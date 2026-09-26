@@ -280,11 +280,48 @@ Owner request, verbatim, 2026-09-23:
    (point 5).
 3. A card keeps its own lane NAME as its pill. So "Building" in one project
    and "In progress" in another both sit under In progress.
-4. A drag into a group resolves the category to one lane. It is the first
-   lane by position with that category in the task's own project
-   (`GET /projects/my/tasks/{id}/lanes`). Then the client PATCHes
-   `/projects/tasks/{id}` with that `status_id`. A drag into Done goes
-   through `POST /projects/tasks/{id}/complete` (§13.5a decision 1).
+4. **Stages group, statuses write (D79, 2026-09-25).** A status write is
+   always to one exact `status_id`. The client reads the lanes of the task's
+   own set from `GET /projects/my/tasks/{id}/lanes`. Each lane now carries
+   its `color`. Every door lists or resolves these lanes:
+   * The status pill and the right-click "Change status…" open
+     `components/ui/StatusMenu.tsx`. It lists the real statuses, grouped
+     by stage, and a pick inside the same stage works.
+   * A drag into a group with ONE status of that stage PATCHes
+     `/projects/tasks/{id}` with it. A drag into a group with TWO or more
+     asks. The card lands with no write, and the menu opens on the card,
+     filtered to that stage, with the first status in focus. Enter picks
+     it. Escape or a click outside puts the card back and writes nothing.
+   * A quick-add in a stage group takes the first status of that stage and
+     does not ask.
+   * The first Done status is Mark done. It goes through
+     `POST /projects/tasks/{id}/complete` (§13.5a decision 1), and it never
+     asks. With two or more Done statuses the receipt names the one it
+     chose: "Done · Shipped in Website relaunch".
+   * Every status write says what it did in the undo toast: "Moved to In
+     review · Website relaunch" for a board task, "Moved to Doing" for a
+     task in my own tree. Undo puts the exact prior `status_id` back first,
+     and then my list. An untriaged board task gets NULL on my overlay, not
+     the value the list derived.
+   * A quick move to NEXT, WAITING or INBOX, or Mark done, reads the SERVER
+     row before it writes. Undo plans its status revert from that read, not
+     from the local row. A teammate may have closed the task since the
+     hydrate. Mark done plans a revert whenever the status moved, so an
+     Undo puts Cancelled back. When the task is closed after the Undo, the
+     Undo does not write an open disposition or DONE to my list, because
+     either one moves the status again. This is also true when the server
+     row was closed before the gesture and nothing moved. The toast then
+     says "Undone, and it stays closed: a teammate closed it."
+   * A reopen goes to the first To do status, else to the first status
+     that is not triage. The Projects Reopen tick uses the same rule.
+   * The assistant's task tools follow the same rules. They read the lanes
+     from the route above. A stage word with two or more statuses writes
+     nothing and lists them, and the model asks the member. An undo of
+     Done writes NEXT only, and the gateway reopens the task. Fence:
+     `tests/unit/test_skill_task_lens.py`.
+
+   Every status set keeps at least one Done status. The gateway refuses the
+   write that would remove the last one (D79 rule 5).
 5. **A stated NEXT is never hidden by its lane.** Next Actions shows every
    task whose effective disposition is NEXT. A task in a `backlog` or
    `triage` lane sits under To do. Only a `cancelled` lane hides a task. The
@@ -306,9 +343,20 @@ Owner request, verbatim, 2026-09-23:
    `workflow_stages` and `status_stage_map`. The `user_settings` columns stay
    until a later contract (R6).
 
-Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
-resolution and the settings modal source) and `naming.test.ts` (no member
-string says ClickUp).
+A cancelled task hides from Next Actions. `nextCategoryOf` tests the
+Cancelled category FIRST. The gateway reads every closing lane as DONE
+(`effective_disposition`), so a test on DONE first drew a cancelled task
+under Done (D79).
+
+Fences:
+
+* `app/tasks/lib/statusCategory.test.ts`: the grouping, the one resolver,
+  the ask rule, the undo order and the settings modal source.
+* `app/tasks/lib/statusReceipt.test.ts`: a status write names the status
+  and the project.
+* `components/ui/StatusMenu.test.ts` and
+  `tests/unit/test_projects_done_guard.py`.
+* `naming.test.ts`: no member string says ClickUp.
 
 ### 4.10 One set of fields across My Tasks and Projects (D77)
 

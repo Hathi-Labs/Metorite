@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Icon from "@/components/Icon";
+import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
+import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { railClass, useRailFold } from "@/lib/railFold";
+import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
 import { ListsSidebar } from "./components/ListsSidebar";
 import { CaptureBar } from "./components/CaptureBar";
@@ -25,6 +28,7 @@ import { TaskSettingsModal } from "./components/TaskSettingsModal";
 import { TaskFocusModal } from "./components/TaskFocusModal";
 import { ReclarifyModal } from "./components/ReclarifyModal";
 import { UndoToast } from "./components/UndoToast";
+import { StagePromptHost } from "./components/StagePromptHost";
 import { SyncFailureToast } from "./components/SyncFailureToast";
 import { PromoteToast } from "./components/PromoteToast";
 import { PromoteHost } from "./components/PromoteHost";
@@ -32,6 +36,14 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
+import { TasksShortcuts } from "./components/TasksShortcuts";
+import { tasksOverlayOpen } from "./lib/shortcuts";
+// ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
+// Projects one with no commands (`paletteCommands`), so it searches tasks only.
+import { SearchPalette } from "../projects/components/SearchPalette";
+import { NotificationBell } from "../projects/components/NotificationBell";
+import { isOpenShortcut } from "../projects/lib/search";
+import { hitTarget, searchAllowed } from "./lib/searchHit";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
@@ -50,7 +62,14 @@ export default function TasksPage() {
   const focusedItemId = useTaskStore((s) => s.focusedItemId);
   const selectItem = useTaskStore((s) => s.selectItem);
   const closeFocus = useTaskStore((s) => s.closeFocus);
-  const [leftOpen, setLeftOpen] = useState(true);
+  const openFocus = useTaskStore((s) => s.openFocus);
+  const router = useRouter();
+  // The lists rail folds itself below `lg`, so the pane beside it keeps a
+  // usable width on a tablet. The toggle still opens it, and the member's
+  // choice holds until the width changes band (`lib/railFold.ts`).
+  const lists = useRailFold();
+  // The ⌘K search palette. Capture is `C` and the Capture button.
+  const [searching, setSearching] = useState(false);
   // The AI assistant opens as a scene from the left sidebar (email-app pattern),
   // not an always-on right rail.
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -121,7 +140,7 @@ export default function TasksPage() {
         selectView("inbox");
         closeDrawer();
       } else if (tab === "tasks-lists") {
-        openDrawer(<ListsSidebar onNavigate={closeDrawer} />);
+        openDrawer(<ListsSidebar titled onNavigate={closeDrawer} />);
       } else if (tab === "tasks-capture") {
         openQuickCapture("single");
       } else if (tab === "tasks-assistant") {
@@ -132,9 +151,20 @@ export default function TasksPage() {
     return () => window.removeEventListener("cc-mobile-nav", handler);
   }, [openDrawer, closeDrawer, openQuickCapture, selectView]);
 
-  // Ubiquitous capture — a hotkey opens the capture palette from any Tasks view.
-  // (App-wide capture from other Metorite apps needs a persisted store +
-  // AppShell-level listener — see spec §2.1 C2 [plumbing].)
+  // Search opens from ⌘K and from the top bar's Search button, through ONE
+  // guard. Not over another overlay (`searchAllowed`): the palette would open
+  // hidden behind it and take the keystrokes.
+  const openSearch = useCallback(() => {
+    if (searchAllowed(useTaskStore.getState(), maximisedId !== null)) {
+      setSearching(true);
+    }
+  }, [maximisedId]);
+
+  // Two hotkeys from any Tasks view: ⌘K searches and `C` captures. ⌘K opens
+  // the same palette it opens in Projects, so one key means one thing in both
+  // task apps. It captured here until 2026-09-24. (App-wide capture from other
+  // Metorite apps needs a persisted store + AppShell-level listener — see spec
+  // §2.1 C2 [plumbing].)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (quickCaptureOpen || clarifyModalOpen) return; // a modal owns the keyboard
@@ -144,11 +174,12 @@ export default function TasksPage() {
         (el.tagName === "INPUT" ||
           el.tagName === "TEXTAREA" ||
           el.isContentEditable);
-      if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) {
+      if (isOpenShortcut(e)) {
         e.preventDefault();
-        openQuickCapture("single");
+        openSearch();
         return;
       }
+      if (searching) return; // the palette owns the keyboard
       if (
         !typing &&
         !e.metaKey &&
@@ -162,7 +193,33 @@ export default function TasksPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen]);
+  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, openSearch]);
+
+  // A hit My Tasks holds opens here. Any other task opens in Projects, because
+  // the palette searches every project and My Tasks cannot draw a task it does
+  // not hold (`lib/searchHit.ts`).
+  const openHit = useCallback(
+    (id: string) => {
+      const target = hitTarget(id, useTaskStore.getState().items);
+      if (target.kind === "here") openFocus(target.id);
+      else router.push(target.href);
+    },
+    [openFocus, router],
+  );
+  const search = (
+    <SearchPalette
+      open={searching}
+      onClose={() => setSearching(false)}
+      onOpenTask={openHit}
+    />
+  );
+  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
+  // any overlay owns the keyboard (`tasksOverlayOpen`, the twin of Projects'
+  // `overlayOpen`), so neither fires under an open dialog.
+  const overlayOpen = useTaskStore((s) =>
+    tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
+  );
+  const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
 
   if (isMobile) {
     // Single-pane mobile flow. Section switching + capture live in the AppShell
@@ -173,6 +230,19 @@ export default function TasksPage() {
     // (`projects/page.tsx`). Desktop docks the same detail beside the list.
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+        {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
+            holds the page's one h1 here too. Capture and the lists live in
+            the shell's bottom bar, so this carries only search and the bell. */}
+        <AppTopBar
+          compact
+          title="My Tasks"
+          tools={
+            <>
+              <AppSearchButton onOpen={openSearch} />
+              <NotificationBell onOpenTask={openHit} />
+            </>
+          }
+        />
         {isInbox ? (
           <InboxView />
         ) : isEngage ? (
@@ -187,52 +257,58 @@ export default function TasksPage() {
         <TaskFocusModal />
         <ReclarifyModal />
         <UndoToast />
+        <StagePromptHost />
         <SyncFailureToast />
         <PromoteToast />
         <PromoteHost />
         <DeleteConfirmModal />
         <SchedulePopup />
         <EliminatePopup />
-      <DelegatePopup />
+        <DelegatePopup />
+        {search}
+        {shortcuts}
       </div>
     );
   }
 
   return (
     <div className="flex h-full w-full select-none flex-col overflow-hidden bg-background">
-      {/* Slim toolbar: panel toggles + title */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
-        <PanelToggle
-          active={leftOpen}
-          onClick={() => setLeftOpen((v) => !v)}
-          label="Toggle lists"
-          icon="PanelLeft"
-        />
-        <span className="text-xs font-medium text-muted-foreground">
-          My Tasks
-        </span>
-        {/* The same primitive and size as AssistantToggle beside it, so the
-            two chips in this bar share one height and one radius. */}
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="Plus"
-          onClick={() => openQuickCapture("single")}
-          className="ml-2"
-        >
-          Capture
-          <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
-        </Button>
-        <AssistantToggle
-          open={assistantOpen}
-          onToggle={() => setAssistantOpen((v) => !v)}
-          className="ml-auto"
-        />
-      </div>
+      {/* The shared app bar (`components/AppTopBar.tsx`), the one Projects
+          renders: rail toggle, the app's h1, Capture, then search, the
+          bell and the assistant at the right end. */}
+      <AppTopBar
+        rail={{ open: lists.open, onToggle: lists.toggle, noun: "your lists" }}
+        title="My Tasks"
+        actions={
+          /* The same primitive and size as AssistantToggle, so the chips in
+             this bar share one height and one radius. */
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Plus"
+            onClick={() => openQuickCapture("single")}
+          >
+            Capture
+            <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
+          </Button>
+        }
+        tools={
+          <>
+            <AppSearchButton onOpen={openSearch} />
+            <NotificationBell onOpenTask={openHit} />
+            <AssistantToggle
+              open={assistantOpen}
+              onToggle={() => setAssistantOpen((v) => !v)}
+            />
+          </>
+        }
+      />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {leftOpen && (
-          <aside className="w-60 shrink-0 border-r border-border bg-card">
+        {/* `railClass`: before mount, CSS hides the rail below `lg`, so a
+            tablet load does not paint it open for a frame (`lib/railFold.ts`). */}
+        {lists.open && (
+          <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
               onOpenAssistant={() => setAssistantOpen(true)}
               assistantActive={assistantOpen}
@@ -266,7 +342,7 @@ export default function TasksPage() {
               <LedProjectView />
             </div>
             {selectedItemId && (
-              <aside className="flex h-full w-[380px] shrink-0 flex-col overflow-hidden bg-card">
+              <aside className={`flex h-full w-full ${TASK_PANEL_WIDTH} shrink-0 flex-col overflow-hidden bg-card`}>
                 <ItemDetail onMaximize={openMaximised} onClose={closeDetail} />
               </aside>
             )}
@@ -286,13 +362,11 @@ export default function TasksPage() {
               </div>
             </div>
             {selectedItemId && (
-              /* `w-[380px]` is DESIGN_SYSTEM §6's side-panel width, not
-                 Projects' `max-w-md`: Projects writes `w-full max-w-md` because
-                 the same <aside> becomes the phone screen with the cap lifted,
-                 and this one never does — the phone gets TaskFocusModal. No
-                 `border-l`: the list column left of it already draws the
-                 divider, and two hairlines is a 2px rule. */
-              <aside className="flex h-full w-[380px] shrink-0 flex-col overflow-hidden bg-card">
+              /* `TASK_PANEL_WIDTH` is the docked width Projects' panel takes
+                 too (`lib/taskPanel.ts`), so a task opens at one width in
+                 both apps. No `border-l`: the list column left of it already
+                 draws the divider, and two hairlines is a 2px rule. */
+              <aside className={`flex h-full w-full ${TASK_PANEL_WIDTH} shrink-0 flex-col overflow-hidden bg-card`}>
                 <ItemDetail onMaximize={openMaximised} onClose={closeDetail} />
               </aside>
             )}
@@ -314,6 +388,7 @@ export default function TasksPage() {
       )}
       <ReclarifyModal />
       <UndoToast />
+      <StagePromptHost />
       <SyncFailureToast />
       <PromoteToast />
       <PromoteHost />
@@ -321,39 +396,8 @@ export default function TasksPage() {
       <SchedulePopup />
       <EliminatePopup />
       <DelegatePopup />
+      {search}
+      {shortcuts}
     </div>
-  );
-}
-
-function PanelToggle({
-  active,
-  onClick,
-  label,
-  icon,
-  className = "",
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  /** Lucide icon NAME. */
-  icon: string;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      aria-pressed={active}
-      className={[
-        "tech-transition flex h-7 w-7 items-center justify-center rounded-md",
-        active
-          ? "bg-primary/10 text-primary"
-          : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-        className,
-      ].join(" ")}
-    >
-      <Icon name={icon} className="h-4 w-4" />
-    </button>
   );
 }

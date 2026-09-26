@@ -51,7 +51,7 @@ describe("the two stops", () => {
 
   it("defaults to the shipped docked width", () => {
     expect(DEFAULT_PANEL_MODE).toBe("side");
-    expect(PANEL_WIDTH_CLASS.side).toBe("max-w-md");
+    expect(PANEL_WIDTH_CLASS.side).toBe("max-w-sm");
   });
 
   it("labels, hints, glyphs and widths cover every stop", () => {

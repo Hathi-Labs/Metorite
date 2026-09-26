@@ -128,6 +128,20 @@ function emailPerson(v: unknown): Person | undefined {
   return email ? { name: email, email } : undefined;
 }
 
+/**
+ * `tag_colors` is jsonb `{lower(name): colour}`, or null when no tag on the
+ * task has a registry row. Keys are lower-cased again here, so a lookup by
+ * `name.toLowerCase()` cannot miss on a server that sent mixed case.
+ */
+function tagColorMap(v: unknown): Record<string, string> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, color] of Object.entries(v as Raw)) {
+    if (typeof color === "string" && color) out[name.toLowerCase()] = color;
+  }
+  return out;
+}
+
 /** `waiting_on` is jsonb `{name, email}` — the delegator typed both. */
 function waitingPerson(v: unknown): Person | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -184,6 +198,7 @@ export function mapLensItem(raw: Raw): MyTask {
     keptMine: tri(raw.kept_mine),
 
     projectId: text(raw.project_id),
+    taskNumber: num(raw.task_number),
     projectName: text(raw.project_name),
     isTriaged: tri(raw.is_triaged),
     assignedBy: text(raw.assigned_by),
@@ -195,8 +210,10 @@ export function mapLensItem(raw: Raw): MyTask {
     assignee: assignees[0],
     assignees,
 
+    statusId: text(raw.status_id),
     workflowStage: text(raw.workflow_stage),
     statusCategory: text(raw.status_category),
+    statusColor: text(raw.status_color),
     sortKey: num(raw.sort_key),
     parentItemId: text(raw.parent_task_id),
     subtaskCount: raw.subtask_count == null ? 0 : Number(raw.subtask_count),
@@ -221,6 +238,7 @@ export function mapLensItem(raw: Raw): MyTask {
     // and the team's tags.
     startDate: text(raw.start_date)?.slice(0, 10),
     tags: Array.isArray(raw.tags) ? (raw.tags as unknown[]).map(String) : [],
+    tagColors: tagColorMap(raw.tag_colors),
   };
 }
 
@@ -725,16 +743,30 @@ export async function lensTrashItem(id: string): Promise<void> {
   });
 }
 
-/** Undo the soft delete — back to the inbox to be triaged again. */
-export async function lensRestoreItem(id: string): Promise<MyTask> {
+/**
+ * Undo the soft delete: the overlay gets back the disposition it had BEFORE
+ * the trash.
+ *
+ * `prior` is that disposition, from the undo snapshot. `null` means the row
+ * was untriaged, so the overlay is CLEARED rather than stating a triage the
+ * member never made (the same rule the board-task undo follows). Absent, it
+ * falls back to INBOX, to be triaged again. Until 2026-09-24 every restore
+ * wrote INBOX, so a Next or Waiting task came back in the Inbox after a
+ * reload, although the screen showed it where it was.
+ */
+export async function lensRestoreItem(
+  id: string,
+  prior?: MyTask["disposition"] | null,
+): Promise<MyTask> {
   // D77 — an open disposition on a closed task REOPENS it for the board
   // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
   // task whose lane is closed comes back as DONE, which is what it was.
   const current = await lensGetItem(id);
   const closed = ["done", "cancelled"].includes(current.statusCategory ?? "");
+  const disposition = closed ? "DONE" : prior === undefined ? "INBOX" : prior;
   await projectsCall<Raw>(`tasks/${id}/personal`, {
     method: "PATCH",
-    body: JSON.stringify({ disposition: closed ? "DONE" : "INBOX" }),
+    body: JSON.stringify({ disposition }),
   });
   return lensGetItem(id);
 }
@@ -944,11 +976,22 @@ export interface LensMoveRequest {
  *   * the D62 guards refuse a move into somebody's personal tree, and an
  *     assignment to a colleague while the task is still in your own.
  */
-/** Put a task in one lane, by id (D73.9: the category drag resolves the lane). */
-export async function lensSetStatusId(taskId: string, statusId: string): Promise<void> {
+/**
+ * Put a task in one lane, by id (D79: a status write names one exact status).
+ *
+ * `ifMatch` is the row's `updated_at` as the caller last read it. The gateway
+ * answers 412 when the row changed since (D-PM-20), which is how an Undo
+ * refuses to overwrite a teammate's newer move.
+ */
+export async function lensSetStatusId(
+  taskId: string,
+  statusId: string,
+  opts?: { ifMatch?: string },
+): Promise<void> {
   await projectsCall<Raw>(`tasks/${taskId}`, {
     method: "PATCH",
     body: JSON.stringify({ status_id: statusId }),
+    ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
   });
 }
 

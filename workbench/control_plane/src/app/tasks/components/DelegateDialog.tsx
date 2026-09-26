@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import Icon from "@/components/Icon";
 import { useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
@@ -68,24 +69,19 @@ export function DelegateDialog({
     }
   };
 
+  // The shared `Modal` (continuity P3). The `alert` layer, because the task
+  // detail raises this from inside the focused task (`TaskFocusModal`,
+  // z-[80]), and the dialog layer (z-50) would paint under it.
   return (
-    <div
-      className="chat-fade-in fixed inset-0 z-[90] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
-      onClick={onClose}
+    <Modal
+      open
+      onClose={onClose}
+      title={`Delegate to ${assignee.name}`}
+      icon="UserPlus"
+      size="md"
+      layer="alert"
+      className="max-h-[86vh]"
     >
-      <div
-        className="flex max-h-[86vh] w-full max-w-md flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl sm:rounded-2xl sm:border"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <span className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Icon name="UserPlus" className="h-4 w-4 text-primary" />
-            Delegate to {assignee.name}
-          </span>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" onClick={onClose} aria-label="Close" className="rounded-md">
-            <Icon name="X" className="h-4 w-4" />
-          </Button>
-        </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <p className="mb-3 flex items-start gap-1.5 text-[11px] text-muted-foreground">
@@ -126,7 +122,6 @@ export function DelegateDialog({
             Delegate
           </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

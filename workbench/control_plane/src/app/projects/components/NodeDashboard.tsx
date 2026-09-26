@@ -63,6 +63,7 @@ import {
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
 /** The order lanes read in — the same left-to-right a board uses. */
 const CATEGORY_ORDER = [
@@ -74,14 +75,8 @@ const CATEGORY_ORDER = [
   "cancelled",
 ] as const;
 
-const CATEGORY_LABELS: Record<string, string> = {
-  triage: "Triage",
-  backlog: "Backlog",
-  todo: "To do",
-  in_progress: "In progress",
-  done: "Done",
-  cancelled: "Cancelled",
-};
+/** The labels are `lib/statusCategory.ts`'s. One place names a category. */
+const CATEGORY_LABELS: Record<string, string> = CATEGORY_LABEL;
 
 function orderedCategories(counts: Record<string, number>) {
   const known = CATEGORY_ORDER.filter((c) => (counts[c] ?? 0) > 0);

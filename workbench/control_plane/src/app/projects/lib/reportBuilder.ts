@@ -34,15 +34,19 @@ import { flatten } from "./tree";
 export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "finished", label: "What we finished" },
   { key: "throughput", label: "How long it took" },
+  { key: "outlook", label: "Outlook" },
   { key: "load", label: "Open work" },
   { key: "capacity", label: "Who has the hours" },
   { key: "stuck", label: "Overdue" },
+  { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
+  { key: "rebalance", label: "Who could help" },
 ];
 
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
- * The same lockstep test pins it. `capacity` and `conflicts` are opt-in.
+ * The same lockstep test pins it. `outlook`, `capacity`, `hygiene`,
+ * `conflicts` and `rebalance` are opt-in.
  */
 export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
   "finished",

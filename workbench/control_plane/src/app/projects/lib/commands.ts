@@ -300,7 +300,15 @@ const PROJECT_COMMANDS: Command[] = [
   },
 ];
 
-const HELP_COMMANDS: Command[] = [
+/**
+ * The `g <letter>` jumps between apps. Exported because My Tasks binds the
+ * SAME objects (continuity P3): a second list of letters is how `g t` comes
+ * to mean one thing here and another there.
+ */
+export const GO_COMMANDS: readonly Command[] = goCommands();
+
+/** `?`. Exported for the same reason as `GO_COMMANDS`. */
+export const HELP_COMMANDS: readonly Command[] = [
   {
     id: "help.shortcuts",
     label: "Keyboard shortcuts",
@@ -314,7 +322,7 @@ const HELP_COMMANDS: Command[] = [
 
 /** THE registry. Everything the palette, the keyboard and the sheet know. */
 export const COMMANDS: readonly Command[] = [
-  ...goCommands(),
+  ...GO_COMMANDS,
   ...viewCommands(),
   ...PANEL_COMMANDS,
   ...PROJECT_COMMANDS,
@@ -359,6 +367,23 @@ export function matchCommands(
   return scored
     .sort((a, b) => a.score - b.score || a.at - b.at)
     .map((entry) => entry.command);
+}
+
+/**
+ * The commands the palette lists for a query, or none.
+ *
+ * My Tasks mounts the SAME palette for its ⌘K and supplies no context,
+ * because every command in this registry acts on the Projects page (a view
+ * mode, a panel width, a project manager). With no context the palette is
+ * task search and nothing else. It never offers a command it cannot run.
+ */
+export function paletteCommands(
+  context: CommandContext | undefined,
+  query: string,
+  registry: readonly Command[] = COMMANDS,
+): Command[] {
+  if (!context) return [];
+  return matchCommands(availableCommands(context, registry), query);
 }
 
 /** "g p" — how a sequence is printed, everywhere it is printed. */

@@ -332,7 +332,8 @@ describe("solid controls go through the Button primitive", () => {
   // workspace/project pickers). Lowering the number is part of the change —
   // this ratchet only holds if a file that got better cannot keep its old
   // budget for the next regression to spend.
-  const SOLID_BUTTON_DEBT = 25;
+  // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
+  const SOLID_BUTTON_DEBT = 24;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -423,7 +424,9 @@ describe("no raw Tailwind palette colours", () => {
     "app/tasks/components/AssistantRail.tsx": 1,
     "app/tasks/components/ClarifyPanel.tsx": 5,
     "app/tasks/components/FocusMode.tsx": 2,
-    "app/tasks/components/PriorityControls.tsx": 48,
+    // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
+    // PriorityChip. What is left is the Weight toggles and the nudge badge.
+    "app/tasks/components/PriorityControls.tsx": 24,
     "app/calendar/components/StartupRitual.tsx": 6,
     "app/calendar/components/EndOfDayReview.tsx": 6,
     "app/calendar/components/ScheduleSheet.tsx": 1,
@@ -773,7 +776,9 @@ describe("selects and file pickers go through the primitives", () => {
    * first file converted and is the worked example. `FilterBar.tsx` left this
    * list at WS-27at: consolidating its row put all three of its selects
    * (status, group-by, lanes) through the primitive, and added a fourth for
-   * "Assigned to" that was never a raw one.
+   * "Assigned to" that was never a raw one. `app/tasks/components/TaskToolbar.tsx`
+   * left it on 2026-09-24: its four (assignee, group-by, sort, and the local
+   * `Select` wrapper) moved onto `SelectButton`, the pieces `FilterBar` uses.
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
@@ -803,8 +808,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/settings/organization/OrganizationAdmin.tsx": 2,
     "app/tasks/components/EngageView.tsx": 2,
     "app/tasks/components/TaskSettingsModal.tsx": 1,
-    // 3 raw, plus one `<Select>` the widened regex now sees.
-    "app/tasks/components/TaskToolbar.tsx": 4,
     "app/calendar/components/CalendarSettings.tsx": 3,
     "app/calendar/components/PlanDayPanel.tsx": 1,
     "app/whatsapp/calls/page.tsx": 1,
@@ -1076,12 +1079,27 @@ describe("the headless substrate is wrapped, not imported", () => {
    * somebody switches off (this file's own header, "Ratchet, not a wall").
    * Retiring another overlay onto `Modal` is how this list grows.
    */
+  /** The My Tasks dialogs the task detail raises from inside TaskFocusModal. */
+  const MY_TASKS_ALERT_LAYER = [
+    "app/tasks/components/SchedulePopup.tsx",
+    "app/tasks/components/EliminatePopup.tsx",
+    "app/tasks/components/DelegatePopup.tsx",
+    "app/tasks/components/DelegateDialog.tsx",
+  ];
+
   const CONVERTED = [
     "app/projects/components/ShortcutsSheet.tsx",
     "app/projects/components/SearchPalette.tsx",
     "app/projects/components/FieldManager.tsx",
     "app/projects/components/TagManager.tsx",
     "app/projects/components/LifecyclePolicy.tsx",
+    // 2026-09-24 — the one delete confirmation, for Projects and My Tasks. It
+    // replaced `window.confirm` and a hand-rolled `fixed inset-0` overlay.
+    "components/ui/ConfirmDialog.tsx",
+    // Continuity P3 (2026-09-25) — five My Tasks dialogs with a scrim, a
+    // panel and buttons, and no portalled picker inside.
+    ...MY_TASKS_ALERT_LAYER,
+    "app/tasks/components/TaskSettingsModal.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1105,6 +1123,25 @@ describe("the headless substrate is wrapped, not imported", () => {
       "These no longer import `Modal`, so the scan above fences nothing for " +
         "them. Either they regressed, or this list is stale.",
     ).toEqual([]);
+  });
+
+  it("My Tasks settings keeps its safe-area padding on Modal", () => {
+    // The hand-rolled sheet carried `pb-safe`. Lost in the move, the last
+    // row sat under the phone's home indicator (PR #475 review).
+    expect(read("app/tasks/components/TaskSettingsModal.tsx")).toMatch(
+      /className="[^"]*\bpb-safe\b[^"]*"/,
+    );
+  });
+
+  it("a My Tasks dialog the focused task can raise paints on the alert layer", () => {
+    // `TaskFocusModal` is still a hand-rolled overlay at z-[80] (its pickers
+    // are portalled, and a Base UI modal blocks them). The task detail inside
+    // it raises these four. On the dialog layer (z-50) they would open BEHIND
+    // it: focused, trapped and invisible. Retire this when TaskFocusModal
+    // moves onto `Modal`.
+    const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
+    expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────

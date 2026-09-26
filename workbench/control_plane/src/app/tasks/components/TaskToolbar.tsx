@@ -1,8 +1,13 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
+import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { searchOpen } from "@/app/projects/lib/grouping";
 import { useMemo, useRef, useState, useEffect } from "react";
 import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
@@ -12,6 +17,7 @@ import {
   NO_CONTEXT_FACET,
   NO_ENERGY_FACET,
   SORT_LABEL,
+  DEFAULT_SORT,
   type GroupBy,
   type SortField,
   type TaskFilters,
@@ -26,7 +32,11 @@ import { CELL_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
 
 // The unified filter + sort + group bar (Jira/Linear-style). One row:
-//   [Search]  [Filter ▾ (N)] [chips…]        [Group by ▾]  [Sort ▾ ⇅]
+//   [Search icon]  [Filter (N)] [chips…]        [Group by]  [Sort] [⇅]
+// Built from the pieces Projects' `FilterBar` uses (2026-09-24): the search is
+// an icon until asked for, then an `Input`; each axis is a `SelectButton`;
+// every toggle is a `Button`. The look is Projects'. The options and what they
+// do are My Tasks' own, unchanged.
 // The Filter popover holds every facet (Context / Priority / Energy, + Assignee
 // off My Next Actions) as MULTI-select checklists — a task matches ANY value
 // within a facet (OR) and must pass EVERY active facet (AND). Active values show
@@ -43,16 +53,25 @@ const SORT_FIELDS: SortField[] = [
   "manual", "priority", "due", "created", "title", "energy",
 ];
 
+// Each option says what it DOES, as Projects' "Group by …" options do, so the
+// control needs no label beside it.
 const GROUP_LABEL: Record<GroupBy | "", string> = {
-  "": "Status", // the default grouping for Next Actions IS by status
+  // "Stage", never "Status". The default groups Next Actions by the status
+  // CATEGORY (`nextCategoryOf`), which Projects calls a stage ("Group by
+  // stage"). A status is one lane's own name, and this is not that.
+  "": "Group by stage",
   none: "No grouping",
-  context: "Context",
+  context: "Group by context",
   // D78: one priority system, the matrix, in both apps.
-  priority: "Priority",
-  mode: "Suggestion",
-  energy: "Energy",
-  depth: "Work mode",
+  priority: "Group by priority",
+  mode: "Group by suggestion",
+  energy: "Group by energy",
+  depth: "Group by work mode",
 };
+
+/** A sort option's text. "Manual order" is not a sort BY anything. */
+const sortOptionLabel = (f: SortField): string =>
+  f === "manual" ? "Manual order" : `Sort by ${SORT_LABEL[f].toLowerCase()}`;
 
 const GROUP_OPTIONS: (GroupBy | "")[] = [
   "", "context", "priority", "mode", "energy", "depth", "none",
@@ -139,6 +158,16 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
   const active = filtersActive(filters);
   const nFacets = activeFilterCount(filters);
 
+  // The search is an icon until it is asked for (Projects' H-94 direction 3).
+  // `opened` is the TOGGLE, never the answer: `searchOpen` keeps the field on
+  // screen while it holds text, whatever this says.
+  const [opened, setOpened] = useState(false);
+  const searchField = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (opened) searchField.current?.focus();
+  }, [opened]);
+  const searching = searchOpen({ opened, draft: filters.query });
+
   // Toggle a value in a multi-select facet.
   const toggle = (key: FacetKey, value: string) => {
     const cur = filters[key] ?? [];
@@ -150,27 +179,35 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-2">
-      {/* Search */}
-      <div className="relative min-w-[160px] flex-1 sm:max-w-xs">
-        <Icon name="Search" className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
-          value={filters.query}
-          onChange={(e) => setFilters({ query: e.target.value })}
-          placeholder="Search tasks…"
-          className="tech-transition h-7 w-full rounded-md border border-border bg-background pl-7 pr-6 text-xs text-foreground placeholder:text-muted-foreground/70 focus:border-primary focus:outline-none"
+      {/* Search — collapsed to its icon, as in Projects' filter row. A
+          fixed width, so nothing beside it moves when it opens. */}
+      {searching ? (
+        <div className="w-64">
+          <Input
+            ref={searchField}
+            icon="Search"
+            inputSize="sm"
+            value={filters.query}
+            onChange={(e) => setFilters({ query: e.target.value })}
+            aria-label="Search tasks"
+            placeholder="Search tasks…"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setOpened(false);
+            }}
+            onBlur={() => setOpened(false)}
+          />
+        </div>
+      ) : (
+        <Button
+          variant="secondary"
+          size="icon-sm"
+          icon="Search"
+          aria-label="Search tasks"
+          aria-expanded={false}
+          title="Search titles and notes"
+          onClick={() => setOpened(true)}
         />
-        {filters.query && (
-          <button
-            type="button"
-            onClick={() => setFilters({ query: "" })}
-            title="Clear search"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          >
-            <Icon name="X" className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
+      )}
 
       {/* Filter — one popover for every facet */}
       <FilterMenu
@@ -185,12 +222,16 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
 
       {/* Assignee (single-select) — only on views where tasks aren't all mine. */}
       {showAssignee && assigneeOpts.length > 0 && (
-        <Select
+        <SelectButton
           label="Assignee"
+          widthClass="w-40"
+          className={filters.assignee ? OFF_DEFAULT : ""}
           value={filters.assignee}
           onChange={(v) => setFilters({ assignee: v })}
-          options={assigneeOpts}
-          anyLabel="Anyone"
+          options={[
+            { value: "", label: "Anyone" },
+            ...assigneeOpts.map((o) => ({ value: o, label: o })),
+          ]}
         />
       )}
 
@@ -202,72 +243,51 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
       />
 
       {active && (
-        <Button variant="ghost" size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={clearFilters} className="h-7 gap-1 rounded-md px-2 text-[11px]">
-          <Icon name="X" className="h-3 w-3" />
+        <Button variant="ghost" size="sm" icon="X" onClick={clearFilters}>
           Clear{nFacets > 1 ? " all" : ""}
         </Button>
       )}
 
       {/* Group-by + Sort — pushed right */}
-      <div className="ml-auto flex items-center gap-1">
-        <Icon name="Rows3" className="h-3.5 w-3.5 text-muted-foreground" />
-        <select
+      <div className="ml-auto flex items-center gap-2">
+        <SelectButton
+          label="Group by"
+          widthClass="w-[11rem]"
+          className={groupBy ? OFF_DEFAULT : ""}
           value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value as GroupBy | "")}
-          aria-label="Group by"
-          className={[
-            "tech-transition h-7 rounded-md border bg-background pl-2 pr-6 text-xs focus:border-primary focus:outline-none",
-            groupBy ? "border-primary/50 text-foreground" : "border-border text-muted-foreground",
-          ].join(" ")}
-        >
-          {GROUP_OPTIONS.map((g) => (
-            <option key={g || "default"} value={g}>
-              {GROUP_LABEL[g]}
-            </option>
-          ))}
-        </select>
+          defaultValue=""
+          onChange={(v) => setGroupBy(v as GroupBy | "")}
+          options={GROUP_OPTIONS.map((g) => ({ value: g, label: GROUP_LABEL[g] }))}
+        />
+        {showSort && (
+          <div className="flex items-center gap-1">
+            <SelectButton
+              label="Sort by"
+              widthClass="w-[10rem]"
+              value={sort.field}
+              defaultValue={DEFAULT_SORT.field}
+              className={sort.field === DEFAULT_SORT.field ? "" : OFF_DEFAULT}
+              onChange={(v) => setSort({ field: v as SortField })}
+              options={SORT_FIELDS.map((f) => ({ value: f, label: sortOptionLabel(f) }))}
+            />
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              icon={sort.dir === "asc" ? "ArrowUpNarrowWide" : "ArrowDownWideNarrow"}
+              onClick={() => setSort({ dir: sort.dir === "asc" ? "desc" : "asc" })}
+              disabled={sort.field === "manual"}
+              aria-label={sort.dir === "asc" ? "Ascending" : "Descending"}
+              title={
+                sort.field === "manual"
+                  ? "Manual order (drag cards to reorder)"
+                  : sort.dir === "asc"
+                    ? "Ascending — click for descending"
+                    : "Descending — click for ascending"
+              }
+            />
+          </div>
+        )}
       </div>
-      {showSort && (
-        <div className="flex items-center gap-1">
-          <Icon name="ListFilter" className="h-3.5 w-3.5 text-muted-foreground" />
-          <select
-            value={sort.field}
-            onChange={(e) => setSort({ field: e.target.value as SortField })}
-            aria-label="Sort by"
-            className="tech-transition h-7 rounded-md border border-border bg-background pl-2 pr-6 text-xs text-foreground focus:border-primary focus:outline-none"
-          >
-            {SORT_FIELDS.map((f) => (
-              <option key={f} value={f}>
-                {SORT_LABEL[f]}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => setSort({ dir: sort.dir === "asc" ? "desc" : "asc" })}
-            disabled={sort.field === "manual"}
-            title={
-              sort.field === "manual"
-                ? "Manual order (drag cards to reorder)"
-                : sort.dir === "asc"
-                  ? "Ascending — click for descending"
-                  : "Descending — click for ascending"
-            }
-            className={[
-              "tech-transition inline-flex h-7 w-7 items-center justify-center rounded-md border border-border",
-              sort.field === "manual"
-                ? "cursor-not-allowed text-muted-foreground/40"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            ].join(" ")}
-          >
-            {sort.dir === "asc" ? (
-              <Icon name="ArrowUpNarrowWide" className="h-3.5 w-3.5" />
-            ) : (
-              <Icon name="ArrowDownWideNarrow" className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -306,10 +326,12 @@ function FilterMenu({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
+  // Dismiss through the shared walker (`lib/outsideClick.ts`), as every
+  // popover in the filter rows does.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (shouldDismiss(e.target as Element | null, domClickWalk(ref.current))) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", onDown);
@@ -326,50 +348,37 @@ function FilterMenu({
 
   return (
     <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
+      {/* Projects' Fields button: `secondary` at rest, `primary` once it is
+          doing something, and the count after the label. */}
+      <Button
+        variant={count > 0 ? "primary" : "secondary"}
+        size="sm"
+        icon="ListFilter"
         aria-expanded={open}
-        className={[
-          "tech-transition inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-medium",
-          count > 0
-            ? "border-primary/50 bg-primary/5 text-foreground"
-            : "border-border text-muted-foreground hover:text-foreground",
-        ].join(" ")}
+        onClick={() => setOpen((v) => !v)}
       >
-        <Icon name="ListFilter" className="h-3.5 w-3.5" />
         Filter
-        {count > 0 && (
-          <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
-            {count}
-          </span>
-        )}
-        <Icon name="ChevronDown" className="h-3 w-3 opacity-60" />
-      </button>
+        {count > 0 ? <span className="ml-1 opacity-70">{count}</span> : null}
+      </Button>
       {open && (
-        <div className="absolute left-0 top-8 z-40 max-h-[70vh] w-64 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-xl">
+        <div className="absolute left-0 z-40 mt-1 max-h-[70vh] w-64 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-md">
           {usable.map((s, si) => (
             <div key={s.key} className={si > 0 ? "mt-2 border-t border-border pt-2" : undefined}>
-              <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <p className="px-1 pb-1 text-[11px] font-medium text-foreground">
                 {s.label}
               </p>
               {s.options.map((o) => {
                 const on = s.selected.includes(o.value);
                 return (
-                  <button
+                  <label
                     key={o.value}
-                    type="button"
-                    onClick={() => onToggle(s.key, o.value)}
-                    className="tech-transition flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs hover:bg-secondary"
+                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-foreground hover:bg-muted"
                   >
-                    <span
-                      className={[
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
-                        on ? "border-primary bg-primary text-primary-foreground" : "border-border",
-                      ].join(" ")}
-                    >
-                      {on && <Icon name="Check" className="h-3 w-3" />}
-                    </span>
+                    <Checkbox
+                      checked={on}
+                      onChange={() => onToggle(s.key, o.value)}
+                      aria-label={`${s.label}: ${o.label}`}
+                    />
                     {o.icon ? (
                       <o.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     ) : o.dot ? (
@@ -377,9 +386,9 @@ function FilterMenu({
                     ) : o.emoji ? (
                       <span aria-hidden>{o.emoji}</span>
                     ) : null}
-                    <span className="min-w-0 flex-1 truncate text-foreground">{o.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
                     <span className="shrink-0 text-[10px] text-muted-foreground">{o.count}</span>
-                  </button>
+                  </label>
                 );
               })}
             </div>
@@ -460,38 +469,5 @@ function FacetChips({
         </span>
       ))}
     </div>
-  );
-}
-
-function Select({
-  label,
-  value,
-  onChange,
-  options,
-  anyLabel,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  anyLabel: string;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label={label}
-      className={[
-        "tech-transition h-7 rounded-md border bg-background pl-2 pr-6 text-xs focus:border-primary focus:outline-none",
-        value ? "border-primary/50 text-foreground" : "border-border text-muted-foreground",
-      ].join(" ")}
-    >
-      <option value="">{anyLabel}</option>
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-    </select>
   );
 }

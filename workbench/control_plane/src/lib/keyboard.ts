@@ -16,12 +16,24 @@
  * it so its callers are unchanged.
  */
 
-/** Is the event's target a field where the user is typing? */
+/** Is the event's target a field where the user is typing?
+ *
+ *  A listbox option counts, the way a `<select>` does: a letter typed on
+ *  one is type-ahead inside the list (`components/ui/StatusMenu.tsx`), and
+ *  must not also fire an app shortcut. */
 export function isTypingTarget(
-  target: { tagName?: string; isContentEditable?: boolean } | null | undefined,
+  target:
+    | {
+        tagName?: string;
+        isContentEditable?: boolean;
+        getAttribute?: (name: string) => string | null;
+      }
+    | null
+    | undefined,
 ): boolean {
   if (!target) return false;
   if (target.isContentEditable === true) return true;
+  if (target.getAttribute?.("role") === "option") return true;
   const tag = (target.tagName ?? "").toLowerCase();
   return tag === "input" || tag === "textarea" || tag === "select";
 }

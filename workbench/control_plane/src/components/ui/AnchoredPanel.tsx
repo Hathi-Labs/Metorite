@@ -51,9 +51,47 @@ import { createPortal } from "react-dom";
 
 import { PREVENT_OUTSIDE_CLICK } from "@/lib/outsideClick";
 
+/**
+ * What a panel can hang from: an element, or anything that can say where it
+ * is. A point (a right-click) is a zero-size box, so a context menu can raise
+ * a panel where the pointer was.
+ */
+export interface PanelAnchor {
+  getBoundingClientRect(): {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+  };
+}
+
+/** A zero-size anchor at a point on screen, such as where a right-click was. */
+export function pointAnchor(x: number, y: number): PanelAnchor {
+  return {
+    getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0 }),
+  };
+}
+
+/**
+ * The paint layer.
+ *
+ * - `popover` (the default) is `z-[60]`, above a `Modal` at `z-50`.
+ * - `top` is `z-[90]`, for a panel raised from inside a hand-rolled overlay
+ *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[80]`, so a
+ *   `popover` panel opened from a focused task drew BEHIND it. `top` stays
+ *   under `Modal`'s `alert` (`z-[100]`), so a confirmation still wins.
+ */
+export type PanelLayer = "popover" | "top";
+
+const PANEL_LAYERS: Record<PanelLayer, string> = {
+  popover: "z-[60]",
+  top: "z-[90]",
+};
+
 export interface AnchoredPanelProps {
-  /** The element the panel hangs from. */
-  anchor: HTMLElement | null;
+  /** The element (or box) the panel hangs from. */
+  anchor: PanelAnchor | null;
   open: boolean;
   children: React.ReactNode;
   /**
@@ -71,6 +109,8 @@ export interface AnchoredPanelProps {
    * the left edge runs off the window (the S6g capture chip at 768px).
    */
   align?: "start" | "end";
+  /** Which layer it paints on. See {@link PanelLayer}. */
+  layer?: PanelLayer;
 }
 
 /** Where the panel sits, measured from the anchor's box. Pure, so it is testable. */
@@ -120,6 +160,7 @@ export function AnchoredPanel({
   className = "",
   panelProps,
   align = "start",
+  layer = "popover",
 }: AnchoredPanelProps) {
   const [box, setBox] = useState<PanelBox | null>(null);
 
@@ -158,7 +199,7 @@ export function AnchoredPanel({
       {...panelProps}
       {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
       style={panelStyle(box, align, maxHeight)}
-      className={`fixed z-[60] overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
+      className={`fixed ${PANEL_LAYERS[layer]} overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
     >
       {children}
     </div>,

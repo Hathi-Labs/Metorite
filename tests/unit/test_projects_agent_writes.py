@@ -1501,10 +1501,33 @@ async def test_delete_status_receipt_reads_the_routes_key(monkeypatch) -> None:
     assert "9 tasks moved" in out
 
 
-async def test_the_last_closing_lane_is_refused_before_the_card(monkeypatch) -> None:
+async def test_the_last_done_lane_is_refused_before_the_card(monkeypatch) -> None:
+    """D79: every status set keeps a Done status, the route's own 409."""
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.delete_status(UUID, "done", move_to="to do")
+    assert "last Done status" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_last_closing_lane_is_refused_before_the_card(monkeypatch) -> None:
+    """A set that predates D79, with no Done lane: its last Cancelled lane
+    is still the only lane that closes a task."""
+
+    def no_done(call: dict) -> Any:
+        if call["path"].endswith("/statuses"):
+            return {
+                "rows": [
+                    {"id": S1, "name": "To do", "category": "todo"},
+                    {"id": S3, "name": "Dropped", "category": "cancelled"},
+                ],
+                "counts": {}, "owner_id": UUID,
+            }
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, no_done)
+    out = await skill_projects.delete_status(UUID, "dropped", move_to="to do")
     assert "only lane that closes" in out
     assert asked == [] and writes(calls) == []
 
@@ -2352,3 +2375,93 @@ async def test_an_effort_out_of_range_is_refused_before_the_card(
         "Frame", _json.dumps([{**PLAN_DEPS[0], "effort_mins": effort}]))
     assert "effort_mins is 0 to 129600 minutes" in out
     assert drawn == [] and asked == [] and calls == []
+
+
+# ── WS-27bm S10: the card edits `after`, and a lost project write ───────────
+
+
+async def test_an_after_edited_on_the_card_is_on_the_confirm_card_and_posted(
+    monkeypatch,
+) -> None:
+    """§16.2 rule 5. The member ticks t1 under t3's "Waits on". The confirm
+    card names the new link and the batch posts it."""
+    edited = [PLAN_DEPS[0], PLAN_DEPS[1], {**PLAN_DEPS[2], "after": ["t1", "t2"]}]
+    form_stub(monkeypatch, _plan_submit(edited))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert "«Order the steel» blocks «Paint the frame»" in asked[0]["context"]
+    assert "3 links" in asked[0]["detail"]
+    assert "linked: «Order the steel» blocks «Paint the frame»" in out
+    posted = [c["json"]["target_task_id"] for c in calls if c["path"].endswith("/links")]
+    assert len(posted) == 3
+
+
+@pytest.mark.parametrize(
+    "edit, words",
+    [
+        ({"after": ["t3"]}, "in a circle"),
+        ({"after": ["t1"]}, "cannot block itself"),
+    ],
+    ids=["cycle", "self-block"],
+)
+async def test_the_server_refuses_a_card_edit_that_the_card_should_not_allow(
+    edit: dict[str, Any], words: str, monkeypatch,
+) -> None:
+    """§16.2 rule 7. `afterOptions` hides these ticks, and the skill is still
+    the fence: no write and no confirm card."""
+    submitted = [{**PLAN_DEPS[0], **edit}, PLAN_DEPS[1], PLAN_DEPS[2]]
+    form_stub(monkeypatch, _plan_submit(submitted))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert words in out
+    assert asked == []
+    assert writes(calls) == []
+    # The only POST is the read-only preview, before the card.
+    assert {c["path"] for c in calls if c["method"] != "GET"} <= {F.PREVIEW_PATH}
+
+
+def _steps() -> list[dict[str, Any]]:
+    return [
+        {"key": f"t{i}", "title": f"Step {i}", "owner": "priya@x.io",
+         "effort_mins": 30, "due": "2026-10-10", **({"after": ["t1"]} if i == 2 else {})}
+        for i in range(1, 8)
+    ]
+
+
+@pytest.mark.parametrize("kind", ["connection", "refusal"])
+async def test_a_lost_project_write_gives_a_receipt_and_writes_nothing_else(
+    kind: str, monkeypatch,
+) -> None:
+    """§16.2 rule 9. The project node is the first write. When it fails, the
+    tool stops with a receipt, and no task, owner or link write runs."""
+    import httpx
+
+    base = _plan_gateway()
+
+    def fail(call: dict) -> Any:
+        if call["method"] == "POST" and call["path"] == "/projects/nodes":
+            if kind == "connection":
+                raise httpx.ConnectError("refused")
+            raise client.GatewayRefusal("Projects POST /projects/nodes: Failed (403).")
+        return base(call)
+
+    form_stub(monkeypatch, _plan_submit(_steps(), name="Steps"))
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, fail)
+    out = await skill_projects.propose_plan("Steps", _json.dumps(_steps()))
+    if kind == "connection":
+        assert "stopped: the project «Steps» lost its connection" in out, out
+        assert "may or may not" in out
+        assert "Read the project tree before you try again" in out
+        assert "Nothing was created." not in out
+    else:
+        assert "stopped: the project «Steps» was refused." in out, out
+        assert "Failed (403)" in out
+        assert "Nothing was created." in out
+    assert "not tried: 7 tasks · 0 of 7 owners assigned · 0 of 1 links written" in out
+    assert "project_id:" not in out
+    assert not any(c["method"] == "POST" and c["path"] == "/projects/tasks" for c in calls)
+    assert not any(c["method"] == "PUT" and c["path"].endswith("/assignees") for c in calls)
+    assert not any(c["path"].endswith("/links") for c in calls)

@@ -88,7 +88,7 @@ export function EngageView() {
       <header className="border-b border-border bg-card px-4 py-3">
         <div className="flex items-center gap-2">
           <AppIcon name="Zap" className="h-4 w-4 text-primary" />
-          <h1 className="text-base font-bold text-foreground">Engage · Now</h1>
+          <h2 className="text-sm font-medium text-foreground">Engage · Now</h2>
           <span className="ml-auto text-xs text-muted-foreground">
             {matched.length} pickable
           </span>

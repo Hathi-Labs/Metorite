@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { submitCaptureBox } from "./quickAdd";
+import { INBOX_KEYS } from "./shortcuts";
 import {
   SOURCE_PILLS,
   assignedByLabel,
@@ -91,7 +92,10 @@ describe("the unified list (S6g)", () => {
   it("Inbox zero only when both kinds are empty, and the controls whenever either has rows", () => {
     const view = read("components/InboxView.tsx");
     expect(view).toMatch(/const hasRows = allRows\.length > 0;/);
-    expect(view).toMatch(/\) : !hasRows \? \(/);
+    // Continuity P3: one shared box draws both empty states, and `empty` is
+    // what picks "Inbox zero" over "the filter hid everything".
+    expect(view).toMatch(/\) : !hasRows \|\| visible\.length === 0 \? \(/);
+    expect(view).toMatch(/<InboxEmptyState empty=\{!hasRows\}/);
     expect(view).toMatch(/\{\(hasRows \|\| tickler\.length > 0\) && \(/);
     // The old second group is gone: one row component draws both kinds.
     expect(view).not.toMatch(/FromProjectsGroup/);
@@ -172,11 +176,13 @@ describe("the actions per kind (S6g)", () => {
     ).toEqual(["remove"]);
   });
 
-  it("a board row offers Not mine and Open on board, and no Delete", () => {
+  it("a board row offers Remove from my lists and Open on board, and no Delete", () => {
     const s = spies();
     const actions = inboxRowActions({ kind: "board", canPromote: true, ...s });
     expect(actions.map((a) => a.id)).toEqual(["notMine", "openBoard"]);
-    expect(actions.map((a) => a.label)).toEqual(["Not mine", "Open on board"]);
+    // One name per act (2026-09-24): the label is REMOVE_LABEL, the name
+    // every other My Tasks surface gives this act. It read "Not mine".
+    expect(actions.map((a) => a.label)).toEqual(["Remove from my lists", "Open on board"]);
     actions.find((a) => a.id === "notMine")!.run();
     expect(s.notMine).toHaveBeenCalledTimes(1);
     expect(s.remove).not.toHaveBeenCalled();
@@ -216,9 +222,11 @@ describe("the keyboard (S6g)", () => {
     );
   });
 
-  it("the legend names both keys", () => {
-    expect(view).toMatch(/<Sc k="m">move to project<\/Sc>/);
-    expect(view).toMatch(/<Sc k="o">open on board<\/Sc>/);
+  it("the shortcuts sheet names both keys", () => {
+    // Continuity P3: the inline legend became the `?` sheet, printed from
+    // `shortcuts.ts`, whose own test ties each row to the switch.
+    expect(INBOX_KEYS.find((k) => k.bound === "m")?.label).toBe("Move to project…");
+    expect(INBOX_KEYS.find((k) => k.bound === "o")?.label).toBe("Open on its board");
   });
 
   it("the walk covers both kinds: the keyboard reads `visible`, built from the union", () => {

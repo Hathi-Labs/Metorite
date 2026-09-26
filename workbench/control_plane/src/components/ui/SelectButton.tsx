@@ -48,7 +48,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
-import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 /**
@@ -68,6 +68,17 @@ import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 export function arrowFor(value: string, defaultValue: string): string {
   return value === defaultValue ? "ChevronsUpDown" : "ChevronDown";
 }
+
+/**
+ * The tint a filter-row control wears when it is NOT at its default.
+ *
+ * The house active pair (`AGENTS.md` rule 6), tinted rather than filled,
+ * because a select still has to read as a field you can open. The CALLER
+ * applies it through `className`, because only the caller knows whether a
+ * sibling flag also counts as off-default. One spelling for both filter rows,
+ * Projects' `FilterBar` and My Tasks' `TaskToolbar`.
+ */
+export const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 
 export interface SelectOption {
   value: string;
@@ -130,6 +141,12 @@ export interface SelectButtonProps {
    * handles one event instead of guessing at three.
    */
   onClose?: () => void;
+  /**
+   * The list's paint layer (`AnchoredPanel`). `top` for a control that can
+   * sit inside a hand-rolled overlay above `z-50`, such as the shared task
+   * body inside My Tasks' `TaskFocusModal` (`z-[80]`).
+   */
+  layer?: PanelLayer;
 }
 
 export function SelectButton({
@@ -143,6 +160,7 @@ export function SelectButton({
   disabled = false,
   autoOpen = false,
   onClose,
+  layer,
 }: SelectButtonProps) {
   const [open, setOpen] = useState(autoOpen);
   const root = useRef<HTMLDivElement | null>(null);
@@ -230,6 +248,7 @@ export function SelectButton({
       <AnchoredPanel
         anchor={trigger}
         open={open}
+        layer={layer}
         className="max-h-64 w-max p-1"
         panelProps={{ id: listId, role: "listbox", "aria-label": label }}
       >

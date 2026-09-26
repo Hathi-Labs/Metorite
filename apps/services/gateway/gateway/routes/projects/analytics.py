@@ -90,6 +90,46 @@ STALE_BANDS: tuple[tuple[str, int, int | None], ...] = (
 #: travels beside it so the panel can say "12 of 47" rather than imply 12.
 MAX_NAMED = 20
 
+#: The days after which a task in progress with no change is STALE
+#: (`projects_reports.md` §5, WS-27bn R3c).
+#:
+#: One named constant, and it is the lower bound of the `days_14_to_30` band
+#: in :data:`STALE_BANDS`, so "stale" in a report and the ageing chart agree.
+#: `test_projects_report_sections_r3c.py` pins the two together. The
+#: `hygiene` section reads it now, and the `pulse` section reads it later.
+STALE_DAYS = 14
+
+#: The four kinds of open task the `hygiene` section counts, in the order it
+#: prints them, each with the predicate over `pm_tasks t` and
+#: `pm_task_statuses s` that decides it (WS-27bn R3c).
+#:
+#: ⚠️ **One predicate for each kind, and the counts and the rows both read
+#: it.** A count with one spelling and a row list with another is how a panel
+#: says "23 undated" over a list of 19.
+#:
+#: ⚠️ **An `agent:<name>` assignee is an assignee.** The predicate asks for
+#: ANY row in `pm_task_assignees`, with no filter on the value, so work that
+#: an agent holds is not "nobody's".
+#:
+#: ⚠️ **Never `pm_task_personal`.** A private estimate or plan of one member
+#: does not fill a shared field (D53, owner Q6). The source test in
+#: `test_projects_report_sections_r3c.py` fails if a predicate names it.
+HYGIENE_KINDS: tuple[tuple[str, str], ...] = (
+    (
+        "no_assignee",
+        "NOT EXISTS (SELECT 1 FROM pm_task_assignees ha WHERE ha.task_id = t.id)",
+    ),
+    ("no_due_date", "t.due_at IS NULL"),
+    ("no_estimate", "t.estimate_mins IS NULL"),
+    (
+        "stale_in_progress",
+        # INTS through `make_interval`, never `CAST(:x AS interval)`: the
+        # asyncpg trap `stale_bands_sql` records.
+        "s.category = :started_cat"
+        " AND t.updated_at <= now() - make_interval(days => :stale_days)",
+    ),
+)
+
 
 # ── Scope: one node, one subtree, or the whole portfolio ────────────────────
 
@@ -1020,6 +1060,25 @@ def team_capacity_sql(open_where: str) -> str:
     )
 
 
+def history_where(scope_sql: str, vis: Any) -> str:
+    """Throughput's scope: the node, the caller's grants, no triage.
+
+    ⚠️ **Named since WS-27bm S7e, because a second read uses it.** The chat's
+    dataset read (`analytics_dataset.py`) answers `state=closed` and
+    `state=all` over THIS predicate, so its cycle times describe the tasks
+    Throughput describes (`projects_ai_chat.md` §13.7 rule 2). A copy of the
+    string there would be a third spelling of the scope.
+
+    No archive arm and no status arm: see :func:`throughput`. A caller that
+    wants live rows only adds ``t.archived_at IS NULL`` itself.
+    """
+    return (
+        f"{scope_sql}"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+    )
+
+
 @router.get("/analytics/throughput")
 async def throughput(
     project_id: str | None = None,
@@ -1060,11 +1119,7 @@ async def throughput(
         # ⚠️ Deliberately WITHOUT `archived_at IS NULL` and without the
         # open-only status arm — see the docstring. Visibility and triage stay,
         # because those two are about who may read a row, not about when.
-        scope_where = (
-            f"{scope_sql}"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
-        )
+        scope_where = history_where(scope_sql, vis)
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
@@ -1457,60 +1512,89 @@ async def outlook(
     guesses.** Verdicts are `no_history`, `no_estimates`, `no_capacity`,
     `not_converging`, `nothing_left`. A missing figure is a finding; an
     invented one gets quoted in a meeting.
+
+    The body is :func:`outlook_body`, which the report section ``outlook``
+    also calls (WS-27bn R3a). The panel and the report are one computation.
     """
-    weeks = max(2, min(26, int(weeks)))
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
-
-        # The one `open` definition this whole module shares. Two panels on
-        # one screen must not disagree about what is still to do.
-        open_where = (
-            f"{scope_sql}"
-            f" AND t.archived_at IS NULL"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
-            # D-PM-32(b). An outlook is a forecast, and forecasting the
-            # delivery of work that was stopped is the clearest case of all.
-            f" AND ({reportable_with_ancestors_clause('t')})"
-            f" AND s.category <> ALL(CAST(:closed AS text[]))"
+        return await outlook_body(
+            db, vis,
+            project_id=project_id,
+            include_subtree=include_subtree,
+            weeks=weeks,
         )
-        params: dict[str, Any] = {
-            **vis.params,
-            **scope_params(project_id),
-            "closed": sorted(CLOSING_CATEGORIES),
-            "reportable_states": sorted(REPORTABLE_STATUSES),
-        }
-        period = {
-            **vis.params,
-            **scope_params(project_id),
-            "weeks": weeks,
-            "closing": sorted(CLOSING_CATEGORIES),
-            "done_cat": COMPLETED_CATEGORY,
-            "started_cat": STARTED_CATEGORY,
-        }
 
-        rows = (await db.execute(
-            text(velocity_sql(f"{scope_sql} AND ({task_visibility_clause(vis, 't')})")),
-            period,
-        )).fetchall()
 
-        remaining = int((await db.execute(
-            text(total_open_sql(open_where)), params,
-        )).scalar() or 0)
+async def outlook_body(
+    db: Any,
+    vis: Any,
+    *,
+    project_id: str | None,
+    include_subtree: bool,
+    weeks: int = FORECAST_WEEKS,
+) -> dict[str, Any]:
+    """The outlook answer, on a session and a visibility the caller resolved.
 
-        left = (await db.execute(
-            text(effort_sql(open_where)), params,
-        )).one()
+    WS-27bn R3a. Shared by the route and by the report section ``outlook``,
+    so a report and the panel it came from are one computation.
 
-        planned = (await db.execute(
-            text(planned_finish_sql(open_where)), params,
-        )).one()
+    ⚠️ **``weeks`` is the history the forecast reads, not a report period.**
+    A report passes nothing here and gets :data:`FORECAST_WEEKS`. Passing a
+    report's ``config.weeks`` of 1 would clamp to 2 below and change the
+    forecast, so the report and the panel would disagree.
+    """
+    weeks = max(2, min(26, int(weeks)))
+    scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
-        cap = (await db.execute(
-            text(team_capacity_sql(open_where)),
-            {**params, "horizon_days": LEAVING_HORIZON_DAYS},
-        )).one()
+    # The one `open` definition this whole module shares. Two panels on
+    # one screen must not disagree about what is still to do.
+    open_where = (
+        f"{scope_sql}"
+        f" AND t.archived_at IS NULL"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+        # D-PM-32(b). An outlook is a forecast, and forecasting the
+        # delivery of work that was stopped is the clearest case of all.
+        f" AND ({reportable_with_ancestors_clause('t')})"
+        f" AND s.category <> ALL(CAST(:closed AS text[]))"
+    )
+    params: dict[str, Any] = {
+        **vis.params,
+        **scope_params(project_id),
+        "closed": sorted(CLOSING_CATEGORIES),
+        "reportable_states": sorted(REPORTABLE_STATUSES),
+    }
+    period = {
+        **vis.params,
+        **scope_params(project_id),
+        "weeks": weeks,
+        "closing": sorted(CLOSING_CATEGORIES),
+        "done_cat": COMPLETED_CATEGORY,
+        "started_cat": STARTED_CATEGORY,
+    }
+
+    rows = (await db.execute(
+        text(velocity_sql(f"{scope_sql} AND ({task_visibility_clause(vis, 't')})")),
+        period,
+    )).fetchall()
+
+    remaining = int((await db.execute(
+        text(total_open_sql(open_where)), params,
+    )).scalar() or 0)
+
+    left = (await db.execute(
+        text(effort_sql(open_where)), params,
+    )).one()
+
+    planned = (await db.execute(
+        text(planned_finish_sql(open_where)), params,
+    )).one()
+
+    cap = (await db.execute(
+        text(team_capacity_sql(open_where)),
+        {**params, "horizon_days": LEAVING_HORIZON_DAYS},
+    )).one()
 
     velocity = project_forecast(
         remaining_tasks=remaining,
@@ -1556,4 +1640,132 @@ async def outlook(
             # fact asked at project scale.
             "leaving_within_90d": int(cap.leaving_soon or 0),
         },
+    }
+
+
+# ── Hygiene: open tasks that make every other report wrong — WS-27bn R3c ────
+
+
+def hygiene_counts_sql(open_where: str) -> str:
+    """One count for each kind in :data:`HYGIENE_KINDS`, over open TASKS.
+
+    A task counts in each kind that it breaks, so the four counts do not add
+    up to the open total. No assignee join, so a task with two assignees is
+    one task here, as in :func:`total_open_sql`.
+    """
+    counts = ", ".join(
+        f"count(*) FILTER (WHERE {predicate}) AS {kind}"
+        for kind, predicate in HYGIENE_KINDS
+    )
+    return (
+        f"SELECT {counts}"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    )
+
+
+def hygiene_rows_sql(open_where: str) -> str:
+    """Up to ``:max_named`` tasks of each kind, in kind order.
+
+    The stale kind lists the oldest change first, because that task has
+    waited longest. The other kinds list the oldest task first. `id` breaks
+    each tie, so two renders of one state list the same rows.
+
+    ⚠️ A `UNION ALL` does not keep the order of its arms. So each arm carries
+    its kind's `position` and a `rn` from its own order, and the outer query
+    sorts on the two.
+    """
+    arms = []
+    for position, (kind, predicate) in enumerate(HYGIENE_KINDS):
+        order = (
+            "t.updated_at ASC, t.id"
+            if kind == "stale_in_progress"
+            else "t.created_at ASC, t.id"
+        )
+        arms.append(
+            f"(SELECT {position} AS position,"
+            f"        row_number() OVER (ORDER BY {order}) AS rn,"
+            f"        '{kind}' AS kind,"
+            f"        t.id, t.title, t.task_number, t.project_id,"
+            f"        p.name AS project_name, t.due_at, t.updated_at"
+            f"   FROM pm_tasks t"
+            f"   JOIN pm_task_statuses s ON s.id = t.status_id"
+            f"   JOIN pm_projects p ON p.id = t.project_id"
+            f"  WHERE {open_where} AND ({predicate})"
+            f"  ORDER BY rn"
+            f"  LIMIT :max_named)"
+        )
+    return (
+        "SELECT kind, id, title, task_number, project_id, project_name,"
+        "       due_at, updated_at"
+        "  FROM (" + " UNION ALL ".join(arms) + ") h"
+        " ORDER BY position, rn"
+    )
+
+
+async def hygiene_body(
+    db: Any,
+    vis: Any,
+    *,
+    project_id: str | None,
+    include_subtree: bool,
+) -> dict[str, Any]:
+    """The `hygiene` report section, on a session and a visibility the caller
+    resolved (`projects_reports.md` §8 R3c).
+
+    Open tasks with no assignee, no due date or no estimate, and tasks in
+    progress with no change for :data:`STALE_DAYS` days.
+
+    ⚠️ **"Open" is Load's.** The predicate is :func:`load_open_where` with
+    :func:`load_params`, so hygiene and `load` agree about which work is
+    open: subtasks count, and triage, archived tasks, closed tasks and the
+    work of a stopped project do not (D-PM-32).
+
+    ⚠️ **It reads the state NOW.** No report period reaches it, so a report
+    of last week shows today's gaps. That is the question the section asks.
+
+    ``by_kind`` counts every task of each kind. ``rows`` names up to
+    :data:`MAX_NAMED` of each, so a reader sees how many the cap cut.
+    """
+    scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+    open_where = load_open_where(scope_sql, vis)
+    params: dict[str, Any] = {
+        **load_params(vis, project_id),
+        "started_cat": STARTED_CATEGORY,
+        "stale_days": STALE_DAYS,
+    }
+
+    open_total = int((await db.execute(
+        text(total_open_sql(open_where)), params,
+    )).scalar() or 0)
+    counts = (await db.execute(
+        text(hygiene_counts_sql(open_where)), params,
+    )).one()
+    rows = (await db.execute(
+        text(hygiene_rows_sql(open_where)),
+        {**params, "max_named": MAX_NAMED},
+    )).fetchall()
+
+    return {
+        "open_total": open_total,
+        "stale_days": STALE_DAYS,
+        "by_kind": {
+            kind: int(getattr(counts, kind, 0) or 0) for kind, _ in HYGIENE_KINDS
+        },
+        "rows": [
+            {
+                "kind": r.kind,
+                "id": str(r.id),
+                "title": r.title,
+                "task_number": (
+                    int(r.task_number) if r.task_number is not None else None
+                ),
+                "project_id": str(r.project_id),
+                "project_name": r.project_name,
+                "due_at": r.due_at.isoformat() if r.due_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
     }

@@ -11,6 +11,7 @@ import { useRemoval } from "../lib/useRemoval";
 import {
   originEmailHref,
   DISPOSITION_LABEL,
+  myListLabel,
   durationLabel,
   formatStatus,
   initials,
@@ -31,7 +32,9 @@ import {
   type TaskRow,
   projectsApi,
 } from "@/app/projects/lib/api";
-import { taskDeepLink } from "@/app/projects/lib/card";
+import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
+import { CLOSE_TASK_LABEL } from "@/lib/taskPanel";
 import { fetchMyTaskLanes } from "../lib/api";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
@@ -128,12 +131,13 @@ export function ItemDetail({
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center justify-end border-b border-border bg-card px-2 py-1">
+          {/* The same close the task header draws: one name, one size. */}
           <Button
             variant="ghost"
-            size="icon-xs"
+            size="icon-sm"
             icon="X"
-            title="Close detail"
-            aria-label="Close detail"
+            title={CLOSE_TASK_LABEL}
+            aria-label={CLOSE_TASK_LABEL}
             onClick={onClose}
           />
         </div>
@@ -565,7 +569,7 @@ export function TaskDetail({
                         const c = stageActions.categories.find(
                           (k) => stageActions.categoryLabel(k) === v,
                         );
-                        if (c) stageActions.setCategory(c);
+                        if (c) stageActions.setStage(c);
                         close();
                       }}
                     />
@@ -842,111 +846,110 @@ export function TaskDetail({
     <div
       className={`flex h-full flex-col bg-background ${lens ? "overflow-hidden" : "overflow-y-auto"}`}
     >
-      {/* Header — status chip, source, deep link, editable title */}
+      {/* Header — the shared one (`components/TaskPanelHeader.tsx`), the one
+          Projects' TaskPanel renders: the reference and its copy-link, this
+          app's chips, its Archive and Delete, then expand, then close. */}
       <div className="shrink-0 border-b border-border bg-card px-5 py-4">
         {/* focused → the modal's × occupies the top-right corner; keep the
             archive/delete actions clear of it */}
-        <div className={`mb-2 flex flex-wrap items-center gap-2 ${focused ? "pr-9" : ""}`}>
-          {/* Status is changed through the status chip (disposition) and the
-              Stage card below — not a standalone Done button, which read as
-              "this task is complete" even when it wasn't. */}
-          <StatusPicker item={item} onPick={(d) => quickDispose(item.id, d)} />
-          <SourceBadge source={item.source} provider={item.provider} />
-          {isSynced && item.providerUrl && (
-            <a
-              href={item.providerUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="tech-transition inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
-            >
-              <AppIcon name="ExternalLink" className="h-3 w-3" />
-              Open in {item.provider}
-            </a>
-          )}
-          {/* Start (or restart) a Focus-Mode session on this task — the room +
-              timer open globally and can be minimized to the dock. Actionable
-              open tasks only. */}
-          {(item.disposition === "NEXT" || item.disposition === "PROJECT") && (
-            <button
-              type="button"
-              onClick={() => enterFocusSession(item.id)}
-              title="Start Focus Mode — a full-screen timer for this task"
-              className="tech-transition inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/10"
-            >
-              <AppIcon name="Timer" className="h-3 w-3" />
-              Focus
-            </button>
-          )}
-          {/* S6c — the promote door, beside Focus (`useCardActions.canPromote`). */}
-          {stageActions.canPromote && (
-            <Button
-              variant="ghost"
-              size="none"
-              radius="keep"
-              layout="inline-flex items-center"
-              icon="FolderInput"
-              type="button"
-              onClick={() => setPromoting(true)}
-              title="Move this task to a company project"
-              className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
-            >
-              Move to project…
-            </Button>
-          )}
-          {/* Maximise — the docked pane is 380px and this detail is dense
-              (nine sections plus the provider ones), so the reading width the
-              overlay gives is an affordance, not a leftover. Hidden inside the
-              overlay itself, which is already the wide mode. */}
-          {!focused && (
-            <button
-              type="button"
-              title="Open full page"
-              aria-label="Open full page"
-              onClick={() => (onMaximize ? onMaximize() : openFocus(item.id))}
-              className="tech-transition ml-auto rounded-md p-1 text-muted-foreground/70 hover:bg-secondary hover:text-foreground"
-            >
-              <AppIcon name="Maximize2" className="h-4 w-4" />
-            </button>
-          )}
-          <button
-            type="button"
-            title={isArchived ? "Restore from archive" : "Archive task"}
-            aria-label={isArchived ? "Restore from archive" : "Archive task"}
-            onClick={() => archiveItem(item.id, !isArchived)}
-            className={[
-              "tech-transition rounded-md p-1 text-muted-foreground/70 hover:bg-secondary hover:text-foreground",
-              focused ? "ml-auto" : "",
-            ].join(" ")}
-          >
-            {isArchived ? (
-              <AppIcon name="ArchiveRestore" className="h-4 w-4" />
-            ) : (
-              <AppIcon name="Archive" className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            title={removal.canPurge(item) ? "Delete task" : "Remove from my lists. The board keeps it."}
-            aria-label={removal.canPurge(item) ? "Delete task" : removal.label(item)}
-            onClick={() => requestDelete([item.id])}
-            className="tech-transition rounded-md p-1 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
-          >
-            <AppIcon name="Trash2" className="h-4 w-4" />
-          </button>
-          {/* Close the docked pane (Projects' TaskPanel closes from its own ✕
-              too). The overlay draws its own ✕, so this stays off there. */}
-          {!focused && onClose && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon="X"
-              title="Close detail"
-              aria-label="Close detail"
-              onClick={onClose}
-            />
-          )}
+        <div className={focused ? "pr-9" : ""}>
+          <TaskHeaderRow
+            taskRef={taskRef({ task_number: item.taskNumber ?? null }) ?? "Task"}
+            // The link opens the task in Projects, the deep link the bell and
+            // search already use. Only a live task has one: a demo row is
+            // not in any project.
+            linkFor={lens ? () => taskDeepLink(item, window.location.origin) : undefined}
+            chips={
+              <>
+                {/* Status is changed through the status chip (disposition)
+                    and the Stage card below — not a standalone Done button,
+                    which read as "this task is complete" even when it
+                    wasn't. */}
+                <StatusPicker item={item} onPick={(d) => quickDispose(item.id, d)} />
+                <SourceBadge source={item.source} provider={item.provider} />
+                {isSynced && item.providerUrl && (
+                  <a
+                    href={item.providerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="tech-transition inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                  >
+                    <AppIcon name="ExternalLink" className="h-3 w-3" />
+                    Open in {item.provider}
+                  </a>
+                )}
+                {/* Start (or restart) a Focus-Mode session on this task — the
+                    room + timer open globally and can be minimized to the
+                    dock. Actionable open tasks only. */}
+                {(item.disposition === "NEXT" || item.disposition === "PROJECT") && (
+                  <Button
+                    variant="ghost"
+                    size="none"
+                    radius="keep"
+                    layout="inline-flex items-center"
+                    icon="Timer"
+                    type="button"
+                    onClick={() => enterFocusSession(item.id)}
+                    title="Start Focus Mode — a full-screen timer for this task"
+                    className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
+                  >
+                    Focus
+                  </Button>
+                )}
+                {/* S6c — the promote door, beside Focus (`useCardActions.canPromote`). */}
+                {stageActions.canPromote && (
+                  <Button
+                    variant="ghost"
+                    size="none"
+                    radius="keep"
+                    layout="inline-flex items-center"
+                    icon="FolderInput"
+                    type="button"
+                    onClick={() => setPromoting(true)}
+                    title="Move this task to a company project"
+                    className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
+                  >
+                    Move to project…
+                  </Button>
+                )}
+              </>
+            }
+            actions={
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon={isArchived ? "ArchiveRestore" : "Archive"}
+                  title={isArchived ? "Restore from archive" : "Archive task"}
+                  aria-label={isArchived ? "Restore from archive" : "Archive task"}
+                  onClick={() => archiveItem(item.id, !isArchived)}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="Trash2"
+                  title={removal.canPurge(item) ? "Delete task" : "Remove from my lists. The board keeps it."}
+                  aria-label={removal.canPurge(item) ? "Delete task" : removal.label(item)}
+                  onClick={() => requestDelete([item.id])}
+                />
+              </>
+            }
+            // Expand — the docked pane is narrow and this detail is dense, so
+            // the reading width the overlay gives is an affordance. Hidden
+            // inside the overlay itself, which is already the wide mode and
+            // draws its own ×, so the close stays off there too.
+            expand={
+              focused
+                ? undefined
+                : {
+                    expanded: false,
+                    onToggle: () => (onMaximize ? onMaximize() : openFocus(item.id)),
+                  }
+            }
+            onClose={!focused ? onClose : undefined}
+          />
         </div>
-        <EditableTitle
+        <EditableTaskTitle
           value={item.title}
           onSave={(t) => updateItem(item.id, { title: t })}
         />
@@ -1125,45 +1128,6 @@ function SectionLabel({
       {Icon && <Icon className="h-3 w-3" />}
       {children}
     </h3>
-  );
-}
-
-function EditableTitle({ value, onSave }: { value: string; onSave: (v: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const startEdit = () => { setDraft(value); setEditing(true); };
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        onClick={startEdit}
-        className="group flex w-full items-start gap-2 text-left"
-        title="Click to edit"
-      >
-        <h1 className="text-lg font-bold leading-snug text-foreground">{value}</h1>
-        <AppIcon name="Pencil" className="mt-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-opacity reveal-on-hover" />
-      </button>
-    );
-  }
-  const save = () => {
-    const t = draft.trim();
-    if (t) onSave(t);
-    setEditing(false);
-  };
-  return (
-    <textarea
-      autoFocus
-      value={draft}
-      rows={2}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={save}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
-        if (e.key === "Escape") { setDraft(value); setEditing(false); }
-      }}
-      className="w-full resize-none rounded-md border border-primary/40 bg-background px-2 py-1 text-lg font-bold leading-snug text-foreground focus:outline-none"
-    />
   );
 }
 
@@ -1464,7 +1428,7 @@ function PersonMenu({
   );
 }
 
-/** Status/disposition picker in the header — flips to a small menu. */
+/** My-list (disposition) picker in the header — flips to a small menu. */
 function StatusPicker({
   item,
   onPick,
@@ -1480,11 +1444,14 @@ function StatusPicker({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={[
-          "tech-transition inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+          // Sentence case, not UPPERCASE: in capitals the chip read as a
+          // status label beside the real Status control (D79).
+          "tech-transition inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold",
           DISP_TONE[item.disposition],
         ].join(" ")}
+        title="Your own list for this task. Its status is the Status field."
       >
-        {DISPOSITION_LABEL[item.disposition]}
+        {myListLabel(item.disposition)}
       </button>
       {open && (
         <>

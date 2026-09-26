@@ -43,8 +43,7 @@ import { projectsApi } from "../lib/api";
 import {
   type CommandActions,
   type CommandContext,
-  availableCommands,
-  matchCommands,
+  paletteCommands,
   paletteList,
   sequenceLabel,
 } from "../lib/commands";
@@ -63,10 +62,15 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenTask: (taskId: string) => void;
-  /** WS-27ab — what a command is allowed to do; the page supplies every one. */
-  actions: CommandActions;
+  /**
+   * WS-27ab — what a command is allowed to do; the Projects page supplies
+   * every one. My Tasks mounts this palette for its own ⌘K and passes neither
+   * this nor `context`, and then the palette is task search only
+   * (`paletteCommands`).
+   */
+  actions?: CommandActions;
   /** Where the app is, so a command that would no-op is not offered. */
-  context: CommandContext;
+  context?: CommandContext;
 }
 
 export function SearchPalette({
@@ -138,7 +142,7 @@ export function SearchPalette({
   const found = view.kind === "results" ? view.hits : [];
   // Applicable commands first, then the ones the query names. Both halves are
   // the registry's own functions — this file decides nothing about either.
-  const commands = matchCommands(availableCommands(context), query);
+  const commands = paletteCommands(context, query);
   const { rows, pickable } = paletteList(commands, found);
   const at = moveSelection(cursor, 0, pickable.length);
 
@@ -150,7 +154,7 @@ export function SearchPalette({
       onClose();
       return;
     }
-    if (row.kind === "command") {
+    if (row.kind === "command" && actions && context) {
       // Closed BEFORE the action runs: several commands open something of
       // their own (the shortcuts sheet, the field manager), and a palette
       // still up over them is a second dismissal nobody asked for.
@@ -177,8 +181,8 @@ export function SearchPalette({
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search tasks, or type a command…"
-          aria-label="Search tasks and commands"
+          placeholder={context ? "Search tasks, or type a command…" : "Search tasks…"}
+          aria-label={context ? "Search tasks and commands" : "Search tasks"}
           className="border-0 focus:border-0"
           onKeyDown={(e) => {
             const action = paletteKey(e);

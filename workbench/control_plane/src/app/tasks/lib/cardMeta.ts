@@ -11,23 +11,30 @@
 // count-only chip in the same grammar (same key, icon, tone, slot in the
 // reading order) is the honest version of the same sentence.
 //
-// My-Tasks-only signals — @context, energy, deep-work, source, stage, priority —
-// deliberately do NOT move into this row: they are this app's identity, and
-// `taskCard.ts`'s own header says what is shared is the vocabulary for the
-// facts both apps have, not a flattening of the two apps into one.
+// My-Tasks-only signals — @context, energy, deep-work, source, stage — do NOT
+// move into this row: they are this app's identity, and `taskCard.ts`'s own
+// header says what is shared is the vocabulary for the facts both apps have,
+// not a flattening of the two apps into one.
+//
+// Priority is NOT My-Tasks-only (D78: one shared answer per task), and it is
+// not in this row either. The card places it itself: top-left on the board,
+// in the meta line on a list row. It draws with `PriorityBadge`, which is a
+// thin wrapper over the shared `PriorityChip` + `priorityChip(cell)` — the
+// same chip the Projects card, list and table draw through `importanceChip`.
+// Until 2026-09-24 this comment claimed `PriorityBadge` was "the one drawing,
+// in both apps". It was not: Projects drew the level as tinted text.
 
 import { type MetaChip, taskMeta } from "@/lib/taskCard";
 
 import type { MyTask } from "./types";
 
 /**
- * The shared-fact chips for a task, in the shared reading order:
- * Priority, due (with the overdue escalation), subtask count, tags,
- * attachments, estimate.
+ * The shared-fact chips for a task, in the shared reading order: due (with
+ * the overdue escalation), subtask count, tags, attachments, estimate.
  *
  * D77 — tags are the TASK's shared facts, so the card draws them with the
- * Projects card's own tag pills. Priority is not a chip here: since D78 the
- * card's `PriorityBadge` is the one drawing of it, in both apps.
+ * Projects card's own tag pills. Priority is not a chip in this row. See the
+ * header for where it is drawn.
  */
 export function taskMetaChips(item: MyTask, nowMs = Date.now()): MetaChip[] {
   const chips = taskMeta(
@@ -36,7 +43,13 @@ export function taskMetaChips(item: MyTask, nowMs = Date.now()): MetaChip[] {
       completedAt: item.completedAt,
       attachmentCount: item.attachments?.length ?? 0,
       estimateMins: item.timeEstimateMins,
-      tags: (item.tags ?? []).map((name) => ({ name })),
+      // The registry colour rides on the lens row (`tag_colors`), keyed by
+      // lower(name). It goes through `resolveHue` inside `taskMeta`, the
+      // path the Projects card takes, so one tag is one colour in both apps.
+      tags: (item.tags ?? []).map((name) => ({
+        name,
+        color: item.tagColors?.[name.toLowerCase()],
+      })),
     },
     nowMs,
   );

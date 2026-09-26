@@ -29,7 +29,7 @@ import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
-import { LEGEND, parseTaskRows, type ProjectTaskRow } from "@/lib/projectToolRows";
+import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -338,7 +338,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
         </span>
         {row.meta && (
           <span className="block text-[10px] text-muted-foreground truncate">
-            {row.meta.replace(/[«»]/g, "")}
+            {taskMetaForPeople(row.meta)}
           </span>
         )}
       </button>

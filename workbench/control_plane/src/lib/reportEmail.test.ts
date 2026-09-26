@@ -19,6 +19,7 @@ import {
   periodLabel,
   reportDocument,
   reportEmail,
+  reportLayout,
   sendReportEmail,
   textBar,
 } from "./reportEmail";
@@ -358,6 +359,122 @@ describe("reportEmail · conflicts", () => {
   });
 });
 
+// WS-27bn R3b — the opt-in rebalance section.
+describe("reportEmail · rebalance", () => {
+  const withRebalance: RenderedReport = {
+    ...rendered,
+    sections: {
+      rebalance: {
+        hr_visible: true,
+        at_risk: [
+          {
+            title: "Weld <the> gantry",
+            due_on: "2026-09-27",
+            holder: { name: "Hal", email: "hal@example.test" },
+            candidates: [{ name: "Ivy" }, { name: "Bo" }],
+          },
+        ],
+        at_risk_total: 1,
+        pickups: [{ name: "Ivy", tasks: [{ title: "Weld a jig" }, { title: "Frame" }] }],
+        pickups_total: 3,
+        idle_total: 3,
+      },
+    },
+  };
+
+  it("prints one line per task and one per pickup, in words", () => {
+    const { text } = reportEmail(withRebalance);
+    expect(text).toContain("Who could help: 1 at risk (3 idle)");
+    expect(text).toContain(
+      "Weld <the> gantry — held by Hal, due 27 Sep 2026: helpers Ivy, Bo",
+    );
+    expect(text).toContain("Ivy could take: Weld a jig, Frame");
+    expect(text).toContain("…and 2 more people who could take work");
+  });
+
+  it("carries no colour and no bar, and escapes a title", () => {
+    const { text, html } = reportEmail(withRebalance);
+    expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
+    expect(text).not.toMatch(/[\u2588\u2591]/);
+    expect(html).toContain("Weld &lt;the&gt; gantry");
+  });
+
+  it("says its title and one line, and no zero rows, without the grant", () => {
+    // H-186 item 3. The part keeps the section's title, as every part does,
+    // and the HR line is its note.
+    const hidden: RenderedReport = {
+      ...rendered,
+      sections: { rebalance: { hr_visible: false } },
+    };
+    const { text } = reportEmail(hidden);
+    expect(text).toContain(
+      "Who could help\n  Rebalancing needs HR read access. An admin can see it.",
+    );
+    expect(text).not.toContain("at risk");
+    expect(text).not.toContain("could take");
+    const layout = reportLayout(hidden);
+    const part = layout.parts[layout.parts.length - 1];
+    expect(part.head).toEqual({ lead: "Who could help", strong: true });
+    expect(part.items).toEqual([]);
+    expect(part.notes).toEqual([
+      "Rebalancing needs HR read access. An admin can see it.",
+    ]);
+  });
+});
+
+// WS-27bn R3c — the opt-in hygiene section.
+describe("reportEmail · hygiene", () => {
+  const titles = (kind: string, n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      kind,
+      title: `${kind} <task> ${i}`,
+      project_name: "Rig",
+    }));
+  const withHygiene: RenderedReport = {
+    ...rendered,
+    sections: {
+      hygiene: {
+        open_total: 40,
+        stale_days: 14,
+        by_kind: { no_assignee: 12, no_due_date: 3, no_estimate: 0, stale_in_progress: 1 },
+        rows: [
+          ...titles("no_assignee", 12),
+          ...titles("no_due_date", 3),
+          ...titles("stale_in_progress", 1),
+        ],
+      },
+    },
+  };
+
+  it("prints one text bar a kind, n of open_total, then the rows", () => {
+    const { text } = reportEmail(withHygiene);
+    expect(text).toContain("Data hygiene: 40 open (stale after 14 days)");
+    expect(text).toContain(`No assignee: 12 · ${textBar(12, 40)} 12 of 40`);
+    expect(text).toContain(`No estimate: 0 · ${textBar(0, 40)} 0 of 40`);
+    expect(text).toContain("no_due_date <task> 2 · Rig");
+    expect(text).toContain(
+      "A task can miss more than one thing, so the counts do not add up to the open total.",
+    );
+  });
+
+  it("cuts each kind at maxRows and says how many more", () => {
+    const { text } = reportEmail(withHygiene);
+    expect(text).toContain(`no_assignee <task> ${MAX_EMAIL_ROWS - 1}`);
+    expect(text).not.toContain(`no_assignee <task> ${MAX_EMAIL_ROWS}`);
+    expect(text).toContain(`…and ${12 - MAX_EMAIL_ROWS} more`);
+    // A download is the whole report.
+    const whole = reportLayout(withHygiene, Infinity).parts[0].items.join("\n");
+    expect(whole).toContain("no_assignee <task> 11");
+    expect(whole).not.toContain("more");
+  });
+
+  it("carries no colour, and escapes a title", () => {
+    const { html } = reportEmail(withHygiene);
+    expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
+    expect(html).toContain("no_assignee &lt;task&gt; 0");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // WS-27bm S8 — the same layout, as a FILE (spec projects_ai_chat.md §14)
 // ---------------------------------------------------------------------------
@@ -662,5 +779,49 @@ describe("reportEmail · the text bars", () => {
     expect(built.html).toContain(FULL);
     expect(built.html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(built.html).not.toMatch(/style=/);
+  });
+});
+
+describe("reportEmail · outlook (WS-27bn R3a)", () => {
+  const withOutlook = (outlook: NonNullable<RenderedReport["sections"]["outlook"]>) =>
+    reportEmail({ ...rendered, sections: { outlook } });
+
+  it("says the plan, the forecast and the slip in words, with no colour", () => {
+    const got = withOutlook({
+      velocity: {
+        verdict: "converging",
+        finish_date: "2027-02-18",
+        remaining_tasks: 7701,
+        finished_per_week: 4.2,
+        created_per_week: 1.1,
+        weeks_sampled: 6,
+      },
+      plan: {
+        planned_finish: "2026-12-01T00:00:00+00:00",
+        dated: 30,
+        tasks: 31,
+        slip_days: 79,
+      },
+    });
+    expect(got.text).toContain("Outlook: converging (7701 open)");
+    expect(got.text).toContain("Planned finish: 1 Dec 2026 (30 of 31 open tasks carry a due date)");
+    expect(got.text).toContain("Forecast finish: 18 Feb 2027");
+    expect(got.text).toContain("79 days late");
+    expect(got.text).toContain("Finishing 4.2 a week, adding 1.1 a week, over 6 weeks");
+    expect(got.html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(got.html).not.toMatch(/\b(rgb|hsl)a?\(|style=/);
+  });
+
+  it("prints no date and no broken word when the verdict has no forecast", () => {
+    for (const verdict of ["not_converging", "no_history", "nothing_left"]) {
+      const got = withOutlook({
+        velocity: { verdict, finish_date: null, remaining_tasks: 12 },
+        plan: { planned_finish: null, dated: 0, tasks: 12, slip_days: null },
+      });
+      for (const word of ["undefined", "NaN", "Forecast finish", "days late", "days early"]) {
+        expect(got.text, `${verdict}: ${word}`).not.toContain(word);
+      }
+      expect(got.text).toContain("Outlook: ");
+    }
   });
 });

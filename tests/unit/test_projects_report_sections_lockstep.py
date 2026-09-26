@@ -3,7 +3,8 @@
 Spec: ``project-docs/specs/projects_ai_chat.md`` §10.3 item 6 and §13.3
 rule 4 (WS-27bm S7a).
 
-A report section is named in six places, in two languages:
+A report section is named in seven places, in two languages, plus the chat
+card map:
 
 1. ``gateway/routes/projects/reports.py`` ``SECTIONS`` — what a definition
    may ask for, and the render's switch.
@@ -14,6 +15,11 @@ A report section is named in six places, in two languages:
 5. ``src/lib/reportEmail.ts`` — how the delivered email says it.
 6. ``app/projects/lib/reportBuilder.ts`` ``REPORT_SECTIONS`` — what the
    builder offers (WS-27bn R1). Held equal in name AND order, below.
+7. ``app/projects/lib/api.ts`` ``RenderedReportBody`` — the type of the body.
+
+The chat card map, ``skill_projects/views.py`` ``REPORT_CARD_SECTIONS``, names
+the card's words for a section. ``test_projects_agent.py`` holds its titles to
+``ReportsView.tsx``.
 
 A section added to the route and left out of one of the others renders as
 NOTHING there, with no error: a TypeScript interface is a claim about the
@@ -244,6 +250,20 @@ def test_no_template_key_disappears() -> None:
     assert list(reports.TEMPLATES)[: len(PINNED_TEMPLATE_KEYS)] == list(
         PINNED_TEMPLATE_KEYS
     )
+
+
+def test_project_status_is_live_in_sections_order() -> None:
+    """WS-27bn R3a. T5: "this week" is one week with the running week kept."""
+    t5 = reports.TEMPLATES["project_status"]
+    assert t5["available"] is True
+    assert t5["sections"] == ["finished", "outlook", "stuck", "conflicts"]
+    assert (t5["weeks"], t5["skip_current_week"]) == (1, False)
+    assert t5["scope_kinds"] == ["project"]
+
+
+def test_the_live_templates_are_exactly_the_pinned_three() -> None:
+    live = [k for k, t in reports.TEMPLATES.items() if t["available"]]
+    assert live == ["weekly_delivery", "project_status", "data_hygiene"]
 
 
 def test_weekly_delivery_is_exactly_the_default_report() -> None:

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Icon from "@/components/Icon";
+import Modal from "@/components/ui/Modal";
 import { useTaskStore } from "../lib/taskStore";
 import type { MyTask, Person } from "../lib/types";
 import { initials } from "../lib/utils";
@@ -105,34 +106,21 @@ function DelegateBody({
     );
   }
 
+  // The shared `Modal` (continuity P3). The `alert` layer, because the
+  // Delegate nudge also opens this from inside the focused task
+  // (`TaskFocusModal`, z-[80]), and the dialog layer (z-50) would paint under
+  // it. No portalled picker lives inside: the search is a plain input.
   return (
-    <div
-      className="chat-fade-in fixed inset-0 z-[95] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
-      onClick={onClose}
+    <Modal
+      open
+      onClose={onClose}
+      title="Delegate this task"
+      description={<span className="block truncate">{item.title}</span>}
+      icon="UserPlus"
+      size="sm"
+      layer="alert"
+      className="max-h-[80vh]"
     >
-      <div
-        className="flex max-h-[80vh] w-full max-w-sm flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl sm:rounded-2xl sm:border"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3">
-          <Icon name="UserPlus" className="h-4 w-4 shrink-0 text-primary" />
-          <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-foreground">
-              Delegate this task
-            </h2>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {item.title}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="tech-transition rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-          >
-            <Icon name="X" className="h-4 w-4" />
-          </button>
-        </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <p className="mb-2 text-[11px] text-muted-foreground">
@@ -195,7 +183,6 @@ function DelegateBody({
             instead of depending on where the task was imported from.
             Multi-owner editing is unaffected: the task detail's assignee
             field still does it, and so does /projects. */}
-      </div>
-    </div>
+    </Modal>
   );
 }

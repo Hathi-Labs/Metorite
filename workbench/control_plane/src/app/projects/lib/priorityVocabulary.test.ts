@@ -109,8 +109,12 @@ describe("every Projects surface derives the level from lib/matrix.ts", () => {
     }
   });
 
-  it("draws the table cell as the level label", () => {
-    expect(read("components/TableView.tsx")).toMatch(/cellLabel\(taskCell\(task\)\)/);
+  it("draws the table cell as THE priority chip, labelled with the level", () => {
+    // One chip in both apps (2026-09-24): the table draws the same
+    // `PriorityChip` My Tasks' Priority column draws, not bare text.
+    expect(read("components/TableView.tsx")).toMatch(
+      /<PriorityChip chip=\{priorityChip\(taskCell\(task\)\)\} \/>/,
+    );
   });
 
   it("builds the table editor and the bulk bar from lib/matrix.ts", () => {

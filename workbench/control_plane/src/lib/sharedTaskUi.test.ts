@@ -111,6 +111,27 @@ const SEAM: {
     declaration: /(?:^|\n)\s*const\s+TONE\s*:\s*Record<MetaTone/,
   },
   {
+    /**
+     * 2026-09-24. A priority level was drawn three ways in two apps. These
+     * three rows keep it at one: one descriptor, one ranked tone table, one
+     * component. A second `PriorityChip`, or a `CELL_TONE` table grown back
+     * in an app, is the old split returning.
+     */
+    what: "the priority chip",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+PriorityChip\b/,
+  },
+  {
+    what: "the ranked pill table",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*const\s+RANKED\s*:/,
+  },
+  {
+    what: "the priority chip descriptor",
+    home: "lib/taskCard.ts",
+    declaration: /(?:^|\n)\s*(?:export\s+)?(?:function\s+priorityChip\b|const\s+(?:PRIORITY_CHIP_STYLE|CELL_TONE)\b)/,
+  },
+  {
     what: "the status colour vocabulary",
     home: "lib/statusAccent.ts",
     declaration: /export\s+function\s+(statusAccent|resolveHue)\b/,
@@ -194,6 +215,48 @@ const SEAM: {
     home: "components/ContextMenu.tsx",
     declaration: /export\s+type\s+CtxItem\b/,
   },
+  {
+    /**
+     * 2026-09-24, "the frame". Each app drew its own `h-10` bar, and My
+     * Tasks' carried a private `PanelToggle`. A second bar, or that toggle
+     * grown back, is the drift this row catches.
+     */
+    what: "the app bar",
+    home: "components/AppTopBar.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+(?:AppTopBar|PanelToggle)\b/,
+  },
+  {
+    /** Projects' switcher was local to its page, and My Tasks hand-rolled one. */
+    what: "the view switcher",
+    home: "components/ModeSwitch.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+ModeSwitch\b/,
+  },
+  {
+    /**
+     * The task panel's header row and its editable title. My Tasks held a
+     * private `EditableTitle` and Projects had none.
+     */
+    what: "the task panel header",
+    home: "components/TaskPanelHeader.tsx",
+    declaration:
+      /(?:^|\n)\s*(?:export\s+)?function\s+(?:TaskHeaderRow|EditableTaskTitle|EditableTitle)\b/,
+  },
+  {
+    /**
+     * The stage labels. `app/tasks/lib/statusCategory.ts`, `FilterBar.tsx`,
+     * `NodeDashboard.tsx` and `AnalyticsView.tsx` each declared their own copy
+     * of "To do / In progress / Done" until 2026-09-24.
+     */
+    what: "the stage labels",
+    home: "lib/statusCategory.ts",
+    declaration: /\bin_progress\s*:\s*["']In progress["']/,
+  },
+  {
+    /** The filter row's off-default tint, which both filter rows apply. */
+    what: "the filter row's off-default tint",
+    home: "components/ui/SelectButton.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?const\s+OFF_DEFAULT\s*=/,
+  },
 ];
 
 describe("one implementation, consumed twice", () => {
@@ -259,11 +322,12 @@ describe("both apps reach the shared modules", () => {
     ["projects", "components/TaskCardShell"],
     ["projects", "components/DropGap"],
     ["projects", "lib/boardDrop"],
-    // S4 — /tasks is deliberately absent: `ItemList.tsx` still holds the
-    // original local `NoMatchState`/`EmptyState` pair this was promoted FROM,
-    // and retiring them onto the shared box is a `/tasks` edit that another
-    // slice holds open. Add the row in the change that does it.
+    // S4, then continuity P3 — the empty state. `ItemList.tsx` held the
+    // local `NoMatchState`/`EmptyState` pair this box was promoted FROM. P3
+    // retired both onto it, and the Inbox's pair too. The copy stays My
+    // Tasks' own, in `app/tasks/lib/emptyState.ts`.
     ["projects", "components/EmptyState"],
+    ["tasks", "components/EmptyState"],
     // S6 — the chip vocabulary itself, not only its renderer. Each app reaches
     // it through its own adapter (`projects/lib/card.ts`,
     // `tasks/lib/cardMeta.ts`); an app that stopped importing it has grown a
@@ -286,6 +350,20 @@ describe("both apps reach the shared modules", () => {
     ["tasks", "components/TaskCardShell"],
     ["tasks", "components/DropGap"],
     ["tasks", "lib/boardDrop"],
+    // 2026-09-24 — the frame: one app bar, one view switcher, one filter-row
+    // dropdown, one panel header, one stage vocabulary, one panel width.
+    ["projects", "components/AppTopBar"],
+    ["tasks", "components/AppTopBar"],
+    ["projects", "components/ModeSwitch"],
+    ["tasks", "components/ModeSwitch"],
+    ["projects", "components/ui/SelectButton"],
+    ["tasks", "components/ui/SelectButton"],
+    ["projects", "components/TaskPanelHeader"],
+    ["tasks", "components/TaskPanelHeader"],
+    ["projects", "lib/statusCategory"],
+    ["tasks", "lib/statusCategory"],
+    ["projects", "lib/taskPanel"],
+    ["tasks", "lib/taskPanel"],
   ])("/%s consumes @/%s", (app, module) => {
     expect(
       reaches(app, module),
@@ -543,5 +621,76 @@ describe("the shared card shell is wired, not merely imported", () => {
       "A board is passing `dragging` to `DropGap`. The prop is gone on " +
         "purpose — the gap is the same size at rest and mid-drag.",
     ).toEqual([]);
+  });
+});
+
+/**
+ * 2026-09-24 — the filter row and the one word for a category.
+ *
+ * My Tasks' `TaskToolbar` had an always-open raw search input, raw
+ * `<select>`s for group and sort, and a hand-rolled Filter trigger. It is
+ * built from Projects' `FilterBar` pieces now. The OPTIONS stay My Tasks'
+ * own. Only the look moved.
+ */
+describe("one filter row", () => {
+  const code = (rel: string) =>
+    read(rel)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(?<![:"'/])\/\/[^\n]*/g, "");
+  const TOOLBAR = "app/tasks/components/TaskToolbar.tsx";
+
+  it("My Tasks' row uses the primitives, and no native control", () => {
+    const src = code(TOOLBAR);
+    expect(src).not.toMatch(/<select\b/);
+    expect(src).not.toMatch(/<input\b/);
+    expect(src).not.toMatch(/function Select\b/);
+    // Every axis is a SelectButton: assignee, group and sort.
+    expect(src.match(/<SelectButton\b/g) ?? []).toHaveLength(3);
+  });
+
+  it("the search is an icon until asked for, as in Projects", () => {
+    const src = code(TOOLBAR);
+    expect(src).toMatch(/const searching = searchOpen\(\{ opened, draft: filters\.query \}\);/);
+    expect(src).toMatch(
+      /\{searching \? \([\s\S]*?<Input[\s\S]*?aria-label="Search tasks"[\s\S]*?\) : \([\s\S]*?<Button[\s\S]*?icon="Search"[\s\S]*?onClick=\{\(\) => setOpened\(true\)\}/,
+    );
+  });
+
+  it("the Filter trigger and the sort direction are Buttons", () => {
+    const src = code(TOOLBAR);
+    expect(src).toMatch(/<Button\s+variant=\{count > 0 \? "primary" : "secondary"\}\s+size="sm"\s+icon="ListFilter"/);
+    expect(src).toMatch(/<Button\s+variant="secondary"\s+size="icon-sm"\s+icon=\{sort\.dir === "asc"/);
+  });
+
+  it("keeps every group and sort option My Tasks had", () => {
+    const src = code(TOOLBAR);
+    expect(src).toMatch(
+      /const GROUP_OPTIONS: \(GroupBy \| ""\)\[\] = \[\s*"", "context", "priority", "mode", "energy", "depth", "none",\s*\];/,
+    );
+    expect(src).toMatch(
+      /const SORT_FIELDS: SortField\[\] = \[\s*"manual", "priority", "due", "created", "title", "energy",\s*\];/,
+    );
+  });
+});
+
+describe("one word for a category: Stage", () => {
+  it("both apps call the category grouping 'Group by stage'", () => {
+    expect(read("app/tasks/components/TaskToolbar.tsx")).toMatch(/\n\s*"": "Group by stage",/);
+    expect(read("app/projects/components/FilterBar.tsx")).toMatch(/\n\s*category: "Group by stage",/);
+  });
+
+  it("My Tasks no longer calls it 'Status'", () => {
+    // Comments stripped: the note that explains the rename says "Status".
+    const toolbar = read("app/tasks/components/TaskToolbar.tsx")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(?<![:"'/])\/\/[^\n]*/g, "");
+    const table = toolbar.slice(toolbar.indexOf("const GROUP_LABEL"));
+    expect(table.slice(0, table.indexOf("};"))).not.toMatch(/"Status"/);
+  });
+
+  it("the stage filter says 'stage' and takes its labels from the shared module", () => {
+    const bar = read("app/projects/components/FilterBar.tsx");
+    expect(bar).toMatch(/\["", "Any stage"\]/);
+    expect(bar).toMatch(/EDITABLE_CATEGORIES\.map\(\(c\): \[string, string\] => \[c, CATEGORY_LABEL\[c\]\]\)/);
   });
 });

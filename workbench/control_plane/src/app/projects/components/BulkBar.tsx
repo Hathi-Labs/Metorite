@@ -19,7 +19,7 @@
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import SelectButton from "@/components/ui/SelectButton";
+import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
 import { useState } from "react";
 
@@ -32,14 +32,10 @@ import { BULK_FLAG_OPTIONS } from "../lib/matrix";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
- * The house active pair, the same two strings `FilterBar` uses.
- *
- * ⚠️ Copied rather than imported, exactly as `FilterBar` holds them: they are
- * two utility strings, and an import between two sibling components to share
- * a constant is a dependency for nothing. If a third surface wants them they
- * move to one place.
+ * The house active pair. `OFF_DEFAULT` lives in `SelectButton.tsx` since
+ * 2026-09-24: a third surface (My Tasks' filter row) wanted it, which is the
+ * moment this note said it would move to one place.
  */
-const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
 /**

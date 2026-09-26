@@ -53,10 +53,28 @@ import {
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
 import {
+  HYGIENE_KINDS,
+  OVERLAP_NOTE,
+  hygieneCount,
+  hygieneRows,
+  kindTitle,
+} from "../lib/hygiene";
+import { headlineVerdict, shortDate } from "../lib/outlook";
+import {
+  REBALANCE_HR_HINT,
+  helpersLine,
+  pickupLine,
+  rebalancePickups,
+  rebalanceTasks,
+} from "../lib/rebalance";
+import {
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
+  hygienePanelData,
   loadPanelData,
+  outlookPanelData,
+  rebalancePanelData,
   reportTiles,
   stuckPanelData,
   throughputPanelData,
@@ -86,7 +104,10 @@ import {
   CapacityPanel,
   ConflictsPanel,
   FinishedPanel,
+  HygienePanel,
   LoadPanel,
+  OutlookPanel,
+  RebalancePanel,
   Stat,
   StuckPanel,
   ThroughputPanel,
@@ -311,6 +332,37 @@ export function RenderedBody({
         </div>
       )}
 
+      {/* WS-27bn R3a. Opt-in. The outlook route's own body, for this scope.
+          The table says each figure the panel draws, in words. */}
+      {sections.outlook && (
+        <div className="space-y-1">
+          <OutlookPanel data={outlookPanelData(sections.outlook)} />
+          <Table title="Outlook">
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+              <dt className="text-muted-foreground">Forecast</dt>
+              <dd className="font-medium">
+                {headlineVerdict(sections.outlook).headline}
+              </dd>
+              <dt className="text-muted-foreground">Planned finish</dt>
+              <dd className="tabular-nums">
+                {shortDate(sections.outlook.plan?.planned_finish)}
+              </dd>
+              <dt className="text-muted-foreground">Forecast finish</dt>
+              <dd className="tabular-nums">
+                {shortDate(sections.outlook.velocity?.finish_date)}
+              </dd>
+              <dt className="text-muted-foreground">Open tasks</dt>
+              <dd
+                className="tabular-nums"
+                title="Open tasks in this scope that the forecast must clear."
+              >
+                {sections.outlook.velocity?.remaining_tasks ?? "—"}
+              </dd>
+            </dl>
+          </Table>
+        </div>
+      )}
+
       {sections.stuck && (
         <div className="space-y-1">
           <StuckPanel data={stuckPanelData(sections.stuck, body)} />
@@ -394,6 +446,54 @@ export function RenderedBody({
         </div>
       )}
 
+      {/* WS-27bn R3c. Opt-in. `hygiene_body`, read now and not over the
+          period. The table names each task the server sent, kind by kind. */}
+      {sections.hygiene && (
+        <div className="space-y-1">
+          <HygienePanel data={hygienePanelData(sections.hygiene)} />
+          <Table title="Data hygiene" count={sections.hygiene.rows.length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              title={OVERLAP_NOTE}
+            >
+              {sections.hygiene.open_total} open
+            </p>
+            <ul className="space-y-1.5">
+              {HYGIENE_KINDS.map(({ kind, label, title }) => (
+                <li key={kind} className="text-[11px]">
+                  <span
+                    className="font-medium text-foreground"
+                    title={kindTitle(title, sections.hygiene)}
+                  >
+                    {label}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {hygieneCount(sections.hygiene, kind) ?? "—"} of{" "}
+                    {sections.hygiene?.open_total}
+                  </span>
+                  <ul className="mt-0.5 space-y-0.5">
+                    {hygieneRows(sections.hygiene, kind).map((r) => (
+                      <li
+                        key={r.id}
+                        className="truncate pr-px text-muted-foreground"
+                        title={r.title}
+                      >
+                        <span className="text-foreground">{r.title}</span> ·{" "}
+                        {r.project_name}
+                        {kind === "stale_in_progress" && r.updated_at
+                          ? ` · last change ${shortDate(r.updated_at)}`
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          </Table>
+        </div>
+      )}
+
       {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
           it. The rows and the sentences are the conflicts route's, verbatim. */}
       {sections.conflicts && (
@@ -421,6 +521,48 @@ export function RenderedBody({
                 </li>
               ))}
             </ul>
+          </Table>
+        </div>
+      )}
+
+      {/* WS-27bn R3b. Opt-in, and read only. The rebalance route's own body.
+          Without the HR grant it has no lists, and the table says why. */}
+      {sections.rebalance && (
+        <div className="space-y-1">
+          <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
+          {/* H-186 item 2. The table lists the idle people too, so they count. */}
+          <Table title="Who could help" count={
+            rebalanceTasks(sections.rebalance).length +
+            rebalancePickups(sections.rebalance).length
+          }>
+            {sections.rebalance.hr_visible === false ? (
+              <p className="text-[11px] text-muted-foreground">
+                {REBALANCE_HR_HINT}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {rebalanceTasks(sections.rebalance).map((t) => (
+                  <li key={t.task_id} className="text-[11px]" title={t.title}>
+                    <span className="font-medium text-foreground">{t.title}</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · held by {t.holder?.name || t.holder?.email} ·{" "}
+                      {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
+                      helpers {helpersLine(t) ?? "none"}
+                    </span>
+                  </li>
+                ))}
+                {rebalancePickups(sections.rebalance).map((p) => (
+                  <li key={p.email} className="text-[11px]" title={p.name}>
+                    <span className="font-medium text-foreground">{p.name}</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      could take: {pickupLine(p)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Table>
         </div>
       )}

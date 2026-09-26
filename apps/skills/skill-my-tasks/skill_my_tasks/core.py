@@ -205,6 +205,9 @@ _MY_AREAS = "/projects/my/areas"
 _MY_PROJECT = "/projects/my/project"
 _NODES = "/projects/nodes"
 _TASKS = "/projects/tasks"
+#: `lens.ts::lensMyTaskLanes`. Behind MEMBERSHIP, not the project grant: a board
+#: task I reach by assignment alone 404s on `/nodes/{id}/statuses` (D79).
+_MY_LANES = "/projects/my/tasks/{id}/lanes"
 
 #: `MAX_PAGE_SIZE` in `routes/projects/core.py`. A larger ask is a 422.
 _PAGE_SIZE = 100
@@ -216,10 +219,29 @@ _BATCH_SIZE = 100
 #: 20 000 tasks — past any real inbox, and short of a hung run.
 _PAGE_LIMIT = 200
 
-#: Lanes a reopened task must not land in: the closing ones
-#: (`core.CLOSING_CATEGORIES`) and the intake holding pen
-#: (`core.TRIAGE_CATEGORY`), the same two `load_default_status` keeps out.
-_NOT_OPEN = frozenset({"done", "cancelled", "triage"})
+#: `core.CLOSING_CATEGORIES`: a task in one of these lanes is closed.
+_CLOSING = frozenset({"done", "cancelled"})
+
+#: A stage is a status CATEGORY, and this is its label. The mirror of
+#: `lib/statusCategory.ts::CATEGORY_LABEL`, and
+#: `test_skill_task_lens.py::test_the_stage_labels_match_the_client` fails if
+#: the two disagree.
+CATEGORY_LABEL: dict[str, str] = {
+    "triage": "Triage",
+    "backlog": "Backlog",
+    "todo": "To do",
+    "in_progress": "In progress",
+    "done": "Done",
+    "cancelled": "Cancelled",
+}
+
+#: The words a member (or the model) may use for a stage, normalised by
+#: `_norm`. Each label, each raw category and one spelling variant.
+_STAGE_WORDS: dict[str, str] = {
+    **{" ".join(k.split("_")): k for k in CATEGORY_LABEL},
+    **{v.lower(): k for k, v in CATEGORY_LABEL.items()},
+    "canceled": "cancelled",
+}
 
 
 def _rows(res: Any) -> list[dict[str, Any]]:
@@ -286,54 +308,133 @@ async def _my_project_ids() -> set[str]:
     return ids
 
 
-async def _statuses(project_id: str) -> list[dict[str, Any]]:
-    """A project's lanes, id and name, in board order (`lens.ts::lensStatuses`).
+async def _lanes(item_id: str) -> list[dict[str, Any]]:
+    """The statuses of THIS task's set, in board order (`lens.ts::lensMyTaskLanes`).
 
-    Keyed on the PROJECT: statuses are per-root, so "what stages can this task
-    be in" has no answer until you know where the task lives.
+    Keyed on the TASK and behind membership (`/projects/my/tasks/{id}/lanes`).
+    The old read, `/nodes/{project}/statuses`, is behind the project grant, so
+    it answered 404 for a board task the member reaches only by assignment,
+    and every status tool failed on it (D79).
     """
-    res = await _request("GET", f"{_NODES}/{project_id}/statuses")
-    return [
+    res = await _request("GET", _MY_LANES.format(id=item_id))
+    lanes = [
         {"id": str(r.get("id") or ""), "name": str(r.get("name") or ""),
-         "category": r.get("category")}
+         "category": str(r.get("category") or ""),
+         "position": int(r.get("position") or 0)}
         for r in _rows(res) if r.get("name")
     ]
+    # `lib/statusCategory.ts::stageLanes`: position, then name.
+    return sorted(lanes, key=lambda s: (s["position"], s["name"]))
+
+
+def _norm(value: str) -> str:
+    """"In-Progress", "in_progress" and " in  progress " are one word."""
+    return " ".join(value.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
 def _match_status(lanes: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
-    """Exact first, then case-insensitive — "done" typed for a lane called
-    "Done" is the same intent (`lens.ts::lensSetStage`)."""
+    """Exact first, then case-insensitive. "done" typed for a status called
+    "Done" is the same intent."""
     want = name.strip()
     return (next((s for s in lanes if s["name"] == want), None)
             or next((s for s in lanes if s["name"].lower() == want.lower()), None))
 
 
-def _open_lane(lanes: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Where a reopened task lands: the FIRST lane by position that is neither
-    closing nor triage — the rule `load_default_status` applies (owner
-    directive 2026-09-06: position IS the rule, `is_default` reads nothing).
-    The statuses route answers in position order."""
-    return next((s for s in lanes if s.get("category") not in _NOT_OPEN), None)
+def _resolve_status(
+    lanes: list[dict[str, Any]], value: str,
+) -> tuple[dict[str, Any] | None, str | None, list[dict[str, Any]]]:
+    """D79: stages group, statuses write. Returns ``(status, stage, choices)``.
+
+    1. A value that names a status exactly (any case) is that status.
+    2. A stage word ("in progress") with ONE status in this set is that status.
+    3. A stage word with TWO or more statuses is NOT resolved. ``status`` is
+       None and ``choices`` holds that stage's statuses, so the caller asks
+       the member. The skill never picks the first one for them.
+    4. Anything else is not resolved: ``stage`` and ``choices`` are empty.
+    """
+    hit = _match_status(lanes, value)
+    if hit:
+        return hit, None, []
+    stage = _STAGE_WORDS.get(_norm(value))
+    if stage is None:
+        return None, None, []
+    choices = [s for s in lanes if s["category"] == stage]
+    return (choices[0] if len(choices) == 1 else None), stage, choices
+
+
+def _project_of(item: dict[str, Any], mine: set[str] | None) -> str | None:
+    """The project a receipt names: a board task's project, never my own tree.
+    `statusReceipt.ts::where`."""
+    if not _is_team_place(item, mine):
+        return None
+    return str(item.get("project_name") or "") or None
+
+
+def _is_team_place(item: dict[str, Any], mine: set[str] | None) -> bool:
+    project = str(item.get("project_id") or "")
+    return mine is not None and bool(project) and project not in mine
+
+
+def _moved(status: str, project: str | None) -> str:
+    """`statusReceipt.ts::moveReceipt`: "Moved to In review · Website relaunch"."""
+    return f"Moved to {status} · {project}" if project else f"Moved to {status}"
+
+
+def _lane_label(s: dict[str, Any]) -> str:
+    """One status as "Name (Stage)"."""
+    return f"{s['name']} ({CATEGORY_LABEL.get(s['category'], s['category'] or '?')})"
+
+
+def _lane_list(lanes: list[dict[str, Any]]) -> str:
+    """Every status as "Name (Stage)", in board order."""
+    return ", ".join(_lane_label(s) for s in lanes) or "(none)"
+
+
+def _not_written(
+    value: str, stage: str | None, choices: list[dict[str, Any]],
+    lanes: list[dict[str, Any]], project: str | None, *, committed: bool = False,
+) -> str:
+    """Why the status was not set, in words the model can act on.
+
+    ``committed`` is True after organize or delegate: their decision WAS
+    written, so the reply says the status was not set, never that nothing
+    was written."""
+    where = f" in {project}" if project else ""
+    if stage and len(choices) >= 2:
+        label = CATEGORY_LABEL[stage]
+        tail = "The status was not set." if committed else "Nothing was written."
+        return (f"{label}{where} has {len(choices)} statuses: "
+                f"{', '.join(s['name'] for s in choices)}. Ask the member which "
+                f"one. {tail}")
+    so = "so the status was not set" if committed else "so nothing was written"
+    owner = project or "This task's project"
+    if stage:
+        return (f"{owner} has no {CATEGORY_LABEL[stage]} status, {so}. "
+                f"Its statuses: {_lane_list(lanes)}")
+    place = project or "this task's project"
+    return (f"{value.strip()!r} is not a status of {place}, {so}. "
+            f"Its statuses: {_lane_list(lanes)}")
 
 
 async def _set_stage(
-    item_id: str, project_id: str, name: str,
-) -> tuple[str | None, list[dict[str, Any]]]:
-    """Put a task in the lane called `name` (§4.6). Returns the lane's name and
-    the lanes; `None` when nothing matched, so a caller whose earlier writes
-    are already committed can report the miss rather than raise over them."""
-    lanes = await _statuses(project_id)
-    hit = _match_status(lanes, name)
-    if not hit:
-        return None, lanes
+    item: dict[str, Any], value: str, mine: set[str] | None,
+    *, committed: bool = False,
+) -> tuple[bool, str]:
+    """Put a task in one exact status (D79). Returns ``(written, message)``.
+
+    The message is the receipt when a status was written, and the reason when
+    nothing was. A caller whose earlier writes are already committed passes
+    ``committed=True``, reports the message, and never raises over it.
+    """
+    item_id = str(item.get("id") or "")
+    lanes = await _lanes(item_id)
+    hit, stage, choices = _resolve_status(lanes, value)
+    project = _project_of(item, mine)
+    if hit is None:
+        return False, _not_written(
+            value, stage, choices, lanes, project, committed=committed)
     await _patch_task(item_id, {"status_id": hit["id"]})
-    return hit["name"], lanes
-
-
-def _lane_miss(name: str, lanes: list[dict[str, Any]]) -> str:
-    return (f"stage {name.strip()!r} not set — no such lane in this task's "
-            f"project. Valid names: "
-            f"{', '.join(s['name'] for s in lanes) or '(none)'}")
+    return True, _moved(hit["name"], project)
 
 
 #: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D77 moved
@@ -404,8 +505,7 @@ def _is_team(i: dict[str, Any], mine: set[str] | None) -> bool:
     author = str(i.get("created_by") or "").lower()
     if author and author != me:
         return True
-    project = str(i.get("project_id") or "")
-    return mine is not None and bool(project) and project not in mine
+    return _is_team_place(i, mine)
 
 
 def _fmt_item(i: dict[str, Any], mine: set[str] | None = None) -> str:
@@ -726,9 +826,11 @@ async def my_tasks_organize(
         project_id: Project UUID to file under (from my_tasks_list_projects). A
             delegate decision needs a COMPANY project — a colleague cannot be
             assigned inside your private tree.
-        status: A lane NAME in the destination project, e.g. "Backlog". It is
-            resolved against the project after the move, so a decision that
-            promotes and names a lane lands in that lane.
+        status: A status NAME in the destination project, e.g. "In review".
+            It is resolved against the task's statuses after the move. A
+            stage word ("in progress") is written only when that stage has
+            ONE status. With two or more, nothing is written and the result
+            lists them: ask the member which one (D79).
         assignee_name / assignee_email: Who it's delegated to (required for
             kind=delegate). assignee_provider_user_id is ignored (D52).
     """
@@ -749,21 +851,25 @@ async def my_tasks_organize(
         body["assignee"] = {"name": assignee_name,
                             "email": assignee_email or None}
     item = await _request("POST", f"{_MY_CAPTURE}/{item_id}/organize", json=body)
-    tail = ""
-    if status:
-        # The decision is committed. A lane-name miss is reported, never
-        # raised over it.
-        target = item.get("project_id")
-        if not target:
-            tail = f" · stage {status!r} not set: the task has no project"
-        else:
-            lane, lanes = await _set_stage(item_id, str(target), status)
-            if lane:
-                item = await _my_task(item_id)
-                tail = f" · stage {lane}"
-            else:
-                tail = " · " + _lane_miss(status, lanes)
-    return f"Organized → {await _show(item)}{tail}"
+    mine = await _my_project_ids()
+    tail = await _status_tail(item, status, mine)
+    return f"Organized → {_fmt_item(item, mine)}{tail}"
+
+
+async def _status_tail(
+    item: dict[str, Any], status: str, mine: set[str],
+) -> str:
+    """The status half of organize and delegate, after the decision is
+    committed. A miss or an ambiguous stage is REPORTED, never raised over a
+    write that already happened. `item` is read back in place on a write."""
+    if not status:
+        return ""
+    if not item.get("project_id"):
+        return f" · status {status!r} not set: the task has no project"
+    written, msg = await _set_stage(item, status, mine, committed=True)
+    if written:
+        item.update(await _my_task(str(item.get("id") or "")))
+    return f" · {msg}"
 
 
 def _fmt_project_plan(plan: dict[str, Any]) -> str:
@@ -932,29 +1038,53 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
 @_annotate_risk(idempotent=True)
 async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
     """Mark a task DONE — or reopen it with undo=True. Done moves the task's
-    SHARED status into its project's done lane, so the team's board and your
-    list agree at the same instant. Reopen puts it back in the project's
-    first open lane and your list's NEXT.
+    SHARED status into its project's first Done status, so the team's board
+    and your list agree at the same instant. Reopen sets your list to NEXT,
+    and the gateway moves the task to its first To do status (D79 rule 6).
+    The result names the status the task is now in.
 
     Args:
         item_id: The item's full UUID.
         undo: True reopens a completed task (back to NEXT).
     """
+    before: dict[str, Any] = {}
     if not undo:
         await _request("POST", f"{_TASKS}/{item_id}/complete")
     else:
-        # The reverse of `/complete`, and SHARED for the same reason completing
-        # is (§13.5a decision 1): the status leaves the done lane for the first
-        # open lane by position (`_open_lane`), then my view says NEXT. The
-        # browser has no reopen yet; this is the one place it exists.
-        current = await _my_task(item_id)
-        if current.get("project_id"):
-            lane = _open_lane(await _statuses(str(current["project_id"])))
-            if lane:
-                await _patch_task(item_id, {"status_id": lane["id"]})
+        # D79 rule 6: ONE reopen rule, and it lives in the gateway. An open
+        # disposition on a closed task makes `reopen_if_closed` move it to the
+        # first To do status, else the first status that is not triage, and
+        # leaves it where it is when that status closes too. So the skill
+        # writes the disposition and nothing else. A status write of its own
+        # here would be a second copy of the rule.
+        #
+        # The status BEFORE the write, so the reply says whether the gateway
+        # moved it. A task that was already open gets no reopen.
+        before = await _my_task(item_id)
         await _patch_personal(item_id, {"disposition": "NEXT"})
     item = await _my_task(item_id)
-    return ("Reopened → " if undo else "Done ✓ → ") + await _show(item)
+    mine = await _my_project_ids()
+    project = _project_of(item, mine)
+    status = str(item.get("workflow_stage") or "")
+    if not undo:
+        # `statusReceipt.ts::doneReceipt`: the Done status it chose.
+        head = "Done ✓" + (f" · {status}" if status else "") + (
+            f" in {project}" if project and status else "")
+    elif str(item.get("status_category") or "") in _CLOSING:
+        head = (f"Back on your Next list. The status stays {status or 'closed'}: "
+                "this project has no open status to reopen into")
+    elif _status_key(before) == _status_key(item):
+        # Nothing moved: the task was open already.
+        head = "Back on your Next list" + (
+            f" · the status stays {status}" if status else "")
+    else:
+        head = ("Reopened · " + _moved(status, project)) if status else "Reopened"
+    return f"{head} → {_fmt_item(item, mine)}"
+
+
+def _status_key(item: dict[str, Any]) -> str:
+    """Which status a task row is in: its id, else its name."""
+    return str(item.get("status_id") or item.get("workflow_stage") or "")
 
 
 @_annotate_risk(idempotent=True)
@@ -977,11 +1107,23 @@ async def my_tasks_move(item_id: str, to: str) -> str:
     return f"Moved → {await _show(await _my_task(item_id))}"
 
 
+def _status_line(item: dict[str, Any], lanes: list[dict[str, Any]]) -> str:
+    """Every status of the task's set as "Name (Stage)", the current one
+    marked. Current is the task's `status_id`, else its status name."""
+    sid = str(item.get("status_id") or "")
+    name = str(item.get("workflow_stage") or "")
+    current = next((s for s in lanes if sid and s["id"] == sid), None) or next(
+        (s for s in lanes if name and s["name"] == name), None)
+    return ", ".join(
+        _lane_label(s) + (" ← current" if s is current else "") for s in lanes)
+
+
 @_annotate_risk(read_only=True, idempotent=True)
 async def my_tasks_detail(item_id: str) -> str:
     """Full detail for one task: every field (context, energy, estimate,
-    priority flags, deep-work, stage, assignees, schedule), the latest
-    comments, the attachment count, and the stages its project uses.
+    priority flags, deep-work, status, assignees, schedule), the latest
+    comments, the attachment count, and every status the task can be in,
+    as "Name (Stage)" with the current one marked.
 
     Args:
         item_id: The item's full UUID.
@@ -1015,10 +1157,9 @@ async def my_tasks_detail(item_id: str) -> str:
         lines.append(f"  subtasks: {i['subtask_count']} (my_tasks_subtasks to list)")
     if i.get("project_id"):
         try:
-            lanes = await _statuses(str(i["project_id"]))
+            lanes = await _lanes(item_id)
             if lanes:
-                lines.append("  its project's stages: "
-                             + ", ".join(s["name"] for s in lanes))
+                lines.append("  its statuses: " + _status_line(i, lanes))
         except Exception:
             pass
     # The detail panel's read (`lens.ts::lensItemDetail`): the comment thread
@@ -1046,25 +1187,28 @@ async def my_tasks_detail(item_id: str) -> str:
 
 @_annotate_risk(idempotent=True)
 async def my_tasks_set_stage(item_id: str, stage: str) -> str:
-    """Change a task's board stage / status — one of ITS project's lanes, by
-    name (§4.6). If the name doesn't match, the valid options come back so you
-    can retry.
+    """Move a task to one exact STATUS of its own set (D79: stages group,
+    statuses write). Pass a status name, e.g. "In review". A stage word
+    ("in progress", "to do", "done") is written only when that stage holds
+    ONE status. When it holds two or more, NOTHING is written and the result
+    lists them: ask the member which one, never guess. An unknown name
+    returns every status as "Name (Stage)". my_tasks_detail lists them too.
 
     Args:
         item_id: The item's full UUID.
-        stage: The target stage/status name (e.g. "in progress", "Done").
+        stage: The target status name, or a stage word (see above).
     """
     want = stage.strip()
     if not want:
-        return "A stage name is required."
+        return "A status name is required."
     i = await _my_task(item_id)
     if not i.get("project_id"):
-        return "This task has no project, so it has no stages."
-    lane, lanes = await _set_stage(item_id, str(i["project_id"]), want)
-    if not lane:
-        return (f"{want!r} isn't a status of this task's project. "
-                f"Its stages are: {', '.join(s['name'] for s in lanes)}")
-    return f"Stage → {lane} · {await _show(await _my_task(item_id))}"
+        return "This task has no project, so it has no statuses."
+    mine = await _my_project_ids()
+    written, msg = await _set_stage(i, want, mine)
+    if not written:
+        return msg
+    return f"{msg} → {_fmt_item(await _my_task(item_id), mine)}"
 
 
 @_annotate_risk(idempotent=False, open_world=True)
@@ -1095,7 +1239,8 @@ async def my_tasks_delegate(
         account_id: Ignored (D52).
         project_id: Company project UUID to move the task into (needed when
             the task is private today).
-        status: A lane NAME in the task's project, resolved after the move.
+        status: A status NAME in the task's project, resolved after the
+            move, the way my_tasks_set_stage resolves it (D79).
         due_at: ISO date the delegate should deliver by.
         next_action: Optional re-phrase of the ask for the delegate.
     """
@@ -1132,20 +1277,11 @@ async def my_tasks_delegate(
             overlay["next_action"] = next_action
         await _patch_personal(item_id, overlay)
     item = await _my_task(item_id)
-    tail = ""
-    if status:
-        # The delegation is committed. A lane-name miss is reported, not raised.
-        if not item.get("project_id"):
-            tail = f" · stage {status!r} not set: the task has no project"
-        else:
-            lane, lanes = await _set_stage(item_id, str(item["project_id"]), status)
-            if lane:
-                item = await _my_task(item_id)
-                tail = f" · stage {lane}"
-            else:
-                tail = " · " + _lane_miss(status, lanes)
+    mine = await _my_project_ids()
+    # The delegation is committed. A status miss is reported, not raised.
+    tail = await _status_tail(item, status, mine)
     return (f"Delegated to {assignee_name} — tracked as waiting-for → "
-            f"{await _show(item)}{tail}")
+            f"{_fmt_item(item, mine)}{tail}")
 
 
 @_annotate_risk(read_only=True, idempotent=True)

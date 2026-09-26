@@ -1,38 +1,53 @@
 "use client";
 
-import Button from "@/components/ui/Button";
-import Icon from "@/components/Icon";
-import { isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
 import { useEffect } from "react";
+
+import { useToast } from "@/components/ui/Toast";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
+
 import { useTaskStore } from "../lib/taskStore";
+import { syncUndoToast } from "../lib/undoToast";
 
 /**
- * The global one-level undo toast for the task manager.
+ * The global one-level undo for the task manager.
  *
- * Mounted once at the page level so it appears in EVERY view (Inbox, Next,
- * Done, …) — previously it lived inside InboxView and so was invisible when a
- * delete/archive happened from a task view. It owns the auto-dismiss timer:
- * when the window closes without an Undo, `dismissUndo` finalizes any pending
- * soft delete (purge + ClickUp propagation).
+ * Mounted once at the page level so it works in EVERY view (Inbox, Next,
+ * Done, …) and in `/calendar`. Since continuity P3 it draws nothing itself:
+ * the undo speaks through THE toast (`useToast`), the one Projects uses, with
+ * an "Undo" action. `lib/undoToast.ts` owns the toast's life, and the rule
+ * that the soft-delete purge runs exactly once when the window closes.
  */
 export function UndoToast() {
   const undoSnapshot = useTaskStore((s) => s.undoSnapshot);
   const undoLastChange = useTaskStore((s) => s.undoLastChange);
   const dismissUndo = useTaskStore((s) => s.dismissUndo);
   const openFocus = useTaskStore((s) => s.openFocus);
+  const toast = useToast();
   // A decision that also wrote the shared task (a move, a reassign or a due
-  // date) cannot be reversed from here. Offer the task instead of an Undo
-  // that would only take back half of it.
+  // date) cannot be reversed from here. The toast offers the task instead of
+  // an Undo that would only take back half of it.
   const sharedId = undoSnapshot?.sharedChangeTaskId;
 
-  // Auto-dismiss after a few seconds (async → effect-safe). Dismiss also
-  // finalizes a pending soft delete, so this is the point deletion becomes
-  // permanent / propagates upstream.
+  // A phone has no keyboard, so the toast names only its button there.
+  const { isMobile } = useViewMode();
+
   useEffect(() => {
-    if (!undoSnapshot) return;
-    const t = setTimeout(() => dismissUndo(), 7000);
-    return () => clearTimeout(t);
-  }, [undoSnapshot, dismissUndo]);
+    const store = {
+      // Read at the moment the toast closes, never the render's copy.
+      current: () => useTaskStore.getState().undoSnapshot,
+      undo: undoLastChange,
+      dismiss: dismissUndo,
+      openTask: openFocus,
+    };
+    syncUndoToast(undoSnapshot, toast, store, { keys: !isMobile });
+    // Unmount (a route change) unbinds `u` and Ctrl+Z, but the toast lives on
+    // in the app-wide viewport. Re-say it in place without the key hint. The
+    // Undo button still works: the store is app-wide.
+    return () => {
+      syncUndoToast(useTaskStore.getState().undoSnapshot, toast, store, { keys: false });
+    };
+  }, [undoSnapshot, toast, undoLastChange, dismissUndo, openFocus, isMobile]);
 
   /**
    * Keyboard: Ctrl/Cmd+Z, or the bare `u` this app has always used.
@@ -40,7 +55,7 @@ export function UndoToast() {
    * Ctrl+Z was added 2026-08-31 so the shortcut is the same across the product
    * — undo is the one binding a user brings with them from every other
    * application, and having it work in Projects but not here is worse than
-   * having it nowhere. `u` stays: it is in the toast's own kbd hint and in
+   * having it nowhere. `u` stays: it is in the toast's own hint and in
    * people's fingers.
    *
    * Both predicates come from `@/lib/keyboard` rather than the hand-rolled
@@ -68,42 +83,5 @@ export function UndoToast() {
     return () => window.removeEventListener("keydown", onKey);
   }, [undoSnapshot, undoLastChange, sharedId]);
 
-  if (!undoSnapshot) return null;
-
-  return (
-    <div className="chat-fade-in fixed bottom-20 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-popover px-4 py-2 shadow-2xl sm:bottom-6">
-      <span className="whitespace-nowrap text-sm text-foreground">
-        {undoSnapshot.label}
-      </span>
-      {sharedId ? (
-        <button
-          type="button"
-          onClick={() => {
-            dismissUndo();
-            openFocus(sharedId);
-          }}
-          title="This changed the task on its board. Open it to change it back."
-          className="tech-transition inline-flex items-center gap-1 whitespace-nowrap text-sm font-semibold text-primary hover:underline"
-        >
-          <Icon name="ExternalLink" className="h-3.5 w-3.5" />
-          Open task
-        </button>
-      ) : (
-      <button
-        type="button"
-        onClick={undoLastChange}
-        className="tech-transition inline-flex items-center gap-1 whitespace-nowrap text-sm font-semibold text-primary hover:underline"
-      >
-        <Icon name="Undo2" className="h-3.5 w-3.5" />
-        Undo
-        <kbd className="ml-0.5 hidden rounded border border-border px-1 py-0.5 font-mono text-[9px] text-muted-foreground sm:inline">
-          Ctrl+Z
-        </kbd>
-      </button>
-      )}
-      <Button variant="text" size="none" radius="keep" layout="" type="button" onClick={dismissUndo} aria-label="Dismiss" className="rounded-md p-0.5">
-        <Icon name="X" className="h-3.5 w-3.5" />
-      </Button>
-    </div>
-  );
+  return null;
 }

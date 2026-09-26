@@ -53,8 +53,15 @@ export function ListsSidebar({
   onNavigate,
   onOpenAssistant,
   assistantActive,
+  titled = false,
 }: {
   onNavigate?: () => void;
+  /**
+   * Draw the app's name at the top. Only the phone drawer asks for it: it
+   * has no top bar. On desktop the app bar owns the name (`AppTopBar`), and
+   * a second "My Tasks" one row under it said the same thing twice.
+   */
+  titled?: boolean;
   /** Open the AI assistant as a scene (email-app pattern). */
   onOpenAssistant?: () => void;
   /** Highlight the Assistant entry while its scene is open. */
@@ -91,7 +98,9 @@ export function ListsSidebar({
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">
       <div className="px-2 pb-2 pt-1">
-        <h2 className="text-sm font-semibold text-foreground">My Tasks</h2>
+        {titled ? (
+          <h2 className="text-sm font-semibold text-foreground">My Tasks</h2>
+        ) : null}
         <p className="text-[11px] text-muted-foreground">Your lists, your Areas, your day</p>
       </div>
 

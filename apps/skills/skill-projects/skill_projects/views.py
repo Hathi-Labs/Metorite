@@ -27,11 +27,15 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from typing import Any
 
 from skill_projects.client import data, get, uuid_of
 from skill_projects.reads import (
+    _MISSING,
     _day,
+    _dig,
+    _hygiene_groups,
     _report_section,
     _status_names,
     _task_line,
@@ -307,6 +311,10 @@ async def render_tasks(
 #:
 #: Each entry: ``title``, ``stats`` as ``(key, label)`` pairs, ``rows`` as the
 #: key of the row list, and ``columns`` as ``(key, label)`` pairs.
+#:
+#: WS-27bn R3a. A key may be a dotted path into a nested dict, such as
+#: ``plan.slip_days``. An entry with ``fields`` and no ``rows`` draws the
+#: section itself as a table of one row, because the outlook has no list.
 REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     "finished": {
         "title": "What we finished",
@@ -318,11 +326,37 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "title": "How long it took",
         "stats": [("median_hours", "Median hours"), ("measured", "Measured")],
     },
+    "outlook": {
+        "title": "Outlook",
+        "stats": [("plan.slip_days", "Slip days"), ("velocity.remaining_tasks", "Tasks left")],
+        "fields": [
+            ("velocity.verdict", "Forecast"),
+            ("plan.planned_finish", "Planned finish"),
+            ("velocity.finish_date", "Forecast finish"),
+        ],
+    },
     "stuck": {
         "title": "Overdue",
         "stats": [("overdue_total", "Overdue")],
         "rows": "overdue",
         "columns": [("name", "Project"), ("overdue", "Overdue")],
+    },
+    # WS-27bn R3c. The four counts, then one row for each named task.
+    "hygiene": {
+        "title": "Data hygiene",
+        "stats": [
+            ("by_kind.no_assignee", "No assignee"),
+            ("by_kind.no_due_date", "No due date"),
+            ("by_kind.no_estimate", "No estimate"),
+            ("by_kind.stale_in_progress", "Stale in progress"),
+        ],
+        "rows": "rows",
+        "columns": [
+            ("kind", "Missing"),
+            ("title", "Task"),
+            ("project_name", "Project"),
+            ("updated_at", "Last change"),
+        ],
     },
     "load": {
         "title": "Open work",
@@ -346,7 +380,39 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "rows": "rows",
         "columns": [("severity", "Severity"), ("sentence", "Conflict")],
     },
+    # WS-27bn R3b. One row per at-risk task, with its first helper. The
+    # idle people print as a count only: a pickup row names skills.
+    "rebalance": {
+        "title": "Who could help",
+        "stats": [("at_risk_total", "At risk"), ("idle_total", "Idle people")],
+        "rows": "at_risk",
+        "columns": [
+            ("title", "Task"),
+            ("holder.name", "Held by"),
+            ("due_on", "Due"),
+            ("candidates.0.name", "Could help"),
+        ],
+        # Without the HR grant the section has no rows. The card says why,
+        # in the Reports app's words, and draws no zero.
+        "hr_hint": "Rebalancing needs HR read access. An admin can see it.",
+    },
 }
+
+#: A value that is an ISO timestamp. The card prints its date only, as the
+#: Reports app's `shortDate` does (H-185 item 1).
+#:
+#: H-186 item 1. A time must follow the `T`. A title such as
+#: "2026-10-01T-minus checklist" is not a timestamp, and prints whole.
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+#: WS-27bn R3c. The endings of a key that holds a date. Only such a key gets
+#: the date cut, so a title "2026-10-01T09:30 kickoff" prints whole.
+_DATE_KEY_ENDINGS = ("_at", "_on", "_date", "_finish")
+
+
+def _is_date_key(key: str) -> bool:
+    """``updated_at``, ``due_on``, ``plan.planned_finish``: yes. ``title``: no."""
+    return key.rsplit(".", 1)[-1].endswith(_DATE_KEY_ENDINGS)
 
 
 def _human(key: str) -> str:
@@ -356,10 +422,27 @@ def _human(key: str) -> str:
 
 
 def _card_cell(key: str, row: dict[str, Any]) -> str:
-    value = row.get(key)
+    value = _dig(row, key)
+    if value is _MISSING:
+        value = None
+    if key.endswith("verdict") and isinstance(value, str):
+        # A server word such as ``not_converging`` reads as "Not converging".
+        return _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
+    if key == "holder.name" and not value:
+        # H-186 item 4. A holder with no directory name is still somebody:
+        # print the address, as the panel does.
+        value = _dig(row, "holder.email")
+        if value is _MISSING:
+            value = None
+    if key == "kind" and isinstance(value, str):
+        # WS-27bn R3c. A server word such as ``no_due_date`` reads as
+        # "No due date".
+        return _human(value)
+    if isinstance(value, str) and _is_date_key(key) and _TIMESTAMP.match(value):
+        return value[:10]
     return _plain(value)
 
 
@@ -369,12 +452,19 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
     title = spec["title"] if spec else _human(name)
     if spec:
         stats = [
-            {"label": label, "value": section[key]}
+            {"label": label, "value": value}
             for key, label in spec["stats"]
-            if isinstance(section.get(key), int | float) and not isinstance(section.get(key), bool)
+            if isinstance(value := _dig(section, key), int | float)
+            and not isinstance(value, bool)
         ]
-        rows = section.get(spec["rows"]) if spec.get("rows") else None
-        columns = spec.get("columns") or []
+        if spec.get("fields"):
+            # WS-27bn R3a. The section is its own one row. A generic
+            # fallback skips a nested dict, and would print nothing here.
+            rows = [section]
+            columns = spec["fields"]
+        else:
+            rows = section.get(spec["rows"]) if spec.get("rows") else None
+            columns = spec.get("columns") or []
     else:
         stats = [
             {"label": f"{title}: {_human(key)}", "value": section[key]}
@@ -388,6 +478,29 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
                 (k, _human(k)) for k in rows[0] if not isinstance(rows[0][k], dict | list)
             ][:6]
     table = None
+    if spec and spec.get("hr_hint") and section.get("hr_visible") is False:
+        # WS-27bn R3b. No rows to draw, and no zero to show. One line says why.
+        return stats, {
+            "title": title,
+            "columns": ["Note"],
+            "rows": [{"cells": [spec["hr_hint"]]}],
+        }
+    if name == "hygiene" and isinstance(rows, list) and rows and columns:
+        # WS-27bn R3c. Five rows of each kind, then a count of the rest. The
+        # rows come sorted by kind, so one cap of 25 hid the later kinds.
+        cells: list[dict[str, Any]] = []
+        for kind, shown, more in _hygiene_groups(section, rows):
+            cells.extend(
+                {"cells": [_card_cell(key, r) for key, _ in columns]} for r in shown
+            )
+            if more > 0:
+                blank = [""] * (len(columns) - 2)
+                cells.append({"cells": [_human(kind), f"…and {more} more", *blank]})
+        return stats, {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": cells,
+        }
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {
             "title": title,

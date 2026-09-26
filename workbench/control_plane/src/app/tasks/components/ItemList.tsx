@@ -3,7 +3,10 @@
 import Badge from "@/components/ui/Badge";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Button from "@/components/ui/Button";
+import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
+import { EmptyState } from "@/components/EmptyState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { categoricalAccent } from "@/lib/categorical";
 import { allSelected } from "@/lib/selection";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -12,6 +15,7 @@ import { useTaskStore, itemsForView, itemsInArea } from "../lib/taskStore";
 import { isUntagged } from "../lib/priority";
 import { ViewKey } from "../lib/types";
 import { isWaitingOverdue } from "../lib/waiting";
+import { tasksEmptyCopy } from "../lib/emptyState";
 import { applyFilters, applySort, type GroupBy } from "../lib/ordering";
 import { FlatList } from "./FlatList";
 import { TaskBoard } from "./TaskBoard";
@@ -40,6 +44,13 @@ function readMode(): "list" | "board" {
     return "list";
   }
 }
+/** List and Board, for the shared view switcher Projects draws its canvases
+ *  with (`components/ModeSwitch.tsx`). The glyphs are Projects' own. */
+const MODE_OPTIONS: readonly ModeOption<"list" | "board">[] = [
+  { id: "list", icon: "List" },
+  { id: "board", icon: "Kanban" },
+];
+
 function setModePersist(m: "list" | "board") {
   try { window.localStorage.setItem(MODE_KEY, m); } catch { /* private mode */ }
   modeListeners.forEach((cb) => cb());
@@ -50,7 +61,7 @@ const VIEW_META: Record<
   { title: string; icon: ThemedIcon; hint: string }
 > = {
   inbox: { title: "Inbox", icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
-  next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by status and sorted by priority — the very next physical step for each." },
+  next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
   // D78: one priority system, the matrix, in both apps.
   priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by priority level — Critical first, Low Priority last." },
   engage: { title: "Engage · Now", icon: themedIcon("Zap"), hint: "What you can pick up right now, matched to your energy." },
@@ -203,7 +214,7 @@ export function ItemList() {
   // toolbar, filters and bulk-select chrome still wrap it — but the swap is a
   // TRADE, not a free addition, and the rows pay for it:
   //   - a WaitingRow is not a TaskCard, so it has no ContextMenu — the
-  //     per-row task actions (Schedule / Change stage / Mark as Done /
+  //     per-row task actions (Schedule / Change status / Mark done /
   //     Eliminate, wired via useCardActions in TaskCard) are gone here;
   //   - so are the card's chips: stage pill, project, due date, attachments,
   //     subtask count, energy.
@@ -223,7 +234,9 @@ export function ItemList() {
             row instead of crushing the title into a two-line break. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <Icon className="h-4 w-4 shrink-0 text-primary" />
-          <h1 className="whitespace-nowrap text-base font-bold text-foreground">
+          {/* An h2: the app bar holds the page's one h1. The view heading
+              is Projects' scale, `text-sm font-medium`. */}
+          <h2 className="whitespace-nowrap text-sm font-medium text-foreground">
             {meta.title}
             {context && (
               <span className="ml-2 font-mono text-sm font-normal text-primary/80">
@@ -247,40 +260,15 @@ export function ItemList() {
                 <AppIcon name="X" className="h-3 w-3" />
               </button>
             )}
-          </h1>
-          {/* List ⇄ Board view mode toggle (Jira-style). Sticky per browser. */}
+          </h2>
+          {/* List ⇄ Board — the shared view switcher. Sticky per browser. */}
           {boardable && (
-            <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
-              <button
-                type="button"
-                onClick={() => setModePersist("list")}
-                aria-pressed={mode === "list"}
-                title="List view"
-                className={[
-                  "tech-transition inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-                  mode === "list"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                <AppIcon name="LayoutList" className="h-3 w-3" />
-                List
-              </button>
-              <button
-                type="button"
-                onClick={() => setModePersist("board")}
-                aria-pressed={mode === "board"}
-                title="Board view"
-                className={[
-                  "tech-transition inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-                  mode === "board"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                <AppIcon name="Columns3" className="h-3 w-3" />
-                Board
-              </button>
+            <div className="ml-auto">
+              <ModeSwitch
+                modes={MODE_OPTIONS}
+                mode={mode === "board" ? "board" : "list"}
+                onPick={setModePersist}
+              />
             </div>
           )}
           {hasSynced && contextlessCount > 0 && (
@@ -408,16 +396,11 @@ export function ItemList() {
       )}
 
       {loading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-          <AppIcon name="Loader2" className="h-6 w-6 animate-spin text-muted-foreground/60" />
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        </div>
+        // The shared skeleton, the loading shape Projects draws. A spinner
+        // says "wait" and shows nothing to wait at.
+        <SkeletonRows count={6} className="p-4" />
       ) : visible.length === 0 ? (
-        inView.length > 0 ? (
-          <NoMatchState />
-        ) : (
-          <EmptyState view={view} />
-        )
+        <ListEmptyState view={view} filtered={inView.length > 0} />
       ) : isWaitingView ? (
         // "Who owes me what, since when" — the one view whose organising axis
         // is a PERSON rather than a stage (spec §1 line 46, §6).
@@ -445,24 +428,6 @@ export function ItemList() {
         // /tasks surfaces where the arrow keys did nothing.
         <FlatList items={visible} view={view} showPriority={view === "priority"} />
       )}
-    </div>
-  );
-}
-
-/** Shown when the view has items but the toolbar filters hid them all — a
- *  different message from the true-empty state so the user knows to clear. */
-function NoMatchState() {
-  const clearFilters = useTaskStore((s) => s.clearFilters);
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <p className="text-sm text-muted-foreground">No tasks match your filters.</p>
-      <button
-        type="button"
-        onClick={clearFilters}
-        className="tech-transition rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-secondary"
-      >
-        Clear filters
-      </button>
     </div>
   );
 }
@@ -503,19 +468,22 @@ function ContextBackfillButton({ count }: { count: number }) {
   );
 }
 
-function EmptyState({ view }: { view: ViewKey }) {
-  const msg =
-    view === "inbox"
-      ? "Inbox zero. Mind like water."
-      : view === "waiting"
-        ? "Nothing on your Waiting-For list."
-        : view === "next"
-          ? "No next actions assigned to you."
-          : "Nothing here yet.";
+/** An empty list, drawn by the shared box Projects draws. The copy is this
+ *  app's (`lib/emptyState.ts`). The filtered state offers Clear filters. */
+function ListEmptyState({ view, filtered }: { view: ViewKey; filtered: boolean }) {
+  const clearFilters = useTaskStore((s) => s.clearFilters);
+  const copy = tasksEmptyCopy(view, filtered);
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <AppIcon name="CheckCircle2" className="h-8 w-8 text-success/70" />
-      <p className="text-sm text-muted-foreground">{msg}</p>
-    </div>
+    <EmptyState
+      icon={copy.icon}
+      message={copy.message}
+      hint={copy.hint}
+      tone={copy.tone}
+      action={
+        copy.filtered
+          ? { label: "Clear filters", icon: "X", onClick: clearFilters }
+          : undefined
+      }
+    />
   );
 }

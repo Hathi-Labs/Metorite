@@ -449,6 +449,113 @@ export interface ConflictsReport {
   rows: ConflictRow[];
 }
 
+/**
+ * WS-27bm S7b — one helper for one at-risk task, as the rebalance route
+ * ranks them. HR tier: it names skills. `spare_hours` is absent when the
+ * ranks used no hours (`hours_note` on the task says why).
+ */
+export interface RebalanceCandidate {
+  person_id: string | null;
+  name: string;
+  email: string;
+  skill_points: number;
+  matched_skills: string[];
+  spare_hours?: number;
+  away?: { kind: string; until: string } | null;
+  rank: number;
+}
+
+/** One at-risk task in scope, once, with up to three helpers. */
+export interface RebalanceTask {
+  task_id: string;
+  title: string;
+  project_name: string | null;
+  due_on: string | null;
+  shortfall_hours: number | null;
+  holder: { person_id: string | null; name: string; email: string };
+  /** Every holder. A task two people hold is one entry (§13.4 rule 4). */
+  holders?: { person_id: string | null; name: string; email: string }[];
+  candidates: RebalanceCandidate[];
+  hours_basis: boolean;
+  hours_note?: string;
+}
+
+/** One idle person, with the work in scope that fits their skills. */
+export interface RebalancePickup {
+  person_id: string | null;
+  name: string;
+  email: string;
+  tasks: {
+    task_id: string;
+    title: string;
+    project_name: string | null;
+    kind: "unassigned" | "at_risk_help";
+    skill_points: number;
+    matched_skills: string[];
+    holder?: string | null;
+  }[];
+}
+
+/**
+ * WS-27bn R3b — the rebalance route's body, as a report section carries it.
+ *
+ * ⚠️ **Without `admin:members:read` there is no `at_risk` and no `pickups`
+ * key.** Absent is "not for this reader", never "nobody". `hr_visible` says
+ * which answer arrived, and the panel says so in one line.
+ */
+export interface RebalanceReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  include_subtree?: boolean;
+  horizon_days: number;
+  hr_visible: boolean;
+  window: { starts_on: string; ends_on: string; days: number };
+  hours_scope?: string;
+  partial?: boolean;
+  /** The join caps it at eight tasks. `at_risk_total` counts them all. */
+  at_risk?: RebalanceTask[];
+  at_risk_total?: number;
+  /** A report caps it at twenty people. `pickups_total` counts them all. */
+  pickups?: RebalancePickup[];
+  pickups_total?: number;
+  idle_total?: number;
+  truncated?: boolean;
+}
+
+/** WS-27bn R3c — the four kinds of open task the hygiene section counts. */
+export type HygieneKind =
+  | "no_assignee"
+  | "no_due_date"
+  | "no_estimate"
+  | "stale_in_progress";
+
+/** One task the hygiene section names. It is in the list once per kind. */
+export interface HygieneRow {
+  kind: HygieneKind;
+  id: string;
+  title: string;
+  task_number: number | null;
+  project_id: string;
+  project_name: string;
+  due_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * WS-27bn R3c — the `hygiene` section (`analytics.py` `hygiene_body`).
+ *
+ * ⚠️ **A task counts in each kind that it breaks**, so the four counts do
+ * not add up to `open_total`. `rows` names up to twenty tasks of each kind,
+ * and `by_kind` counts them all.
+ */
+export interface HygieneReport {
+  open_total: number;
+  /** A task in progress with no change for this many days is stale. */
+  stale_days: number;
+  by_kind: Partial<Record<HygieneKind, number>>;
+  rows: HygieneRow[];
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -741,6 +848,11 @@ export interface RenderedReportBody {
       no_start?: number;
       cancelled?: number;
     };
+    /**
+     * WS-27bn R3a. Opt-in. The outlook route's own body, for the report's
+     * scope, over the route's own weeks of history (not the report period).
+     */
+    outlook?: OutlookReport;
     load?: {
       people: {
         assignee: string | null;
@@ -764,7 +876,17 @@ export interface RenderedReportBody {
     stuck?: {
       overdue: { project_id: string; name: string; overdue: number }[];
       overdue_total: number;
+      /**
+       * WS-27bn R3a. The route's ageing bands, as `{band, n}`. Optional, so
+       * a body from a server before R3a still draws.
+       */
+      stale?: { band: string; n: number }[];
     };
+    /**
+     * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
+     * estimate, and tasks in progress with no change. It reads the state now.
+     */
+    hygiene?: HygieneReport;
     /** WS-27bm S7c. Opt-in: present only when the report asked for it. */
     conflicts?: {
       rows: ConflictRow[];
@@ -774,6 +896,11 @@ export interface RenderedReportBody {
       horizon_days: number;
       window: ConflictsReport["window"];
     };
+    /**
+     * WS-27bn R3b. Opt-in. The rebalance route's own body, with `pickups`
+     * capped at twenty and `pickups_total` beside it.
+     */
+    rebalance?: RebalanceReport;
   };
 }
 

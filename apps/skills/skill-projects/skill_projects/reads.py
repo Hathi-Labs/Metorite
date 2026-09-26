@@ -1173,6 +1173,229 @@ async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     return "\n".join(out)
 
 
+# ── On-the-fly analysis — S7e, the dataset ───────────────────────────────────
+
+#: The columns the tool asks for when the model names none. Short on purpose:
+#: a full table of 500 rows costs many tokens (§13.7 O4).
+DATASET_DEFAULT_COLUMNS = (
+    "number,title,project,status,status_category,assignees,estimate_mins,"
+    "due,completed_at,cycle_hours,tags"
+)
+#: The longest piece of member text one cell carries (§13.7 rule 10).
+DATASET_CELL = 80
+#: The columns whose values members wrote. Each is fenced, cell by cell.
+_MEMBER_TEXT = frozenset({"title", "project", "root_project", "status", "type"})
+_DAYS = frozenset({"start", "due", "completed_at", "created_at"})
+
+#: The trailer line for a table the cap cut (§13.7 rule 8).
+DATASET_TRUNCATED = (
+    "TRUNCATED: these rows are not the whole set. Do not compute a total, a "
+    "share or a median over the whole set from them. Call again with "
+    "group_by, and the server computes it."
+)
+#: What the model says for every figure it derives from rows (rule 8).
+DATASET_LABEL = (
+    "Label every figure you compute from these rows: \"computed by the "
+    "assistant from {n} of {m} tasks, not an Analytics figure\". A "
+    "statDashboard tile title begins \"Computed from {n} tasks\"."
+)
+#: What the tool says when the route withheld the per-person values (O3).
+DATASET_HR_HIDDEN = (
+    "The per-person values are hidden: this member does not hold "
+    "admin:members:read. An admin can see them. The counts stay. Do not "
+    "compute a person's estimate or speed from rows either."
+)
+
+
+#: What the tool says when the route dropped row columns (O3). The default
+#: column set names assignees, so a member without the grant always sees it.
+DATASET_COLUMNS_HIDDEN = (
+    "Hidden columns: {columns}. They need admin:members:read, because two "
+    "reads joined on the task give a person's estimate or speed. An admin "
+    "can see them. Do not guess them. For cycle time by tag or by stage, "
+    "pass group_by and a measure."
+)
+
+
+#: What the tool says when a group of fewer than three people hid its value.
+DATASET_GROUP_HIDDEN = (
+    "A group with fewer than three people hides its estimate or cycle value, "
+    "because it is one person's figure under another name. An admin can see "
+    "it. Do not guess it."
+)
+
+
+def _fenced(value: Any) -> str:
+    """Member text for one cell: one line, no pipe, cut, then fenced."""
+    flat = " ".join(str(value or "").split()).replace("|", "/")
+    return data(flat[:DATASET_CELL])
+
+
+def _dataset_cell(column: str, value: Any) -> str:
+    """One cell of a dataset row, as the table prints it."""
+    if value is None or value == []:
+        return ""
+    if column == "number":
+        return f"#{value}"
+    if column in _MEMBER_TEXT:
+        return _fenced(value)
+    if column in ("tags", "assignees"):
+        return ", ".join(_fenced(v) for v in value)
+    if column == "blockers":
+        return ", ".join(
+            f"#{b.get('number')} {_fenced(b.get('title'))}" for b in value if isinstance(b, dict)
+        )
+    if column in _DAYS:
+        return _day(value)
+    return str(value)
+
+
+def _dataset_scope(payload: dict[str, Any]) -> str:
+    if payload.get("scope") == "portfolio" or not payload.get("project_id"):
+        return "portfolio"
+    tail = "+subtree" if payload.get("include_subtree") else ""
+    return f"node:{payload.get('project_id')}{tail}"
+
+
+def _cycle_line(payload: dict[str, Any]) -> str:
+    window = payload.get("cycle_window") or {}
+    return (
+        f"  cycle times: first in_progress to first done, for completions since"
+        f" {window.get('starts_on')} ({window.get('weeks')} weeks). An older"
+        " completion has no cycle time."
+    )
+
+
+def _dataset_groups(payload: dict[str, Any]) -> list[str]:
+    """The grouped answer: one line for each group, `key · value · n`."""
+    total = payload.get("total", 0)
+    measure = payload.get("measure") or "count"
+    out = [
+        f"Groups by {payload.get('group_by')}, measure {measure}, computed by the"
+        f" server over {total} {payload.get('state')} tasks:",
+        _cycle_line(payload),
+        "key · value · n",
+    ]
+    hidden = bool(payload.get("measure_hidden"))
+    for group in payload.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        key = group.get("key")
+        label = _fenced(group.get("label"))
+        if payload.get("group_by") == "assignee" and key and key != group.get("label"):
+            label += f" ({_fenced(key)})"
+        value = "hidden" if hidden or "value" not in group else group.get("value")
+        line = f"- {label} · {'none' if value is None else value} · {group.get('n', 0)}"
+        if not hidden and group.get("measured", group.get("n")) != group.get("n"):
+            line += f" · measured {group.get('measured')}"
+        if group.get("agent"):
+            line += " · agent"
+        out.append(line)
+    if hidden:
+        out.append(f"  {DATASET_HR_HIDDEN}")
+    elif any(isinstance(g, dict) and g.get("measure_hidden") for g in payload.get("groups") or []):
+        out.append(f"  {DATASET_GROUP_HIDDEN}")
+    shown = len(payload.get("groups") or [])
+    capped = "yes" if payload.get("groups_truncated") else "no"
+    out.append(
+        f"groups={shown} of {payload.get('groups_total', shown)} total={total}"
+        f" truncated={capped} scope={_dataset_scope(payload)} state={payload.get('state')}"
+    )
+    out.append(
+        f"These figures are exact. Label each one \"from the server, {total} tasks\"."
+        " You may summarise them. Do not add groups up: a task with two tags or"
+        " two assignees is in two groups."
+    )
+    return out
+
+
+def _dataset_rows(payload: dict[str, Any]) -> list[str]:
+    """The table: a header line, one line for each row, then the trailer."""
+    columns = [str(c) for c in payload.get("columns") or []]
+    rows = [r for r in payload.get("rows") or [] if isinstance(r, dict)]
+    total = payload.get("total", 0)
+    truncated = bool(payload.get("truncated"))
+    out = [
+        f"Tasks in {_scope_title(payload)}, state {payload.get('state')}:",
+        _cycle_line(payload),
+        " | ".join(columns),
+    ]
+    out.extend(" | ".join(_dataset_cell(c, row.get(c)) for c in columns) for row in rows)
+    out.append(
+        f"rows={len(rows)} total={total} truncated={'yes' if truncated else 'no'}"
+        f" scope={_dataset_scope(payload)} state={payload.get('state')}"
+    )
+    hidden = [str(c) for c in payload.get("hidden_columns") or []]
+    if hidden:
+        out.append(DATASET_COLUMNS_HIDDEN.format(columns=", ".join(hidden)))
+    if truncated:
+        out.append(DATASET_TRUNCATED)
+    out.append(DATASET_LABEL.format(n=len(rows), m=total))
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def task_dataset(
+    project_id: str = "",
+    state: str = "open",
+    columns: str = "",
+    group_by: str = "",
+    measure: str = "",
+    limit: int = 200,
+    status_category: str = "",
+    assignee: str = "",
+    tags: str = "",
+    tags_all: str = "",
+    overdue: bool = False,
+    unassigned: bool = False,
+    due_before: str = "",
+    created_after: str = "",
+    completed_after: str = "",
+    completed_before: str = "",
+    q: str = "",
+) -> str:
+    """A table of tasks for a question no analytics read answers, for example
+    cycle time by tag or the share of work in each stage. state is open
+    (default), closed or all. columns picks from number, full_id, title,
+    project, root_project, status, status_category, type, tags, assignees,
+    estimate_mins, start, due, completed_at, created_at, cycle_hours,
+    blockers. At most 500 rows (default 200). For a total, a share, a median
+    or a p90 over the whole set, pass group_by (tag, status, status_category,
+    project, assignee, type, created_week, completed_week) and measure
+    (count, estimate_sum, cycle_hours_median, cycle_hours_p90): the SERVER
+    computes exact figures over every matching task and sends no rows.
+    Filters: status_category, assignee, tags, tags_all, overdue, unassigned,
+    due_before, created_after, completed_after, completed_before (ISO dates)
+    and q. Leave project_id empty for the portfolio. Never write the rows to
+    a file and never run code over them."""
+    if (measure or "").strip() and not (group_by or "").strip():
+        return (
+            "measure needs group_by. Name what to group by, or use the analytics"
+            " reads for one figure over the whole scope."
+        )
+    params = _scope_params(project_id, state=(state or "open").strip())
+    if (group_by or "").strip():
+        params["group_by"] = group_by.strip()
+        params["measure"] = (measure or "count").strip()
+    else:
+        params["columns"] = (columns or DATASET_DEFAULT_COLUMNS).strip()
+        params["limit"] = max(1, min(500, int(limit or 200)))
+    given = {
+        "status_category": status_category, "assignee": assignee, "tags": tags,
+        "tags_all": tags_all, "due_before": due_before,
+        "created_after": created_after, "completed_after": completed_after,
+        "completed_before": completed_before, "q": q,
+    }
+    params.update({k: v.strip() for k, v in given.items() if (v or "").strip()})
+    if overdue:
+        params["overdue"] = True
+    if unassigned:
+        params["unassigned"] = True
+    payload = await get("/projects/analytics/dataset", params) or {}
+    body = _dataset_groups(payload) if payload.get("group_by") else _dataset_rows(payload)
+    return "\n".join([legend(), *body])
+
+
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
@@ -1228,11 +1451,176 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
+    # WS-27bn R3a. The outlook has no row list. Its figures are NESTED, so
+    # the scalar keys are dotted paths that `_report_section` reads with
+    # `_dig`. A generic fallback would print nothing for a nested dict.
+    "outlook": ("", "", (
+        "velocity.verdict", "plan.planned_finish", "velocity.finish_date",
+        "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
+    )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # WS-27bn R3c. One row per task, each with its kind. The four counts sit
+    # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
+    "hygiene": ("rows", "title", (
+        "open_total", "by_kind.no_assignee", "by_kind.no_due_date",
+        "by_kind.no_estimate", "by_kind.stale_in_progress", "stale_days",
+    )),
     # S7c. The row label is the kind. The sentence carries titles, so it is
     # fenced like every other piece of member text below.
     "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
+    # WS-27bn R3b. One row per at-risk task. The holder, the helpers and the
+    # pickups are nested, so the row prints its flat facts only. Without the
+    # HR grant the section has no list, and `_REPORT_HINTS` says why.
+    "rebalance": ("at_risk", "title", (
+        "at_risk_total", "idle_total", "pickups_total", "hr_visible", "horizon_days",
+    )),
 }
+
+#: A plain label for a figure whose key is not plain words (H-185 item 2).
+#: A key with no entry prints as itself, as before. Each entry is
+#: ``section:key``, so it labels the key in that section only, and an older
+#: section keeps its words (H-186 item 4).
+_REPORT_LABELS: dict[str, str] = {
+    "outlook:velocity.verdict": "forecast",
+    "outlook:plan.planned_finish": "planned finish",
+    "outlook:velocity.finish_date": "forecast finish",
+    "outlook:plan.slip_days": "slip days",
+    "outlook:velocity.remaining_tasks": "tasks left",
+    "outlook:capacity.verdict": "capacity",
+    "rebalance:at_risk_total": "tasks at risk",
+    "rebalance:idle_total": "idle people",
+    "rebalance:pickups_total": "people who could take work",
+    "rebalance:hr_visible": "HR access",
+    "rebalance:horizon_days": "horizon days",
+    "hygiene:open_total": "open tasks",
+    "hygiene:by_kind.no_assignee": "no assignee",
+    "hygiene:by_kind.no_due_date": "no due date",
+    "hygiene:by_kind.no_estimate": "no estimate",
+    "hygiene:by_kind.stale_in_progress": "stale in progress",
+    "hygiene:stale_days": "stale after days",
+}
+
+#: The facts one row prints, as ``(path, plain label, fenced)``, for a
+#: section whose rows nest what matters (WS-27bn R3b). A section with no
+#: entry prints each flat key of the row, as before. A fenced value is a name
+#: somebody typed, so it prints as data. A date is not fenced.
+#:
+#: A path may name a fallback after ``|``. ``holder.name|holder.email`` prints
+#: the address when the name is empty, as the panel does (H-186 item 4).
+_REPORT_ROW_FACTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "rebalance": (
+        ("project_name", "project", True),
+        ("due_on", "due", False),
+        ("shortfall_hours", "hours short", False),
+        ("holder.name|holder.email", "held by", True),
+        ("candidates.0.name", "first helper", True),
+    ),
+    # WS-27bn R3c. The kind first, because it is why the row is here.
+    "hygiene": (
+        ("kind", "kind", False),
+        ("project_name", "project", True),
+        ("due_at", "due", False),
+        ("updated_at", "last change", False),
+    ),
+}
+
+#: The line a section prints when the reader lacks the HR grant, in the
+#: Reports app's words. The section then carries no rows to print.
+_REPORT_HINTS: dict[str, str] = {
+    "rebalance": "Rebalancing needs HR read access. An admin can see it.",
+}
+
+#: Row keys the chat never prints as a fact. An id is not a fact a member
+#: reads, and the model must not quote it back.
+_ROW_KEYS_UNPRINTED: tuple[str, ...] = ("id", "project_id", "task_id")
+
+
+_MISSING = object()
+
+
+def _dig(section: dict[str, Any], key: str) -> Any:
+    """One figure of a section. A dotted key reads a nested dict (R3a).
+
+    WS-27bn R3b. A numeric part reads a list index, so
+    ``candidates.0.name`` is the first helper's name.
+    """
+    value: Any = section
+    for part in key.split("."):
+        if isinstance(value, list) and part.isdigit():
+            index = int(part)
+            if index >= len(value):
+                return _MISSING
+            value = value[index]
+            continue
+        if not isinstance(value, dict) or part not in value:
+            return _MISSING
+        value = value[part]
+    return value
+
+
+def _fact(row: dict[str, Any], path: str) -> Any:
+    """One row fact. The first path in a ``|`` list that has a value wins.
+
+    An empty name is no fact, so the row does not print ``held by «»``.
+    """
+    for option in path.split("|"):
+        value = _dig(row, option)
+        if value is not _MISSING and value not in (None, ""):
+            return value
+    return _MISSING
+
+
+#: WS-27bn R3c. The chat names this many hygiene rows of each kind. The
+#: rows come sorted by kind, so one cap over all of them shows the first
+#: kind only, and the later kinds vanish.
+HYGIENE_ROWS_PER_KIND = 5
+
+
+def _hygiene_groups(
+    section: dict[str, Any], rows: list[Any]
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    """The hygiene rows by kind, in the server's order.
+
+    Each item is ``(kind, the rows shown, how many more)``. The count comes
+    from ``by_kind``, which counts every task, not only the rows sent.
+    """
+    by_kind = section.get("by_kind")
+    by_kind = by_kind if isinstance(by_kind, dict) else {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            groups.setdefault(str(row.get("kind") or ""), []).append(row)
+    out: list[tuple[str, list[dict[str, Any]], int]] = []
+    for kind, members in groups.items():
+        shown = members[:HYGIENE_ROWS_PER_KIND]
+        total = by_kind.get(kind)
+        if not isinstance(total, int) or isinstance(total, bool) or total < len(members):
+            total = len(members)
+        out.append((kind, shown, total - len(shown)))
+    return out
+
+
+def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
+    """One row of a report section as one line."""
+    # A capacity row with no directory name still HAS an owner: its
+    # address. "unassigned" is only the row whose assignee is empty,
+    # or the model reads a former colleague's work as nobody's.
+    label = row.get(label_key) or row.get("assignee")
+    if name in _REPORT_ROW_FACTS:
+        facts = ", ".join(
+            f"{plain} {data(v) if fenced else v}"
+            for path, plain, fenced in _REPORT_ROW_FACTS[name]
+            if (v := _fact(row, path)) is not _MISSING and v is not None
+        )
+    else:
+        facts = ", ".join(
+            f"{k} {data(v) if k == 'sentence' else v}"
+            for k, v in row.items()
+            if k not in (label_key, *_ROW_KEYS_UNPRINTED)
+            and not isinstance(v, (dict, list))
+        )
+    shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
+    return f"- {shown} · {facts}"
 
 
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
@@ -1241,25 +1629,31 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
-    totals = ", ".join(f"{k} {section[k]}" for k in scalar_keys if k in section)
+    totals = ", ".join(
+        f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
+        for k in scalar_keys
+        if (v := _dig(section, k)) is not _MISSING
+    )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
-    rows = section.get(list_key) or []
+    if section.get("hr_visible") is False and name in _REPORT_HINTS:
+        out.append(f"  {_REPORT_HINTS[name]}")
+    rows = section.get(list_key) if list_key else None
+    rows = rows or []
     if not isinstance(rows, list):
+        return out
+    if name == "hygiene":
+        # A cap for each kind, so a stale task still shows after twenty
+        # tasks with no assignee.
+        for kind, shown, more in _hygiene_groups(section, rows):
+            out.extend(_report_row(name, label_key, row) for row in shown)
+            if more > 0:
+                plain = _REPORT_LABELS.get(f"hygiene:by_kind.{kind}", kind)
+                out.append(f"  (and {more} more: {plain})")
         return out
     for row in rows[:25]:
         if not isinstance(row, dict):
             continue
-        # A capacity row with no directory name still HAS an owner: its
-        # address. "unassigned" is only the row whose assignee is empty,
-        # or the model reads a former colleague's work as nobody's.
-        label = row.get(label_key) or row.get("assignee")
-        facts = ", ".join(
-            f"{k} {data(v) if k == 'sentence' else v}"
-            for k, v in row.items()
-            if k not in (label_key, "id", "project_id") and not isinstance(v, (dict, list))
-        )
-        shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
-        out.append(f"- {shown} · {facts}")
+        out.append(_report_row(name, label_key, row))
     if len(rows) > 25:
         out.append(f"  (and {len(rows) - 25} more rows)")
     return out

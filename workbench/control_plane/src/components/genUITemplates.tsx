@@ -30,14 +30,20 @@ import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
   PLAN_EDIT_COLS,
   type PlanRow,
+  afterCount,
   afterLabel,
+  afterOptions,
   blankRow,
   isMarked,
   markLine,
   planIncomplete,
   planRowsFrom,
   planSubmit,
+  waitsOnName,
+  withAfter,
 } from "@/app/projects/lib/planCard";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 
 type Data = Record<string, unknown>;
@@ -148,7 +154,7 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, start, due per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
+    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
     data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], importance?, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },
 ];
@@ -1289,6 +1295,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
           const after = afterLabel(r, rows);
+          const options = afterOptions(r, rows);
           const facts = [
             after ? `After: ${after}` : "",
             r.fit != null ? `Fit: ${r.fit}` : "",
@@ -1318,6 +1325,28 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 )}
               </div>
               <div style={PLAN_GRID}>{shortCols.map(field)}</div>
+              {/* WS-27bm S10: what this row waits on is an input. The list
+                  leaves out every row that waits on this one, so a tick
+                  cannot make a cycle. The server still refuses one. */}
+              {options.length === 0 && rows.length > 1 && (
+                <div className="mt-1.5 text-[11px] text-muted-foreground" style={PLAN_WRAP}>
+                  Waits on: none. Every other task waits on this one.
+                </div>
+              )}
+              {options.length > 0 && (
+                <CollapsibleSection label="Waits on" count={afterCount(r, rows)} defaultOpen={false}
+                  ariaLabel={waitsOnName(r)} className="mt-1.5">
+                  <div className="flex flex-col gap-1">
+                    {options.map((o) => (
+                      <label key={o.key} className="flex min-w-0 items-center gap-2 text-xs text-foreground">
+                        <Checkbox size="sm" checked={r.after.includes(o.key)} disabled={submitted}
+                          onChange={(e) => setCell(i, "after", withAfter(r, rows, o.key, e.target.checked))} />
+                        <span style={PLAN_WRAP}>{o.title.trim() || "Untitled task"}</span>
+                      </label>
+                    ))}
+                  </div>
+                </CollapsibleSection>
+              )}
               {facts.length > 0 && <div style={{ ...MUTED, ...PLAN_WRAP, marginTop: 4 }}>{facts.join(" · ")}</div>}
               {isMarked(r) && <div style={{ ...MARK_BOX, ...PLAN_WRAP }}>⚠ {markLine(r)}</div>}
             </div>

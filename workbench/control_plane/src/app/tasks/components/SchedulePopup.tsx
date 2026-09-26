@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import Icon from "@/components/Icon";
 import { useMemo, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
@@ -99,30 +100,20 @@ export function SchedulePopup() {
 
   const scheduled = item.scheduledStart ? new Date(item.scheduledStart) : null;
 
+  // The shared `Modal` (continuity P3): one scrim, a focus trap, Escape and
+  // focus return. The `alert` layer, because the Schedule nudge also opens
+  // this from inside the focused task (`TaskFocusModal`, z-[80]), and the
+  // dialog layer (z-50) would paint under it. See `Modal`'s `LAYERS`.
   return (
-    <div
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-black/50 p-4"
-      onClick={closeSchedule}
+    <Modal
+      open
+      onClose={closeSchedule}
+      title="Schedule on calendar"
+      description={<span className="block truncate">{item.title}</span>}
+      icon="CalendarClock"
+      size="sm"
+      layer="alert"
     >
-      <div
-        className="flex w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <Icon name="CalendarClock" className="h-4 w-4 shrink-0 text-primary" />
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold text-foreground">
-              Schedule on calendar
-            </h2>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {item.title}
-            </p>
-          </div>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" onClick={closeSchedule} aria-label="Close" className="rounded-md">
-            <Icon name="X" className="h-4 w-4" />
-          </Button>
-        </div>
-
         <div className="flex flex-col gap-2 px-4 py-3">
           <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Icon name="Clock" className="h-3 w-3" />
@@ -192,7 +183,6 @@ export function SchedulePopup() {
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

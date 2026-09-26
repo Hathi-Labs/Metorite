@@ -7,6 +7,7 @@ import {
   type Placeable,
   emptyCategories,
   isLastInCategory,
+  lastDoneRefusal,
   nextPosition,
   placeNew,
   reorder,
@@ -247,5 +248,35 @@ describe("emptyCategories", () => {
     // Owner directive 2026-09-03: triage is not offered, so its absence is not
     // a gap to nag about.
     expect(emptyCategories(SEED)).not.toContain("triage");
+  });
+});
+
+describe("lastDoneRefusal — the editor explains D79 before the write", () => {
+  const set = (...rows: [string, string][]): Placeable[] =>
+    rows.map(([id, category], i) => ({ id, name: id, category, position: i * 10 }));
+
+  it("refuses to remove the last Done status, in plain words", () => {
+    const rows = set(["To do", "todo"], ["Done", "done"]);
+    const said = lastDoneRefusal(rows, "Done", "remove");
+    expect(said).toContain("“Done” is the last Done status");
+    expect(said).toContain("Mark done");
+    expect(said).not.toMatch(/409|error/i);
+  });
+
+  it("refuses to move the last Done status to another stage", () => {
+    const rows = set(["To do", "todo"], ["Done", "done"]);
+    expect(lastDoneRefusal(rows, "Done", "cancelled")).toContain("another stage");
+  });
+
+  it("allows it when another Done status stays", () => {
+    const rows = set(["Shipped", "done"], ["Done", "done"]);
+    expect(lastDoneRefusal(rows, "Done", "remove")).toBeNull();
+    expect(lastDoneRefusal(rows, "Done", "in_progress")).toBeNull();
+  });
+
+  it("never refuses a status that is not Done, or a move into Done", () => {
+    const rows = set(["To do", "todo"], ["Done", "done"]);
+    expect(lastDoneRefusal(rows, "To do", "remove")).toBeNull();
+    expect(lastDoneRefusal(rows, "Done", "done")).toBeNull();
   });
 });

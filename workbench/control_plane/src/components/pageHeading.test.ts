@@ -12,8 +12,10 @@
  * 2. `SettingsHeader` — the PANE header. Carries the back link out of a pane
  *    you navigated into, inside the bordered bar. Settings.
  * 3. The APP BAR — a slim `h-10` strip carrying a rail toggle and the app's
- *    name. Projects and Tasks. Deliberately not a page header, and it has no
- *    component yet.
+ *    name. Projects and Tasks. Deliberately not a page header. Its component
+ *    is `AppTopBar` since 2026-09-24, and both apps render it. The app's
+ *    name is small there on purpose (`DESIGN_SYSTEM.md` §6a), so it does not
+ *    take `HEADING_TITLE`.
  *
  * Both components take their title from `headingScale.ts`, so shape 1 and
  * shape 2 are the same size. Tab from Workload to Organisation and only the
@@ -54,10 +56,16 @@ const SRC = path.join(__dirname, "..");
  * then set this to the new count. Never raise it — a new surface takes a
  * heading component, which is the whole point.
  */
-const RAW_HEADING_BUDGET = 44;
+const RAW_HEADING_BUDGET = 39;
 
 /** The two components that legitimately contain the one `<h1>` each. */
 const HEADING_COMPONENTS = ["PageHeader.tsx", "SettingsHeader.tsx"];
+
+/**
+ * The app bar. It holds its `<h1>` in two branches, the desktop bar and the
+ * phone bar, and it renders exactly one of them.
+ */
+const APP_BAR = "AppTopBar.tsx";
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -77,7 +85,7 @@ function stripComments(source: string): string {
 
 function filesWithARawHeading(): string[] {
   return walk(SRC)
-    .filter((f) => !HEADING_COMPONENTS.includes(path.basename(f)))
+    .filter((f) => ![...HEADING_COMPONENTS, APP_BAR].includes(path.basename(f)))
     .filter((f) => RAW_H1.test(fs.readFileSync(f, "utf8")))
     .map((f) => path.relative(SRC, f).split(path.sep).join("/"));
 }
@@ -116,6 +124,37 @@ describe("the heading comes from a component", () => {
       expect(source.match(/<h1[\s>]/g) ?? []).toHaveLength(1);
     }
   });
+
+  it("Projects and My Tasks write no <h1> of their own: the app bar holds it", () => {
+    // Swept 2026-09-24. Each view under the bar titles itself with an <h2>.
+    // `FocusMode.tsx` is the one exception: a full-screen scene with its own
+    // timer, drawn over the whole app, not a pane under the bar.
+    const offenders = filesWithARawHeading()
+      .filter((f) => f.startsWith("app/tasks") || f.startsWith("app/projects"))
+      .filter((f) => f !== "app/tasks/components/FocusMode.tsx");
+    expect(offenders).toEqual([]);
+    const bar = stripComments(fs.readFileSync(path.join(SRC, "components", APP_BAR), "utf8"));
+    expect(bar.match(/<h1[\s>]/g) ?? []).toHaveLength(2);
+  });
+
+  it.each(["app/tasks/page.tsx", "app/projects/page.tsx"])(
+    "%s renders exactly one app bar, so one h1, in its phone AND its desktop layout",
+    (rel) => {
+      const src = stripComments(fs.readFileSync(path.join(SRC, rel), "utf8")).replace(/\r\n/g, "\n");
+      // The phone layout is the `if (isMobile) { … }` block; the desktop
+      // layout is everything after it. Both pages are shaped this way.
+      const start = src.indexOf("  if (isMobile) {\n");
+      expect(start, "the phone branch moved").toBeGreaterThan(-1);
+      const end = src.indexOf("\n  }\n", start);
+      expect(end).toBeGreaterThan(start);
+      const phone = src.slice(start, end);
+      const desktop = src.slice(end);
+      expect(phone.match(/<AppTopBar\b/g) ?? []).toHaveLength(1);
+      expect(phone).toMatch(/<AppTopBar\s+compact\b/);
+      expect(desktop.match(/<AppTopBar\b/g) ?? []).toHaveLength(1);
+      expect(desktop).not.toMatch(/<AppTopBar\s+compact\b/);
+    },
+  );
 
   it("the People app writes no heading of its own", () => {
     const offenders = filesWithARawHeading().filter((f) =>

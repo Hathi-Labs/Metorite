@@ -343,3 +343,91 @@ export function peopleLine(o: OutlookReport): OutlookLine {
     tone: p.leaving_within_90d > 0 ? "warn" : known === 0 ? "quiet" : "good",
   };
 }
+
+/**
+ * WS-27bn R3a — the slip as a range, for the bar that draws it.
+ *
+ * The track starts at the server's today and ends at the later of the two
+ * dates. `plan` and `forecast` are positions on it, 0 to 100. `start` and
+ * `width` are the filled segment between them, so the slip is the bar.
+ *
+ * ⚠️ **It computes positions and no figure.** Each input is the server's:
+ * the forecast is today plus `weeks_remaining` whole weeks
+ * (`analytics.py` `project_forecast`), and `slip_days` is the forecast
+ * minus the plan (`slip_days`). So the plan sits `weeks_remaining` × 7 −
+ * `slip_days` days from today, and no date is parsed in the browser.
+ * `test_h185_3_the_forecast_is_today_plus_whole_weeks` in
+ * `tests/unit/test_projects_report_sections_r3b.py` pins that link, so a
+ * forecast that stops being whole weeks fails there first.
+ *
+ * Returns `null` when either date is absent. The verdicts `not_converging`,
+ * `no_history` and `nothing_left` carry no forecast date, and a bar with one
+ * end would draw a slip that nobody measured. The verdict line says why.
+ */
+export type SlipRange = {
+  /** The plan's position on the track, 0 to 100. */
+  plan: number;
+  /** The forecast's position on the track, 0 to 100. */
+  forecast: number;
+  /** Where the filled segment starts, 0 to 100. */
+  start: number;
+  /** How wide the filled segment is, never under 1 so it stays visible. */
+  width: number;
+  /** "79 days late", "3 days early" or "on the plan date". */
+  slip: string;
+  /** The plan and the forecast as dates a person reads. */
+  planLabel: string;
+  forecastLabel: string;
+  /** True when the plan date is already before today. */
+  planPassed: boolean;
+  tone: Tone;
+  /** The whole range in one sentence, for a screen reader. */
+  title: string;
+};
+
+export function slipRange(o: OutlookReport | null | undefined): SlipRange | null {
+  const v = o?.velocity;
+  const p = o?.plan;
+  const slip = p?.slip_days;
+  const weeks = v?.weeks_remaining;
+  if (
+    !v?.finish_date ||
+    !p?.planned_finish ||
+    typeof slip !== "number" ||
+    !Number.isFinite(slip) ||
+    typeof weeks !== "number" ||
+    !Number.isFinite(weeks) ||
+    weeks < 0
+  ) {
+    return null;
+  }
+  const forecastDays = weeks * 7;
+  const planDaysRaw = forecastDays - slip;
+  const planPassed = planDaysRaw < 0;
+  const planDays = Math.max(0, planDaysRaw);
+  const span = Math.max(forecastDays, planDays, 1);
+  const plan = (planDays / span) * 100;
+  const forecast = (forecastDays / span) * 100;
+  const lo = Math.min(plan, forecast);
+  const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+  const words =
+    slip > 0
+      ? `${days(slip)} late`
+      : slip < 0
+        ? `${days(Math.abs(slip))} early`
+        : "on the plan date";
+  const planLabel = shortDate(p.planned_finish);
+  const forecastLabel = shortDate(v.finish_date);
+  return {
+    plan,
+    forecast,
+    start: lo,
+    width: Math.max(1, Math.abs(forecast - plan)),
+    slip: words,
+    planLabel,
+    forecastLabel,
+    planPassed,
+    tone: slip > 14 ? "bad" : slip > 0 ? "warn" : "good",
+    title: `Plan ${planLabel}, forecast ${forecastLabel}: ${words}.`,
+  };
+}

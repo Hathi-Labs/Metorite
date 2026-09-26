@@ -22,8 +22,11 @@ import type {
   CapacityReport,
   ConflictsReport,
   FinishedReport,
+  HygieneReport,
   LoadReport,
+  OutlookReport,
   PreviewReportBody,
+  RebalanceReport,
   RenderedReportBody,
   StuckReport,
   ThroughputReport,
@@ -127,10 +130,12 @@ export function capacityPanelData(
 }
 
 /**
- * `stuck` as `StuckPanel` takes it: the overdue half only.
+ * `stuck` as `StuckPanel` takes it: the overdue half, and the ageing bands.
  *
- * ⚠️ No `stale`, on purpose. The report has no ageing bands until R3, and
- * the panel draws no band chart without them.
+ * WS-27bn R3a. The report carries the route's `stale` bands, so the panel
+ * draws its band chart. A body from a server before R3a has no `stale`, and
+ * the key stays ABSENT, so the panel draws no band chart and never says
+ * "No open work in this scope" about work it was not sent.
  */
 export function stuckPanelData(
   section: NonNullable<Sections["stuck"]>,
@@ -140,7 +145,22 @@ export function stuckPanelData(
     ...scopeOf(frame),
     overdue: asList<StuckReport["overdue"][number]>(section.overdue),
     overdue_total: section.overdue_total,
+    ...(section.stale === undefined || section.stale === null
+      ? {}
+      : { stale: asList<{ band: string; n: number }>(section.stale) }),
   };
+}
+
+/**
+ * `outlook` as `OutlookPanel` takes it (WS-27bn R3a).
+ *
+ * The section IS the outlook route's body, so this copies it. It takes no
+ * frame: the scope is the section's own, because the server resolved it.
+ */
+export function outlookPanelData(
+  section: NonNullable<Sections["outlook"]>
+): OutlookReport {
+  return { ...section };
 }
 
 /** `conflicts` as `ConflictsPanel` takes it. The rows are the server's. */
@@ -157,6 +177,35 @@ export function conflictsPanelData(
     total: section.total,
     by_kind: section.by_kind ?? {},
     rows: asList<ConflictsReport["rows"][number]>(section.rows),
+  };
+}
+
+/**
+ * `rebalance` as `RebalancePanel` takes it (WS-27bn R3b).
+ *
+ * The section IS the rebalance route's body, with `pickups` capped, so this
+ * copies it. It takes no frame: the scope is the section's own. Without the
+ * HR grant the two lists are absent, and they stay absent here.
+ */
+export function rebalancePanelData(
+  section: NonNullable<Sections["rebalance"]>
+): RebalanceReport {
+  return { ...section };
+}
+
+/**
+ * `hygiene` as `HygienePanel` takes it (WS-27bn R3c).
+ *
+ * The section IS `hygiene_body`, so this copies it. It takes no frame: the
+ * section reads the state now, and no report period reaches it.
+ */
+export function hygienePanelData(
+  section: NonNullable<Sections["hygiene"]>
+): HygieneReport {
+  return {
+    ...section,
+    by_kind: { ...(section.by_kind ?? {}) },
+    rows: asList<HygieneReport["rows"][number]>(section.rows),
   };
 }
 

@@ -43,19 +43,24 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.analytics import (
     MAX_PEOPLE,
     MAX_WEEKS,
+    STALE_BANDS,
     _hours,
     cycle_summary_sql,
     finished_period_sql,
     finished_sql,
+    hygiene_body,
     load_sql,
+    outlook_body,
     overdue_by_project_sql,
     scope_clause,
     scope_params,
+    stale_bands_sql,
     total_open_sql,
     weekly_sql,
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
+from gateway.routes.projects.analytics_rebalance import rebalance_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -91,8 +96,18 @@ from sqlalchemy import text
 #: work and names who has the hours for it. `conflicts` (WS-27bm S7c) comes
 #: after `stuck`: both say what is wrong with the open work, and conflicts
 #: says what is wrong with the plan for it.
+#:
+#: WS-27bn R3 declares the whole order (`projects_reports.md` §8 R3):
+#: finished, throughput, outlook, load, capacity, pulse, stuck, hygiene,
+#: conflicts, rebalance. Each slice adds its own name in that place. R3a adds
+#: `outlook`, after the past and before the open work, because a forecast
+#: reads the rate that the two sections above it measured. R3b adds
+#: `rebalance` LAST: it says what to do about the problems the sections
+#: above it found. R3c adds `hygiene` after `stuck`: both read the open work,
+#: and hygiene says which tasks lack the data the other sections need.
 SECTIONS: tuple[str, ...] = (
-    "finished", "throughput", "load", "capacity", "stuck", "conflicts",
+    "finished", "throughput", "outlook", "load", "capacity", "stuck",
+    "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -146,8 +161,9 @@ def _coming(
 #: a scope or a period that does not exist yet, and `waits_for` names it in
 #: words a member reads on the gallery card (§8 names the slice). A
 #: preset that named a missing section would be a save the server refuses.
-#: Only `weekly_delivery` (T4) is live in R2. T11 waits for a filter on the
-#: conflict kind, because `conflicts_body` takes no kinds argument.
+#: `weekly_delivery` (T4) is live since R2, `project_status` (T5) since
+#: R3a, and `data_hygiene` (T13) since R3c. T11 waits for a filter on the conflict kind, because `conflicts_body`
+#: takes no kinds argument.
 TEMPLATES: dict[str, dict[str, Any]] = {
     t["key"]: t
     for t in (
@@ -155,7 +171,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "team_pulse", "Team pulse",
             "How is each person on the team today, and who needs help?",
             ("team", "project", "org"),
-            "The pulse and rebalance sections, and a today period",
+            "The pulse section and a today period",
         ),
         _coming(
             "my_day", "My day",
@@ -177,12 +193,15 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "sections": ["finished", "throughput", "load", "stuck"],
             "weeks": 1, "skip_current_week": True,
         },
-        _coming(
-            "project_status", "Project status",
-            "Will this project finish on time, and what blocks it?",
-            ("project",),
-            "The outlook section",
-        ),
+        {
+            # WS-27bn R3a. "This week" is the running week: one week, with
+            # the current week kept. The sections are in SECTIONS order.
+            "key": "project_status", "name": "Project status",
+            "question": "Will this project finish on time, and what blocks it?",
+            "scope_kinds": ["project"], "available": True,
+            "sections": ["finished", "outlook", "stuck", "conflicts"],
+            "weeks": 1, "skip_current_week": False,
+        },
         _coming(
             "one_on_one", "1:1 prep",
             "How is this person doing over a month?",
@@ -193,7 +212,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "exceptions", "Exceptions",
             "What is wrong right now, and nothing else?",
             _ANY_SCOPE,
-            "The hygiene section, and a today period",
+            "A today period, and a rule for which hygiene rows are high",
         ),
         _coming(
             "capacity_outlook", "Capacity outlook",
@@ -225,12 +244,15 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             ("project",),
             "Stored runs and the changes section",
         ),
-        _coming(
-            "data_hygiene", "Data hygiene",
-            "Which tasks make every other report wrong?",
-            ("project", "org"),
-            "The hygiene section",
-        ),
+        {
+            # WS-27bn R3c. The section reads the state now and ignores the
+            # period, so one week with the current week kept says "now".
+            "key": "data_hygiene", "name": "Data hygiene",
+            "question": "Which tasks make every other report wrong?",
+            "scope_kinds": ["project", "org"], "available": True,
+            "sections": ["hygiene"],
+            "weeks": 1, "skip_current_week": False,
+        },
     )
 }
 
@@ -722,6 +744,21 @@ async def render_body(
                 ],
                 "total_tasks": total,
             }
+        elif name == "outlook":
+            # WS-27bn R3a. The outlook route's OWN body, imported, as
+            # `capacity` does. The panel and the report are one computation.
+            #
+            # ⚠️ **No `weeks=` here, on purpose.** The forecast reads
+            # FORECAST_WEEKS of history, whatever period the report names.
+            # `config["weeks"]` of 1 would clamp to 2 and change the forecast,
+            # so the report and the Analytics panel would disagree. The
+            # outlook covers the report's scope only. A forecast for each
+            # child project waits for the T10 slice.
+            sections[name] = await outlook_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
         elif name == "capacity":
             # WS-27bm S7a. The capacity route's OWN body, imported: the
             # panel and the report are one computation. The HR tier is the
@@ -763,13 +800,57 @@ async def render_body(
                 "horizon_days": found["horizon_days"],
                 "window": found["window"],
             }
-        elif name == "stuck":
-            # The one number a report needs from (a): what is overdue, by
-            # project. The ageing bands are a dashboard shape — four
-            # buckets asking to be looked at, not read aloud.
+        elif name == "rebalance":
+            # WS-27bn R3b. The rebalance route's OWN body, imported, as
+            # `conflicts` does. The HR gate is the READER's grant: without
+            # `admin:members:read` the body has no `at_risk` and no
+            # `pickups` key, so a reader who may not see skills sees none.
             #
-            # ⚠️ The builder is ANALYTICS', imported. A count written
+            # ⚠️ **No `config["weeks"]` here, on purpose.** Rebalancing
+            # reads its own 14-day horizon (`HORIZON_DAYS`), which is a
+            # window ahead of today. The report period is a window behind
+            # it, so passing the period would change which tasks are at
+            # risk, and the report and the route would disagree.
+            found = await rebalance_body(
+                db, vis,
+                hr_visible=can_read_hr_fields(user),
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+            # A copy of the body. `at_risk` stays as the route serves it,
+            # because the join already caps it at eight tasks.
+            section = dict(found)
+            if "pickups" in found:
+                # Capped like `load`. `pickups_total` counts every idle
+                # person with a match, so a reader sees what the cap cut.
+                section["pickups"] = found["pickups"][:MAX_PEOPLE]
+                section["pickups_total"] = len(found["pickups"])
+            sections[name] = section
+        elif name == "hygiene":
+            # WS-27bn R3c. `hygiene_body`, imported, as `outlook` does. Its
+            # open-work predicate is Load's, bound from the reader's own
+            # visibility, so every count is the reader's.
+            #
+            # ⚠️ **No period here, on purpose.** The section reads the
+            # state now. A missing due date last week is not a question a
+            # member can act on.
+            sections[name] = await hygiene_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+        elif name == "stuck":
+            # What is overdue, by project, and (WS-27bn R3a) how long open
+            # work has sat untouched, in the route's four bands.
+            #
+            # ⚠️ The builders are ANALYTICS', imported. A count written
             # here would be the second set of numbers §9.12.8 forbids.
+            # `open_where` above is the `stuck` route's predicate, so the
+            # bands equal `/analytics/stuck` for the same scope and reader.
+            band_sql, band_params = stale_bands_sql(open_where)
+            stale_row = (
+                await db.execute(text(band_sql), {**params, **band_params})
+            ).fetchone()
             overdue = (
                 await db.execute(
                     text(overdue_by_project_sql(open_where)), params,
@@ -785,6 +866,12 @@ async def render_body(
                     for o in overdue
                 ],
                 "overdue_total": sum(int(o.overdue) for o in overdue),
+                # The route's own shape: a list of {band, n}, in STALE_BANDS
+                # order. The panel then draws its band chart in a report.
+                "stale": [
+                    {"band": band, "n": int(getattr(stale_row, band, 0) or 0)}
+                    for band, _, _ in STALE_BANDS
+                ],
             }
 
     return {

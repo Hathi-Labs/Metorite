@@ -64,6 +64,26 @@ export interface RenderedReport {
       /** The weekly counts. Each week draws one text bar (WS-27bn R2b). */
       series?: { week_start: string; completed: number }[];
     };
+    /**
+     * WS-27bn R3a. Opt-in. The outlook route's body for the report's scope.
+     * Every date is null when the verdict carries no forecast.
+     */
+    outlook?: {
+      velocity?: {
+        verdict?: string;
+        finish_date?: string | null;
+        remaining_tasks?: number;
+        finished_per_week?: number;
+        created_per_week?: number;
+        weeks_sampled?: number;
+      };
+      plan?: {
+        planned_finish?: string | null;
+        dated?: number;
+        tasks?: number;
+        slip_days?: number | null;
+      };
+    };
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
@@ -94,6 +114,16 @@ export interface RenderedReport {
       overdue_total: number;
     };
     /**
+     * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
+     * kind that it breaks, so the counts do not add up to `open_total`.
+     */
+    hygiene?: {
+      open_total: number;
+      stale_days?: number;
+      by_kind?: Record<string, number | undefined>;
+      rows?: { kind: string; title: string; project_name?: string }[];
+    };
+    /**
      * WS-27bm S7c. Opt-in. The four HR kinds are absent for a reader without
      * `admin:members:read`, so `hr_visible` travels.
      */
@@ -102,6 +132,23 @@ export interface RenderedReport {
       total: number;
       hr_visible: boolean;
       horizon_days: number;
+    };
+    /**
+     * WS-27bn R3b. Opt-in. Without `admin:members:read` the two lists are
+     * ABSENT, and the email says so in one line.
+     */
+    rebalance?: {
+      hr_visible: boolean;
+      at_risk?: {
+        title: string;
+        due_on: string | null;
+        holder?: { name?: string; email?: string };
+        candidates?: { name?: string }[];
+      }[];
+      at_risk_total?: number;
+      pickups?: { name: string; tasks?: { title?: string }[] }[];
+      pickups_total?: number;
+      idle_total?: number;
     };
   };
 }
@@ -152,6 +199,33 @@ function duration(hours: number | null | undefined): string {
   if (hours < 48) return `${Math.round(hours)} hours`;
   return `${Math.round(hours / 24)} days`;
 }
+
+/**
+ * WS-27bn R3a. A date from the outlook, which may be a full timestamp.
+ * `day` splits on "-", so it reads the calendar date only.
+ */
+function dateOnly(iso: string): string {
+  return day(iso.slice(0, 10));
+}
+
+/** The outlook's verdict, in words. The server decides it. */
+const OUTLOOK_VERDICT: Record<string, string> = {
+  converging: "converging",
+  not_converging: "not converging, because work arrives as fast as it finishes",
+  no_history: "too early to forecast",
+  nothing_left: "nothing open",
+};
+
+/**
+ * The hygiene kinds, in the server's order, with the panel's words.
+ * `app/projects/lib/hygiene.test.ts` holds them equal to `HYGIENE_KINDS`.
+ */
+export const HYGIENE_WORDS: readonly [string, string][] = [
+  ["no_assignee", "No assignee"],
+  ["no_due_date", "No due date"],
+  ["no_estimate", "No estimate"],
+  ["stale_in_progress", "Stale in progress"],
+];
 
 /** How many project lines a message carries before it stops being readable. */
 export const MAX_EMAIL_ROWS = 10;
@@ -276,6 +350,56 @@ export function reportLayout(
     });
   }
 
+  const out = sections.outlook;
+  if (out) {
+    // ⚠️ Words and the server's figures only. No date is computed here, and
+    // a verdict with no forecast date prints no date line at all.
+    const v = out.velocity ?? {};
+    const p = out.plan ?? {};
+    const items: string[] = [];
+    if (p.planned_finish) {
+      items.push(
+        `Planned finish: ${dateOnly(p.planned_finish)}` +
+          (typeof p.dated === "number" && typeof p.tasks === "number"
+            ? ` (${p.dated} of ${p.tasks} open tasks carry a due date)`
+            : ""),
+      );
+    }
+    if (v.finish_date) items.push(`Forecast finish: ${dateOnly(v.finish_date)}`);
+    if (typeof p.slip_days === "number") {
+      const n = Math.abs(p.slip_days);
+      items.push(
+        p.slip_days === 0
+          ? "On the plan date"
+          : `${n} ${n === 1 ? "day" : "days"} ${p.slip_days > 0 ? "late" : "early"}`,
+      );
+    }
+    if (
+      typeof v.finished_per_week === "number" &&
+      typeof v.created_per_week === "number"
+    ) {
+      items.push(
+        `Finishing ${figure(v.finished_per_week)} a week, adding` +
+          ` ${figure(v.created_per_week)} a week` +
+          (typeof v.weeks_sampled === "number"
+            ? `, over ${v.weeks_sampled} weeks`
+            : ""),
+      );
+    }
+    parts.push({
+      head: {
+        lead: `Outlook: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
+        strong: true,
+        extra:
+          typeof v.remaining_tasks === "number"
+            ? `${v.remaining_tasks} open`
+            : undefined,
+      },
+      items,
+      notes: [],
+    });
+  }
+
   const stuck = sections.stuck;
   if (stuck && stuck.overdue_total > 0) {
     parts.push({
@@ -346,6 +470,43 @@ export function reportLayout(
     });
   }
 
+  const hyg = sections.hygiene;
+  if (hyg) {
+    // One text bar a kind, "n of open_total", then its rows up to `maxRows`.
+    // The counts are the server's, and each bar draws two of them.
+    const items: string[] = [];
+    const notes: string[] = [
+      "A task can miss more than one thing, so the counts do not add up to the open total.",
+    ];
+    for (const [kind, label] of HYGIENE_WORDS) {
+      const n = hyg.by_kind?.[kind];
+      if (typeof n !== "number") continue;
+      items.push(
+        `${label}: ${n} · ${textBar(n, hyg.open_total)} ${n} of ${hyg.open_total}`,
+      );
+      const rows = (hyg.rows ?? []).filter((r) => r.kind === kind);
+      const shown = rows.slice(0, maxRows);
+      for (const r of shown) {
+        items.push(`  ${r.title}${r.project_name ? ` · ${r.project_name}` : ""}`);
+      }
+      if (n > shown.length && shown.length > 0) {
+        items.push(`  …and ${n - shown.length} more`);
+      }
+    }
+    parts.push({
+      head: {
+        lead: `Data hygiene: ${hyg.open_total} open`,
+        strong: true,
+        extra:
+          typeof hyg.stale_days === "number"
+            ? `stale after ${hyg.stale_days} days`
+            : undefined,
+      },
+      items,
+      notes,
+    });
+  }
+
   const conf = sections.conflicts;
   if (conf) {
     // ⚠️ The sentence is the server's, verbatim, and it carries task titles
@@ -356,6 +517,58 @@ export function reportLayout(
         .slice(0, maxRows)
         .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
       notes: conf.hr_visible ? [] : ["Four kinds need HR read access."],
+    });
+  }
+
+  const reb = sections.rebalance;
+  if (reb && reb.hr_visible === false) {
+    // ⚠️ The title and one line, and no rows. A helper names who holds which
+    // skill, and a zero here would read as "nobody is at risk". H-186 item 3:
+    // the part keeps its title, as every other part does.
+    parts.push({
+      head: { lead: "Who could help", strong: true },
+      items: [],
+      notes: ["Rebalancing needs HR read access. An admin can see it."],
+    });
+  } else if (reb) {
+    // Words and the server's names only. No colour and no bar: a helper is
+    // not a share of anything.
+    const tasks = (reb.at_risk ?? []).slice(0, maxRows);
+    const people = (reb.pickups ?? []).slice(0, maxRows);
+    const notes: string[] = [];
+    if (typeof reb.at_risk_total === "number" && reb.at_risk_total > tasks.length) {
+      notes.push(`…and ${reb.at_risk_total - tasks.length} more tasks at risk`);
+    }
+    if (typeof reb.pickups_total === "number" && reb.pickups_total > people.length) {
+      notes.push(`…and ${reb.pickups_total - people.length} more people who could take work`);
+    }
+    parts.push({
+      head: {
+        lead: `Who could help: ${reb.at_risk_total ?? tasks.length} at risk`,
+        strong: true,
+        extra:
+          typeof reb.idle_total === "number" ? `${reb.idle_total} idle` : undefined,
+      },
+      items: [
+        ...tasks.map((t) => {
+          const helpers = (t.candidates ?? [])
+            .slice(0, 3)
+            .map((c) => c.name)
+            .filter(Boolean)
+            .join(", ");
+          return (
+            `${t.title} — held by ${t.holder?.name || t.holder?.email || "somebody"}` +
+            `, due ${t.due_on ? day(t.due_on.slice(0, 10)) : "with no date"}` +
+            `: helpers ${helpers || "none"}`
+          );
+        }),
+        ...people.map(
+          (p) =>
+            `${p.name} could take: ` +
+            (p.tasks ?? []).map((t) => t.title).filter(Boolean).join(", "),
+        ),
+      ],
+      notes,
     });
   }
 

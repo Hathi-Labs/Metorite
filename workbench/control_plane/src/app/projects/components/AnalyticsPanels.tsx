@@ -44,8 +44,10 @@ import type {
   CapacityReport,
   ConflictsReport,
   FinishedReport,
+  HygieneReport,
   LoadReport,
   OutlookReport,
+  RebalanceReport,
   StuckReport,
   ThroughputReport,
 } from "../lib/api";
@@ -71,15 +73,35 @@ import {
 } from "../lib/conflicts";
 import { effortDisplay, personEffort } from "../lib/effort";
 import {
+  HYGIENE_KINDS,
+  OVERLAP_NOTE,
+  TITLES_SHOWN,
+  hygieneCount,
+  hygieneRows,
+  kindTitle,
+  moreNote,
+} from "../lib/hygiene";
+import {
   type OutlookLine,
+  type SlipRange,
   type Tone,
   capacityLine,
   forecastGap,
   headlineVerdict,
   isDrawableOutlook,
   peopleLine,
+  slipRange,
   velocityLine,
 } from "../lib/outlook";
+import {
+  REBALANCE_HR_HINT,
+  helpersLine,
+  holderLine,
+  pickupLine,
+  rebalanceCapNote,
+  rebalancePickups,
+  rebalanceTasks,
+} from "../lib/rebalance";
 
 /**
  * The ageing bands, in the order the server sends them.
@@ -281,10 +303,10 @@ function Bar({
 
 /** (a) Where is work stuck? */
 export function StuckPanel({ data }: { data: StuckReport }) {
-  // ⚠️ WS-27bn R2b. A REPORT's `stuck` section has no ageing bands, because
-  // they wait for R3. Without `stale` the panel draws no band chart, no band
-  // legend, and never "No open work in this scope". It was not sent the
-  // open work, so it cannot say there is none.
+  // ⚠️ WS-27bn R2b. A report body from a server before R3a has no ageing
+  // bands. Without `stale` the panel draws no band chart, no band legend,
+  // and never "No open work in this scope". It was not sent the open work,
+  // so it cannot say there is none. Since R3a a report sends the bands.
   const hasBands = data?.stale !== undefined && data?.stale !== null;
   // ⚠️ The server sends `stale` as a LIST of {band, n}. This read asked
   // `b.key in data.stale`, which on an array tests INDICES — always false —
@@ -299,9 +321,13 @@ export function StuckPanel({ data }: { data: StuckReport }) {
     <Panel
       title="Where work is stuck"
       hint={
-        hasBands
+        // WS-27bn R3a. A report sends the bands and no blocked list, so its
+        // hint does not name what the panel cannot show.
+        hasBands && typeof data.blocked_total === "number"
           ? "Open tasks by how long they have sat without a change, what is blocked, and what is past due."
-          : "Open tasks past their due date, by project."
+          : hasBands
+            ? "Open tasks by how long they have sat without a change, and what is past due."
+            : "Open tasks past their due date, by project."
       }
     >
       {hasBands && (
@@ -793,6 +819,216 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
 }
 
 /**
+ * WS-27bn R3b — who could help whom, in a report.
+ *
+ * ⚠️ **Draws the route and counts nothing** (`projects_reports.md` §8 R3b).
+ * Every task, helper and count is the rebalance route's, and `lib/rebalance.ts`
+ * holds only the words. An at-risk task and an idle person wear the People
+ * dashboard's pill hues (`PILL_HUE`), each with its words beside it.
+ *
+ * ⚠️ **HR tier.** Without `admin:members:read` the server sends neither list,
+ * and the panel says so in one line instead of drawing "nobody at risk".
+ *
+ * ⚠️ **Read only, and a report panel only.** No Assign, no Dismiss and no
+ * task link (slice R4b). The Analytics app does not mount it yet.
+ */
+export function RebalancePanel({ data }: { data: RebalanceReport }) {
+  const tasks = rebalanceTasks(data);
+  const pickups = rebalancePickups(data);
+  const cap = rebalanceCapNote(data, tasks.length, pickups.length);
+  const risk = accentForHue(PILL_HUE.at_risk);
+  const idle = accentForHue(PILL_HUE.idle);
+  const hidden = data?.hr_visible === false;
+
+  return (
+    <Panel
+      title="Who could help"
+      hint="Tasks at risk of missing their due date, the people whose skills fit them, and idle people with work they could take. Nothing is reassigned."
+    >
+      {hidden ? (
+        <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
+      ) : tasks.length === 0 && pickups.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No task at risk and nobody idle in this scope.
+        </p>
+      ) : (
+        <>
+          {typeof data?.at_risk_total === "number" &&
+            typeof data?.idle_total === "number" && (
+              <p
+                className="mb-2 text-[11px] text-muted-foreground"
+                title="Counted by the server over every task and person, before any cap."
+              >
+                {data.at_risk_total} at risk · {data.idle_total} idle
+              </p>
+            )}
+          {tasks.length > 0 && (
+            <ul className="space-y-2">
+              {tasks.map((task) => {
+                const helpers = helpersLine(task);
+                return (
+                  <li key={task.task_id}>
+                    <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                      <span
+                        className={`size-1.5 shrink-0 rounded-full ${risk.dot}`}
+                        aria-hidden
+                      />
+                      <span
+                        // `pr-px`: the Load panel's italic-clip lesson.
+                        className="min-w-0 truncate pr-px font-medium text-foreground"
+                        title={task.title}
+                      >
+                        {task.title}
+                      </span>
+                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                        {PILL_LABEL.at_risk}
+                      </span>
+                    </div>
+                    <p
+                      className="mt-0.5 truncate text-[10px] text-muted-foreground"
+                      title={holderLine(task)}
+                    >
+                      {holderLine(task)}
+                    </p>
+                    <p
+                      className="truncate text-[10px] text-muted-foreground"
+                      title={
+                        helpers
+                          ? `Up to three people whose skills fit this task: ${helpers}`
+                          : "Nobody in scope fits this task."
+                      }
+                    >
+                      {helpers ? `Could help: ${helpers}` : "Nobody fits this task."}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {pickups.length > 0 && (
+            <ul className={`space-y-1.5 ${tasks.length ? "mt-3 border-t border-border pt-2" : ""}`}>
+              {pickups.map((person) => (
+                <li key={person.email}>
+                  <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                    <span
+                      className={`size-1.5 shrink-0 rounded-full ${idle.dot}`}
+                      aria-hidden
+                    />
+                    <span
+                      className="min-w-0 truncate pr-px font-medium text-foreground"
+                      title={person.name}
+                    >
+                      {person.name}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                      {PILL_LABEL.idle}
+                    </span>
+                  </div>
+                  <p
+                    className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground"
+                    title={`Work in scope that fits ${person.name}'s skills: ${pickupLine(person)}`}
+                  >
+                    Could take: {pickupLine(person)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {cap && <p className="mt-2 text-[10px] text-muted-foreground">{cap}</p>}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn R3c — which open tasks lack the data every other report needs.
+ *
+ * ⚠️ **Draws the server's counts and counts nothing** (`projects_reports.md`
+ * §8 R3c). Each kind is one bar, "n of open total", with the private `Bar`.
+ * Up to five titles follow it, then "…and M more". `lib/hygiene.ts` holds
+ * the words.
+ *
+ * ⚠️ **A task counts in each kind that it breaks**, so the bars do not add up
+ * to the open total, and the panel says so under them.
+ *
+ * ⚠️ **A report panel only.** The Analytics app does not mount it yet: the
+ * `/analytics/hygiene` route is a later slice.
+ */
+export function HygienePanel({ data }: { data: HygieneReport }) {
+  const open = data?.open_total;
+  const gap = accentForHue("amber");
+
+  return (
+    <Panel
+      title="What open tasks are missing"
+      hint="Open tasks with no assignee, no due date or no estimate, and work in progress that has not changed. This is the state now, not the period."
+    >
+      {typeof open !== "number" || open <= 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No open tasks in this scope.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-3">
+            {HYGIENE_KINDS.map(({ kind, label, title }) => {
+              const n = hygieneCount(data, kind);
+              const rows = hygieneRows(data, kind).slice(0, TITLES_SHOWN);
+              const more = moreNote(n, rows.length);
+              const meaning = kindTitle(title, data);
+              return (
+                <li key={kind}>
+                  <div className="mb-1 flex items-baseline gap-2 text-[11px]">
+                    <span className="font-medium text-foreground" title={meaning}>
+                      {label}
+                    </span>
+                    <span
+                      className="ml-auto tabular-nums text-muted-foreground"
+                      title={`${n ?? "No count"} of ${open} open tasks: ${meaning}`}
+                    >
+                      {typeof n === "number" ? `${n} of ${open}` : "—"}
+                    </span>
+                  </div>
+                  <Bar
+                    segments={[{ key: kind, value: n, dot: gap.dot, label }]}
+                    total={open}
+                  />
+                  {rows.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {rows.map((r) => (
+                        <li
+                          key={r.id}
+                          // `pr-px`: the Load panel's italic-clip lesson.
+                          className="truncate pr-px text-[10px] text-muted-foreground"
+                          title={`${r.title} · ${r.project_name}`}
+                        >
+                          {r.title}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {more && (
+                    <p
+                      className="mt-0.5 text-[10px] text-muted-foreground"
+                      title="The table under this panel names up to twenty tasks of each kind."
+                    >
+                      {more}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+            {OVERLAP_NOTE}
+          </p>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/**
  * Work left and work done, in ESTIMATED hours.
  *
  * ⚠️ **Estimated, never logged.** Owner decision 2026-09-17, taken knowing
@@ -1130,6 +1366,67 @@ const TONE: Record<Tone, string> = {
   quiet: "text-muted-foreground",
 };
 
+/** The filled segment of the slip bar, in the verdict's own tone. */
+const TONE_DOT: Record<Tone, string> = {
+  good: statusAccent({ category: "done" }).dot,
+  bad: statusAccent({ category: "cancelled" }).dot,
+  warn: accentForHue("amber").dot,
+  quiet: "bg-muted-foreground/60",
+};
+
+/**
+ * WS-27bn R3a — the plan against the forecast, as one range.
+ *
+ * The track runs from today to the later date. The segment between the plan
+ * and the forecast is the slip, in the verdict's tone. `slipRange` places
+ * both ends, and the text below says both dates and the slip, because a bar
+ * alone does not say which end is which.
+ */
+function SlipBar({ range }: { range: SlipRange }) {
+  return (
+    <div className="mb-3">
+      <div
+        className="relative h-2 w-full rounded-full bg-muted"
+        role="img"
+        aria-label={range.title}
+        title={range.title}
+      >
+        <div
+          className={`absolute inset-y-0 rounded-full ${TONE_DOT[range.tone]}`}
+          style={{ left: `${range.start}%`, width: `${range.width}%` }}
+        />
+        <span
+          className="absolute -top-0.5 h-3 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+          style={{ left: `${range.plan}%` }}
+          aria-hidden
+        />
+        <span
+          className={`absolute -top-0.5 size-3 -translate-x-1/2 rounded-full border-2 border-card ${TONE_DOT[range.tone]}`}
+          style={{ left: `${range.forecast}%` }}
+          aria-hidden
+        />
+      </div>
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className="h-3 w-0.5 rounded-full bg-foreground" aria-hidden />
+          Plan {range.planLabel}
+          {range.planPassed && " (passed)"}
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className={`size-2 rounded-full ${TONE_DOT[range.tone]}`}
+            aria-hidden
+          />
+          Forecast {range.forecastLabel}
+        </span>
+        <span className={`ml-auto font-medium ${TONE[range.tone]}`}>
+          {range.slip}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Verdict({ label, line }: { label: string; line: OutlookLine }) {
   return (
     <div className="min-w-0">
@@ -1156,6 +1453,9 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
   // `isDrawableOutlook` carries the four times this has happened here.
   if (!isDrawableOutlook(data)) return null;
   const verdict = headlineVerdict(data);
+  // WS-27bn R3a. `null` when either date is absent, so the verdicts with no
+  // forecast date draw no bar. The headline above already says why.
+  const range = slipRange(data);
   const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);
   const capacity = capacityLine(data.capacity);
@@ -1179,6 +1479,8 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
           {verdict.detail}
         </p>
       </div>
+
+      {range && <SlipBar range={range} />}
 
       {/* ⚠️ The two forecasts disagreed by five months on screen and nothing
           said so. Both were calm coloured dates in the same size, and the

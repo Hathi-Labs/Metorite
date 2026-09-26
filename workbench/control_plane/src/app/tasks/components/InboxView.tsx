@@ -12,6 +12,8 @@ import {
   KeyboardEvent,
 } from "react";
 import FilterPills from "@/components/FilterPills";
+import { EmptyState } from "@/components/EmptyState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { taskDeepLink } from "@/app/projects/lib/card";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import {
@@ -48,11 +50,14 @@ import {
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { promoteAllowed } from "../lib/promote";
+import { inboxEmptyCopy } from "../lib/emptyState";
+import { DELETE_LABEL, MIXED_LABEL, REMOVE_LABEL } from "../lib/removal";
 import { InboxCard } from "./InboxCard";
 import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
+import { openShortcutsSheet } from "./TasksShortcuts";
 import { CaptureProjectChip } from "./CaptureProjectChip";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
@@ -207,7 +212,6 @@ export function InboxView() {
   // selection from fresh state and an anchor from stale state.
   const [selection, setSelection] = useState<SelectionState>(NO_SELECTION);
   const selectedIds = selection.selected;
-  const [showShortcuts, setShowShortcuts] = useState(false);
   // Inline editor for the dup-notice "rename existing" affordance: seeded with
   // the new capture's (usually clearer) title.
   const [dupRenaming, setDupRenaming] = useState(false);
@@ -268,11 +272,13 @@ export function InboxView() {
     if (selectedBoard.length) bulkDispose(selectedBoard, "TRASH");
     clearSelection();
   };
+  // One name per act (`removal.ts`): "Delete" for my own task, "Remove from
+  // my lists" for a board task. It read "Not mine" here until 2026-09-24.
   const removeLabel = selectedBoard.length
     ? selectedMine.length
-      ? "Remove"
-      : "Not mine"
-    : "Delete";
+      ? MIXED_LABEL
+      : REMOVE_LABEL
+    : DELETE_LABEL;
 
   // ── keyboard navigation + triage over the visible list ──
   //
@@ -446,24 +452,28 @@ export function InboxView() {
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
-        <h1 className="text-sm font-bold text-foreground">Inbox</h1>
+        <h2 className="text-sm font-medium text-foreground">Inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
-      {/* Capture header — desktop only, ONE compact full-width row (mobile
-          captures via the bottom-nav button): title · capture box · attach ·
-          mind sweep · shortcuts. The old centered hero cost three stacked
-          rows before the list started; full width also matches Next Actions
-          and lets long captures breathe. */}
+      {/* Capture header — desktop only (mobile captures via the bottom-nav
+          button): title · capture box · attach · mind sweep · shortcuts.
+          ⚠️ The row WRAPS, the way Projects' action row does. Below `xl` the
+          capture box takes a full-width row of its own under the title and
+          the tools. On one row at 768px the box shrank to zero width, because
+          the attachments, Mind sweep and the shortcuts button do not shrink.
+          `xl` and not `lg`: at a 1024px window the sidebar leaves the pane
+          about 780px, and one row there left the text field under 280px.
+          Fence: `inboxCaptureRow.test.ts`. */}
       <div className="hidden shrink-0 border-b border-border bg-card sm:block">
-        <div className="flex items-center gap-2.5 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
-            <h1 className="text-base font-bold text-foreground">Inbox</h1>
+            <h2 className="text-sm font-medium text-foreground">Inbox</h2>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
-          <div className="tech-transition flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50">
+          <div className="tech-transition order-last flex min-w-0 flex-1 basis-full items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50 xl:order-none xl:basis-0">
             <AppIcon name="Plus" className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               value={value}
@@ -498,7 +508,9 @@ export function InboxView() {
           </div>
           {/* Context attachments: photo/file/link kept WITH the capture —
               icon triggers inline; pending chips appear above the icons. */}
-          <div className="max-w-[320px] shrink-0">
+          {/* `ml-auto` below `xl` puts the tools at the right end of the
+              title row. At `xl` the capture box fills that space instead. */}
+          <div className="ml-auto max-w-[320px] shrink-0 xl:ml-0">
             <AttachmentComposer compact attachments={pendingAtts} onChange={setPendingAtts} />
           </div>
           <button
@@ -510,36 +522,19 @@ export function InboxView() {
             <AppIcon name="Wind" className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Mind sweep</span>
           </button>
+          {/* A pointer to the `?` sheet, which replaced the inline legend
+              (continuity P3). The sheet is printed from the key map in
+              `lib/shortcuts.ts`, so it cannot drift from the handlers. */}
           <button
             type="button"
-            onClick={() => setShowShortcuts((v) => !v)}
-            title="Keyboard shortcuts (press C to capture from anywhere)"
-            aria-pressed={showShortcuts}
+            onClick={openShortcutsSheet}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
             className="tech-transition inline-flex shrink-0 items-center rounded-md border border-border p-1.5 text-muted-foreground hover:border-primary/40 hover:text-foreground"
           >
             <AppIcon name="Keyboard" className="h-3.5 w-3.5" />
           </button>
         </div>
-        {showShortcuts && (
-          <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
-            <Sc k="C">capture</Sc>
-            {/* WS-27ad — was "j / k". The arrows are the one movement idiom
-                across both task apps now; a vim walk on this screen only was a
-                shortcut nobody could carry anywhere else. */}
-            <Sc k="↑ / ↓">move</Sc>
-            <Sc k="↵">clarify</Sc>
-            <Sc k="e">edit</Sc>
-            <Sc k="x">select</Sc>
-            <Sc k="t">delete · not mine</Sc>
-            <Sc k="m">move to project</Sc>
-            <Sc k="o">open on board</Sc>
-            <Sc k="s">someday</Sc>
-            <Sc k="r">reference</Sc>
-            <Sc k="2">do now</Sc>
-            <Sc k="u">undo</Sc>
-            <Sc k="esc">clear</Sc>
-          </div>
-        )}
       </div>
 
       {/* Capture undo — kept out of the hero so it shows on mobile too */}
@@ -797,32 +792,14 @@ export function InboxView() {
       <div className="flex-1 overflow-y-auto">
         <div className="w-full px-4 py-4 sm:py-3">
           {loading ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="Loader2" className="h-6 w-6 animate-spin text-muted-foreground/60" />
-              <p className="text-xs text-muted-foreground">Loading your inbox…</p>
-            </div>
+            // The shared skeleton, as Projects draws a load.
+            <SkeletonRows count={6} />
           ) : showTickler ? (
             <TicklerList items={tickler} onUndefer={undeferItem} />
-          ) : !hasRows ? (
-            /* Inbox zero only when BOTH kinds are empty (S6g). */
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="CheckCircle2" className="h-9 w-9 text-success/70" />
-              <p className="text-sm font-medium text-foreground">
-                Inbox zero. Mind like water.
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {processed > 0
-                  ? `You processed ${processed} item${processed === 1 ? "" : "s"} this session. 🎉`
-                  : "Nothing left to process. Capture the next thing above."}
-              </p>
-            </div>
-          ) : visible.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="SearchX" className="h-8 w-8 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">
-                Nothing in the inbox matches this filter.
-              </p>
-            </div>
+          ) : !hasRows || visible.length === 0 ? (
+            /* Inbox zero only when BOTH kinds are empty (S6g). The shared
+               box, with this app's copy (`lib/emptyState.ts`). */
+            <InboxEmptyState empty={!hasRows} processed={processed} />
           ) : (
             <>
               {(search || dateFilter !== "all" || sourceFilter !== "all") && (
@@ -868,6 +845,21 @@ export function InboxView() {
 
       <ClarifyModal />
     </div>
+  );
+}
+
+/** Inbox zero, or "the filter hid everything": the shared box, this app's
+ *  copy. The inbox filter row has no Clear control, so there is no action. */
+function InboxEmptyState({ empty, processed }: { empty: boolean; processed: number }) {
+  const copy = inboxEmptyCopy({ empty, processed });
+  return (
+    <EmptyState
+      icon={copy.icon}
+      message={copy.message}
+      hint={copy.hint}
+      tone={copy.tone}
+      className="py-16"
+    />
   );
 }
 
@@ -943,16 +935,5 @@ function BulkBtn({
       <Icon className="h-3.5 w-3.5" />
       {children}
     </button>
-  );
-}
-
-function Sc({ k, children }: { k: string; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1">
-      <kbd className="rounded border border-border px-1 py-0.5 font-mono text-[9px] text-foreground">
-        {k}
-      </kbd>
-      {children}
-    </span>
   );
 }

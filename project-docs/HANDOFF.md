@@ -425,22 +425,19 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1 WS-31 (i)
 - **Added:** 2026-09-23 · the Jev planning session
 
-### H-163 · My Tasks: only S6g is left of the cutover · [AGENT]
-- **Check:** `gh pr list --head my-tasks-inbox --state merged` → an empty
-  list means S6g has not merged. Delete this entry when it has merged and the
-  deploy serves it.
-- **What is left.** S6g, one inbox and one promote path (branch
-  `my-tasks-inbox`). `specs/my_tasks_cutover.md` §5 S6g holds its build
-  record. Every other slice is merged. S8 PR 2 dropped the old store
-  (migration 217, in the production ledger since 2026-09-24 05:40 UTC). S9
-  moved the code names (#436, `ec979545`).
-- **Owed by a person.** A signed-in member captures in My Tasks and sees the
-  task in Projects in the same page load (§6 step 9).
-- **Why:** owner directive 2026-09-23 (D73), and the inbox directive of
-  2026-09-24. The spec's §5 holds the slices in order.
+### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
+- **Check:** a signed-in member opens My Tasks on app.metorite.com. The
+  member picks a project with the capture chip, or types `#<project>`, and
+  captures a task. The task shows on that project's board in Projects without
+  a page reload. Delete this entry when the member sees it.
+- **Why a person.** An agent cannot sign in. Every slice of the cutover is
+  merged and served. S6g is the last one (#454, `3c1a8512`, served
+  2026-09-24). `specs/my_tasks_cutover.md` §6 step 9 names this check.
+- **If it fails.** Record what the member saw, and open an [AGENT] entry for
+  the fix.
 - **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
 - **Added:** 2026-09-23 · the My Tasks planning session. **Re-cut**
-  2026-09-24 when S8 and S9 closed H-29 and H-151.
+  2026-09-24 when S6g merged. Only the signed-in check is left.
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
@@ -3213,8 +3210,10 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
 ### H-169 · The outlook's capacity reads only the typed hours, and ignores absences · [AGENT]
-- **Check:** `grep -n "hours_per_week=float(cap.stated_hours)" apps/services/gateway/gateway/routes/projects/analytics.py`
-  → a hit means this is open.
+- **Check:** `grep -n "hours_per_week=float(cap.stated_hours" apps/services/gateway/gateway/routes/projects/analytics.py`
+  → a hit means this is open. The old pattern ended in `)`, and the line
+  now reads `float(cap.stated_hours or 0)`. So the old Check found nothing
+  and read the defect as closed (fixed 2026-09-25, WS-27bm S10).
 - **Why:** `/projects/analytics/outlook` forecasts a finish date from
   `people.capacity_hours_per_week` only. The docstring names `working_hours`
   as the fallback, but the code only counts it. Absences are not subtracted.
@@ -3223,6 +3222,18 @@ line — never reclaim a number by deleting the other entry.
 - **Do:** Compute the outlook's hours through `person_schedule` and
   `working_hours_between`, as `routes/people/dashboard.py` does. Keep the typed
   figure as the override that `capacity_disagreement` already reports.
+- **The owner's answer, 2026-09-25.** The Outlook uses each person's working
+  schedule for every viewer. Absences reduce the hours only for a viewer
+  with `admin:members:read`, as on Capacity. A viewer without that grant
+  sees a forecast that ignores leave.
+- **Two rules are still open for the build.** (1) The schedule wins over the
+  typed figure. That is the S7a precedent, so write it down in the spec
+  before the code. (2) Decide how dated hours become a weekly rate. The
+  schedule gives hours between two dates, and the forecast divides by hours
+  each week.
+- **The fix also changes the WS-27bn reports `outlook` section.** That
+  section calls `outlook_body` (`routes/projects/reports.py`), so the report
+  and the Analytics panel change together. Run the reports tests too.
 - **Authority:** `specs/projects_ai_chat.md` §13.8 · `people_center_app.md` §5.7
 - **Added:** 2026-09-23 · the Projects chat team-intelligence design
 

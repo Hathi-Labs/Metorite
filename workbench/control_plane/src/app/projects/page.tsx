@@ -14,6 +14,8 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
+import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
+import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import { useToast } from "@/components/ui/Toast";
 import { PROJECT_STATES } from "@/lib/statusAccent";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
@@ -63,6 +65,8 @@ import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
 import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import { deleteTaskCopy, deleteTasksCopy } from "./lib/deleteCopy";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
@@ -483,44 +487,13 @@ function ProjectNav({
 }
 
 /**
- * The five modes as a toolbar control (desktop) and as a drawer sheet (phone).
- *
- * Deliberately NOT the shared `<Tabs>`: that is a page-level bar carrying its
- * own `px-4 sm:px-6 py-3` and bottom border, and this sits *inside* one such
- * header. Same active token as every other nav in the house.
+ * The canvases, for the shared view switcher (`components/ModeSwitch.tsx`).
+ * My Tasks draws its List / Board switch with the same control.
  */
-function ModeSwitch({
-  mode,
-  onPick,
-  layout,
-}: {
-  mode: ViewMode;
-  onPick: (next: ViewMode) => void;
-  layout: "toolbar" | "sheet";
-}) {
-  const sheet = layout === "sheet";
-  return (
-    <div
-      className={sheet ? "flex flex-col gap-0.5" : "flex shrink-0 items-center gap-1"}
-      role="group"
-      aria-label="View mode"
-    >
-      {VIEW_MODES.map((entry) => (
-        <Button
-          key={entry.id}
-          variant="ghost"
-          size={sheet ? "lg" : "sm"}
-          selected={mode === entry.id}
-          icon={entry.icon}
-          onClick={() => onPick(entry.id)}
-          className="capitalize"
-        >
-          {entry.id}
-        </Button>
-      ))}
-    </div>
-  );
-}
+const MODE_OPTIONS: readonly ModeOption<ViewMode>[] = VIEW_MODES.map((entry) => ({
+  id: entry.id,
+  icon: entry.icon,
+}));
 
 function ProjectsWorkspace() {
   const searchParams = useSearchParams();
@@ -876,6 +849,11 @@ function ProjectsWorkspace() {
   // WS-27r — the search palette. Held at the page rather than in a view,
   // because the whole point is that it works from wherever you already are.
   const [searching, setSearching] = useState(false);
+  // The delete waiting for the shared ConfirmDialog: one task, or the bulk
+  // bar's selection. Null while no dialog is up.
+  const [confirmingDelete, setConfirmingDelete] = useState<
+    { kind: "one"; taskId: string } | { kind: "bulk"; ids: string[] } | null
+  >(null);
   // WS-27ab — the `?` sheet, printed from the same command registry the
   // palette and the key sequences read.
   const [showingShortcuts, setShowingShortcuts] = useState(false);
@@ -1489,6 +1467,7 @@ function ProjectsWorkspace() {
           />
         ) : (
           <ModeSwitch
+            modes={MODE_OPTIONS}
             mode={mode}
             layout="sheet"
             onPick={(next) => {
@@ -2067,18 +2046,19 @@ function ProjectsWorkspace() {
    * ⚠️ **Delete is confirmed and the rest are not.** Archiving fifty tasks is
    * undone by restoring fifty tasks, and the Restore button is on the same
    * bar. Deleting fifty is undone by nothing.
+   *
+   * The confirmation is the shared `ConfirmDialog` (it was `window.confirm`
+   * until 2026-09-24). A delete without `confirmedIds` only opens it, and
+   * the dialog's confirm calls back here with the ids it showed.
    */
-  async function applyBulkAction(action: "archive" | "unarchive" | "delete") {
-    const ids = [...picked];
+  async function applyBulkAction(
+    action: "archive" | "unarchive" | "delete",
+    confirmedIds?: string[],
+  ) {
+    const ids = confirmedIds ?? [...picked];
     if (ids.length === 0) return;
-    if (
-      action === "delete" &&
-      !window.confirm(
-        `Delete ${ids.length} task${ids.length === 1 ? "" : "s"}? This cannot ` +
-          "be undone.\n\nAny subtasks they have are kept and moved up a " +
-          "level, not deleted.",
-      )
-    ) {
+    if (action === "delete" && !confirmedIds) {
+      setConfirmingDelete({ kind: "bulk", ids });
       return;
     }
     setBulkBusy(true);
@@ -2471,8 +2451,22 @@ function ProjectsWorkspace() {
   // Anything modal is up. Sequences are suppressed under it: `g` while a
   // dialog is open must not navigate the page out from under a half-filled
   // form.
+  const doomedTask =
+    confirmingDelete?.kind === "one"
+      ? tasks.find((t) => t.id === confirmingDelete.taskId)
+      : undefined;
+  const deleteCopy =
+    confirmingDelete?.kind === "bulk"
+      ? deleteTasksCopy(confirmingDelete.ids.length)
+      : deleteTaskCopy(
+          doomedTask
+            ? { title: doomedTask.title, subtasks: doomedTask.subtasks?.total ?? 0 }
+            : null,
+        );
+
   const overlayOpen =
     searching ||
+    Boolean(confirmingDelete) ||
     showingShortcuts ||
     Boolean(managingFields) ||
     Boolean(managingTags) ||
@@ -2771,19 +2765,16 @@ function ProjectsWorkspace() {
    * its children — `parent_task_id` SET NULLs — so they survive at the top
    * level. Somebody who expects a cascade would otherwise delete a parent to
    * be rid of a subtree and find the subtree still there, or, worse, hesitate
-   * to delete anything because they cannot tell which it does.
+   * to delete anything because they cannot tell which it does. The words
+   * are `deleteTaskCopy`'s, drawn by the shared `ConfirmDialog`.
+   *
+   * Without `confirmed` this only opens the dialog. Its confirm calls back.
    */
-  async function deleteTaskById(taskId: string) {
-    const doomed = tasks.find((t) => t.id === taskId);
-    const kids = doomed?.subtasks?.total ?? 0;
-    const ok = window.confirm(
-      `Delete “${doomed?.title ?? "this task"}”? This cannot be undone.` +
-        (kids
-          ? `\n\nIts ${kids} subtask${kids === 1 ? "" : "s"} will be kept and ` +
-            "moved up a level, not deleted."
-          : ""),
-    );
-    if (!ok) return;
+  async function deleteTaskById(taskId: string, confirmed = false) {
+    if (!confirmed) {
+      setConfirmingDelete({ kind: "one", taskId });
+      return;
+    }
     try {
       const done = await projectsApi.deleteTask(taskId);
       await refreshRef.current();
@@ -3914,6 +3905,20 @@ function ProjectsWorkspace() {
         onConfirm={(project) => void deleteNode(project)}
       />
 
+      {/* One delete confirmation, shared with My Tasks. The words are this
+          app's own and true for it: a Projects delete is permanent. */}
+      <ConfirmDialog
+        open={Boolean(confirmingDelete)}
+        {...deleteCopy}
+        onCancel={() => setConfirmingDelete(null)}
+        onConfirm={() => {
+          const pending = confirmingDelete;
+          setConfirmingDelete(null);
+          if (pending?.kind === "one") void deleteTaskById(pending.taskId, true);
+          if (pending?.kind === "bulk") void applyBulkAction("delete", pending.ids);
+        }}
+      />
+
       <SearchPalette
         open={searching}
         onClose={() => setSearching(false)}
@@ -4020,20 +4025,17 @@ function ProjectsWorkspace() {
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
-        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
-          <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-            {title}
-          </h1>
-          <div className="flex shrink-0 items-center gap-0.5">
-            {projectActions(true)}
-            <NotificationBell onOpenTask={openTaskById} />
-          </div>
-        </div>
+        <AppTopBar
+          compact
+          title={title}
+          actions={projectActions(true)}
+          tools={<NotificationBell onOpenTask={openTaskById} />}
+        />
 
         {workArea}
 
         {taskPanel ? (
-          // The panel's own `max-w-md` is a docked-column width; on a phone the
+          // The panel's own `max-w-sm` (384px) is a docked-column width; on a phone the
           // surface IS the screen, so the cap is lifted here rather than in the
           // panel, which knows nothing about the shell. `z-[60]` clears the
           // bottom nav (z-50); the panel closes from its own ✕.
@@ -4050,59 +4052,47 @@ function ProjectsWorkspace() {
   // ── Desktop ──────────────────────────────────────────────────────────────
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
-      {/* The house shell: a slim h-10 bar carrying the rail toggle, a divider,
-          the app's name and the app-LEVEL actions. Same shape as Tasks and
-          Email; what used to live here — six unrelated controls in one row —
-          is now split between this bar (app scope) and the header below
-          (project scope). */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
-        <Button
-          variant={railOpen ? "secondary" : "ghost"}
-          size="icon-sm"
-          icon={railOpen ? "PanelLeftClose" : "PanelLeftOpen"}
-          aria-label={railOpen ? "Hide the project tree" : "Show the project tree"}
-          aria-pressed={railOpen}
-          onClick={() => setRailOpen((v) => !v)}
-        />
-        <div className="h-4 w-px bg-border" />
-        {/* The page's <h1>. The project name below is an <h2>, as it was. */}
-        <h1 className="shrink-0 text-xs font-medium text-muted-foreground">Projects</h1>
-        <span className="min-w-0 truncate text-xs text-muted-foreground">
-          {center ? `${center} Center's slice` : "Every space you can see"}
-        </span>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="Search"
-            onClick={() => setSearching(true)}
-            title="Search every project (⌘K)"
-          >
-            Search
-          </Button>
-          <NotificationBell onOpenTask={openTaskById} />
-          {/* The assistant sits at the right end of the top bar, where My
-              Tasks puts it (owner ask, 2026-09-24). One component for both
-              apps. It lived in the project header's action row until then,
-              so a space, a folder, Analytics, Reports and the chat slot had
-              no button at all. Fence: `components/AssistantToggle.test.ts`. */}
-          {CHAT_LIVE ? (
-            <AssistantToggle
-              open={assistant.pressed}
-              title={assistant.title}
-              onToggle={() => {
-                const { press } = assistant;
-                if (press.app !== undefined) setApp(press.app);
-                if (press.closeTask) setOpenTask(null);
-                if (press.docked !== undefined) {
-                  setChatDocked(press.docked);
-                  writeChatDocked(press.docked);
-                }
-              }}
-            />
-          ) : null}
-        </div>
-      </div>
+      {/* The house shell: the shared app bar (`components/AppTopBar.tsx`),
+          the same component My Tasks renders. It carries the rail toggle,
+          the app's name and the app-LEVEL tools. What used to live here —
+          six unrelated controls in one row — is split between this bar (app
+          scope) and the header below (project scope). The page's h1 is
+          the bar's. The project name below is an <h2>, as it was. */}
+      <AppTopBar
+        rail={{
+          open: railOpen,
+          onToggle: () => setRailOpen((v) => !v),
+          noun: "the project tree",
+        }}
+        title="Projects"
+        subtitle={center ? `${center} Center's slice` : "Every space you can see"}
+        tools={
+          <>
+            <AppSearchButton onOpen={() => setSearching(true)} />
+            <NotificationBell onOpenTask={openTaskById} />
+            {/* The assistant sits at the right end of the top bar, where My
+                Tasks puts it (owner ask, 2026-09-24). One component for both
+                apps. It lived in the project header's action row until then,
+                so a space, a folder, Analytics, Reports and the chat slot had
+                no button at all. Fence: `components/AssistantToggle.test.ts`. */}
+            {CHAT_LIVE ? (
+              <AssistantToggle
+                open={assistant.pressed}
+                title={assistant.title}
+                onToggle={() => {
+                  const { press } = assistant;
+                  if (press.app !== undefined) setApp(press.app);
+                  if (press.closeTask) setOpenTask(null);
+                  if (press.docked !== undefined) {
+                    setChatDocked(press.docked);
+                    writeChatDocked(press.docked);
+                  }
+                }}
+              />
+            ) : null}
+          </>
+        }
+      />
 
       <SidePanelFitContext.Provider value={panelFits}>
       <div ref={rowRef} className="flex min-h-0 flex-1 overflow-hidden">
@@ -4177,6 +4167,7 @@ function ProjectsWorkspace() {
               // chat column (measured at 1440, 2026-09-23).
               <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
                 <ModeSwitch
+                  modes={MODE_OPTIONS}
                   mode={mode}
                   layout="toolbar"
                   onPick={(next) => setChosenMode(next)}

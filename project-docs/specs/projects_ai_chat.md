@@ -9,7 +9,8 @@ intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
 2026-09-23. S7b (fit and rebalancing), S7c (conflicts) and S7d (plan with
 capacity, no phases) were built 2026-09-24. S8 (documents and downloads
 from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
-was built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
+S10 (chat follow-ups, §16) was built 2026-09-25.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -695,7 +696,8 @@ Each slice is one pull request. Each one is useful alone.
 | **S7d · Plan with capacity** — ✅ **BUILT 2026-09-24** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
 | **S8 · Documents and downloads** — ✅ **BUILT 2026-09-24** | A written document opens beside the board, as in `/chat` · the panel follows the session · Download PDF for a Markdown or HTML file · Download and Download PDF for a saved report, in the Reports app and on the chat's report card · the Files section of the instructions (§14) | AGENT-SAFE |
 | **S9 · Entity pills** — ✅ **BUILT 2026-09-24** | A task, a project, a person, a status and a tag in a chat answer draw as a pill. A task or a project opens in this tab. A pill links only on exactly one match in the same message's tool results. The link colour, the made-up stat delta, the missing space before bold and the date that wrapped (§15) | AGENT-SAFE |
-| **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
+| **S7e · On-the-fly analysis** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/dataset` and the read tool `task_dataset`: a capped table, or the server's groups over the full set. The rule for numbers the chat computes itself (§13.7, §10.7) | AGENT-SAFE |
+| **S10 · Chat follow-ups** — ✅ **BUILT 2026-09-25** | The checkpoint names its agent · the plan card edits after · a lost project write gives a receipt · the Throughput pin, if S7e is on main (§16) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -867,6 +869,56 @@ Each slice is one pull request. Each one is useful alone.
 11. The status header, the §10 row, the board row and the INDEX line say that
     S7d is built (R4).
 
+### 10.7 Acceptance — S7e
+
+Each item maps to the §13.7 rule with the same number.
+
+**Done when:**
+1. `GET /projects/analytics/dataset` lives in `analytics_dataset.py` and
+   writes nothing. `task_dataset` is class A in `reads.py`, and it issues only
+   that GET. `instructions.md` forbids `write_artifact`, `run_script` and
+   `code_task` over the rows, and a test pins the sentence. The spec calls
+   the fence advisory.
+2. `state=open` uses `load_open_where` and `load_params`, and `closed` and
+   `all` use Throughput's scope with `archived_at IS NULL`. An R8 test shows
+   that the open total equals the `analytics/load` total for one scope. An
+   unreadable project gives 404, and a hidden project's tasks are absent from
+   the portfolio.
+3. A source test asserts that the module imports `cycle_cte_sql` and has no
+   `completed_at` subtraction. An R8 test shows that the median and the p90
+   equal Throughput's figures for the same tasks.
+4. An unknown column gives 422. `columns=` returns only the named columns, and
+   the full set carries the tag names and the status names.
+5. An R8 test proves that the id and the title of a hidden blocker are absent
+   from the body, and that a visible blocker is present.
+6. The default limit is 200. A limit above 500 or below 1 gives 422. An R8
+   test shows `total`, `truncated` and the stable order at the cap.
+7. An unknown `group_by`, an unknown `measure` or an unknown filter key gives
+   422. R8 tests check the group values against hand-computed figures, the
+   median and the p90 over the full set, and the HR gate. Without the grant,
+   the value keys are absent for `assignee` with `estimate_sum` or a cycle
+   measure. An agent group carries `agent: true`. Without the grant, no row
+   has a `cycle_hours` or an `estimate_mins` key, also for `full_id,cycle_hours`
+   alone, and `hidden_columns` names them. With the grant, every column comes
+   back. Without the grant, a tag that only one person uses hides its value
+   and keeps `n`. A group of 3 people shows its value, and the HR viewer
+   sees every value. Mutations that restore the per-request rule, set K to 1
+   or drop the K rule each fail an R8 test.
+8. The tool trailer tells the model not to compute a figure over the whole
+   set when `truncated=yes`. `instructions.md` carries the two labels, and a
+   test pins them.
+9. The three old sentences are gone from `instructions.md`, and tests pin the
+   new ones. The S9 tests still pass.
+10. Hermetic tests pin the header line, the pipe cells, the 80-character cut,
+    the fence and the trailer, in both modes.
+11. `__all__`, `own_tool_scope` and MANIFEST carry `task_dataset`. The
+    `agents.py` description names capabilities, not tools. So it names the
+    capability ("a table of tasks or the server's exact groups over them")
+    and not the tool name (corrected in S10, §16).
+    `test_projects_chat_coverage.py` and `test_projects_agent.py` pass.
+12. The status header, the §10 row, the board row and the INDEX line say that
+    S7e is built (R4).
+
 ---
 
 ## 11. Verification
@@ -950,6 +1002,35 @@ mode, at compact density, under a changed accent and at 390px. The slice
 creates the four new vitest files, `lib/remarkEntityPills.ts`,
 `lib/entityIndex.ts`, `lib/projectToolRows.ts`, `ui/EntityPill.tsx` and
 `ChatEntityPill.tsx`.
+
+For S7e, with `TENANT_LADDER_DATABASE_URL` set:
+
+```
+uv run pytest tests/unit/test_projects_analytics_dataset.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py tests/unit/test_projects_agent_writes.py
+```
+
+S7e changes no frontend file, so it has no vitest command. If a later change
+touches the chart templates, run `npx tsc --noEmit` and
+`npx vitest run src/components/genUITemplates.test.ts` in
+`workbench/control_plane`. The slice creates
+`routes/projects/analytics_dataset.py` and
+`tests/unit/test_projects_analytics_dataset.py`. The tool lives in
+`reads.py`.
+
+For S10, with `DATABASE_URL` and `TENANT_LADDER_DATABASE_URL` set to the
+same tenant database. `test_rooms.py` reads `DATABASE_URL`, and its R8 tests
+skip without it:
+
+```
+uv run pytest tests/unit/test_projects_agent_writes.py tests/unit/test_projects_agent.py tests/unit/test_projects_chat_coverage.py tests/unit/test_genui_catalog_lockstep.py tests/unit/test_projects_plan_preview.py tests/unit/test_rooms.py tests/unit/test_chat_hardening.py tests/unit/test_projects_analytics_throughput.py
+uv run ruff check apps/skills/skill-projects/skill_projects/forms.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/lib/assistantCheckpoint.test.ts src/app/projects/lib/planCard.test.ts src/components/genUITemplates.test.ts src/components/entityPillsAuthor.test.ts src/components/entityPillsGate.test.ts src/lib/theme/`.
+Then look at the "Waits on" control on the plan card in light mode, at
+compact density, under a changed accent, and beside the board. The slice
+creates `lib/assistantCheckpoint.ts` and `lib/assistantCheckpoint.test.ts`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -1447,15 +1528,182 @@ dispatch named five gaps, and three of them change what a member sees.
 ### 13.7 S7e — On-the-fly analysis
 
 `task_dataset(project_id, filters, columns)` returns a compact table of up to
-500 tasks in the viewer's scope. The columns are number, title, project, status
-category, assignees, estimate, start, due, completed, created and blockers. The
-agent computes an uncommon figure from it, for example cycle time by tag or
-the share of work each stage holds.
+500 tasks in the viewer's scope. The columns are in rule 4. The agent uses it
+for an uncommon question, for example cycle time by tag or the share of work
+each stage holds. For a figure over the whole set, the server groups the rows
+and computes the figure (rule 7). The chat explains the figure. It does not add
+rows up itself.
 
 **The rule for a number the chat computes.** The answer says that the chat
 computed it, and from how many rows. If the table was truncated, the chat does
 not compute a total from it. A figure that people ask for twice is a
 candidate for a server read and a report section, and the chat says so.
+
+**The owner's answers, 2026-09-24.** The S7e audit returned NO-GO, because
+three product decisions were open. The owner answered all three on
+2026-09-24.
+
+- **O1 · No code execution over member data.** The chat writes no dataset file
+  and runs no script. The server computes. The instructions forbid
+  `write_artifact`, `run_script` and `code_task` over the dataset rows. **This
+  fence is ADVISORY** (R7). Those three are floor tools, and a tool scope
+  cannot remove them. No test can stop the model from calling them.
+- **O2 · The server groups the data.** The route takes an optional `group_by`
+  from an allowlist and a `measure` from an allowlist. The server returns
+  exact figures. The model picks figures and explains them. It never adds
+  rows up itself.
+- **O3 · Per-person counts for every member, per-person speed for admins
+  only.** A member may group by assignee to count tasks. `estimate_sum` and
+  the two cycle measures, grouped by assignee, need `can_read_hr_fields`
+  (`admin:members:read`). Without the grant, those keys are ABSENT, not null,
+  and the response says `hr_visible: false`. This is §13.2 rule 3.
+- **O4 · Token cost** is advisory. A full table of 500 rows costs many tokens.
+  The tool asks for a short default column set, and a grouped read costs one
+  line for each group. H-42 prices the tiers. No slice measures this cost.
+
+**Rules for the build.** The spec-auditor wrote these on 2026-09-24, after the
+owner's answers. They follow the S7c and S7d precedent.
+
+1. **One read and no file.** The route is
+   `GET /projects/analytics/dataset?project_id=&include_subtree=&state=&columns=&limit=&group_by=&measure=&<filters>`,
+   in `routes/projects/analytics_dataset.py`. It is the class A tool
+   `task_dataset` in `reads.py`, with the manifest row
+   `Route("GET", "/projects/analytics/dataset", "task_dataset", "A")`. The
+   tool writes nothing. The instructions forbid `write_artifact`,
+   `run_script` and `code_task` over its rows (ADVISORY, O1).
+2. **The scope is Load's or Throughput's, never a third.** `state=open` is
+   exactly `load_open_where` plus `load_params`. That carries the D-PM-32(b)
+   stopped-project exclusion. `closed` and `all` use Throughput's scope
+   (`scope_clause`, `task_visibility_clause` and the triage exclusion), with
+   `archived_at IS NULL`. A missing `project_id` means the portfolio. An
+   unreadable project gives 404. An R8 test checks that the open count
+   equals the `analytics/load` total for the same scope.
+3. **One cycle time.** `cycle_hours` and the completion come from
+   `cycle_cte_sql`: the first `in_progress` to `done` on the activity spine.
+   `completed_at` on the task row clears when a task opens again, so the route
+   never reads it. A source test asserts the import, and that the module has
+   no `completed_at` subtraction. A median and a p90 never become a mean.
+4. **Columns come from an allowlist of 17.** The first nine are `number`,
+   `full_id`, `title`, `project`, `root_project`, `status`,
+   `status_category`, `type` and `tags`. The other eight are `assignees`,
+   `estimate_mins`, `start`, `due`, `completed_at`, `created_at`,
+   `cycle_hours` and `blockers`. `columns=` picks a subset. An
+   unknown name gives 422. The table includes the tag names and the status
+   names, because the examples above need them.
+5. **Blockers follow §13.5 rule 4.** Only `blocks` links count. The blocker
+   must pass visibility and must not be archived. A blocker that the viewer
+   cannot see gives nothing. An R8 test proves that the id and the title of a
+   hidden blocker are absent.
+6. **The cap is visible.** The default limit is 200 and the maximum is 500. A
+   limit above 500 gives 422. The sort is stable on `created_at`, then `id`.
+   `total` and `truncated` are always present. There is no second page.
+7. **Group on the server when the chat asks (O2 and O3).** `group_by` is one
+   of `tag`, `status`, `status_category`, `project`, `assignee`, `type`,
+   `created_week` and `completed_week`. `measure` is one of `count`,
+   `estimate_sum`, `cycle_hours_median` and `cycle_hours_p90`. An unknown
+   value gives 422. With `group_by` set, the response returns groups
+   (`key`, `label`, `value`, `n`) and no rows. The server computes the median
+   and the p90 over the full filtered set, not over the capped rows. Take
+   `assignee` with `estimate_sum` or a cycle measure, and a caller without
+   the HR grant. Then the value keys are absent and `hr_visible` is false. A
+   test proves that they are absent. The server marks an agent in an assignee
+   group. **The rows follow O3 too** (fix rounds 1 and 2, 2026-09-24). A
+   row for a caller without the HR grant NEVER carries `cycle_hours` or
+   `estimate_mins`, whatever else the request names. The server drops them
+   and lists them in `hidden_columns`, and the body says `hr_visible: false`.
+   A narrower rule, which dropped them only beside `assignees`, failed to one
+   join. A call for `full_id,cycle_hours` and a call for `full_id,assignees`,
+   joined on the task, give each person's speed. `assignees` stays, and so
+   does `group_by=assignee&measure=count`, because a count per person is
+   for every member. A grouped measure behind an assignee filter hides its
+   value in the same way.
+   **A group of fewer than K = 3 people hides its value** (fix round 2). The
+   server counts the distinct people in each group, and an agent is not a
+   person. It counts only the people whose tasks FEED the measure (round 3).
+   A task with no cycle time adds nothing to a median, and a task with no
+   estimate adds nothing to a sum, so its owner does not count toward K.
+   The server trims and lower-cases each address first. Without the grant, a group with fewer than 3 people carries no
+   `value` and no `measured`, it says `measure_hidden: true`, and it keeps
+   `n`. A tag that only Ana uses, or a project where only Ana works, is
+   Ana's speed under another name. With 3 people, no one member of the
+   group reads another's figure by taking their own out. Cycle time by tag
+   or by stage stays available as a server group under this rule.
+8. **The label rule.** Every figure that the chat derives carries "computed by
+   the assistant from N of M tasks, not an Analytics figure". A
+   `statDashboard` tile title begins "Computed from N tasks". With
+   `truncated=yes`, the chat computes no total, share or median over the
+   whole set, and the tool trailer says so. A grouped figure from the server
+   is labelled "from the server, N tasks". It is exact, so the chat may
+   summarise it.
+9. **The instructions change in the same slice.** Three places forbid or
+   contradict a computed number: the analytics line, the chart line and the
+   numbers rule. The slice writes them again around rules 1, 7 and 8. Tests
+   pin the new
+   sentences, in the `_w1` and `_files_section` style. The S9 «» rules stay.
+10. **The tool output shape.** A header line, then one line for each row,
+    with the cells separated by pipes. Titles and names pass through
+    `client.data()` and are cut to 80 characters. The trailer is
+    `rows=N total=M truncated=yes|no scope=…`. Grouped output is one line for
+    each group, `key · value · n`, and a trailer.
+11. **Lockstep.** `skill_projects.__all__`, `config.json` `own_tool_scope`,
+    the `agents.py` description and MANIFEST change together.
+    `test_projects_chat_coverage.py` and `test_projects_agent.py` pass.
+12. **R4.** The status header, the §10 row, the board row (`work_plan.md`
+    WS-27) and the INDEX line say that S7e is built.
+
+**The filters.** The route takes the `build_task_filters` names, and three
+more: `created_after`, `completed_after` and `completed_before`. Any other key
+gives 422. S7e has no HR column on a row. Hours, skills and absences stay in
+`team_capacity` and `fit_for_task`.
+
+**As built, 2026-09-24.** Nine facts that the rules above do not say.
+- **Where each part lives.** The route is
+  `routes/projects/analytics_dataset.py`, and the tool is `reads.py`
+  `task_dataset`. Throughput's scope now has a name,
+  `analytics.history_where`, and Throughput calls it. That is the S7a
+  precedent for `load_open_where`, and it keeps the scope in one place.
+- **The completion window is 26 weeks**, the widest Throughput window. The
+  route calls `cycle_cte_sql` with that window. A completion that is older
+  has no `completed_at` and no `cycle_hours`, and the response prints
+  `cycle_window`. `completed_at` is the first `done` on the spine. A
+  cancellation is not a completion, so a cancelled task has neither value.
+- **The completion filters read the spine too.** `completed_after` and
+  `completed_before` compare the same `done` that `completed_at` prints.
+- **A blocker is open and not in triage**, as in
+  `analytics_conflicts.dependency_sql`, because a closed blocker blocks
+  nothing. Each blocker carries its id, its number and its title.
+- **`measure` needs `group_by`.** A measure alone gets 422, and the detail
+  names Throughput for one figure over the whole scope.
+- **A group carries `measured` beside `value`**, which is the count of tasks
+  that had a figure. A task with two tags or two assignees is in two groups,
+  so the tool tells the model not to add groups up. The route keeps at most
+  100 groups and prints `groups_total`. A week group reads in date order.
+- **Without the HR grant the server does not compute the hidden value**, and
+  the body says `measure_hidden: true`. The row rule is
+  `analytics_dataset.hr_gate`, and the K rule is `MIN_GROUP_PEOPLE`.
+- **One grouped statement.** The groups, the count of people in each group,
+  `groups_total` and the task total come from ONE statement, so the cycle
+  CTE runs once. The group cap of 100 is a SQL `LIMIT`.
+- **A project name follows the caller's grants** (fix round 2). A task can
+  be visible through its assignee while its project is not. Such a row and
+  such a group print no project name.
+- **The lead-time proxy is accepted** (owner, 2026-09-24). `completed_at`
+  and `created_at` stay on the row for every member, also beside
+  `assignees`. A member can read a lead time for each person from them. The
+  instructions sentence that forbids a person's lead time is the only fence,
+  and it is ADVISORY.
+- **The tool asks for eleven columns by default** (O4). Without the grant
+  the table loses `cycle_hours` and `estimate_mins`, and the tool prints a
+  "Hidden columns" line that says why. It clamps the limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
+  title cannot add a cell.
+- **The S9 pill index does not read these rows.** A dataset row is not the
+  `- #<n> «title»` card line, so its names draw as plain marked text.
+- **Deferred from review round 2** (the owner put S7e on production first).
+  Nobody has measured the token size of a full table. An estimate is 15k
+  to 20k tokens for 200 rows of eleven columns. The `agents.py` description
+  does not name `task_dataset` literally. No test pins Throughput's
+  rendered SQL, so a change to `history_where` fails only the dataset
+  tests. S10 adds that pin (§16.2 rule 10).
 
 ### 13.8 What S7 does not do
 
@@ -1913,3 +2161,147 @@ The skill output does not change. The cards read the «» in the tool output
 - Nobody has looked at the pills in a browser yet. The Playwright review is
   the next step, in light mode, at compact density, under a changed accent,
   in the 26rem rail and at 390px.
+
+## 16. Chat follow-ups (S10)
+
+**Status: BUILT 2026-09-25.** The spec-auditor cleared the scope on
+2026-09-25 (GO-NARROWED, against origin/main `9e5095a2`). S10 closes four
+gaps that the S7d, S7e and S9 reviews left open. Each item is small, and
+each one has its own fence.
+
+### 16.1 What S10 builds
+
+1. **The checkpoint names its agent.** The chat translator
+   (`app/api/agent/chat/route.ts`) saves the assistant turn every 3 s and
+   at the end of the stream. Its row had no `author_*` keys. So the gateway's
+   `_attribute` (`routes/chat.py`) stamped the room's agent, and the
+   COALESCE in `_MESSAGE_UPSERT_SQL` kept that first stamp. A Projects turn
+   in a room of another agent then reloaded without its pills. The live path
+   now sends the agent that the request named. An `@name` turn sends none.
+2. **The plan card edits `after`.** Each row of the plan card has a "Waits
+   on" control. The member ticks the rows that must finish first. The list
+   leaves out every row that waits on this one, so the card cannot make a
+   cycle.
+3. **A lost project write gives a receipt.** `_write_plan` in `forms.py`
+   posted the project node outside the `_WRITE_FAILED` guard. A refusal or a
+   broken connection there escaped as an exception, with no receipt. Now the
+   project write stops the batch like every other write.
+4. **Throughput pins its scope.** S7e named `analytics.history_where` and
+   made the dataset read share it. No test held Throughput to it. S10 adds
+   two hermetic tests. S7e merged before S10 started, so this item is built.
+
+### 16.2 Rules
+
+1. **The live path sends the named agent.** `translateAndPersistStream`
+   takes `checkpointAgent(resolvedAgentName, message)`. Each checkpoint row
+   carries `author_kind: "agent"` and `author_email` set to that name.
+2. **The reconnect path and an `@name` turn send no author.** Neither knows
+   which agent runs. In a room, `_address_agent` (`routes/agent.py`) can send
+   an `@name` turn to another agent. `isRoomAddress` copies the gateway's
+   `_MENTION_RE`, and a test fails when the two differ. The server then
+   stamps the room's agent, as before S10 (fix round 1).
+3. **The row shape lives in `src/lib/assistantCheckpoint.ts`.** A route file
+   may export only route names, so a test cannot reach a function there.
+   `persistAssistantMessage` calls `assistantCheckpointRow` and builds no row
+   of its own.
+4. **The server does not change.** `_attribute` keeps a client's
+   `author_email` for an agent turn. The COALESCE keeps the first stamp, so
+   a later save with no author does not rename the turn.
+5. **`after` is an input.** `PLAN_READ_ONLY` no longer holds `after`. The
+   control is a `CollapsibleSection` with one `Checkbox` for each other row,
+   labelled with its title. Both come from `components/ui`. S10 adds no new
+   primitive and no raw input. `CollapsibleSection` gains one prop,
+   `ariaLabel`. Each control is named `Waits on (for <title>)`, and its count
+   leaves out the key of a dropped row (`afterCount`, fix round 1).
+6. **The card cannot make a cycle.** `afterOptions(row, rows)` leaves out the
+   row itself and every row that waits on it, directly or through other
+   rows. A row with no option shows the line "Waits on: none. Every other
+   task waits on this one." in place of the control.
+7. **The server stays the fence for §13.6 rule 7.** `_submitted_rows` and
+   `_plan_rows` refuse an unknown key, a self-block and a cycle before
+   `_confirm`, with zero writes. S10 adds no refusal text in TypeScript.
+8. **Lockstep.** The `planCard` catalog summary in `genUITemplates.tsx` says
+   that the member edits `after`. The `planCard` bullet in `write_artifact.py`
+   already lists `after?:[key]`, so it does not change. A longer bullet put
+   the `emit_generative_ui` schema past its ceiling in
+   `test_tool_schema_diet.py`.
+9. **The project write stops the batch.** On a `GatewayRefusal` the receipt
+   says `stopped: the project «X» was refused.`, the reason, and `Nothing was
+   created.` On an `httpx.TransportError` it says that the write may or may
+   not have landed. It tells the member to read the tree before a retry.
+   Both receipts count every task, owner and link as not tried. No other
+   write runs.
+10. **The Throughput pin.** One test asserts that `throughput` passes the
+    output of `history_where` into `weekly_sql` and `cycle_summary_sql`. One
+    test pins the string that `history_where` gives for a fixed scope and a
+    fake visibility.
+11. **No migration, no flag and no new route.**
+
+**As built, 2026-09-25.** Four facts that the rules do not say.
+- **An `@name` turn can still reload under the wrong author.** With no
+  author, the first checkpoint stamps the room's agent. The gateway's fold
+  knows the addressed agent, but it writes after that first checkpoint, and
+  the COALESCE keeps the first stamp. `test_rooms.py` holds the gap as a
+  strict xfail, `test_an_addressed_turn_is_stamped_with_the_agent_that_ran`.
+  The fix is a server change (§16.4).
+- **`test_rooms.py` needed a fixture repair to run at all.** Its `_seed_user`
+  wrote `ON CONFLICT (email)`, and `app_user` has only a unique index on
+  `lower(email)`. So every R8 test in the file failed in its fixture against
+  a real ladder. CI never saw it, because CI does not set `DATABASE_URL`. The
+  fixture now writes `ON CONFLICT (lower(email))`.
+- **The Throughput suite skips in its `db` fixture, not at module level.** A
+  module-wide skip hid the two hermetic pins on every run without a
+  database.
+- **The "Waits on" control starts folded** and shows the count of ticked
+  rows. The `After:` line under the row still names the blockers by title.
+
+### 16.3 Acceptance — S10
+
+**Done when:**
+
+1. `src/lib/assistantCheckpoint.test.ts` passes. It checks the row with an
+   agent and without one, and scans `route.ts`. The live call passes
+   `resolvedAgentName` through `checkpointAgent`, the reconnect call does
+   not, and both checkpoints pass the agent. An `@name` message claims no
+   author, and `ROOM_ADDRESS_RE` equals the gateway's `_MENTION_RE` (rules 1
+   to 3).
+2. The R8 test `test_a_checkpoint_author_wins_over_the_room_agent` in
+   `tests/unit/test_rooms.py` passes. A checkpoint with `author_email`
+   `projects-assistant` in a room whose agent is `orchestrator` stores
+   `projects-assistant`. A second save with no author keeps it (rule 4).
+3. `entityPillsAuthor.test.ts` and `entityPillsGate.test.ts` pass unchanged.
+4. `planCard.test.ts` passes. `PLAN_READ_ONLY` holds no `after`. For the
+   chain t1, t2 after t1 and t3 after t2, the options of t1 hold neither t2
+   nor t3. The options of t3 hold t1 and t2. `planSubmit` sends the edited
+   `after` and strips the key of a dropped row (rules 5 and 6).
+5. `genUITemplates.test.ts` passes. It draws the control on each row that
+   has an option, and draws none on a plan of one task. Each control's name
+   holds its row's title. The count leaves out a dropped row's key. A row
+   with no option shows the "Waits on: none" line.
+6. `test_projects_agent_writes.py` passes (rules 7 and 9).
+   - An edited `after` puts the link on the confirm card and posts it.
+   - A cycle and a self-block each give the refusal, with no write and no
+     `_confirm` call.
+   - A `ConnectError` on `POST /projects/nodes` gives `stopped: the project
+     «Steps» lost its connection`, `may or may not` and `not tried: 7 tasks`.
+   - A `GatewayRefusal` there gives `was refused` and `Nothing was created.`
+   - In both cases there is no task POST, no assignee PUT and no link POST.
+7. `test_genui_catalog_lockstep.py` passes (rule 8).
+8. The two Throughput tests in `test_projects_analytics_throughput.py` pass
+   (rule 10).
+9. The status header, the §10 row, the board row and the INDEX line say that
+   S10 is built (R4).
+
+### 16.4 What S10 does not do
+
+- **H-169.** The owner answered the HR question on 2026-09-25, and the fix
+  now waits for its own slice. HANDOFF H-169 carries the answer and the two
+  rules that are still open.
+- It does not put a literal tool name in the `agents.py` description.
+- It does not measure the token size of a `task_dataset` table.
+- It does not change the main agent of a room, or the route that sets it.
+- **It does not stamp an `@name` turn with the agent that ran.** That needs
+  a server change. One way: the fold overwrites the author of an agent turn.
+  Another way: the run stream names its agent, and the translator sends it.
+  The strict xfail in `test_rooms.py` fails when either lands, so remove its
+  mark in that change.

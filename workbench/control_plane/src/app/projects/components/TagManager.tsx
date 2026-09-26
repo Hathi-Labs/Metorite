@@ -17,6 +17,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import Modal from "@/components/ui/Modal";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
 /**
  * An org-wide row belongs to the organization, not to this space.
@@ -25,7 +26,7 @@ import Modal from "@/components/ui/Modal";
  *
  * **What may be done to one changed on 2026-09-20 (D-PM-33).** A RENAME and a
  * recolour are allowed, for somebody holding `admin:settings:manage`, and the
- * rename is confirmed against a count first — see `confirmOrgRename`. A MERGE
+ * rename is confirmed against a count first — see `orgRenameCopy`. A MERGE
  * and a DELETE are still refused by the gateway, so those two stay drawn
  * disabled with the reason rather than letting the member press a 409.
  *
@@ -40,41 +41,11 @@ const ORG_WIDE_NOTE =
   "Shared by the whole organization — it can be renamed, but not merged " +
   "away or deleted from inside one project.";
 
-/**
- * Ask before rewriting other projects' tasks.
- *
- * ⚠️ **The count is the whole point of the confirmation.** "Rename a tag" and
- * "rewrite 340 tasks in 11 projects, most of which you cannot see" are the
- * same gesture here, because `pm_tasks.tags` stores display text. A member who
- * is told the second number makes a different decision from one who is not,
- * which is exactly why the owner asked for it.
- *
- * Returns true when the rename should go ahead.
- */
-async function confirmOrgRename(tagId: string, to: string): Promise<boolean> {
-  let impact: Awaited<ReturnType<typeof projectsApi.tagImpact>> | null = null;
-  try {
-    impact = await projectsApi.tagImpact(tagId);
-  } catch {
-    // ⚠️ A preview that failed must not become a silent yes. Ask anyway, and
-    // say that the size is unknown — the member can still decline.
-    return window.confirm(
-      `Rename this organization-wide tag to “${to}”? It is shared by every ` +
-        "project, and the number of tasks it would rewrite could not be read.",
-    );
-  }
-  const tasks = `${impact.tasks} task${impact.tasks === 1 ? "" : "s"}`;
-  const projects = `${impact.projects} project${impact.projects === 1 ? "" : "s"}`;
-  return window.confirm(
-    `“${impact.tag}” is shared by the whole organization.\n\n` +
-      `Renaming it to “${to}” rewrites ${tasks} across ${projects}, ` +
-      "including projects you may not be able to open.\n\nRename it?",
-  );
-}
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
 import { TAG_COLORS, type TagRow, byUsage, chipClass, normaliseTag } from "../lib/tags";
+import { orgRenameCopy, tagDeleteCopy } from "../lib/tagCopy";
 
 interface Props {
   projectId: string;
@@ -101,6 +72,21 @@ export function TagManager({
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [mergeSource, setMergeSource] = useState<TagRow | null>(null);
+  // The act waiting for the shared ConfirmDialog. A DELETE strips the tag
+  // from every task and cannot be undone. An org-wide RENAME rewrites tasks
+  // in projects the member may not see, so the count is asked first
+  // (D-PM-33). Both asked through `window.confirm`, or not at all, until
+  // 2026-09-24. The words are `lib/tagCopy.ts`'s.
+  const [confirming, setConfirming] = useState<
+    | { kind: "delete"; tag: TagRow }
+    | {
+        kind: "rename";
+        tag: TagRow;
+        to: string;
+        impact: { tag: string; tasks: number; projects: number } | null;
+      }
+    | null
+  >(null);
 
   const load = async () => {
     try {
@@ -213,12 +199,19 @@ export function TagManager({
                         setEditing(null);
                         return;
                       }
+                      if (orgWide(t)) {
+                        // D-PM-33: the count comes before the write, never
+                        // after. A preview that failed must not become a
+                        // silent yes, so the dialog asks with the size unknown.
+                        void projectsApi
+                          .tagImpact(t.id)
+                          .catch(() => null)
+                          .then((impact) =>
+                            setConfirming({ kind: "rename", tag: t, to: next, impact }),
+                          );
+                        return;
+                      }
                       void run(async () => {
-                        // D-PM-33: the count comes before the write, never after.
-                        if (orgWide(t) && !(await confirmOrgRename(t.id, next))) {
-                          setEditing(null);
-                          return null;
-                        }
                         const done = await projectsApi.patchTag(t.id, { name: next });
                         setEditing(null);
                         onTasksTouched();
@@ -326,16 +319,7 @@ export function TagManager({
                           ? ORG_WIDE_NOTE
                           : "Deletes it and takes it off every task"
                       }
-                      onClick={() =>
-                        void run(async () => {
-                          const done = await projectsApi.deleteTag(t.id);
-                          onTasksTouched();
-                          const n = done.cascaded.tasks_untagged;
-                          return `Deleted “${done.name}”.${
-                            n ? ` Removed from ${n} task${n === 1 ? "" : "s"}.` : ""
-                          }`;
-                        })
-                      }
+                      onClick={() => setConfirming({ kind: "delete", tag: t })}
                     />
                   </>
                 )}
@@ -369,6 +353,42 @@ export function TagManager({
           Add
         </Button>
       </form>
+
+      {/* Inside the Modal on purpose: Base UI nests a dialog opened from
+          within another, so focus returns to the tag manager on close. */}
+      <ConfirmDialog
+        open={Boolean(confirming)}
+        {...(confirming?.kind === "rename"
+          ? orgRenameCopy(confirming.to, confirming.impact)
+          : tagDeleteCopy(confirming?.tag ?? { name: "" }))}
+        icon={confirming?.kind === "rename" ? "Pencil" : "Trash2"}
+        onCancel={() => {
+          if (confirming?.kind === "rename") setEditing(null);
+          setConfirming(null);
+        }}
+        onConfirm={() => {
+          const act = confirming;
+          setConfirming(null);
+          if (!act) return;
+          if (act.kind === "delete") {
+            void run(async () => {
+              const done = await projectsApi.deleteTag(act.tag.id);
+              onTasksTouched();
+              const n = done.cascaded.tasks_untagged;
+              return `Deleted “${done.name}”.${
+                n ? ` Removed from ${n} task${n === 1 ? "" : "s"}.` : ""
+              }`;
+            });
+            return;
+          }
+          void run(async () => {
+            const done = await projectsApi.patchTag(act.tag.id, { name: act.to });
+            setEditing(null);
+            onTasksTouched();
+            return `Renamed to “${done.name}”.${touched(done.retagged ?? 0)}`;
+          });
+        }}
+      />
     </Modal>
   );
 }

@@ -259,14 +259,21 @@ async def test_my_task_lanes_answer_behind_the_membership_check(
     `/nodes/{id}/statuses` is behind a grant they may not hold. 404 for a
     task that is not mine, exactly as the single read answers."""
     project, todo, done = _team_project(db)
+    # D79 — each lane carries its stored colour, so the status menu draws a
+    # violet "In review" in the hue its board draws it.
+    review = db.seed(
+        "pm_task_statuses", project_id=project.id, name="In review",
+        category="in_progress", position=30, color="violet", is_default=False,
+    )
     task = db.seed_task(project.id, todo.id, title="Draft the quote")
     _assign(db, task.id, "bob@fracktal.in")
     out = await pm_personal.my_task_lanes(str(task.id), user=BOB)
-    assert [(s["id"], s["name"], s["category"]) for s in out["rows"]] == [
-        (str(todo.id), "To do", "todo"),
-        (str(done.id), "Done", "done"),
+    assert [(s["id"], s["name"], s["category"], s["color"]) for s in out["rows"]] == [
+        (str(todo.id), "To do", "todo", "gray"),
+        (str(review.id), "In review", "in_progress", "violet"),
+        (str(done.id), "Done", "done", "gray"),
     ]
-    assert out["total"] == 2
+    assert out["total"] == 3
     with pytest.raises(HTTPException) as caught:
         await pm_personal.my_task_lanes(str(task.id), user=ALICE)
     assert caught.value.status_code == 404
