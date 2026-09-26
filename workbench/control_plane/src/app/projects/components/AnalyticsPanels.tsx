@@ -44,6 +44,7 @@ import type {
   CapacityReport,
   ConflictsReport,
   FinishedReport,
+  HygieneReport,
   LoadReport,
   OutlookReport,
   RebalanceReport,
@@ -71,6 +72,15 @@ import {
   windowLine,
 } from "../lib/conflicts";
 import { effortDisplay, personEffort } from "../lib/effort";
+import {
+  HYGIENE_KINDS,
+  OVERLAP_NOTE,
+  TITLES_SHOWN,
+  hygieneCount,
+  hygieneRows,
+  kindTitle,
+  moreNote,
+} from "../lib/hygiene";
 import {
   type OutlookLine,
   type SlipRange,
@@ -925,6 +935,93 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
             </ul>
           )}
           {cap && <p className="mt-2 text-[10px] text-muted-foreground">{cap}</p>}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn R3c — which open tasks lack the data every other report needs.
+ *
+ * ⚠️ **Draws the server's counts and counts nothing** (`projects_reports.md`
+ * §8 R3c). Each kind is one bar, "n of open total", with the private `Bar`.
+ * Up to five titles follow it, then "…and M more". `lib/hygiene.ts` holds
+ * the words.
+ *
+ * ⚠️ **A task counts in each kind that it breaks**, so the bars do not add up
+ * to the open total, and the panel says so under them.
+ *
+ * ⚠️ **A report panel only.** The Analytics app does not mount it yet: the
+ * `/analytics/hygiene` route is a later slice.
+ */
+export function HygienePanel({ data }: { data: HygieneReport }) {
+  const open = data?.open_total;
+  const gap = accentForHue("amber");
+
+  return (
+    <Panel
+      title="What open tasks are missing"
+      hint="Open tasks with no assignee, no due date or no estimate, and work in progress that has not changed. This is the state now, not the period."
+    >
+      {typeof open !== "number" || open <= 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No open tasks in this scope.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-3">
+            {HYGIENE_KINDS.map(({ kind, label, title }) => {
+              const n = hygieneCount(data, kind);
+              const rows = hygieneRows(data, kind).slice(0, TITLES_SHOWN);
+              const more = moreNote(n, rows.length);
+              const meaning = kindTitle(title, data);
+              return (
+                <li key={kind}>
+                  <div className="mb-1 flex items-baseline gap-2 text-[11px]">
+                    <span className="font-medium text-foreground" title={meaning}>
+                      {label}
+                    </span>
+                    <span
+                      className="ml-auto tabular-nums text-muted-foreground"
+                      title={`${n ?? "No count"} of ${open} open tasks: ${meaning}`}
+                    >
+                      {typeof n === "number" ? `${n} of ${open}` : "—"}
+                    </span>
+                  </div>
+                  <Bar
+                    segments={[{ key: kind, value: n, dot: gap.dot, label }]}
+                    total={open}
+                  />
+                  {rows.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {rows.map((r) => (
+                        <li
+                          key={r.id}
+                          // `pr-px`: the Load panel's italic-clip lesson.
+                          className="truncate pr-px text-[10px] text-muted-foreground"
+                          title={`${r.title} · ${r.project_name}`}
+                        >
+                          {r.title}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {more && (
+                    <p
+                      className="mt-0.5 text-[10px] text-muted-foreground"
+                      title="The table under this panel names up to twenty tasks of each kind."
+                    >
+                      {more}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+            {OVERLAP_NOTE}
+          </p>
         </>
       )}
     </Panel>

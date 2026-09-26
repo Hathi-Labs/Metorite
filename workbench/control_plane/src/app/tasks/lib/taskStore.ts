@@ -544,8 +544,18 @@ interface UndoSnapshot {
    *  done, a reopen). `plan` resolves to what the SERVER had before our
    *  write and what our write set, or null when the status did not move.
    *  Undo puts the prior status back FIRST, and only while the task is
-   *  still in the status our write set. See `revertStatus`. */
-  statusRevert?: { id: string; plan: Promise<StatusRevert | null> };
+   *  still in the status our write set. See `revertStatus`.
+   *
+   *  `wasClosed` resolves true when the SERVER row was closed before our
+   *  write, whether or not the status then moved. A teammate may have
+   *  closed it after the hydrate. Undo then never writes an open
+   *  disposition or DONE to my list, because either one moves the status
+   *  again (review of #480). */
+  statusRevert?: {
+    id: string;
+    plan: Promise<StatusRevert | null>;
+    wasClosed?: Promise<boolean>;
+  };
 }
 
 /** D79 — one status write, as Undo needs it. */
@@ -556,15 +566,25 @@ export interface StatusRevert {
   priorName?: string;
   /** The status id our write set. Undo reverts only while it still holds. */
   set: string;
+  /** The prior status CLOSES a task. After Undo puts it back, an open
+   *  disposition would reopen the task again (`reopen_if_closed`), and
+   *  DONE would move it to the first Done status. So Undo then writes
+   *  neither to my list. */
+  priorClosed?: boolean;
 }
 
 /** The plan from the server row before our write, and the status after it. */
 export function statusRevertPlan(
-  before: Pick<MyTask, "statusId" | "workflowStage"> | null | undefined,
+  before: Pick<MyTask, "statusId" | "workflowStage" | "statusCategory"> | null | undefined,
   after: string | null | undefined,
 ): StatusRevert | null {
   if (!before?.statusId || !after || before.statusId === after) return null;
-  return { prior: before.statusId, priorName: before.workflowStage, set: after };
+  return {
+    prior: before.statusId,
+    priorName: before.workflowStage,
+    set: after,
+    priorClosed: closesTask(before.statusCategory ?? ""),
+  };
 }
 
 /** The dispositions the gateway reopens a closed task for (D77 choice 3,
@@ -587,9 +607,28 @@ export function dispositionMovesStatus(
   return REOPENING.has(disposition) && closed;
 }
 
+/**
+ * Can this disposition move a status on SOME task? DONE and the open ones
+ * can. It asks nothing of the row, because the local row can be stale: a
+ * teammate may have closed the task since the hydrate. So a quick move
+ * that can move a status reads the SERVER row first, and
+ * {@link dispositionMovesStatus} then asks that row, not the local one.
+ */
+export function dispositionCanMoveStatus(disposition: Disposition): boolean {
+  return disposition === "DONE" || REOPENING.has(disposition);
+}
+
+/** Undo may write this disposition back after it put a CLOSED status back. */
+const safeOnClosed = (disposition: Disposition | null | undefined): boolean =>
+  !!disposition && disposition !== "DONE" && !REOPENING.has(disposition);
+
 /** What Undo says when the status moved again after our write. */
 export const STATUS_MOVED_SINCE =
   "Someone changed the status since, so it was not undone.";
+
+/** What Undo says when it kept a teammate's close: my list said the task
+ *  was open, and writing that back would reopen it. */
+export const STAYS_CLOSED = "Undone, and it stays closed: a teammate closed it.";
 
 const errText = (err: unknown): string =>
   err instanceof Error && err.message ? err.message : String(err);
@@ -601,22 +640,30 @@ const errText = (err: unknown): string =>
  * status OUR write set. The PATCH carries that read's `updated_at` as
  * If-Match, so a move that lands between the read and the write answers
  * 412 and is kept. Any failure is said through the toast, and the row is
- * re-read so the screen matches the server. Resolves true when the other
- * undo writes for this task may go ahead.
+ * re-read so the screen matches the server.
+ *
+ * Resolves `"go"` when the other undo writes for this task may go ahead,
+ * `"blocked"` when they may not, and `"closed"` when the task is closed
+ * after the undo: the status it put back closes it, or the server row was
+ * closed before our write and nothing moved. Then only a disposition that
+ * neither reopens nor completes may follow it (`safeOnClosed`).
  */
 async function revertStatus(
   get: Getter,
   revert: UndoSnapshot["statusRevert"],
-): Promise<boolean> {
-  if (!revert) return true;
+): Promise<"go" | "blocked" | "closed"> {
+  if (!revert) return "go";
   const plan = await revert.plan.catch(() => null);
-  if (!plan) return true;
+  if (!plan) {
+    const wasClosed = await (revert.wasClosed ?? Promise.resolve(false)).catch(() => false);
+    return wasClosed ? "closed" : "go";
+  }
   const { id } = revert;
   const restore = plan.priorName ?? "the earlier status";
-  const refuse = async (message: string): Promise<boolean> => {
+  const refuse = async (message: string): Promise<"blocked"> => {
     get().reportSyncFailure(message);
     await get().refreshItem(id);
-    return false;
+    return "blocked";
   };
   let now: MyTask;
   try {
@@ -631,7 +678,7 @@ async function revertStatus(
     if (err instanceof ProjectsApiError && err.status === 412) return refuse(STATUS_MOVED_SINCE);
     return refuse(`Could not restore ${restore}: ${errText(err)}`);
   }
-  return true;
+  return plan.priorClosed ? "closed" : "go";
 }
 
 /** D79 — a drag that landed on a stage with two or more statuses, waiting
@@ -2164,10 +2211,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     // D79 — only a gesture that can move the status reads the server's
     // status first, and only that one's Undo may write a status back.
+    //
+    // The plan comes from the SERVER: the row read before the write, and
+    // the rows the write answered with. Never from the local category,
+    // which is as old as the last hydrate. A teammate who closed the task
+    // since then makes a NEXT here reopen it (`reopen_if_closed`), and the
+    // local row cannot know that.
+    //
+    // DONE plans whenever the status moved, closed before or not. A task a
+    // teammate put in Cancelled, or in a second Done status, is moved by
+    // `/complete` to the FIRST Done status, and Undo must put it back.
     const live = get().backend === "live";
-    const moves =
-      live && dispositionMovesStatus(get().items.find((i) => i.id === id), disposition);
-    const priorRead = moves ? lensGetItem(id).catch(() => null) : null;
+    const priorRead =
+      live && dispositionCanMoveStatus(disposition) ? lensGetItem(id).catch(() => null) : null;
     const write = live
       ? (priorRead ?? Promise.resolve(null)).then(() =>
           disposeLive(set, get, [id], disposition),
@@ -2178,8 +2234,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         ? {
             id,
             plan: Promise.all([priorRead, write]).then(([before, rows]) =>
-              statusRevertPlan(before, rows.find((r) => r.id === id)?.statusId),
+              before && (disposition === "DONE" || dispositionMovesStatus(before, disposition))
+                ? statusRevertPlan(before, rows.find((r) => r.id === id)?.statusId)
+                : null,
             ),
+            wasClosed: priorRead.then((before) => closesTask(before?.statusCategory ?? "")),
           }
         : undefined;
     set((s) => {
@@ -3132,10 +3191,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // When the status is NOT put back (someone moved it since, or the write
     // failed), my list is left alone for that task too. An open disposition
     // would reopen whatever closed status the task is in now.
+    //
+    // When the status put back CLOSES the task, my list gets back only a
+    // disposition that neither reopens it nor completes it again. The local
+    // row can say NEXT for a task a teammate closed, and writing that NEXT
+    // back would undo the undo.
     const before = new Map(items.map((i) => [i.id, i]));
     const blocked = new Set<string>();
-    const statusFirst: Promise<unknown> = revertStatus(get, statusRevert).then((ok) => {
-      if (!ok && statusRevert) blocked.add(statusRevert.id);
+    const closedAgain = new Set<string>();
+    const statusFirst: Promise<unknown> = revertStatus(get, statusRevert).then((result) => {
+      if (!statusRevert) return;
+      if (result === "blocked") blocked.add(statusRevert.id);
+      if (result === "closed") closedAgain.add(statusRevert.id);
     });
     const after = (write: () => Promise<unknown>) => sync(statusFirst.then(write));
     if (removedIds?.length) {
@@ -3232,17 +3299,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Revert the server rows to their pre-change disposition (the local
       // state is already fully restored from the snapshot). An untriaged
       // row is CLEARED (null): its shown value was derived, never stated.
+      //
+      // A task that is closed after the undo keeps only a disposition that
+      // neither reopens nor completes it. When my list said it was open,
+      // somebody else closed it: the undo says so, and re-reads the row so
+      // the screen shows the close rather than the stale open row.
+      const keptClosed: string[] = [];
       after(() =>
         Promise.all(
           changedIds.map((id) => {
             const p = before.get(id);
-            return p && !blocked.has(id)
-              ? apiPatchItem(id, {
-                  disposition: p.isTriaged === false ? null : p.disposition,
-                }).catch(() => {})
-              : Promise.resolve();
+            const prior = p?.isTriaged === false ? null : p?.disposition;
+            if (!p || blocked.has(id)) return Promise.resolve();
+            if (closedAgain.has(id) && prior !== null && !safeOnClosed(prior)) {
+              if (prior && REOPENING.has(prior)) keptClosed.push(id);
+              return get().refreshItem(id);
+            }
+            return apiPatchItem(id, { disposition: prior ?? null }).catch(() => {});
           }),
-        ),
+        ).then(() => {
+          if (keptClosed.length) get().reportSyncFailure(STAYS_CLOSED);
+        }),
       );
     } else if (statusRevert) {
       // A status write alone (a pick, a drag): only the status goes back.

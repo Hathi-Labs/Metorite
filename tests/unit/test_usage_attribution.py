@@ -438,3 +438,56 @@ class TestEveryClientUsesTheSeam:
             assert '"headers"' not in literal, (
                 f"{rel}: the provider dict now carries headers. H-181 has "
                 "landed: delete this test and the H-181 attribution note.")
+
+
+# ── The session member on DIRECT AI routes (2026-09-24) ─────────────────────
+
+class TestTheGatewayNamesTheSessionMember:
+    """🔴 Production: Tasks clarify calls reached the meter with no member,
+    because a route that calls `acb_llm` directly is not an agent run."""
+
+    async def _resolve(self, monkeypatch, **headers):
+        import structlog
+        from acb_auth import deps
+
+        monkeypatch.setattr(deps, "_get_internal_token", lambda: "tok")
+
+        async def _as_is(ctx):
+            return ctx
+
+        monkeypatch.setattr(deps, "_with_resolved_access", _as_is)
+        structlog.contextvars.clear_contextvars()
+        await deps.get_current_user(**headers)
+        return structlog.contextvars.get_contextvars()
+
+    async def test_a_session_member_is_bound_and_verified(self, monkeypatch):
+        ctx = await self._resolve(
+            monkeypatch, x_user_email="a@example.com", x_user_role=None,
+            authorization="Bearer tok",
+        )
+        assert ctx.get("user") == "a@example.com"
+        assert ctx.get("member_verified") == "1"
+
+    async def test_a_bare_internal_call_binds_nobody(self, monkeypatch):
+        ctx = await self._resolve(
+            monkeypatch, x_user_email=None, x_user_role=None,
+            authorization="Bearer tok",
+        )
+        assert "user" not in ctx and "member_verified" not in ctx
+
+    async def test_an_unverified_email_header_binds_nobody(self, monkeypatch):
+        """No Bearer, so nobody vouched for the header (H-73)."""
+        ctx = await self._resolve(
+            monkeypatch, x_user_email="a@example.com", x_user_role=None,
+            authorization=None,
+        )
+        assert ctx.get("member_verified") != "1"
+
+    async def test_the_bound_member_reaches_the_Router_headers(self, monkeypatch):
+        from acb_llm.attribution import attribution_headers
+
+        await self._resolve(
+            monkeypatch, x_user_email="a@example.com", x_user_role=None,
+            authorization="Bearer tok",
+        )
+        assert attribution_headers().get("X-CC-Member") == "a@example.com"

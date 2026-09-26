@@ -154,7 +154,7 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, start, due and what each task waits on, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
+    summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
     data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], importance?, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },
 ];

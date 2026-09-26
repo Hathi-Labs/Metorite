@@ -3320,25 +3320,6 @@ line — never reclaim a number by deleting the other entry.
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
 
-### H-186 · Four small follow-ups from the R3b review, for R3c · [AGENT]
-- **Check:** `grep -n "_TIMESTAMP = " apps/skills/skill-projects/skill_projects/views.py`
-  → a pattern with no `\d{2}:\d{2}` after the `T` means item 1 is open.
-- **Why:** the R3b review and verification found these. None blocks.
-  1. `_card_cell` in `views.py` cuts any value that starts with
-     `YYYY-MM-DDT` to 10 characters. A task title such as
-     "2026-10-01T-minus checklist" then shows as a date only. Match a time
-     after the `T`, or cut only date keys.
-  2. The "Who could help" table count in `ReportsView.tsx` counts tasks
-     only, but the list also shows idle people.
-  3. The email part for a reader without the HR grant has no section
-     title. Print "Who could help" above the HR line.
-  4. A holder with no name prints `held by «»` in the chat text. Fall back
-     to the address, as the panel does. Also scope the labels
-     `at_risk_total`, `idle_total`, `pickups_total`, `velocity.*` and
-     `plan.*` in `reads.py` `_REPORT_LABELS` to their section.
-- **Authority:** `specs/projects_reports.md` §8 R3b · the R3b review, 2026-09-25
-- **Added:** 2026-09-25 · the WS-27bn R3b session
-
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

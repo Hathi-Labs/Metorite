@@ -522,6 +522,40 @@ export interface RebalanceReport {
   truncated?: boolean;
 }
 
+/** WS-27bn R3c — the four kinds of open task the hygiene section counts. */
+export type HygieneKind =
+  | "no_assignee"
+  | "no_due_date"
+  | "no_estimate"
+  | "stale_in_progress";
+
+/** One task the hygiene section names. It is in the list once per kind. */
+export interface HygieneRow {
+  kind: HygieneKind;
+  id: string;
+  title: string;
+  task_number: number | null;
+  project_id: string;
+  project_name: string;
+  due_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * WS-27bn R3c — the `hygiene` section (`analytics.py` `hygiene_body`).
+ *
+ * ⚠️ **A task counts in each kind that it breaks**, so the four counts do
+ * not add up to `open_total`. `rows` names up to twenty tasks of each kind,
+ * and `by_kind` counts them all.
+ */
+export interface HygieneReport {
+  open_total: number;
+  /** A task in progress with no change for this many days is stale. */
+  stale_days: number;
+  by_kind: Partial<Record<HygieneKind, number>>;
+  rows: HygieneRow[];
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -848,6 +882,11 @@ export interface RenderedReportBody {
        */
       stale?: { band: string; n: number }[];
     };
+    /**
+     * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
+     * estimate, and tasks in progress with no change. It reads the state now.
+     */
+    hygiene?: HygieneReport;
     /** WS-27bm S7c. Opt-in: present only when the report asked for it. */
     conflicts?: {
       rows: ConflictRow[];

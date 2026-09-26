@@ -303,8 +303,22 @@ Owner request, verbatim, 2026-09-23:
      task in my own tree. Undo puts the exact prior `status_id` back first,
      and then my list. An untriaged board task gets NULL on my overlay, not
      the value the list derived.
+   * A quick move to NEXT, WAITING or INBOX, or Mark done, reads the SERVER
+     row before it writes. Undo plans its status revert from that read, not
+     from the local row. A teammate may have closed the task since the
+     hydrate. Mark done plans a revert whenever the status moved, so an
+     Undo puts Cancelled back. When the task is closed after the Undo, the
+     Undo does not write an open disposition or DONE to my list, because
+     either one moves the status again. This is also true when the server
+     row was closed before the gesture and nothing moved. The toast then
+     says "Undone, and it stays closed: a teammate closed it."
    * A reopen goes to the first To do status, else to the first status
      that is not triage. The Projects Reopen tick uses the same rule.
+   * The assistant's task tools follow the same rules. They read the lanes
+     from the route above. A stage word with two or more statuses writes
+     nothing and lists them, and the model asks the member. An undo of
+     Done writes NEXT only, and the gateway reopens the task. Fence:
+     `tests/unit/test_skill_task_lens.py`.
 
    Every status set keeps at least one Done status. The gateway refuses the
    write that would remove the last one (D79 rule 5).
