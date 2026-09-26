@@ -381,6 +381,60 @@ class TestThePayloadSurvivesTheREALModel:
 # ── The AGENT paths — the largest unbilled surface of all ───────────────────
 
 
+#: The slate the Console seeds in `tier_catalog`. A routed call must name one.
+_CONSOLE_CHAT_TIERS = {"tier-fast", "tier-balanced", "tier-powerful"}
+
+
+class TestTheRouterIsHandedASlateName:
+    """🔴 Production, 2026-09-24: the Tasks assistant sent `tier2` and the
+    Router refused it with `tier_unknown`. `LLMTier.value` is the legacy id,
+    and no test looked at the name the Router was handed."""
+
+    @pytest.mark.parametrize("which", ["complete", "complete_with_tools"])
+    async def test_every_LLMTier_reaches_the_Router_by_its_slate_name(
+        self, monkeypatch, routed, which
+    ):
+        from acb_llm import client
+        from acb_llm.client import LLMTier
+
+        expected = {
+            LLMTier.TIER_1: "tier-fast",
+            LLMTier.TIER_2: "tier-balanced",
+            LLMTier.TIER_3: "tier-powerful",
+        }
+        for tier, name in expected.items():
+            spy = RouterSpy()
+            _spy_on(monkeypatch, spy)
+            if which == "complete":
+                await client.complete(tier=tier, messages=MESSAGES, max_tokens=8)
+            else:
+                await client.complete_with_tools(
+                    tier=tier, messages=MESSAGES, tools=[], max_tokens=8
+                )
+            sent = spy.calls[0][0]["model"]
+            assert sent == name, f"{tier.value} reached the Router as {sent!r}"
+            assert sent in _CONSOLE_CHAT_TIERS
+
+    def test_a_slate_name_or_model_id_passes_through(self):
+        from acb_llm.routed import router_tier
+
+        assert router_tier("tier-balanced") == "tier-balanced"
+        assert router_tier("deepseek/deepseek-v4-pro") == "deepseek/deepseek-v4-pro"
+        assert router_tier("stt") == "tier-stt"
+
+    def test_the_slate_names_are_the_ones_the_Console_seeds(self):
+        """The set above is not a guess: the Console ladder seeds it."""
+        import pathlib
+
+        sql = "".join(
+            p.read_text(encoding="utf-8")
+            for p in (pathlib.Path(__file__).resolve().parents[2]
+                      / "infra/customer_console").glob("*.sql")
+        )
+        for name in _CONSOLE_CHAT_TIERS | {"tier-stt"}:
+            assert f"'{name}'" in sql, f"{name} is not seeded in tier_catalog"
+
+
 class TestTheAgentPathsBillToo:
     """🔴 `acompletion_with_fallback`'s own comment says *"client.complete
     covers agent runs"*, so agent runs were the biggest remaining hole. An
