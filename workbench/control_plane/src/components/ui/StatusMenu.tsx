@@ -143,15 +143,39 @@ export function statusDot(status: StatusOption): string {
   return statusAccent({ color: status.color, category: status.category }).dot;
 }
 
+/** One row, the header and the panel's padding, in rem. A row is `text-xs`
+ *  with `py-1`: 1.5rem, plus a little for the ring. 26px at 16px. */
+export const MENU_ROW_REM = 1.625;
+export const MENU_HEADER_REM = 2.5;
+export const MENU_PAD_REM = 0.75;
+/** The cap: 20rem, the `max-h-80` the panel carried, at every density. */
+export const MENU_MAX_REM = 20;
+
 /**
- * How tall the panel will be, in px, capped at 320. `AnchoredPanel` decides
- * above or below from this, and a flipped panel sits this far above its
- * anchor. A flat 320 flipped a three-row drag prompt far above the card it
- * asks about, over the toolbar. Rows are about 26px at default density, and
- * the header about 40px.
+ * How tall the panel will be, in px. `AnchoredPanel` decides above or below
+ * from this, sets it as the panel's `max-height`, and a flipped panel sits
+ * this far above its anchor. A flat 320 flipped a three-row drag prompt far
+ * above the card it asks about, over the toolbar.
+ *
+ * ⚠️ In rem, times the root font size. Density scales the root font size
+ * (`--ui-scale`), and every row with it. A px estimate was right at the
+ * default density only: at a roomier one each row outgrew it, and a short
+ * menu scrolled.
  */
-export function menuHeight(rowCount: number, hasHeader: boolean): number {
-  return Math.min(320, 12 + (hasHeader ? 40 : 0) + rowCount * 26);
+export function menuHeight(rowCount: number, hasHeader: boolean, remPx = 16): number {
+  const rem = MENU_PAD_REM + (hasHeader ? MENU_HEADER_REM : 0) + rowCount * MENU_ROW_REM;
+  return Math.ceil(Math.min(MENU_MAX_REM, rem) * remPx);
+}
+
+/** The root font size in px: the density the member chose, applied. 16 on
+ *  the server and wherever it cannot be read. */
+export function rootRemPx(
+  doc: Pick<Document, "documentElement"> | undefined = globalThis.document,
+  style: (el: Element) => Pick<CSSStyleDeclaration, "fontSize"> = (el) => getComputedStyle(el),
+): number {
+  if (!doc?.documentElement) return 16;
+  const px = parseFloat(style(doc.documentElement).fontSize);
+  return px > 0 ? px : 16;
 }
 
 /** How long typed letters stay one query. */
@@ -287,7 +311,7 @@ export function StatusMenu({
       anchor={anchor}
       open={open}
       layer="top"
-      maxHeight={menuHeight(rows.length, Boolean(projectName || prompt))}
+      maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), rootRemPx())}
       className="w-max min-w-[12rem] max-w-[18rem] p-1"
       panelProps={{
         role: "listbox",

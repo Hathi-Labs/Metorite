@@ -496,6 +496,36 @@ describe("undo puts the exact status back, then the overlay", () => {
     await flush();
     expect(useTaskStore.getState().undoSnapshot?.label).toBe("Done · Shipped in Workshop");
   });
+
+  it("undo of NEXT puts back a close a teammate made after the hydrate", async () => {
+    // The local row is open. On the server a teammate has since moved the
+    // task to Shipped. NEXT reopens it there (`reopen_if_closed`), so the
+    // Undo must put Shipped back, from the SERVER rows and not the local one.
+    Object.assign(server, { statusId: "w-done", workflowStage: "Shipped" });
+    const category = () => WORKSHOP.find((l) => l.id === server.statusId)?.category;
+    vi.mocked(lensGetItem).mockImplementation(async () =>
+      serverRow({ statusCategory: category() }),
+    );
+    vi.mocked(apiBulkDispose).mockImplementation(async (_ids, disposition) => {
+      if (disposition === "NEXT" && category() === "done") serverMoves("w-queue", "Queued");
+      return [serverRow({ disposition, statusCategory: category() })];
+    });
+    const stale = task({
+      statusId: "w-build", statusCategory: "in_progress", workflowStage: "Building",
+      disposition: "WAITING",
+    });
+    useTaskStore.setState({ backend: "live", items: [stale], syncFailure: null });
+    useTaskStore.getState().quickDispose("t1", "NEXT");
+    await flush();
+    expect(server.statusId).toBe("w-queue");
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-done", { ifMatch: "v2" });
+    expect(server.statusId).toBe("w-done");
+    // WAITING back on my list would reopen the task a second time.
+    expect(apiPatchItem).not.toHaveBeenCalledWith("t1", { disposition: "WAITING" });
+    expect(useTaskStore.getState().syncFailure).toBeNull();
+  });
 });
 
 describe("which quick moves may write a status back (D79)", () => {
