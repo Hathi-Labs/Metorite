@@ -306,6 +306,98 @@ def test_the_guard_locks_the_whole_set_target_included() -> None:
     assert "<>" not in sql
 
 
+_WRITES = ("INSERT ", "UPDATE ", "DELETE ")
+
+
+def _locks_then_first_write(db: FakeProjectsDB) -> tuple[list[str], int]:
+    """The sets locked, in order, and whether every lock came before the
+    first write. Returns ``(owners, index of the first write)``."""
+    lock = " ".join(pm_admin._LOCK_STATUS_SET_SQL.split())
+    owners = [args["owner"] for sql, args in db.calls if sql == lock]
+    last_lock = max(i for i, (sql, _a) in enumerate(db.calls) if sql == lock)
+    first_write = next(
+        i for i, (sql, _a) in enumerate(db.calls) if sql.startswith(_WRITES)
+    )
+    assert last_lock < first_write, "a status set was locked after a write"
+    return owners, first_write
+
+
+@pytest.mark.parametrize("mode", ["own", "inherit"])
+async def test_a_set_switch_locks_every_set_it_touches_first(
+    db: FakeProjectsDB, mode: str,
+) -> None:
+    """Review of #477: ``set_status_set`` upserts and deletes status rows in no
+    set order. Beside a status delete in the same set, Postgres could abort
+    one of them with a deadlock, a 500. It now locks the set the tasks leave
+    and the set they land in, whole and in id order, before any write."""
+    root, _rows = _set(db, ("To do", "todo", 10), ("Done", "done", 40))
+    child = db.seed_project(
+        name="Mobile app", parent=root.id, subject=None,
+        owns_statuses=(mode == "inherit"),
+    )
+    # The child's own set: live for inherit, dormant for own.
+    db.seed_status(child.id, name="Queued", category="todo", position=10)
+    db.seed_status(child.id, name="Shipped", category="done", position=40)
+    await pm_admin.set_status_set(
+        str(child.id), pm_admin.StatusSetIn(mode=mode), user=USER,
+    )
+    owners, _first = _locks_then_first_write(db)
+    assert owners == sorted({str(root.id), str(child.id)})
+
+
+@live
+async def test_live_a_set_switch_holds_both_sets_until_it_ends(ladder) -> None:
+    """R8: ``_lock_status_sets`` takes both sets on a real Postgres. While the
+    switch holds them, a status delete in EITHER set waits at its own lock,
+    before it writes anything, so the two cannot deadlock."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(
+        _TENANT_URL.replace("+psycopg", "+asyncpg"), poolclass=NullPool,
+    )
+    async with eng.begin() as seed:
+        one, _ids = await _real_set(
+            seed, ("To do", "todo", 10, "gray"), ("Done", "done", 40, "green"),
+        )
+        two, _ids = await _real_set(
+            seed, ("Queued", "todo", 10, "gray"), ("Shipped", "done", 40, "green"),
+        )
+    try:
+        async with eng.connect() as switch, eng.connect() as delete:
+            await switch.begin()
+            await pm_admin._lock_status_sets(switch, [two, one])
+            for owner in (one, two):
+                await delete.begin()
+                await delete.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                with pytest.raises(DBAPIError):
+                    await delete.execute(
+                        text(pm_admin._LOCK_STATUS_SET_SQL), {"owner": owner},
+                    )
+                await delete.rollback()
+            await switch.rollback()
+    finally:
+        async with eng.begin() as cleanup:
+            for project in (one, two):
+                org = (await cleanup.execute(
+                    text("SELECT organization_id FROM pm_projects WHERE id = :p"),
+                    {"p": project},
+                )).scalar_one()
+                await cleanup.execute(
+                    text("DELETE FROM pm_task_statuses WHERE project_id = :p"),
+                    {"p": project},
+                )
+                await cleanup.execute(
+                    text("DELETE FROM pm_projects WHERE id = :p"), {"p": project},
+                )
+                await cleanup.execute(
+                    text("DELETE FROM organization WHERE id = :o"), {"o": org},
+                )
+        await eng.dispose()
+
+
 @live
 async def test_live_a_second_writer_waits_for_the_locked_set(ladder) -> None:
     """R8: while one transaction holds the set, a second one cannot read it
