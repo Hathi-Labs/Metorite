@@ -12,8 +12,10 @@ for an IDE that isn't here: it declares VS Code tool ids (`editFiles`,
     config.json + the DB table — so an agent depending on a server (e.g. a
     diagramming agent declaring draw.io) silently lost it.
   * MCP config was merged into `agent._default_options["mcp_servers"]`, which the
-    SDK never reads (it resolves `runtime_options.get("mcp_servers") or
-    self._mcp_servers`), so servers never reached a session at all.
+    1.0.0b wrapper never read (it resolved `runtime_options.get("mcp_servers")
+    or self._mcp_servers`), so servers never reached a session at all.
+    ⚠️ The 2.0 wrapper (H-181) reversed this: `_default_options` is now the
+    field it reads, and `_mcp_servers` is gone.
 """
 from __future__ import annotations
 
@@ -153,30 +155,38 @@ def test_remote_server_shape(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_merge_targets_the_field_the_sdk_reads() -> None:
+    """🔴 Asked of the REAL wrapper, because the field has moved once already.
+
+    The 1.0.0b wrapper read ``self._mcp_servers``. The 2.0 wrapper (H-181) has
+    no such attribute and forwards ``_default_options`` to ``create_session``.
+    A fake agent would agree with whichever field the helper wrote, so this
+    asks the installed wrapper what it would send.
+    """
+    from agent_framework_github_copilot import GitHubCopilotAgent
     from orchestrator._tool_injection import merge_mcp_servers
 
-    agent = SimpleNamespace(_mcp_servers=None, _default_options={})
+    agent = GitHubCopilotAgent(instructions="x", default_options={"mcp_servers": {}})
     merge_mcp_servers(agent, {"drawio": {"type": "stdio"}}, override=False)
-    # _create_session resolves `opts.get(...) or self._mcp_servers`, and
-    # _resume_session reads self._mcp_servers only. _default_options is dead.
-    assert agent._mcp_servers == {"drawio": {"type": "stdio"}}
+    sent = agent._build_session_kwargs(True, None)
+    assert sent["mcp_servers"] == {"drawio": {"type": "stdio"}}
 
 
 def test_db_registry_outranks_repo_files() -> None:
     from orchestrator._tool_injection import merge_mcp_servers
 
-    agent = SimpleNamespace(_mcp_servers=None)
+    agent = SimpleNamespace(_default_options={})
     merge_mcp_servers(agent, {"s": {"command": "repo"}}, override=False)
     merge_mcp_servers(agent, {"s": {"command": "db"}}, override=True)
-    assert agent._mcp_servers["s"]["command"] == "db"
+    assert agent._default_options["mcp_servers"]["s"]["command"] == "db"
 
 
 def test_repo_file_does_not_clobber_existing() -> None:
     from orchestrator._tool_injection import merge_mcp_servers
 
-    agent = SimpleNamespace(_mcp_servers={"s": {"command": "already"}})
+    agent = SimpleNamespace(
+        _default_options={"mcp_servers": {"s": {"command": "already"}}})
     merge_mcp_servers(agent, {"s": {"command": "repo"}}, override=False)
-    assert agent._mcp_servers["s"]["command"] == "already"
+    assert agent._default_options["mcp_servers"]["s"]["command"] == "already"
 
 
 # ---------------------------------------------------------------------------

@@ -102,7 +102,8 @@ SYSTEM_PROMPT = _append_skills(SYSTEM_PROMPT)
 def build_agent():
     """Return a GitHubCopilotAgent configured for the Metorite repo."""
     from agent_framework_github_copilot import GitHubCopilotAgent  # type: ignore[import]  # noqa: PLC0415
-    from copilot.types import PermissionHandler  # type: ignore[import]  # noqa: PLC0415
+    # SDK 1.0 (H-181): ``copilot.types`` is gone; the handler is top-level.
+    from copilot import PermissionHandler  # type: ignore[import]  # noqa: PLC0415
 
     return GitHubCopilotAgent(
         name="metorite",

@@ -45,12 +45,12 @@ async def main() -> None:
     if not gateway_key and not github_token:
         _die("No auth configured: set GATEWAY_API_KEY+GATEWAY_BASE_URL or COPILOT_GITHUB_TOKEN")
 
-    from copilot import CopilotClient  # noqa: PLC0415
-    from copilot.client import SessionConfig  # noqa: PLC0415
-    from copilot.types import CopilotClientOptions, PermissionHandler  # noqa: PLC0415
-    from copilot.generated.session_events import SessionEventType  # noqa: PLC0415
+    # SDK 1.0 (H-181): the client and create_session take keyword arguments,
+    # ``cwd`` became ``working_directory``, and ``send`` takes the prompt.
+    from copilot import CopilotClient, PermissionHandler  # noqa: PLC0415
+    from copilot.session_events import SessionEventType  # noqa: PLC0415
 
-    client_options: CopilotClientOptions = {}
+    client_options: dict = {}
     session_config_kwargs: dict = {
         "on_permission_request": PermissionHandler.approve_all,
         "model": gateway_model,
@@ -58,7 +58,7 @@ async def main() -> None:
 
     repo_dir = "/workspace/repo"
     if os.path.isdir(repo_dir):
-        client_options["cwd"] = repo_dir
+        client_options["working_directory"] = repo_dir
 
     if gateway_key and gateway_url:
         session_config_kwargs["provider"] = {
@@ -75,11 +75,10 @@ async def main() -> None:
     test_summary: str = ""
     done = asyncio.Event()
 
-    client = CopilotClient(client_options if client_options else None)
+    client = CopilotClient(**client_options)
     await client.start()
     try:
-        session_cfg = SessionConfig(**session_config_kwargs)
-        session = await client.create_session(session_cfg)
+        session = await client.create_session(**session_config_kwargs)
 
         def on_event(event) -> None:  # noqa: ANN001
             nonlocal pr_url, commit_sha, test_summary
@@ -105,7 +104,7 @@ async def main() -> None:
                 done.set()
 
         session.on(on_event)
-        await session.send({"prompt": prompt})
+        await session.send(prompt)
         await done.wait()
     finally:
         await client.stop()

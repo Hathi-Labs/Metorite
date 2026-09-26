@@ -6,10 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "acb-common",
     "acb-skills",
-    "agent-framework-core>=1.8.0",
+    "agent-framework-core>=1.19.0",
     # Native MAF chat client → LiteLLM gateway /v1 (the agent uses agent_framework
     # Agent + OpenAIChatClient instead of the GitHub Copilot SDK).
-    "agent-framework-openai>=1.7.0",
+    "agent-framework-openai>=1.14.4",
 ]
 
 [build-system]

@@ -13,10 +13,12 @@ Copilot-SDK agent's per-run session:
 """
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Any
 
 from acb_common import get_logger
+from acb_llm.attribution import attributed_copilot_provider
 
 _log = get_logger("orchestrator.copilot_session")
 
@@ -128,6 +130,55 @@ def effective_infinite_sessions(
     return _copilot_infinite_session_config() or {"enabled": False}
 
 
+_SDK_SESSION_PARAMS: frozenset[str] | None = None
+
+
+def _sdk_session_params() -> frozenset[str]:
+    """The keyword names ``CopilotClient.create_session`` / ``resume_session`` take.
+
+    SDK 1.0 turned the one ``config`` dict into keyword arguments, so a key the
+    SDK does not know is now a ``TypeError`` instead of a silently dropped
+    field (H-181). Read once from the installed SDK, so an upgrade that adds a
+    parameter needs no edit here.
+    """
+    global _SDK_SESSION_PARAMS
+    if _SDK_SESSION_PARAMS is None:
+        from copilot import CopilotClient
+
+        names: set[str] = set()
+        for fn in (CopilotClient.create_session, CopilotClient.resume_session):
+            names.update(
+                p.name for p in inspect.signature(fn).parameters.values()
+                if p.kind is inspect.Parameter.KEYWORD_ONLY
+            )
+        _SDK_SESSION_PARAMS = frozenset(names)
+    return _SDK_SESSION_PARAMS
+
+
+def session_kwargs_for_this_run(config: dict[str, Any]) -> dict[str, Any]:
+    """Turn a session ``config`` into the SDK's keyword arguments, for THIS run.
+
+    The one place every Copilot session is shaped before the SDK sees it:
+
+    - **Attribution (H-181).** ``provider`` becomes a copy that carries the
+      ``X-CC-*`` headers of the run bound on this task
+      (:func:`acb_llm.attribution.attributed_copilot_provider`). It runs when
+      the session is created or resumed, and every run creates or resumes its
+      session, so the headers are always the run's own.
+    - **Unknown keys are dropped.** ``max_tokens`` (never on the wire),
+      ``thinking`` and ``model_params`` (the MAF think-mode keys) ride on
+      ``_default_options`` and would raise ``TypeError`` in SDK 1.0.
+    """
+    allowed = _sdk_session_params()
+    out = {k: v for k, v in config.items() if k in allowed}
+    dropped = sorted(set(config) - set(out))
+    if dropped:
+        _log.debug("copilot.session_keys_dropped", keys=dropped)
+    if out.get("provider"):
+        out["provider"] = attributed_copilot_provider(out["provider"])
+    return out
+
+
 def _apply_copilot_infinite_sessions(agent: Any) -> bool:
     """Inject ``infinite_sessions`` into a Copilot agent's SessionConfig.
 
@@ -153,10 +204,12 @@ def _apply_copilot_infinite_sessions(agent: Any) -> bool:
 
     Idempotent (guards ``__cc_inf_sessions__``); best-effort (never raises). Returns
     True if the wrap was applied.
+
+    ⚠️ **The wrap is installed even under ``COPILOT_INFINITE_SESSIONS=default``
+    (H-181).** It is now also where the batch run and a delegated sub-agent get
+    their attribution headers and lose the keys SDK 1.0 refuses. The opt-out
+    still leaves the SDK's compaction defaults alone: no block is injected.
     """
-    # Honour the operator opt-out at wrap time — no wrap, no runtime overhead.
-    if os.environ.get("COPILOT_INFINITE_SESSIONS", "").strip().lower() == "default":
-        return False
     orig = getattr(agent, "_create_session", None)
     if not callable(orig) or getattr(agent, "__cc_inf_sessions__", False):
         return False
@@ -171,22 +224,25 @@ def _apply_copilot_infinite_sessions(agent: Any) -> bool:
         # swap in a create_session that merges our block, run the original, restore.
         #
         # Compute effective config NOW — provider may have been set after the wrap.
+        # None means the operator opted out: inject no block, but still shape
+        # the call (attribution + unknown keys) below.
         effective_cfg = effective_infinite_sessions(
             getattr(agent, "_default_options", {}) or {}
         )
-        if effective_cfg is None:
-            # Opt-out changed at runtime — skip injection this call.
-            return await orig(streaming, runtime_options)
 
         client = getattr(agent, "_client", None)
         orig_client_create = getattr(client, "create_session", None) if client else None
         if not callable(orig_client_create):
             return await orig(streaming, runtime_options)
 
-        async def _client_create(config: Any) -> Any:
-            if isinstance(config, dict) and "infinite_sessions" not in config:
-                config = {**config, "infinite_sessions": effective_cfg}
-            return await orig_client_create(config)
+        # SDK 1.0 (H-181): the wrapper calls ``create_session(**kwargs)``, so
+        # the interceptor takes keywords. It is also the attribution choke
+        # point for the paths that keep the wrapper's own ``_create_session``
+        # (the batch run and a delegated sub-agent).
+        async def _client_create(**kwargs: Any) -> Any:
+            if effective_cfg is not None and kwargs.get("infinite_sessions") is None:
+                kwargs["infinite_sessions"] = effective_cfg
+            return await orig_client_create(**session_kwargs_for_this_run(kwargs))
 
         try:
             client.create_session = _client_create  # type: ignore[attr-defined]
