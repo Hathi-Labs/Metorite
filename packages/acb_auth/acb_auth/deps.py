@@ -70,7 +70,7 @@ import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from acb_common import get_logger
+from acb_common import bind_run_context, get_logger
 from acb_common.db import bind_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -354,6 +354,28 @@ async def _with_resolved_access(user: UserContext) -> UserContext:
     return enriched
 
 
+def _bind_session_member(email: str | None) -> None:
+    """Name the signed-in member on every AI call this request makes.
+
+    🔴 **Measured on production, 2026-09-24.** `POST /tasks/items/{id}/clarify`
+    calls the model directly, outside any agent run, so nothing bound the
+    member and four Tasks calls reached the meter with no person on them. Every
+    route that calls `acb_llm` itself has the same gap, and this is the one
+    seam they all pass through.
+
+    ⚠️ **Branch 1a only.** The internal Bearer matched AND the Next.js proxy
+    forwarded the email it verified from the session. That is the same trust
+    `gateway.routes.agent._session_member` extends, so `member_verified` is
+    honest here and the Router may sign the member (H-73). A bare internal
+    call names nobody, and binds nothing.
+
+    ⚠️ Scoped to this request's task: contextvars do not leak between
+    requests, and an agent run re-binds its own inside `run_context_scope`.
+    """
+    if email and "@" in email:
+        bind_run_context(user=email, member_verified=True)
+
+
 async def get_current_user(
     x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
@@ -424,6 +446,7 @@ async def get_current_user(
                 allowed_domain=allowed_domain,
             )
             email = None
+        _bind_session_member(email or x_user_email)
         return await _with_resolved_access(
             UserContext(
                 email=email or x_user_email,  # still trust Next.js but flag domain mismatch
