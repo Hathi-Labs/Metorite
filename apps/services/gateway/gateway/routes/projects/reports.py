@@ -60,6 +60,7 @@ from gateway.routes.projects.analytics import (
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
+from gateway.routes.projects.analytics_pulse import pulse_body
 from gateway.routes.projects.analytics_rebalance import rebalance_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -105,9 +106,11 @@ from sqlalchemy import text
 #: `rebalance` LAST: it says what to do about the problems the sections
 #: above it found. R3c adds `hygiene` after `stuck`: both read the open work,
 #: and hygiene says which tasks lack the data the other sections need.
+#: R3d adds `pulse` after `capacity`: both read the same person rows, and
+#: pulse says who needs help today.
 SECTIONS: tuple[str, ...] = (
-    "finished", "throughput", "outlook", "load", "capacity", "stuck",
-    "hygiene", "conflicts", "rebalance",
+    "finished", "throughput", "outlook", "load", "capacity", "pulse",
+    "stuck", "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -162,17 +165,23 @@ def _coming(
 #: words a member reads on the gallery card (§8 names the slice). A
 #: preset that named a missing section would be a save the server refuses.
 #: `weekly_delivery` (T4) is live since R2, `project_status` (T5) since
-#: R3a, and `data_hygiene` (T13) since R3c. T11 waits for a filter on the conflict kind, because `conflicts_body`
+#: R3a, `data_hygiene` (T13) since R3c, and `team_pulse` (T1) since R3d.
+#: T11 waits for a filter on the conflict kind, because `conflicts_body`
 #: takes no kinds argument.
 TEMPLATES: dict[str, dict[str, Any]] = {
     t["key"]: t
     for t in (
-        _coming(
-            "team_pulse", "Team pulse",
-            "How is each person on the team today, and who needs help?",
-            ("team", "project", "org"),
-            "The pulse section and a today period",
-        ),
+        {
+            # WS-27bn R3d. The three sections ignore the period: `pulse`
+            # reads today, and the other two read their own horizons. So
+            # one week with the current week kept says "now". R5 adds the
+            # `team` scope.
+            "key": "team_pulse", "name": "Team pulse",
+            "question": "How is each person on the team today, and who needs help?",
+            "scope_kinds": ["project", "org"], "available": True,
+            "sections": ["pulse", "conflicts", "rebalance"],
+            "weeks": 1, "skip_current_week": False,
+        },
         _coming(
             "my_day", "My day",
             "What do I work on today, and what waits on me?",
@@ -826,6 +835,18 @@ async def render_body(
                 section["pickups"] = found["pickups"][:MAX_PEOPLE]
                 section["pickups_total"] = len(found["pickups"])
             sections[name] = section
+        elif name == "pulse":
+            # WS-27bn R3d. `pulse_body`, imported, as `hygiene` does. The
+            # reader decides the HR half of each card and which cards the
+            # body carries (edits E4 and E5), so the READER goes in.
+            #
+            # ⚠️ **No period here, on purpose.** The section reads one UTC
+            # day, today.
+            sections[name] = await pulse_body(
+                db, vis, user,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
         elif name == "hygiene":
             # WS-27bn R3c. `hygiene_body`, imported, as `outlook` does. Its
             # open-work predicate is Load's, bound from the reader's own

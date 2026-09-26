@@ -96,7 +96,7 @@ MAX_NAMED = 20
 #: One named constant, and it is the lower bound of the `days_14_to_30` band
 #: in :data:`STALE_BANDS`, so "stale" in a report and the ageing chart agree.
 #: `test_projects_report_sections_r3c.py` pins the two together. The
-#: `hygiene` section reads it now, and the `pulse` section reads it later.
+#: `hygiene` section and the `pulse` section (R3d) read it.
 STALE_DAYS = 14
 
 #: The four kinds of open task the `hygiene` section counts, in the order it
@@ -178,6 +178,35 @@ async def scope_clause(
     return "t.project_id = CAST(:pid AS uuid)"
 
 
+def blocked_clause() -> str:
+    """The open task ``t`` waits on an open blocker (WS-27bn R3d).
+
+    ⚠️ **One predicate for "blocked", and two callers.** The ``stuck`` route
+    and ``analytics_pulse.pulse_body`` both call it, so the Stuck panel and
+    the pulse cards agree about which work is blocked. A source test in
+    ``test_projects_report_sections_r3d.py`` finds the link type once in
+    this module.
+
+    ⚠️ A link to a task that is DONE is not a block. Counting every
+    `blocks` edge would report a project as blocked by work it already
+    finished, which is how a blocked count becomes noise people mute.
+
+    It binds ``:closed``, which :func:`load_params` and the ``stuck`` route
+    both supply.
+    """
+    return (
+        "EXISTS ("
+        "  SELECT 1 FROM pm_task_links l"
+        "    JOIN pm_tasks b ON b.id = l.source_task_id"
+        "    JOIN pm_task_statuses bs ON bs.id = b.status_id"
+        "   WHERE l.target_task_id = t.id"
+        "     AND l.link_type = 'blocks'"
+        "     AND b.archived_at IS NULL"
+        "     AND bs.category <> ALL(CAST(:closed AS text[]))"
+        ")"
+    )
+
+
 def scope_params(project_id: str | None) -> dict[str, Any]:
     """`:pid`, and ONLY when the clause above names it.
 
@@ -251,20 +280,9 @@ async def stuck(
 
         # ── What is blocked by something unfinished? ────────────────────────
         #
-        # ⚠️ A link to a task that is DONE is not a block. Counting every
-        # `blocks` edge would report a project as blocked by work it already
-        # finished, which is how a blocked count becomes noise people mute.
-        blocker_join = (
-            "EXISTS ("
-            "  SELECT 1 FROM pm_task_links l"
-            "    JOIN pm_tasks b ON b.id = l.source_task_id"
-            "    JOIN pm_task_statuses bs ON bs.id = b.status_id"
-            "   WHERE l.target_task_id = t.id"
-            "     AND l.link_type = 'blocks'"
-            "     AND b.archived_at IS NULL"
-            "     AND bs.category <> ALL(CAST(:closed AS text[]))"
-            ")"
-        )
+        # The predicate is `blocked_clause()`, which the `pulse` report
+        # section calls too (WS-27bn R3d).
+        blocker_join = blocked_clause()
         blocked_total = int((await db.execute(
             text(
                 f"SELECT count(*) FROM pm_tasks t"

@@ -39,6 +39,7 @@ from skill_projects.reads import (
     _report_section,
     _status_names,
     _task_line,
+    hidden_people_line,
     legend,
 )
 
@@ -341,6 +342,20 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "rows": "overdue",
         "columns": [("name", "Project"), ("overdue", "Overdue")],
     },
+    # WS-27bn R3d. One row for each card. A status and the help reasons
+    # print in words, and a key the row does not carry prints empty.
+    "pulse": {
+        "title": "Team pulse",
+        "stats": [("people_total", "People")],
+        "rows": "rows",
+        "columns": [
+            ("name", "Person"),
+            ("status", "Status"),
+            ("open_tasks", "Open"),
+            ("focus_total", "Focus"),
+            ("help_reasons", "Needs help"),
+        ],
+    },
     # WS-27bn R3c. The four counts, then one row for each named task.
     "hygiene": {
         "title": "Data hygiene",
@@ -446,6 +461,28 @@ def _card_cell(key: str, row: dict[str, Any]) -> str:
     return _plain(value)
 
 
+#: WS-27bn R3d. The words of a help reason, as the Pulse panel says them
+#: (`HELP_REASON_LABEL` in `app/projects/lib/pulse.ts`).
+HELP_REASON_WORDS: dict[str, str] = {
+    "blocked": "Blocked",
+    "stale": "Stale",
+    "waiting_overdue": "Waiting past its date",
+}
+
+
+def _pulse_cell(key: str, row: dict[str, Any]) -> str:
+    """One cell of a pulse card row. A status and a reason print in words."""
+    if key == "help_reasons":
+        reasons = row.get("help_reasons")
+        if not isinstance(reasons, list):
+            return ""
+        return ", ".join(HELP_REASON_WORDS.get(str(r), _human(str(r))) for r in reasons)
+    if key == "status":
+        status = row.get("status")
+        return _human(status) if isinstance(status, str) else ""
+    return _card_cell(key, row)
+
+
 def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """The tiles and the table one section adds to the card."""
     spec = REPORT_CARD_SECTIONS.get(name)
@@ -484,6 +521,23 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             "title": title,
             "columns": ["Note"],
             "rows": [{"cells": [spec["hr_hint"]]}],
+        }
+    if name == "pulse" and columns:
+        # WS-27bn R3d. One row for each card, then the E5 line when the
+        # report hides the cards of other people from this reader.
+        cells = [
+            {"cells": [_pulse_cell(key, r) for key, _ in columns]}
+            for r in (rows if isinstance(rows, list) else [])[:25]
+            if isinstance(r, dict)
+        ]
+        if line := hidden_people_line(section):
+            cells.append({"cells": [line, *[""] * (len(columns) - 1)]})
+        if not cells:
+            return stats, None
+        return stats, {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": cells,
         }
     if name == "hygiene" and isinstance(rows, list) and rows and columns:
         # WS-27bn R3c. Five rows of each kind, then a count of the rest. The

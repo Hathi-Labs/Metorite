@@ -1451,6 +1451,9 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
+    # WS-27bn R3d. One row per card. A row with no directory name prints
+    # its address. The facts of a row are in `_REPORT_ROW_FACTS`.
+    "pulse": ("rows", "name", ("people_total", "hidden_people")),
     # WS-27bn R3a. The outlook has no row list. Its figures are NESTED, so
     # the scalar keys are dotted paths that `_report_section` reads with
     # `_dig`. A generic fallback would print nothing for a nested dict.
@@ -1498,6 +1501,8 @@ _REPORT_LABELS: dict[str, str] = {
     "hygiene:by_kind.no_estimate": "no estimate",
     "hygiene:by_kind.stale_in_progress": "stale in progress",
     "hygiene:stale_days": "stale after days",
+    "pulse:people_total": "people",
+    "pulse:hidden_people": "hidden people",
 }
 
 #: The facts one row prints, as ``(path, plain label, fenced)``, for a
@@ -1514,6 +1519,19 @@ _REPORT_ROW_FACTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
         ("shortfall_hours", "hours short", False),
         ("holder.name|holder.email", "held by", True),
         ("candidates.0.name", "first helper", True),
+    ),
+    # WS-27bn R3d. The status first. `status` and `waiting_count` are
+    # absent from a row the reader may not see them on, so they do not
+    # print there.
+    "pulse": (
+        ("status", "status", False),
+        ("open_tasks", "open", False),
+        ("overdue", "overdue", False),
+        ("blocked_count", "blocked", False),
+        ("stale_count", "stale", False),
+        ("waiting_count", "waiting past its date", False),
+        ("focus_total", "focus tasks", False),
+        ("needs_help", "needs help", False),
     ),
     # WS-27bn R3c. The kind first, because it is why the row is here.
     "hygiene": (
@@ -1600,6 +1618,18 @@ def _hygiene_groups(
     return out
 
 
+def hidden_people_line(section: dict[str, Any]) -> str | None:
+    """"This report hides N other people", or None when it hides nobody.
+
+    WS-27bn R3d, edit E5. The chat text and the chat card print it, in
+    the words of the Reports app (`hiddenPeopleLine` in reportEmail.ts).
+    """
+    n = section.get("hidden_people")
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        return None
+    return f"This report hides {n} other {'person' if n == 1 else 'people'}"
+
+
 def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     """One row of a report section as one line."""
     # A capacity row with no directory name still HAS an owner: its
@@ -1637,6 +1667,9 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:
         out.append(f"  {_REPORT_HINTS[name]}")
+    if name == "pulse" and (line := hidden_people_line(section)):
+        # WS-27bn R3d, edit E5. The cards this reader cannot see.
+        out.append(f"  {line}")
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):
