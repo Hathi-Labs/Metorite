@@ -1088,13 +1088,13 @@ def merge_mcp_servers(
 ) -> None:
     """Merge MCP servers into the field the Copilot SDK actually reads.
 
-    MUST target ``agent._mcp_servers``, NOT ``agent._default_options``. The SDK
-    consults ``_default_options`` for exactly one key — ``system_message`` —
-    and resolves MCP as ``runtime_options.get("mcp_servers") or
-    self._mcp_servers`` (``_resume_session`` reads ``self._mcp_servers`` only).
-    We pass a fresh per-run options dict to ``agent.run()``, so anything written
-    to ``_default_options["mcp_servers"]`` is never read by anyone: MCP servers
-    silently never reached a session at all.
+    ⚠️ **The field MOVED with the 2.0 wrapper (H-181).** The 1.0.0b wrapper
+    read ``self._mcp_servers`` and ignored ``_default_options["mcp_servers"]``.
+    The 2.0 wrapper is the reverse: it has no ``_mcp_servers`` attribute, and
+    ``_build_session_kwargs`` forwards every ``_default_options`` key to
+    ``create_session``. ``MetoriteCopilotAgent`` reads the same key. So the
+    target is ``_default_options["mcp_servers"]``. Writing the old attribute
+    would silently drop every server again, the bug this function fixed once.
 
     ``override=True`` lets the caller win over what's already there (the DB
     registry outranks a repo's own files); ``False`` only fills gaps.
@@ -1103,12 +1103,15 @@ def merge_mcp_servers(
     if not servers:
         return
     try:
-        existing = getattr(agent, "_mcp_servers", None)
+        opts = getattr(agent, "_default_options", None)
+        if not isinstance(opts, dict):
+            return  # not a Copilot-SDK agent: it has no MCP field to fill
+        existing = opts.get("mcp_servers")
         merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
         for name, cfg in servers.items():
             if override or name not in merged:
                 merged[name] = cfg
-        agent._mcp_servers = merged  # type: ignore[attr-defined]
+        opts["mcp_servers"] = merged
     except Exception:
         pass
 
@@ -1118,8 +1121,8 @@ async def _inject_mcp_servers(agent: Any, agent_name: str) -> None:
 
     Reads the ``mcp_servers`` Postgres table, resolves any credential
     references through the Integration Registry, and merges the MCP
-    server config into ``agent._mcp_servers`` (see :func:`merge_mcp_servers`
-    for why that field and not ``_default_options``).
+    server config into ``agent._default_options["mcp_servers"]`` (see
+    :func:`merge_mcp_servers` for why that field moved with the 2.0 wrapper).
 
     Only servers whose ``agent_scope`` includes ``"*"`` or the current
     agent name are injected.

@@ -36,6 +36,9 @@ INSTRUCTIONS = _RAW_INSTRUCTIONS.replace(
 
 
 def _llm_provider() -> dict[str, Any]:
+    # ⚠️ No ``headers`` here, on purpose (H-181): one agent serves every
+    # person. The orchestrator stamps the run's X-CC-* headers when each run
+    # creates or resumes its session (session_kwargs_for_this_run).
     base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:8080")
     api_key = os.environ.get("LITELLM_MASTER_KEY", "sk-local")
     return {"type": "openai", "base_url": f"{base_url}/v1", "api_key": api_key}

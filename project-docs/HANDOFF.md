@@ -118,26 +118,29 @@ line — never reclaim a number by deleting the other entry.
   because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
   bug appears on the stream path at once. Do both in one slice.
 
-### H-181 · Upgrade the agent framework and the Copilot SDK · [AGENT]
-- **Check:** `grep -A1 'name = "agent-framework-core"' uv.lock` → a version
-  below 1.19 means this is still open.
-- **Measured 2026-09-24.** `agent-framework-core` 1.8.1 against 1.19.0.
-  `agent-framework-openai` 1.7.0 against 1.14.4. `github-copilot-sdk` 0.1.32
-  against 1.0.14.
-- ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
-  `reasoning_details`. Keep the Router adapter.
-- ⚠️ **The Copilot SDK crosses 1.0.** Expect breaking changes on the
-  `/copilot/chat` path.
+### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
+- **Check:** run one `task-manager` chat on the box. Then read its
+  `usage_event` rows. → A row with an empty member, app or run means this is
+  still open.
+- **Built 2026-09-26, on the `worktree-agent-a48231615ce91464f` branch.** The
+  lock now holds `agent-framework-core` 1.19.0, `agent-framework-openai`
+  1.14.4 and `agent-framework-github-copilot` 2.0.0. The wrapper pins
+  `github-copilot-sdk` to 1.0.11 exactly, so the SDK is 1.0.11, not 1.0.14.
+  Version 1.0.11 already has `ProviderConfig.headers`.
+- **This branch closes the attribution gap in code.** The orchestrator stamps the
+  `X-CC-*` headers when each run creates or resumes its Copilot session. It
+  also stamps them on every turn. `TestTheCopilotPathCarriesTheRun` in
+  `tests/unit/test_usage_attribution.py` is the fence.
 - **Done when:** all four agents and the orchestrator hold a tool conversation
   through the live Router on DeepSeek V4. A stubbed test does not count.
-- 🔴 **The upgrade also closes an attribution gap.** Three agents run on the
-  Copilot SDK: `task-manager`, `app-builder` and `apis-config`. Their model
-  calls reach the Router with no member, app or run. Version 0.1.32 has no
-  `headers` field on `ProviderConfig`, and 1.0.14 adds one. Set
-  `"headers": attribution_headers()` on the provider dict at the two sites
-  that build it. Then delete
-  `test_the_copilot_path_is_a_KNOWN_gap_until_H_181`, which fails on purpose
-  when the sites change.
+- ⚠️ **The 1.x SDK wheel does not bundle the CLI.** The SDK downloads CLI
+  1.0.79 from GitHub releases on first use. Make sure the box can reach
+  GitHub, or run `python -m copilot download-runtime` as the service user
+  during the deploy.
+- ⚠️ **Rebuild two images.** `Dockerfile.copilot-sandbox` and
+  `Dockerfile.mutation` now pin the SDK and download the CLI at build time.
+- ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
+  `reasoning_details`. Keep the Router adapter.
 
 ### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
 - **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`

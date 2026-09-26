@@ -10,8 +10,12 @@ RUN apt-get update \
         git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Copilot SDK (bundles its own copilot CLI binary for Linux).
-RUN pip install --no-cache-dir github-copilot-sdk
+# Install the Copilot SDK. Pinned to the version uv.lock holds, because
+# mutation_runner.py is written against its API (H-181: 1.0 changed it).
+# The 1.x wheel no longer bundles the CLI binary, and it downloads the CLI on
+# first use. Fetch it at build time, so a run does not need the network.
+RUN pip install --no-cache-dir "github-copilot-sdk==1.0.11" \
+    && python -m copilot download-runtime
 
 COPY mutation_runner.py .
 

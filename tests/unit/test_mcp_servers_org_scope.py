@@ -87,7 +87,11 @@ _UNFILTERED_SQL = "SELECT name FROM mcp_servers WHERE enabled = true"
 
 
 class _Agent:
-    """A bare agent stub: ``merge_mcp_servers`` only reads/writes ``_mcp_servers``."""
+    """A bare agent stub: ``merge_mcp_servers`` only reads/writes
+    ``_default_options["mcp_servers"]`` (the 2.0 wrapper's field, H-181)."""
+
+    def __init__(self) -> None:
+        self._default_options: dict = {}
 
 
 def _seed_mcp(admin_engine, *, org: str, name: str) -> None:
@@ -139,7 +143,7 @@ class TestMcpServersScopedToRunOrg:
             finally:
                 release_tenant(tok)
 
-            injected = set(getattr(agent, "_mcp_servers", {}) or {})
+            injected = set(agent._default_options.get("mcp_servers") or {})
             assert srv_a in injected, (
                 "the org-A-bound injection did not include org A's own MCP "
                 f"server: {sorted(injected)!r}"
@@ -185,7 +189,7 @@ class TestMcpServersScopedToRunOrg:
             finally:
                 release_tenant(tok)
 
-            injected = set(getattr(agent, "_mcp_servers", {}) or {})
+            injected = set(agent._default_options.get("mcp_servers") or {})
             assert srv_a in injected and srv_b in injected, (
                 "flag OFF must inject every org's servers (no filter) — "
                 f"byte-identical to today: {sorted(injected)!r}"
@@ -216,7 +220,7 @@ class TestMcpServersScopedToRunOrg:
 
             await _inject_mcp_servers(agent, _AGENT)
 
-            injected = set(getattr(agent, "_mcp_servers", {}) or {})
+            injected = set(agent._default_options.get("mcp_servers") or {})
             assert injected == set(), (
                 "flag ON + no resolvable org must inject NOTHING (fail closed), "
                 f"never another org's servers: {sorted(injected)!r}"

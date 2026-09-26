@@ -16,9 +16,19 @@ from orchestrator.copilot_agent import MetoriteCopilotAgent
 
 
 class _FakeCopilotClient:
+    """Records the keywords, then proves the REAL SDK client accepts them.
+
+    SDK 1.0 (H-181) takes keyword arguments, and ``cli_url`` became
+    ``connection=RuntimeConnection.for_uri(...)``. Building a real client
+    from the same keywords fails the test if the SDK signature drifts again.
+    """
+
     instances: ClassVar[list[_FakeCopilotClient]] = []
 
-    def __init__(self, options):
+    def __init__(self, **options):
+        from copilot import CopilotClient
+
+        CopilotClient(**options)  # raises TypeError on an unknown keyword
         self.options = options
         _FakeCopilotClient.instances.append(self)
 
@@ -50,8 +60,13 @@ async def test_sandbox_cli_url_uses_tcp_transport_not_token(monkeypatch):
 
     await agent.start()
 
+    from copilot import UriRuntimeConnection
+
     assert len(_FakeCopilotClient.instances) == 1
-    assert _FakeCopilotClient.instances[0].options == {"cli_url": "127.0.0.1:54321"}
+    opts = _FakeCopilotClient.instances[0].options
+    assert set(opts) == {"connection"}, "the sandbox branch must not send a token"
+    assert isinstance(opts["connection"], UriRuntimeConnection)
+    assert opts["connection"].url == "127.0.0.1:54321"
     assert agent._client is _FakeCopilotClient.instances[0]
     assert base_start_calls == [agent]
 

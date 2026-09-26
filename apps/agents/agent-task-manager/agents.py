@@ -111,6 +111,12 @@ def _llm_provider() -> dict[str, Any]:
     """Return BYOK provider config pointing at the gateway's /v1 endpoint.
 
     The gateway uses the litellm Python SDK directly — no separate proxy.
+
+    ⚠️ No ``headers`` here, on purpose (H-181). This dict is built once per
+    agent, and one agent serves every person, so a header stamped here would
+    bill the wrong member. The orchestrator stamps ``X-CC-Member``,
+    ``X-CC-Module`` and ``X-CC-Run`` when each run creates or resumes its
+    session (``orchestrator._copilot_session.session_kwargs_for_this_run``).
     """
     base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:8080")
     api_key = os.environ.get("LITELLM_MASTER_KEY", "sk-local")

@@ -8,14 +8,18 @@ from collections.abc import AsyncIterable
 from typing import Any
 
 from acb_llm import compress_tool_output
+from acb_llm.attribution import attribution_headers
 from agent_framework import AgentResponseUpdate, Content
 from agent_framework.exceptions import AgentException
 from agent_framework_github_copilot import GitHubCopilotAgent
-from copilot import CopilotClient, CopilotSession, SessionEvent
-from copilot.session import SessionEventType
+from copilot import CopilotClient, CopilotSession, RuntimeConnection, SessionEvent
+from copilot.session_events import SessionEventType
 
 from orchestrator._copilot_session import (
     effective_infinite_sessions as _effective_infinite_sessions,
+)
+from orchestrator._copilot_session import (
+    session_kwargs_for_this_run as _session_kwargs_for_this_run,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +27,8 @@ logger = logging.getLogger(__name__)
 # ── Output token limit (CURRENTLY A NO-OP — see below) ───────────────────
 # WARNING: this value does NOT reach the model. The Copilot SDK's
 # create_session / resume_session wire protocol has no max_tokens field, so the
-# ``config["max_tokens"]`` we set below is silently dropped by the SDK. The
+# ``config["max_tokens"]`` we set below is dropped before the SDK call by
+# ``session_kwargs_for_this_run`` (SDK 1.0 would raise TypeError on it). The
 # real output ceiling is applied by the gateway's /v1 endpoint
 # (GATEWAY_DEFAULT_MAX_OUTPUT_TOKENS in v1_compat.py), which is the choke point
 # every Copilot request actually flows through — the CLI POSTs there WITHOUT a
@@ -107,9 +112,14 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         exclusive per the SDK's own validation, so this branch and the token
         branch below never both fire.
         """
+        # SDK 1.0 (H-181): the client takes keywords, and ``cli_url`` became
+        # ``connection=RuntimeConnection.for_uri(...)``, which still accepts
+        # the "host:port" form copilot_sandbox.py hands us.
         sandbox_cli_url = getattr(self, "_sandbox_cli_url", None)
         if self._client is None and sandbox_cli_url:
-            self._client = CopilotClient({"cli_url": sandbox_cli_url})
+            self._client = CopilotClient(
+                connection=RuntimeConnection.for_uri(sandbox_cli_url),
+            )
             logger.info("Copilot client connected to sandbox", cli_url=sandbox_cli_url)
             await GitHubCopilotAgent.start(self)
             return
@@ -128,11 +138,11 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             client_options: dict[str, Any] = {"github_token": token}
             cli_path = self._settings.get("cli_path")
             if cli_path:
-                client_options["cli_path"] = cli_path
+                client_options["connection"] = RuntimeConnection.for_stdio(path=cli_path)
             log_level = self._settings.get("log_level")
             if log_level:
                 client_options["log_level"] = log_level
-            self._client = CopilotClient(client_options)
+            self._client = CopilotClient(**client_options)
             logger.info("Copilot client using explicit token auth")
         # Explicit base call (not super()): this method is monkey-patched
         # onto plain GitHubCopilotAgent instances, where zero-arg super()
@@ -166,7 +176,9 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         if permission_handler:
             config["on_permission_request"] = permission_handler
 
-        mcp_servers = opts.get("mcp_servers") or self._mcp_servers
+        # SDK 2.0 wrapper (H-181): MCP servers live in _default_options.
+        # The 1.0.0b wrapper's ``self._mcp_servers`` attribute is gone.
+        mcp_servers = opts.get("mcp_servers") or self._default_options.get("mcp_servers")
         if mcp_servers:
             config["mcp_servers"] = mcp_servers
 
@@ -225,7 +237,8 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         if effort:
             config["reasoning_effort"] = effort
             try:
-                return await self._client.create_session(config)
+                return await self._client.create_session(
+                    **_session_kwargs_for_this_run(config))
             except Exception:
                 # Model may not support reasoning_effort — retry without.
                 logger.warning(
@@ -234,14 +247,21 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
                 )
                 config.pop("reasoning_effort", None)
 
-        return await self._client.create_session(config)
+        # SDK 1.0 (H-181): keyword arguments, shaped for THIS run — the
+        # provider carries the run's X-CC-* headers and unknown keys drop.
+        return await self._client.create_session(**_session_kwargs_for_this_run(config))
 
     async def _resume_session(
         self,
         session_id: str,
         streaming: bool,
+        runtime_options: dict[str, Any] | None = None,
     ) -> CopilotSession:
         """Resume a Copilot session, re-applying the agent's identity.
+
+        ``runtime_options`` is accepted because the 2.0 wrapper's
+        ``_get_or_create_session`` passes it (H-181). It is ignored, as before:
+        a resumed session takes the agent's defaults only.
 
         The upstream ``_resume_session`` forwards only ``tools``,
         ``on_permission_request`` and ``mcp_servers`` — it drops
@@ -273,7 +293,7 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         if self._permission_handler:
             config["on_permission_request"] = self._permission_handler
 
-        mcp_servers = self._mcp_servers
+        mcp_servers = self._default_options.get("mcp_servers")
         if mcp_servers:
             config["mcp_servers"] = mcp_servers
 
@@ -311,7 +331,8 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         if effort:
             config["reasoning_effort"] = effort
             try:
-                return await self._client.resume_session(session_id, config)
+                return await self._client.resume_session(
+                    session_id, **_session_kwargs_for_this_run(config))
             except Exception:
                 logger.warning(
                     "resume_session failed with reasoning_effort=%s; "
@@ -319,7 +340,10 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
                 )
                 config.pop("reasoning_effort", None)
 
-        return await self._client.resume_session(session_id, config)
+        # A resume re-stamps the provider, so a thread reopened by another
+        # person or in a later run bills THAT run, not the one that made it.
+        return await self._client.resume_session(
+            session_id, **_session_kwargs_for_this_run(config))
 
     async def _stream_updates(
         self,
@@ -388,6 +412,9 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         # stall detector grants a longer quiet budget while any is in flight
         # (audit C3). A set of call ids so an unmatched COMPLETE can't skew it.
         _tools_in_flight: set[str] = set()
+        # request_id → (tool_call_id, tool_name) for our injected tools, whose
+        # COMPLETED event names only the request (SDK 1.0).
+        _external_by_request: dict[str, tuple[str, str]] = {}
 
         def _on_event(event: SessionEvent) -> None:
             """Translate Copilot SDK events to AgentResponseUpdate objects."""
@@ -525,6 +552,9 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
                     tc_name = getattr(d, "tool_name", "") or ""
                     args = getattr(d, "arguments", None)
                     _tools_in_flight.add(tc_id or tc_name or "tool")
+                    _req = getattr(d, "request_id", None)
+                    if _req:
+                        _external_by_request[str(_req)] = (tc_id, tc_name)
                     queue.put_nowait(AgentResponseUpdate(
                         role="assistant",
                         contents=[Content.from_function_call(
@@ -537,8 +567,12 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
                     ))
 
                 elif t == SessionEventType.EXTERNAL_TOOL_COMPLETED:
-                    tc_id = getattr(d, "tool_call_id", "") or ""
-                    tc_name = getattr(d, "tool_name", "") or ""
+                    # SDK 1.0 carries only ``request_id`` here, so recover the
+                    # call id and name from the matching REQUESTED event.
+                    _req_ids = _external_by_request.pop(
+                        str(getattr(d, "request_id", "") or ""), ("", ""))
+                    tc_id = getattr(d, "tool_call_id", "") or _req_ids[0] or ""
+                    tc_name = getattr(d, "tool_name", "") or _req_ids[1] or ""
                     _tools_in_flight.discard(tc_id or tc_name or "tool")
                     result_obj = getattr(d, "result", None)
                     result_text = (
@@ -642,10 +676,17 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
                     "Error in MetoriteCopilotAgent event handler"
                 )
 
-        copilot_session.on(_on_event)
+        # SDK 1.0: on() returns the unsubscribe callable; there is no off().
+        _unsubscribe = copilot_session.on(_on_event)
 
         try:
-            await copilot_session.send({"prompt": prompt})
+            # SDK 1.0: send(prompt, ...) — no config dict. ``request_headers``
+            # are per-TURN headers on this turn's model calls (H-181). They
+            # carry the run bound on this task, which also covers a session
+            # the CLI kept from an earlier run.
+            await copilot_session.send(
+                prompt, request_headers=attribution_headers() or None,
+            )
 
             # ── Stream stall detection ───────────────────────────────
             # If the Copilot CLI subprocess crashes or hangs, queue.get()
@@ -723,7 +764,7 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             raise
         finally:
             with contextlib.suppress(Exception):
-                copilot_session.off(_on_event)
+                _unsubscribe()
 
     async def _run_impl(
         self,
