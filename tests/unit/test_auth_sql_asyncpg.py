@@ -220,6 +220,7 @@ def _cases() -> list[tuple[str, str, dict]]:
         ),
         ("access._ORG_OWNER_SQL", A._ORG_OWNER_SQL, {"slug": "no-such-org"}),
         ("access._MEMBERSHIP_SQL", A._MEMBERSHIP_SQL, {"email": WHO}),
+        ("access._MEMBERSHIP_IDENTITY_SQL", A._MEMBERSHIP_IDENTITY_SQL, {"email": WHO}),
         ("access._PARTICIPANT_SQL", A._PARTICIPANT_SQL, {"sid": NOWHERE}),
         (
             "access._GROUP_MEMBER_SQL",
