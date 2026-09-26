@@ -142,6 +142,9 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/billing/subscriptions/activate"): _R(EDITOR),
     ("POST", "/billing/seats"): _R(EDITOR),
     ("POST", "/billing/seats/release"): _R(EDITOR),
+    # Set the seat COUNT (2026-09-26). No payment stands behind it and it
+    # moves MRR, so it takes the gate access changes and keys take.
+    ("POST", "/billing/seats/count"): _R(ADMIN, elevated=True),
     ("POST", "/registry/seats"): _R(EDITOR),
     # The dual-arm resolve door. It mints identities and consumes Core
     # seats like the seat doors above, so the same rank. It had NO row
