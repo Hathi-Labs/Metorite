@@ -275,7 +275,7 @@ next to each status, as `classify` already does.
 |---|---|---|
 | **Behind**, **At risk**, **Overloaded**, **Idle**, **On track** | The `classify` pill, over the named window | `workload.py:166` — exists |
 | **On leave** | An absence today, from `people_absences`. It shows before every pill. | `work_schedule.py` — exists |
-| **Stale** | An open task with no activity for N days. N comes from the `stuck` bands. | `analytics.py` `stuck` — exists |
+| **Stale** | An open task in the `in_progress` category whose `updated_at` is `STALE_DAYS` (14) or more days old. `record_activity` and each satellite write bump `updated_at`, so a comment or a new assignee resets it. | `analytics.py` `STALE_DAYS`. The `hygiene` section uses it now, and `pulse` uses it later. |
 | **Blocked** | An open task with an open blocker (`pm_task_links`) | `stuck` and `conflicts` — exist |
 | **Waiting** | A `pm_task_personal` row with `waiting_on`, and `expected_by` before today | migration 187/188 — the column exists, no read uses it in a report |
 | **Needs help** | NEW. A person with one or more of: a blocked task, a stale task in progress, a waiting item past its date, or the `behind` pill two runs in a row | The `pulse` section (R3) |
@@ -704,17 +704,17 @@ spec-auditor split R3 into four slices on 2026-09-24. Each slice is one PR.
 **The lockstep list.** A section name lives in seven places, plus the chat
 card map. A slice adds its name to each of them in the same PR:
 
-1. `reports.py` `SECTIONS` (`:103`).
+1. `reports.py` `SECTIONS` (`:106`).
 2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1224`). This is the
    chat's list, not `views.py`.
 3. `skill_projects/writes.py` `REPORT_SECTIONS` (`:854`).
-4. `ReportsView.tsx` `RenderedBody` (`:201`).
+4. `ReportsView.tsx` `RenderedBody` (`:210`).
 5. `src/lib/reportEmail.ts`.
 6. `lib/reportBuilder.ts` `REPORT_SECTIONS` (`:34`).
-7. `lib/api.ts` `RenderedReportBody` (`:713`).
+7. `lib/api.ts` `RenderedReportBody` (`:786`).
 
 The chat card map is `skill_projects/views.py` `REPORT_CARD_SECTIONS`
-(`:316`). `test_projects_report_sections_lockstep.py` holds the seven lists.
+(`:317`). `test_projects_report_sections_lockstep.py` holds the seven lists.
 `test_projects_agent.py` holds each card title to `ReportsView.tsx`.
 
 **The declared order of `SECTIONS`:** `finished`, `throughput`, `outlook`,
@@ -815,12 +815,70 @@ records why R3b adds no row filter.
 **As built:** `test_projects_report_sections_r3b.py` seeds one task with two
 holders and 23 idle people on a real database. It proves (a) to (d) and (g).
 
-#### R3c — `hygiene` and T13 · waits for spec edit E2
+#### R3c — `hygiene` and T13 · AGENT-SAFE
 
-**What:** the `hygiene` section and a `HygienePanel` for it. T13
-`data_hygiene` goes live.
+**What:**
+- `hygiene_body` in `analytics.py` returns the section. It reads open work
+  through `load_open_where` and `load_params`, so hygiene and `load` agree
+  about "open".
+- The section counts four kinds of open task:
+  - `no_assignee`: no row in `pm_task_assignees`. An `agent:<name>`
+    assignee counts as an assignee.
+  - `no_due_date`: `due_at IS NULL`.
+  - `no_estimate`: `estimate_mins IS NULL`.
+  - `stale_in_progress`: category `in_progress`, and
+    `updated_at <= now() - make_interval(days => :stale_days)`.
+- `STALE_DAYS = 14` is one named constant in `analytics.py`. It is the lower
+  bound of the `days_14_to_30` band in `STALE_BANDS`.
+- A task counts in each kind that it breaks. So the kinds do not add up to
+  `open_total`, and the panel says so.
+- Subtasks count, as they count in `load`. Triage, archived tasks, closed
+  tasks and the work of a stopped project do not count (D-PM-32).
+- The section never reads `pm_task_personal`. A private estimate of one
+  member does not fill the shared field (D53, owner Q6).
+- The body is `open_total`, `stale_days`, `by_kind` and `rows`. `rows` holds
+  up to `MAX_NAMED` (20) tasks of each kind, and `by_kind` counts them all.
+- `HygienePanel` in `AnalyticsPanels.tsx` draws one bar for each kind,
+  "n of open_total". Up to five titles follow each bar, then "…and M more".
+  It uses the private `Bar`.
+- `lib/reportPanels.ts` gains `hygienePanelData`. The table folds under the
+  panel, as R2b sets.
+- The email and the download print one text bar for each kind,
+  "n of open_total", then the rows up to `maxRows`.
+- The chat card shows the four counts and one row for each task.
+- T13 `data_hygiene` goes live with sections `hygiene`, `weeks` 1 and
+  `skip_current_week` false. Its scopes are `project` and `org`. The section
+  ignores the period, because it reads the state now.
+- T7 stays ◐. Its `waits_for` changes to "A today period, and a rule for
+  which hygiene rows are high".
 
-**Open:** spec edit E2 must land before this slice starts.
+**Non-goals:** a `/analytics/hygiene` route, a panel in the Analytics app, a
+manifest row, a summary tile, and T7. The route is a later slice. The body
+function makes it one route plus one manifest row.
+
+**Done when:**
+- (a) On a real database, the section equals `hygiene_body` for one scope and
+  one reader.
+- (b) A seeded task shows in each of the four kinds, and a task with only an
+  `agent:` assignee is not in `no_assignee`.
+- (c) Triage, archived, closed tasks and tasks of a stopped project are not in
+  any kind.
+- (d) A task in progress with `updated_at` 15 days old is stale. One with 13
+  days is not.
+- (e) A task with `estimate_mins` NULL and a
+  `pm_task_personal.time_estimate_mins` value is in `no_estimate`. A source
+  test proves that the SQL does not name `pm_task_personal`.
+- (f) A task that the reader cannot see is in no count.
+- (g) 23 undated tasks give 20 rows and `by_kind.no_due_date` 23.
+- (h) `hygiene` sits between `stuck` and `conflicts` in `SECTIONS`, and it is
+  opt-in. `test_projects_report_sections_r3.py` passes with no change.
+- (i) T13 is live. The live list in the lockstep and template tests is
+  `weekly_delivery`, `project_status`, `data_hygiene`.
+- (j) `reportVisuals.test.ts` draws nine panels, and fence (b) names
+  `HygienePanel`.
+- (k) The lockstep test and the card title test pass with the new name.
+- (l) The H-186 items pass their tests, and the slice deletes the H-186
+  entry.
 
 #### R3d — `pulse` and T1 · waits for spec edits E2 to E4
 
@@ -1098,20 +1156,25 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_templates.py \
   tests/unit/test_projects_report_visuals.py \
   tests/unit/test_projects_report_sections_r3.py \
+  tests/unit/test_projects_report_sections_r3b.py \
+  tests/unit/test_projects_report_sections_r3c.py \
   tests/unit/test_projects_analytics_outlook.py \
   tests/unit/test_tenant_coverage.py -q
 ```
 
 `test_projects_agent.py` holds the class-A reach fence. A manifest row that
 names a built tool which never calls the route fails there.
+
 `test_projects_report_builder.py` is R1's file.
 `test_projects_report_templates.py` is R2's file.
 `test_projects_report_sections_r3.py` is R3a's file.
+`test_projects_report_sections_r3b.py` is R3b's file.
+`test_projects_report_sections_r3c.py` is R3c's file.
 
 Client, in `workbench/control_plane`:
 
 ```bash
-npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts
+npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts src/components/genUITemplates.test.ts
 ```
 
 Each slice adds its own test file and names it in its PR. A UI slice also runs
