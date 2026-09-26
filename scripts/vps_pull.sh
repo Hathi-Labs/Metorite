@@ -40,34 +40,95 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 RELEASE_REF="${RELEASE_REF:-release}"
 STATE_DIR="${STATE_DIR:-/var/lib/acb}"
-MODE="apply"
+# MODE comes from the argument, or else from the environment. The give-up
+# message below has told operators to run `sudo MODE=force bash vps_pull.sh`
+# since WS-25, and until 2026-09-26 this line overwrote MODE with "apply", so
+# that advice never worked.
+MODE="${MODE:-apply}"
 case "${1:-}" in
   --force) MODE="force" ;;
   --check) MODE="check" ;;
   "")      ;;
   *)       echo "unknown argument: $1" >&2; exit 2 ;;
 esac
+case "$MODE" in
+  apply|force|check) ;;
+  *) echo "unknown MODE: $MODE (expected apply, force or check)" >&2; exit 2 ;;
+esac
 
 say()  { printf "\n==> %s\n" "$*"; }
 warn() { printf "  !! %s\n" "$*" >&2; }
 
-# --- Never run two of these at once ------------------------------------------
-# The timer fires on a cadence; a slow apply must not have the next tick start a
-# second one on the same working tree. flock makes overlap impossible rather
-# than unlikely — a second invocation exits 0 quietly, because "someone else is
-# already applying" is a normal state, not a fault worth alerting on.
-LOCK="/tmp/acb-vps-pull.lock"
-exec 9>"$LOCK"
-if ! flock -n 9; then
-  echo "another apply is in progress — nothing to do"
-  exit 0
+# --- Never apply as root (H-89) ----------------------------------------------
+# 🔴 **ROOT WAS THE WRITER.** This script ran as root under `acb-pull.service`,
+# so every `npm ci` and `next build` on the pull path left root-owned files in
+# a checkout that the CI path, as the app user, then could not write. On
+# 2026-09-26 that was 50220 paths under the workbench's `node_modules`.
+#
+# The unit now runs as the checkout's owner. This block is the fence for the
+# other ways in: the runbook's `sudo … vps_pull.sh`, and the first tick after
+# this change lands, while the box still holds the old unit. Root hands the
+# state directory to the owner and runs this file again as the owner. Nothing
+# else on this path runs as root. The apply reaches root through `sudo` only.
+if [ "$(id -u)" = "0" ]; then
+  OWNER="$(stat -c '%U' "$APP_DIR")"
+  if [ "$OWNER" != "root" ]; then
+    OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
+    mkdir -p "$STATE_DIR" && chown -R "$OWNER:" "$STATE_DIR" 2>/dev/null || true
+    echo "running as root — running again as $OWNER, the owner of $APP_DIR (H-89)"
+    exec runuser -u "$OWNER" -- env \
+      HOME="$OWNER_HOME" PATH="$OWNER_HOME/.local/bin:$PATH" \
+      APP_DIR="$APP_DIR" RELEASE_REF="$RELEASE_REF" STATE_DIR="$STATE_DIR" MODE="$MODE" \
+      MAX_FAILS="${MAX_FAILS:-3}" \
+      bash "$0" "$@"
+  fi
 fi
 
+# --- One deploy at a time, and NEVER wait (H-89, H-164) ----------------------
+# The timer fires on a cadence, AND the CI path runs the same apply on the same
+# checkout. So this takes the SAME lock that `vps_apply.sh` takes, on the same
+# file and the same fd, for the whole run: fetch, install, build, swap and
+# restart. When another deploy holds it, this exits 0 and changes nothing.
+# "Someone else is already applying" is a normal state, and the timer's next
+# tick is the retry.
+#
+# ⚠️ The path must match `vps_apply.sh`'s helper block exactly.
+#
+# ⚠️ `/tmp/acb-vps-pull.lock` is the OLD lock, and nothing takes it now. It
+# guarded the pull path against itself only, and the CI path never took it.
+# The file can stay on the box. Do not delete it from here, because a pull
+# that runs the old copy of this script still opens it.
+# `test_deploy_serialize.py` runs both against one lock file and fails if they
+# do not exclude each other.
+DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
+DEPLOY_MARKER="${DEPLOY_MARKER:-$(dirname "$APP_DIR")/acb-deploy.applied}"
+[ -e "$DEPLOY_LOCK" ] || ( umask 022; : >> "$DEPLOY_LOCK" ) 2>/dev/null || true
+# Read-only on purpose: flock(2) ignores the open mode, so a lock file that
+# another user created stays usable.
+exec 8<"$DEPLOY_LOCK"
+if ! flock -n 8; then
+  hpid="" hsince="" hwho=""
+  read -r hpid hsince hwho < "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  if [ -n "$hpid" ] && [ -d "/proc/$hpid" ]; then
+    echo "another deploy holds the lock since $hsince, pid $hpid ($hwho) — nothing to do, the timer retries"
+  else
+    echo "another deploy holds the lock — nothing to do, the timer retries"
+  fi
+  exit 0
+fi
+printf '%s %s %s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(id -un)" \
+  > "$DEPLOY_LOCK.holder.$$" 2>/dev/null \
+  && mv -f "$DEPLOY_LOCK.holder.$$" "$DEPLOY_LOCK.holder" 2>/dev/null || true
+
 cd "$APP_DIR"
-# The unit runs as root while the checkout is owned by acb; without this git
-# refuses every command with "detected dubious ownership" and the timer fails
-# in a way that reads like a network problem.
-git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+# Only a user who does NOT own the checkout needs this, or git refuses every
+# command with "detected dubious ownership". Add it once. The unconditional add
+# ran every five minutes, and root's ~/.gitconfig held 8375 copies of this one
+# line on 2026-09-26.
+if [ "$(stat -c '%U' "$APP_DIR")" != "$(id -un)" ] \
+   && ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$APP_DIR"; then
+  git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+fi
 
 say "Fetching origin/$RELEASE_REF"
 if ! git fetch --quiet origin "$RELEASE_REF" 2>/dev/null; then
@@ -106,9 +167,17 @@ printf "    local:  %s\n    target: %s\n" "${LOCAL:0:12}" "${TARGET:0:12}"
 # ⚠️ A box with no marker at all (fresh bring-up, or one that predates this)
 # applies once and then settles. That is the correct bias: re-applying is
 # idempotent, and never applying is the failure this exists to end.
+#
+# 🟢 **A CI DEPLOY COUNTS TOO (2026-09-26).** `last-pull-sha` records only what
+# THIS path applied, so a commit the CI path had just shipped read as "not yet
+# applied", and this path built it a second time: CI at 06:34, root at 06:47.
+# `vps_apply.sh` now writes one marker for BOTH paths, and only at its last
+# line. APPLIED_SHA reads it, so either path's complete apply satisfies the
+# gate. `last-pull-sha` stays the record of this path's own successes.
 LAST_OK_SHA="$(cat "$STATE_DIR/last-pull-sha" 2>/dev/null || echo '')"
-if [ "$LOCAL" = "$TARGET" ] && [ "$LAST_OK_SHA" = "$TARGET" ] && [ "$MODE" != "force" ]; then
-  echo "    already current"
+APPLIED_SHA="$(cut -d' ' -f1 "$DEPLOY_MARKER" 2>/dev/null || echo '')"
+if [ "$LOCAL" = "$TARGET" ] && { [ "$LAST_OK_SHA" = "$TARGET" ] || [ "$APPLIED_SHA" = "$TARGET" ]; } && [ "$MODE" != "force" ]; then
+  echo "    already at ${TARGET:0:12}, skipping"
   # Touch the marker even on a no-op: D3 asks whether delivery is WORKING, and
   # "nothing to do" is a healthy answer. Without this, a box that is simply
   # up to date looks identical to a box whose poller died three weeks ago.
@@ -145,7 +214,7 @@ MAX_FAILS="${MAX_FAILS:-3}"
 if [ "$FAIL_SHA" = "$TARGET" ] && [ "$FAIL_N" -ge "$MAX_FAILS" ] && [ "$MODE" != "force" ]; then
   warn "apply has failed $FAIL_N times at ${TARGET:0:12} — NOT retrying"
   warn "each attempt restarts the gateway before it fails, so retrying is an outage"
-  warn "fix the cause, then: sudo MODE=force bash $0   (or clear $STATE_DIR/last-fail-*)"
+  warn "fix the cause, then: sudo bash $0 --force   (or sudo MODE=force bash $0, or clear $STATE_DIR/last-fail-*)"
   # Non-zero so `systemctl --failed` keeps showing it. A box that has given up
   # must not look healthy — that is the failure WS-25 exists to end.
   exit 11
@@ -178,7 +247,13 @@ git show "$TARGET:$APPLY_SRC" > "$TMP_APPLY"
 chmod 700 "$TMP_APPLY"
 
 say "Running $APPLY_SRC from $TARGET"
-if APP_DIR="$APP_DIR" DEPLOY_REF="$TARGET" bash "$TMP_APPLY"; then
+# DEPLOY_LOCK_HELD: this process already holds the lock on fd 8, and the
+# apply inherits it. A second acquire would open a NEW file description and
+# wait on itself.
+FORCE_FLAG=0
+[ "$MODE" = "force" ] && FORCE_FLAG=1
+if APP_DIR="$APP_DIR" DEPLOY_REF="$TARGET" DEPLOY_LOCK_HELD=1 DEPLOY_FORCE="$FORCE_FLAG" \
+     DEPLOY_LOCK="$DEPLOY_LOCK" DEPLOY_MARKER="$DEPLOY_MARKER" bash "$TMP_APPLY"; then
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   date -u '+%Y-%m-%dT%H:%M:%SZ' > "$STATE_DIR/last-pull-ok" 2>/dev/null || true
   echo "$TARGET" > "$STATE_DIR/last-pull-sha" 2>/dev/null || true

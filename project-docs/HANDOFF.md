@@ -705,8 +705,35 @@ line — never reclaim a number by deleting the other entry.
   connects. If every failure still prints "THE APPLY DID NOT REACH ITS
   FINAL LINE", this is open — that sentence is false when the apply never
   started.
+- 📌 **2026-09-26 — a third shape of the same sentence.** After the
+  deploy-serialize PR, a CI round can connect, wait 900s for the box's
+  deploy lock, and stop with nothing applied. The apply log then says
+  `another deploy holds the lock since <time>, pid <pid>`, and the workflow
+  still prints "THE APPLY DID NOT REACH ITS FINAL LINE". The fix for this
+  entry must separate that case too. The round applied nothing, and the
+  box's own pull held the lock to deliver the release.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- 🟢 **2026-09-26 — the deploy-serialize PR removes the writer. Do not delete
+  this entry until the box proves it.**
+  - **What it changes.** `acb-pull.service` runs as `User=acb`, not root.
+    `vps_pull.sh` also runs itself again as the checkout owner when root
+    starts it. That covers the runbook's `sudo` and the first tick after the
+    merge. Both deploy paths take one `flock` on `/opt/acb/acb-deploy.lock`.
+  - **Measured on the box before the merge.** 50220 root-owned paths sat
+    under `workbench/control_plane/node_modules`. `.next` was `root:root`.
+    `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`, so every
+    `sudo systemctl` in the apply works as `acb`.
+  - **What to measure.** `reclaim_build_tree` now covers `node_modules` too,
+    and it prints a total on every build. The first deploy after the merge
+    reclaims the old root files. From the second deploy, every line must
+    read `reclaimed 0 path(s)`:
+
+        sudo journalctl -u acb-pull --since "1 day ago" | grep "build tree ownership"
+
+  - **The decision this entry asked the owner for** is in that PR. It
+    changes a systemd unit on production, and the merge is the owner's
+    decision.
 - **📌 2026-09-21 — MEASURED, and one part of it is still unexplained.**
   H-137's gate turned a deploy red for the first time. The cause was this
   entry. `.next` was `root:root` with 3803 paths under it in the control
@@ -1424,6 +1451,20 @@ line — never reclaim a number by deleting the other entry.
   Any hit means this is still real:
 
       journalctl -u acb-workbench --since "7 days ago" | grep -c "next: not found"
+- 🟢 **2026-09-26 — the deploy-serialize PR closes the race. Keep this entry
+  until seven days of journal read zero.**
+  - **The cause was the OTHER deploy path.** Root's pull ran `npm ci` while
+    the CI path restarted the unit, and the reverse. Run 36166015861 is the
+    build half of the same race: `Cannot find module 'next/server.js'`.
+  - **What it changes.** Both paths take one lock for the whole apply, so no
+    install runs during another path's build or restart. Inside one apply
+    the order is install, build, swap, restart. `require_next_bin` checks
+    `node_modules/.bin/next` before the workbench and Console restarts, and
+    stops the apply when it is missing. The running process keeps serving.
+  - ⚠️ **One gap remains.** `acb-workbench.service` has
+    `Requires=acb-gateway.service`, so the gateway restart also restarts the
+    workbench, BEFORE the install. The apply now prints a warning there when
+    `next` is missing, and it does not stop.
 - 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
   rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
   box was healthy the whole time and the next deploy started it fine.
@@ -2960,6 +3001,15 @@ line — never reclaim a number by deleting the other entry.
   root-owned paths inside `node_modules`. The ownership repair at the top of
   `vps_apply.sh` deliberately prunes that directory. **H-89** owns it. Until it
   closes, some deploys go red — correctly, and visibly.
+- 🟢 **2026-09-26 — part two is in the deploy-serialize PR.** The pull path
+  runs as `acb`, so no root-owned path reaches `node_modules` again, and both
+  paths take one lock. This PR keeps the success gate. The final line
+  `==> Deployment complete` now also prints when the apply SKIPS, because a
+  complete apply of that same sha already finished. The apply writes the
+  marker file `/opt/acb/acb-deploy.applied` only just before that line.
+  ⚠️ A CI round that waits 900s for the lock and does not get it prints
+  `another deploy holds the lock since …` and exits 1 with nothing changed.
+  That round is red on purpose, and the next round then usually skips.
 - **Authority:** `.github/workflows/deploy.yml` · `scripts/vps_apply.sh` · H-89
 - **Added:** 2026-09-20 · credit and usage review session
 
@@ -3319,6 +3369,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
+
+### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
+- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
+  → a hit means this is still open.
+- **Why:** `vps_pull.sh` applies the `release` ref and passes
+  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
+  to `origin/main`. So the pull path applies the tip of main, and CI gating
+  on `release` does not hold. A commit that failed CI can reach the box
+  through the pull path when it is the tip of main.
+  - The fix must keep the skip check on the sha that the apply resets to.
+  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
+- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
+  header, "Why it polls `release` and NOT `main`"
+- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
+  that PR on purpose, because it changes what the pull path deploys.
 
 # DONE — deleted, not archived
 
