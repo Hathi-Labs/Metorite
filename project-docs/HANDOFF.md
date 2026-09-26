@@ -2637,6 +2637,12 @@ line — never reclaim a number by deleting the other entry.
   sender. **Any member may add any member**, because the send renders once per
   recipient with that recipient's own visibility, so adding somebody can never
   show them more than they could already see.
+- **⚠️ The HR grant is part of "that recipient's own" view** (S11, 2026-09-26).
+  `render_body` passes `can_read_hr_fields(user)` to the Forecast (`outlook`)
+  section, so leave lowers its hours only for an admin reader. The job must
+  render with each recipient as `user`. If it renders once as the author, a
+  non-admin recipient gets the leave-applied rate
+  (`projects_ai_chat.md` §17.3 rule 5).
 - **What exists.** §9.12.8 slices 1 and 2 are merged. A definition saves
   (`pm_reports`, migration 204), renders in the app (the Reports pane), and
   renders to an email body with no colour (`src/lib/reportEmail.ts`).
