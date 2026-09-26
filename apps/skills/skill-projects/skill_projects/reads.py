@@ -1459,6 +1459,12 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
     )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # WS-27bn R3c. One row per task, each with its kind. The four counts sit
+    # in `by_kind`, so the scalar keys are dotted paths, as in `outlook`.
+    "hygiene": ("rows", "title", (
+        "open_total", "by_kind.no_assignee", "by_kind.no_due_date",
+        "by_kind.no_estimate", "by_kind.stale_in_progress", "stale_days",
+    )),
     # S7c. The row label is the kind. The sentence carries titles, so it is
     # fenced like every other piece of member text below.
     "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
@@ -1471,33 +1477,50 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
 }
 
 #: A plain label for a figure whose key is not plain words (H-185 item 2).
-#: A key with no entry prints as itself, as before. A ``section:key`` entry
-#: labels the key in that section only, so an older section keeps its words.
+#: A key with no entry prints as itself, as before. Each entry is
+#: ``section:key``, so it labels the key in that section only, and an older
+#: section keeps its words (H-186 item 4).
 _REPORT_LABELS: dict[str, str] = {
-    "velocity.verdict": "forecast",
-    "plan.planned_finish": "planned finish",
-    "velocity.finish_date": "forecast finish",
-    "plan.slip_days": "slip days",
-    "velocity.remaining_tasks": "tasks left",
-    "capacity.verdict": "capacity",
-    "at_risk_total": "tasks at risk",
-    "idle_total": "idle people",
-    "pickups_total": "people who could take work",
+    "outlook:velocity.verdict": "forecast",
+    "outlook:plan.planned_finish": "planned finish",
+    "outlook:velocity.finish_date": "forecast finish",
+    "outlook:plan.slip_days": "slip days",
+    "outlook:velocity.remaining_tasks": "tasks left",
+    "outlook:capacity.verdict": "capacity",
+    "rebalance:at_risk_total": "tasks at risk",
+    "rebalance:idle_total": "idle people",
+    "rebalance:pickups_total": "people who could take work",
     "rebalance:hr_visible": "HR access",
     "rebalance:horizon_days": "horizon days",
+    "hygiene:open_total": "open tasks",
+    "hygiene:by_kind.no_assignee": "no assignee",
+    "hygiene:by_kind.no_due_date": "no due date",
+    "hygiene:by_kind.no_estimate": "no estimate",
+    "hygiene:by_kind.stale_in_progress": "stale in progress",
+    "hygiene:stale_days": "stale after days",
 }
 
 #: The facts one row prints, as ``(path, plain label, fenced)``, for a
 #: section whose rows nest what matters (WS-27bn R3b). A section with no
 #: entry prints each flat key of the row, as before. A fenced value is a name
 #: somebody typed, so it prints as data. A date is not fenced.
+#:
+#: A path may name a fallback after ``|``. ``holder.name|holder.email`` prints
+#: the address when the name is empty, as the panel does (H-186 item 4).
 _REPORT_ROW_FACTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
     "rebalance": (
         ("project_name", "project", True),
         ("due_on", "due", False),
         ("shortfall_hours", "hours short", False),
-        ("holder.name", "held by", True),
+        ("holder.name|holder.email", "held by", True),
         ("candidates.0.name", "first helper", True),
+    ),
+    # WS-27bn R3c. The kind first, because it is why the row is here.
+    "hygiene": (
+        ("kind", "kind", False),
+        ("project_name", "project", True),
+        ("due_at", "due", False),
+        ("updated_at", "last change", False),
     ),
 }
 
@@ -1535,6 +1558,71 @@ def _dig(section: dict[str, Any], key: str) -> Any:
     return value
 
 
+def _fact(row: dict[str, Any], path: str) -> Any:
+    """One row fact. The first path in a ``|`` list that has a value wins.
+
+    An empty name is no fact, so the row does not print ``held by «»``.
+    """
+    for option in path.split("|"):
+        value = _dig(row, option)
+        if value is not _MISSING and value not in (None, ""):
+            return value
+    return _MISSING
+
+
+#: WS-27bn R3c. The chat names this many hygiene rows of each kind. The
+#: rows come sorted by kind, so one cap over all of them shows the first
+#: kind only, and the later kinds vanish.
+HYGIENE_ROWS_PER_KIND = 5
+
+
+def _hygiene_groups(
+    section: dict[str, Any], rows: list[Any]
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    """The hygiene rows by kind, in the server's order.
+
+    Each item is ``(kind, the rows shown, how many more)``. The count comes
+    from ``by_kind``, which counts every task, not only the rows sent.
+    """
+    by_kind = section.get("by_kind")
+    by_kind = by_kind if isinstance(by_kind, dict) else {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            groups.setdefault(str(row.get("kind") or ""), []).append(row)
+    out: list[tuple[str, list[dict[str, Any]], int]] = []
+    for kind, members in groups.items():
+        shown = members[:HYGIENE_ROWS_PER_KIND]
+        total = by_kind.get(kind)
+        if not isinstance(total, int) or isinstance(total, bool) or total < len(members):
+            total = len(members)
+        out.append((kind, shown, total - len(shown)))
+    return out
+
+
+def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
+    """One row of a report section as one line."""
+    # A capacity row with no directory name still HAS an owner: its
+    # address. "unassigned" is only the row whose assignee is empty,
+    # or the model reads a former colleague's work as nobody's.
+    label = row.get(label_key) or row.get("assignee")
+    if name in _REPORT_ROW_FACTS:
+        facts = ", ".join(
+            f"{plain} {data(v) if fenced else v}"
+            for path, plain, fenced in _REPORT_ROW_FACTS[name]
+            if (v := _fact(row, path)) is not _MISSING and v is not None
+        )
+    else:
+        facts = ", ".join(
+            f"{k} {data(v) if k == 'sentence' else v}"
+            for k, v in row.items()
+            if k not in (label_key, *_ROW_KEYS_UNPRINTED)
+            and not isinstance(v, (dict, list))
+        )
+    shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
+    return f"- {shown} · {facts}"
+
+
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     """One report section as lines: its totals, then one line per row."""
     list_key, label_key, scalar_keys = _REPORT_SECTIONS.get(
@@ -1542,7 +1630,7 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
     totals = ", ".join(
-        f"{_REPORT_LABELS.get(f'{name}:{k}', _REPORT_LABELS.get(k, k))} {v}"
+        f"{_REPORT_LABELS.get(f'{name}:{k}', k)} {v}"
         for k in scalar_keys
         if (v := _dig(section, k)) is not _MISSING
     )
@@ -1553,28 +1641,19 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     rows = rows or []
     if not isinstance(rows, list):
         return out
+    if name == "hygiene":
+        # A cap for each kind, so a stale task still shows after twenty
+        # tasks with no assignee.
+        for kind, shown, more in _hygiene_groups(section, rows):
+            out.extend(_report_row(name, label_key, row) for row in shown)
+            if more > 0:
+                plain = _REPORT_LABELS.get(f"hygiene:by_kind.{kind}", kind)
+                out.append(f"  (and {more} more: {plain})")
+        return out
     for row in rows[:25]:
         if not isinstance(row, dict):
             continue
-        # A capacity row with no directory name still HAS an owner: its
-        # address. "unassigned" is only the row whose assignee is empty,
-        # or the model reads a former colleague's work as nobody's.
-        label = row.get(label_key) or row.get("assignee")
-        if name in _REPORT_ROW_FACTS:
-            facts = ", ".join(
-                f"{plain} {data(v) if fenced else v}"
-                for path, plain, fenced in _REPORT_ROW_FACTS[name]
-                if (v := _dig(row, path)) is not _MISSING and v is not None
-            )
-        else:
-            facts = ", ".join(
-                f"{k} {data(v) if k == 'sentence' else v}"
-                for k, v in row.items()
-                if k not in (label_key, *_ROW_KEYS_UNPRINTED)
-                and not isinstance(v, (dict, list))
-            )
-        shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
-        out.append(f"- {shown} · {facts}")
+        out.append(_report_row(name, label_key, row))
     if len(rows) > 25:
         out.append(f"  (and {len(rows) - 25} more rows)")
     return out

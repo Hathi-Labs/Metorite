@@ -4,15 +4,15 @@
  * Spec: `project-docs/specs/projects_reports.md` §8 R2b, "Done when". This
  * file is the fence the spec names, in three parts:
  *
- *   (a) RENDER. `RenderedBody` draws each of the eight sections as its
+ *   (a) RENDER. `RenderedBody` draws each of the nine sections as its
  *       Analytics panel, with its table folded under it (WS-27bn R3a adds
  *       `outlook`, and the ageing bands in `stuck`. R3b adds `rebalance`,
- *       and its HR hint). A sentinel figure
+ *       and its HR hint. R3c adds `hygiene`). A sentinel figure
  *       per section appears in the panel AND in the table ("agree"). A body
  *       in the report's own shape carries no "undefined", no "NaN" and no
  *       "No open work in this scope" unless every band is zero
  *       ("degrade"). A tile hides when its section is not in the report.
- *   (b) SOURCE. `ReportsView.tsx` imports the eight panels from
+ *   (b) SOURCE. `ReportsView.tsx` imports the nine panels from
  *       `./AnalyticsPanels` and renders each one. It holds no inline width
  *       or height style and no function named for a bar or a chart. A
  *       self-test proves a hand-drawn bar fires the fence.
@@ -30,11 +30,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { CapacityRow, RenderedReportBody } from "../lib/api";
+import type { CapacityRow, HygieneKind, RenderedReportBody } from "../lib/api";
 import {
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
+  hygienePanelData,
   loadPanelData,
   outlookPanelData,
   rebalancePanelData,
@@ -42,6 +43,7 @@ import {
   stuckPanelData,
   throughputPanelData,
 } from "../lib/reportPanels";
+import { rebalancePickups, rebalanceTasks } from "../lib/rebalance";
 import {
   CapacityPanel,
   OutlookPanel,
@@ -179,6 +181,36 @@ const REBALANCE_HIDDEN: NonNullable<Sections["rebalance"]> = {
   window: { starts_on: "2026-09-24", ends_on: "2026-10-07", days: 14 },
 };
 
+/** Titles of one kind: seven, so the panel prints five and "…and M more". */
+const hygieneTitles = (kind: HygieneKind, n: number, first: string) =>
+  Array.from({ length: n }, (_, i) => ({
+    kind,
+    id: `${kind}-${i}`,
+    title: i === 0 ? first : `${kind} task ${i}`,
+    task_number: i,
+    project_id: "p1",
+    project_name: "Rig",
+    due_at: null,
+    updated_at: "2026-09-01T08:00:00+00:00",
+  }));
+
+/** `hygiene_body`, as a report carries it (WS-27bn R3c). */
+const HYGIENE: NonNullable<Sections["hygiene"]> = {
+  open_total: 9901,
+  stale_days: 14,
+  by_kind: {
+    no_assignee: 7901,
+    no_due_date: 7,
+    no_estimate: 0,
+    stale_in_progress: 1,
+  },
+  rows: [
+    ...hygieneTitles("no_assignee", 7, "Order steel 7901"),
+    ...hygieneTitles("no_due_date", 7, "Paint the frame"),
+    ...hygieneTitles("stale_in_progress", 1, "Weld the base"),
+  ],
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -260,6 +292,7 @@ const SECTIONS: Required<Sections> = {
     window: { starts_on: "2026-09-24", ends_on: "2026-10-07", days: 14, ignored_by: [] },
   },
   rebalance: REBALANCE,
+  hygiene: HYGIENE,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -271,6 +304,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   capacity: "7501",
   conflicts: "7601",
   rebalance: "7801",
+  hygiene: "7901",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -315,19 +349,52 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   capacity: "Who has the hours",
   conflicts: "Where the plan conflicts",
   rebalance: "Who could help",
+  hygiene: "What open tasks are missing",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all eight panels and eight tables in one report", () => {
+  it("draws all nine panels and nine tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(", as a table<").length).toBe(9);
+    expect(html.split(", as a table<").length).toBe(10);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(8);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(9);
+  });
+
+  it("hygiene draws one bar a kind, five titles, then the rest as a count", () => {
+    const { panel, table } = panelAndTable(draw({ hygiene: HYGIENE }));
+    for (const line of ["7901 of 9901", "7 of 9901", "0 of 9901", "1 of 9901"]) {
+      expect(panel, line).toContain(line);
+    }
+    // One bar for each kind, with its figures as its accessible name.
+    expect(panel.match(/role="img"/g)?.length).toBe(4);
+    expect(panel).toContain('aria-label="No assignee: 7901 of 9901"');
+    expect(panel).toContain('aria-label="None of 9901"');
+    // Five titles, then the server's count less the five.
+    expect(panel).toContain("Order steel 7901");
+    expect(panel).toContain("no_assignee task 4");
+    expect(panel).not.toContain("no_assignee task 5");
+    expect(panel).toContain("…and 7896 more");
+    expect(panel).toContain("…and 2 more");
+    expect(panel).toContain(
+      "A task can miss more than one thing, so the counts do not add up to the open total."
+    );
+    // The table names every row the server sent.
+    expect(table).toContain("no_assignee task 6");
+    expect(table).toContain("last change 1 Sep 2026");
+  });
+
+  it("hygiene with no open work says so, and draws no bar", () => {
+    const html = draw({
+      hygiene: { open_total: 0, stale_days: 14, by_kind: {}, rows: [] },
+    });
+    expect(html).toContain("No open tasks in this scope.");
+    const { panel } = panelAndTable(html);
+    expect(panel).not.toContain('role="img"');
   });
 
   it("rebalance draws each task with its holder and helpers, then pickups, then the caps", () => {
@@ -344,6 +411,28 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(table).toContain("could take: Weld a jig");
     // Read only: no Assign, no Dismiss, no link.
     for (const word of ["Assign", "Dismiss", "<a "]) expect(panel + table).not.toContain(word);
+  });
+
+  it("rebalance counts the tasks and the pickups in its table title (H-186 item 2)", () => {
+    // One task and three people, so a count of tasks alone reads 1, not 4.
+    const pickup = REBALANCE.pickups![0];
+    const data = {
+      ...REBALANCE,
+      pickups: [
+        pickup,
+        { ...pickup, person_id: "p-bo", name: "Bo", email: "bo@example.test" },
+        { ...pickup, person_id: "p-cy", name: "Cy", email: "cy@example.test" },
+      ],
+    };
+    const tasks = rebalanceTasks(data).length;
+    const pickups = rebalancePickups(data).length;
+    expect([tasks, pickups]).toEqual([1, 3]);
+    const html = draw({ rebalance: data });
+    const count = html.match(
+      /Who could help, as a table<\/span><span[^>]*>· (?:<!-- -->)?(\d+)<\/span>/
+    );
+    expect(count, "the table title carries no count").not.toBeNull();
+    expect(Number(count![1])).toBe(tasks + pickups);
   });
 
   it("rebalance without the HR grant shows the hint and no zero rows", () => {
@@ -441,6 +530,9 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     ["with no median", { throughput: { series: [], median_hours: null, measured: 0 } }],
     ["with no forecast date", { outlook: NOT_CONVERGING }],
     ["without the HR grant", { rebalance: REBALANCE_HIDDEN }],
+    ["with no open work to check", {
+      hygiene: { open_total: 0, stale_days: 14, by_kind: {}, rows: [] },
+    }],
   ] as [string, Sections][]) {
     it(`prints none of them ${label}`, () => {
       const html = draw(sections);
@@ -617,6 +709,7 @@ const PANELS = [
   "StuckPanel",
   "ConflictsPanel",
   "RebalancePanel",
+  "HygienePanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -635,13 +728,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the eight panels from ./AnalyticsPanels", () => {
+  it("imports the nine panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the eight", () => {
+  it("renders each of the nine", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 
@@ -737,6 +830,16 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
     const hidden = rebalancePanelData(REBALANCE_HIDDEN);
     expect("at_risk" in hidden).toBe(false);
     expect("pickups" in hidden).toBe(false);
+  });
+
+  it("hygiene: the section is the body, copied, and nothing is added", () => {
+    const got = hygienePanelData(HYGIENE);
+    expect(got).toEqual(HYGIENE);
+    expect(got).not.toBe(HYGIENE);
+    expect(got.by_kind).not.toBe(HYGIENE.by_kind);
+    expect(Object.keys(got).sort()).toEqual(
+      ["by_kind", "open_total", "rows", "stale_days"]
+    );
   });
 
   describe("the browser counts nothing", () => {

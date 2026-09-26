@@ -48,6 +48,7 @@ from gateway.routes.projects.analytics import (
     cycle_summary_sql,
     finished_period_sql,
     finished_sql,
+    hygiene_body,
     load_sql,
     outlook_body,
     overdue_by_project_sql,
@@ -102,10 +103,11 @@ from sqlalchemy import text
 #: `outlook`, after the past and before the open work, because a forecast
 #: reads the rate that the two sections above it measured. R3b adds
 #: `rebalance` LAST: it says what to do about the problems the sections
-#: above it found.
+#: above it found. R3c adds `hygiene` after `stuck`: both read the open work,
+#: and hygiene says which tasks lack the data the other sections need.
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "stuck",
-    "conflicts", "rebalance",
+    "hygiene", "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -159,8 +161,8 @@ def _coming(
 #: a scope or a period that does not exist yet, and `waits_for` names it in
 #: words a member reads on the gallery card (§8 names the slice). A
 #: preset that named a missing section would be a save the server refuses.
-#: `weekly_delivery` (T4) is live since R2, and `project_status` (T5) since
-#: R3a. T11 waits for a filter on the conflict kind, because `conflicts_body`
+#: `weekly_delivery` (T4) is live since R2, `project_status` (T5) since
+#: R3a, and `data_hygiene` (T13) since R3c. T11 waits for a filter on the conflict kind, because `conflicts_body`
 #: takes no kinds argument.
 TEMPLATES: dict[str, dict[str, Any]] = {
     t["key"]: t
@@ -210,7 +212,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "exceptions", "Exceptions",
             "What is wrong right now, and nothing else?",
             _ANY_SCOPE,
-            "The hygiene section, and a today period",
+            "A today period, and a rule for which hygiene rows are high",
         ),
         _coming(
             "capacity_outlook", "Capacity outlook",
@@ -242,12 +244,15 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             ("project",),
             "Stored runs and the changes section",
         ),
-        _coming(
-            "data_hygiene", "Data hygiene",
-            "Which tasks make every other report wrong?",
-            ("project", "org"),
-            "The hygiene section",
-        ),
+        {
+            # WS-27bn R3c. The section reads the state now and ignores the
+            # period, so one week with the current week kept says "now".
+            "key": "data_hygiene", "name": "Data hygiene",
+            "question": "Which tasks make every other report wrong?",
+            "scope_kinds": ["project", "org"], "available": True,
+            "sections": ["hygiene"],
+            "weeks": 1, "skip_current_week": False,
+        },
     )
 }
 
@@ -821,6 +826,19 @@ async def render_body(
                 section["pickups"] = found["pickups"][:MAX_PEOPLE]
                 section["pickups_total"] = len(found["pickups"])
             sections[name] = section
+        elif name == "hygiene":
+            # WS-27bn R3c. `hygiene_body`, imported, as `outlook` does. Its
+            # open-work predicate is Load's, bound from the reader's own
+            # visibility, so every count is the reader's.
+            #
+            # ⚠️ **No period here, on purpose.** The section reads the
+            # state now. A missing due date last week is not a question a
+            # member can act on.
+            sections[name] = await hygiene_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
         elif name == "stuck":
             # What is overdue, by project, and (WS-27bn R3a) how long open
             # work has sat untouched, in the route's four bands.

@@ -87,8 +87,9 @@ def test_rebalance_is_an_opt_in_section_and_the_last() -> None:
 
 
 def test_no_template_goes_live_and_team_pulse_waits_for_pulse_only() -> None:
+    # R3b made no template live. R3c made `data_hygiene` live after it.
     live = [k for k, t in rep.TEMPLATES.items() if t["available"]]
-    assert live == ["weekly_delivery", "project_status"]
+    assert live == ["weekly_delivery", "project_status", "data_hygiene"]
     assert rep.TEMPLATES["team_pulse"]["waits_for"] == (
         "The pulse section and a today period"
     )
@@ -195,7 +196,8 @@ def test_h185_2_the_outlook_says_slip_days_once_and_uses_plain_labels() -> None:
     labels = [label for _, label in [*spec["stats"], *spec["fields"]]]
     assert labels.count("Slip days") == 1, labels
     for key in _REPORT_SECTIONS["outlook"][2]:
-        assert "." not in _REPORT_LABELS[key], key
+        # H-186 item 4 scoped each label to its section.
+        assert "." not in _REPORT_LABELS[f"outlook:{key}"], key
 
 
 @pytest.mark.parametrize(

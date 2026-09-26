@@ -399,19 +399,79 @@ describe("reportEmail · rebalance", () => {
     expect(html).toContain("Weld &lt;the&gt; gantry");
   });
 
-  it("says one line, and no zero rows, without the grant", () => {
+  it("says its title and one line, and no zero rows, without the grant", () => {
+    // H-186 item 3. The part keeps the section's title, as every part does,
+    // and the HR line is its note.
     const hidden: RenderedReport = {
       ...rendered,
       sections: { rebalance: { hr_visible: false } },
     };
     const { text } = reportEmail(hidden);
-    expect(text).toContain("Rebalancing needs HR read access. An admin can see it.");
-    expect(text).not.toContain("Who could help");
+    expect(text).toContain(
+      "Who could help\n  Rebalancing needs HR read access. An admin can see it.",
+    );
+    expect(text).not.toContain("at risk");
     expect(text).not.toContain("could take");
     const layout = reportLayout(hidden);
     const part = layout.parts[layout.parts.length - 1];
+    expect(part.head).toEqual({ lead: "Who could help", strong: true });
     expect(part.items).toEqual([]);
-    expect(part.notes).toEqual([]);
+    expect(part.notes).toEqual([
+      "Rebalancing needs HR read access. An admin can see it.",
+    ]);
+  });
+});
+
+// WS-27bn R3c — the opt-in hygiene section.
+describe("reportEmail · hygiene", () => {
+  const titles = (kind: string, n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      kind,
+      title: `${kind} <task> ${i}`,
+      project_name: "Rig",
+    }));
+  const withHygiene: RenderedReport = {
+    ...rendered,
+    sections: {
+      hygiene: {
+        open_total: 40,
+        stale_days: 14,
+        by_kind: { no_assignee: 12, no_due_date: 3, no_estimate: 0, stale_in_progress: 1 },
+        rows: [
+          ...titles("no_assignee", 12),
+          ...titles("no_due_date", 3),
+          ...titles("stale_in_progress", 1),
+        ],
+      },
+    },
+  };
+
+  it("prints one text bar a kind, n of open_total, then the rows", () => {
+    const { text } = reportEmail(withHygiene);
+    expect(text).toContain("Data hygiene: 40 open (stale after 14 days)");
+    expect(text).toContain(`No assignee: 12 · ${textBar(12, 40)} 12 of 40`);
+    expect(text).toContain(`No estimate: 0 · ${textBar(0, 40)} 0 of 40`);
+    expect(text).toContain("no_due_date <task> 2 · Rig");
+    expect(text).toContain(
+      "A task can miss more than one thing, so the counts do not add up to the open total.",
+    );
+  });
+
+  it("cuts each kind at maxRows and says how many more", () => {
+    const { text } = reportEmail(withHygiene);
+    expect(text).toContain(`no_assignee <task> ${MAX_EMAIL_ROWS - 1}`);
+    expect(text).not.toContain(`no_assignee <task> ${MAX_EMAIL_ROWS}`);
+    expect(text).toContain(`…and ${12 - MAX_EMAIL_ROWS} more`);
+    // A download is the whole report.
+    const whole = reportLayout(withHygiene, Infinity).parts[0].items.join("\n");
+    expect(whole).toContain("no_assignee <task> 11");
+    expect(whole).not.toContain("more");
+  });
+
+  it("carries no colour, and escapes a title", () => {
+    const { html } = reportEmail(withHygiene);
+    expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
+    expect(html).toContain("no_assignee &lt;task&gt; 0");
   });
 });
 

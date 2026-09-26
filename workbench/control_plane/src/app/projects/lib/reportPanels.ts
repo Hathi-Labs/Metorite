@@ -22,6 +22,7 @@ import type {
   CapacityReport,
   ConflictsReport,
   FinishedReport,
+  HygieneReport,
   LoadReport,
   OutlookReport,
   PreviewReportBody,
@@ -190,6 +191,22 @@ export function rebalancePanelData(
   section: NonNullable<Sections["rebalance"]>
 ): RebalanceReport {
   return { ...section };
+}
+
+/**
+ * `hygiene` as `HygienePanel` takes it (WS-27bn R3c).
+ *
+ * The section IS `hygiene_body`, so this copies it. It takes no frame: the
+ * section reads the state now, and no report period reaches it.
+ */
+export function hygienePanelData(
+  section: NonNullable<Sections["hygiene"]>
+): HygieneReport {
+  return {
+    ...section,
+    by_kind: { ...(section.by_kind ?? {}) },
+    rows: asList<HygieneReport["rows"][number]>(section.rows),
+  };
 }
 
 /** One summary tile: one figure from one section. */

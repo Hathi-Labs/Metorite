@@ -114,6 +114,16 @@ export interface RenderedReport {
       overdue_total: number;
     };
     /**
+     * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
+     * kind that it breaks, so the counts do not add up to `open_total`.
+     */
+    hygiene?: {
+      open_total: number;
+      stale_days?: number;
+      by_kind?: Record<string, number | undefined>;
+      rows?: { kind: string; title: string; project_name?: string }[];
+    };
+    /**
      * WS-27bm S7c. Opt-in. The four HR kinds are absent for a reader without
      * `admin:members:read`, so `hr_visible` travels.
      */
@@ -205,6 +215,17 @@ const OUTLOOK_VERDICT: Record<string, string> = {
   no_history: "too early to forecast",
   nothing_left: "nothing open",
 };
+
+/**
+ * The hygiene kinds, in the server's order, with the panel's words.
+ * `app/projects/lib/hygiene.test.ts` holds them equal to `HYGIENE_KINDS`.
+ */
+export const HYGIENE_WORDS: readonly [string, string][] = [
+  ["no_assignee", "No assignee"],
+  ["no_due_date", "No due date"],
+  ["no_estimate", "No estimate"],
+  ["stale_in_progress", "Stale in progress"],
+];
 
 /** How many project lines a message carries before it stops being readable. */
 export const MAX_EMAIL_ROWS = 10;
@@ -449,6 +470,43 @@ export function reportLayout(
     });
   }
 
+  const hyg = sections.hygiene;
+  if (hyg) {
+    // One text bar a kind, "n of open_total", then its rows up to `maxRows`.
+    // The counts are the server's, and each bar draws two of them.
+    const items: string[] = [];
+    const notes: string[] = [
+      "A task can miss more than one thing, so the counts do not add up to the open total.",
+    ];
+    for (const [kind, label] of HYGIENE_WORDS) {
+      const n = hyg.by_kind?.[kind];
+      if (typeof n !== "number") continue;
+      items.push(
+        `${label}: ${n} · ${textBar(n, hyg.open_total)} ${n} of ${hyg.open_total}`,
+      );
+      const rows = (hyg.rows ?? []).filter((r) => r.kind === kind);
+      const shown = rows.slice(0, maxRows);
+      for (const r of shown) {
+        items.push(`  ${r.title}${r.project_name ? ` · ${r.project_name}` : ""}`);
+      }
+      if (n > shown.length && shown.length > 0) {
+        items.push(`  …and ${n - shown.length} more`);
+      }
+    }
+    parts.push({
+      head: {
+        lead: `Data hygiene: ${hyg.open_total} open`,
+        strong: true,
+        extra:
+          typeof hyg.stale_days === "number"
+            ? `stale after ${hyg.stale_days} days`
+            : undefined,
+      },
+      items,
+      notes,
+    });
+  }
+
   const conf = sections.conflicts;
   if (conf) {
     // ⚠️ The sentence is the server's, verbatim, and it carries task titles
@@ -464,12 +522,13 @@ export function reportLayout(
 
   const reb = sections.rebalance;
   if (reb && reb.hr_visible === false) {
-    // ⚠️ One line and no rows. A helper names who holds which skill, and a
-    // zero here would read as "nobody is at risk".
+    // ⚠️ The title and one line, and no rows. A helper names who holds which
+    // skill, and a zero here would read as "nobody is at risk". H-186 item 3:
+    // the part keeps its title, as every other part does.
     parts.push({
-      head: { lead: "Rebalancing needs HR read access. An admin can see it." },
+      head: { lead: "Who could help", strong: true },
       items: [],
-      notes: [],
+      notes: ["Rebalancing needs HR read access. An admin can see it."],
     });
   } else if (reb) {
     // Words and the server's names only. No colour and no bar: a helper is

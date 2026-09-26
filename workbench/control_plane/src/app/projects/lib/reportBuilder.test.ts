@@ -166,6 +166,7 @@ describe("sections", () => {
       "load",
       "capacity",
       "stuck",
+      "hygiene",
       "conflicts",
       "rebalance",
     ]);

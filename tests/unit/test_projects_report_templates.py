@@ -5,8 +5,9 @@ Spec: ``project-docs/specs/projects_reports.md`` §4, §6.1 and §8 R2.
 Five claims:
 
 * **The catalogue route.** ``GET /projects/reports/templates`` answers all 13
-  templates, and exactly ``weekly_delivery`` and ``project_status`` are live
-  (``project_status`` since WS-27bn R3a). The call goes through a
+  templates, and exactly ``weekly_delivery``, ``project_status`` and
+  ``data_hygiene`` are live (``project_status`` since WS-27bn R3a,
+  ``data_hygiene`` since R3c). The call goes through a
   real FastAPI app, so the test also proves that ``/reports/{report_id}``
   does not capture the word "templates".
 * **``config.template`` is an origin label.** A live key saves, PATCH and
@@ -67,7 +68,7 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_the_route_answers_all_13_and_only_the_live_two_are_live(monkeypatch) -> None:
+def test_the_route_answers_all_13_and_only_the_live_three_are_live(monkeypatch) -> None:
     def _no_session(*_a: Any, **_k: Any) -> Any:
         # The id route opens a session. The catalogue route opens none.
         raise AssertionError("GET /reports/{report_id} captured 'templates'")
@@ -79,7 +80,7 @@ def test_the_route_answers_all_13_and_only_the_live_two_are_live(monkeypatch) ->
     assert [t["key"] for t in templates] == list(rep.TEMPLATES)
     assert len(templates) == 13
     assert [t["key"] for t in templates if t["available"]] == [
-        "weekly_delivery", "project_status",
+        "weekly_delivery", "project_status", "data_hygiene",
     ]
     for t in templates:
         assert t["name"] and t["question"] and t["scope_kinds"], t["key"]
