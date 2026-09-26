@@ -616,9 +616,10 @@ async def attach_parent_context(
 
     ``parent`` is ``None`` for a top-level task. For a subtask it is
     ``{id, ref, title, archived}`` when the reader can see the parent, and
-    ``{hidden: True}`` when they cannot. A hidden parent carries no id and no
-    title: the child's own ``parent_task_id`` already says it HAS a parent,
-    and that is all a reader without a grant may learn.
+    ``{hidden: True}`` when they cannot. The hidden form adds no id and no
+    title. The child's own ``parent_task_id`` was on the wire before this, and
+    it says only that the task HAS a parent, which is all a reader without a
+    grant may learn.
 
     ONE query over the distinct parent ids, never one per row. A board of
     three hundred subtasks is the case this exists for.

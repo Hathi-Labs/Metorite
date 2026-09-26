@@ -7948,6 +7948,16 @@ subtask of a subtask a top-level task, while the dialog said "moved up a
 level". Both delete paths now move the children to the parent of the deleted
 task first, in the same transaction.
 
+**Two known gaps, recorded and not fixed here.**
+
+- My Tasks counts children under the member's OWN grants, for the reason
+  `MY_TASKS_FROM` gives. Its expander lists them through the board's
+  visibility. For a `data:org:read` holder the two can differ, so the count
+  can be lower than the list, or 0 with children behind it.
+- A PROJECT delete still takes its tasks through the FK cascade. A child in
+  another project then becomes top-level through `ON DELETE SET NULL`, not a
+  child of its grandparent.
+
 S3 and S4 draw the views: the list nesting, the board modes, the FilterBar
 control, the timeline and the My Tasks dedupe. S5 builds decisions 2 and 4.
 
