@@ -110,6 +110,10 @@ Five rules on top of the three above. Each one exists because it was broken:
    **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.
+   **`src/lib/assistantCheckpoint.ts` is the one row shape** the chat
+   translator (`api/agent/chat/route.ts`) saves (WS-27bm S10). The live
+   stream names its agent in `author_email`, and the reconnect stream names
+   none. Fence: `assistantCheckpoint.test.ts`.
    **Prose is `cc-prose prose`, never `prose-invert`** (WS-27bm S8). The
    typography plugin's invert variant hard-codes dark text, and this app
    turns light with the `.light` class. `.cc-prose` in `globals.css` points
