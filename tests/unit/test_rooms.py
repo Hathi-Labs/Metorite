@@ -81,7 +81,7 @@ def _seed_user(email: str, *, status: str = "active") -> None:
     _exec(
         "INSERT INTO app_user (email, display_name, role, status, organization_id) "
         "SELECT :e, :e, 'employee', :st, id FROM organization LIMIT 1 "
-        "ON CONFLICT (email) DO UPDATE SET status = :st",
+        "ON CONFLICT (lower(email)) DO UPDATE SET status = :st",
         e=email, st=status,
     )
 
@@ -404,6 +404,40 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
     )
     assert rows[0].author_kind == "agent"
     assert rows[0].author_email == "agent-sales-assistant"
+
+
+@_needs_db
+def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
+    """The chat translator's checkpoint names the agent that ran (WS-27bm S10).
+
+    `lib/assistantCheckpoint.ts` sends ``author_email`` on each checkpoint.
+    It must beat the room's agent, and a later write with no author (the
+    browser re-POSTing its list) must keep it.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _upsert_messages(
+        sid,
+        [MessageRecord(
+            id="c1", role="assistant", content="partial", timestamp=1002,
+            author_kind="agent", author_email="projects-assistant",
+        )],
+        actor_email=_ALICE, agent_name="orchestrator",
+    )
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="c1", role="assistant", content="final", timestamp=1003)],
+        actor_email=_ALICE, agent_name="orchestrator",
+    )
+
+    rows = _exec(
+        "SELECT author_email, author_kind, content FROM chat_message "
+        "WHERE session_id = :i AND id = 'c1'", i=sid,
+    )
+    assert rows[0].author_kind == "agent"
+    assert rows[0].author_email == "projects-assistant"
+    assert rows[0].content == "final"
 
 
 # ---------------------------------------------------------------------------

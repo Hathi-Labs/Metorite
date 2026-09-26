@@ -42,8 +42,8 @@ import {
   foldForToolStart,
   unfoldTrailingAnswer,
   groupReasoningBlocks,
-  serializeReasoning,
 } from "@/lib/chatStream";
+import { assistantCheckpointRow, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -101,31 +101,17 @@ async function persistAssistantMessage(
   todos: Array<{ id: string; title: string; status: string }> = [],
   customEvents: Array<{ name: string; value: unknown }> = [],
   segments: Array<{ id: string; text: string }> = [],
+  agentName?: string,
 ): Promise<void> {
-  if (!content.trim() && toolEvents.length === 0 && reasoningBlocks.length === 0 && todos.length === 0 && customEvents.length === 0) return;
+  const checkpoint = {
+    threadId, content, toolEvents, reasoningBlocks, progressLines,
+    messageId, todos, customEvents, segments, agentName,
+  };
+  if (checkpointIsEmpty(checkpoint)) return;
   try {
-    // Pack todos + segments (Phase 3b) into agent_state — no dedicated columns.
-    const agentState: Record<string, unknown> = {};
-    if (todos.length > 0) agentState.todos = todos;
-    if (segments.length > 0) agentState.segments = segments;
-    const payload = [{
-      // The caller always supplies a message ID (frontend-provided, or a
-      // per-stream fallback minted in translateAndPersistStream).  The old
-      // shared `assistant-${threadId}` fallback upserted every assistant turn
-      // of the thread onto ONE row, silently overwriting prior turns.
-      id: messageId || `assistant-${threadId}-${Date.now().toString(36)}`,
-      role: "assistant",
-      content,
-      timestamp: Date.now(),
-      tool_events: toolEvents,
-      progress_lines: progressLines,
-      reasoning: serializeReasoning(reasoningBlocks),
-      // Carry the structured todo list + real message segments in agent_state
-      // so the Todos panel and 3b segment-native rendering survive a refresh
-      // (no dedicated DB columns needed).
-      agent_state: Object.keys(agentState).length > 0 ? agentState : null,
-      custom_events: customEvents,
-    }];
+    // The row shape, with the agent that ran as its author (WS-27bm S10),
+    // lives in lib/assistantCheckpoint.ts.
+    const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
     // even if the Next.js process restarts mid-stream.
     await fetch(
@@ -154,6 +140,9 @@ async function translateAndPersistStream(
   controller: ReadableStreamDefaultController<Uint8Array>,
   threadId: string,
   assistantMessageId?: string,
+  /** The agent that runs this turn. The reconnect path does not know it, so
+   *  it passes nothing and the server stamps the room's agent (WS-27bm S10). */
+  agentName?: string,
 ): Promise<string> {
   // Stable per-STREAM persistence id: when the frontend didn't supply one,
   // mint it once here — per-call minting would write a new row on every 3s
@@ -465,7 +454,7 @@ async function translateAndPersistStream(
         const now = Date.now();
         if ((assistantContent.trim() || reasoningBlocks.length > 0 || latestTodos.length > 0 || customEvents.length > 0) && now - lastPersistTime > 3000) {
           lastPersistTime = now;
-          persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments).catch(() => {});
+          persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments, agentName).catch(() => {});
         }
       }
     }
@@ -475,7 +464,7 @@ async function translateAndPersistStream(
 
   // Final persist — ensure the complete message is saved with all stream metadata.
   if (assistantContent.trim() || toolEvents.length > 0 || reasoningBlocks.length > 0 || latestTodos.length > 0 || customEvents.length > 0) {
-    await persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments).catch(() => {});
+    await persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments, agentName).catch(() => {});
   }
 
   if (clientConnected) {
@@ -730,6 +719,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       async start(controller) {
         await translateAndPersistStream(
           streamRes.body!, controller, threadId ?? "", assistantMessageId,
+          resolvedAgentName,
         );
       },
     });

@@ -5,6 +5,8 @@
  * `tests/unit/test_genui_catalog_lockstep.py`. This file covers the one
  * function a wrong input would break silently: the app link a row carries.
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -91,5 +93,24 @@ describe("isDateCell", () => {
     for (const cell of ["Due 2026-09-30 or later", 42, "", null, "2026-09"]) {
       expect(isDateCell(cell)).toBe(false);
     }
+  });
+});
+
+// ── WS-27bm S10 — the plan card's "Waits on" control ────────────────────────
+
+describe("the plan card's Waits on control", () => {
+  const plan = (tasks: unknown[]) =>
+    renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.planCard({ project: { name: "Steps" }, tasks })));
+  const row = (key: string, after: string[] = []) =>
+    ({ key, title: key, owner: "a@x.io", effort_mins: 30, due: "2026-10-01", after });
+
+  it("draws on each row that has another row to wait on", () => {
+    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    // t1 has no option (both others wait on it). t2 and t3 each have one.
+    expect(html.match(/Waits on/g) ?? []).toHaveLength(2);
+  });
+
+  it("is absent from a plan of one task", () => {
+    expect(plan([row("t1")])).not.toContain("Waits on");
   });
 });

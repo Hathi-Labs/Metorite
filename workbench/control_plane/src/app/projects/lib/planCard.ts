@@ -4,12 +4,13 @@
  * `genUITemplates.tsx` `PlanCard` draws what this module decides, so the
  * decisions are testable in the node-env suite where the card cannot render.
  *
- * Four rules live here:
+ * Five rules live here:
  *
- * 1. **The editable fields are a closed list** (`PLAN_EDIT_COLS`). The fit,
- *    the hours and the marks come from the server's preview and are READ-ONLY.
- *    The member changes an owner or a date, and the server marks the plan
- *    again after the submit (§13.6 rule 3).
+ * 1. **The editable fields are a closed list** (`PLAN_EDIT_COLS`, and the
+ *    `after` keys). The fit, the hours and the marks come from the server's
+ *    preview and are READ-ONLY. The member changes an owner, a date or what a
+ *    row waits on, and the server marks the plan again after the submit
+ *    (§13.6 rule 3).
  * 2. **The submit carries what round-trips** (`planSubmit`): the key, the
  *    start date, the `after` keys and the three scores. So the sort score
  *    after the submit is the score the card showed (§13.6 rule 10). It never
@@ -19,6 +20,10 @@
  *    links on the confirm card.
  * 4. **A mark warns and never blocks** (§13.6 rule 3). `planIncomplete` reads
  *    the four required fields and a start after the due date, and no mark.
+ * 5. **The card cannot make a cycle** (WS-27bm S10, §16.2 rule 6).
+ *    `afterOptions` offers a row every other row except the rows that wait on
+ *    it, directly or through other rows. The server still refuses a cycle and
+ *    a self-block, so this rule is a convenience and the server is the fence.
  *
  * There are no phases (owner, 2026-09-24).
  */
@@ -54,8 +59,9 @@ export const PLAN_EDIT_COLS: ReadonlyArray<{ key: keyof PlanRow; label: string; 
   { key: "due", label: "Due", type: "date" },
 ];
 
-/** The fields the server owns. The card shows them and never edits them. */
-export const PLAN_READ_ONLY: ReadonlyArray<keyof PlanRow> = ["fit", "hours", "marks", "warnings", "after"];
+/** The fields the server owns. The card shows them and never edits them.
+ *  `after` left this list in WS-27bm S10: the "Waits on" control edits it. */
+export const PLAN_READ_ONLY: ReadonlyArray<keyof PlanRow> = ["fit", "hours", "marks", "warnings"];
 
 const text = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 const whole = (v: unknown, f: number): number => {
@@ -164,4 +170,37 @@ export function afterLabel(row: PlanRow, rows: PlanRow[]): string {
     .filter((k) => title.has(k))
     .map((k) => title.get(k) || k)
     .join(", ");
+}
+
+/** Every row that waits on `row`, directly or through other rows. */
+function waitersOf(row: PlanRow, rows: PlanRow[]): Set<string> {
+  const found = new Set<string>();
+  const queue = [row.key];
+  while (queue.length > 0) {
+    const key = queue.shift() as string;
+    for (const r of rows) {
+      if (r.after.includes(key) && !found.has(r.key)) {
+        found.add(r.key);
+        queue.push(r.key);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The rows `row` may wait on: every other row, except a row that already
+ * waits on `row`. A tick on one of those would make a cycle (rule 5).
+ */
+export function afterOptions(row: PlanRow, rows: PlanRow[]): PlanRow[] {
+  const waiters = waitersOf(row, rows);
+  return rows.filter((r) => r.key !== row.key && !waiters.has(r.key));
+}
+
+/** `row.after` with `key` ticked or cleared, in the order the rows show. */
+export function withAfter(row: PlanRow, rows: PlanRow[], key: string, on: boolean): string[] {
+  const next = new Set(row.after.filter((k) => k !== key));
+  if (on) next.add(key);
+  const order = rows.map((r) => r.key);
+  return [...next].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }

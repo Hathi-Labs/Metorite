@@ -602,8 +602,9 @@ async def emit_generative_ui(ui: str) -> dict:
              parent?, description?}, tasks:[{key, title, owner, effort_mins,
              start?, due, after?:[key], importance?, impact?, urgency?,
              effort?, priority?, fit?, hours?, marks?, warnings?}],
-             capacity?, warnings?, risks?:[string]} — an editable plan; PAIR
-             WITH ``"hitl":true``.
+             capacity?, warnings?, risks?:[string]} — an editable plan. The
+             member edits each task's after keys too. PAIR WITH
+             ``"hitl":true``.
 
     2. COMPONENT TREE — a safe whitelist of typed primitives (data, not code).
        Each node is ``{"type":<kind>,"props":{...},"children":[...]}``. Kinds:
