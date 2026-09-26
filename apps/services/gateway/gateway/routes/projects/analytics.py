@@ -90,6 +90,46 @@ STALE_BANDS: tuple[tuple[str, int, int | None], ...] = (
 #: travels beside it so the panel can say "12 of 47" rather than imply 12.
 MAX_NAMED = 20
 
+#: The days after which a task in progress with no change is STALE
+#: (`projects_reports.md` §5, WS-27bn R3c).
+#:
+#: One named constant, and it is the lower bound of the `days_14_to_30` band
+#: in :data:`STALE_BANDS`, so "stale" in a report and the ageing chart agree.
+#: `test_projects_report_sections_r3c.py` pins the two together. The
+#: `hygiene` section reads it now, and the `pulse` section reads it later.
+STALE_DAYS = 14
+
+#: The four kinds of open task the `hygiene` section counts, in the order it
+#: prints them, each with the predicate over `pm_tasks t` and
+#: `pm_task_statuses s` that decides it (WS-27bn R3c).
+#:
+#: ⚠️ **One predicate for each kind, and the counts and the rows both read
+#: it.** A count with one spelling and a row list with another is how a panel
+#: says "23 undated" over a list of 19.
+#:
+#: ⚠️ **An `agent:<name>` assignee is an assignee.** The predicate asks for
+#: ANY row in `pm_task_assignees`, with no filter on the value, so work that
+#: an agent holds is not "nobody's".
+#:
+#: ⚠️ **Never `pm_task_personal`.** A private estimate or plan of one member
+#: does not fill a shared field (D53, owner Q6). The source test in
+#: `test_projects_report_sections_r3c.py` fails if a predicate names it.
+HYGIENE_KINDS: tuple[tuple[str, str], ...] = (
+    (
+        "no_assignee",
+        "NOT EXISTS (SELECT 1 FROM pm_task_assignees ha WHERE ha.task_id = t.id)",
+    ),
+    ("no_due_date", "t.due_at IS NULL"),
+    ("no_estimate", "t.estimate_mins IS NULL"),
+    (
+        "stale_in_progress",
+        # INTS through `make_interval`, never `CAST(:x AS interval)`: the
+        # asyncpg trap `stale_bands_sql` records.
+        "s.category = :started_cat"
+        " AND t.updated_at <= now() - make_interval(days => :stale_days)",
+    ),
+)
+
 
 # ── Scope: one node, one subtree, or the whole portfolio ────────────────────
 
@@ -1585,4 +1625,132 @@ async def outlook_body(
             # fact asked at project scale.
             "leaving_within_90d": int(cap.leaving_soon or 0),
         },
+    }
+
+
+# ── Hygiene: open tasks that make every other report wrong — WS-27bn R3c ────
+
+
+def hygiene_counts_sql(open_where: str) -> str:
+    """One count for each kind in :data:`HYGIENE_KINDS`, over open TASKS.
+
+    A task counts in each kind that it breaks, so the four counts do not add
+    up to the open total. No assignee join, so a task with two assignees is
+    one task here, as in :func:`total_open_sql`.
+    """
+    counts = ", ".join(
+        f"count(*) FILTER (WHERE {predicate}) AS {kind}"
+        for kind, predicate in HYGIENE_KINDS
+    )
+    return (
+        f"SELECT {counts}"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    )
+
+
+def hygiene_rows_sql(open_where: str) -> str:
+    """Up to ``:max_named`` tasks of each kind, in kind order.
+
+    The stale kind lists the oldest change first, because that task has
+    waited longest. The other kinds list the oldest task first. `id` breaks
+    each tie, so two renders of one state list the same rows.
+
+    ⚠️ A `UNION ALL` does not keep the order of its arms. So each arm carries
+    its kind's `position` and a `rn` from its own order, and the outer query
+    sorts on the two.
+    """
+    arms = []
+    for position, (kind, predicate) in enumerate(HYGIENE_KINDS):
+        order = (
+            "t.updated_at ASC, t.id"
+            if kind == "stale_in_progress"
+            else "t.created_at ASC, t.id"
+        )
+        arms.append(
+            f"(SELECT {position} AS position,"
+            f"        row_number() OVER (ORDER BY {order}) AS rn,"
+            f"        '{kind}' AS kind,"
+            f"        t.id, t.title, t.task_number, t.project_id,"
+            f"        p.name AS project_name, t.due_at, t.updated_at"
+            f"   FROM pm_tasks t"
+            f"   JOIN pm_task_statuses s ON s.id = t.status_id"
+            f"   JOIN pm_projects p ON p.id = t.project_id"
+            f"  WHERE {open_where} AND ({predicate})"
+            f"  ORDER BY rn"
+            f"  LIMIT :max_named)"
+        )
+    return (
+        "SELECT kind, id, title, task_number, project_id, project_name,"
+        "       due_at, updated_at"
+        "  FROM (" + " UNION ALL ".join(arms) + ") h"
+        " ORDER BY position, rn"
+    )
+
+
+async def hygiene_body(
+    db: Any,
+    vis: Any,
+    *,
+    project_id: str | None,
+    include_subtree: bool,
+) -> dict[str, Any]:
+    """The `hygiene` report section, on a session and a visibility the caller
+    resolved (`projects_reports.md` §8 R3c).
+
+    Open tasks with no assignee, no due date or no estimate, and tasks in
+    progress with no change for :data:`STALE_DAYS` days.
+
+    ⚠️ **"Open" is Load's.** The predicate is :func:`load_open_where` with
+    :func:`load_params`, so hygiene and `load` agree about which work is
+    open: subtasks count, and triage, archived tasks, closed tasks and the
+    work of a stopped project do not (D-PM-32).
+
+    ⚠️ **It reads the state NOW.** No report period reaches it, so a report
+    of last week shows today's gaps. That is the question the section asks.
+
+    ``by_kind`` counts every task of each kind. ``rows`` names up to
+    :data:`MAX_NAMED` of each, so a reader sees how many the cap cut.
+    """
+    scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+    open_where = load_open_where(scope_sql, vis)
+    params: dict[str, Any] = {
+        **load_params(vis, project_id),
+        "started_cat": STARTED_CATEGORY,
+        "stale_days": STALE_DAYS,
+    }
+
+    open_total = int((await db.execute(
+        text(total_open_sql(open_where)), params,
+    )).scalar() or 0)
+    counts = (await db.execute(
+        text(hygiene_counts_sql(open_where)), params,
+    )).one()
+    rows = (await db.execute(
+        text(hygiene_rows_sql(open_where)),
+        {**params, "max_named": MAX_NAMED},
+    )).fetchall()
+
+    return {
+        "open_total": open_total,
+        "stale_days": STALE_DAYS,
+        "by_kind": {
+            kind: int(getattr(counts, kind, 0) or 0) for kind, _ in HYGIENE_KINDS
+        },
+        "rows": [
+            {
+                "kind": r.kind,
+                "id": str(r.id),
+                "title": r.title,
+                "task_number": (
+                    int(r.task_number) if r.task_number is not None else None
+                ),
+                "project_id": str(r.project_id),
+                "project_name": r.project_name,
+                "due_at": r.due_at.isoformat() if r.due_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
     }

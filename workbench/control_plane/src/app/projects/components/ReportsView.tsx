@@ -52,6 +52,13 @@ import {
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import {
+  HYGIENE_KINDS,
+  OVERLAP_NOTE,
+  hygieneCount,
+  hygieneRows,
+  kindTitle,
+} from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import {
   REBALANCE_HR_HINT,
@@ -64,6 +71,7 @@ import {
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
+  hygienePanelData,
   loadPanelData,
   outlookPanelData,
   rebalancePanelData,
@@ -96,6 +104,7 @@ import {
   CapacityPanel,
   ConflictsPanel,
   FinishedPanel,
+  HygienePanel,
   LoadPanel,
   OutlookPanel,
   RebalancePanel,
@@ -437,6 +446,54 @@ export function RenderedBody({
         </div>
       )}
 
+      {/* WS-27bn R3c. Opt-in. `hygiene_body`, read now and not over the
+          period. The table names each task the server sent, kind by kind. */}
+      {sections.hygiene && (
+        <div className="space-y-1">
+          <HygienePanel data={hygienePanelData(sections.hygiene)} />
+          <Table title="Data hygiene" count={sections.hygiene.rows.length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              title={OVERLAP_NOTE}
+            >
+              {sections.hygiene.open_total} open
+            </p>
+            <ul className="space-y-1.5">
+              {HYGIENE_KINDS.map(({ kind, label, title }) => (
+                <li key={kind} className="text-[11px]">
+                  <span
+                    className="font-medium text-foreground"
+                    title={kindTitle(title, sections.hygiene)}
+                  >
+                    {label}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {hygieneCount(sections.hygiene, kind) ?? "—"} of{" "}
+                    {sections.hygiene?.open_total}
+                  </span>
+                  <ul className="mt-0.5 space-y-0.5">
+                    {hygieneRows(sections.hygiene, kind).map((r) => (
+                      <li
+                        key={r.id}
+                        className="truncate pr-px text-muted-foreground"
+                        title={r.title}
+                      >
+                        <span className="text-foreground">{r.title}</span> ·{" "}
+                        {r.project_name}
+                        {kind === "stale_in_progress" && r.updated_at
+                          ? ` · last change ${shortDate(r.updated_at)}`
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          </Table>
+        </div>
+      )}
+
       {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
           it. The rows and the sentences are the conflicts route's, verbatim. */}
       {sections.conflicts && (
@@ -473,7 +530,11 @@ export function RenderedBody({
       {sections.rebalance && (
         <div className="space-y-1">
           <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
-          <Table title="Who could help" count={rebalanceTasks(sections.rebalance).length}>
+          {/* H-186 item 2. The table lists the idle people too, so they count. */}
+          <Table title="Who could help" count={
+            rebalanceTasks(sections.rebalance).length +
+            rebalancePickups(sections.rebalance).length
+          }>
             {sections.rebalance.hr_visible === false ? (
               <p className="text-[11px] text-muted-foreground">
                 {REBALANCE_HR_HINT}

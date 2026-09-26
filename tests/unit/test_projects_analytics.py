@@ -168,7 +168,17 @@ class TestScope:
         # builds its own scope FAILS rather than needing a new literal.
         endpoints = SOURCE.count('@router.get("/analytics/')
         assert endpoints >= 4, "an analytics endpoint disappeared"
-        assert SOURCE.count("await scope_clause(db, vis, project_id") == endpoints
+        # WS-27bn R3c. `hygiene_body` resolves its scope for the report
+        # section, and its route is a later slice (projects_reports.md §8
+        # R3c non-goals). It is the one body with no route. The day a route
+        # awaits it, the second assert fails, and this tuple must go.
+        bodies_with_no_route = ("hygiene_body",)
+        for body in bodies_with_no_route:
+            assert f"async def {body}(" in SOURCE, body
+            assert f"await {body}(" not in SOURCE, f"{body} has a route now"
+        assert SOURCE.count("await scope_clause(db, vis, project_id") == (
+            endpoints + len(bodies_with_no_route)
+        )
 
     def test_an_unreadable_node_404s_rather_than_reporting_zeroes(self):
         # Zeroes would tell the caller the project exists and is empty.

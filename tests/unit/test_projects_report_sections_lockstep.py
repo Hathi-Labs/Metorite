@@ -261,9 +261,9 @@ def test_project_status_is_live_in_sections_order() -> None:
     assert t5["scope_kinds"] == ["project"]
 
 
-def test_the_live_templates_are_exactly_the_pinned_two() -> None:
+def test_the_live_templates_are_exactly_the_pinned_three() -> None:
     live = [k for k, t in reports.TEMPLATES.items() if t["available"]]
-    assert live == ["weekly_delivery", "project_status"]
+    assert live == ["weekly_delivery", "project_status", "data_hygiene"]
 
 
 def test_weekly_delivery_is_exactly_the_default_report() -> None:

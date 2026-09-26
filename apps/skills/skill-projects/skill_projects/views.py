@@ -340,6 +340,23 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "rows": "overdue",
         "columns": [("name", "Project"), ("overdue", "Overdue")],
     },
+    # WS-27bn R3c. The four counts, then one row for each named task.
+    "hygiene": {
+        "title": "Data hygiene",
+        "stats": [
+            ("by_kind.no_assignee", "No assignee"),
+            ("by_kind.no_due_date", "No due date"),
+            ("by_kind.no_estimate", "No estimate"),
+            ("by_kind.stale_in_progress", "Stale in progress"),
+        ],
+        "rows": "rows",
+        "columns": [
+            ("kind", "Missing"),
+            ("title", "Task"),
+            ("project_name", "Project"),
+            ("updated_at", "Last change"),
+        ],
+    },
     "load": {
         "title": "Open work",
         "stats": [("total_tasks", "Open tasks")],
@@ -382,7 +399,10 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
 
 #: A value that is an ISO timestamp. The card prints its date only, as the
 #: Reports app's `shortDate` does (H-185 item 1).
-_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T")
+#:
+#: H-186 item 1. A time must follow the `T`. A title such as
+#: "2026-10-01T-minus checklist" is not a timestamp, and prints whole.
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 
 
 def _human(key: str) -> str:
@@ -401,6 +421,16 @@ def _card_cell(key: str, row: dict[str, Any]) -> str:
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
+    if key == "holder.name" and not value:
+        # H-186 item 4. A holder with no directory name is still somebody:
+        # print the address, as the panel does.
+        value = _dig(row, "holder.email")
+        if value is _MISSING:
+            value = None
+    if key == "kind" and isinstance(value, str):
+        # WS-27bn R3c. A server word such as ``no_due_date`` reads as
+        # "No due date".
+        return _human(value)
     if isinstance(value, str) and _TIMESTAMP.match(value):
         return value[:10]
     return _plain(value)

@@ -8,7 +8,9 @@ with its table folded under it). **R3a BUILT 2026-09-25** (the `outlook`
 section, the ageing bands in `stuck`, and T5 live).
 
 **R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
-only). R3c is next. R3d, R4, R4b, R5 to R9 and Phases 2 and 3 are not built.
+only). **R3c BUILT 2026-09-26** (the `hygiene` section, `HygienePanel`, and
+T13 live). R3d is next. R3d, R4, R4b, R5 to R9 and Phases 2 and 3 are not
+built.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -230,8 +232,9 @@ the default period. A member picks a template, then changes any of it. The
 saved report keeps the template key in `config.template`, so the home screen
 can group reports and the chat can name them.
 
-**Status key:** ✅ live (T4 since R2, T5 since R3a) · ◐ it waits for a section, a scope, a period
-or a filter that §8 adds. The gallery shows a ◐ template as "coming soon".
+**Status key:** ✅ live (T4 since R2, T5 since R3a, T13 since R3c). ◐ waits
+for a section, a scope, a period or a filter that §8 adds. The gallery shows
+a ◐ template as "coming soon".
 
 | # | Key | Template | The question | Scope | Period | Sections | Status |
 |---|---|---|---|---|---|---|---|
@@ -247,7 +250,7 @@ or a filter that §8 adds. The gallery shows a ◐ template as "coming soon".
 | T10 | `portfolio_health` | **Portfolio health** | Which projects are healthy? | org | this month | `outlook` for each child project, `capacity` | ◐ |
 | T11 | `focus_switching` | **Focus and switching** | Who is spread over too many projects? | team · org | this week | `conflicts` (`parallel_person` only), `load` | ◐ (it waits for a conflict-kind filter) |
 | T12 | `retrospective` | **Retrospective** | What slipped in the period, and why? | project | a closed period | `finished`, `throughput`, `changes` (slips only) | ◐ |
-| T13 | `data_hygiene` | **Data hygiene** | Which tasks make every other report wrong? | project · org | today | `hygiene` | ◐ |
+| T13 | `data_hygiene` | **Data hygiene** | Which tasks make every other report wrong? | project · org | today | `hygiene` | ✅ (since R3c) |
 
 **T11 waits for a filter.** `conflicts_body` (`analytics_conflicts.py:366`)
 takes no argument for the conflict kind. So a T11 report would show every
@@ -815,7 +818,7 @@ records why R3b adds no row filter.
 **As built:** `test_projects_report_sections_r3b.py` seeds one task with two
 holders and 23 idle people on a real database. It proves (a) to (d) and (g).
 
-#### R3c — `hygiene` and T13 · AGENT-SAFE
+#### R3c — `hygiene` and T13 · AGENT-SAFE · BUILT 2026-09-26
 
 **What:**
 - `hygiene_body` in `analytics.py` returns the section. It reads open work
@@ -879,6 +882,13 @@ function makes it one route plus one manifest row.
 - (k) The lockstep test and the card title test pass with the new name.
 - (l) The H-186 items pass their tests, and the slice deletes the H-186
   entry.
+
+**As built:** `test_projects_report_sections_r3c.py` seeds one project and a
+stopped child project on a real database. It proves (a) to (g), and a
+mutation of each of (b), (d), (e) and (f) turns its test red.
+`hygiene_body` has no route yet, so `test_projects_analytics.py` names it
+as the one body with no route. `reportVisuals.test.ts` draws nine panels,
+and `hygiene.test.ts` holds the email words equal to the panel words.
 
 #### R3d — `pulse` and T1 · waits for spec edits E2 to E4
 
