@@ -63,6 +63,7 @@ from skill_projects.reads import (
     recurrence,
     report_list,
     report_render,
+    task_dataset,
     task_detail,
     team_capacity,
     vocabulary,
@@ -143,11 +144,12 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class A — navigation (S6)
     "open_in_app",
     # Class A — team intelligence (S7a capacity, S7b fit and rebalancing,
-    # S7c conflicts)
+    # S7c conflicts, S7e on-the-fly analysis)
     "team_capacity",
     "fit_for_task",
     "rebalance",
     "find_conflicts",
+    "task_dataset",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",
