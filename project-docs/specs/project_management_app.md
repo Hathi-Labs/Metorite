@@ -7895,6 +7895,59 @@ returned to a known state, or the later check measures the earlier one's leftove
 
 ---
 
+### 11.38 D-PM-38 — the build record for Subtasks S1 and S2 (2026-09-26)
+
+**The rule is in §12.9, and §12.9 is binding.** This section records what
+slices S1 and S2 built against it. Read §12.9 for the owner's four decisions,
+the approved design, and the engineering defaults.
+
+#### What S1 and S2 built (2026-09-26)
+
+No migration. A member sees two changes only. The delete copy is now true, and
+the chip count leaves out hidden and archived children. The views draw nothing
+new until S3 and S4.
+
+| Item | Where | Fence |
+|---|---|---|
+| The parent of each row, in one query, under `task_visibility_clause` | `filters.attach_parent_context` | `test_projects_routes.py`, live check (a) |
+| The chip counts visible children that are not archived (B4) | `filters._SUBTASK_COUNTS_SQL` | `test_projects_routes.py`, live check (b) |
+| `top_level` on the list, the calendar, the export and the analytics dataset | `filters.build_task_filters` | `test_projects_filters.py` |
+| `subtasks` in the view config and in the overlay | `filters.normalise_view_config`, `normalise_view_user_state` | `test_projects_filters.py` |
+| My Tasks: `subtask_done`, a visible child count, and `parent` | `personal._MY_TASKS_SQL`, `attach_my_parents` | live checks (a) and (b) |
+| A delete moves the subtasks to the grandparent (B10) | `core.lift_subtasks_to_grandparent` | `test_projects_routes.py`, live check (c) |
+| The crumb words, the crumb, and the card shell's `parent` | `lib/taskCard.ts`, `components/TaskMeta.tsx` | `taskCard.test.ts`, `sharedTaskUi.test.ts` |
+| The tree: any depth, orphans and cycles | `lib/taskTree.ts` | `taskTree.test.ts` |
+
+The live checks are `tests/live/live_subtask_views.py`, on a fresh database.
+
+**A hidden parent's title never leaves the server.** The visibility clause is
+the WHERE of the parent query. A parent that the reader cannot see returns no
+row, so the child carries `{hidden: true}` and no title.
+
+**Why the delete changed.** The FK is `ON DELETE SET NULL`. So a delete made a
+subtask of a subtask a top-level task, while the dialog said "moved up a
+level". Both delete paths now move the children to the parent of the deleted
+task first, in the same transaction.
+
+**Two known gaps, recorded and not fixed here.**
+
+- My Tasks counts children under the member's OWN grants, for the reason
+  `MY_TASKS_FROM` gives. Its expander lists them through the board's
+  visibility. For a `data:org:read` holder the two can differ, so the count
+  can be lower than the list, or 0 with children behind it.
+- A PROJECT delete still takes its tasks through the FK cascade. A child in
+  another project then becomes top-level through `ON DELETE SET NULL`, not a
+  child of its grandparent.
+- The delta feed does not take `top_level` yet. §12.9 gives S3 the job.
+
+**The overlay exception.** `subtasks` is the one overlay key that can fold
+rows. §12.9 names it and says why.
+
+S3 and S4 draw the views: the list nesting, the board modes, the FilterBar
+control, the timeline and the My Tasks dedupe. S5 builds decisions 2 and 4.
+
+---
+
 ## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)
 
 **Status:** owner directive 2026-08-24, recorded as **D52** and **D53** in
@@ -8154,6 +8207,58 @@ values, before designing the target rows.
 ⚠️ **Still owner-gated, unchanged.** Running either against a real database is
 the owner's act. `docs/TASKS_LENS.md` carries the runbook; `H-29` is the queue
 entry.
+
+---
+
+### 12.9 D-PM-38 — how a view shows a subtask (ACTIVE, 2026-09-26)
+
+**D-PM-38 is binding.** It sits in §12 because §12 is the part of this spec
+that plans. §11.38 is the build record for slices S1 and S2. A subtask is a
+task with a parent (§3.4).
+
+**The owner approved the design on 2026-09-26.** It has three parts:
+
+- Each view has one Subtasks setting: Nested, Separate or Hidden. The view
+  stores it, and the member's overlay remembers it for that member.
+- One "↳ Parent" visual language. In every flat view, a subtask carries
+  "↳ Parent title". A nested row carries an indent and the CornerDownRight
+  icon.
+- A parent carries a "done/total" chip. The chip counts only the children
+  that the reader can see and that are not archived.
+
+**The owner took four decisions the same day. Cite them, and do not reopen
+them.**
+
+1. **The board defaults to Separate.**
+2. **A member completes a parent that has open subtasks: ask, and do not
+   block.** The default completes this task only. Slice S5 builds it.
+3. **A filter matches a subtask but not its parent: show the subtask alone.**
+   It carries its "↳ Parent" line. The view shows no greyed context rows.
+4. **A member moves or archives a parent: its subtasks go with it by
+   default.** A pre-ticked "Include N subtasks" box sets this. Slice S5 builds
+   it.
+
+**The other defaults are ENGINEERING defaults.** They come from the approved
+design, and a later decision may change them. They are not owner decisions.
+
+- The list and the table default to Nested.
+- The Projects calendar defaults to Separate, and offers only Separate and
+  Hidden.
+- The timeline is Nested. D-PM-11 decides this, and D-PM-11 is binding.
+- My Tasks is always Separate and has no setting. It shows each subtask once,
+  with its parent named.
+- The Calendar app and Search always show subtasks.
+
+**The one exception to "presentation only".** A member's overlay may carry
+presentation keys and no filters (`VIEW_USER_STATE_KEYS`). `subtasks` is the
+one overlay key that can fold rows: Hidden sends `top_level`, so two members
+of one shared view can see different rows. This is on purpose, because the
+design remembers the setting for each member. A hidden subtask still counts
+in its parent's chip, so the parent still says that it has children.
+
+⚠️ **For S3.** The delta feed does not take `top_level` yet. S3 must make the
+delta feed respect it, or a synced board shows the subtasks that Hidden
+folded away.
 
 ---
 

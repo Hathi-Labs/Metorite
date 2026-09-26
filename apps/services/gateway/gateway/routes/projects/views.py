@@ -235,7 +235,8 @@ async def delete_view(
 #
 # ⚠️ Presentation only. `filters.VIEW_USER_STATE_KEYS` deliberately excludes
 # filters: two people must never be looking at a view that means two different
-# sets of tasks.
+# sets of tasks. The one named exception is `subtasks` (D-PM-38): `hidden`
+# folds subtask rows for one member. `VIEW_USER_STATE_KEYS` says why.
 
 @router.get("/views/{view_id}/state")
 async def get_view_state(

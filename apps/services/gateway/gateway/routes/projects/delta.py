@@ -90,7 +90,11 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
-from gateway.routes.projects.filters import attach_assignees, attach_relation_counts
+from gateway.routes.projects.filters import (
+    attach_assignees,
+    attach_parent_context,
+    attach_relation_counts,
+)
 from sqlalchemy import text
 
 #: How far back from ``now()`` the feed refuses to look. See rule 3 above: this
@@ -367,7 +371,11 @@ async def delta_tasks(
             # The same attachers the list endpoint uses, so a synced card can
             # draw an owner and a progress count without an N+1 per row.
             await attach_assignees(db, page_rows)
-            await attach_relation_counts(db, page_rows)
+            await attach_relation_counts(db, page_rows, vis)
+            # D-PM-38. The board merges these rows into the list's, so they
+            # carry the same `parent` the list gives, or a synced card would
+            # lose its "↳ Parent" line.
+            await attach_parent_context(db, vis, page_rows)
             kept = {str(r["id"]) for r in page_rows}
             removed.extend(ident for ident in row_ids if ident not in kept)
 

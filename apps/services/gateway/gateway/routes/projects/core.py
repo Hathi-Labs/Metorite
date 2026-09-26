@@ -2788,6 +2788,48 @@ async def touch_task(db: Any, *task_ids: Any) -> None:
     )
 
 
+async def lift_subtasks_to_grandparent(db: Any, task_id: str) -> list[str]:
+    """Before ``task_id`` is deleted, give its subtasks to ITS parent (B10).
+
+    Returns the ids that moved. The caller bumps them with :func:`touch_task`,
+    because ``parent_task_id`` changes and ``updated_at`` does not.
+
+    ⚠️ **Why this exists.** The FK is ``ON DELETE SET NULL``, so until
+    2026-09-26 deleting a subtask that had subtasks of its own made them
+    TOP-LEVEL tasks, while the dialog said "moved up a level". Moving up one
+    level means to the grandparent. For a top-level task the grandparent is
+    NULL, so the old result stays the right one there. D-PM-38.
+
+    ⚠️ **The grandparent is READ HERE, from the database, never from a row the
+    caller loaded.** A bulk delete takes a whole selection in one transaction.
+    If it deletes the grandparent first, the FK has already set this task's
+    parent to NULL. A row loaded before that delete would still name the
+    deleted grandparent, and writing that id would violate the FK and roll
+    back the whole selection. `bulk_edit` loads each row just before it acts,
+    so it is safe today. This read keeps it safe for the next caller, whatever
+    order it loads in. `merge._reparent_children` reads the same way.
+
+    Moving UP cannot close a cycle, so `assert_no_task_cycle` has nothing to
+    check here.
+    """
+    row = (await db.execute(
+        text("SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": str(task_id)},
+    )).fetchone()
+    grandparent = getattr(row, "parent_task_id", None) if row is not None else None
+    moved = (await db.execute(
+        text(
+            "UPDATE pm_tasks SET parent_task_id = CAST(:grandparent AS uuid) "
+            "WHERE parent_task_id = CAST(:tid AS uuid) RETURNING id"
+        ),
+        {
+            "tid": str(task_id),
+            "grandparent": str(grandparent) if grandparent else None,
+        },
+    )).fetchall()
+    return [str(r.id) for r in moved]
+
+
 # ── The activity spine ──────────────────────────────────────────────────────
 
 async def record_activity(

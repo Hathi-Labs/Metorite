@@ -1130,3 +1130,191 @@ async def test_positions_refuse_a_task_the_caller_cannot_see(
     written = db.rows("pm_view_task_positions")
     assert len(written) == 1
     assert str(written[0]["task_id"]) == str(mine.id)
+
+
+# ── D-PM-38 — parent context, honest counts, delete lifts to the grandparent ─
+
+def _wire(rows: list[dict]) -> str:
+    """Everything the list would put on the wire, as one string."""
+    import json
+
+    return json.dumps(rows, default=str)
+
+
+async def test_a_subtask_names_its_parent_on_the_list(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """Every flat row carries "↳ Parent", so the list must say which parent."""
+    project, todo, _ = _project_with_statuses(db)
+    parent = db.seed_task(project.id, todo.id, title="Parent", task_number=12)
+    db.seed_task(project.id, todo.id, title="Child", parent_task_id=parent.id)
+
+    result = await pm_tasks.list_tasks(user=USER, page=page())
+    rows = {row["title"]: row for row in result.rows}
+
+    assert rows["Child"]["parent"] == {
+        "id": str(parent.id), "ref": "#12", "title": "Parent", "archived": False,
+    }
+    # A top-level task carries the key too, as None: a missing key and "no
+    # parent" read the same to a careless client.
+    assert rows["Parent"]["parent"] is None
+
+
+async def test_an_archived_parent_says_so(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    project, todo, _ = _project_with_statuses(db)
+    parent = db.seed_task(
+        project.id, todo.id, title="Filed", archived_at=pm_core.now(),
+    )
+    db.seed_task(project.id, todo.id, title="Child", parent_task_id=parent.id)
+
+    result = await pm_tasks.list_tasks(user=USER, page=page())
+
+    assert result.rows[0]["parent"]["archived"] is True
+
+
+async def test_a_hidden_parents_title_never_reaches_the_wire(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """§11.14: visibility applies to each task, never inherited. A child the
+    reader can see must not disclose a parent they cannot."""
+    caller = member_user("colleague@fracktal.in")
+    mine = db.seed_project(name="Ops", subject=caller.email)
+    mine_status = db.seed_status(
+        mine.id, name="To do", category="todo", is_default=True,
+    )
+    theirs = db.seed_project(name="Not mine", subject=None)
+    theirs_status = db.seed_status(
+        theirs.id, name="To do", category="todo", is_default=True,
+    )
+    secret = db.seed_task(
+        theirs.id, theirs_status.id, title="Acquire Initech", task_number=7,
+    )
+    db.seed_task(
+        mine.id, mine_status.id, title="Visible child", parent_task_id=secret.id,
+    )
+
+    result = await pm_tasks.list_tasks(user=caller, page=page())
+
+    assert [row["title"] for row in result.rows] == ["Visible child"]
+    assert result.rows[0]["parent"] == {"hidden": True}
+    assert "Acquire Initech" not in _wire(result.rows)
+
+
+async def test_the_card_chip_counts_only_children_the_reader_can_see(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """B4. The chip and the panel's progress (`relations._SUBTASKS_SQL`) must
+    give one number. The panel has always read visible children only."""
+    caller = member_user("colleague@fracktal.in")
+    mine = db.seed_project(name="Ops", subject=caller.email)
+    mine_status = db.seed_status(
+        mine.id, name="To do", category="todo", is_default=True,
+    )
+    theirs = db.seed_project(name="Not mine", subject=None)
+    theirs_status = db.seed_status(
+        theirs.id, name="To do", category="todo", is_default=True,
+    )
+    parent = db.seed_task(mine.id, mine_status.id, title="Parent")
+    db.seed_task(mine.id, mine_status.id, title="Seen", parent_task_id=parent.id)
+    db.seed_task(
+        theirs.id, theirs_status.id, title="Unseen", parent_task_id=parent.id,
+    )
+
+    as_member = await pm_tasks.list_tasks(user=caller, page=page())
+    by_title = {row["title"]: row for row in as_member.rows}
+    assert by_title["Parent"]["subtasks"] == {"done": 0, "total": 1}
+
+    # The org reader sees both, so the same parent counts both.
+    as_owner = await pm_tasks.list_tasks(user=USER, page=page())
+    by_title = {row["title"]: row for row in as_owner.rows}
+    assert by_title["Parent"]["subtasks"]["total"] == 2
+
+
+def test_the_parent_is_filtered_in_sql_not_masked_in_python() -> None:
+    """The fake cannot tell a WHERE from a mask, so the statement text is the
+    evidence. A parent the reader cannot see must return NO ROW: a title that
+    reaches this process is one careless edit away from the wire."""
+    from gateway.routes.projects import filters as pm_filters
+
+    body = pm_filters._PARENT_CONTEXT_SQL
+    where = body.split("WHERE", 1)[1]
+    assert "{visible}" in where
+    assert "= ANY(CAST(:parent_ids AS uuid[]))" in where
+    counts = pm_filters._SUBTASK_COUNTS_SQL
+    assert "{visible}" in counts.split("WHERE", 1)[1]
+    assert "t.archived_at IS NULL" in counts
+
+
+async def test_a_delete_lifts_the_subtasks_to_the_grandparent(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """B10. "Moved up a level" means to the grandparent. The FK's SET NULL
+    made a subtask of a subtask top-level, two levels up."""
+    project, todo, _ = _project_with_statuses(db)
+    grand = db.seed_task(project.id, todo.id, title="Grand")
+    parent = db.seed_task(
+        project.id, todo.id, title="Parent", parent_task_id=grand.id,
+    )
+    child = db.seed_task(
+        project.id, todo.id, title="Child", parent_task_id=parent.id,
+    )
+
+    result = await pm_tasks.delete_task(str(parent.id), user=USER)
+
+    moved = next(r for r in db.rows("pm_tasks") if r["id"] == child.id)
+    assert str(moved["parent_task_id"]) == str(grand.id)
+    assert result.cascaded["subtasks_promoted"] == 1
+
+
+async def test_deleting_a_top_level_task_leaves_its_subtasks_top_level(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    project, todo, _ = _project_with_statuses(db)
+    parent = db.seed_task(project.id, todo.id, title="Parent")
+    child = db.seed_task(
+        project.id, todo.id, title="Child", parent_task_id=parent.id,
+    )
+
+    await pm_tasks.delete_task(str(parent.id), user=USER)
+
+    moved = next(r for r in db.rows("pm_tasks") if r["id"] == child.id)
+    assert moved["parent_task_id"] is None
+
+
+async def test_a_bulk_delete_lifts_to_the_grandparent_too(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """Both delete doors use the one helper, so the bulk bar cannot keep the
+    old two-level jump."""
+    from gateway.routes.projects import bulk as pm_bulk
+
+    project, todo, _ = _project_with_statuses(db)
+    grand = db.seed_task(project.id, todo.id, title="Grand")
+    parent = db.seed_task(
+        project.id, todo.id, title="Parent", parent_task_id=grand.id,
+    )
+    child = db.seed_task(
+        project.id, todo.id, title="Child", parent_task_id=parent.id,
+    )
+
+    outcome = await pm_bulk._act_on_one(
+        db, parent, "delete", by="owner@fracktal.in",
+    )
+
+    assert outcome == ("applied", "deleted")
+    moved = next(r for r in db.rows("pm_tasks") if r["id"] == child.id)
+    assert str(moved["parent_task_id"]) == str(grand.id)
+
+
+def test_the_grandparent_is_read_from_the_database_not_the_loaded_row() -> None:
+    """A bulk delete that takes the grandparent first has already SET NULL
+    this task's parent. A stale row would name the deleted grandparent, and
+    the FK would roll back the whole selection. The live test drives the real
+    FK; this pins that the helper asks the database."""
+    import inspect
+
+    source = inspect.getsource(pm_core.lift_subtasks_to_grandparent)
+    assert "SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:tid AS uuid)" in source
+    assert "getattr(task" not in source and "doomed" not in source

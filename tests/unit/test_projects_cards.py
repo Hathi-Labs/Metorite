@@ -261,7 +261,8 @@ async def test_rows_without_an_id_do_not_reach_the_query() -> None:
     rows: list[dict] = [{"id": None}, {}]
     db = Counting()
 
-    assert await attach_relation_counts(db, rows) is rows
+    vis = pm_core.Visibility(unrestricted=False, email="x@y.z", groups=())
+    assert await attach_relation_counts(db, rows, vis) is rows
     assert db.calls == 0
     assert all(r["subtasks"] == {"done": 0, "total": 0} for r in rows)
 

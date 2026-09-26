@@ -257,6 +257,59 @@ const SEAM: {
     home: "components/ui/SelectButton.tsx",
     declaration: /(?:^|\n)\s*(?:export\s+)?const\s+OFF_DEFAULT\s*=/,
   },
+  {
+    /**
+     * D-PM-38 (Subtasks S2). "↳ Parent" is ONE visual language in every flat
+     * view, drawn by `ParentCrumb`. A file that draws the CornerDownRight icon
+     * itself, next to a parent title, is a second copy of it, and a second
+     * copy is how the board and My Tasks would come to say "subtask" two
+     * ways. So every other use of the icon is named here with its reason.
+     * The rows marked S3 or S4 are drawn by hand today and move onto the
+     * shared mark in those slices. Delete each exemption in the change that
+     * retires it.
+     */
+    what: "the subtask's parent crumb",
+    home: "components/TaskMeta.tsx",
+    declaration: /["']CornerDownRight["']/,
+    except: {
+      "components/AgentChat.tsx":
+        "the chat composer's 'steer' send mode. Not a subtask and not a " +
+        "parent: the icon means 'redirect this run'",
+      "app/projects/components/TaskBody.tsx":
+        "a reply to a comment. Not a subtask and not a parent",
+      "app/projects/components/NodeDashboard.tsx":
+        "the 'Direct work' row: tasks that sit on a project in no " +
+        "subproject. A project fact, not a subtask",
+      "app/projects/components/TableView.tsx":
+        "S3. The table's NESTED row mark (an indent plus the icon, decision " +
+        "5), drawn by hand. S3 builds the list nesting and moves this onto " +
+        "the shared nested-row mark",
+      "app/tasks/components/TaskListGrouped.tsx":
+        "S4. My Tasks draws a subtask row under its expanded parent by hand. " +
+        "S4 dedupes My Tasks (each subtask once, with its parent named) and " +
+        "moves this onto ParentCrumb",
+    },
+  },
+  {
+    /** D-PM-38. The component, and the words it draws, each declared once. */
+    what: "the parent crumb component",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+ParentCrumb\b/,
+  },
+  {
+    what: "the parent crumb's words",
+    home: "lib/taskCard.ts",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+parentCrumb\b/,
+  },
+  {
+    /**
+     * D-PM-38. One tree model for every nesting view: depth, orphans and
+     * cycles decided once. The table's own copy moved here in S2.
+     */
+    what: "the subtask tree",
+    home: "lib/taskTree.ts",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+treeRows\b/,
+  },
 ];
 
 describe("one implementation, consumed twice", () => {

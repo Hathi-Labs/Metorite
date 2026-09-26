@@ -16,11 +16,14 @@
 import Icon from "@/components/Icon";
 import { accentForHue } from "@/lib/statusAccent";
 import {
+  CRUMB_GLYPH,
   type MetaChip,
   type MetaTone,
+  type ParentFact,
   type PillRank,
   avatarStack,
   initials,
+  parentCrumb,
 } from "@/lib/taskCard";
 
 const TONE: Record<MetaTone, string> = {
@@ -140,6 +143,41 @@ export function TaskMeta({
           {chip.label}
         </span>
       ))}
+    </span>
+  );
+}
+
+/**
+ * THE "↳ Parent" line (D-PM-38, decision 5), in both apps and every flat
+ * view. `parentCrumb` decides the words. This draws them, in the muted tone,
+ * with the CornerDownRight icon in place of the "↳" glyph.
+ *
+ * Not a chip, and not in `shown_fields`: a member cannot hide it, for the
+ * reason they cannot hide the Archived badge. Without it a subtask on a board
+ * reads as a top-level task. Renders nothing for a task with no parent.
+ *
+ * Fence: `sharedTaskUi.test.ts` — a file under `app/` that draws the icon
+ * next to a parent title itself is a second copy of this.
+ */
+export function ParentCrumb({
+  parent,
+  className = "",
+}: {
+  parent?: ParentFact | null;
+  className?: string;
+}) {
+  const crumb = parentCrumb(parent);
+  if (!crumb) return null;
+  const text = crumb.label.startsWith(CRUMB_GLYPH)
+    ? crumb.label.slice(CRUMB_GLYPH.length)
+    : crumb.label;
+  return (
+    <span
+      title={crumb.title}
+      className={`flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground ${className}`}
+    >
+      <Icon name="CornerDownRight" className="h-3 w-3 shrink-0" aria-hidden />
+      <span className="truncate">{text}</span>
     </span>
   );
 }

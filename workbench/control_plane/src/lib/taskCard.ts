@@ -461,6 +461,68 @@ export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
 }
 
 /**
+ * D-PM-38 — a subtask's parent, as the gateway sends it (`parent` on every
+ * list row). `attach_parent_context` fills it under the reader's grants:
+ *
+ * - a parent the reader can see: `{ id, ref, title, archived }`;
+ * - a parent the reader cannot see: `{ hidden: true }`, with no title;
+ * - a top-level task: `null`.
+ */
+export interface ParentFact {
+  id?: string;
+  /** The reference the app draws, "#12". Null when the task has no number. */
+  ref?: string | null;
+  title?: string | null;
+  archived?: boolean;
+  hidden?: boolean;
+}
+
+/** The glyph a crumb starts with, in text. `ParentCrumb` draws an icon instead. */
+export const CRUMB_GLYPH = "↳ ";
+
+/**
+ * How many characters of "#12 Parent title" a crumb shows before "…". A crumb
+ * is context, not content: past this it pushes the task's OWN title off a
+ * narrow card. The full text is always in `title`.
+ */
+export const PARENT_CRUMB_MAX = 24;
+
+const clip = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+
+/**
+ * The "↳ Parent" line a subtask carries in every flat view (D-PM-38,
+ * decision 5). Pure, so its three cases are assertions rather than
+ * screenshots. Returns `null` for a task with no parent.
+ *
+ * - **Hidden parent → "↳ Subtask".** It says the task HAS a parent and nothing
+ *   more. The gateway never sends the title, and this never invents one.
+ * - **Archived parent → "(archived)" after the name**, outside the clip, so a
+ *   long title cannot push the one word that explains a missing parent off
+ *   the card.
+ * - **Long name → clipped** at {@link PARENT_CRUMB_MAX}, with the whole
+ *   name in `title`.
+ */
+export function parentCrumb(
+  parent: ParentFact | null | undefined,
+): { label: string; title: string } | null {
+  if (!parent) return null;
+  if (parent.hidden) {
+    return {
+      label: `${CRUMB_GLYPH}Subtask`,
+      title: "A subtask of a task you cannot see",
+    };
+  }
+  const name =
+    [parent.ref, parent.title?.trim()].filter(Boolean).join(" ") || "Parent task";
+  const archived = parent.archived ? " (archived)" : "";
+  return {
+    label: `${CRUMB_GLYPH}${clip(name, PARENT_CRUMB_MAX)}${archived}`,
+    title: `Subtask of ${name}${archived}`,
+  };
+}
+
+/**
  * The avatars to draw, and how many were left out.
  *
  * Capped rather than wrapped: a task with nine assignees would otherwise push

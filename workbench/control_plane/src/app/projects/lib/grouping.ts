@@ -116,6 +116,32 @@ export const NO_LANES: BoardLanes = {
   showEmptyLanes: false,
 };
 
+/**
+ * D-PM-38 — how a view draws a subtask: under its parent, as its own row with
+ * a "↳ Parent" line, or not at all (the list's `top_level=true`).
+ *
+ * Mirrors the gateway's `filters.SUBTASK_MODES`. No default is stored in a
+ * view: the list and table default to `nested`, the board and the calendar to
+ * `separate`. `test_projects_filters.py` fails if the two lists differ.
+ */
+export const SUBTASK_MODES = ["nested", "separate", "hidden"] as const;
+export type SubtaskMode = (typeof SUBTASK_MODES)[number];
+
+/**
+ * The keys ONE member's private overlay on a shared view may carry. Mirrors
+ * the gateway's `filters.VIEW_USER_STATE_KEYS`, and the same Python test fails
+ * if the two sets differ: a key on one side only is a preference the other
+ * side silently drops.
+ */
+export const VIEW_USER_STATE_KEYS = [
+  "group_by",
+  "sub_group_by",
+  "collapsed_lanes",
+  "show_empty_lanes",
+  "shown_fields",
+  "subtasks",
+] as const;
+
 export const EMPTY_FILTERS: Filters = {
   q: "",
   statusCategory: "",

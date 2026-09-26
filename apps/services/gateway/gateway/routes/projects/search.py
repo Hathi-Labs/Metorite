@@ -62,7 +62,11 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     wire,
 )
-from gateway.routes.projects.filters import MIN_QUERY, like_escape
+from gateway.routes.projects.filters import (
+    MIN_QUERY,
+    attach_parent_context,
+    like_escape,
+)
 from sqlalchemy import text
 
 # `MIN_QUERY` — the shortest text query either search surface will run — is
@@ -118,7 +122,7 @@ def task_number(raw: str) -> int | None:
 #: no type system to be ambiguous about; only the live run found it.
 _SEARCH_SQL = """
 SELECT t.id, t.title, t.task_number, t.project_id, t.status_id, t.due_at,
-       t.completed_at, p.name AS project_name, s.name AS status_name,
+       t.completed_at, t.parent_task_id, p.name AS project_name, s.name AS status_name,
        s.category,
        CASE
          WHEN CAST(:number AS bigint) IS NOT NULL
@@ -284,9 +288,16 @@ async def search_tasks(
                 "due_at": wire(r.due_at),
                 "completed_at": wire(r.completed_at),
                 "rank": int(r.rank),
+                "parent_task_id": (
+                    str(r.parent_task_id)
+                    if getattr(r, "parent_task_id", None) else None
+                ),
             }
             for r in rows[:cap]
         ]
+        # D-PM-38. Search always shows subtasks, so each hit names its parent,
+        # under the reader's grants.
+        await attach_parent_context(db, vis, hits)
         return {
             "rows": hits,
             "total": len(hits),

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from gateway.routes.projects.core import task_visibility_clause
 from sqlalchemy import text
 
 #: `pm_task_statuses.category`. Mirrored from the CHECK the migrations leave in
@@ -150,6 +151,7 @@ def build_task_filters(
     archived_only: bool = False,
     watching: bool = False,
     viewer: str | None = None,
+    top_level: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -167,6 +169,14 @@ def build_task_filters(
     if parent_task_id:
         clauses.append("t.parent_task_id = CAST(:parent AS uuid)")
         params["parent"] = parent_task_id
+
+    if top_level:
+        # D-PM-38. A view with `subtasks = hidden` sends this. It is a
+        # PRESENTATION choice that the server applies, because paging is in
+        # SQL: a client that dropped subtasks after `LIMIT` would draw short
+        # pages. It is not in `VIEW_FILTER_KEYS`, because the view stores the
+        # `subtasks` mode and the client turns that mode into this flag.
+        clauses.append("t.parent_task_id IS NULL")
 
     if status_id:
         clauses.append("t.status_id = CAST(:status_id AS uuid)")
@@ -383,6 +393,17 @@ SHOWN_FIELDS: tuple[str, ...] = (
     "subtasks", "blocked", "tags", "attachments", "estimate", "created_at",
 )
 
+#: D-PM-38 — how a view draws a subtask. `nested` puts it under its parent,
+#: `separate` draws it as its own row or card with a "↳ Parent" line, and
+#: `hidden` leaves it out (the list endpoint's `top_level`).
+#:
+#: ⚠️ **No default is stored.** Each surface owns its own default (the list is
+#: nested, the board is separate), so writing one here would freeze today's
+#: default into every stored view — `shown_fields`' rule. Mirrored by
+#: `SUBTASK_MODES` in `app/projects/lib/grouping.ts`, and
+#: `test_projects_filters` fails if the two differ.
+SUBTASK_MODES: tuple[str, ...] = ("nested", "separate", "hidden")
+
 #: A project's custom fields ride the same list as ``custom.<field_key>`` —
 #: the spelling ``patch_task`` already files a custom edit under. Checked by
 #: SHAPE rather than against the registry: this function is pure, and a view
@@ -450,6 +471,10 @@ def normalise_view_config(config: Any) -> dict[str, Any]:
             if known:
                 kept_fields.append(key)
         out["shown_fields"] = kept_fields
+    # D-PM-38. Kept only when it is one of the three words. Absent stays
+    # absent, so the surface applies its own default.
+    if config.get("subtasks") in SUBTASK_MODES:
+        out["subtasks"] = config["subtasks"]
     return out
 
 
@@ -458,9 +483,22 @@ def normalise_view_config(config: Any) -> dict[str, Any]:
 #: set would make one saved view mean two different task sets for two people,
 #: which is precisely what a *shared* view may not do. What a member is allowed
 #: to disagree about is how their own screen is arranged.
+#:
+#: ⚠️ **One exception, on purpose: `subtasks` (D-PM-38, spec §12.9).** It is
+#: the one key here that can FOLD ROWS. `hidden` makes the client send
+#: `top_level`, so two members of one shared view can see different rows. The
+#: approved design remembers the setting for each member, so this is not a
+#: leak of the rule above but a named exception to it. It only ever hides
+#: subtasks, never adds a task, and a hidden subtask still counts in its
+#: parent's chip, so the parent still says it has children. No other key may
+#: follow it without a decision of its own.
 VIEW_USER_STATE_KEYS: frozenset[str] = frozenset({
     "group_by", "sub_group_by", "collapsed_lanes", "show_empty_lanes",
     "shown_fields",
+    # D-PM-38 — the exception named above. `hidden` folds subtask rows for
+    # this member only. ⚠️ S3: the delta feed does not take `top_level` yet,
+    # and must before a board with Hidden syncs.
+    "subtasks",
 })
 
 
@@ -512,6 +550,8 @@ def normalise_view_user_state(config: Any) -> dict[str, Any]:
             ):
                 kept.append(key)
         out["shown_fields"] = kept
+    if config.get("subtasks") in SUBTASK_MODES:
+        out["subtasks"] = config["subtasks"]
     return out
 
 
@@ -536,6 +576,14 @@ SELECT task_id, array_agg(assignee ORDER BY assignee) AS people
 #: workspace of hundreds. Aggregated over the page's ids rather than joined onto
 #: the list itself, because a join would repeat the task row per child and break
 #: `LIMIT`.
+#:
+#: ⚠️ **Children are counted under the READER's visibility (D-PM-38, B4).** The
+#: chip read every child until 2026-09-26, and the task panel's progress
+#: (`relations._SUBTASKS_SQL`) read only the visible ones. So a parent with a
+#: child in an ungranted project drew "0/2" on the card and "0 of 1" in the
+#: panel. The two now apply the same two rules: visible to the reader, and not
+#: archived. `{visible}` is `core.task_visibility_clause`, formatted by the
+#: caller of this SQL, never by a request.
 _SUBTASK_COUNTS_SQL = """
 SELECT t.parent_task_id AS parent,
        count(*) AS total,
@@ -544,8 +592,75 @@ SELECT t.parent_task_id AS parent,
   JOIN pm_task_statuses s ON s.id = t.status_id
  WHERE t.parent_task_id = ANY(CAST(:ids AS uuid[]))
    AND t.archived_at IS NULL
+   AND {visible}
  GROUP BY t.parent_task_id
 """
+
+#: The parents of a page of tasks, in ONE query (D-PM-38).
+#:
+#: ⚠️ **The visibility clause is the WHERE, not a column.** A parent the reader
+#: cannot see returns no row at all, so its title never leaves the database.
+#: Selecting every parent and masking the title in Python would put the title
+#: in this process's memory and one careless edit away from the wire.
+#:
+#: `archived` is the parent's OWN flag. A parent in an archived project is
+#: filed by its project, and the list's default reads already leave that out.
+_PARENT_CONTEXT_SQL = """
+SELECT t.id, t.task_number, t.title, t.archived_at
+  FROM pm_tasks t
+ WHERE t.id = ANY(CAST(:parent_ids AS uuid[]))
+   AND {visible}
+"""
+
+
+def task_ref(task_number: Any) -> str | None:
+    """``42`` → ``"#42"``. The reference the whole app draws (`card.taskRef`)."""
+    return None if task_number is None else f"#{task_number}"
+
+
+async def attach_parent_context(
+    db: Any, vis: Any, rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fill each row's ``parent``, mutating and returning the list (D-PM-38).
+
+    ``parent`` is ``None`` for a top-level task. For a subtask it is
+    ``{id, ref, title, archived}`` when the reader can see the parent, and
+    ``{hidden: True}`` when they cannot. The hidden form adds no id and no
+    title. The child's own ``parent_task_id`` was on the wire before this, and
+    it says only that the task HAS a parent, which is all a reader without a
+    grant may learn.
+
+    ONE query over the distinct parent ids, never one per row. A board of
+    three hundred subtasks is the case this exists for.
+
+    ``vis`` is the caller's `core.Visibility`, resolved from the session. It
+    is never built from request input (R5).
+    """
+    for row in rows:
+        row["parent"] = None
+    wanted = sorted({
+        str(r["parent_task_id"]) for r in rows if r.get("parent_task_id")
+    })
+    if not wanted:
+        return rows
+    found = (await db.execute(
+        text(_PARENT_CONTEXT_SQL.format(visible=task_visibility_clause(vis))),
+        {"parent_ids": wanted, **vis.params},
+    )).fetchall()
+    seen = {
+        str(r.id): {
+            "id": str(r.id),
+            "ref": task_ref(r.task_number),
+            "title": r.title,
+            "archived": r.archived_at is not None,
+        }
+        for r in found
+    }
+    for row in rows:
+        parent = row.get("parent_task_id")
+        if parent:
+            row["parent"] = seen.get(str(parent), {"hidden": True})
+    return rows
 
 #: How many still-OPEN tasks block each of these.
 #:
@@ -608,14 +723,19 @@ async def window_links(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, An
 
 
 async def attach_relation_counts(
-    db: Any, rows: list[dict[str, Any]],
+    db: Any, rows: list[dict[str, Any]], vis: Any,
 ) -> list[dict[str, Any]]:
     """Fill each row's ``subtasks`` and ``blocked_by_count``, mutating in place.
 
     Every row gets both keys, including the ones with neither — a missing key
     and a zero read the same to a careless client, and "has no subtasks" is a
     state the card draws nothing for rather than an absence it guesses at.
+
+    ``vis`` is REQUIRED (D-PM-38). The subtask count reads only the children
+    the reader can see, so the chip and the panel's progress agree. A default
+    would let a new caller count every child and bring B4 back.
     """
+
     for row in rows:
         row["subtasks"] = {"done": 0, "total": 0}
         row["blocked_by_count"] = 0
@@ -624,7 +744,10 @@ async def attach_relation_counts(
         return rows
 
     args = {"ids": ids, "closed": list(CLOSED_CATEGORIES)}
-    counts = (await db.execute(text(_SUBTASK_COUNTS_SQL), args)).fetchall()
+    counts = (await db.execute(
+        text(_SUBTASK_COUNTS_SQL.format(visible=task_visibility_clause(vis))),
+        {**args, **vis.params},
+    )).fetchall()
     by_parent = {
         str(r.parent): {"done": int(r.done or 0), "total": int(r.total or 0)}
         for r in counts
