@@ -24,6 +24,7 @@
  * `statusAccent`; the table paints no colour of its own.
  */
 import Icon from "@/components/Icon";
+import { LayoutBoundary } from "@/components/LayoutBoundary";
 import { statusAccent } from "@/lib/statusAccent";
 import { accentForSlot } from "@/lib/categorical";
 
@@ -179,9 +180,15 @@ export default function AnalyticsView({
       {/* ⚠️ The forecast LEADS, full width. It is the one panel that answers
           the question somebody opens a portfolio view to ask, and the four
           below are the evidence behind it. */}
+      {/* ⚠️ WS-27bm S12. Each panel is the only child of its own boundary.
+          The analytics branch of page.tsx sits outside every other boundary,
+          so one panel that throws on a missing field would blank the whole
+          page. `layoutBoundary.test.ts` holds each tag to this shape. */}
       {outlook && (
         <div className="mb-3">
-          <OutlookPanel data={outlook} />
+          <LayoutBoundary layout="forecast panel">
+            <OutlookPanel data={outlook} />
+          </LayoutBoundary>
         </div>
       )}
       {(stuck || load || capacity || conflicts || throughput || finished) && (
@@ -189,14 +196,38 @@ export default function AnalyticsView({
           {/* ⚠️ Load leads since S7a, so Capacity can sit BESIDE it: the
               two read one set of open work, and a reader compares them row by
               row. The node dashboards already lead with Load. */}
-          {load && <LoadPanel data={load} />}
-          {capacity && <CapacityPanel data={capacity} />}
+          {load && (
+            <LayoutBoundary layout="load panel">
+              <LoadPanel data={load} />
+            </LayoutBoundary>
+          )}
+          {capacity && (
+            <LayoutBoundary layout="capacity panel">
+              <CapacityPanel data={capacity} />
+            </LayoutBoundary>
+          )}
           {/* S7c. Beside Capacity: the hours say who is full, and this
               says where the plan for that work disagrees with itself. */}
-          {conflicts && <ConflictsPanel data={conflicts} />}
-          {stuck && <StuckPanel data={stuck} />}
-          {throughput && <ThroughputPanel data={throughput} />}
-          {finished && <FinishedPanel data={finished} />}
+          {conflicts && (
+            <LayoutBoundary layout="conflicts panel">
+              <ConflictsPanel data={conflicts} />
+            </LayoutBoundary>
+          )}
+          {stuck && (
+            <LayoutBoundary layout="stuck work panel">
+              <StuckPanel data={stuck} />
+            </LayoutBoundary>
+          )}
+          {throughput && (
+            <LayoutBoundary layout="throughput panel">
+              <ThroughputPanel data={throughput} />
+            </LayoutBoundary>
+          )}
+          {finished && (
+            <LayoutBoundary layout="finished work panel">
+              <FinishedPanel data={finished} />
+            </LayoutBoundary>
+          )}
         </div>
       )}
 

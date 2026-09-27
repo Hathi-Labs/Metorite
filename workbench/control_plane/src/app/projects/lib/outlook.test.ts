@@ -241,6 +241,17 @@ describe("peopleLine", () => {
     expect(line.tone).toBe("warn");
   });
 
+  it("⚠️ reads a missing count as no warning (WS-27bm S12, H-188)", () => {
+    // Only an admin receives the count. A member's payload has no key at
+    // all, and that must not read as a risk or as a crash.
+    const { leaving_within_90d: _gone, ...rest } = report().people;
+    const line = peopleLine(report({ people: rest }));
+    expect("leaving_within_90d" in rest).toBe(false);
+    expect(line.detail).not.toContain("engagement");
+    expect(line.tone).not.toBe("warn");
+    expect(line.tone).toBe("good");
+  });
+
   it("stays quiet when nobody's hours are on file", () => {
     const line = peopleLine(
       report({ people: { ...report().people, in_directory: 0 } })

@@ -334,6 +334,9 @@ export function capacityLine(
  * ⚠️ `leaving_within_90d` is a risk no velocity can see. Somebody whose
  * engagement ends inside the forecast window takes their throughput with
  * them, and the forecast above will not notice until after it happens.
+ *
+ * WS-27bm S12 (H-188): the server sends the count to an admin only. A missing
+ * count reads as no warning, because the reader cannot see end dates.
  */
 export function peopleLine(o: OutlookReport): OutlookLine {
   const p = o?.people;
@@ -356,14 +359,15 @@ export function peopleLine(o: OutlookReport): OutlookLine {
       : known < n
         ? `${known} of ${n} are in the people directory, with ${p.hours_per_week} working hours a week between them.`
         : `${p.hours_per_week} working hours a week between them.`;
+  const leaving = p.leaving_within_90d ?? 0;
   const risk =
-    p.leaving_within_90d > 0
-      ? ` ⚠️ ${p.leaving_within_90d} ${p.leaving_within_90d === 1 ? "engagement ends" : "engagements end"} within 90 days.`
+    leaving > 0
+      ? ` ⚠️ ${leaving} ${leaving === 1 ? "engagement ends" : "engagements end"} within 90 days.`
       : "";
   return {
     headline: `${n} ${n === 1 ? "person" : "people"}`,
     detail: detail + risk,
-    tone: p.leaving_within_90d > 0 ? "warn" : known === 0 ? "quiet" : "good",
+    tone: leaving > 0 ? "warn" : known === 0 ? "quiet" : "good",
   };
 }
 

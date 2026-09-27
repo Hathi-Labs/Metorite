@@ -421,6 +421,15 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: who produced a turn is the one that decides, and no later writer can rename
 #: an author. That is the property attribution needs: a name in a transcript
 #: must not be rewritable by anyone who can POST to the session.
+#:
+#: ⚠️ **One exception: the run's fold may set the author of an AGENT turn
+#: again** (WS-27bm S12, ``projects_ai_chat.md`` §18). An ``@name`` turn's
+#: checkpoint lands first, with the room's agent. Only the fold knows which
+#: agent ran, so ``:author_from_run`` lets it replace ``author_email`` when the
+#: stored ``author_kind`` is ``agent`` or NULL. A human turn keeps its author,
+#: because ``_persist_message_id`` comes from the client and the fold can
+#: reach a row the client chose. Only ``chat_fold`` passes True. Every client
+#: write keeps the COALESCE, and ``authority`` keeps it for every writer.
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
@@ -433,7 +442,12 @@ _MESSAGE_UPSERT_SQL = """
          :author_email, :author_kind, CAST(:authority AS jsonb))
     ON CONFLICT (session_id, id) DO UPDATE SET
         content        = EXCLUDED.content,
-        author_email   = COALESCE(chat_message.author_email, EXCLUDED.author_email),
+        author_email   = CASE
+            WHEN CAST(:author_from_run AS boolean)
+                 AND COALESCE(chat_message.author_kind, 'agent') = 'agent'
+                 AND EXCLUDED.author_email IS NOT NULL
+            THEN EXCLUDED.author_email
+            ELSE COALESCE(chat_message.author_email, EXCLUDED.author_email) END,
         author_kind    = COALESCE(chat_message.author_kind,  EXCLUDED.author_kind),
         authority      = COALESCE(chat_message.authority,    EXCLUDED.authority),
         tool_events    = CASE
@@ -457,6 +471,7 @@ def _upsert_messages(
     actor_email: str | None = None,
     agent_name: str | None = None,
     authority: dict[str, Any] | None = None,
+    author_from_run: bool = False,
 ) -> None:
     """Write a batch of turns, stamping who produced each one.
 
@@ -464,6 +479,12 @@ def _upsert_messages(
     the authenticated caller's, full stop. ``role`` still decides which side of
     the conversation a turn sits on (the model's vocabulary); ``author_*``
     decides whose face the room renders next to it, and the two never mix.
+
+    ``author_from_run`` is for ``chat_fold.persist_final_assistant_message``
+    ONLY (WS-27bm S12). With it, the write may replace the author of a stored
+    agent or NULL-kind turn with the agent that ran. It never changes a human
+    turn. A route handler must never pass it, and ``test_rooms.py`` checks
+    the source of both callers.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -494,6 +515,7 @@ def _upsert_messages(
                     # Only agent output carries a clearance — a human's own
                     # words are theirs regardless of what the run could reach.
                     "authority": authority_json if kind == "agent" else None,
+                    "author_from_run": bool(author_from_run),
                 },
             )
 

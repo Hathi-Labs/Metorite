@@ -105,7 +105,9 @@ describe("the name the server stamps", () => {
     );
     expect(chat).toContain('return "agent", (m.author_email or agent_name or None)');
     // And the first stamp wins, so a client stamp survives a later save.
-    expect(chat).toContain("author_email   = COALESCE(chat_message.author_email, EXCLUDED.author_email)");
+    // WS-27bm S12: only the run's fold (`:author_from_run`) may set it again.
+    expect(chat).toContain("ELSE COALESCE(chat_message.author_email, EXCLUDED.author_email) END");
+    expect(chat).toContain("WHEN CAST(:author_from_run AS boolean)");
     expect(PROJECTS_AGENT).toBe("projects-assistant");
   });
 });

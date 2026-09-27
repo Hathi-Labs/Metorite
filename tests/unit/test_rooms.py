@@ -452,33 +452,103 @@ def _addressed_turn(sid: str) -> None:
         actor_email=_ALICE, agent_name="orchestrator",
     )
     # chat_fold.persist_final_assistant_message, with `_address_agent`'s answer.
+    # The fold is the one writer that passes `author_from_run` (S12).
     _upsert_messages(
         sid,
         [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
-        actor_email=_ALICE, agent_name="sales-assistant",
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
     )
 
 
+def _author(sid: str, mid: str):
+    return _exec(
+        "SELECT author_email, author_kind FROM chat_message "
+        "WHERE session_id = :i AND id = :m", i=sid, m=mid,
+    )[0]
+
+
 @_needs_db
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open gap (projects_ai_chat.md §16.4): the first stamp wins, and the "
-        "checkpoint lands before the fold that knows the addressed agent. "
-        "Only a server change closes it. Remove this mark in that change."
-    ),
-)
 def test_an_addressed_turn_is_stamped_with_the_agent_that_ran(clean) -> None:
-    """The property an ``@name`` turn needs, and does not have yet. Today the
-    row keeps the room's agent, because the checkpoint writes first. The
+    """WS-27bm S12 (§18). The checkpoint writes first with the room's agent.
+    The fold knows which agent ran, and it may set the author again. The
     client-side half (no author on an ``@`` turn) is fenced in
     ``assistantCheckpoint.test.ts``."""
     sid = _seed_session(_ALICE)
     _addressed_turn(sid)
-    rows = _exec(
-        "SELECT author_email FROM chat_message WHERE session_id = :i AND id = 'c2'", i=sid,
+    row = _author(sid, "c2")
+    assert row.author_email == "sales-assistant"
+    assert row.author_kind == "agent"
+
+
+@_needs_db
+def test_a_client_save_after_the_fold_keeps_the_agent_that_ran(clean) -> None:
+    """§18.2 rule 9. A client write keeps the COALESCE, so a later save that
+    names another agent cannot undo the fold."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _addressed_turn(sid)
+    # The browser re-POSTs its list, and claims a different agent.
+    _upsert_messages(
+        sid,
+        [MessageRecord(
+            id="c2", role="assistant", content="final", timestamp=1006,
+            author_kind="agent", author_email="projects-assistant",
+        )],
+        actor_email=_ALICE, agent_name="orchestrator",
     )
-    assert rows[0].author_email == "sales-assistant"
+    assert _author(sid, "c2").author_email == "sales-assistant"
+
+
+@_needs_db
+def test_the_fold_never_rewrites_a_human_turn(clean) -> None:
+    """§18.2 rule 8. ``_persist_message_id`` comes from the client, so the
+    fold can reach a human turn's id. The human keeps the turn."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="h1", role="user", content="hello", timestamp=1007)],
+        actor_email=_ALICE,
+    )
+    # The fold, aimed at that id.
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="h1", role="assistant", content="answer", timestamp=1008)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    row = _author(sid, "h1")
+    assert row.author_kind == "human"
+    assert row.author_email == _ALICE
+
+
+def test_only_the_fold_passes_author_from_run() -> None:
+    """§18.2 rule 7, by source. The fold passes True, and the route handler
+    that saves the client's messages never names the keyword."""
+    import inspect
+
+    from gateway import chat_fold
+    from gateway.routes import chat
+
+    fold = inspect.getsource(chat_fold.persist_final_assistant_message)
+    assert "author_from_run=True" in fold
+    route = inspect.getsource(chat.save_messages)
+    assert "_upsert_messages" in route
+    assert "author_from_run" not in route
+    # No other file in the gateway names the keyword.
+    import pathlib
+
+    root = pathlib.Path(chat.__file__).resolve().parents[1]
+    users = sorted(
+        str(f.relative_to(root)).replace("\\", "/")
+        for f in root.rglob("*.py")
+        if "author_from_run" in f.read_text(encoding="utf-8")
+    )
+    assert users == ["chat_fold.py", "routes/chat.py"], users
+    param = inspect.signature(chat._upsert_messages).parameters["author_from_run"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
 
 
 # ---------------------------------------------------------------------------

@@ -362,10 +362,19 @@ class TestS11TheScheduleRate:
             "starts_on": start.isoformat(), "ends_on": end.isoformat(),
             "weeks": _ana.OUTLOOK_RATE_WEEKS,
         }
-        assert set(got["people"]) == {
+        base = {
             "holding_open_work", "in_directory", "hours_per_week",
-            "absences_applied", "leaving_within_90d",
+            "absences_applied",
         }
+        assert set(got["people"]) == base | {"leaving_within_90d"}
+        # WS-27bm S12 (H-188). Without the grant the count is ABSENT: not
+        # null and not 0, because a zero says that nobody leaves.
+        member = _outlook(_OutlookDB(schedules=_one()), hr=False)
+        assert set(member["people"]) == base
+        assert set(_ana.OUTLOOK_HR_KEYS) == {"leaving_within_90d"}
+        assert set(got["people"]) - set(member["people"]) == set(
+            _ana.OUTLOOK_HR_KEYS
+        )
 
     def test_no_key_or_value_names_a_person_or_an_absence(self):
         """§17.3 rule 7. Team totals only: no list, no id, no absence span."""
@@ -382,6 +391,19 @@ class TestS11TheScheduleRate:
                     walk(value, f"{path}.{key}")
             else:
                 assert node != _PID, f"a person id at {path}"
+
+        walk(got, "outlook")
+
+    def test_no_hr_key_reaches_a_reader_without_the_grant(self):
+        """§18.2 rules 1 and 2. The walk covers the whole payload."""
+        got = _outlook(_OutlookDB(schedules=_one()), hr=False)
+        hr_keys = set(_ana.OUTLOOK_HR_KEYS)
+
+        def walk(node: Any, path: str) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    assert key not in hr_keys, f"{path}.{key}"
+                    walk(value, f"{path}.{key}")
 
         walk(got, "outlook")
 
