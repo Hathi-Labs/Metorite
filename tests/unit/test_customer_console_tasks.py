@@ -368,7 +368,7 @@ INT = {"Authorization": "Bearer internal"}
 #: different key would 503 here.
 ENC_KEY = "test-encryption-key-not-a-real-one"
 
-#: litellm 1.86.0's `TranscriptionUsageDurationObject`, which reaches the
+#: litellm's `TranscriptionUsageDurationObject` (1.86.0, unchanged in 1.103.0), which reaches the
 #: Router only because the Router asked for `verbose_json`.
 NINETY_SECONDS = {"type": "duration", "seconds": 90}
 
@@ -1331,7 +1331,8 @@ class TestAnImageRowRecordsThePicturesTheProviderReturned:
         call — the customer already holds whatever came back.
 
         ⚠️ **STUB-ONLY, and the name says so.** `ImageResponse.__init__`
-        (`litellm/types/utils.py:2336`, measured in litellm 1.86.0) turns a
+        (`litellm/types/utils.py:2566` in litellm 1.103.0, line 2336 in
+        1.86.0, re-measured 2026-09-28) turns a
         falsy `data` into `[]`, so a real litellm answer never reaches
         `image_count`'s `None` arm — it takes the `Decimal(0)` arm instead
         and bills the same zero. The dict below is a shape litellm does not
@@ -1769,7 +1770,7 @@ class TestTheMediaBodiesAreAnAllowlist:
             self, client, db, org_id, org_key, bound_image, priced_image):
         """🔴 **A CALLER MUST NOT PICK OUR BILL.**
 
-        The vendor prices a picture BY SIZE. litellm 1.86.0 holds
+        The vendor prices a picture BY SIZE. litellm 1.86.0 and 1.103.0 hold
         `standard/1024-x-1024/dall-e-3` at 3.81469e-08 per pixel, which is
         $0.040, and `standard/1024-x-1792/dall-e-3` at 4.359e-08, which is
         $0.080. Our own column carries NO size axis — `feed.py` reads
@@ -1831,6 +1832,8 @@ class TestTheMediaBodiesAreAnAllowlist:
         Measured 2026-08-31 in litellm 1.86.0. 27 entries carry
         `mode: audio_speech`. A regex over all 27 keys for
         `alloy|nova|shimmer|mp3|opus|wav|pcm|flac|aac` returns ZERO hits.
+        Re-measured 2026-09-28 in litellm 1.103.0: 37 entries, and the same
+        regex still returns ZERO hits.
         litellm prices a speech model by a whole model id (`tts-1` against
         `tts-1-hd`, `aws_polly/standard` against `aws_polly/neural`). `input`
         is counted AND clamped, and `stream` is a 400. So no forwarded field
@@ -1842,7 +1845,10 @@ class TestTheMediaBodiesAreAnAllowlist:
         of the 27 carry no such key: `gpt-4o-mini-tts`,
         `azure/gpt-4o-mini-tts`, the two dated `gpt-4o-mini-tts` builds, and
         both `gemini-2.5-flash-preview-tts` keys. They price on tokens and on
-        seconds. Binding one is an OPERATOR choice through `tier_binding`,
+        seconds. *(In litellm 1.103.0, 12 of the 37 carry no such key. The
+        new ones are a third `gemini-2.5-flash-preview-tts` key, two
+        `gemini-3.1-flash-tts-preview` keys and three `vertex_ai/lyria-*`
+        keys.)* Binding one is an OPERATOR choice through `tier_binding`,
         and never a caller's. `feed.py:242` finds no character key for them,
         so `vendor_per_character_usd` lands NULL. That is D-AI-7 rule 3
         working as designed.

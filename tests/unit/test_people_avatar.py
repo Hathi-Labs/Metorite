@@ -52,7 +52,7 @@ def image(width: int, height: int, fmt: str = "png",
           bands: tuple[tuple[int, int, int], ...] = ((200, 30, 30),)) -> bytes:
     """A real encoded image. Bands are painted left to right so a crop is
     provable by reading a pixel back, rather than by trusting a dimension."""
-    import fitz
+    import pymupdf as fitz
 
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height), False)
     step = width // len(bands)
@@ -63,7 +63,7 @@ def image(width: int, height: int, fmt: str = "png",
 
 
 def decoded(data: bytes) -> Any:
-    import fitz
+    import pymupdf as fitz
 
     return fitz.Pixmap(data)
 
@@ -125,7 +125,7 @@ def test_the_stored_image_is_small_whatever_arrived() -> None:
 def test_an_alpha_image_composites_onto_white_not_black() -> None:
     """JPEG has no alpha, and the default for "no alpha" is exactly the kind of
     thing that is only wrong in the corner of somebody's profile picture."""
-    import fitz
+    import pymupdf as fitz
 
     transparent = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 200, 200), True)
     transparent.clear_with()
@@ -194,7 +194,7 @@ def test_svg_is_refused_by_NAME_because_the_decoder_would_accept_it() -> None:
     """**Measured.** MuPDF renders SVG: handed to `fitz.open(filetype="image")`
     it opens happily. An avatar is displayed on every page in the product, and
     an SVG is a document that can carry script and external references."""
-    import fitz
+    import pymupdf as fitz
 
     svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'
     fitz.open(stream=svg, filetype="image")      # the decoder does NOT refuse it

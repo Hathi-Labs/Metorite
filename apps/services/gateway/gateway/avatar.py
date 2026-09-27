@@ -21,7 +21,7 @@ That is why there is no list of validations to keep in step:
   the polyglot-file class of problem is gone rather than filtered for.
 
 ⚠️ **The decoder is NOT the type check.** MuPDF renders SVG, which was measured
-rather than assumed — an SVG handed to ``fitz.open(filetype="image")`` opens
+rather than assumed — an SVG handed to ``pymupdf.open(filetype="image")`` opens
 happily, and an avatar is displayed on every page in the product. So the bytes
 are sniffed against :data:`_MAGIC` **before** the decoder sees them, and only
 JPEG, PNG and WebP get that far.
@@ -134,10 +134,10 @@ def normalise(
             f"{size}x{size} either way.")
     sniff(data)
 
-    import fitz
+    import pymupdf
 
     try:
-        page = fitz.open(stream=data, filetype="image")[0]
+        page = pymupdf.open(stream=data, filetype="image")[0]
     except Exception as exc:
         raise AvatarError(
             "That image could not be read - it may be truncated or corrupt."
@@ -157,7 +157,7 @@ def normalise(
     # onto the target box exactly, which is the difference between "about 256"
     # and the constant this whole design rests on.
     pixmap = page.get_pixmap(
-        matrix=clip.torect(fitz.Rect(0, 0, size, size)), clip=clip,
+        matrix=clip.torect(pymupdf.Rect(0, 0, size, size)), clip=clip,
         # No alpha: JPEG has none, and the composite lands on WHITE rather than
         # black — verified against a fully transparent PNG, because the default
         # for "no alpha" is the kind of thing that is only wrong in the corner
@@ -175,7 +175,7 @@ def _square(page: Any, width: float, height: float,
     browser. A caller can send ``(9, 9, 5)`` and gets the largest square that
     fits, not an exception and not a rectangle off the edge of the image.
     """
-    import fitz
+    import pymupdf
 
     shortest = min(width, height)
     if not crop:
@@ -189,7 +189,7 @@ def _square(page: Any, width: float, height: float,
         side = shortest if fside <= 0 else min(fside * shortest, shortest)
         x = min(max(fx * width, 0.0), width - side)
         y = min(max(fy * height, 0.0), height - side)
-    return fitz.Rect(x, y, x + side, y + side)
+    return pymupdf.Rect(x, y, x + side, y + side)
 
 
 def _finite(value: Any) -> float:

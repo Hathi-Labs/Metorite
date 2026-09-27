@@ -282,7 +282,9 @@ def test_the_authorize_route_is_registered_and_behind_the_app_guard() -> None:
     turns "not public" into "actually authenticated"."""
     import gateway.main as main
 
-    paths = {getattr(r, "path", "") for r in main.app.routes}
+    from tests.unit._routes import served_routes
+
+    paths = {getattr(r, "path", "") for r in served_routes(main.app.routes)}
     assert AUTHORIZE_TEMPLATE in paths, (
         "the authorize route is not mounted; the exemption test above would "
         "then be vacuously true"

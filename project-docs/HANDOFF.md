@@ -118,6 +118,52 @@ line — never reclaim a number by deleting the other entry.
   because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
   bug appears on the stream path at once. Do both in one slice.
 
+### H-191 · Prove the 2026-09-28 dependency upgrade on the box · [AGENT]
+- **Check:** on the box, read `usage_event` for a Router chat, a transcription
+  and a picture made after the deploy. Then export one PDF and open one call
+  audio socket. → A row with no tokens, or a failed PDF or socket, means this
+  is still open.
+- **Why.** The upgrade moved litellm 1.86.0 to 1.103.0, FastAPI 0.133 to
+  0.141, uvicorn 0.48 to 0.54 and pymupdf 1.28.0 to 1.28.2. The tests drive
+  stubs and litellm's own transforms. No test sent a call to a real vendor.
+- ⚠️ **uvicorn changed its WebSocket server.** 0.54 picks the sans-I/O
+  implementation when `ws` is `auto`, and 0.48 picked the legacy one. A local
+  echo round trip passed. The box has not carried a real call yet.
+- **Added:** 2026-09-28 · the dependency upgrade
+
+### H-192 · The WhatsApp call-audio socket fails on every connection · [AGENT]
+- **Check:** open a websocket to `/whatsapp/calls/audio` on a dev gateway.
+  A `TypeError` naming `require_authenticated.<locals>._check()` and a
+  missing `request` means this is open.
+- **Why.** The gateway's app-level default-deny dependency asks for a
+  `Request`, and a websocket supplies none. So the route raises before its
+  own handler runs. Measured 2026-09-28 on `main` and on PR #500 alike, so
+  the dependency upgrade did not cause it.
+- **Fix.** Make the guard accept `HTTPConnection`, or exempt the socket and
+  authenticate inside it. Keep default-deny for every HTTP route.
+- **Blocks:** the socket step of H-191.
+- **Added:** 2026-09-28 · the review of PR #500
+
+### H-190 · A streamed OpenRouter call records our computed cost, not the vendor's · [AGENT]
+- **Check:** `rg -n "usage.cost|\"cost\"" apps/services/customer_console/customer_console/router.py`
+  → no reader of `usage.cost` means this is still open.
+- **Why.** On a buffered call, litellm puts OpenRouter's `usage.cost` in
+  `_hidden_params`, and the Router reads it. On a stream, the cost arrives in
+  the final chunk as `usage.cost`. `relay_stream` reads only `_hidden_params`,
+  so it records `None` and the computed cost wins. litellm 1.86.0 and 1.103.0
+  both do this. Measured 2026-09-28.
+- ⚠️ **This changes a money column.** `provider_cost_usd` gets the vendor's
+  figure where it held ours. Read `usage.cost` only when the provider is
+  OpenRouter, because litellm 1.103.0 gates its own copy the same way. Add a
+  test that drives litellm's real OpenRouter stream parser.
+- 🔴 **litellm 1.103.0 writes its OWN computed `usage.cost` into the last
+  streamed frame, for every provider** (`litellm/main.py`
+  `_stamp_streaming_usage_cost`, no flag). So a `usage.cost` on a stream is
+  NOT proof the vendor sent it. If OpenRouter omits it, litellm fills in its
+  estimate, and a naive reader stores that as `cost_source = 'vendor'`. Tell
+  the two apart before trusting the figure. Found by the PR #500 review.
+- **Added:** 2026-09-28 · the dependency upgrade
+
 ### H-189 · The out-of-workspace write veto never fires for a real write · [AGENT]
 - **Check:** in `apps/services/orchestrator/orchestrator/permission_policy.py`,
   find the key that `decide` reads for a write's target. `path` alone means
