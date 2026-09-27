@@ -116,14 +116,16 @@ export function MoveTasksDialog({
   // S6g — the promote door's answers come up from `PromoteFields`, the one
   // component Clarify draws too.
   const [answers, setAnswers] = useState<PromoteFieldsState | null>(null);
-  // D-PM-38 decision 4 — the bulk path's "Include N subtasks", TICKED.
+  // D-PM-38 decision 4 — the bulk path's "Include N subtasks", TICKED. The
+  // preview reads the plan WITH the subtasks while it is ticked, so their
+  // drops and required fields are on the card before the member agrees.
   const [withSubtasks, setWithSubtasks] = useState<boolean>(CASCADE_DEFAULTS.move);
 
   const ids = taskIds ?? [];
   const promoting = Boolean(promote);
   // The bulk path's preview. The promote path reads its own inside
   // `PromoteFields`, so this one stays idle there (no destination).
-  const bulk = useMovePreview(ids, promoting ? null : destination, false);
+  const bulk = useMovePreview(ids, promoting ? null : destination, false, withSubtasks);
 
   if (!taskIds || ids.length === 0) return null;
 

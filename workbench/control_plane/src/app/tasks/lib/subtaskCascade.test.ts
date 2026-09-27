@@ -23,6 +23,13 @@ vi.mock("./api", async (importOriginal) => {
     apiBulkArchive: vi.fn(async () => []),
   };
 });
+vi.mock("@/app/projects/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/projects/lib/api")>();
+  return {
+    ...actual,
+    projectsApi: { ...actual.projectsApi, task: vi.fn() },
+  };
+});
 vi.mock("./lens", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lens")>();
   return {
@@ -32,7 +39,7 @@ vi.mock("./lens", async (importOriginal) => {
   };
 });
 
-import { ProjectsApiError } from "@/app/projects/lib/api";
+import { ProjectsApiError, type TaskRow, projectsApi } from "@/app/projects/lib/api";
 
 import {
   apiArchiveCascade,
@@ -86,6 +93,12 @@ beforeEach(() => {
     k2: { statusId: "todo-b", v: 1 },
   });
   vi.mocked(lensGetItem).mockImplementation(async (id: string) => serverRow(id));
+  // Undo reads each task through the PROJECT door, which answers for any task
+  // the member can see (review of #493).
+  vi.mocked(projectsApi.task).mockImplementation(
+    async (id: string) =>
+      ({ id, status_id: server[id].statusId, updated_at: `v${server[id].v}` }) as TaskRow,
+  );
   vi.mocked(lensSetStatusId).mockImplementation(async (id, sid, opts) => {
     if (opts?.ifMatch && opts.ifMatch !== `v${server[id].v}`) {
       throw new ProjectsApiError("This row changed since you loaded it.", 412);
@@ -173,6 +186,23 @@ describe("Undo covers the cascade (D79)", () => {
     // Each with the row version it read, so a newer move answers 412.
     expect(lensSetStatusId).toHaveBeenCalledWith("k1", "review", { ifMatch: "v2" });
     expect(lensSetStatusId).toHaveBeenCalledWith("k2", "todo-b", { ifMatch: "v2" });
+  });
+
+  it("puts back a subtask that is NOT mine: `/my/tasks` would answer 404", async () => {
+    // The cascade closes every visible open child, mine or not. My own door
+    // answers 404 for a colleague's task, so Undo must not read through it.
+    vi.mocked(lensGetItem).mockImplementation(async (id: string) => {
+      if (id !== "p") throw new ProjectsApiError("No such task", 404);
+      return serverRow(id);
+    });
+    useTaskStore.setState({ backend: "live", items: [PARENT] });
+    useTaskStore.getState().quickDispose("p", "DONE", { includeSubtasks: true });
+    await flush();
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(server.k1.statusId).toBe("review");
+    expect(server.k2.statusId).toBe("todo-b");
+    expect(projectsApi.task).toHaveBeenCalledWith("k1");
   });
 
   it("keeps a teammate's move on a subtask, and says so", async () => {

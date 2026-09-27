@@ -32,7 +32,6 @@ import { StagePromptHost } from "./components/StagePromptHost";
 import { SyncFailureToast } from "./components/SyncFailureToast";
 import { PromoteToast } from "./components/PromoteToast";
 import { PromoteHost } from "./components/PromoteHost";
-import { SubtaskPromptHost } from "./components/SubtaskPromptHost";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
@@ -262,7 +261,6 @@ export default function TasksPage() {
         <SyncFailureToast />
         <PromoteToast />
         <PromoteHost />
-        <SubtaskPromptHost />
         <DeleteConfirmModal />
         <SchedulePopup />
         <EliminatePopup />
@@ -394,7 +392,6 @@ export default function TasksPage() {
       <SyncFailureToast />
       <PromoteToast />
       <PromoteHost />
-      <SubtaskPromptHost />
       <DeleteConfirmModal />
       <SchedulePopup />
       <EliminatePopup />

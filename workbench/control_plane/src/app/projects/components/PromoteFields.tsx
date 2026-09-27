@@ -107,6 +107,12 @@ export function useMovePreview(
   taskIds: readonly string[],
   destinationId: string | null,
   askRequired: boolean,
+  /**
+   * D-PM-38 (S5) — preview the move WITH the subtasks, so the drops, the
+   * required fields, the types and the tags cover them too (D-PM-29). The
+   * box's state, so ticking or unticking it reads the plan again.
+   */
+  includeSubtasks = false,
 ) {
   const [plan, setPlan] = useState<MovePlan | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -136,6 +142,7 @@ export function useMovePreview(
         const next = await projectsApi.previewMove({
           task_ids: key.split(","),
           destination_project_id: dest,
+          ...(includeSubtasks ? { include_subtasks: true } : {}),
         });
         if (stale()) return;
         setPlan(next);
@@ -160,7 +167,7 @@ export function useMovePreview(
         if (!stale()) setPlanning(false);
       }
     },
-    [key, askRequired],
+    [key, askRequired, includeSubtasks],
   );
 
   useEffect(() => {
@@ -386,15 +393,17 @@ export function PromoteFields({
   showAssignees?: boolean;
   onChange: (state: PromoteFieldsState) => void;
 }) {
+  // D-PM-38 decision 4 — the "Include N subtasks" box starts TICKED, and the
+  // preview reads the plan with the subtasks while it is ticked.
+  const [withSubtasks, setWithSubtasks] = useState<boolean>(CASCADE_DEFAULTS.move);
   const { plan, planning, planError, requiredDefs, draft, setDraft } = useMovePreview(
     taskIds,
     destinationId,
     true,
+    withSubtasks,
   );
   const [assignees, setAssignees] = useState<string[]>(() => initialAssignees);
   const [assigneeText, setAssigneeText] = useState("");
-  // D-PM-38 decision 4 — the "Include N subtasks" box starts TICKED.
-  const [withSubtasks, setWithSubtasks] = useState<boolean>(CASCADE_DEFAULTS.move);
 
   const asked = askedFields(requiredDefs, refusedFields);
   const missing = asked ? requiredBlanks(asked, wireOf(asked, draft)).map((d) => d.name) : [];

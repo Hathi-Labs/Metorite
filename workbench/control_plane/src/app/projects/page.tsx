@@ -3286,15 +3286,19 @@ function ProjectsWorkspace() {
     const status = patch && typeof patch.status_id === "string" ? patch.status_id : null;
     if (status && Object.keys(patch ?? {}).length === 1) {
       try {
+        // The drop's slot is written ONCE, before the first reload, so the
+        // board redraws the card where it was dropped (review of #493).
+        let placed = writes.length === 0;
         const asked = await subtaskComplete.changeStatus(task, status, statuses, async () => {
+          if (!placed) {
+            placed = true;
+            const rootViews = await projectsApi.views(task.root_project_id);
+            const board = orderBearingView(rootViews.rows);
+            if (board) await projectsApi.setPositions(board.id, writes);
+          }
           if (selected) await loadProject(selected);
         });
-        if (asked) {
-          const rootViews = await projectsApi.views(task.root_project_id);
-          const board = orderBearingView(rootViews.rows);
-          if (board && writes.length) await projectsApi.setPositions(board.id, writes);
-          return;
-        }
+        if (asked) return;
       } catch (err) {
         setError(String((err as Error).message));
         if (selected) await loadProject(selected);

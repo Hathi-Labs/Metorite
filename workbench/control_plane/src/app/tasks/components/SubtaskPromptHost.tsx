@@ -14,8 +14,10 @@
  * - archive: the archive dialog with "Include N subtasks" TICKED. Cancel
  *   archives nothing.
  *
- * Mounted beside `PromoteHost`, outside every row, so a click inside it can
- * never reach a card's own click handler.
+ * Mounted ONCE, in `AppShell`, beside `FocusSession`. The store is global:
+ * Focus Mode and the Calendar complete and archive tasks too, and a prompt
+ * with no host would swallow the gesture (review of #493). Outside every
+ * row, so a click inside it never reaches a card's own click handler.
  */
 
 import { useState } from "react";

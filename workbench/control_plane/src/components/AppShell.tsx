@@ -41,6 +41,7 @@ import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
 import { FocusSession } from "@/app/tasks/components/FocusMode";
+import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // The note-taker's live recording dock — same shell-level pattern, so an
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
@@ -165,6 +166,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </main>
         <WelcomeDialog />
         <FocusSession />
+        {/* D-PM-38 (S5) — the store's subtask question. Global, like the
+            store: Focus Mode and the Calendar complete tasks too. */}
+        <SubtaskPromptHost />
         <RecordingDock />
         <LiveDock />
 
@@ -207,6 +211,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* Focus Mode session: full-screen room, or — minimized — a compact
             timer strip that extends the bottom bar upward. */}
         <FocusSession />
+        <SubtaskPromptHost />
         {/* Live recording dock — sits above the bottom nav (and above the Focus
             pill when both are up), so the menu bar never clips it. */}
         <RecordingDock />

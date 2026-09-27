@@ -59,7 +59,7 @@ export function useSubtaskComplete() {
       { status_id: statusId },
       { includeSubtasks: include },
     );
-    const changes: CascadeChange[] = [
+    let changes: CascadeChange[] = [
       { task_id: task.id, from_status_id: task.status_id, to_status_id: statusId },
       ...(fresh.subtask_changes ?? []),
     ];
@@ -82,11 +82,14 @@ export function useSubtaskComplete() {
     const redo = async () => {
       if (applied) return;
       applied = true;
-      await projectsApi.patchTask(
+      const again = await projectsApi.patchTask(
         task.id,
         { status_id: statusId },
         { includeSubtasks: include },
       );
+      // The redo may close children the first write did not, so the next
+      // Undo puts back what THIS write moved.
+      changes = [changes[0], ...(again.subtask_changes ?? [])];
       await after();
     };
     undoApi.record({ label: `completed ${task.title}`, undo: revert, redo });

@@ -267,6 +267,28 @@ async def test_complete_by_default_does_not_cascade(complete_door):
     assert default is False
 
 
+async def test_a_refused_cascade_never_completes_the_parent(
+    complete_door, monkeypatch,
+):
+    """`complete_for_member` emits the parent's event inside the
+    transaction. So the cascade runs FIRST: a 409 from it must not follow an
+    announced completion (review of #493)."""
+    completed: list[str] = []
+
+    async def refuse(db, vis, task_id, *, by):
+        raise HTTPException(status_code=409, detail="no Done status")
+
+    async def complete_for_member(db, task, email):
+        completed.append(task.id)
+        return {"row": task}
+
+    monkeypatch.setattr(personal, "complete_subtree", refuse)
+    monkeypatch.setattr(personal, "complete_for_member", complete_for_member)
+    with pytest.raises(HTTPException):
+        await personal.complete_task("parent", user=_user(), include_subtasks=True)
+    assert completed == []
+
+
 async def test_complete_with_the_flag_cascades_and_reports(complete_door):
     got = await personal.complete_task(
         "parent", user=_user(), include_subtasks=True)
@@ -458,7 +480,7 @@ def mover(monkeypatch, subtree):
     async def lane_category(db, status_id):
         return "todo"
 
-    async def cross_root(db, task, new_root, answers):
+    async def cross_root(db, task, new_root, answers, field_map=None):
         return {"root_project_id": new_root}, {}
 
     async def update_row(db, table, rid, values):
@@ -550,6 +572,7 @@ async def test_the_bulk_move_refuses_a_hidden_descendant_before_any_write(
             "drops": {}, "destination_statuses": [], "statuses": [],
             "types": [], "crosses_status_set": False, "crosses_root": False,
             "descendants": [_row("x", "a", depth=1, visible=False)],
+            "subtree_maps": {},
         }
 
     async def move_task_in(*args, **kwargs):
@@ -584,10 +607,13 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
             "types": [], "crosses_status_set": False, "crosses_root": False,
             "descendants": [_row("c1", "a", depth=1), _row("c2", "b", depth=2),
                             _row("c3", "z", depth=2)],
+            # The map the card showed, per source root (review of #493).
+            "subtree_maps": {"root-a": {"po": "customer_po"}},
         }
 
-    async def move_task_in(db, vis, task, payload, *, by):
-        carried.append((task.id, payload.project_id, payload.include_subtasks))
+    async def move_task_in(db, vis, task, payload, *, by, field_map=None):
+        carried.append((task.id, payload.project_id, payload.include_subtasks,
+                        field_map))
         return {}
 
     async def noop(*args, **kwargs):
@@ -602,10 +628,115 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
         move.MoveIn(task_ids=["p"], destination_project_id="z",
                     include_subtasks=True),
         user=_user())
-    # c3 is already there. Each one alone, never recursing a second time.
-    assert carried == [("c1", "z", False), ("c2", "z", False)]
+    # c3 is already there. Each one alone, never recursing a second time, and
+    # each with the map the card showed for ITS root.
+    assert carried == [
+        ("c1", "z", False, {"po": "customer_po"}),
+        ("c2", "z", False, None),
+    ]
     assert got["subtasks_moved"] == 2
     assert got["subtask_ids"] == ["c1", "c2"]
+
+
+# ── The move plan shows what the subtasks cost (review of #493) ───────────
+
+
+@pytest.fixture
+def planner(monkeypatch):
+    """`move._plan` with its reads faked. Three roots: the selection's (a),
+    another (b) and the destination (z), which REQUIRES `po`."""
+    parent = SimpleNamespace(
+        id="p", project_id="proj-a", root_project_id="root-proj-a", status_id="s",
+        task_number=1, type_id=None, tags=[], custom_fields={"po": "9"},
+    )
+    kids = [
+        _row("k1", "proj-a", depth=1),
+        _row("k2", "proj-b", depth=2),
+        _row("k3", "proj-a", depth=1, visible=False),
+    ]
+    kids[0].custom_fields = {"po": "1"}
+    kids[1].custom_fields = {"sev": "high"}
+    kids[0].tags = []
+    kids[1].tags = []
+    kids[2].tags = []
+    text_field = lambda key, name, required=False: {  # noqa: E731
+        "field_key": key, "name": name, "field_type": "text",
+        "options": None, "required": required,
+    }
+    defs = {
+        "root-proj-a": [text_field("po", "PO")],
+        "root-proj-b": [text_field("sev", "Severity")],
+        "root-z": [text_field("po", "PO", required=True)],
+    }
+
+    async def selection(db, vis, ids):
+        return [parent]
+
+    async def destination(db, vis, pid):
+        return SimpleNamespace(id="proj-z", kind="project")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def root_project_id(db, pid):
+        return "root-z"
+
+    async def status_owner_id(db, pid):
+        return f"owner-{pid}"
+
+    async def load_definitions(db, root):
+        return defs[root]
+
+    async def load_subtree(db, vis, task_id):
+        return kids
+
+    async def status_proposal(db, ids, owner):
+        return []
+
+    async def type_proposal(db, ids, root):
+        return []
+
+    class _DB:
+        async def execute(self, stmt, params=None):
+            class _R:
+                def fetchall(self):
+                    return []
+            return _R()
+
+    monkeypatch.setattr(move, "_selection", selection)
+    monkeypatch.setattr(move, "_destination", destination)
+    monkeypatch.setattr(move, "assert_move_keeps_privacy", noop)
+    monkeypatch.setattr(move, "root_project_id", root_project_id)
+    monkeypatch.setattr(move, "status_owner_id", status_owner_id)
+    monkeypatch.setattr(move, "load_definitions", load_definitions)
+    monkeypatch.setattr(move, "load_subtree", load_subtree)
+    monkeypatch.setattr(move, "_status_proposal", status_proposal)
+    monkeypatch.setattr(move, "_type_proposal", type_proposal)
+    return _DB()
+
+
+async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
+    planner,
+):
+    plan = await move._plan(planner, VIS, move.MoveIn(
+        task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
+    # k2's Severity has no home in the destination: shown, and so gated by
+    # accept_drops like any other loss (D-PM-29).
+    assert [d["task_id"] for d in plan["drops"]["sev"]] == ["k2"]
+    # k2 carries no PO, which the destination requires.
+    assert plan["required_missing"] == ["PO"]
+    assert plan["subtasks"] == {"count": 2, "hidden": 1}
+    # The map the apply hands each subtask, by ITS root.
+    assert set(plan["subtree_maps"]) == {"root-proj-a", "root-proj-b"}
+
+
+async def test_the_plan_without_subtasks_shows_only_the_selection(planner):
+    plan = await move._plan(planner, VIS, move.MoveIn(
+        task_ids=["p"], destination_project_id="proj-z"))
+    assert plan["drops"] == {}
+    assert plan["required_missing"] == []
+    # The box still needs the count, ticked or not.
+    assert plan["subtasks"] == {"count": 2, "hidden": 1}
 
 
 # ── The bulk door: one choice for the whole batch ──────────────────────────

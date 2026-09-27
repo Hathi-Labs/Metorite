@@ -2102,11 +2102,17 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # The subtree FIRST. `complete_for_member` emits the parent's
+        # `pm.task.status_changed` inside this transaction, so a cascade that
+        # refuses after it would have announced a completion that rolled back
+        # (review of #493). The cascade's own events wait for the commit.
+        cascade = (
+            await complete_subtree(db, vis, task_id, by=email)
+            if include_subtasks else None
+        )
         moved = await complete_for_member(db, task, email)
         result = row_to_dict(moved["row"], TaskModel)
-        cascade = None
-        if include_subtasks:
-            cascade = await complete_subtree(db, vis, task_id, by=email)
+        if cascade is not None:
             result["subtasks_completed"] = len(cascade.ids)
             result["subtask_changes"] = cascade.changes
     if cascade is not None:

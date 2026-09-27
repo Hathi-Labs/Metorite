@@ -3557,9 +3557,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         cascadeRevert
           .then((changes) =>
             revertCascade(changes, {
+              // ⚠️ The PROJECT door (`load_visible_task`), not `lensGetItem`.
+              // The cascade closes subtasks that are not mine (unassigned, or
+              // a colleague's), and `/my/tasks/{id}` answers 404 for those.
               read: async (taskId) => {
-                const now = await lensGetItem(taskId);
-                return { status_id: now.statusId ?? "", updated_at: now.updatedAt || null };
+                const now = await projectsApi.task(taskId);
+                return { status_id: now.status_id, updated_at: now.updated_at ?? null };
               },
               write: (taskId, prior, ifMatch) =>
                 lensSetStatusId(taskId, prior, ifMatch ? { ifMatch } : undefined),

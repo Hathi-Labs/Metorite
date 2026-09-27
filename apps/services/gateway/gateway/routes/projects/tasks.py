@@ -593,6 +593,7 @@ async def patch_task(
 
 async def _cross_root_values(
     db: Any, task: Any, new_root: str, answers: dict[str, Any] | None,
+    field_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """What a task's row owes when its ROOT changes: ``(values, dropped)``.
 
@@ -610,9 +611,10 @@ async def _cross_root_values(
     refused on this path and accepted on the bulk one. Checked BEFORE any
     value is written, so a refusal leaves the task exactly where it was.
     """
-    source_defs = await load_definitions(db, str(task.root_project_id))
     dest_defs = await load_definitions(db, new_root)
-    field_map, _orphans = resolve_field_map(source_defs, dest_defs)
+    if field_map is None:
+        source_defs = await load_definitions(db, str(task.root_project_id))
+        field_map, _orphans = resolve_field_map(source_defs, dest_defs)
     landed, dropped = await land_custom_fields(
         db, task, dest_root=new_root, field_map=field_map,
         dest_defs=dest_defs, answers=answers,
@@ -640,6 +642,7 @@ async def _cross_root_values(
 
 async def move_task_in(
     db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
+    field_map: dict[str, str] | None = None,
 ) -> dict:
     """The body of ``POST /tasks/{id}/move``, inside a caller's transaction.
 
@@ -651,6 +654,10 @@ async def move_task_in(
 
     ``task`` is the row ``load_visible_task`` returned. ``by`` is the actor.
     Returns the wire task with ``notified`` and ``skipped`` attached.
+
+    ``field_map`` is the map the bulk move's card showed for this task's root
+    (D-PM-38, S5). Absent, the automatic map for the task's own root applies,
+    as it always did.
     """
     task_id = str(task.id)
     values: dict[str, Any] = {}
@@ -711,7 +718,7 @@ async def move_task_in(
             ))
         if new_root != str(task.root_project_id):
             crossed, dropped = await _cross_root_values(
-                db, task, new_root, payload.custom_fields,
+                db, task, new_root, payload.custom_fields, field_map,
             )
             values.update(crossed)
 

@@ -112,6 +112,24 @@ describe("the move and archive box (decision 4)", () => {
     );
   });
 
+  it("the My Tasks question has ONE global host, like its store", () => {
+    // The store parks a gesture in `subtaskPrompt` from ANY page: Focus Mode
+    // and the Calendar complete tasks too. A page-level host left those
+    // gestures doing nothing (review of #493).
+    const shell = read("components/AppShell.tsx");
+    expect(shell.match(/<SubtaskPromptHost \/>/g) ?? []).toHaveLength(2);
+    expect(read("app/tasks/page.tsx")).not.toMatch(/<SubtaskPromptHost/);
+  });
+
+  it("the move preview is read WITH the subtasks while the box is ticked", () => {
+    expect(read("app/projects/components/MoveTasksDialog.tsx")).toMatch(
+      /useMovePreview\(ids, promoting \? null : destination, false, withSubtasks\)/,
+    );
+    expect(read("app/projects/components/PromoteFields.tsx")).toMatch(
+      /\.\.\.\(includeSubtasks \? \{ include_subtasks: true \} : \{\}\)/,
+    );
+  });
+
   it("labels the box", () => {
     expect(includeSubtasksLabel(1)).toBe("Include 1 subtask");
     expect(includeSubtasksLabel(4)).toBe("Include 4 subtasks");

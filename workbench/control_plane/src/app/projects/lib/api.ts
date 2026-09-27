@@ -1018,6 +1018,11 @@ export interface TaskRow {
   completed_at?: string | null;
   tags?: string[];
   created_at?: string | null;
+  /**
+   * The row version `TaskModel` sends. An If-Match write names it, so a
+   * write after somebody else's answers 412 (D-PM-20, D79 Undo).
+   */
+  updated_at?: string | null;
   assignees?: string[];
   view_position?: number | null;
   view_group_key?: string | null;

@@ -21,6 +21,11 @@ judge, so it runs on a real database (R8):
   Undo restores exactly the ids the archive reported.
 * **(f) The PATCH door** cascades a move into `done`, and not into
   `cancelled`.
+* **(g) A bulk move WITH subtasks shows what THEY cost** (review of #493).
+  A subtask's value with no home in the destination is in the preview's
+  drops, and the apply refuses it until the member accepts. A field the
+  destination requires and a subtask lacks is in `required_missing`, and the
+  apply refuses the whole move.
 
 Running it, on a FRESH database (01_schema.sql, then apply_migrations.sh)::
 
@@ -207,6 +212,23 @@ async def seed() -> dict:
         await task("p_child", "b", "To do", parent="p_parent")
         await task("x_parent", "a", "To do")
         await task("x_child", "b", "To do", parent="x_parent")
+
+        # (g) A field `sev` on `a` that the destination `c` does not have, and
+        # a subtask that carries a value in it.
+        for key, name in (("sev", "Severity"),):
+            await db.execute(text(
+                "INSERT INTO pm_custom_fields (project_id, organization_id, "
+                "field_key, name, field_type, created_by) VALUES "
+                "(CAST(:p AS uuid), CAST(:o AS uuid), :k, :n, 'text', :me)"),
+                {"p": made["projects"]["a"]["id"], "o": org_id, "k": key,
+                 "n": name, "me": OWNER})
+        await task("g_parent", "a", "To do")
+        await task("g_child", "a", "To do", parent="g_parent")
+        await db.execute(text(
+            "UPDATE pm_tasks SET custom_fields = '{\"sev\": \"high\"}'::jsonb "
+            "WHERE id = CAST(:i AS uuid)"), {"i": made["tasks"]["g_child"]})
+        await task("r_parent", "a", "To do")
+        await task("r_child", "a", "To do", parent="r_parent")
 
         await db.commit()
         return made
@@ -429,6 +451,84 @@ async def main():  # noqa: C901
         check("patch into cancelled: nothing cascades", got["subtasks_completed"], 0)
         check("patch into cancelled: the child stays open",
               await status_of(t["x_child"]), lane["b"]["To do"])
+
+        # ── (g) a bulk move WITH subtasks shows what they cost ─────────────
+        plain = await pm_move.preview_move(
+            pm_move.MoveIn(task_ids=[t["g_parent"]], destination_project_id=pc),
+            user=owner())
+        check("preview without subtasks: nothing drops", plain["drops"], {})
+        check("preview without subtasks: the box still has its count",
+              plain["subtasks"], {"count": 1, "hidden": 0})
+        full = await pm_move.preview_move(
+            pm_move.MoveIn(task_ids=[t["g_parent"]], destination_project_id=pc,
+                           include_subtasks=True),
+            user=owner())
+        check("preview with subtasks: the subtask's Severity drops",
+              [d["task_id"] for d in full["drops"].get("sev", [])], [t["g_child"]])
+        try:
+            await pm_move.move_tasks(
+                pm_move.MoveIn(task_ids=[t["g_parent"]], destination_project_id=pc,
+                               include_subtasks=True),
+                user=owner())
+            check("apply without accept_drops: refused", "no refusal", 422)
+        except HTTPException as exc:
+            check("apply without accept_drops: refused", exc.status_code, 422)
+        row = await one("SELECT project_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+                        i=t["g_child"])
+        check("apply without accept_drops: the subtask did not move",
+              str(row.project_id), made["projects"]["a"]["id"])
+        moved = await pm_move.move_tasks(
+            pm_move.MoveIn(task_ids=[t["g_parent"]], destination_project_id=pc,
+                           include_subtasks=True, accept_drops=True,
+                           accepted_drops=["sev"]),
+            user=owner())
+        check("apply with the loss accepted: the subtask moved",
+              moved["subtasks_moved"], 1)
+        trail = await one(
+            "SELECT count(*) AS n FROM pm_activities WHERE task_id = CAST(:i AS uuid) "
+            "AND meta ? 'dropped_custom_fields'", i=t["g_child"])
+        check("apply with the loss accepted: the value is on the timeline",
+              trail.n, 1)
+
+        # A field the destination REQUIRES, which the parent carries and the
+        # subtask does not. Added last, because `c` is the destination above.
+        db = await get_db()
+        try:
+            await db.execute(text(
+                "INSERT INTO pm_custom_fields (project_id, organization_id, "
+                "field_key, name, field_type, required, created_by) VALUES "
+                "(CAST(:p AS uuid), CAST(:o AS uuid), 'po', 'PO', 'text', true, :me)"),
+                {"p": pc, "o": made["org"], "me": OWNER})
+            await db.execute(text(
+                "INSERT INTO pm_custom_fields (project_id, organization_id, "
+                "field_key, name, field_type, created_by) VALUES "
+                "(CAST(:p AS uuid), CAST(:o AS uuid), 'po', 'PO', 'text', :me)"),
+                {"p": made["projects"]["a"]["id"], "o": made["org"], "me": OWNER})
+            await db.execute(text(
+                "UPDATE pm_tasks SET custom_fields = '{\"po\": \"PO-7\"}'::jsonb "
+                "WHERE id = CAST(:i AS uuid)"), {"i": t["r_parent"]})
+            await db.commit()
+        finally:
+            await db.close()
+        need = await pm_move.preview_move(
+            pm_move.MoveIn(task_ids=[t["r_parent"]], destination_project_id=pc,
+                           include_subtasks=True),
+            user=owner())
+        check("preview with subtasks: the subtask's missing PO is named",
+              need["required_missing"], ["PO"])
+        alone = await pm_move.preview_move(
+            pm_move.MoveIn(task_ids=[t["r_parent"]], destination_project_id=pc),
+            user=owner())
+        check("preview without subtasks: the parent alone satisfies PO",
+              alone["required_missing"], [])
+        try:
+            await pm_move.move_tasks(
+                pm_move.MoveIn(task_ids=[t["r_parent"]], destination_project_id=pc,
+                               include_subtasks=True),
+                user=owner())
+            check("apply with a subtask missing PO: refused", "no refusal", 422)
+        except HTTPException as exc:
+            check("apply with a subtask missing PO: refused", exc.status_code, 422)
 
         # ── the bulk door, once for the batch ───────────────────────────────
         outcome = await pm_bulk.bulk_edit(

@@ -8140,6 +8140,25 @@ No migration. The gateway change is additive: one option on seven doors.
 The live checks are `tests/live/live_subtask_lifecycle.py`, on a fresh
 database.
 
+**The review round (PR #493).**
+
+- **The My Tasks question has ONE host, in `AppShell`.** The store is global,
+  and Focus Mode and the Calendar complete tasks too. A host on the My Tasks
+  page alone left those gestures doing nothing. Fence: `subtaskCascade.test.ts`.
+- **My Tasks' Undo reads each subtask through the project door.** The cascade
+  closes subtasks that are not mine, and `/my/tasks/{id}` answers 404 for
+  them. Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A move WITH subtasks shows what they cost.** The preview takes
+  `include_subtasks`, and the carried subtasks join the drops, the required
+  fields, the types and the tags. So `accept_drops` gates a subtask's loss,
+  and a missing required field refuses the move before any write (D-PM-29).
+  Each subtask lands by the map of its own root, and the apply hands that map
+  to `move_task_in`. Fences: `test_subtasks_s5.py`, live check (g).
+- **Complete runs the cascade before the parent's completion.** The parent's
+  event goes out inside the transaction, so a refused cascade must come
+  first. Fence: `test_subtasks_s5.py`.
+- **A drop into Done writes the card's slot before the board reloads.**
+
 **Why the server default is false on every door.** The owner's defaults are
 the dialog's defaults. The prompt defaults to "Only this task", and the move
 and archive dialogs tick their box. A server default of true would change what the
@@ -8206,11 +8225,8 @@ ticked box for Archive and Move.
 
 - The prompt counts the direct children from the chip. A closed child with
   an open grandchild does not make the parent ask.
-- The move preview does not show the descendants' drops or their required
-  fields. The apply still refuses a blank required field, and records each
-  drop on the task's timeline.
-- A bulk move remaps each descendant by the automatic rule. The member's
-  status overrides name the selection's lanes only.
+- A bulk move remaps each descendant's STATUS by the automatic rule. The
+  member's status overrides name the selection's lanes only.
 - The move preview reads the subtree once per selected task.
 - A board drop that moves two axes at once does not ask.
 - An organize that promotes WITH subtasks names only the parent in the card's

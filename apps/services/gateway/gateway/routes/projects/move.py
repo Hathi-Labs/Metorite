@@ -334,6 +334,26 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     for task in tasks:
         await assert_move_keeps_privacy(db, task, dest_id)
 
+    # D-PM-38 decision 4 — the descendants a move WITH its subtasks would
+    # take, for the dialog's "Include N subtasks" box. Every depth, and not
+    # the ones the selection already names. `hidden` is how many the member
+    # cannot see: the apply refuses those (409), so the card says so first.
+    selected = {str(t.id) for t in tasks}
+    descendants: dict[str, Any] = {}
+    for task in tasks:
+        for row in await load_subtree(db, vis, str(task.id)):
+            if str(row.id) not in selected:
+                descendants.setdefault(str(row.id), row)
+    #: The descendants the apply will move, when the member asked for them.
+    #: They join the drop report, the required-field check, the types and the
+    #: tags below, so the card shows what THEY cost too (D-PM-29, review of
+    #: #493). Only the visible ones: a hidden one refuses the move anyway.
+    carried = [
+        row for row in descendants.values()
+        if payload.include_subtasks and row.visible
+        and str(row.project_id) != dest_id
+    ]
+
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
     source_home = await status_owner_id(db, source_project_id)
@@ -408,19 +428,48 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
                 "value": value,
             })
 
-    types = (
-        await _type_proposal(
-            db, sorted({str(t.type_id) for t in tasks if t.type_id}), dest_root,
+    # D-PM-38 — each carried subtask lands by the map of ITS OWN root: the
+    # member's map for the selection's root, the automatic one for another.
+    # The apply hands the same map to `move_task_in`, so the card and the
+    # write agree, and a subtask's loss is gated by `accept_drops` like any.
+    subtree_maps: dict[str, dict[str, str]] = {}
+    for row in carried:
+        row_root = str(row.root_project_id)
+        if row_root == dest_root:
+            continue
+        if row_root not in subtree_maps:
+            subtree_maps[row_root] = (
+                chosen if row_root == source_root
+                else resolve_field_map(
+                    await load_definitions(db, row_root), dest_defs,
+                )[0]
+            )
+        landed, dropped = apply_field_map(
+            from_jsonb(row.custom_fields), subtree_maps[row_root], dest_keys,
         )
-        if dest_root != source_root else []
-    )
+        landed_by_task.append(landed)
+        for key, value in dropped.items():
+            drops.setdefault(key, []).append({
+                "task_id": str(row.id),
+                "task_number": row.task_number,
+                "value": value,
+            })
+
+    type_ids = {str(t.type_id) for t in tasks if t.type_id} if dest_root != source_root else set()
+    type_ids |= {
+        str(r.type_id) for r in carried
+        if r.type_id and str(r.root_project_id) != dest_root
+    }
+    types = await _type_proposal(db, sorted(type_ids), dest_root) if type_ids else []
 
     # Tags ride the row as NAMES, so they always survive the move. What may not
     # survive is their registry entry, and with it the colour. Reported, never
     # auto-created (section 9.13.5).
-    carried = sorted({tag for t in tasks for tag in (t.tags or [])})
+    tag_names = sorted({
+        tag for t in [*tasks, *carried] for tag in (getattr(t, "tags", None) or [])
+    })
     unregistered: list[str] = []
-    if carried and dest_root != source_root:
+    if tag_names and (dest_root != source_root or carried):
         # ⚠️ `vocabulary_scope()`, not `project_id = :root`. A tag may be
         # ORG-WIDE (`project_id IS NULL`, migration 175), and the narrow read
         # reported every one of them as unregistered — telling the member a
@@ -431,7 +480,7 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
                 {"root": dest_root},
             )).fetchall()
         }
-        unregistered = [tag for tag in carried if tag.lower() not in known]
+        unregistered = [tag for tag in tag_names if tag.lower() not in known]
 
     # P1 — the destination's REQUIRED fields the selection does not satisfy.
     # `tasks.py` refuses a single move without them (migration 192), so
@@ -449,7 +498,7 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     # first version re-ran `apply_field_map` once per (required field x task),
     # i.e. 20000 times for a 500-task move into a root with 40 required fields.
     required_missing: list[str] = []
-    if dest_root != source_root:
+    if landed_by_task:
         for definition in (d for d in dest_defs if d.get("required")):
             key = str(definition["field_key"])
             if any(_is_blank(landed.get(key)) for landed in landed_by_task):
@@ -474,17 +523,6 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
             {"owner": dest_home},
         )).fetchall()
     ]
-
-    # D-PM-38 decision 4 — the descendants a move WITH its subtasks would
-    # take, for the dialog's "Include N subtasks" box. Every depth, and not
-    # the ones the selection already names. `hidden` is how many the member
-    # cannot see: the apply refuses those (409), so the card says so first.
-    selected = {str(t.id) for t in tasks}
-    descendants: dict[str, Any] = {}
-    for task in tasks:
-        for row in await load_subtree(db, vis, str(task.id)):
-            if str(row.id) not in selected:
-                descendants.setdefault(str(row.id), row)
 
     return {
         "tasks": tasks,
@@ -513,7 +551,8 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         ],
         "drops": drops,
         "types": types,
-        "tags": {"carried": carried, "unregistered": unregistered},
+        "tags": {"carried": tag_names, "unregistered": unregistered},
+        "subtree_maps": subtree_maps,
         "dest_keys": dest_keys,
         "dest_defs": dest_defs,
         "dest_home": dest_home,
@@ -526,6 +565,7 @@ def _public(plan: dict[str, Any]) -> dict[str, Any]:
         key: value for key, value in plan.items()
         if key not in {
             "tasks", "dest_keys", "dest_defs", "dest_home", "descendants",
+            "subtree_maps",
         }
     }
     public["task_count"] = len(plan["tasks"])
@@ -756,6 +796,7 @@ async def move_tasks(
                 continue
             await move_task_in(
                 db, vis, child, MoveTask(project_id=dest_id), by=actor(user),
+                field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
 
