@@ -1568,19 +1568,29 @@ line — never reclaim a number by deleting the other entry.
     auth-relevant lines cannot merge without the owner.
     - **The fence** is `tests/unit/test_caddy_auth_gate.py`. It hashes the
       auth lines and compares the hash with `_BASELINE`
-      (`8188e88b…517ddc2f`). The owner approves a new hash with the line
+      (`b134ae70…cdbd4b1cd`). The box's live Caddyfile hashes to the same
+      value on 2026-09-28. The owner approves a new hash with the line
       `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md`. The test
       failure prints the exact line.
+    - It covers the header lines, the sign-in blocks, `handle`,
+      `handle_path`, `route`, `rewrite`, `uri`, `redir`, `tls`, `transport`,
+      `import`, named matchers, every site label and `admin`. An `import`
+      of a file fails outright.
     - ⚠️ An agent that edits `_BASELINE` defeats the fence. Review must treat
       that edit as gate (a).
     - `work_plan.md` §6 gate (a) and `onboarding_preflight.py` now say this.
   - **More fences from the review round:**
     - After a Caddy restart, the apply asks every site host through Caddy.
-      No answer, or a 5xx other than 502/503/504, rolls the config back.
+      Any HTTP answer, a 500 too, proves that Caddy routes the host. The
+      probe tries each host for up to 90 s, because a new host has no
+      certificate at first. Only no answer at that deadline rolls back.
     - No backup of the live file means no install. The apply keeps the last
       five backups.
     - CI runs `caddy validate` and `caddy fmt` (`caddy:2.11.4`), so a broken
       Caddyfile cannot merge green.
+    - 📌 **[OWNER] follow-up: add 'Caddy config (validate)' to the required
+      checks on `main`.** Until then, a red run of that job does not block a
+      merge. Only the owner can change branch protection.
     - The apply removes the deps stamp before an install starts.
     - `DEPLOY_FORCE=1` no longer runs `npm ci`. `DEPLOY_REINSTALL=1` does:
       the `reinstall` dispatch input, or `vps_pull.sh --reinstall`.

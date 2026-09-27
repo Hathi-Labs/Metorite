@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -866,6 +867,21 @@ class TestCaddyHoldsTheRequest:
         prune = _first(lines, 'ls -1t "$CADDY_LIVE".bak.[0-9]*')
         assert "tail -n +6" in lines[prune]
 
+    def test_the_host_probe_retries_to_a_deadline_and_accepts_any_answer(self) -> None:
+        """Runs on every platform. One attempt, or a probe that fails on a 5xx,
+        wedged every deploy (H-60 re-review, P1)."""
+        fn = _apply_function("caddy_probe_sites")
+        assert "while :; do" in fn, "one attempt per host is not enough"
+        assert "${CADDY_PROBE_DEADLINE:-90}" in fn
+        m = re.search(r"CADDY_PROBE_DEADLINE:-(\d+)", fn)
+        assert m and int(m.group(1)) >= 60, "a new certificate needs time"
+        assert 'sleep "${CADDY_PROBE_INTERVAL:-' in fn
+        assert 'if [ "$(date +%s)" -ge "$cps_end" ]; then' in fn
+        assert "[1-5][0-9][0-9])" in fn, "any HTTP answer proves Caddy routes the host"
+        assert "|502|503|504)" not in fn
+        m = re.search(r"CADDY_PROBE_MAX:-(\d+)", fn)
+        assert m and int(m.group(1)) > 30, "an attempt must outwait lb_try_duration"
+
     def test_every_host_is_probed_before_caddy_counts_as_up(self) -> None:
         lines = _executable_lines(_APPLY)
         restart = _first(lines, "sudo systemctl restart caddy")
@@ -1130,14 +1146,18 @@ class TestEveryCaddyHostIsProved:
         "a.example.com, b.example.com {\n\tfile_server\n}\n"
     )
 
-    def _server(self, codes: dict[str, int]) -> tuple[subprocess.Popen, int]:
+    def _server(
+        self, codes: dict[str, int], delay: float = 0.0, port: int = 0
+    ) -> tuple[subprocess.Popen, int]:
         import socket
 
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
+        if not port:
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
         code = (
-            "import http.server\n"
+            "import http.server, time\n"
+            f"time.sleep({delay})\n"
             f"CODES = {codes!r}\n"
             "class H(http.server.BaseHTTPRequestHandler):\n"
             "    def do_GET(self):\n"
@@ -1147,10 +1167,13 @@ class TestEveryCaddyHostIsProved:
             f"http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
         )
         proc = subprocess.Popen([sys.executable, "-c", code])
-        time.sleep(0.5)
+        if not delay:
+            time.sleep(0.5)
         return proc, port
 
-    def _run(self, tmp_path: pathlib.Path, cmd: str, port: int) -> subprocess.CompletedProcess:
+    def _run(
+        self, tmp_path: pathlib.Path, cmd: str, port: int, deadline: str = "10"
+    ) -> subprocess.CompletedProcess:
         cf = tmp_path / "Caddyfile"
         cf.write_text(self._CF, encoding="utf-8")
         helpers = _helpers(tmp_path, tmp_path)
@@ -1158,9 +1181,10 @@ class TestEveryCaddyHostIsProved:
             ["bash", "-c", f'. "{helpers}"; {cmd} "{cf}"; echo "rc=$?"'],
             env=_env(
                 tmp_path, CADDY_PROBE_SCHEME="http", CADDY_PROBE_PORT=str(port),
-                CADDY_PROBE_MAX="5",
+                CADDY_PROBE_MAX="5", CADDY_PROBE_DEADLINE=deadline,
+                CADDY_PROBE_INTERVAL="0.2",
             ),
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=120,
         )
 
     def test_the_site_list_is_every_host_and_nothing_else(self, tmp_path: pathlib.Path) -> None:
@@ -1195,24 +1219,45 @@ class TestEveryCaddyHostIsProved:
             _stop(srv)
         assert "rc=0" in res.stdout, res.stdout
 
-    def test_a_500_from_caddy_fails(self, tmp_path: pathlib.Path) -> None:
+    def test_a_500_passes(self, tmp_path: pathlib.Path) -> None:
+        """Caddy routes the host, and the app behind it is broken. Rolling
+        Caddy back here stops the rebuild that would fix the app."""
         srv, port = self._server({"b.example.com": 500})
         try:
             res = self._run(tmp_path, "caddy_probe_sites", port)
         finally:
             _stop(srv)
-        assert "rc=1" in res.stdout, res.stdout
-        assert "b.example.com FAILED (HTTP 500)" in res.stdout
+        assert "rc=0" in res.stdout, res.stdout
+        assert "b.example.com answers HTTP 500" in res.stdout
 
-    def test_no_answer_fails(self, tmp_path: pathlib.Path) -> None:
+    def test_a_host_that_answers_after_some_failures_passes(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """A new host has no certificate for its first seconds: 000, then an
+        answer. One attempt rolled it back on every deploy."""
+        srv, port = self._server({}, delay=2.0)
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port, deadline="20")
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+        first = next(ln for ln in res.stdout.splitlines() if "answers HTTP" in ln)
+        tries = int(first.rsplit("attempt ", 1)[1].rstrip(")"))
+        assert tries > 1, f"it passed on attempt {tries}, before the server listened"
+
+    def test_no_answer_fails_at_the_deadline(self, tmp_path: pathlib.Path) -> None:
         import socket
 
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-        res = self._run(tmp_path, "caddy_probe_sites", port)
+        t0 = time.monotonic()
+        res = self._run(tmp_path, "caddy_probe_sites", port, deadline="2")
+        took = time.monotonic() - t0
         assert "rc=1" in res.stdout, res.stdout
-        assert "FAILED (HTTP 000)" in res.stdout
+        assert "no HTTP answer in 2s" in res.stdout and "last: 000" in res.stdout
+        # Three hosts, each held to its own 2 s deadline, never unbounded.
+        assert 2 <= took < 30, took
 
     def test_a_file_with_no_hosts_fails(self, tmp_path: pathlib.Path) -> None:
         cf = tmp_path / "empty"

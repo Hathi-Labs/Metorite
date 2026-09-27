@@ -317,11 +317,19 @@ caddy_sites() {
          for (i = 1; i < NF; i++) { h = $i; gsub(",", "", h); if (h ~ /\./) print h }
        }' "$1"
 }
-# $1 = the Caddyfile. Returns 1 when any host fails. A failure is no HTTP
-# answer at all (000: refused, TLS, timeout), or a 5xx that Caddy made itself.
-# 502, 503 and 504 PASS: they mean the config routed the host to an upstream
-# that is cold or restarting, which is the case this PR teaches Caddy to wait
-# for. The bound is longer than lb_try_duration (30 s).
+# $1 = the Caddyfile. Returns 1 when any host fails.
+#
+# ⚠️ **THE QUESTION IS "DOES CADDY ROUTE THIS HOST", NOT "IS THE APP
+# HEALTHY".** Any three-digit HTTP code answers it, a 500 included. Upstream
+# health is `wait_ready`'s job, AFTER the rebuild. A probe that failed on a
+# 500 rolled Caddy back BEFORE the rebuild that would fix the 500, so every
+# deploy looped (H-60 re-review, P1).
+#
+# ⚠️ **ONE ATTEMPT IS NOT ENOUGH.** A new hostname has no certificate until
+# certmagic fetches it after the start, so the first answers are 000. Each
+# host therefore gets attempts until CADDY_PROBE_DEADLINE (90 s), and fails
+# only on 000 at the deadline. Each attempt waits CADDY_PROBE_MAX (40 s),
+# longer than lb_try_duration (30 s), so a held request ends as a 502, not 000.
 caddy_probe_sites() {
   cps_bad=0
   cps_port="${CADDY_PROBE_PORT:-443}"
@@ -330,13 +338,25 @@ caddy_probe_sites() {
     return 1
   fi
   for cps_host in $(caddy_sites "$1"); do
-    cps_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CADDY_PROBE_MAX:-40}" \
-      --resolve "$cps_host:$cps_port:127.0.0.1" \
-      "${CADDY_PROBE_SCHEME:-https}://$cps_host:$cps_port/" 2>/dev/null || true)"
-    case "$cps_code" in
-      [1-4][0-9][0-9]|502|503|504) echo "    caddy: $cps_host answers HTTP $cps_code" ;;
-      *) echo "    !! caddy: $cps_host FAILED (HTTP ${cps_code:-none})"; cps_bad=1 ;;
-    esac
+    cps_end=$(( $(date +%s) + ${CADDY_PROBE_DEADLINE:-90} ))
+    cps_tries=0
+    while :; do
+      cps_tries=$((cps_tries + 1))
+      cps_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CADDY_PROBE_MAX:-40}" \
+        --resolve "$cps_host:$cps_port:127.0.0.1" \
+        "${CADDY_PROBE_SCHEME:-https}://$cps_host:$cps_port/" 2>/dev/null || true)"
+      case "$cps_code" in
+        [1-5][0-9][0-9])
+          echo "    caddy: $cps_host answers HTTP $cps_code (attempt $cps_tries)"
+          break ;;
+      esac
+      if [ "$(date +%s)" -ge "$cps_end" ]; then
+        echo "    !! caddy: $cps_host FAILED — no HTTP answer in ${CADDY_PROBE_DEADLINE:-90}s ($cps_tries attempts, last: ${cps_code:-none})"
+        cps_bad=1
+        break
+      fi
+      sleep "${CADDY_PROBE_INTERVAL:-2}"
+    done
   done
   return "$cps_bad"
 }
