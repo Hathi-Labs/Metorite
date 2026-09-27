@@ -1305,8 +1305,8 @@ def require_organization(vis: Visibility) -> str:
 async def require_organization_of(db: Any, email: str) -> str:
     """:func:`require_organization` for a caller who has no ``Visibility``.
 
-    The personal-project seam and both importers create root projects without
-    ever building one — they are helpers reached from a route that has already
+    The personal-project seam and the file importer's writer (D80, WS-41)
+    create root projects without ever building one — they are helpers reached from a route that has already
     authorized the caller, and growing them a ``Visibility`` parameter would
     push the tenant decision back out to each of their call sites, which is the
     opposite of the point.

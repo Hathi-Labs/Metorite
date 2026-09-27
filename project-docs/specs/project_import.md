@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — I-1 built 2026-09-27, the rest is spec.** Owner
+**Status: ACTIVE — I-1 and I-2 built 2026-09-27, the rest is spec.** Owner
 directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
@@ -579,7 +579,7 @@ test proves the flag suppresses each one (§8).
 | `progress` | JSONB | Tasks written, the last batch, `node_map` of source ref to node id |
 | `report` | JSONB | The final counts |
 | `heartbeat_at` | TIMESTAMPTZ | The writer bumps it each batch |
-| `created_at`, `finished_at` | TIMESTAMPTZ | |
+| `created_at`, `updated_at`, `finished_at` | TIMESTAMPTZ | `updated_at` moves on each mapping save |
 
 R6 expand only: a new table and a new index. Nothing existing changes.
 
@@ -624,6 +624,9 @@ Ship dark, default OFF:
 - Gateway: `PROJECTS_IMPORT`, read at call time like `PROJECTS_ORG_VOCABULARIES`
   (`core.py:2096-2117`). OFF, every import route answers 404.
 - Client: `NEXT_PUBLIC_PROJECTS_IMPORT`, as a literal `process.env` read.
+  I-4 adds it with the wizard. No client code exists before I-4.
+- Storage: `PROJECT_IMPORT_DIR` (§7.2). Both gateway values are in
+  `.env.example`.
 
 ### 7.6 Routes
 
@@ -665,11 +668,11 @@ look (`DESIGN_SYSTEM.md`):
 | The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
 | Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
 | The bundle holds `None`, never a guess | `tests/unit/test_import_clickup_adapter.py` — `test_every_whole_field_the_file_lacks_is_a_loss` (no guessed `completed_at`) and `test_every_column_of_the_real_file_has_a_stated_fate` |
-| The plan writes nothing | `tests/unit/test_import_plan.py` — a plan run against a session that refuses every write |
+| The plan writes nothing | `tests/unit/test_import_plan.py` — the plan module imports no database client (`test_the_plan_module_cannot_reach_a_database`). `tests/unit/test_projects_import_routes.py` records every statement an upload sends, and finds no write but the run's own |
 | Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
 | The SQL works (R8) | `tests/live/live_ws41_import.py` — a real Postgres: apply, re-run skips, resume after a kill, discard |
-| The flag is dark by default | `tests/unit/test_import_flag.py`, and `publicFlags.test.ts` for the client flag |
+| The flag is dark by default | `tests/unit/test_projects_import_routes.py` (`test_the_flag_off_answers_404`, and the gate order on every route). `publicFlags.test.ts` holds the client flag from I-4 |
 
 ## 9. Slices
 
@@ -679,7 +682,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 |---|---|---|
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
-| **I-2** | Migration for `pm_import_runs` and the origin index. Upload, get and mapping routes. The plan. The D80 docstring and `CLAUDE.md` edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes |
+| **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 18 of 18, with RLS checked under a role that does not bypass it |
 | **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
@@ -722,14 +725,25 @@ uv run mypy apps/services/gateway/gateway/routes/projects/importer
 node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
 ```
 
-**I-2 and later (planned — these files do not exist yet):**
+**I-2 (built):**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
-  tests/unit/test_pm_task_insert_sites.py tests/unit/test_tenant_coverage.py \
-  tests/unit/test_import_flag.py
-uv run pytest tests/live/live_ws41_import.py
+uv run pytest tests/unit/test_import_plan.py tests/unit/test_projects_import_routes.py \
+  tests/unit/test_projects_routes.py tests/unit/test_tenant_coverage.py \
+  tests/unit/test_migration_prefixes.py tests/unit/test_projects_migration.py
+uv run python tests/live/live_ws41_import.py
+uv run ruff check apps/services/gateway/gateway/routes/projects/imports.py
+```
+
+`test_projects_import_routes.py` holds the flag tests that §8 names
+`test_import_flag.py`. The live test is a script, as every file in
+`tests/live/` is, so run it with `python` and read its PASS lines.
+
+**I-3 and later (planned — these files do not exist yet):**
+
+```bash
+uv run pytest tests/unit/test_import_quiet.py tests/unit/test_pm_task_insert_sites.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 
