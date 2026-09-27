@@ -15,6 +15,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     apiFileUnder: vi.fn(),
+    apiSetParent: vi.fn(),
     fetchItems: vi.fn(),
     fetchProjects: vi.fn(),
     fetchPeople: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("./lens", async (importOriginal) => {
 
 import {
   apiFileUnder,
+  apiSetParent,
   fetchItems,
   fetchMyRoot,
   fetchPeople,
@@ -37,12 +39,14 @@ import {
 } from "./api";
 import { lensGetItem } from "./lens";
 import {
+  expanderSlots,
   myTaskRows,
   otherSteps,
   parentFactOf,
   stepsNotShown,
 } from "./subtaskRows";
 import { useTaskStore } from "./taskStore";
+import { type UndoToastApi, syncUndoToast } from "./undoToast";
 import type { MyTask } from "./types";
 
 const task = (id: string, over: Partial<MyTask> = {}): MyTask => ({
@@ -72,8 +76,8 @@ describe("myTaskRows — each subtask once", () => {
   it("draws a step at the top level WITH its crumb when the parent is not here", () => {
     const step = task("s", { parentItemId: "p", parent: { id: "p", title: "Launch" } });
     expect(myTaskRows([task("a"), step])).toEqual([
-      { item: task("a"), depth: 0, crumb: false },
-      { item: step, depth: 0, crumb: true },
+      { item: task("a"), depth: 0, crumb: false, descendantCount: 0 },
+      { item: step, depth: 0, crumb: true, descendantCount: 0 },
     ]);
   });
 
@@ -103,6 +107,28 @@ describe("the parent's expander — only the steps not on the list", () => {
     expect(stepsNotShown(parent, list)).toBe(2);
     expect(stepsNotShown(task("q", { subtaskCount: 1 }), [task("q"), task("s", { parentItemId: "q" })])).toBe(0);
     expect(stepsNotShown(task("lone"), [task("lone")])).toBe(0);
+  });
+
+  it("draws the other steps AFTER my nested steps, deepest parent first", () => {
+    const rows = myTaskRows([
+      task("p", { subtaskCount: 4 }),
+      task("s1", { parentItemId: "p", subtaskCount: 2 }),
+      task("g1", { parentItemId: "s1" }),
+      task("s2", { parentItemId: "p" }),
+      task("x"),
+    ]);
+    // p's subtree is rows 0-3, s1's is rows 1-2.
+    const slots = expanderSlots(rows, new Set(["p", "s1", "x"]));
+    expect([...slots.keys()].sort()).toEqual([2, 3, 4]);
+    expect(slots.get(3)!.map((r) => r.item.id)).toEqual(["p"]);
+    expect(slots.get(2)!.map((r) => r.item.id)).toEqual(["s1"]);
+    expect(slots.get(4)!.map((r) => r.item.id)).toEqual(["x"]);
+    // Two parents that end on one row: the deeper one draws first.
+    const both = expanderSlots(
+      myTaskRows([task("a"), task("b", { parentItemId: "a" }), task("c", { parentItemId: "b" })]),
+      new Set(["a", "b"]),
+    );
+    expect(both.get(2)!.map((r) => r.item.id)).toEqual(["b", "a"]);
   });
 
   it("lists only the children not shown elsewhere", () => {
@@ -163,8 +189,57 @@ describe("File as subtask survives a store rehydrate (B8)", () => {
     expect(parentFactOf(parent)).toEqual(served.parent);
   });
 
-  it("offers no undo that would copy the task", async () => {
+  /** The shared undo toast, over a fake that runs the action on click. */
+  const clickUndo = () => {
+    let action: (() => void) | undefined;
+    const toast: UndoToastApi = {
+      show: (spec) => {
+        action = spec.action?.onClick;
+      },
+      dismiss: () => {},
+    };
+    const store = useTaskStore.getState();
+    syncUndoToast(store.undoSnapshot, toast, {
+      current: () => useTaskStore.getState().undoSnapshot,
+      undo: () => useTaskStore.getState().undoLastChange(),
+      dismiss: () => useTaskStore.getState().dismissUndo(),
+      openTask: () => {},
+    }, { defer: (fn) => fn() });
+    expect(action, "the toast offers Undo").toBeTypeOf("function");
+    action!();
+  };
+
+  it("Undo through the toast moves a top-level task back to the top level", async () => {
+    vi.mocked(apiSetParent).mockResolvedValue(undefined);
+    vi.mocked(lensGetItem).mockResolvedValue(capture);
     await useTaskStore.getState().fileUnderParent("c", "p");
+    expect(useTaskStore.getState().undoSnapshot?.label).toBe("Filed as a subtask");
+    clickUndo();
+    await vi.waitFor(() => expect(apiSetParent).toHaveBeenCalledWith("c", null));
+    expect(layout(useTaskStore.getState().items)).toEqual(["p", "c"]);
+    expect(useTaskStore.getState().items.find((i) => i.id === "p")?.subtaskCount ?? 0).toBe(0);
+  });
+
+  it("Undo puts back the parent the task had before", async () => {
+    const other = task("o", { title: "Other" });
+    const stepOfOther = task("c", { parentItemId: "o", parent: parentFactOf(other) });
+    useTaskStore.setState({ items: [parent, other, stepOfOther], undoSnapshot: null });
+    vi.mocked(apiSetParent).mockResolvedValue(undefined);
+    vi.mocked(lensGetItem).mockResolvedValue(stepOfOther);
+    await useTaskStore.getState().fileUnderParent("c", "p");
+    clickUndo();
+    await vi.waitFor(() => expect(apiSetParent).toHaveBeenCalledWith("c", "o"));
+    expect(useTaskStore.getState().items.find((i) => i.id === "c")?.parentItemId).toBe("o");
+  });
+
+  it("a refused move rolls the rows back, offers no undo, and says why", async () => {
+    vi.mocked(apiFileUnder).mockRejectedValue(new Error("That would make a task its own ancestor."));
+    useTaskStore.setState({ syncFailure: null });
+    await useTaskStore.getState().fileUnderParent("c", "p");
+    const items = useTaskStore.getState().items;
+    expect(items.find((i) => i.id === "c")).toEqual(capture);
+    expect(items.find((i) => i.id === "p")).toEqual(parent);
     expect(useTaskStore.getState().undoSnapshot).toBeNull();
+    expect(useTaskStore.getState().syncFailure?.message).toContain("its own ancestor");
   });
 });

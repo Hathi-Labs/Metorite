@@ -2404,14 +2404,23 @@ async def add_my_steps(
     Before S4 the checklist wrote each step through ``POST /tasks`` with no
     status, so a step took the first lane and read SOMEDAY.
 
-    The parent is read through the visibility the organize door uses, which
-    admits a task I reach by assignment. Answers ``{created: [ids]}`` in the
-    order given.
+    The parent is read through the visibility the organize door uses
+    (``load_visible_task``), which admits a task I reach by assignment. That
+    reach is intended: an assignee adds steps under their own work, as
+    organize lets them. A parent I cannot see answers 404 and writes nothing.
+    Answers ``{created: [ids]}`` in the order given.
     """
     email = actor(user).lower()
     titles = [t for t in (payload.titles or []) if (t or "").strip()]
     if not titles:
         raise HTTPException(status_code=422, detail="A step needs a title.")
+    # Bounded for the reason the batch capture is (`MAX_BATCH`).
+    if len(payload.titles or []) > MAX_BATCH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_BATCH} steps per request; "
+                   f"got {len(payload.titles)}.",
+        )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         parent = await load_visible_task(db, vis, task_id)

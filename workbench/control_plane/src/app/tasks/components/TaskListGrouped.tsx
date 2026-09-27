@@ -8,6 +8,7 @@ import { QuickAdd } from "@/components/QuickAdd";
 import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -40,6 +41,7 @@ import {
 } from "../lib/columns";
 import { quickAddPrefill } from "../lib/quickAdd";
 import {
+  expanderSlots,
   myTaskRows,
   otherSteps,
   stepsNotShown,
@@ -190,6 +192,15 @@ export function TaskListGrouped({
   // the steps that are NOT here.
   const shownIds = useMemo(() => new Set(items.map((i) => i.id)), [items]);
 
+  // The parents whose "other steps" expander is open (D-PM-38 S4).
+  const [openSteps, setOpenSteps] = useState<Set<string>>(new Set());
+  const toggleSteps = (id: string) =>
+    setOpenSteps((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggle = (k: string) =>
     setCollapsed((c) => {
@@ -319,6 +330,7 @@ export function TaskListGrouped({
         // up comparing against the wrong array.
         const groupRows = byGroup.get(g.key) ?? [];
         const drawn = drawnByGroup.get(g.key) ?? [];
+        const slots = expanderSlots(drawn, openSteps);
         const isCollapsed = collapsed.has(g.key);
         const showHeader = grouped;
         // Status groups take their category's accent; a lens grouping uses a
@@ -391,13 +403,14 @@ export function TaskListGrouped({
             {!isCollapsed && (
               <div>
                 {drawn.map(({ item, depth, crumb }, idx) => (
+                  <Fragment key={item.id}>
                   <DraggableRow
-                    key={item.id}
                     item={item}
                     depth={depth}
                     crumb={crumb}
                     stepsHidden={stepsNotShown(item, items)}
-                    shownIds={shownIds}
+                    expanded={openSteps.has(item.id)}
+                    onToggleExpanded={() => toggleSteps(item.id)}
                     manual={manual}
                     selected={selectedIds.has(item.id)}
                     onToggleSelected={(shift) => toggleSelected(item.id, shift, rows)}
@@ -418,6 +431,18 @@ export function TaskListGrouped({
                     onDragOverGap={() => setDropAt(`${g.key}:${idx}`)}
                     onDropGap={() => onDrop(g.key, idx)}
                   />
+                  {/* D-PM-38 S4 — an open expander's other steps, after the
+                      LAST row of its parent's subtree, so my nested steps
+                      draw first and the muted ones follow them. */}
+                  {(slots.get(idx) ?? []).map((p) => (
+                    <SubtaskRows
+                      key={`steps-${p.item.id}`}
+                      parent={p.item}
+                      depth={p.depth}
+                      shownIds={shownIds}
+                    />
+                  ))}
+                  </Fragment>
                 ))}
                 {/* trailing gap → drop at the end of the group. Taller when a
                     drag is active so an empty/short stage is an easy target. */}
@@ -476,7 +501,8 @@ function DraggableRow({
   depth,
   crumb,
   stepsHidden,
-  shownIds,
+  expanded,
+  onToggleExpanded,
   manual,
   selected,
   onToggleSelected,
@@ -498,8 +524,9 @@ function DraggableRow({
   crumb: boolean;
   /** How many of this task's steps are NOT on the list (the expander's). */
   stepsHidden: number;
-  /** Every task the list draws, so the expander leaves them out. */
-  shownIds: ReadonlySet<string>;
+  /** The expander is open: the list draws the other steps after my own. */
+  expanded: boolean;
+  onToggleExpanded: () => void;
   manual: boolean;
   selected: boolean;
   /** `shift` extends the selection from the anchor (`@/lib/selection`). */
@@ -523,8 +550,8 @@ function DraggableRow({
   // D-PM-38 (Subtasks S4) — my own steps are rows of their own, drawn under
   // this one by the list. The expander is for the REST: steps that are not on
   // the list (other people's, or mine in another view). It is offered only
-  // when there is one, and lists only those, so no step draws twice.
-  const [expanded, setExpanded] = useState(false);
+  // when there is one, and lists only those, so no step draws twice. The list
+  // draws them AFTER my nested steps (`expanderSlots`).
   const hasSubtasks = stepsHidden > 0;
 
   return (
@@ -595,7 +622,7 @@ function DraggableRow({
           {hasSubtasks && (
             <button
               type="button"
-              onClick={() => setExpanded((v) => !v)}
+              onClick={onToggleExpanded}
               aria-label={
                 expanded
                   ? "Hide the other subtasks"
@@ -626,9 +653,6 @@ function DraggableRow({
           />
         </div>
       </div>
-      {hasSubtasks && expanded && (
-        <SubtaskRows parent={item} depth={depth} shownIds={shownIds} />
-      )}
     </div>
   );
 }
@@ -767,17 +791,17 @@ function SubtaskRows({
     );
   }
   return (
-    <div
-      className="border-l border-border/60 ml-[26px]"
-      style={depth > 0 ? { marginLeft: `calc(26px + ${depth * 1.25}rem)` } : undefined}
-    >
+    // The same indent as my nested steps: the three row gutters (64px), then
+    // one level under the parent.
+    <div style={{ paddingLeft: `calc(64px + ${(depth + 1) * 1.25}rem)` }}>
       {children.map((c) => {
         const done = c.disposition === "DONE";
         return (
           <div
             key={c.id}
-            className="tech-transition group/sub flex items-center gap-2 py-1.5 pl-4 pr-3.5 hover:bg-secondary/40"
+            className="tech-transition group/sub flex items-center gap-2 py-1.5 pr-3.5 hover:bg-secondary/40"
           >
+            <NestedRowMark depth={1} />
             <button
               type="button"
               onClick={() => quickDispose(c.id, done ? "NEXT" : "DONE")}
@@ -791,7 +815,6 @@ function SubtaskRows({
                 <Icon name="Circle" className="h-4 w-4" />
               )}
             </button>
-            <NestedRowMark depth={1} />
             <button
               type="button"
               onClick={() => openFocus(c.id)}

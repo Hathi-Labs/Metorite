@@ -27,6 +27,7 @@ import {
   lensMyTaskLanes,
   lensFetchProjects,
   lensFileUnder,
+  lensSetParent,
   lensItemDetail,
   lensListSubtasks,
   lensMergeInto,
@@ -997,6 +998,12 @@ export async function apiMergeInto(id: string, targetId: string): Promise<MyTask
  *  step of X"). Returns the parent task (now with the new child). */
 export async function apiFileUnder(id: string, parentId: string): Promise<MyTask> {
   return lensFileUnder(id, parentId);
+}
+
+/** Put a task back under `parentId`, or at the top level with `null` — the
+ *  undo of "File as subtask" (D-PM-38 S4). */
+export async function apiSetParent(id: string, parentId: string | null): Promise<void> {
+  return lensSetParent(id, parentId);
 }
 
 // ── Project planning (§7, Phase 3): a brief → phases → tasks → subtasks ───────

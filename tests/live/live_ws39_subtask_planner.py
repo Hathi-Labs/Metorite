@@ -1,6 +1,6 @@
 """Subtasks S4 (D-PM-38) — the planner, the step door and the AI counts, live.
 
-Four claims only a database can answer, because each one is decided in SQL
+Five claims only a database can answer, because each one is decided in SQL
 and a hermetic fake agrees with whatever SQL it is handed (R8):
 
 * **(a) A scheduled subtask is busy time.** `LENS_SOURCE.busy_window`,
@@ -17,8 +17,12 @@ and a hermetic fake agrees with whatever SQL it is handed (R8):
   under a parent with no stated NEXT, in the personal Inbox lane, still reads
   SOMEDAY: the inheritance is only for NEXT.
 * **(d) The AI counts agree (B13).** `PM_ITEMS.insight_counts` counts a
-  subtask of mine, and `open_items` lists it. So does `siblings` and the
-  context backfill.
+  subtask of mine, and `open_items` lists it. So does the context backfill.
+  `siblings` (the clarify parent candidates) offers steps of other tasks,
+  leaves out the item's own descendants, and ranks top-level tasks first, so
+  a fresh step cannot push a real parent out of the cap.
+* **(e) The step door's reach.** A parent the member cannot see answers 404
+  and writes no row. A parent reached by assignment alone takes a step.
 
 Running it, on a FRESH database (01_schema.sql, then apply_migrations.sh)::
 
@@ -48,6 +52,7 @@ from gateway.routes.projects import personal as pm_personal
 from gateway.routes.projects.core import Page
 from gateway.routes.projects.item_lens import PM_ITEMS
 from gateway.routes.projects.planning import LENS_SOURCE
+from fastapi import HTTPException
 from sqlalchemy import text
 
 RUN = uuid.uuid4().hex[:8]
@@ -118,9 +123,10 @@ class Seed:
                 {"id": sid, "p": self.project, "n": name, "pos": pos, "c": cat})
 
     async def task(self, key, *, parent=None, mine=True, state="open",
-                   start=None, minutes=60, flexible=True):
+                   start=None, minutes=60, flexible=True, stated=None):
         self.n += 1
         tid = str(uuid.uuid4())
+        lane = {"done": self.done, "backlog": self.backlog}.get(state, self.todo)
         await self.db.execute(text(
             "INSERT INTO pm_tasks (id, organization_id, project_id, "
             "root_project_id, status_id, title, source, created_by, "
@@ -130,7 +136,7 @@ class Seed:
             "CAST(:parent AS uuid), "
             "CASE WHEN :arch THEN now() ELSE NULL END)"),
             {"id": tid, "o": self.org, "p": self.project,
-             "s": self.done if state == "done" else self.todo,
+             "s": lane,
              "t": f"{MARK} {key}", "me": OTHER, "n": self.n,
              "parent": self.ids.get(parent) if parent else None,
              "arch": state == "archived"})
@@ -140,7 +146,7 @@ class Seed:
             "CAST(:o AS uuid), :w, :me)"),
             {"t": tid, "o": self.org, "w": MEMBER if mine else OTHER,
              "me": OTHER})
-        if start is not None or state == "trash":
+        if start is not None or state == "trash" or stated:
             await self.db.execute(text(
                 "INSERT INTO pm_task_personal (task_id, member_email, "
                 "organization_id, scheduled_start, scheduled_end, flexible, "
@@ -149,7 +155,7 @@ class Seed:
                 {"t": tid, "w": MEMBER, "o": self.org, "s": start,
                  "e": start + timedelta(minutes=minutes) if start else None,
                  "flex": flexible,
-                 "d": "TRASH" if state == "trash" else None})
+                 "d": "TRASH" if state == "trash" else stated})
         self.ids[key] = tid
         return tid
 
@@ -213,13 +219,84 @@ async def check_candidates(seed: Seed):
         for t in case["tasks"]:
             await seed.task(
                 t["key"], parent=t.get("parent"), mine=t.get("mine", True),
-                state=t.get("state", "open"),
+                state=t.get("state", "open"), stated=t.get("stated"),
                 start=later if t.get("scheduled") else None)
         await seed.db.commit()
         got = sorted(titles(await LENS_SOURCE.candidates(seed.db, MEMBER)))
         check(f"(b) {case['name']}", got, sorted(case["candidates"]))
         await seed.clear_tasks()
         await seed.db.commit()
+
+
+async def check_step_door_reach(seed: Seed):
+    """(e) The step door reads the parent through the caller's visibility.
+
+    A parent in a project the member holds no grant on, and is not assigned
+    to, answers 404 and writes no row. A parent reached by assignment ALONE
+    is intended reach, the same as organize.
+    """
+    hidden_project = str(uuid.uuid4())
+    await seed.db.execute(text(
+        "INSERT INTO pm_projects (id, organization_id, name, source, "
+        "created_by, owns_statuses) VALUES (CAST(:id AS uuid), "
+        "CAST(:o AS uuid), :n, 'manual', :me, true)"),
+        {"id": hidden_project, "o": seed.org, "n": f"{MARK} hidden",
+         "me": OTHER})
+    lane = str(uuid.uuid4())
+    await seed.db.execute(text(
+        "INSERT INTO pm_task_statuses (id, project_id, name, position, "
+        "category) VALUES (CAST(:id AS uuid), CAST(:p AS uuid), 'To do', 1, "
+        "'todo')"), {"id": lane, "p": hidden_project})
+    hidden_done = str(uuid.uuid4())
+    await seed.db.execute(text(
+        "INSERT INTO pm_task_statuses (id, project_id, name, position, "
+        "category) VALUES (CAST(:id AS uuid), CAST(:p AS uuid), 'Done', 2, "
+        "'done')"), {"id": hidden_done, "p": hidden_project})
+    tasks = {}
+    # Numbers far above the counter, which the step door advances from 1.
+    for n, key in enumerate(("secret", "assigned_only"), start=9001):
+        tid = str(uuid.uuid4())
+        tasks[key] = tid
+        await seed.db.execute(text(
+            "INSERT INTO pm_tasks (id, organization_id, project_id, "
+            "root_project_id, status_id, title, source, created_by, "
+            "task_number) VALUES (CAST(:id AS uuid), CAST(:o AS uuid), "
+            "CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :t, "
+            "'manual', :me, :n)"),
+            {"id": tid, "o": seed.org, "p": hidden_project, "s": lane,
+             "t": f"{MARK} {key}", "me": OTHER, "n": n})
+    await seed.db.execute(text(
+        "INSERT INTO pm_task_assignees (task_id, organization_id, assignee, "
+        "assigned_by) VALUES (CAST(:t AS uuid), CAST(:o AS uuid), :w, :me)"),
+        {"t": tasks["assigned_only"], "o": seed.org, "w": MEMBER, "me": OTHER})
+    await seed.db.commit()
+
+    status = None
+    try:
+        await pm_personal.add_my_steps(
+            tasks["secret"], pm_personal.StepsIn(titles=["sneak"]),
+            user=member())
+    except HTTPException as exc:
+        status = exc.status_code
+    check("(e) a parent I cannot see answers 404", status, 404)
+    n = (await seed.db.execute(text(
+        "SELECT count(*) FROM pm_tasks WHERE parent_task_id = CAST(:p AS uuid)"),
+        {"p": tasks["secret"]})).scalar_one()
+    check("(e) and no step row is written", n, 0)
+
+    made = await pm_personal.add_my_steps(
+        tasks["assigned_only"], pm_personal.StepsIn(titles=["mine"]),
+        user=member())
+    check("(e) a parent reached by assignment alone takes a step",
+          len(made["created"]), 1)
+
+    await seed.db.execute(text(
+        "DELETE FROM pm_tasks WHERE project_id = CAST(:p AS uuid)"),
+        {"p": hidden_project})
+    await seed.db.execute(text(
+        "DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+        {"p": hidden_project})
+    await seed.db.commit()
 
 
 async def check_steps(seed: Seed):
@@ -296,6 +373,7 @@ async def check_steps(seed: Seed):
 
 async def check_ai_counts(seed: Seed):
     """(d) The AI seam counts and lists the same subtasks."""
+    await seed.clear_tasks()
     await seed.task("ai_parent")
     await seed.task("ai_step", parent="ai_parent")
     await seed.db.commit()
@@ -305,9 +383,29 @@ async def check_ai_counts(seed: Seed):
     check("(d) open_items lists the step", "ai_step" in titles(listed), True)
     check("(d) insight_counts NEXT == open_items NEXT",
           counts.get("NEXT", 0), len(nexts))
-    sib = await PM_ITEMS.siblings(
-        seed.db, MEMBER, seed.project, seed.ids["ai_parent"], 50)
-    check("(d) siblings offers the step", "ai_step" in titles(sib), True)
+    # The siblings are PARENT candidates for the item (`_find_parent_task`).
+    await seed.task("ai_grandchild", parent="ai_step")
+    await seed.task("other_top")
+    await seed.task("other_step", parent="other_top")
+    # The step is the most recently changed row, so a newest-first cap of 1
+    # would pick it over the real parent candidate.
+    await seed.db.execute(text(
+        "UPDATE pm_tasks SET updated_at = now() - interval '1 day' "
+        "WHERE project_id = CAST(:p AS uuid)"), {"p": seed.project})
+    await seed.db.execute(text(
+        "UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:i AS uuid)"),
+        {"i": seed.ids["other_step"]})
+    await seed.db.commit()
+    sib = titles(await PM_ITEMS.siblings(
+        seed.db, MEMBER, seed.project, seed.ids["ai_parent"], 50))
+    check("(d) siblings offers a step of another task",
+          "other_step" in sib, True)
+    check("(d) siblings leaves out the item's own descendants",
+          sorted(sib & {"ai_step", "ai_grandchild"}), [])
+    top = titles(await PM_ITEMS.siblings(
+        seed.db, MEMBER, seed.project, seed.ids["ai_parent"], 1))
+    check("(d) a fresh step cannot push a top-level task out of the cap",
+          top, {"other_top"})
     bare = await PM_ITEMS.context_less_actionables(seed.db, MEMBER, 50)
     check("(d) the context backfill reaches the step",
           "ai_step" in titles(bare), True)
@@ -329,6 +427,7 @@ async def main():
         await check_busy(seed)
         await check_candidates(seed)
         await check_steps(seed)
+        await check_step_door_reach(seed)
         await check_ai_counts(seed)
     finally:
         await db.rollback()

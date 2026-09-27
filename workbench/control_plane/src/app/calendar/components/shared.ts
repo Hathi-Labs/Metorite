@@ -84,34 +84,60 @@ export function fmtLeft(mins: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+// ── a block's lines ──────────────────────────────────────────────────────────
+
+/**
+ * Which optional lines a block on the grid draws, for its length (D-PM-38
+ * S4). The title and the clock line always draw. A subtask's block also
+ * draws its "↳ Parent" crumb, which a member cannot hide.
+ *
+ * - From 90 minutes the crumb has its own line, and the outcome ribbon draws.
+ * - Under 90 minutes the crumb shares the clock line, and the ribbon gives
+ *   way. A one-hour block then draws two lines, which fit.
+ *
+ * A plain block keeps the ribbon from 45 minutes, as before S4. The first S4
+ * build drew four lines on a one-hour step block, and the clock line fell
+ * below the block edge.
+ */
+export function blockLines(
+  mins: number,
+  isStep: boolean,
+): { crumb: "own" | "inline" | null; outcome: boolean } {
+  if (!isStep) return { crumb: null, outcome: mins >= 45 };
+  return mins >= 90
+    ? { crumb: "own", outcome: true }
+    : { crumb: "inline", outcome: false };
+}
+
 // ── the unscheduled rail ─────────────────────────────────────────────────────
 
-/** A step of mine that is still open: not done, not in my trash, not filed. */
-const isOpenStepOfMine = (i: MyTask): boolean =>
+/** A step of mine that I can schedule: it is itself NEXT, and not filed. The
+ *  disposition is the effective one the gateway sends (D77). */
+const isNextStepOfMine = (i: MyTask): boolean =>
   Boolean(i.parentItemId) &&
   Boolean(i.isMine) &&
   !i.archivedAt &&
-  i.disposition !== "DONE" &&
-  i.disposition !== "TRASH";
+  i.disposition === "NEXT";
 
 /**
  * The tasks the unscheduled rail offers, and the planner may pack (D-PM-38,
  * Subtasks S4): mine, NEXT, not archived, with no block yet, and NOT a parent
- * that has an open step of mine.
+ * that has a NEXT step of mine.
  *
- * The Calendar app always shows subtasks. The steps are the units I schedule,
- * so a parent whose steps are still open would book the same work twice. A
- * parent whose steps are all done, archived, trashed or somebody else's is a
- * task like any other.
+ * The Calendar app always shows subtasks. The NEXT steps are the units I
+ * schedule, so packing their parent too would book the same work twice. A
+ * step in INBOX, SOMEDAY or WAITING cannot be scheduled, so it leaves its
+ * parent a candidate. So does a step that is done, archived, trashed or
+ * somebody else's.
  *
- * The gateway's copy is `planning._PM_CANDIDATE_WHERE`. Both read one table,
+ * The gateway's copy is `planning._LensSource.candidates`. Both read one table,
  * `tests/fixtures/subtask_planner_parity.json`: `shared.test.ts` here, and
  * `tests/live/live_ws39_subtask_planner.py` against Postgres.
  */
 export function plannerCandidates(items: readonly MyTask[]): MyTask[] {
   const withOpenSteps = new Set<string>();
   for (const i of items) {
-    if (isOpenStepOfMine(i)) withOpenSteps.add(i.parentItemId!);
+    if (isNextStepOfMine(i)) withOpenSteps.add(i.parentItemId!);
   }
   return items.filter(
     (i) =>

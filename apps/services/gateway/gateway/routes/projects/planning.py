@@ -131,30 +131,23 @@ _PM_MINE = (
 #: `t.parent_task_id IS NULL`, so the grid drew a scheduled step while the
 #: planner counted its slot as FREE and could book over it.
 #:
-#: What replaces that clause on CANDIDATE is narrower: a parent with an open
-#: step assigned to me is not a candidate. The steps are the units I
-#: schedule, and packing the parent too would book the same work twice.
-#: "Open" is the reading `effective_disposition` gives: the lane is not
-#: closed, the step is not archived, and my overlay does not say TRASH.
+#: What replaces that clause on CANDIDATE is narrower: a parent that has a
+#: step of mine which is itself NEXT is not a candidate. The NEXT steps are
+#: the units I schedule, and packing the parent too would book the same work
+#: twice. A step in INBOX, SOMEDAY or WAITING is not schedulable, so it must
+#: not take its parent out either: then nothing of that work could be planned.
+#:
+#: NEXT is the EFFECTIVE disposition (`effective_disposition`, D77), so the
+#: rule is applied in Python (`_LensSource.candidates`) over the rows of
+#: `_PM_MY_STEPS_WHERE`. A SQL copy of the rule would be the mirror the note
+#: on `_PM_ALIVE` refuses.
 #:
 #: The rail's copy of this rule is `plannerCandidates` in
 #: `app/calendar/components/shared.ts`. `tests/fixtures/subtask_planner_parity.json`
 #: holds both to one set of cases: `shared.test.ts` reads it, and so does
 #: `tests/live/live_ws39_subtask_planner.py` on a real Postgres.
-_HAS_OPEN_STEP_OF_MINE = (
-    " AND NOT EXISTS ("
-    "SELECT 1 FROM pm_tasks c"
-    "  JOIN pm_task_statuses cs ON cs.id = c.status_id"
-    " WHERE c.parent_task_id = t.id AND c.archived_at IS NULL"
-    "   AND cs.category NOT IN ("
-    + ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
-    + ")"
-    "   AND EXISTS (SELECT 1 FROM pm_task_assignees ca"
-    "               WHERE ca.task_id = c.id AND lower(ca.assignee) = :who)"
-    "   AND NOT EXISTS (SELECT 1 FROM pm_task_personal cp"
-    "                   WHERE cp.task_id = c.id"
-    "                     AND lower(cp.member_email) = :who"
-    "                     AND cp.disposition = 'TRASH'))"
+_PM_MY_STEPS_WHERE = (
+    " AND t.parent_task_id IS NOT NULL" + _PM_ALIVE + _PM_MINE
 )
 _PM_TODAY_WHERE = (
     " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')"
@@ -171,7 +164,6 @@ _PM_CANDIDATE_WHERE = (
     + " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'DONE'))"
     + _CLOSED_LANE
     + " AND p.scheduled_start IS NULL"
-    + _HAS_OPEN_STEP_OF_MINE
 )
 _PM_OVERDUE_WHERE = (
     _PM_ALIVE
@@ -278,8 +270,15 @@ class _LensSource(TaskSource):
             lambda d: d not in ("DONE", "TRASH", "WAITING"))
 
     async def candidates(self, db, uid):
-        return await self._rows(
+        rows = await self._rows(
             db, uid, _PM_CANDIDATE_WHERE, {}, lambda d: d == "NEXT")
+        # D-PM-38 S4 — a parent with a NEXT step of mine is not a candidate
+        # (see `_PM_MY_STEPS_WHERE`). A scheduled step still counts: the work
+        # is planned through the step.
+        steps = await self._rows(
+            db, uid, _PM_MY_STEPS_WHERE, {}, lambda d: d == "NEXT")
+        held = {str(s.parent_task_id) for s in steps if s.parent_task_id}
+        return [r for r in rows if str(r.id) not in held]
 
     async def overdue(self, db, uid, now):
         return await self._rows(

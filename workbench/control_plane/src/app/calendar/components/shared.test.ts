@@ -5,6 +5,7 @@ import type { DayTemplate } from "@/app/tasks/lib/api";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  blockLines,
   layoutBlocks,
   plannerCandidates,
   reservedWindowsForDay,
@@ -123,13 +124,14 @@ describe("reservedWindowsForDay", () => {
  * D-PM-38 (Subtasks S4) — the rail's candidate rule against the gateway's,
  * through ONE table. `tests/fixtures/subtask_planner_parity.json` is also read
  * by `tests/live/live_ws39_subtask_planner.py`, which runs
- * `planning._PM_CANDIDATE_WHERE` on Postgres.
+ * `planning.LENS_SOURCE.candidates` on Postgres.
  */
 interface ParityTask {
   key: string;
   parent?: string;
   mine?: boolean;
-  state?: "open" | "done" | "trash" | "archived";
+  state?: "open" | "done" | "backlog" | "trash" | "archived";
+  stated?: "INBOX" | "SOMEDAY" | "WAITING";
   scheduled?: boolean;
 }
 const PLANNER = JSON.parse(
@@ -142,8 +144,16 @@ const PLANNER = JSON.parse(
 ) as { cases: { name: string; tasks: ParityTask[]; candidates: string[] }[] };
 
 /** One fixture task as the store holds it. The disposition is the effective
- *  one the gateway sends: DONE for a closed lane, TRASH for my trash, NEXT for
- *  my open work and WAITING for somebody else's. */
+ *  one the gateway sends (`effective_disposition`): TRASH for my trash, DONE
+ *  for a closed lane, then what I stated, then SOMEDAY for a backlog lane,
+ *  NEXT for my open work and WAITING for somebody else's. */
+const effective = (t: ParityTask, mine: boolean, state: string): MyTask["disposition"] => {
+  if (state === "trash") return "TRASH";
+  if (state === "done") return "DONE";
+  if (t.stated) return t.stated;
+  if (state === "backlog") return "SOMEDAY";
+  return mine ? "NEXT" : "WAITING";
+};
 const storeTask = (t: ParityTask): MyTask => {
   const mine = t.mine ?? true;
   const state = t.state ?? "open";
@@ -153,8 +163,7 @@ const storeTask = (t: ParityTask): MyTask => {
     source: "LOCAL",
     isMine: mine,
     parentItemId: t.parent,
-    disposition:
-      state === "done" ? "DONE" : state === "trash" ? "TRASH" : mine ? "NEXT" : "WAITING",
+    disposition: effective(t, mine, state),
     archivedAt: state === "archived" ? "2026-09-20T09:00:00Z" : undefined,
     scheduledStart: t.scheduled ? "2026-09-28T09:00:00Z" : undefined,
     scheduledEnd: t.scheduled ? "2026-09-28T10:00:00Z" : undefined,
@@ -171,5 +180,19 @@ describe("plannerCandidates — the rail and the planner pack the same tasks", (
   it.each(PLANNER.cases)("$name", ({ tasks, candidates }) => {
     const got = plannerCandidates(tasks.map(storeTask)).map((t) => t.id);
     expect([...got].sort()).toEqual([...candidates].sort());
+  });
+});
+
+describe("blockLines — a one-hour step block fits (review of #492)", () => {
+  it("under 90 minutes a step block puts its crumb on the clock line and drops the ribbon", () => {
+    expect(blockLines(60, true)).toEqual({ crumb: "inline", outcome: false });
+    expect(blockLines(30, true)).toEqual({ crumb: "inline", outcome: false });
+  });
+  it("from 90 minutes a step block gives the crumb its own line and keeps the ribbon", () => {
+    expect(blockLines(90, true)).toEqual({ crumb: "own", outcome: true });
+  });
+  it("a plain block keeps the ribbon from 45 minutes, as before", () => {
+    expect(blockLines(44, false)).toEqual({ crumb: null, outcome: false });
+    expect(blockLines(60, false)).toEqual({ crumb: null, outcome: true });
   });
 });

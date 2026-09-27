@@ -1298,6 +1298,17 @@ export async function lensFileUnder(
 }
 
 /**
+ * Set a task's parent, or clear it with `null`: the move route takes an
+ * explicit null (`move_task_in`). The undo of "File as subtask" (S4).
+ */
+export async function lensSetParent(
+  id: string,
+  parentId: string | null,
+): Promise<void> {
+  await post(`tasks/${id}/move`, { parent_task_id: parentId });
+}
+
+/**
  * Hold a picked file until its task exists. The object URL is what the chip
  * previews; the `File` is what `lensCapture` uploads.
  */

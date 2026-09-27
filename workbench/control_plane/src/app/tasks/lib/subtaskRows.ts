@@ -47,6 +47,30 @@ export interface MyTaskRow {
   depth: number;
   /** Draws "↳ Parent": a subtask at the top level, its parent not here. */
   crumb: boolean;
+  /** How many rows under this one, at any depth, in this set. */
+  descendantCount: number;
+}
+
+/**
+ * Where each expanded parent's OTHER steps draw: after the last row of its
+ * subtree, so my own nested steps come first and the muted steps of other
+ * people follow them. Keyed by the index of that last row. When two parents
+ * end on one row, the deeper one draws first.
+ */
+export function expanderSlots(
+  rows: readonly MyTaskRow[],
+  expanded: ReadonlySet<string>,
+): Map<number, MyTaskRow[]> {
+  const slots = new Map<number, MyTaskRow[]>();
+  rows.forEach((row, idx) => {
+    if (!expanded.has(row.item.id)) return;
+    const end = idx + row.descendantCount;
+    const at = slots.get(end);
+    if (at) at.push(row);
+    else slots.set(end, [row]);
+  });
+  for (const list of slots.values()) list.sort((a, b) => b.depth - a.depth);
+  return slots;
 }
 
 /**
@@ -64,6 +88,7 @@ export function myTaskRows(items: readonly MyTask[]): MyTaskRow[] {
     item: row.task.item,
     depth: row.depth,
     crumb: row.depth === 0 && Boolean(row.task.item.parentItemId),
+    descendantCount: row.descendantCount,
   }));
 }
 

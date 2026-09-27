@@ -86,6 +86,7 @@ import {
   apiOrganize,
   apiMergeInto,
   apiFileUnder,
+  apiSetParent,
   apiPatchItem,
   apiAtomize,
   apiEnrichItem,
@@ -541,6 +542,10 @@ interface UndoSnapshot {
    *  due date). Undo cannot reverse that from here, so the toast offers to
    *  open the task instead, and `undoLastChange` refuses. */
   sharedChangeTaskId?: string;
+  /** D-PM-38 S4 — "File as subtask" moved this task under a parent. Undo
+   *  moves it back to `parentId` (null = the top level) on the server. The
+   *  local rows come back from the snapshot. */
+  refiled?: { id: string; parentId: string | null };
   /** D79 — this change MOVED a task's status (a status pick, a drag, Mark
    *  done, a reopen). `plan` resolves to what the SERVER had before our
    *  write and what our write set, or null when the status did not move.
@@ -2853,10 +2858,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // parent or with the "↳ Parent" crumb (`lib/subtaskRows`), before the
     // reload and after it alike.
     //
-    // No undo is offered: the move is on the server, and a local restore
-    // would show a task that is not where the screen says. (The old undo
-    // re-created the "deleted" row, so it made a copy of the task.)
+    // Undo moves it back on the server (`refiled`): to the parent it had
+    // before, or to the top level. (The pre-S4 undo re-created a "deleted"
+    // row, so it made a copy of the task.)
     const parent = get().items.find((i) => i.id === parentId);
+    const moving = get().items.find((i) => i.id === id);
+    const before = get().items;
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => ({
       items: s.items.map((i) =>
@@ -2870,12 +2877,36 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             ? { ...i, subtaskCount: (i.subtaskCount ?? 0) + 1 }
             : i,
       ),
-      undoSnapshot: null,
+      undoSnapshot: {
+        items: s.items,
+        projects: s.projects,
+        processed: s.processedThisSession,
+        selectedItemId: s.selectedItemId,
+        label: "Filed as a subtask",
+        refiled: { id, parentId: moving?.parentItemId ?? null },
+      },
     }));
     if (get().backend !== "live") return;
     // The server answers with the parent (its count). The child is read
     // again too, so it carries the gateway's own parent fact and project.
-    const fresh = await apiFileUnder(id, parentId);
+    let fresh: MyTask;
+    try {
+      fresh = await apiFileUnder(id, parentId);
+    } catch (err) {
+      // The move was refused (a cycle, a parent I cannot see): put both rows
+      // back as they were, drop the undo, and say why.
+      set((s) => {
+        const was = new Map(before.map((i) => [i.id, i]));
+        return {
+          items: s.items.map((i) =>
+            (i.id === id || i.id === parentId) && was.has(i.id) ? was.get(i.id)! : i,
+          ),
+          undoSnapshot: s.undoSnapshot?.refiled?.id === id ? null : s.undoSnapshot,
+        };
+      });
+      get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+      return;
+    }
     set((s) => ({
       items: s.items.map((i) => (i.id === fresh.id ? fresh : i)),
     }));
@@ -3192,7 +3223,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, removedIds, archivedIds, archivedTo,
-      scheduleRevertIds, untriagedIds, statusRevert } = snap;
+      scheduleRevertIds, untriagedIds, statusRevert, refiled } = snap;
     set((s) => {
       // An undone decision is undecided again: it rejoins the walk.
       const clarifiedThisSession = new Set(s.clarifiedThisSession);
@@ -3352,6 +3383,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     } else if (statusRevert) {
       // A status write alone (a pick, a drag): only the status goes back.
       after(() => get().refreshItem(statusRevert.id));
+    } else if (refiled) {
+      // D-PM-38 S4 — "File as subtask" undone: the task goes back to the
+      // parent it had, or to the top level, on the server too. The snapshot
+      // already put both rows back here. The task is then read again, so its
+      // crumb is the server's.
+      sync(
+        apiSetParent(refiled.id, refiled.parentId)
+          .then(() => get().refreshItem(refiled.id))
+          .catch((err: unknown) => {
+            get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+            return get().refreshItem(refiled.id);
+          }),
+      );
     }
   },
 

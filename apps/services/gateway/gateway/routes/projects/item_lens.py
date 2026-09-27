@@ -255,7 +255,8 @@ class _PmLens(ItemSource):
     # open list, the siblings, the context backfill and the insight counts.
     # Before S4 three of them dropped subtasks and `insight_counts` kept
     # them, so the Inbox count and the lists the AI reasoned over disagreed.
-    # Fence: `test_item_lens_subtasks.py`.
+    # Fence: `test_subtasks_s4.py::test_every_ai_read_keeps_subtasks`, and
+    # live check (d) in `tests/live/live_ws39_subtask_planner.py`.
     async def open_items(self, db, uid, limit):
         return _alive(await self._items(
             db, uid,
@@ -285,12 +286,30 @@ class _PmLens(ItemSource):
         ]
 
     async def siblings(self, db, uid, project_id, exclude_id, limit):
+        # The clarify "is this a step of X?" check reads this list as PARENT
+        # candidates (`ai._find_parent_task`). Two rules keep it honest:
+        #
+        # * the item's own descendants are left out, because filing an item
+        #   under its own step is a cycle the move would refuse;
+        # * top-level tasks rank first, then the newest. A step can hold
+        #   steps, so steps stay in the list, but a burst of freshly edited
+        #   steps cannot push the real parents out of the cap. Ranking is the
+        #   smaller change: dropping steps here would undo B13 for one read.
         return _alive(await self._items(
             db, uid,
             _PM_ALIVE
             + " AND t.project_id = CAST(:pid AS uuid)"
             " AND t.id <> CAST(:self_id AS uuid)"
-            " ORDER BY t.updated_at DESC LIMIT :lim",
+            " AND t.id NOT IN ("
+            "WITH RECURSIVE below AS ("
+            " SELECT d.id FROM pm_tasks d"
+            "  WHERE d.parent_task_id = CAST(:self_id AS uuid)"
+            " UNION"
+            " SELECT d.id FROM pm_tasks d JOIN below b"
+            "     ON d.parent_task_id = b.id)"
+            " SELECT id FROM below)"
+            " ORDER BY (t.parent_task_id IS NULL) DESC, t.updated_at DESC"
+            " LIMIT :lim",
             pid=str(project_id), self_id=str(exclude_id), lim=limit))
 
     async def local_tree(self, db, uid):
