@@ -326,6 +326,64 @@ async def _run(db) -> None:
             type(exc).__name__,
         )
 
+    # ── 3b. one open run per organization, and the state guard ─────────
+    newer = str(uuid.uuid4())
+    await db.execute(
+        text(imports.INSERT_RUN_SQL),
+        {
+            "id": newer,
+            "org": org,
+            "who": ADMIN,
+            "source": "clickup",
+            "files": "[]",
+            "mapping": "{}",
+            "plan": "{}",
+        },
+    )
+    foreign = str(uuid.uuid4())
+    await db.execute(
+        text(imports.INSERT_RUN_SQL),
+        {
+            "id": foreign,
+            "org": other,
+            "who": ADMIN,
+            "source": "clickup",
+            "files": "[]",
+            "mapping": "{}",
+            "plan": "{}",
+        },
+    )
+    gone = {
+        str(r.id)
+        for r in (
+            await db.execute(text(imports.SUPERSEDE_OPEN_RUNS_SQL), {"org": org, "id": newer})
+        ).fetchall()
+    }
+    check(
+        "3.7 a new upload discards the open run, and only in its org", gone == {run_id}, str(gone)
+    )
+    states = {
+        str(r.id): r.state
+        for r in (
+            await db.execute(
+                text("SELECT id, state FROM pm_import_runs WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": [run_id, newer, foreign]},
+            )
+        ).fetchall()
+    }
+    check(
+        "3.8 old discarded, new and foreign runs untouched",
+        states == {run_id: "discarded", newer: "planned", foreign: "planned"},
+        str(states),
+    )
+    refused = (
+        await db.execute(
+            text(imports.SAVE_MAPPING_SQL),
+            {"id": run_id, "org": org, "mapping": "{}", "plan": "{}"},
+        )
+    ).fetchone()
+    check("3.9 a mapping save cannot drag a discarded run back", refused is None, str(refused))
+
     # ── 4. the FORCE policy, under a role that does not bypass RLS ──────
     role = f"ws41_live_{uuid.uuid4().hex[:8]}"
     await db.execute(text(f"CREATE ROLE {role} NOLOGIN NOBYPASSRLS"))

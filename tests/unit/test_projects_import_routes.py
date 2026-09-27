@@ -61,8 +61,23 @@ class RecordingDB:
             row = self.runs.get(params["id"])
             ok = row is not None and row["organization_id"] == params["org"]
             return _Result([SimpleNamespace(**row)] if ok else [])
+        if sql.startswith("UPDATE pm_import_runs SET state = 'discarded'"):
+            gone = [
+                r
+                for r in self.runs.values()
+                if r["organization_id"] == params["org"]
+                and r["id"] != params["id"]
+                and r["state"] in ("uploaded", "planned")
+            ]
+            for r in gone:
+                r["state"] = "discarded"
+            return _Result([SimpleNamespace(id=r["id"]) for r in gone])
         if sql.startswith("UPDATE pm_import_runs"):
             row = self.runs[params["id"]]
+            # The route's guard is in the SQL; the fake honours it.
+            assert "state IN ('uploaded', 'planned')" in sql
+            if row["state"] not in ("uploaded", "planned"):
+                return _Result([])
             row.update(mapping=params["mapping"], plan=params["plan"], state="planned")
             return _Result([SimpleNamespace(**row)])
         if "FROM people" in sql:
@@ -319,3 +334,101 @@ def test_the_migration_forces_rls_and_keys_the_import_origin() -> None:
     )
     for state in ("uploaded", "planned", "applying", "done", "failed", "discarded"):
         assert f"'{state}'" in sql
+
+
+# ── review fixes (I-2 review and verification, 2026-09-27) ──────────────────
+
+
+async def test_a_mixed_case_session_email_is_stored_lowercased(db: RecordingDB) -> None:
+    """The column CHECKs lowercase. A mixed-case email was a 500."""
+    user = SimpleNamespace(email="Admin@Acme.TEST", has_permission=lambda p: True)
+    await imports.create_import_run([_upload(FIXTURE.read_bytes())], user)
+    insert = next(p for s, p in db.statements if s.startswith("INSERT INTO pm_import_runs"))
+    assert insert["who"] == "admin@acme.test"
+
+
+async def test_a_new_upload_discards_the_open_run_and_its_files(
+    db: RecordingDB,
+    tmp_path: pathlib.Path,
+) -> None:
+    """§7.4 — one open run per organization, so the disk holds one upload per
+    organization at most."""
+    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    second = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    assert db.runs[first["id"]]["state"] == "discarded"
+    assert db.runs[second["id"]]["state"] == "planned"
+    folders = {p.parent.name for p in tmp_path.rglob("*.csv")}
+    assert folders == {second["id"]}
+
+
+async def test_another_organizations_open_run_is_not_discarded(db: RecordingDB) -> None:
+    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[first["id"]]["organization_id"] = "22222222-2222-2222-2222-222222222222"
+    await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    assert db.runs[first["id"]]["state"] == "planned"
+
+
+async def test_a_run_that_moves_on_during_the_parse_is_not_dragged_back(
+    db: RecordingDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The load sees `planned`, the parse takes seconds, and in that window the
+    run moves on. The guarded UPDATE must refuse, never write `planned`."""
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    real_parse = imports._parse
+
+    async def slow_parse(source: str, uploads: Any) -> Any:
+        db.runs[view["id"]]["state"] = "applying"
+        return await real_parse(source, uploads)
+
+    monkeypatch.setattr(imports, "_parse", slow_parse)
+    with pytest.raises(HTTPException) as err:
+        await imports.save_import_mapping(view["id"], ImportMapping(), _user())
+    assert err.value.status_code == 409
+    assert db.runs[view["id"]]["state"] == "applying"
+
+
+async def test_the_parse_runs_with_no_session_open(
+    db: RecordingDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large parse inside a transaction pins a pooled connection."""
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    open_sessions = 0
+
+    @asynccontextmanager
+    async def counting(organization_id: str | None = None) -> Any:
+        nonlocal open_sessions
+        open_sessions += 1
+        try:
+            yield db
+        finally:
+            open_sessions -= 1
+
+    real_parse = imports._parse
+    seen: list[int] = []
+
+    async def parse(source: str, uploads: Any) -> Any:
+        seen.append(open_sessions)
+        return await real_parse(source, uploads)
+
+    monkeypatch.setattr(imports, "_tenant_session", counting)
+    monkeypatch.setattr(imports, "_parse", parse)
+    await imports.save_import_mapping(view["id"], ImportMapping(), _user())
+    assert seen == [0]
+
+
+async def test_a_failed_commit_leaves_no_file(
+    db: RecordingDB,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    @asynccontextmanager
+    async def failing_commit(organization_id: str | None = None) -> Any:
+        yield db
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(imports, "_tenant_session", failing_commit)
+    with pytest.raises(RuntimeError):
+        await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    assert list(tmp_path.rglob("*.csv")) == []

@@ -74,16 +74,7 @@ UPDATE app_versions SET organization_id = (SELECT id FROM organization WHERE slu
 UPDATE apps SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
 UPDATE audit_event SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE calendar_day_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE chat_message SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -209,6 +200,42 @@ UPDATE email_thread_status SET organization_id = (SELECT id FROM organization WH
 UPDATE email_voice_profiles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE calendar_day_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE my_tasks_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE people SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE people_absences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE people_credentials SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE people_resumes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE people_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE my_tasks_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_import_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE live_session SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -225,12 +252,6 @@ UPDATE meeting_recording SET organization_id = (SELECT id FROM organization WHER
  WHERE organization_id IS NULL;
 
 UPDATE message SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE my_tasks_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE my_tasks_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE notes_glossary SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -251,21 +272,6 @@ UPDATE pending_actions SET organization_id = (SELECT id FROM organization WHERE 
 UPDATE pending_commit SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE people SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE people_absences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE people_credentials SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE people_resumes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE people_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
 UPDATE person SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -276,9 +282,6 @@ UPDATE pm_activities SET organization_id = (SELECT id FROM organization WHERE sl
  WHERE organization_id IS NULL;
 
 UPDATE pm_custom_fields SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE pm_import_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE pm_intake SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -366,9 +369,6 @@ UPDATE user_permission_override SET organization_id = (SELECT id FROM organizati
  WHERE organization_id IS NULL;
 
 UPDATE user_role SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE wa_accounts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

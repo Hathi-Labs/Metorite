@@ -12,10 +12,11 @@
 -- ── pm_import_runs ──────────────────────────────────────────────────────────
 --
 -- A run records what an admin uploaded, what the dry run found, and what the
--- admin confirmed. I-2 writes the first three states only (`uploaded`,
--- `planned`, `failed`). The writer (I-3) adds `applying` and `done`, and I-6
--- adds `discarded`. The CHECK names them all now, so a later slice adds no
--- migration to widen it.
+-- admin confirmed. I-2 writes two states: `planned`, and `discarded` when a
+-- newer upload replaces the organization's open run (one open run per
+-- organization, spec §7.4). The writer (I-3) adds `applying`, `done` and
+-- `failed`. The CHECK names them all now, so a later slice adds no migration
+-- to widen it.
 --
 -- The uploaded FILES are not in this table. They sit on local disk under
 -- `PROJECT_IMPORT_DIR/<organization_id>/<run id>/`, and `files` records each
@@ -37,7 +38,9 @@
 -- old code meets this schema without noticing it.
 --
 -- Idempotent per infra/postgres/README.md. Pinned by
--- tests/unit/test_import_runs_migration.py and tests/live/live_ws41_import.py.
+-- tests/unit/test_projects_import_routes.py
+-- (test_the_migration_forces_rls_and_keys_the_import_origin) and
+-- tests/live/live_ws41_import.py.
 
 BEGIN;
 

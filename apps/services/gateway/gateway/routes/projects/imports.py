@@ -104,12 +104,27 @@ LOAD_RUN_SQL = (
     "SELECT * FROM pm_import_runs "
     " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
 )
+#: Guarded by state. The route checks the state when it loads the run, then
+#: parses for seconds with no session open. A run that moved on in that window
+#: (to ``applying`` in I-3, or ``discarded`` by a newer upload) must not be
+#: dragged back to ``planned``: that could start a second writer in one tree.
 SAVE_MAPPING_SQL = (
     "UPDATE pm_import_runs "
     "   SET mapping = CAST(:mapping AS jsonb), plan = CAST(:plan AS jsonb), "
     "       state = 'planned', updated_at = now() "
     " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "   AND state IN ('uploaded', 'planned') "
     "RETURNING *"
+)
+#: §7.4 — one open run per organization. A new upload discards the open one,
+#: and its files go with it. Without this, an admin could fill the shared disk
+#: one 250 MB upload at a time, and every tenant would go down with it.
+SUPERSEDE_OPEN_RUNS_SQL = (
+    "UPDATE pm_import_runs "
+    "   SET state = 'discarded', updated_at = now(), finished_at = now() "
+    " WHERE organization_id = CAST(:org AS uuid) "
+    "   AND state IN ('uploaded', 'planned') AND id <> CAST(:id AS uuid) "
+    "RETURNING id"
 )
 
 
@@ -139,8 +154,14 @@ async def create_import_run(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Upload one or more export files. Parse them, plan with the proposals,
-    and store the run. Writes no ``pm_*`` row."""
-    email = actor(user)
+    and store the run. Writes no ``pm_*`` row.
+
+    A new upload DISCARDS the organization's open run, if any (§7.4). The
+    admin works on one import at a time, and the disk holds one per
+    organization at most."""
+    # Lowercased: the column CHECKs it, and a mixed-case session email would
+    # otherwise turn every upload into a 500 (watchers.py does the same).
+    email = actor(user).strip().lower()
     if not files:
         raise HTTPException(status_code=400, detail="Choose at least one export file.")
     if len(files) > MAX_FILES:
@@ -162,16 +183,25 @@ async def create_import_run(
     source = detect_source(uploads)
     bundle = await _parse(source, uploads)
 
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        organization_id = require_organization(vis)
-        mapping = ImportMapping()
-        facts = await _facts(db, bundle, mapping, vis, organization_id)
-        plan = build_plan(bundle, mapping, **facts)
+    run_id = str(uuid.uuid4())
+    organization_id: str | None = None
+    try:
+        async with _tenant_session() as db:
+            vis = await resolve_visibility(db, user)
+            organization_id = require_organization(vis)
+            mapping = ImportMapping()
+            facts = await _facts(db, bundle, mapping, vis, organization_id)
+            plan = build_plan(bundle, mapping, **facts)
 
-        run_id = str(uuid.uuid4())
-        stored = _store(organization_id, run_id, uploads)
-        try:
+            stored = _store(organization_id, run_id, uploads)
+            superseded = [
+                str(r.id)
+                for r in (
+                    await db.execute(
+                        text(SUPERSEDE_OPEN_RUNS_SQL), {"org": organization_id, "id": run_id}
+                    )
+                ).fetchall()
+            ]
             row = (
                 await db.execute(
                     text(INSERT_RUN_SQL),
@@ -186,10 +216,22 @@ async def create_import_run(
                     },
                 )
             ).fetchone()
-        except Exception:
+        # The session committed on exit. Only now are the old files orphans.
+    except BaseException:
+        # Covers the commit too: a failed commit leaves no row, so no file.
+        if organization_id is not None:
             _discard_files(organization_id, run_id)
-            raise
-    _log.info("projects.import.run_created", run_id=run_id, source=source, tasks=len(bundle.tasks))
+        raise
+    assert organization_id is not None  # set before any row could exist
+    for old in superseded:
+        _discard_files(organization_id, old)
+    _log.info(
+        "projects.import.run_created",
+        run_id=run_id,
+        source=source,
+        tasks=len(bundle.tasks),
+        superseded=len(superseded),
+    )
     return run_view(row)
 
 
@@ -236,19 +278,24 @@ async def save_import_mapping(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Save the admin's choices and plan again. The plan is recomputed from the
-    stored files, so it always matches what apply will read."""
+    stored files, so it always matches what apply will read.
+
+    Three steps, and the parse holds NO session: a large file takes seconds,
+    and a pooled connection idle in a transaction for that long is the lock
+    queue ``apply_migrations.sh`` records an outage from."""
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         organization_id = require_organization(vis)
         row = await _load_run(db, run_id, organization_id)
-        if row.state not in EDITABLE_STATES:
-            raise HTTPException(
-                status_code=409, detail=f"This import is {row.state} and cannot change."
-            )
-        bundle = await _parse(row.source, _read_files(organization_id, run_id, _json(row.files)))
+    if row.state not in EDITABLE_STATES:
+        raise HTTPException(status_code=409, detail=_not_editable(row.state))
+
+    bundle = await _parse(row.source, _read_files(organization_id, run_id, _json(row.files)))
+
+    async with _tenant_session() as db:
         facts = await _facts(db, bundle, mapping, vis, organization_id)
         plan = build_plan(bundle, mapping, **facts)
-        row = (
+        saved = (
             await db.execute(
                 text(SAVE_MAPPING_SQL),
                 {
@@ -259,7 +306,14 @@ async def save_import_mapping(
                 },
             )
         ).fetchone()
-    return run_view(row)
+    if saved is None:
+        # The run moved on while the file was parsed.
+        raise HTTPException(status_code=409, detail=_not_editable("no longer open"))
+    return run_view(saved)
+
+
+def _not_editable(state: str) -> str:
+    return f"This import is {state} and cannot change. Upload the file again to start over."
 
 
 # ── parse ───────────────────────────────────────────────────────────────────
