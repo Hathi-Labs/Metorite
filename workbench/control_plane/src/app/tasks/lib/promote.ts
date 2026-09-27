@@ -157,6 +157,8 @@ export interface PromoteAnswers {
   assignees: readonly string[];
   /** Who owned it before the dialog opened. */
   initialAssignees: readonly string[];
+  /** D-PM-38 decision 4 (S5) — the ticked "Include N subtasks" box. */
+  includeSubtasks?: boolean;
 }
 
 export type PromotePlan =
@@ -192,6 +194,7 @@ export function promotePlan(answers: PromoteAnswers): PromotePlan {
     ...(sameSet(answers.assignees, answers.initialAssignees)
       ? {}
       : { assignees: [...answers.assignees] }),
+    ...(answers.includeSubtasks ? { includeSubtasks: true } : {}),
   };
   return { ok: true, request };
 }

@@ -45,6 +45,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
+from gateway.routes.projects.cascade import load_subtree, movable_subtree
 from gateway.routes.projects.core import (
     _REMAP_TARGET_SQL,
     TRIAGE_CATEGORY,
@@ -91,6 +92,7 @@ from gateway.routes.projects.landing import (
 from gateway.routes.projects.landing import (
     resolve_field_map as _resolve_field_map,
 )
+from gateway.routes.projects.tasks import MoveTask, move_task_in
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
@@ -165,6 +167,12 @@ class MoveIn(BaseModel):
     #: drop MORE than was agreed to. Omitted means "no list", and the bare
     #: flag then behaves as before.
     accepted_drops: list[str] | None = None
+    #: D-PM-38 decision 4 (S5). Take every descendant of the selection along,
+    #: each through the narrow move seam (`tasks.move_task_in`), so each one
+    #: is remapped into the destination's set by the rule that seam applies.
+    #: FALSE by default: the chat tool and old callers move what they name.
+    #: The Move dialog sends true, because its box is ticked.
+    include_subtasks: bool = False
 
     @field_validator("status_map", "field_map")
     @classmethod
@@ -467,8 +475,24 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         )).fetchall()
     ]
 
+    # D-PM-38 decision 4 — the descendants a move WITH its subtasks would
+    # take, for the dialog's "Include N subtasks" box. Every depth, and not
+    # the ones the selection already names. `hidden` is how many the member
+    # cannot see: the apply refuses those (409), so the card says so first.
+    selected = {str(t.id) for t in tasks}
+    descendants: dict[str, Any] = {}
+    for task in tasks:
+        for row in await load_subtree(db, vis, str(task.id)):
+            if str(row.id) not in selected:
+                descendants.setdefault(str(row.id), row)
+
     return {
         "tasks": tasks,
+        "descendants": list(descendants.values()),
+        "subtasks": {
+            "count": sum(1 for r in descendants.values() if r.visible),
+            "hidden": sum(1 for r in descendants.values() if not r.visible),
+        },
         "required_missing": required_missing,
         "destination_statuses": dest_lanes,
         "source_project_id": source_project_id,
@@ -500,7 +524,9 @@ def _public(plan: dict[str, Any]) -> dict[str, Any]:
     """The plan minus the rows and the internals the wire has no use for."""
     public = {
         key: value for key, value in plan.items()
-        if key not in {"tasks", "dest_keys", "dest_defs", "dest_home"}
+        if key not in {
+            "tasks", "dest_keys", "dest_defs", "dest_home", "descendants",
+        }
     }
     public["task_count"] = len(plan["tasks"])
     return public
@@ -583,6 +609,12 @@ async def move_tasks(
         plan = await _plan(db, vis, payload)
 
         _refuse_unless_agreed(plan, payload)
+        # Before any write: a hidden descendant refuses the whole move (409),
+        # because moving the rest would split the tree unseen.
+        subtree = (
+            movable_subtree(plan["descendants"]) if payload.include_subtasks
+            else []
+        )
 
         # Every destination lane's category, so the completion correction
         # above has the one fact it needs without a second read.
@@ -709,11 +741,33 @@ async def move_tasks(
             )
             moved.append(str(task.id))
 
-    for task_id in moved:
+        # ── The subtree (D-PM-38 decision 4), in the SAME transaction ───────
+        #
+        # Through the narrow seam, one task at a time, because each
+        # descendant may sit in its own project and its own status set: the
+        # member's `status_map` names the SELECTION's lanes and means nothing
+        # for a lane of another set. Each gets the D62 refusal, the rule's
+        # remap, the required-field check and its drop record. A refusal on
+        # any one rolls the whole move back: no split tree.
+        dest_id = plan["destination_project_id"]
+        carried: list[str] = []
+        for child in subtree:
+            if str(child.project_id) == dest_id:
+                continue
+            await move_task_in(
+                db, vis, child, MoveTask(project_id=dest_id), by=actor(user),
+            )
+            carried.append(str(child.id))
+
+    for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})
-    return {
+    answer: dict[str, Any] = {
         "moved": len(moved),
         "task_ids": moved,
         "destination_project_id": plan["destination_project_id"],
         "dropped_fields": sorted(plan["drops"]),
     }
+    if payload.include_subtasks:
+        answer["subtasks_moved"] = len(carried)
+        answer["subtask_ids"] = carried
+    return answer

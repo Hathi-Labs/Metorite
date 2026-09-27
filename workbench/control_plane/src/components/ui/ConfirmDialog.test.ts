@@ -95,8 +95,19 @@ describe("ConfirmDialog", () => {
 
   it("confirms with the destructive Button and opens focused on it", () => {
     const src = read("components/ui/ConfirmDialog.tsx");
-    expect(src).toMatch(/variant="destructive"[\s\S]*?data-confirm=""/);
-    expect(src).toMatch(/querySelector<HTMLElement>\("\[data-confirm\]"\)/);
+    // The DEFAULTS are the delete's: a destructive confirm, focused.
+    expect(src).toMatch(/confirmVariant = "destructive"/);
+    expect(src).toMatch(/defaultFocus = "confirm"/);
+    expect(src).toMatch(/variant=\{confirmVariant\}[\s\S]*?data-confirm=""/);
+    expect(src).toMatch(/defaultFocus === "cancel" \? "\[data-cancel\]" : "\[data-confirm\]"/);
+  });
+
+  it("names its cancel button, and Escape and the close button mean it (S5)", () => {
+    const src = read("components/ui/ConfirmDialog.tsx");
+    expect(src).toMatch(/cancelLabel = "Cancel"/);
+    expect(src).toMatch(/closeLabel=\{words\.cancelLabel\}/);
+    expect(src).toMatch(/onClose=\{onCancel\}/);
+    expect(src).toMatch(/data-cancel=""[\s\S]*?\{words\.cancelLabel\}/);
   });
 
   it.each([

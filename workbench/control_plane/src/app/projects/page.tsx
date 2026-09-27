@@ -53,6 +53,7 @@ import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
+import { useSubtaskComplete } from "./components/useSubtaskComplete";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
@@ -148,6 +149,15 @@ import {
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
+import {
+  CASCADE_DEFAULTS,
+  archiveReceipt,
+  bulkSubtaskSummary,
+  bulkSummaryLine,
+  moveReceipt,
+  subtaskCount,
+} from "@/lib/subtaskCascade";
+import { IncludeSubtasksBox } from "@/components/SubtaskCascade";
 import { peek, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
@@ -870,6 +880,18 @@ function ProjectsWorkspace() {
   const [confirmingDelete, setConfirmingDelete] = useState<
     { kind: "one"; taskId: string } | { kind: "bulk"; ids: string[] } | null
   >(null);
+  // D-PM-38 decision 4 (S5) — an archive of tasks that have subtasks, waiting
+  // for the dialog with the pre-ticked "Include N subtasks" box. One task
+  // (the card menu) or the bulk bar's selection. Null while no dialog is up.
+  const [archiving, setArchiving] = useState<{
+    ids: string[];
+    title?: string;
+    subtasks: number;
+    bulk: boolean;
+  } | null>(null);
+  const [archiveSubtasks, setArchiveSubtasks] = useState<boolean>(
+    CASCADE_DEFAULTS.archive,
+  );
   // WS-27ab — the `?` sheet, printed from the same command registry the
   // palette and the key sequences read.
   const [showingShortcuts, setShowingShortcuts] = useState(false);
@@ -932,6 +954,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(`projects:${selected?.id ?? "none"}`);
+  // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
+  const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
   const [timeWindow, setTimeWindow] = useState<TimelineWindow>(() =>
     windowFor("month", dayKey(new Date()))
@@ -2006,6 +2030,13 @@ function ProjectsWorkspace() {
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
 
+  // D-PM-38 (S5) — the parents in the selection and their open subtasks,
+  // from the chips. The bulk bar names it, and a bulk complete asks with it.
+  const selectionSubtasks = useMemo(
+    () => bulkSubtaskSummary(tasks, picked),
+    [tasks, picked],
+  );
+
   /**
    * The same grouping, over the TIMELINE's rows (WS-27t S5).
    *
@@ -2059,14 +2090,29 @@ function ProjectsWorkspace() {
 
   async function applyBulk(request: ReturnType<typeof buildRequest>) {
     if (!request) return;
+    // D-PM-38 decision 2 (S5) — a bulk move into a Done lane asks ONCE for
+    // the whole batch, over the open subtasks of every selected parent. The
+    // default answer is "Only this task", as on one task.
+    const statusName = (request.patch as { status?: unknown } | undefined)?.status;
+    const intoDone =
+      typeof statusName === "string" &&
+      statuses.some((s) => s.name === statusName && s.category === "done");
+    const include = intoDone
+      ? await subtaskComplete.ask(selectionSubtasks.open)
+      : false;
     setBulkBusy(true);
     setBulkNotice(null);
     try {
       const outcome = await projectsApi.bulkEdit({
         ...request,
         task_ids: [...picked],
+        ...(include ? { include_subtasks: true } : {}),
       });
-      setBulkNotice(describeOutcome(outcome));
+      const closed = outcome.subtasks_completed ?? 0;
+      setBulkNotice(
+        describeOutcome(outcome) +
+          (closed ? ` · and ${subtaskCount(closed)} completed with them` : ""),
+      );
       // The selection is KEPT: a sweep is usually several passes over the same
       // set ("these fifty: status, then owner, then tag"), and clearing after
       // each would make the second pass a re-selection.
@@ -2097,6 +2143,7 @@ function ProjectsWorkspace() {
   async function applyBulkAction(
     action: "archive" | "unarchive" | "delete",
     confirmedIds?: string[],
+    includeSubtasks = false,
   ) {
     const ids = confirmedIds ?? [...picked];
     if (ids.length === 0) return;
@@ -2104,11 +2151,32 @@ function ProjectsWorkspace() {
       setConfirmingDelete({ kind: "bulk", ids });
       return;
     }
+    // D-PM-38 decision 4 (S5) — the batch's subtasks are asked about ONCE,
+    // in the archive dialog, with the box ticked. No subtasks, no dialog.
+    if (action === "archive" && !confirmedIds) {
+      const held = ids.reduce(
+        (sum, id) => sum + (tasks.find((t) => t.id === id)?.subtasks?.total ?? 0),
+        0,
+      );
+      if (held > 0) {
+        setArchiveSubtasks(CASCADE_DEFAULTS.archive);
+        setArchiving({ ids, subtasks: held, bulk: true });
+        return;
+      }
+    }
     setBulkBusy(true);
     setBulkNotice(null);
     try {
-      const outcome = await projectsApi.bulkEdit({ action, task_ids: ids });
-      setBulkNotice(describeOutcome(outcome));
+      const outcome = await projectsApi.bulkEdit({
+        action,
+        task_ids: ids,
+        ...(includeSubtasks ? { include_subtasks: true } : {}),
+      });
+      const shelved = outcome.subtasks_archived ?? 0;
+      setBulkNotice(
+        describeOutcome(outcome) +
+          (shelved ? ` · and ${subtaskCount(shelved)} archived with them` : ""),
+      );
       // ⚠️ The selection is DROPPED after a delete and kept otherwise. Keeping
       // it would leave the bar counting rows that no longer exist, and the
       // next button pressed would report fifty "not found".
@@ -2551,6 +2619,7 @@ function ProjectsWorkspace() {
   const overlayOpen =
     searching ||
     Boolean(confirmingDelete) ||
+    Boolean(archiving) ||
     showingShortcuts ||
     Boolean(managingFields) ||
     Boolean(managingTags) ||
@@ -2827,15 +2896,60 @@ function ProjectsWorkspace() {
    * guard went on 2026-09-21. An error can still arrive (the task moved, the
    * grant changed), so the strip still shows one.
    */
-  async function setTaskArchived(taskId: string, archived: boolean) {
+  async function setTaskArchived(
+    taskId: string,
+    archived: boolean,
+    answer?: { includeSubtasks: boolean },
+  ) {
+    // D-PM-38 decision 4 (S5) — a task with subtasks asks first, in a dialog
+    // whose "Include N subtasks" box is TICKED. A task without any archives
+    // on the click, as before.
+    const row = tasks.find((t) => t.id === taskId);
+    const held = row?.subtasks?.total ?? 0;
+    if (archived && !answer && held > 0) {
+      setArchiveSubtasks(CASCADE_DEFAULTS.archive);
+      setArchiving({ ids: [taskId], title: row?.title, subtasks: held, bulk: false });
+      return;
+    }
     try {
-      if (archived) await projectsApi.archiveTask(taskId);
-      else await projectsApi.unarchiveTask(taskId);
+      if (!archived) {
+        await projectsApi.unarchiveTask(taskId);
+        await refreshRef.current();
+        setTreeKey((k) => k + 1);
+        toast.show({ variant: "success", title: "Task restored from the archive" });
+        return;
+      }
+      const include = Boolean(answer?.includeSubtasks);
+      const res = await projectsApi.archiveTask(taskId, { includeSubtasks: include });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
+      // Undo restores EXACTLY what this archive shelved: the task and the
+      // ids the gateway reported. Unarchive itself does not cascade.
+      const shelved = [taskId, ...(res.subtask_ids ?? [])];
+      let applied = true;
+      const restore = async () => {
+        if (!applied) return;
+        applied = false;
+        for (const id of shelved) await projectsApi.unarchiveTask(id);
+        await refreshRef.current();
+        setTreeKey((k) => k + 1);
+      };
+      undoApi.record({
+        label: `archived ${row?.title ?? "a task"}`,
+        undo: restore,
+        redo: async () => {
+          if (applied) return;
+          applied = true;
+          await projectsApi.archiveTask(taskId, { includeSubtasks: include });
+          await refreshRef.current();
+          setTreeKey((k) => k + 1);
+        },
+      });
       toast.show({
+        key: `projects:archive:${taskId}`,
         variant: "success",
-        title: archived ? "Task archived" : "Task restored from the archive",
+        title: archiveReceipt(res.subtasks_archived ?? 0),
+        action: { label: "Undo", onClick: () => void restore() },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -2881,6 +2995,7 @@ function ProjectsWorkspace() {
     destinationId: string,
     statusMap: Record<string, string>,
     acceptedDrops: string[] | null,
+    includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
     setMovingTasksBusy(true);
@@ -2894,6 +3009,8 @@ function ProjectsWorkspace() {
         // What the card actually SHOWED as dropping. The server answers 409
         // if the destination changed and the real loss is now larger.
         ...(acceptedDrops ? { accepted_drops: acceptedDrops } : {}),
+        // D-PM-38 decision 4 — the dialog's box, ticked by default.
+        ...(includeSubtasks ? { include_subtasks: true } : {}),
       });
       setMovingTasks(null);
       setPicked(new Set());
@@ -2906,12 +3023,19 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // "Moved 4 tasks to Website relaunch" — the subtasks the move took
+      // along are counted, from the server's answer.
+      const moved = moveReceipt(
+        res.moved,
+        res.subtasks_moved ?? 0,
+        projectName(res.destination_project_id ?? destinationId),
+      );
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
-            ? `Moved ${res.moved} task(s) — dropped ${res.dropped_fields.join(", ")}`
-            : `Moved ${res.moved} task(s)`,
+            ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
+            : moved,
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -3155,6 +3279,28 @@ function ProjectsWorkspace() {
     // Optimistic: the card moves now and the truth arrives on reload. A drag
     // that waits for a round trip feels broken even when it is correct. The
     // WHOLE patch applies — a lane-cell drop moves two axes at once (WS-27y).
+    // D-PM-38 decision 2 (S5) — a move INTO a Done lane of a parent with open
+    // subtasks asks first: the tick, the status menu and a drag all arrive
+    // here. The hook writes the status itself, with the member's answer, and
+    // the drop's order write still follows.
+    const status = patch && typeof patch.status_id === "string" ? patch.status_id : null;
+    if (status && Object.keys(patch ?? {}).length === 1) {
+      try {
+        const asked = await subtaskComplete.changeStatus(task, status, statuses, async () => {
+          if (selected) await loadProject(selected);
+        });
+        if (asked) {
+          const rootViews = await projectsApi.views(task.root_project_id);
+          const board = orderBearingView(rootViews.rows);
+          if (board && writes.length) await projectsApi.setPositions(board.id, writes);
+          return;
+        }
+      } catch (err) {
+        setError(String((err as Error).message));
+        if (selected) await loadProject(selected);
+        return;
+      }
+    }
     // D-PM-38 — `optimisticDrop` moves the DRAGGED task only. A subtask
     // dropped in a lane does not take its parent or its siblings with it.
     if (patch) {
@@ -3594,6 +3740,8 @@ function ProjectsWorkspace() {
           }}
           onApply={(request) => void applyBulk(request)}
           onAction={(action) => void applyBulkAction(action)}
+          // D-PM-38 (S5) — "includes 2 parents with 5 open subtasks".
+          subtaskSummary={bulkSummaryLine(selectionSubtasks)}
           onMove={() => {
             setMoveTasksError(null);
             setMovingTasks([...picked]);
@@ -3782,6 +3930,7 @@ function ProjectsWorkspace() {
                   current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
                 )
               }
+              onReload={() => void loadProject(selected)}
               onSelect={(task) => void openWithStatuses(task)}
             />
           ) : mode === "board" ? (
@@ -3966,6 +4115,10 @@ function ProjectsWorkspace() {
         onMerge={(targetId) => void mergeInto(targetId)}
       />
 
+      {/* D-PM-38 decision 2 — "N subtasks are still open. Complete them
+          too?" In `overlays`, so the phone branch has it too. */}
+      {subtaskComplete.dialog}
+
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
@@ -3976,8 +4129,8 @@ function ProjectsWorkspace() {
           setMovingTasks(null);
           setMoveTasksError(null);
         }}
-        onConfirm={(destinationId, statusMap, acceptedDrops) =>
-          void moveTasksTo(destinationId, statusMap, acceptedDrops)
+        onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
+          void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
         }
       />
 
@@ -4007,6 +4160,40 @@ function ProjectsWorkspace() {
           if (pending?.kind === "bulk") void applyBulkAction("delete", pending.ids);
         }}
       />
+
+      {/* D-PM-38 decision 4 (S5) — archive a task that has subtasks, or a
+          selection that holds some. The box is TICKED: the subtasks go on the
+          shelf with it unless the member unticks it. */}
+      <ConfirmDialog
+        open={Boolean(archiving)}
+        title={
+          archiving && archiving.ids.length > 1
+            ? `Archive ${archiving.ids.length} tasks?`
+            : "Archive this task?"
+        }
+        subject={archiving?.title}
+        body="It leaves every board, list and search. You can restore it from the archive."
+        confirmLabel="Archive"
+        confirmVariant="primary"
+        icon="Archive"
+        onCancel={() => setArchiving(null)}
+        onConfirm={() => {
+          const pending = archiving;
+          setArchiving(null);
+          if (!pending) return;
+          if (pending.bulk) {
+            void applyBulkAction("archive", pending.ids, archiveSubtasks);
+          } else {
+            void setTaskArchived(pending.ids[0], true, { includeSubtasks: archiveSubtasks });
+          }
+        }}
+      >
+        <IncludeSubtasksBox
+          count={archiving?.subtasks ?? 0}
+          checked={archiveSubtasks}
+          onChange={setArchiveSubtasks}
+        />
+      </ConfirmDialog>
 
       <SearchPalette
         open={searching}

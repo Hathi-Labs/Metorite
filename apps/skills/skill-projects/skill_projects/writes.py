@@ -581,7 +581,9 @@ async def move_task(
     server previews what carries over and what drops, the card shows that,
     and the move applies only the drops the member saw. With
     parent_task_id alone, re-parents one task under another in the same
-    project. Moving back is the undo."""
+    project. Moving back is the undo. The gateway also takes
+    include_subtasks, which moves the subtasks along. This tool does NOT send
+    it: subtasks stay in their own project."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
         return "Give at least one task id."
@@ -689,7 +691,8 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
 async def complete(task_id: str) -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
-    update_task."""
+    update_task. The gateway also takes include_subtasks, which completes the
+    open subtasks too. This tool does NOT send it: its subtasks stay open."""
     tid, task = await _task(task_id)
     if task.get("completed_at"):
         return f"{_ref(task)} is already done."

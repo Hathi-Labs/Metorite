@@ -1041,7 +1041,9 @@ async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
     SHARED status into its project's first Done status, so the team's board
     and your list agree at the same instant. Reopen sets your list to NEXT,
     and the gateway moves the task to its first To do status (D79 rule 6).
-    The result names the status the task is now in.
+    The result names the status the task is now in. The gateway also takes
+    include_subtasks, which completes the open subtasks too. This tool does
+    NOT send it: it completes this task only, and its subtasks stay open.
 
     Args:
         item_id: The item's full UUID.

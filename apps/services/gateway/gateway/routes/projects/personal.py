@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
     _VISIBLE_PROJECTS_SQL,
@@ -235,6 +236,11 @@ class OrganizeIn(BaseModel):
     #: them. Without them a promote from Clarify was refused after the card
     #: had already moved the row.
     custom_fields: dict | None = None
+    #: D-PM-38 decision 4 (S5). A promote from Clarify takes the task's
+    #: subtasks along, as the Move dialog's ticked box does. Passed to the ONE
+    #: move seam (`MoveTask.include_subtasks`). FALSE by default, so the chat
+    #: tool's organize and every old caller move one task.
+    include_subtasks: bool = False
 
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
@@ -2073,6 +2079,7 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
 @router.post("/tasks/{task_id}/complete")
 async def complete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    include_subtasks: bool = False,
 ) -> dict:
     """Tick a task off from my inbox.
 
@@ -2082,13 +2089,29 @@ async def complete_task(
     same instant, because there is one row. A personal-only completion would be
     a member quietly marking a team task finished while the board still shows it
     open, which is the exact drift a mirror produces.
+
+    D-PM-38 decision 2 (S5). ``?include_subtasks=true`` completes every open
+    descendant too, each into the first Done status of its OWN set
+    (``cascade.complete_subtree``), in this transaction. The default is
+    false: the owner's prompt defaults to "Only this task", and the chat tool
+    and old callers keep completing one task. The reply then carries
+    ``subtasks_completed`` and ``subtask_changes`` (each child's status before
+    and after), which is what the client's Undo puts back.
     """
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         moved = await complete_for_member(db, task, email)
-        return row_to_dict(moved["row"], TaskModel)
+        result = row_to_dict(moved["row"], TaskModel)
+        cascade = None
+        if include_subtasks:
+            cascade = await complete_subtree(db, vis, task_id, by=email)
+            result["subtasks_completed"] = len(cascade.ids)
+            result["subtask_changes"] = cascade.changes
+    if cascade is not None:
+        await emit_all(cascade.events)
+    return result
 
 
 # ── Organize: one clarify decision, atomically ──────────────────────────────
@@ -2215,6 +2238,7 @@ async def _add_subtasks(
 
 async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
+    moved_subtasks: list[str] | None = None,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2260,9 +2284,15 @@ async def _organize(
         # They mean something only when the task changes project.
         custom_fields=payload.custom_fields if dest else None,
         assignees=[who] if who else None,
+        # D-PM-38 decision 4. Means something only when the task changes
+        # project, which `move_task_in` checks itself.
+        include_subtasks=bool(payload.include_subtasks and dest),
     )
     if move.project_id or move.assignees is not None:
-        await move_task_in(db, vis, task, move, by=email)
+        shifted = await move_task_in(db, vis, task, move, by=email)
+        if moved_subtasks is not None:
+            # D-PM-38 — the caller emits one "moved" event per subtask.
+            moved_subtasks.extend(shifted.get("subtask_ids", []))
         task = await load_visible_task(db, vis, task_id)
 
     # ── 2. The shared facts — one deadline, one estimate, on the task ───────
@@ -2359,7 +2389,10 @@ async def organize_my_task(
         task = await load_visible_task(db, vis, task_id)
         title = str(getattr(task, "title", "") or "")
         before = str(getattr(task, "project_id", "") or "")
-        disposition = await _organize(db, vis, email, task, payload)
+        moved_subtasks: list[str] = []
+        disposition = await _organize(
+            db, vis, email, task, payload, moved_subtasks=moved_subtasks,
+        )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the
     # way `POST /tasks/{id}/move` does. Automations bound to "Task moved"
@@ -2384,6 +2417,8 @@ async def organize_my_task(
     await emit("pm.task.updated", {"task_id": task_id})
     if moved:
         await emit("pm.task.moved", {"task_id": task_id})
+    for child_id in moved_subtasks:
+        await emit("pm.task.moved", {"task_id": child_id})
     return result
 
 
