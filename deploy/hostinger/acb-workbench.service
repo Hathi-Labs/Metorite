@@ -2,7 +2,15 @@
 Description=Metorite Workbench (Next.js)
 After=network-online.target acb-gateway.service
 Wants=network-online.target
-Requires=acb-gateway.service
+# H-60: Wants=, NOT Requires=. The workbench only needs the gateway to START
+# first, and After= above gives that order. Requires= also made every gateway
+# restart restart the workbench, before the deploy had installed and built it.
+# Each deploy then gave browsers a 502 from 127.0.0.1:3001 (measured
+# 2026-09-26 and 2026-09-27). Wants= still starts the gateway at boot. A gateway
+# that is down does not stop the workbench: its pages load and its API routes
+# answer with an error until the gateway is back.
+# Fence: tests/unit/test_deploy_serialize.py (the H-60 section).
+Wants=acb-gateway.service
 
 [Service]
 Type=simple

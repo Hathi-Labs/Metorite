@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -295,9 +296,35 @@ class TestReapplyTheSameSha:
 
     def test_a_CI_rerun_or_the_force_input_forces_the_apply(self) -> None:
         wf = self._WF.read_text(encoding="utf-8")
-        assert "DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force) && '1' || '0' }}" in wf
-        assert "\"DEPLOY_FORCE=${DEPLOY_FORCE:-0} bash -s\" < /tmp/deploy_remote.sh" in wf
+        assert (
+            "DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force || inputs.reinstall)"
+            " && '1' || '0' }}" in wf
+        )
+        assert (
+            '"DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
+            " < /tmp/deploy_remote.sh" in wf
+        )
         assert "      force:\n" in wf, "the workflow_dispatch input is missing"
+
+    def test_only_the_reinstall_input_reinstalls_the_dependencies(self) -> None:
+        """H-60: a rerun re-applies the sha but keeps node_modules. `npm ci`
+        under the running workbench is ~38 s of HTTP 500."""
+        wf = self._WF.read_text(encoding="utf-8")
+        assert "      reinstall:\n" in wf
+        assert "DEPLOY_REINSTALL: ${{ inputs.reinstall && '1' || '0' }}" in wf
+        assert "run_attempt" not in next(
+            ln for ln in wf.splitlines() if ln.strip().startswith("DEPLOY_REINSTALL:")
+        )
+
+    def test_the_pull_path_carries_reinstall_to_the_apply(self) -> None:
+        body = _PULL.read_text(encoding="utf-8")
+        assert '--reinstall) MODE="force"; DEPLOY_REINSTALL=1 ;;' in body
+        drop = body[body.index("exec runuser") :]
+        drop = drop[: drop.index('bash "$0" "$@"')]
+        assert 'DEPLOY_REINSTALL="$DEPLOY_REINSTALL"' in drop, "the root drop loses it"
+        call = body[body.index('DEPLOY_FORCE="$FORCE_FLAG"') :]
+        call = call[: call.index('bash "$TMP_APPLY"')]
+        assert 'DEPLOY_REINSTALL="$DEPLOY_REINSTALL"' in call, "the apply never sees it"
 
     def test_MODE_from_the_environment_is_honoured(self) -> None:
         """The give-up message said `sudo MODE=force bash vps_pull.sh`, and a
@@ -714,3 +741,530 @@ class TestAnEndedSessionEndsTheBuild:
         assert apply.returncode == 1, out
         assert "ended while this apply waited" in out, out
         assert "Pulling latest" not in out, "it went past the lock"
+
+
+# ── H-60: a deploy gives live users no 502 window ────────────────────────────
+#
+# Measured 2026-09-27, run 36320367460. The gateway restart ALSO restarted the
+# workbench (`Requires=`), and browsers got a 502 from 127.0.0.1:3001. `npm ci`
+# deleted `node_modules` under the running workbench for 38 s, and it answered
+# 500. The Caddy step restarted Caddy on every deploy, because `admin off`
+# makes a reload fail, and that cut every open connection. The tests below
+# fence the four fixes: Caddy waits for a restarting upstream, a gateway
+# restart leaves the workbench alone, an unchanged dependency tree is kept,
+# and each restart waits until the service answers.
+
+_CADDYFILE = _ROOT / "deploy/hostinger/caddy/Caddyfile"
+_WB_UNIT = _ROOT / "deploy/hostinger/acb-workbench.service"
+
+
+def _caddy_proxy_block(upstream: str) -> str:
+    """The body of the `reverse_proxy <upstream> { ... }` block."""
+    lines = [ln.split("#", 1)[0] for ln in _CADDYFILE.read_text(encoding="utf-8").splitlines()]
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.split()[:2] == ["reverse_proxy", upstream]),
+        None,
+    )
+    assert start is not None, f"no reverse_proxy to {upstream}"
+    assert lines[start].rstrip().endswith("{"), f"reverse_proxy {upstream} has no block"
+    body: list[str] = []
+    for ln in lines[start + 1 :]:
+        if ln.strip() == "}":
+            return "\n".join(body)
+        body.append(ln.strip())
+    raise AssertionError(f"reverse_proxy {upstream} block is not closed")
+
+
+def _seconds(value: str) -> float:
+    for unit, mult in (("ms", 0.001), ("s", 1.0), ("m", 60.0)):
+        if value.endswith(unit):
+            return float(value[: -len(unit)]) * mult
+    raise AssertionError(f"not a duration: {value}")
+
+
+def _apply_function(name: str) -> str:
+    body = _APPLY.read_text(encoding="utf-8")
+    fn = body[body.index(f"{name}() {{"):]
+    fn = fn[: fn.index("\n}\n")]
+    return "\n".join(ln for ln in fn.splitlines() if not ln.strip().startswith("#"))
+
+
+class TestCaddyHoldsTheRequest:
+    @pytest.mark.parametrize("upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002"])
+    def test_every_upstream_is_retried_through_a_restart(self, upstream: str) -> None:
+        block = _caddy_proxy_block(upstream)
+        opts = {ln.split()[0]: ln.split()[1] for ln in block.splitlines() if ln.split()}
+        assert "lb_try_duration" in opts, f"{upstream}: a restart answers 502 without it"
+        assert "lb_try_interval" in opts, f"{upstream}: no retry interval"
+        # Longer than the gateway's measured cold start (15 to 23 s).
+        assert _seconds(opts["lb_try_duration"]) >= 25, opts
+        assert _seconds(opts["lb_try_interval"]) <= 1, opts
+
+    def test_the_repo_file_serves_every_hostname_the_box_serves(self) -> None:
+        """The apply installs this file. A hostname missing here goes DOWN on
+        the next deploy. The repo copy had lost three of them by 2026-09-28."""
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        sites = {
+            ln.split()[0]
+            for ln in text.splitlines()
+            if ln and not ln[0].isspace() and ln.rstrip().endswith("{") and "." in ln
+        }
+        assert sites >= {
+            "api.metorite.com", "app.metorite.com", "metorite.com",
+            "www.metorite.com", "operator.metorite.com",
+        }, sites
+
+    def test_the_apply_validates_the_file_before_it_installs_it(self) -> None:
+        lines = _executable_lines(_APPLY)
+        validate = _first(lines, 'caddy validate --config "$CADDY_REPO"')
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert validate < install
+        assert lines[validate].lstrip().startswith("if ! "), "a bad file must stop the apply"
+        assert "exit 1" in "\n".join(lines[validate : validate + 6])
+
+    def test_the_config_goes_in_before_the_first_restart(self) -> None:
+        lines = _executable_lines(_APPLY)
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert install < _first(lines, "sudo systemctl restart acb-gateway")
+
+    def test_caddy_is_never_reloaded_and_restarts_only_on_a_change(self) -> None:
+        """`admin off`: a reload always fails, and `reload || restart` then
+        restarted Caddy on every deploy and cut every open stream."""
+        lines = _executable_lines(_APPLY)
+        assert not any("systemctl reload caddy" in ln for ln in lines)
+        assert any('cmp -s "$CADDY_REPO" "$CADDY_LIVE"' in ln for ln in lines)
+        restarts = [ln for ln in lines if "systemctl restart caddy" in ln]
+        assert restarts
+        for ln in restarts:
+            assert ln.startswith((" ", "\t")), f"an unconditional Caddy restart: {ln!r}"
+
+    def test_a_changed_config_restarts_caddy_even_without_a_backup(self) -> None:
+        """The restart must follow the INSTALL, not the backup. A backup that
+        fails must never leave a new file on disk and the old one running."""
+        lines = _executable_lines(_APPLY)
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert lines[install + 1].strip() == "CADDY_CHANGED=1"
+        restart = _first(lines, "systemctl restart caddy", install)
+        cond = lines[restart - 2 : restart]
+        assert any('[ "$CADDY_CHANGED" = "1" ]' in ln for ln in cond), cond
+
+    def test_a_config_that_does_not_start_is_rolled_back(self) -> None:
+        lines = _executable_lines(_APPLY)
+        backup = _first(lines, 'sudo cp -a "$CADDY_LIVE" "$CADDY_BAK"')
+        restore = _first(lines, 'sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"')
+        assert backup < restore
+
+    def test_no_backup_means_no_install(self) -> None:
+        lines = _executable_lines(_APPLY)
+        backup = _first(lines, 'sudo cp -a "$CADDY_LIVE" "$CADDY_BAK"')
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert lines[backup].lstrip().startswith("if ! "), "a failed backup must stop it"
+        assert "exit 1" in "\n".join(lines[backup : backup + 4])
+        assert backup < install
+
+    def test_only_five_backups_are_kept(self) -> None:
+        lines = _executable_lines(_APPLY)
+        prune = _first(lines, 'ls -1t "$CADDY_LIVE".bak.[0-9]*')
+        assert "tail -n +6" in lines[prune]
+
+    def test_the_host_probe_retries_to_a_deadline_and_accepts_any_answer(self) -> None:
+        """Runs on every platform. One attempt, or a probe that fails on a 5xx,
+        wedged every deploy (H-60 re-review, P1)."""
+        fn = _apply_function("caddy_probe_sites")
+        assert "while :; do" in fn, "one attempt per host is not enough"
+        assert "${CADDY_PROBE_DEADLINE:-90}" in fn
+        m = re.search(r"CADDY_PROBE_DEADLINE:-(\d+)", fn)
+        assert m and int(m.group(1)) >= 60, "a new certificate needs time"
+        assert 'sleep "${CADDY_PROBE_INTERVAL:-' in fn
+        assert 'if [ "$(date +%s)" -ge "$cps_end" ]; then' in fn
+        assert "[1-5][0-9][0-9])" in fn, "any HTTP answer proves Caddy routes the host"
+        assert "|502|503|504)" not in fn
+        m = re.search(r"CADDY_PROBE_MAX:-(\d+)", fn)
+        assert m and int(m.group(1)) > 30, "an attempt must outwait lb_try_duration"
+
+    def test_every_host_is_probed_before_caddy_counts_as_up(self) -> None:
+        lines = _executable_lines(_APPLY)
+        restart = _first(lines, "sudo systemctl restart caddy")
+        probe = _first(lines, 'caddy_probe_sites "$CADDY_LIVE"', restart)
+        rollback = _first(lines, 'sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"', probe)
+        up = _first(lines, 'echo "Caddy is active"', rollback)
+        assert restart < probe < rollback < up
+        assert "CADDY_RESTARTED" in lines[probe], "probe after a restart"
+
+
+class TestProbesOutwaitTheRetry:
+    """`lb_try_duration` makes Caddy HOLD a request to a down upstream. A probe
+    with a shorter bound then reads 000. The watchdog restarted a healthy Caddy
+    on that, and vps-health.yml blamed the network."""
+
+    def _try_seconds(self) -> float:
+        opts = dict(
+            ln.split()[:2]
+            for ln in _caddy_proxy_block("127.0.0.1:8080").splitlines()
+            if len(ln.split()) >= 2
+        )
+        return _seconds(opts["lb_try_duration"])
+
+    def test_the_watchdog_probes_caddy_on_a_path_caddy_answers_itself(self) -> None:
+        wd = _executable_lines(_ROOT / "deploy/hostinger/health-watchdog.sh")
+        probe = next(ln for ln in wd if ln.strip().startswith("probe_http caddy "))
+        url = probe.split('"')[1]
+        path = url.split("}", 1)[1]
+        assert path.startswith("/internal/"), (
+            f"{url}: a path Caddy proxies waits for the gateway and restarts Caddy"
+        )
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        api = text[text.index("api.metorite.com {") :]
+        api = api[: api.index("\n}\n")]
+        assert "@internal path /internal/*" in api
+        assert "respond @internal 404" in api
+        assert api.index("respond @internal 404") < api.index("reverse_proxy")
+
+    def test_vps_health_outwaits_the_retry(self) -> None:
+        wf = (_ROOT / ".github/workflows/vps-health.yml").read_text(encoding="utf-8")
+        probe = next(
+            ln for ln in wf.splitlines() if "curl -s -o /dev/null -m" in ln and '"$url"' in ln
+        )
+        bound = int(probe.split("-m ", 1)[1].split()[0])
+        assert bound > self._try_seconds(), f"-m {bound} reads a held request as UNREACHABLE"
+
+
+class TestAGatewayRestartLeavesTheWorkbenchAlone:
+    def _unit(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for ln in _WB_UNIT.read_text(encoding="utf-8").splitlines():
+            if "=" in ln and not ln.lstrip().startswith(("#", ";")):
+                k, v = ln.split("=", 1)
+                out.setdefault(k.strip(), []).extend(v.split())
+        return out
+
+    def test_no_hard_dependency_on_the_gateway(self) -> None:
+        unit = self._unit()
+        for key in ("Requires", "BindsTo", "PartOf", "Requisite"):
+            assert "acb-gateway.service" not in unit.get(key, []), (
+                f"{key}= makes a gateway restart take the workbench down (H-60)"
+            )
+
+    def test_the_gateway_still_starts_first(self) -> None:
+        unit = self._unit()
+        assert "acb-gateway.service" in unit.get("Wants", [])
+        assert "acb-gateway.service" in unit.get("After", [])
+
+    def test_the_new_unit_is_on_the_box_before_the_gateway_restart(self) -> None:
+        lines = _executable_lines(_APPLY)
+        cp = _first(lines, "deploy/hostinger/acb-workbench.service")
+        reload_ = _first(lines, "sudo systemctl daemon-reload", cp)
+        assert cp < reload_ < _first(lines, "sudo systemctl restart acb-gateway")
+
+    def test_the_workbench_restarts_once(self) -> None:
+        lines = _executable_lines(_APPLY)
+        assert sum("systemctl restart acb-workbench" in ln for ln in lines) == 1
+
+
+class TestTheRestartOrder:
+    def test_each_restart_waits_for_the_one_before_it(self) -> None:
+        lines = _executable_lines(_APPLY)
+        order = [
+            _first(lines, "apply_migrations.sh"),
+            _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"'),
+            _first(lines, "sudo systemctl restart acb-gateway"),
+            _first(lines, 'wait_ready "gateway" "http://127.0.0.1:8080/health"'),
+            _first(lines, "sudo systemctl restart acb-customer-console"),
+            _first(lines, 'wait_ready "Customer Console"'),
+            _first(lines, 'npm_install_here "workbench"'),
+            _first(lines, 'build_next_staged "workbench"'),
+            _first(lines, "sudo systemctl restart acb-workbench"),
+            _first(lines, 'wait_ready "workbench" "http://127.0.0.1:3001/"'),
+            _first(lines, 'sudo systemctl restart "$OC_UNIT"'),
+            _first(lines, 'wait_ready "$OC_UNIT"'),
+        ]
+        assert order == sorted(order), order
+
+    def test_a_service_that_never_answers_fails_the_apply(self) -> None:
+        lines = _executable_lines(_APPLY)
+        for needle in ('wait_ready "gateway"', 'wait_ready "workbench"'):
+            i = _first(lines, needle)
+            tail = "\n".join(lines[i : i + 2])
+            assert "exit 1" in tail, f"{needle}: a cold service must not pass"
+
+
+class TestTheInstallKeepsAnUnchangedTree:
+    def test_the_check_runs_before_the_first_npm_ci(self) -> None:
+        fn = _apply_function("npm_install_here")
+        assert fn.index("deps_unchanged") < fn.index("npm ci")
+
+    def test_every_successful_install_records_the_stamp(self) -> None:
+        fn = _apply_function("npm_install_here")
+        installs = [
+            ln for ln in fn.splitlines() if ln.strip().startswith(("npm ci", "npm install"))
+        ]
+        assert len(installs) == 3, installs
+        for ln in installs:
+            assert "record_deps_stamp" in ln, f"an install that leaves no stamp: {ln!r}"
+
+    def test_the_stamp_goes_before_the_first_install(self) -> None:
+        """An install killed half way must leave no stamp beside the damaged
+        tree, or the next apply keeps it."""
+        fn = _apply_function("npm_install_here")
+        rm = fn.index("rm -f node_modules/.acb-deps-stamp")
+        assert fn.index("deps_unchanged") < rm < fn.index("npm ci")
+
+
+@linux_only
+class TestTheReadinessWait:
+    def _wait(
+        self, tmp_path: pathlib.Path, url: str, seconds: int
+    ) -> subprocess.CompletedProcess:
+        helpers = _helpers(tmp_path, tmp_path)
+        return subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; wait_ready svc "{url}" {seconds}; echo "rc=$?"'],
+            env=_env(tmp_path, WAIT_READY_POLL="0.2"),
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def _server(self, status: int, delay: float) -> tuple[subprocess.Popen, int]:
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        code = (
+            "import http.server, time\n"
+            f"time.sleep({delay})\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            f"        self.send_response({status}); self.end_headers()\n"
+            "    def log_message(self, *a): pass\n"
+            f"http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
+        )
+        return subprocess.Popen([sys.executable, "-c", code]), port
+
+    def test_it_waits_for_a_cold_service(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(200, delay=1.5)
+        try:
+            t0 = time.monotonic()
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/health", 20)
+            took = time.monotonic() - t0
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout + res.stderr
+        assert "answers HTTP 200" in res.stdout
+        assert took >= 1.0, f"it returned after {took:.1f}s, before the service listened"
+
+    def test_a_service_that_never_listens_times_out(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(200, delay=600)
+        try:
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 2)
+        finally:
+            _stop(srv)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "did not answer" in res.stdout
+
+    def test_a_5xx_is_not_ready(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(500, delay=0)
+        try:
+            time.sleep(0.5)
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 2)
+        finally:
+            _stop(srv)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "last answer: 500" in res.stdout
+
+    def test_a_redirect_is_ready(self, tmp_path: pathlib.Path) -> None:
+        """The workbench answers `/` with 307 to the login page."""
+        srv, port = self._server(307, delay=0)
+        try:
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 10)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout + res.stderr
+
+
+@linux_only
+class TestTheDependencyStamp:
+    def _app(self, tmp_path: pathlib.Path) -> pathlib.Path:
+        app = tmp_path / "wb"
+        (app / "node_modules/.bin").mkdir(parents=True)
+        nxt = app / "node_modules/.bin/next"
+        nxt.write_text("#!/bin/sh\n")
+        nxt.chmod(0o755)
+        (app / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+        return app
+
+    def _run(self, tmp_path: pathlib.Path, app: pathlib.Path, cmd: str, **extra: str) -> str:
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; cd "{app}"; {cmd}'],
+            env=_env(tmp_path, **extra), capture_output=True, text=True, timeout=30,
+        )
+        return res.stdout + res.stderr
+
+    def _kept(self, tmp_path: pathlib.Path, app: pathlib.Path, **extra: str) -> bool:
+        return "KEEP" in self._run(tmp_path, app, "deps_unchanged && echo KEEP", **extra)
+
+    def test_no_stamp_means_install(self, tmp_path: pathlib.Path) -> None:
+        assert not self._kept(tmp_path, self._app(tmp_path))
+
+    def test_a_recorded_install_is_kept(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert self._kept(tmp_path, app)
+
+    def test_a_changed_lock_file_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        (app / "package-lock.json").write_text('{"lockfileVersion": 3, "x": 1}\n')
+        assert not self._kept(tmp_path, app)
+
+    def test_reinstall_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert not self._kept(tmp_path, app, DEPLOY_REINSTALL="1")
+
+    def test_force_alone_keeps_the_tree(self, tmp_path: pathlib.Path) -> None:
+        """A rerun sends DEPLOY_FORCE=1. It must not bring back the 38 s."""
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert self._kept(tmp_path, app, DEPLOY_FORCE="1")
+
+    def test_a_tree_without_next_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        (app / "node_modules/.bin/next").unlink()
+        assert not self._kept(tmp_path, app)
+
+
+@linux_only
+class TestEveryCaddyHostIsProved:
+    """After a Caddy restart the apply asks each site host through Caddy. Here
+    a plain HTTP server stands in for Caddy and answers by Host header."""
+
+    _CF = (
+        "{\n\tadmin off\n}\n"
+        "(snippet) {\n\tencode gzip\n}\n"
+        "api.example.com {\n\treverse_proxy 127.0.0.1:8080 {\n\t\tlb_try_duration 30s\n\t}\n}\n"
+        "a.example.com, b.example.com {\n\tfile_server\n}\n"
+    )
+
+    def _server(
+        self, codes: dict[str, int], delay: float = 0.0, port: int = 0
+    ) -> tuple[subprocess.Popen, int]:
+        import socket
+
+        if not port:
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+        code = (
+            "import http.server, time\n"
+            f"time.sleep({delay})\n"
+            f"CODES = {codes!r}\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        host = self.headers.get('Host', '').split(':')[0]\n"
+            "        self.send_response(CODES.get(host, 200)); self.end_headers()\n"
+            "    def log_message(self, *a): pass\n"
+            f"http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code])
+        if not delay:
+            time.sleep(0.5)
+        return proc, port
+
+    def _run(
+        self, tmp_path: pathlib.Path, cmd: str, port: int, deadline: str = "10"
+    ) -> subprocess.CompletedProcess:
+        cf = tmp_path / "Caddyfile"
+        cf.write_text(self._CF, encoding="utf-8")
+        helpers = _helpers(tmp_path, tmp_path)
+        return subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; {cmd} "{cf}"; echo "rc=$?"'],
+            env=_env(
+                tmp_path, CADDY_PROBE_SCHEME="http", CADDY_PROBE_PORT=str(port),
+                CADDY_PROBE_MAX="5", CADDY_PROBE_DEADLINE=deadline,
+                CADDY_PROBE_INTERVAL="0.2",
+            ),
+            capture_output=True, text=True, timeout=120,
+        )
+
+    def test_the_site_list_is_every_host_and_nothing_else(self, tmp_path: pathlib.Path) -> None:
+        out = self._run(tmp_path, "caddy_sites", 1).stdout.split()
+        assert out[:-1] == ["api.example.com", "a.example.com", "b.example.com"], out
+
+    def test_the_real_caddyfile_names_every_box_host(self, tmp_path: pathlib.Path) -> None:
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; caddy_sites "{_CADDYFILE}"'],
+            env=_env(tmp_path), capture_output=True, text=True, timeout=30,
+        )
+        assert set(res.stdout.split()) == {
+            "api.metorite.com", "app.metorite.com", "metorite.com",
+            "www.metorite.com", "operator.metorite.com",
+        }, res.stdout
+
+    def test_every_host_answering_passes(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server({"a.example.com": 301, "b.example.com": 404})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+        assert res.stdout.count("answers HTTP") == 3
+
+    def test_a_cold_upstream_502_passes(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server({"api.example.com": 502})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+
+    def test_a_500_passes(self, tmp_path: pathlib.Path) -> None:
+        """Caddy routes the host, and the app behind it is broken. Rolling
+        Caddy back here stops the rebuild that would fix the app."""
+        srv, port = self._server({"b.example.com": 500})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+        assert "b.example.com answers HTTP 500" in res.stdout
+
+    def test_a_host_that_answers_after_some_failures_passes(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """A new host has no certificate for its first seconds: 000, then an
+        answer. One attempt rolled it back on every deploy."""
+        srv, port = self._server({}, delay=2.0)
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port, deadline="20")
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+        first = next(ln for ln in res.stdout.splitlines() if "answers HTTP" in ln)
+        tries = int(first.rsplit("attempt ", 1)[1].rstrip(")"))
+        assert tries > 1, f"it passed on attempt {tries}, before the server listened"
+
+    def test_no_answer_fails_at_the_deadline(self, tmp_path: pathlib.Path) -> None:
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        t0 = time.monotonic()
+        res = self._run(tmp_path, "caddy_probe_sites", port, deadline="2")
+        took = time.monotonic() - t0
+        assert "rc=1" in res.stdout, res.stdout
+        assert "no HTTP answer in 2s" in res.stdout and "last: 000" in res.stdout
+        # Three hosts, each held to its own 2 s deadline, never unbounded.
+        assert 2 <= took < 30, took
+
+    def test_a_file_with_no_hosts_fails(self, tmp_path: pathlib.Path) -> None:
+        cf = tmp_path / "empty"
+        cf.write_text("{\n\tadmin off\n}\n", encoding="utf-8")
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; caddy_probe_sites "{cf}"; echo "rc=$?"'],
+            env=_env(tmp_path), capture_output=True, text=True, timeout=30,
+        )
+        assert "rc=1" in res.stdout, res.stdout

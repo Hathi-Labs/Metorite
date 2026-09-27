@@ -1533,6 +1533,9 @@ line — never reclaim a number by deleting the other entry.
     `Requires=acb-gateway.service`, so the gateway restart also restarts the
     workbench, BEFORE the install. The apply now prints a warning there when
     `next` is missing, and it does not stop.
+    🟢 **2026-09-28 — the H-60 no-502 PR closes this gap.** The unit now has
+    `Wants=`, and the apply installs it before the gateway restart. So the
+    workbench restarts once, after its install and build.
 - 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
   rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
   box was healthy the whole time and the next deploy started it fine.
@@ -1567,6 +1570,101 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the H-152 gateway slice.
 
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
+- 🟢 **2026-09-28 — the no-502 PR removes most of the window. Keep this entry
+  until a deploy on the box proves it.**
+  - **What the "~3 minutes" was, measured on the #497 deploy (run
+    36320367460, 2026-09-27).** It is the time from the first restart at
+    12:55:27 to the Caddy restart at 12:58:19. Inside it, four separate faults:
+    - the gateway restart also restarted the workbench through `Requires=`.
+      Every Caddy 502 on :3001 from 2026-09-26 to 2026-09-27 falls in that
+      second: 4 to 14 browser requests per deploy.
+    - the gateway was cold for **15 to 23 s**. The workbench calls it directly
+      on localhost, so its API routes failed for that time.
+    - `npm ci` deleted `node_modules` under the running workbench for **38 s**.
+      It answered 500 with `Cannot find module 'next/dist/compiled/cookie'`.
+    - the Caddy step ran `reload || restart`. `admin off` makes every reload
+      fail, so every deploy restarted Caddy and cut every open stream.
+  - **What the PR changes.**
+    - Caddy retries a refused dial for up to 30 s (`lb_try_duration`) on
+      app, api and operator. A request in a restart gap waits, and a POST
+      keeps its body. Proved against Caddy v2.11.4, the version on the box.
+    - The repo Caddyfile now matches the box, and the apply installs it before
+      the restarts. It validates the file first and restarts Caddy only when
+      the file changed. A file that does not start is rolled back.
+    - `acb-workbench.service` has `Wants=`, not `Requires=`. The apply
+      installs it before the gateway restart. The workbench restarts once.
+    - The install keeps `node_modules` when `package-lock.json` and node are
+      unchanged. That was 323 of 324 merges in 30 days.
+    - Each restart waits until its service answers HTTP, with a bound.
+    - The watchdog probes Caddy on `/internal/…`, which Caddy answers with
+      404 itself. A probe of `/health` would wait for a cold gateway, pass
+      its 15 s bound, and restart a healthy Caddy. `vps-health.yml` waits
+      40 s, which is longer than the 30 s retry.
+  - **What stays.** The gateway is still cold for 15 to 23 s on every deploy.
+    Workbench API routes fail for that time, because they do not go through
+    Caddy. A deploy that changes `package-lock.json` still runs `npm ci`
+    under the running server. The first deploy after the merge restarts Caddy
+    once, to install the new file.
+  - **Follow-up, only if the measurement below still shows a window:** a
+    retry in the workbench's gateway client, or two gateway units behind a
+    swapped port. Skipping the gateway restart is NOT safe: `build_sha()` is
+    cached per process, and `deploy.yml` verifies `/version`.
+  - 🟢 **The owner decided gate (a) on 2026-09-28: "Auto, except sign-in
+    changes".** Every deploy installs the repo Caddyfile. A change to its
+    auth-relevant lines cannot merge without the owner.
+    - **The fence** is `tests/unit/test_caddy_auth_gate.py`. It hashes the
+      auth lines and compares the hash with `_BASELINE`
+      (`b134ae70…cdbd4b1cd`). The box's live Caddyfile hashes to the same
+      value on 2026-09-28. The owner approves a new hash with the line
+      `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md`. The test
+      failure prints the exact line.
+    - It covers the header lines, the sign-in blocks, `handle`,
+      `handle_path`, `route`, `rewrite`, `uri`, `redir`, `tls`, `transport`,
+      `import`, named matchers, every site label and `admin`. An `import`
+      of a file fails outright.
+    - ⚠️ An agent that edits `_BASELINE` defeats the fence. Review must treat
+      that edit as gate (a).
+    - `work_plan.md` §6 gate (a) and `onboarding_preflight.py` now say this.
+  - **More fences from the review round:**
+    - After a Caddy restart, the apply asks every site host through Caddy.
+      Any HTTP answer, a 500 too, proves that Caddy routes the host. The
+      probe tries each host for up to 90 s, because a new host has no
+      certificate at first. Only no answer at that deadline rolls back.
+    - No backup of the live file means no install. The apply keeps the last
+      five backups.
+    - CI runs `caddy validate` and `caddy fmt` (`caddy:2.11.4`), so a broken
+      Caddyfile cannot merge green.
+    - 📌 **[OWNER] follow-up: add 'Caddy config (validate)' to the required
+      checks on `main`.** Until then, a red run of that job does not block a
+      merge. Only the owner can change branch protection.
+    - The apply removes the deps stamp before an install starts.
+    - `DEPLOY_FORCE=1` no longer runs `npm ci`. `DEPLOY_REINSTALL=1` does:
+      the `reinstall` dispatch input, or `vps_pull.sh --reinstall`.
+  - ⚠️ **The identity-header strip is NOT on the box.**
+    `colleague_onboarding.md` G1 says that the owner added
+    `header_up -X-User-Email` and `-X-User-Role` to the live file on
+    2026-08-04. The live file on 2026-09-28 has neither line. The repo file
+    matches the box, so this PR does not remove them. Adding them is an
+    auth change, so it needs the owner under gate (a).
+  - **Measure it on the first two deploys after the merge.** The first one
+    installs the new units and the Caddyfile. The second one is the real test.
+    Run this from any machine while the deploy runs:
+
+        while :; do for h in app api; do curl -s -o /dev/null --max-time 60 \
+          -w "$(date +%T) $h %{http_code} %{time_total}\n" \
+          https://$h.metorite.com/$([ $h = api ] && echo health); done; \
+          sleep 0.5; done | tee deploy-probe.log
+        awk '$3 !~ /^[23]/' deploy-probe.log | wc -l     # must be 0
+        sort -k4 -n deploy-probe.log | tail -3            # the worst wait
+
+    Then read Caddy on the box. Zero lines is the pass. A retry that
+    succeeds writes no line, so each line is a 502 that reached a client:
+
+        sudo journalctl -u caddy --since "30 min ago" \
+          | grep -cE '127\.0\.0\.1:(3001|3002|8080).*connection refused'
+
+    On the box, the apply log must say `Caddy is NOT restarted` and
+    `node_modules is KEPT` on the second deploy.
 - 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
   workbench on :3001 returned **500** while the old process was still
   serving. Its pid changed from 1119154 to 1121629 and the next probe

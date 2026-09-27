@@ -29,6 +29,7 @@
 # Usage:
 #   scripts/vps_pull.sh            # apply origin/$RELEASE_REF if it moved
 #   scripts/vps_pull.sh --force    # apply even if HEAD already matches
+#   scripts/vps_pull.sh --reinstall # --force, and also run npm ci (H-60)
 #   scripts/vps_pull.sh --check    # report only, change nothing (exit 10 = behind)
 #
 # Env:
@@ -45,8 +46,12 @@ STATE_DIR="${STATE_DIR:-/var/lib/acb}"
 # since WS-25, and until 2026-09-26 this line overwrote MODE with "apply", so
 # that advice never worked.
 MODE="${MODE:-apply}"
+# H-60: `--force` re-applies a sha and KEEPS an unchanged node_modules.
+# `--reinstall` also runs `npm ci`, which costs ~38 s of HTTP 500 on the app.
+DEPLOY_REINSTALL="${DEPLOY_REINSTALL:-0}"
 case "${1:-}" in
   --force) MODE="force" ;;
+  --reinstall) MODE="force"; DEPLOY_REINSTALL=1 ;;
   --check) MODE="check" ;;
   "")      ;;
   *)       echo "unknown argument: $1" >&2; exit 2 ;;
@@ -79,7 +84,7 @@ if [ "$(id -u)" = "0" ]; then
     exec runuser -u "$OWNER" -- env \
       HOME="$OWNER_HOME" PATH="$OWNER_HOME/.local/bin:$PATH" \
       APP_DIR="$APP_DIR" RELEASE_REF="$RELEASE_REF" STATE_DIR="$STATE_DIR" MODE="$MODE" \
-      MAX_FAILS="${MAX_FAILS:-3}" \
+      DEPLOY_REINSTALL="$DEPLOY_REINSTALL" MAX_FAILS="${MAX_FAILS:-3}" \
       bash "$0" "$@"
   fi
 fi
@@ -253,6 +258,7 @@ say "Running $APPLY_SRC from $TARGET"
 FORCE_FLAG=0
 [ "$MODE" = "force" ] && FORCE_FLAG=1
 if APP_DIR="$APP_DIR" DEPLOY_REF="$TARGET" DEPLOY_LOCK_HELD=1 DEPLOY_FORCE="$FORCE_FLAG" \
+     DEPLOY_REINSTALL="$DEPLOY_REINSTALL" \
      DEPLOY_LOCK="$DEPLOY_LOCK" DEPLOY_MARKER="$DEPLOY_MARKER" bash "$TMP_APPLY"; then
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   date -u '+%Y-%m-%dT%H:%M:%SZ' > "$STATE_DIR/last-pull-ok" 2>/dev/null || true

@@ -615,10 +615,11 @@ def check_caddy_strip(env: Env, box: bool) -> Check:
       mode. It is what a fresh bootstrap installs (``bootstrap.sh:59``).
     * ``/etc/caddy/Caddyfile`` — the live copy, box mode only.
 
-    The drift matters: the pipeline reinstalls the repo copy ONLY when the live
-    one fails ``caddy validate`` (``.github/workflows/deploy.yml:496-501``). A
-    live file that is valid but wrong is therefore never corrected, and a repo
-    file that is right can sit next to a live file that is not, indefinitely.
+    Since PR #498 (H-60) every deploy validates the repo copy and installs it
+    over the live one (``scripts/vps_apply.sh``, "Installing the Caddy
+    config"). So drift lasts only until the next deploy, or it means the last
+    deploy failed. A change to the auth lines of the repo copy is owner-gated
+    (``work_plan.md`` §6 gate (a), fence ``tests/unit/test_caddy_auth_gate.py``).
 
     LOCAL MODE. The repo copy IS checkable from anywhere and a wrong one is a
     real, locally-fixable defect, so it FAILs. The live copy is not reachable,
@@ -708,10 +709,9 @@ def check_caddy_strip(env: Env, box: bool) -> Check:
         != repo_file.read_text(encoding="utf-8", errors="replace").strip()
     ):
         c.notes.append(
-            f"DRIFT: {live_path} differs from {repo_file}. The pipeline "
-            "reinstalls the repo copy only when the live one fails "
-            "`caddy validate` (deploy.yml:496-501), so a valid-but-wrong "
-            "live file is never corrected. Diff them by hand."
+            f"DRIFT: {live_path} differs from {repo_file}. Every deploy "
+            "installs the repo copy (vps_apply.sh, H-60), so the last deploy "
+            "did not finish, or someone edited the box by hand. Diff them."
         )
     if live_ok is None and box:
         c.notes.append(

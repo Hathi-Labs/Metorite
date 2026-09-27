@@ -56,6 +56,10 @@ on:
         description: "Re-apply even if the box already runs this sha (for an .env edit)"
         type: boolean
         default: false
+      reinstall:
+        description: "Also run npm ci for the Next apps (costs ~38 s of 500 on the live app; H-60)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -241,7 +245,11 @@ jobs:
           # of this job, or a dispatch with `force`, means "apply it again",
           # usually after an .env edit on the box. So both send DEPLOY_FORCE=1.
           # A forced apply still takes the deploy lock.
-          DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force) && '1' || '0' }}
+          DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force || inputs.reinstall) && '1' || '0' }}
+          # H-60: a separate switch for the dependency install. A rerun or
+          # `force` keeps an unchanged node_modules, because `npm ci` under the
+          # running workbench costs ~38 s of HTTP 500. `reinstall` asks for it.
+          DEPLOY_REINSTALL: ${{ inputs.reinstall && '1' || '0' }}
         run: |
           set -uo pipefail
 
@@ -287,7 +295,7 @@ jobs:
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=30 -o ServerAliveInterval=15 \
               -o ServerAliveCountMax=8 -o BatchMode=yes \
-              "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} bash -s" < /tmp/deploy_remote.sh
+              "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
           }
 
           # The apply script's own last line. `vps_apply.sh` prints it and

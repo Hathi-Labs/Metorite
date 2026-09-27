@@ -161,7 +161,14 @@ probe_http acb-workbench http://127.0.0.1:3001/       "workbench"
 # https://127.0.0.1/ matches no site block in the Caddyfile, so it fails even
 # when Caddy is perfectly healthy. --resolve keeps the request local (no DNS,
 # no round trip to the public internet) while presenting the right SNI+Host.
-probe_http caddy "https://${CADDY_VHOST}/health" "caddy TLS" \
+#
+# 🔴 H-60: the path is one CADDY answers itself, never the gateway. The api
+# vhost answers `/internal/*` with 404 from its `@internal` matcher. It used to
+# probe `/health`, which Caddy proxies to the gateway. With `lb_try_duration
+# 30s`, a cold gateway makes Caddy hold that request past the 15 s curl bound.
+# The probe then reads 000 and restarts a healthy Caddy, and that cuts every
+# open connection. Fence: test_deploy_serialize.py, the H-60 section.
+probe_http caddy "https://${CADDY_VHOST}/internal/watchdog-probe" "caddy TLS" \
   --resolve "${CADDY_VHOST}:443:127.0.0.1"
 
 # ── Forensic snapshot ─────────────────────────────────────────────────────
