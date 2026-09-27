@@ -527,7 +527,9 @@ def _ms_to_mins(value: str) -> int | None:
     # division keeps any value from overflowing a float.
     if not value.isdigit() or len(value) > 15:
         return None
-    return (int(value) + 30000) // 60000
+    minutes = (int(value) + 30000) // 60000
+    # `estimate_mins` is an INT. A value past it is damage, not a duration.
+    return minutes if minutes <= 2_147_483_647 else None
 
 
 def _row_local(bundle: ImportBundle, moment: dt.datetime, text: str) -> dt.datetime:

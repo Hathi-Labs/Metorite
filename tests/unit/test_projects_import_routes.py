@@ -36,6 +36,7 @@ class RecordingDB:
         self.statements: list[tuple[str, dict[str, Any]]] = []
         self.runs: dict[str, dict[str, Any]] = {}
         self.directory = [SimpleNamespace(email="ann@acme.test", name="Person 1")]
+        self.groups: set[str] = set()
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> Any:
         sql = " ".join(str(statement).split())
@@ -61,6 +62,25 @@ class RecordingDB:
             row = self.runs.get(params["id"])
             ok = row is not None and row["organization_id"] == params["org"]
             return _Result([SimpleNamespace(**row)] if ok else [])
+        if sql.startswith("SELECT pg_advisory_xact_lock"):
+            return _Result([])
+        if sql.startswith("SELECT 1 FROM org_group"):
+            return _Result([SimpleNamespace(x=1)] if params["slug"] in self.groups else [])
+        if sql.startswith("SELECT id FROM pm_import_runs") and "'applying'" in sql:
+            busy = [
+                r
+                for r in self.runs.values()
+                if r["organization_id"] == params["org"]
+                and r["id"] != params["id"]
+                and r["state"] == "applying"
+            ]
+            return _Result([SimpleNamespace(id=r["id"]) for r in busy])
+        if sql.startswith("UPDATE pm_import_runs SET state = 'applying'"):
+            row = self.runs.get(params["id"])
+            if row is None or row["state"] != "planned":
+                return _Result([])
+            row["state"] = "applying"
+            return _Result([SimpleNamespace(**row)])
         if sql.startswith("UPDATE pm_import_runs SET state = 'discarded'"):
             gone = [
                 r
@@ -138,12 +158,13 @@ def _own_deps(route: Any) -> list[Any]:
     return [d.dependency for d in route.dependencies[len(router.dependencies) :]]
 
 
-def test_four_import_routes_are_mounted() -> None:
+def test_five_import_routes_are_mounted() -> None:
     assert {(r.path, tuple(sorted(r.methods))) for r in _import_routes()} == {
         ("/projects/import/runs", ("POST",)),
         ("/projects/import/runs", ("GET",)),
         ("/projects/import/runs/{run_id}", ("GET",)),
         ("/projects/import/runs/{run_id}/mapping", ("PUT",)),
+        ("/projects/import/runs/{run_id}/apply", ("POST",)),
     }
 
 
@@ -432,3 +453,76 @@ async def test_a_failed_commit_leaves_no_file(
     with pytest.raises(RuntimeError):
         await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
     assert list(tmp_path.rglob("*.csv")) == []
+
+
+# ── apply (I-3) ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def started(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    from gateway.routes.projects import import_writer
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(import_writer, "start", lambda org, run, lease: calls.append((org, run)))
+    return calls
+
+
+async def test_apply_starts_the_writer_for_the_callers_organization(
+    db: RecordingDB,
+    started: list[tuple[str, str]],
+) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    applied = await imports.apply_import_run(view["id"], _user())
+    assert applied["state"] == "applying"
+    assert started == [(ORG, view["id"])]
+    # The per-organization lock comes before the busy check and the start.
+    order = [s.split(" ")[0:3] for s, _ in db.statements[-3:]]
+    assert order[0][:2] == ["SELECT", "pg_advisory_xact_lock(hashtextextended('pm_import:'"]
+
+
+async def test_apply_refuses_a_plan_that_is_not_ready(
+    db: RecordingDB,
+    started: list[tuple[str, str]],
+) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[view["id"]]["plan"] = json.dumps({"ready": False, "errors": ["x"]})
+    with pytest.raises(HTTPException) as err:
+        await imports.apply_import_run(view["id"], _user())
+    assert err.value.status_code == 422 and started == []
+
+
+async def test_apply_refuses_while_another_run_writes(
+    db: RecordingDB,
+    started: list[tuple[str, str]],
+) -> None:
+    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    await imports.apply_import_run(first["id"], _user())
+    second = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    with pytest.raises(HTTPException) as err:
+        await imports.apply_import_run(second["id"], _user())
+    assert err.value.status_code == 409
+    assert started == [(ORG, first["id"])]
+
+
+async def test_apply_refuses_a_group_this_organization_does_not_have(
+    db: RecordingDB,
+    started: list[tuple[str, str]],
+) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[view["id"]]["mapping"] = json.dumps({"grant": "group:eng"})
+    with pytest.raises(HTTPException) as err:
+        await imports.apply_import_run(view["id"], _user())
+    assert err.value.status_code == 422
+    db.groups.add("eng")
+    assert (await imports.apply_import_run(view["id"], _user()))["state"] == "applying"
+
+
+async def test_a_finished_run_cannot_apply_again(
+    db: RecordingDB,
+    started: list[tuple[str, str]],
+) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[view["id"]]["state"] = "done"
+    with pytest.raises(HTTPException) as err:
+        await imports.apply_import_run(view["id"], _user())
+    assert err.value.status_code == 409 and started == []

@@ -168,13 +168,15 @@ def test_the_importer_package_exists() -> None:
 #: The HTTP layer of the importer sits beside the package, not in it, because
 #: it needs the Projects core. D80's no-network rule binds it as well.
 ROUTE_MODULE = IMPORTER.parent / "imports.py"
+#: The writer (I-3) sits beside it for the same reason.
+WRITER_MODULE = IMPORTER.parent / "import_writer.py"
 
 
 def test_no_importer_module_imports_a_network_client() -> None:
-    assert ROUTE_MODULE.is_file()
+    assert ROUTE_MODULE.is_file() and WRITER_MODULE.is_file()
     offenders = {
         str(path.relative_to(IMPORTER.parent)): found
-        for path in [*sorted(IMPORTER.rglob("*.py")), ROUTE_MODULE]
+        for path in [*sorted(IMPORTER.rglob("*.py")), ROUTE_MODULE, WRITER_MODULE]
         if (found := network_imports(path.read_text(encoding="utf-8")))
     }
     assert offenders == {}, f"D80: the importer must not reach the network — {offenders}"

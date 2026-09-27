@@ -2553,19 +2553,34 @@ async def next_task_number(db: Any, root_id: str) -> int:
 
     One statement, so two concurrent creates cannot be handed the same number:
     the ``ON CONFLICT DO UPDATE`` re-reads and increments the committed row
-    under the same lock that would have rejected the insert.
+    under the same lock that would have rejected the insert. That statement is
+    :func:`reserve_task_numbers`: one allocator owns the counter.
     """
+    return await reserve_task_numbers(db, root_id, 1)
+
+
+async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
+    """:func:`next_task_number` for ``count`` tasks at once. Returns the FIRST
+    number of the block; the caller hands out ``first … first + count - 1``.
+
+    The same one statement, so a reservation and a single create can never be
+    given one number. The file importer (WS-41) calls it in a short
+    transaction of its own before each batch, so the counter row's lock is
+    not held for the whole batch while members create tasks in the space.
+    """
+    if count < 1:
+        raise ValueError("reserve at least one number")
     row = (await db.execute(
         text(
             "INSERT INTO pm_task_counters (project_id, last_value) "
-            "VALUES (CAST(:root AS uuid), 1) "
+            "VALUES (CAST(:root AS uuid), :n) "
             "ON CONFLICT (project_id) DO UPDATE "
-            "SET last_value = pm_task_counters.last_value + 1 "
+            "SET last_value = pm_task_counters.last_value + :n "
             "RETURNING last_value"
         ),
-        {"root": root_id},
+        {"root": root_id, "n": count},
     )).fetchone()
-    return int(getattr(row, "last_value", 1) or 1)
+    return int(getattr(row, "last_value", count) or count) - count + 1
 
 
 # ── Statuses ────────────────────────────────────────────────────────────────
@@ -2843,8 +2858,13 @@ async def record_activity(
     meta: dict[str, Any] | None = None,
     automation: bool = False,
     parent_id: str | None = None,
+    created_at: datetime | None = None,
 ) -> Any:
     """Write one timeline row.
+
+    ``created_at`` is for the file importer only (D80, WS-41): a comment
+    imported from another tool keeps the date it was written there. Every
+    other caller omits it, and the column default stamps ``now()``.
 
     The migration's CHECK requires a target, and this refuses first so the
     failure names the caller's mistake instead of surfacing as an
@@ -2884,7 +2904,7 @@ async def record_activity(
     # A project-level activity bumps nothing — there is no task to bump, and
     # `pm_projects.updated_at` is not what any feed reads.
     await touch_task(db, task_id)
-    return await insert_row(db, "pm_activities", {
+    values: dict[str, Any] = {
         "type": activity_type,
         "task_id": task_id,
         "project_id": project_id,
@@ -2895,7 +2915,33 @@ async def record_activity(
         # business — `add_comment` is the only caller that passes it, and it
         # checks the parent first. This function stays the one writer.
         "parent_id": parent_id,
-    })
+    }
+    if created_at is not None:
+        values["created_at"] = created_at
+    return await insert_row(db, "pm_activities", values)
+
+
+async def insert_assignees(
+    db: Any, task_id: str, assignees: Any, *, by: str,
+) -> None:
+    """Add people to a task's assignee set. Idempotent per (task, assignee).
+
+    The ONE insert into ``pm_task_assignees``: ``tasks.set_assignees`` and the
+    file importer (WS-41) both call it. It writes the rows and nothing else.
+    The notification, the watcher and the event are the caller's to decide,
+    because an import of two thousand tasks must not ping anybody
+    (``project_import.md`` §6.10).
+    """
+    for who in sorted({str(a).strip().lower() for a in assignees if str(a or "").strip()}):
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_assignees "
+                "(task_id, assignee, assigned_by) "
+                "VALUES (CAST(:tid AS uuid), :who, :by) "
+                "ON CONFLICT (task_id, assignee) DO NOTHING"
+            ),
+            {"tid": task_id, "who": who, "by": by},
+        )
 
 
 def diff_changes(before: Any, after: Any, fields: tuple[str, ...]) -> list[dict]:

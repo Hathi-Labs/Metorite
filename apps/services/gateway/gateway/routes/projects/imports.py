@@ -3,16 +3,15 @@
 Spec: ``project-docs/specs/project_import.md`` §7.1 to §7.6 · decision **D80**
 (amends D52.2) · board **WS-41** slice I-2.
 
-    POST /projects/import/runs                 upload files → a run with its plan
-    GET  /projects/import/runs                 this organization's runs
-    GET  /projects/import/runs/{run_id}        one run
+    POST /projects/import/runs                   upload files → a run with its plan
+    GET  /projects/import/runs                   this organization's runs
+    GET  /projects/import/runs/{run_id}          one run
     PUT  /projects/import/runs/{run_id}/mapping  save the choices → a new plan
+    POST /projects/import/runs/{run_id}/apply    start, or resume, the writer
 
-**Nothing here writes a ``pm_*`` row.** This slice stores the upload and the
-plan. The writer is slice I-3, and until it lands no route can move a run
-past ``planned``. The parse and the plan are the pure modules under
-``importer/``; this module does the HTTP, the disk and the four reads the
-plan needs.
+The parse and the plan are the pure modules under ``importer/``. The writer is
+``import_writer.py`` (I-3). This module does the HTTP, the disk, the reads the
+plan needs, and the one transition into ``applying``.
 
 Three gates, in this order, on every route:
 
@@ -116,6 +115,33 @@ SAVE_MAPPING_SQL = (
     "   AND state IN ('uploaded', 'planned') "
     "RETURNING *"
 )
+#: §7.4 — one WRITER per organization. The start takes this transaction lock,
+#: so two applies from one organization cannot both pass the busy check.
+LOCK_ORG_SQL = "SELECT pg_advisory_xact_lock(hashtextextended('pm_import:' || :org, 0))"
+BUSY_SQL = (
+    "SELECT id FROM pm_import_runs "
+    " WHERE organization_id = CAST(:org AS uuid) AND state = 'applying' "
+    "   AND id <> CAST(:id AS uuid) AND heartbeat_at > now() - interval '120 seconds'"
+)
+#: `planned` starts; `applying` with a stale heartbeat RESUMES (§7.3). A fresh
+#: heartbeat means a writer is alive, and the UPDATE matches nothing.
+#: It also writes a new LEASE into `progress.lease`. Every write the job makes
+#: names the lease, so a writer that outlived its heartbeat loses its next
+#: write and stops (``import_writer`` module docstring).
+START_SQL = (
+    "UPDATE pm_import_runs "
+    "   SET state = 'applying', heartbeat_at = now(), updated_at = now(), "
+    "       progress = jsonb_set(progress, '{lease}', to_jsonb(CAST(:lease AS text))) "
+    " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "   AND (state = 'planned' OR (state = 'applying' AND "
+    "        (heartbeat_at IS NULL OR heartbeat_at < now() - interval '120 seconds'))) "
+    "RETURNING *"
+)
+#: A `group:<slug>` grant must name a group of THIS organization.
+GROUP_EXISTS_SQL = (
+    "SELECT 1 FROM org_group WHERE organization_id = CAST(:org AS uuid) AND slug = :slug"
+)
+
 #: §7.4 — one open run per organization. A new upload discards the open one,
 #: and its files go with it. Without this, an admin could fill the shared disk
 #: one 250 MB upload at a time, and every tenant would go down with it.
@@ -314,6 +340,56 @@ async def save_import_mapping(
 
 def _not_editable(state: str) -> str:
     return f"This import is {state} and cannot change. Upload the file again to start over."
+
+
+@router.post("/import/runs/{run_id}/apply", status_code=202, dependencies=_GATES)
+async def apply_import_run(
+    run_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Start the writer, or resume a run whose writer died (§7.3). Answers
+    202 at once; ``GET`` the run to follow ``progress`` and read ``report``."""
+    from gateway.routes.projects import import_writer
+
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        organization_id = require_organization(vis)
+        row = await _load_run(db, run_id, organization_id)
+        if row.state not in ("planned", "applying"):
+            raise HTTPException(status_code=409, detail=_not_editable(row.state))
+        plan = _json(row.plan) or {}
+        if not plan.get("ready"):
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Fix the mapping first.", "errors": plan.get("errors", [])},
+            )
+        grant = str((_json(row.mapping) or {}).get("grant") or "org")
+        if grant.startswith("group:"):
+            found = (
+                await db.execute(
+                    text(GROUP_EXISTS_SQL),
+                    {"org": organization_id, "slug": grant.split(":", 1)[1]},
+                )
+            ).fetchone()
+            if found is None:
+                raise HTTPException(status_code=422, detail=f"There is no group {grant!r} here.")
+        await db.execute(text(LOCK_ORG_SQL), {"org": organization_id})
+        busy = (await db.execute(text(BUSY_SQL), {"org": organization_id, "id": run_id})).fetchone()
+        if busy is not None:
+            raise HTTPException(
+                status_code=409, detail="Another import is running. Wait for it to finish."
+            )
+        lease = str(uuid.uuid4())
+        started = (
+            await db.execute(
+                text(START_SQL), {"org": organization_id, "id": run_id, "lease": lease}
+            )
+        ).fetchone()
+        if started is None:
+            raise HTTPException(status_code=409, detail="This import is already running.")
+    import_writer.start(organization_id, run_id, lease)
+    _log.info("projects.import.apply_started", run_id=run_id, resumed=row.state == "applying")
+    return run_view(started)
 
 
 # ── parse ───────────────────────────────────────────────────────────────────
