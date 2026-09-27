@@ -558,8 +558,13 @@ export function reportLayout(
       return `${who}${status}: ${r.open_tasks} open${bar}${focus}${waiting}${help}`;
     });
     const notes: string[] = [];
-    if (pulse.rows.length > items.length) {
-      notes.push(`…and ${pulse.rows.length - items.length} more people`);
+    // The server already cuts an admin's rows to MAX_PEOPLE, so the rows
+    // sent do not count everybody. The count is two server figures less
+    // the lines shown: people_total - hidden_people - items.length. The
+    // hidden people have their own line below.
+    const more = pulse.people_total - pulse.hidden_people - items.length;
+    if (more > 0) {
+      notes.push(`…and ${more} more ${more === 1 ? "person" : "people"}`);
     }
     const hidden = hiddenPeopleLine(pulse.hidden_people);
     if (hidden) notes.push(hidden);

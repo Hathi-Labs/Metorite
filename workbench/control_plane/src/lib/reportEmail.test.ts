@@ -540,6 +540,24 @@ describe("reportEmail · pulse", () => {
     expect(one).toContain("This report hides 1 other person");
   });
 
+  it("counts the people it does not name from people_total, not the rows sent", () => {
+    // The server sent 20 of 25 cards (MAX_PEOPLE). The email names
+    // MAX_EMAIL_ROWS of them, so 25 - 0 - 10 people are not named.
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      ...card, assignee: `p${i}@example.test`, name: `P${i}`,
+    }));
+    const { text } = reportEmail(withPulse({ people_total: 25, hidden_people: 0, rows }));
+    expect(MAX_EMAIL_ROWS).toBe(10);
+    expect(text).toContain(`…and ${25 - 0 - MAX_EMAIL_ROWS} more people`);
+    expect(text).toContain("…and 15 more people");
+    // A member: one own card, the rest hidden. The hidden line covers them.
+    const own = reportEmail(
+      withPulse({ people_total: 25, hidden_people: 24, rows: [card] }),
+    ).text;
+    expect(own).not.toContain("more people");
+    expect(own).toContain("This report hides 24 other people");
+  });
+
   it("carries no colour, and escapes a name", () => {
     const { html } = reportEmail(withPulse());
     expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);

@@ -620,13 +620,18 @@ export interface PulseFocusTask {
   scheduled_today?: boolean;
 }
 
-/** One overdue waiting item. Only the reader's own card carries these. */
+/**
+ * One overdue waiting item. Only the reader's own card carries these. The
+ * item is judged on `expected_by`, or on `due_at` when nobody stated a
+ * promise: the rule of `app/tasks/lib/waiting.ts`.
+ */
 export interface PulseWaitingItem {
   id: string;
   title: string;
   task_number: number | null;
   project_name: string | null;
   expected_by: string | null;
+  due_at?: string | null;
 }
 
 /**

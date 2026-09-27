@@ -13,11 +13,14 @@ and keeps its ``kind == "person"`` rows. So a card's ``pill`` is the capacity
 row's ``pill``, and the two cannot disagree. An agent and the unassigned row
 get no card.
 
-⚠️ **Three rules come from elsewhere, and none is written again here.**
+⚠️ **Four rules come from elsewhere, and none is written again here.**
 "Blocked" is ``analytics.blocked_clause()``, which the ``stuck`` route calls.
 "Stale" is the ``stale_in_progress`` predicate of ``HYGIENE_KINDS``, with
 ``STALE_DAYS``. "Has room" is the ``idle`` flag of ``workload.classify``, which
-applies ``IDLE_FRACTION``. A source test holds each of the three.
+applies ``IDLE_FRACTION``. "Waiting" is ``personal.effective_disposition``,
+and the item is late when ``expected_by``, else ``due_at``, is before today.
+That is the rule of My Tasks (``app/tasks/lib/waiting.ts``). A test holds
+each of the four.
 
 ⚠️ **The HR half (edit E4).** Hours, the pill, the status and ``has_room``
 need ``admin:members:read``, or the row must be the reader's own row. That is
@@ -52,6 +55,7 @@ from gateway.routes.projects.analytics import (
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.core import STARTED_CATEGORY
+from gateway.routes.projects.personal import effective_disposition
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.work_schedule import absent_on
 from sqlalchemy import text
@@ -158,28 +162,57 @@ def pulse_focus_sql(open_where: str) -> str:
     )
 
 
-def pulse_waiting_sql(open_where: str) -> str:
-    """The READER's overdue waiting items over open work in scope (Q6).
+#: The date a waiting item is judged on. ⚠️ This is the rule of My Tasks,
+#: ``isWaitingOverdue`` in ``app/tasks/lib/waiting.ts``: ``expectedBy ||
+#: dueAt``. A promise wins when a person stated one. Every delegate site
+#: stores ``expected_by`` NULL, so the usual line is the task's own due date,
+#: read live. The report compares UTC days, because ``today`` is one UTC day.
+_WAITING_LINE = "coalesce(tp.expected_by, t.due_at)"
 
-    A waiting item counts when ``waiting_on`` is set and ``expected_by`` is
-    before today. ⚠️ ``:me`` is the reader. This statement never runs for
-    the row of another person.
+
+def pulse_waiting_sql(open_where: str) -> str:
+    """The READER's overlay rows over open work in scope whose line has
+    passed (Q6). Each row carries the facts ``effective_disposition`` needs.
+
+    The statement does not decide WAITING. :func:`pulse_body` gives each row
+    to ``personal.effective_disposition``, the one rule that My Tasks, the
+    planner and the AI seam call. ⚠️ ``:me`` is the reader. This statement
+    never runs for the row of another person.
     """
     return (
         "SELECT t.id, t.title, t.task_number, p.name AS project_name,"
-        "       tp.expected_by, count(*) OVER () AS n"
+        "       tp.expected_by, t.due_at, tp.disposition AS stated,"
+        "       s.category AS status_category,"
+        "       EXISTS (SELECT 1 FROM pm_task_assignees a"
+        "                WHERE a.task_id = t.id"
+        "                  AND lower(a.assignee) = :me) AS is_mine,"
+        "       EXISTS (SELECT 1 FROM pm_task_assignees a"
+        "                WHERE a.task_id = t.id) AS has_assignee"
         "  FROM pm_task_personal tp"
         "  JOIN pm_tasks t ON t.id = tp.task_id"
         "  JOIN pm_task_statuses s ON s.id = t.status_id"
         "  LEFT JOIN pm_projects p ON p.id = t.project_id"
         f" WHERE {open_where}"
         "   AND lower(tp.member_email) = :me"
-        "   AND tp.waiting_on IS NOT NULL"
-        "   AND tp.expected_by IS NOT NULL"
-        "   AND (tp.expected_by AT TIME ZONE 'UTC')::date < CAST(:today AS date)"
-        " ORDER BY tp.expected_by, t.id"
-        " LIMIT :waiting_max"
+        f"  AND ({_WAITING_LINE} AT TIME ZONE 'UTC')::date"
+        "       < CAST(:today AS date)"
+        f" ORDER BY {_WAITING_LINE}, t.id"
     )
+
+
+def is_waiting(row: Any) -> bool:
+    """True when the reader's EFFECTIVE disposition of the row is WAITING.
+
+    ``effective_disposition`` is the rule, called here and not copied. So a
+    task moved to NEXT does not count, although its overlay still holds
+    ``waiting_on`` (``personal._project_task`` blanks the name the same way).
+    """
+    return effective_disposition(
+        getattr(row, "stated", None),
+        status_category=getattr(row, "status_category", None),
+        is_mine=bool(getattr(row, "is_mine", False)),
+        has_assignee=bool(getattr(row, "has_assignee", False)),
+    ) == "WAITING"
 
 
 def on_leave(absences: Any, today: date) -> bool:
@@ -348,12 +381,18 @@ async def pulse_body(
                 **({"scheduled_today": True} if r.scheduled else {}),
             })
         if me in holders:
-            for r in (await db.execute(
-                text(pulse_waiting_sql(open_where)),
-                {**base, "me": me, "today": today, "waiting_max": WAITING_MAX},
-            )).fetchall():
-                waiting_count = int(r.n or 0)
-                waiting.append({
+            # The disposition is decided in Python, by the shared rule, so
+            # the count and the cut happen here and not in the SQL.
+            late = [
+                r for r in (await db.execute(
+                    text(pulse_waiting_sql(open_where)),
+                    {**base, "me": me, "today": today},
+                )).fetchall()
+                if is_waiting(r)
+            ]
+            waiting_count = len(late)
+            waiting = [
+                {
                     "id": str(r.id),
                     "title": r.title,
                     "task_number": (
@@ -361,7 +400,10 @@ async def pulse_body(
                     ),
                     "project_name": r.project_name,
                     "expected_by": _iso(r.expected_by),
-                })
+                    "due_at": _iso(r.due_at),
+                }
+                for r in late[:WAITING_MAX]
+            ]
 
     rows = []
     for cap_row in shown:

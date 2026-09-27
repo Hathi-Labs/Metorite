@@ -275,11 +275,33 @@ def test_the_chat_text_prints_the_hidden_line_and_no_id() -> None:
     lines = _report_section("pulse", _section())
     assert lines[0] == "pulse: people 3, hidden people 2"
     assert lines[1] == "  This report hides 2 other people"
-    assert lines[2].startswith("- «Bea» · status idle, open 4, overdue 1, blocked 1")
+    assert lines[2].startswith("- «Bea» · status Idle, open 4, overdue 1, blocked 1")
     assert "waiting past its date 1" in lines[2]
     one = _report_section("pulse", _section(hidden=1))
     assert one[1] == "  This report hides 1 other person"
     assert not any("hides" in line for line in _report_section("pulse", _section(0)))
+
+
+@pytest.mark.parametrize(
+    ("status", "words"),
+    [("on_leave", "On leave"), ("at_risk", "At risk"), ("on_track", "On track"),
+     ("behind", "Behind")],
+)
+def test_the_chat_text_prints_the_status_in_the_words_of_the_card(
+    status: str, words: str,
+) -> None:
+    """The chat and the card say one status in one set of words. Both call
+    `reads.pulse_status_words`, and no server key reaches the chat."""
+    from skill_projects.reads import _report_section, pulse_status_words
+    from skill_projects.views import _pulse_cell
+
+    section = _section(hidden=0)
+    section["rows"][0]["status"] = status
+    line = _report_section("pulse", section)[1]
+    assert f"status {words}," in line, line
+    assert f"status {status}," not in line, line
+    assert _pulse_cell("status", section["rows"][0]) == words
+    assert pulse_status_words(status) == words
 
 
 # ── R8: a real Postgres, through asyncpg ─────────────────────────────────────
@@ -318,8 +340,16 @@ def seeded(_ladder):
     * ``bea`` is the member reader. She holds a task in progress that an
       open task blocks and that changed 13 days ago, one that a CLOSED task
       blocks, one in progress that changed 15 days ago, and one she
-      scheduled for today. She waits on ``cy`` for a task, past its date.
+      scheduled for today. She waits on ``cy`` for four tasks, each through
+      the real disposition column. ``delegated`` has a promise from
+      yesterday and a due date ahead. ``wait_due`` has no promise and was
+      due yesterday. ``wait_moved`` was due yesterday, but Bea moved it to
+      NEXT, and the overlay still holds the old delegation. ``wait_promised``
+      was due yesterday, with a promise for tomorrow.
     * ``dan`` holds seven focus tasks and one task due in three days.
+    * ``eve`` is in the directory and holds one task of 100 hours, due in
+      two days. So her pill is not ``idle`` or ``on_track``, and it changes
+      when ``today`` moves.
     * ``boss`` is the admin reader and ``nobody`` holds no work.
     * ``trio`` is a second project with three holders: bea, cy and ana.
     """
@@ -328,7 +358,7 @@ def seeded(_ladder):
     eng = create_engine(_TENANT_URL, future=True)
     tag = uuid.uuid4().hex[:8]
     who = {k: f"{k}-{tag}@example.test"
-           for k in ("ana", "bea", "cy", "dan", "boss", "nobody")}
+           for k in ("ana", "bea", "cy", "dan", "eve", "boss", "nobody")}
     made: dict[str, Any] = {"who": who, "projects": [], "people": [], "tag": tag}
     with eng.begin() as c:
         org = str(c.execute(
@@ -367,7 +397,7 @@ def seeded(_ladder):
 
         def task(title: str, *, pid: str = main, cat: str = "todo",
                  holders: tuple[str, ...] = (), due_days: int | None = None,
-                 statuses: dict[str, str] | None = None) -> str:
+                 statuses: dict[str, str] | None = None, est: int = 60) -> str:
             tid = str(c.execute(
                 text(
                     "INSERT INTO pm_tasks (title, project_id, root_project_id,"
@@ -375,14 +405,14 @@ def seeded(_ladder):
                     " estimate_mins, due_at)"
                     " SELECT :t, CAST(:p AS uuid), CAST(:p AS uuid),"
                     " CAST(:s AS uuid), :me, CAST(:o AS uuid),"
-                    " COALESCE(MAX(task_number), 0) + 1, 60,"
+                    " COALESCE(MAX(task_number), 0) + 1, CAST(:est AS int),"
                     " CASE WHEN CAST(:d AS int) IS NULL THEN NULL"
                     "      ELSE now() + make_interval(days => CAST(:d AS int)) END"
                     " FROM pm_tasks WHERE root_project_id = CAST(:p AS uuid)"
                     " RETURNING id"
                 ),
                 {"t": f"{title} {tag}", "p": pid, "s": (statuses or st)[cat],
-                 "me": who["boss"], "o": org, "d": due_days},
+                 "me": who["boss"], "o": org, "d": due_days, "est": est},
             ).scalar_one())
             for h in holders:
                 c.execute(
@@ -474,10 +504,33 @@ def seeded(_ladder):
         overlay(made["bea_sched"], "bea",
                 scheduled_start="date_trunc('day', now() AT TIME ZONE 'UTC')"
                                 " AT TIME ZONE 'UTC' + interval '12 hours'")
-        overlay(made["delegated"], "bea",
-                waiting_on="""'{"name": "Cy"}'::jsonb""",
+        cy_json = """'{"name": "Cy"}'::jsonb"""
+        overlay(made["delegated"], "bea", disposition="'WAITING'",
+                waiting_on=cy_json,
                 delegated_at="now() - interval '3 days'",
                 expected_by="now() - interval '1 day'")
+        # (i) The normal delegation: no promise, so the due date is the line.
+        made["wait_due"] = task("wait due", holders=("cy",), due_days=-1)
+        overlay(made["wait_due"], "bea", disposition="'WAITING'",
+                waiting_on=cy_json,
+                delegated_at="now() - interval '3 days'")
+        # (ii) Moved to NEXT. The overlay still holds the old delegation.
+        made["wait_moved"] = task("wait moved", holders=("cy",), due_days=-1)
+        overlay(made["wait_moved"], "bea", disposition="'NEXT'",
+                waiting_on=cy_json,
+                delegated_at="now() - interval '3 days'",
+                expected_by="now() - interval '1 day'")
+        # (iii) A promise for tomorrow wins over a due date of yesterday.
+        made["wait_promised"] = task("wait promised", holders=("cy",),
+                                     due_days=-1)
+        overlay(made["wait_promised"], "bea", disposition="'WAITING'",
+                waiting_on=cy_json,
+                delegated_at="now() - interval '3 days'",
+                expected_by="now() + interval '1 day'")
+
+        person("eve")
+        made["eve_crunch"] = task("eve crunch", holders=("eve",), due_days=2,
+                                  est=6000)
 
         made["dan_focus"] = (
             [task(f"dan doing {i}", cat="in_progress", holders=("dan",))
@@ -569,6 +622,9 @@ def test_each_card_has_the_pill_of_capacity_body(seeded, wired) -> None:
             )
     cap = asyncio.run(run())
     pills = {r["assignee"]: r["pill"] for r in cap["rows"] if r["kind"] == "person"}
+    # Eve's pill turns on `today`. Without a pill of this kind, a pulse
+    # that read another day would still pass.
+    assert pills[seeded["who"]["eve"]] not in ("idle", "on_track"), pills
     assert got["rows"], "no card came back"
     assert {r["assignee"] for r in got["rows"]} == set(pills)
     for row in got["rows"]:
@@ -603,14 +659,43 @@ def test_an_admin_never_sees_another_members_private_notes(seeded, wired) -> Non
 
     own = _report(seeded, "bea", admin=False, project=seeded["project"])
     bea = _card(own, seeded, "bea")
-    assert bea["waiting_count"] == 1
-    assert _ids(bea["waiting"]) == {seeded["delegated"]}
+    assert bea["waiting_count"] == 2
+    assert _ids(bea["waiting"]) == {seeded["delegated"], seeded["wait_due"]}
     assert seeded["bea_sched"] in _ids(bea["focus"])
     sched = next(f for f in bea["focus"] if f["id"] == seeded["bea_sched"])
     assert sched["scheduled_today"] is True
     assert bea["help_reasons"] == ["blocked", "stale", "waiting_overdue"]
     # The self door: the member reads the HR half of her own card.
     assert "pill" in bea and "status" in bea and "has_room" in bea
+
+
+def _bea_waiting(seeded: dict[str, Any]) -> set[str]:
+    own = _report(seeded, "bea", admin=False, project=seeded["project"])
+    return _ids(_card(own, seeded, "bea")["waiting"])
+
+
+@_needs_db
+def test_a_delegation_with_no_promise_is_judged_on_its_due_date(seeded, wired) -> None:
+    """Waiting (i). Every delegate site stores `expected_by` NULL, and My
+    Tasks then judges the item on `due_at` (`waiting.ts`)."""
+    assert seeded["wait_due"] in _bea_waiting(seeded)
+
+
+@_needs_db
+def test_a_task_moved_out_of_waiting_does_not_count(seeded, wired) -> None:
+    """Waiting (ii). The overlay keeps `waiting_on` after the move to NEXT.
+    The effective disposition decides, as in My Tasks."""
+    assert seeded["wait_moved"] not in _bea_waiting(seeded)
+
+
+@_needs_db
+def test_a_promise_wins_over_the_due_date_in_both_directions(seeded, wired) -> None:
+    """Waiting (iii). `expected_by` wins when it is set: a promise for
+    tomorrow keeps a task due yesterday off, and a promise from yesterday
+    puts a task due in ten days on."""
+    got = _bea_waiting(seeded)
+    assert seeded["wait_promised"] not in got
+    assert seeded["delegated"] in got
 
 
 @_needs_db
@@ -624,7 +709,7 @@ def test_a_member_sees_only_her_own_card_and_no_other_address(seeded, wired, sco
     if scope == "trio":
         assert (got["people_total"], got["hidden_people"]) == (3, 2)
     body = json.dumps(got)
-    for other in ("ana", "cy", "dan", "boss"):
+    for other in ("ana", "cy", "dan", "eve", "boss"):
         assert seeded["who"][other] not in body, other
         assert f"{other.title()} {seeded['tag']}" not in body, other
 
@@ -634,10 +719,10 @@ def test_an_admin_hides_nobody_and_a_reader_with_no_work_gets_no_row(seeded, wir
     """(e)."""
     admin = _report(seeded, "boss", admin=True, project=seeded["project"])
     assert admin["hidden_people"] == 0
-    assert admin["people_total"] == len(admin["rows"]) == 4
+    assert admin["people_total"] == len(admin["rows"]) == 5
     nobody = _report(seeded, "nobody", admin=False, project=seeded["project"])
     assert nobody["rows"] == []
-    assert nobody["hidden_people"] == nobody["people_total"] == 4
+    assert nobody["hidden_people"] == nobody["people_total"] == 5
 
 
 @_needs_db

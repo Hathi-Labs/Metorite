@@ -281,7 +281,7 @@ next to each status, as `classify` already does.
 | **On leave** | An absence today, from `people_absences`. It shows before every pill. | `work_schedule.py` — exists |
 | **Stale** | An open task in the `in_progress` category whose `updated_at` is `STALE_DAYS` (14) or more days old. `record_activity` and each satellite write bump `updated_at`, so a comment or a new assignee resets it. | `analytics.py` `STALE_DAYS`. The `hygiene` section uses it now, and `pulse` uses it later. |
 | **Blocked** | An open task with an open blocker (`pm_task_links`) | `stuck` and `conflicts` — exist |
-| **Waiting** | A `pm_task_personal` row with `waiting_on`, and `expected_by` before today | migration 187/188 — the column exists, no read uses it in a report |
+| **Waiting** | A `pm_task_personal` row of the reader whose effective disposition is `WAITING` (`personal.effective_disposition`). It is past its date when `expected_by` is before today, or `due_at` when `expected_by` is null. This is the rule of My Tasks, `isWaitingOverdue` in `app/tasks/lib/waiting.ts`. | `analytics_pulse.py` `is_waiting` and `_WAITING_LINE` (R3d) |
 | **Needs help** | NEW. A person with one or more of: a blocked task, a stale task in progress, a waiting item past its date, or the `behind` pill two runs in a row | The `pulse` section (R3) |
 | **Has room** | The `idle` pill, or spare hours above a threshold in the window, and not on leave | `capacity` — exists |
 | **Today's focus** | Tasks in progress, plus tasks due today or tomorrow, plus tasks that the person scheduled today (`scheduled_start`) | The `pulse` section (R3) |
@@ -961,11 +961,20 @@ hours key. Each key is absent, never null. Its `help_reasons` use only
 person. So this rule binds first in R5.
 
 **Private notes stay on the reader's own row (owner Q6).** The section reads
-`pm_task_personal` for the reader's own address only. A waiting item counts
-when `waiting_on` is not null and `expected_by` is before today. A task with a
+`pm_task_personal` for the reader's own address only. A task with a
 `scheduled_start` of today joins `focus` on the reader's own row. Every other
 row has no `waiting_count` and no `waiting` key. This rule holds for an admin
 too.
+
+**Waiting past its date (repair round 1, 2026-09-28).** A waiting item counts
+when two things are true. First, `personal.effective_disposition` gives
+`WAITING`, so a task that the reader moved to NEXT does not count. Second,
+its line is before today. The
+line is `expected_by` when a person stated a promise, and else `due_at`. This
+is the rule of My Tasks, `isWaitingOverdue` in `app/tasks/lib/waiting.ts`.
+
+Every delegate site stores `expected_by` null, so the usual line is the due
+date.
 
 **Edit E5, who sees which card (owner Q7).** A reader with
 `admin:members:read` sees every card, up to `MAX_PEOPLE` (20). Any other
@@ -1011,7 +1020,7 @@ summary tile, T2 and T6. "Behind two runs in a row" waits for R4.
 - (b) A person with a full absence today has `status` `on_leave` and
   `has_room` false. The panel draws "On leave" and not "Idle". A partial
   absence keeps the pill.
-- (c) Member Bea has a task in scope with `waiting_on` set and
+- (c) Member Bea has a task in scope with disposition `WAITING` and
   `expected_by` yesterday. Bea also scheduled a second task today. An admin
   render has no `waiting` key on the card of Bea. That second task is not in
   the `focus` of Bea. The render for Bea shows both.
@@ -1044,8 +1053,12 @@ summary tile, T2 and T6. "Behind two runs in a row" waits for R4.
 The `waiting` rows of `pulse` for one person serve T2 and T6. They are not a fifth section.
 
 **As built:** `test_projects_report_sections_r3d.py` seeds two projects and
-six people on a real database. It proves (a) to (j). A mutation of each of
+seven people on a real database. It proves (a) to (j). A mutation of each of
 (a), (b), (c), (d) and (g) turns its test red.
+
+Repair round 1 adds three Waiting tests. A delegation with no promise counts
+on its due date. A task moved to NEXT does not count. A promise wins over the
+due date. Test (a) now holds a pill that changes with `today`.
 
 `lib/pulse.ts` holds the
 words, and `reportEmail.ts` holds the status words, the reason words and

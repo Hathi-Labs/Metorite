@@ -1618,6 +1618,24 @@ def _hygiene_groups(
     return out
 
 
+def pulse_status_words(status: str) -> str:
+    """The status of a pulse card, in words: ``on_leave`` → "On leave".
+
+    WS-27bn R3d. The chat text and the chat card (`views.py` `_pulse_cell`)
+    both call this, so the two say the same words. They match
+    `PULSE_STATUS_WORDS` in reportEmail.ts.
+    """
+    text = str(status).replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
+
+
+#: WS-27bn R3d. A row fact that prints in words and not as the server key.
+#: Each entry is ``section:path``.
+_REPORT_ROW_WORDS: dict[str, Any] = {
+    "pulse:status": pulse_status_words,
+}
+
+
 def hidden_people_line(section: dict[str, Any]) -> str | None:
     """"This report hides N other people", or None when it hides nobody.
 
@@ -1630,6 +1648,12 @@ def hidden_people_line(section: dict[str, Any]) -> str | None:
     return f"This report hides {n} other {'person' if n == 1 else 'people'}"
 
 
+def _row_words(name: str, path: str, value: Any) -> Any:
+    """A row fact in words, where `_REPORT_ROW_WORDS` names a rule for it."""
+    words = _REPORT_ROW_WORDS.get(f"{name}:{path}")
+    return words(value) if words and isinstance(value, str) else value
+
+
 def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     """One row of a report section as one line."""
     # A capacity row with no directory name still HAS an owner: its
@@ -1638,7 +1662,7 @@ def _report_row(name: str, label_key: str, row: dict[str, Any]) -> str:
     label = row.get(label_key) or row.get("assignee")
     if name in _REPORT_ROW_FACTS:
         facts = ", ".join(
-            f"{plain} {data(v) if fenced else v}"
+            f"{plain} {data(v) if fenced else _row_words(name, path, v)}"
             for path, plain, fenced in _REPORT_ROW_FACTS[name]
             if (v := _fact(row, path)) is not _MISSING and v is not None
         )

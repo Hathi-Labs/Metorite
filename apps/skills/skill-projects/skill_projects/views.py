@@ -41,6 +41,7 @@ from skill_projects.reads import (
     _task_line,
     hidden_people_line,
     legend,
+    pulse_status_words,
 )
 
 try:
@@ -479,7 +480,7 @@ def _pulse_cell(key: str, row: dict[str, Any]) -> str:
         return ", ".join(HELP_REASON_WORDS.get(str(r), _human(str(r))) for r in reasons)
     if key == "status":
         status = row.get("status")
-        return _human(status) if isinstance(status, str) else ""
+        return pulse_status_words(status) if isinstance(status, str) else ""
     return _card_cell(key, row)
 
 
