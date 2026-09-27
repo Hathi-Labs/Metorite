@@ -247,6 +247,59 @@ run_tethered_build() {
   rm -f "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
   return "$tb_rc"
 }
+
+# 🟢 **H-60: A RESTARTED SERVICE IS READY WHEN IT ANSWERS, NOT WHEN SYSTEMD
+# SAYS `active`.** `active` means that a process exists. The gateway then needs
+# 15 to 23 s before uvicorn listens (measured 2026-09-27). The old `sleep 3`
+# let the apply start the next step while the gateway was still cold.
+#
+# $1 = a name for the log, $2 = a URL, $3 = seconds to wait (default 120).
+# Any HTTP answer from 200 to 499 counts as ready. A refused connection (000)
+# and a 5xx do not. Returns 1 when the bound runs out.
+wait_ready() {
+  wr_name="$1" wr_url="$2" wr_max="${3:-120}"
+  wr_start="$(date +%s)"
+  while :; do
+    wr_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$wr_url" 2>/dev/null || true)"
+    case "$wr_code" in
+      2??|3??|4??)
+        echo "    $wr_name answers HTTP $wr_code after $(( $(date +%s) - wr_start ))s"
+        return 0 ;;
+    esac
+    if [ $(( $(date +%s) - wr_start )) -ge "$wr_max" ]; then
+      echo "    !! $wr_name did not answer $wr_url within ${wr_max}s (last answer: ${wr_code:-none})"
+      return 1
+    fi
+    sleep "${WAIT_READY_POLL:-1}"
+  done
+}
+
+# 🔴 **H-60: `npm ci` DELETES `node_modules` UNDER THE RUNNING SERVER.** The
+# live `next start` loads modules on demand, so for the whole install it
+# answers 500. Measured 2026-09-27, run 36320367460: `npm ci` took 38 s, and
+# the workbench logged `Cannot find module 'next/dist/compiled/cookie'` in
+# that window. `package-lock.json` changed in 1 of 324 merges in 30 days, so
+# almost every one of those installs rebuilt the tree it deleted, byte for byte.
+#
+# So the install records what it installed, INSIDE `node_modules`. The next
+# apply keeps the tree when the lock file and the node version are the same.
+# A deleted or half-installed tree has no stamp, so it always installs again.
+# DEPLOY_FORCE=1 always installs. These run in the app's directory.
+deps_stamp() {
+  printf '%s %s\n' "$(sha256sum package-lock.json 2>/dev/null | cut -d' ' -f1)" \
+    "$(node --version 2>/dev/null)"
+}
+deps_unchanged() {
+  [ "${DEPLOY_FORCE:-0}" = "1" ] && return 1
+  [ -f package-lock.json ] || return 1
+  [ -x node_modules/.bin/next ] || return 1
+  [ -f node_modules/.acb-deps-stamp ] || return 1
+  [ "$(cat node_modules/.acb-deps-stamp 2>/dev/null)" = "$(deps_stamp)" ]
+}
+# Only after an install that succeeded. A failed one removes the stamp.
+record_deps_stamp() {
+  deps_stamp > node_modules/.acb-deps-stamp 2>/dev/null || true
+}
 # <<< deploy-serialize helpers
 
 # Find the session BEFORE the lock wait. A round cancelled during the wait
@@ -849,23 +902,92 @@ else
     --profile meetingbot rm -sf meeting-bot >/dev/null 2>&1 || true
 fi
 
+echo "==> Installing the Caddy config (H-60)"
+# Caddy fronts every public hostname. If it is down, the whole app is
+# unreachable, however healthy the services behind it are.
+#
+# 🟢 **THE REPO FILE IS THE CONFIG, AND IT GOES IN BEFORE THE RESTARTS.** The
+# repo copy carries `lb_try_duration`, so a request that meets a restarting
+# upstream waits for it instead of getting a 502. Installing it HERE, before
+# the gateway restart, means this deploy's own restarts are covered too.
+#
+# 🔴 **A BAD FILE MUST NEVER REACH THE BOX.** The repo file is validated first.
+# A file that does not validate stops the apply HERE, before any restart, and
+# the live config is untouched. A file that validates but does not start is
+# rolled back to the copy it replaced. Both end the deploy red.
+#
+# ⚠️ **RESTART ONLY WHEN THE FILE CHANGED.** The config has `admin off`, so
+# `systemctl reload caddy` cannot work and a change needs a restart. Until
+# 2026-09-28 this step ran `reload || restart` on EVERY deploy, and the reload
+# always failed, so every deploy restarted Caddy and cut every open connection,
+# chat streams included. Measured 2026-09-27 at 10:46:57, 10:55:43, 12:58:19.
+#
+# ⚠️ Until 2026-09-28 the repo file was STALE. It had no apex, no www and no
+# operator host. The old step installed it only when the live file was invalid,
+# and that would have taken three hostnames down. It now matches the box.
+CADDY_LIVE=/etc/caddy/Caddyfile
+CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile"
+CADDY_BAK=""
+CADDY_CHANGED=0
+echo "    caddy state: $(systemctl is-active caddy 2>&1 || true)"
+if ! sudo caddy validate --config "$CADDY_REPO" --adapter caddyfile >/dev/null 2>&1; then
+  echo "CADDY CONFIG INVALID: $CADDY_REPO does not validate."
+  sudo caddy validate --config "$CADDY_REPO" --adapter caddyfile 2>&1 | tail -5 || true
+  echo "    The live config is UNTOUCHED and the site keeps serving. No service"
+  echo "    was restarted. Fix the repo file and deploy again."
+  exit 1
+fi
+if sudo cmp -s "$CADDY_REPO" "$CADDY_LIVE"; then
+  echo "    $CADDY_LIVE matches the repo — Caddy is NOT restarted"
+else
+  CADDY_BAK="$CADDY_LIVE.bak.$(date +%s)"
+  sudo cp -a "$CADDY_LIVE" "$CADDY_BAK" 2>/dev/null || CADDY_BAK=""
+  sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"
+  CADDY_CHANGED=1
+  echo "    installed the repo Caddyfile (the previous one is ${CADDY_BAK:-not kept})"
+fi
+sudo systemctl enable caddy >/dev/null 2>&1 || true
+if [ "$CADDY_CHANGED" = "1" ] || ! systemctl is-active --quiet caddy; then
+  echo "    restarting Caddy (the config changed, or Caddy was down)"
+  sudo systemctl restart caddy || true
+  sleep 2
+fi
+if ! systemctl is-active --quiet caddy; then
+  sudo journalctl -u caddy --no-pager -n 40 || true
+  if [ -n "$CADDY_BAK" ]; then
+    echo "    !! Caddy did not start on the new config — restoring $CADDY_BAK"
+    sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"
+    sudo systemctl restart caddy || true
+    sleep 2
+    echo "    caddy state after the rollback: $(systemctl is-active caddy 2>&1 || true)"
+  fi
+  echo "CADDY FAILED TO START"
+  exit 1
+fi
+echo "Caddy is active"
+
 echo "==> Restarting gateway (systemd)"
 # `restart` alone does NOT survive a reboot — without the enable
 # symlink the box comes back with the gateway down until the next
 # deploy. Install + enable the unit every time so boot is covered.
+#
+# 🟢 **THE WORKBENCH UNIT GOES IN HERE TOO, BEFORE THE GATEWAY RESTART (H-60,
+# H-164).** It carried `Requires=acb-gateway.service`, so this restart ALSO
+# restarted the workbench, BEFORE its install and build. Every Caddy 502 on
+# :3001 from 2026-09-26 to 2026-09-27 is in that second. The unit now says
+# `Wants=`, which keeps the start order and drops the restart. It must be on
+# the box before this restart, or this deploy still takes the workbench down.
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
+sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
 sudo systemctl daemon-reload
 sudo systemctl enable acb-gateway >/dev/null 2>&1 || true
-# ⚠️ acb-workbench.service carries `Requires=acb-gateway.service`, so this
-# restart ALSO restarts the workbench. Say so when that will fail (H-164). It
-# does not stop the apply: the install below is what repairs `next`.
-if ! [ -x "$APP_DIR/workbench/control_plane/node_modules/.bin/next" ]; then
-  echo "    !! the workbench has no node_modules/.bin/next. This restart takes the"
-  echo "       workbench down with it, until the install and build below repair it."
-fi
 sudo systemctl restart acb-gateway
 sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
+# Wait until it ANSWERS. The build below does not need it, but the verify at
+# the end of the deploy does, and so does every workbench request.
+wait_ready "gateway" "http://127.0.0.1:8080/health" 120 \
+  || { echo "GATEWAY FAILED TO START: active, but /health never answered"; exit 1; }
 echo "Gateway is active"
 
 echo "==> Restarting the Customer Console (systemd)"
@@ -881,7 +1003,8 @@ echo "==> Restarting the Customer Console (systemd)"
 if systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
   sudo systemctl restart acb-customer-console
   sleep 3
-  if systemctl is-active --quiet acb-customer-console; then
+  if systemctl is-active --quiet acb-customer-console \
+    && wait_ready "Customer Console" "http://127.0.0.1:8090/health" 60; then
     echo "    Customer Console is active (127.0.0.1:8090)"
   else
     echo "CUSTOMER CONSOLE FAILED TO START"
@@ -1022,15 +1145,23 @@ npm_install_here() {
   name="$1"
   # Measure first. With both paths as the app user this count is 0 (H-89).
   reclaim_build_tree "$name"
-  npm ci --prefer-offline 2>/dev/null && return 0
+  # H-60: keep the tree the running server loads from, when nothing changed.
+  if deps_unchanged; then
+    echo "    $name: package-lock.json and node are unchanged since the last"
+    echo "      install — node_modules is KEPT, so the running server keeps"
+    echo "      serving (H-60). DEPLOY_FORCE=1 installs again."
+    return 0
+  fi
+  npm ci --prefer-offline 2>/dev/null && { record_deps_stamp; return 0; }
   echo "    ~ $name: npm ci failed — reclaiming the build tree and retrying"
   if ! sudo chown -R "$(id -un):$(id -gn)" node_modules 2>&1; then
     echo "    !! $name: could NOT reclaim node_modules — an install that fails"
     echo "       with EACCES after this is H-89, not an npm problem."
   fi
-  npm ci --prefer-offline && return 0
+  npm ci --prefer-offline && { record_deps_stamp; return 0; }
   echo "    ~ $name: npm ci failed again — falling back to npm install"
-  npm install && return 0
+  npm install && { record_deps_stamp; return 0; }
+  rm -f node_modules/.acb-deps-stamp 2>/dev/null || true
   echo "    ! $name: npm install failed — building against the node_modules"
   echo "      already here. ⚠️ If the build below fails, THIS is why."
   return 0
@@ -1150,16 +1281,18 @@ if [ -f package-lock.json ] || [ -f package.json ]; then
   npm_install_here "workbench"
   build_next_staged "workbench"
 fi
-# Reload systemd unit in case acb-workbench.service changed (adds PATH for uv etc.)
-sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
-sudo systemctl daemon-reload
+# The unit file went in at the gateway step, before any restart (H-60).
 # See the gateway note above — enable so the workbench survives reboots.
 sudo systemctl enable acb-workbench >/dev/null 2>&1 || true
 # Install, build, swap — and only THEN restart, and only with `next` present.
+# This is the workbench's ONLY restart in the apply: the gateway restart above
+# no longer takes it down (H-60). Caddy holds the requests for this second.
 require_next_bin "$APP_DIR/workbench/control_plane" "acb-workbench" || exit 1
 sudo systemctl restart acb-workbench
 sleep 3
 systemctl is-active --quiet acb-workbench || { echo "WORKBENCH FAILED TO START"; exit 1; }
+wait_ready "workbench" "http://127.0.0.1:3001/" 60 \
+  || { echo "WORKBENCH FAILED TO START: active, but / never answered"; exit 1; }
 echo "Workbench is active"
 
 # ── Operator Console (Next.js, staff-only) ────────────────────────
@@ -1201,6 +1334,13 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   sleep 3
   if ! systemctl is-active --quiet "$OC_UNIT"; then
     echo "OPERATOR CONSOLE FAILED TO START"
+    sudo journalctl -u "$OC_UNIT" --no-pager -n 40 || true
+    exit 1
+  fi
+  # A cold server answers 000, not 404, so the route probe below would pass
+  # on a server that is not listening yet. Wait for it first (H-60).
+  if ! wait_ready "$OC_UNIT" "http://127.0.0.1:${OPERATOR_CONSOLE_PORT:-3002}/" 60; then
+    echo "OPERATOR CONSOLE FAILED TO START: active, but / never answered"
     sudo journalctl -u "$OC_UNIT" --no-pager -n 40 || true
     exit 1
   fi
@@ -1248,40 +1388,20 @@ else
   echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
 fi
 
-echo "==> Ensuring Caddy is serving"
-# Caddy fronts BOTH public hostnames — if it is down, the whole app
-# is unreachable no matter how healthy gateway/workbench are. The
-# old `reload || true` silently swallowed a chronically failing
-# reload (broken on-disk config), which turns any later Caddy
-# restart into a full outage. Recover deterministically instead:
-#   1. surface Caddy's current state + recent journal in the log;
-#   2. validate the live config — if invalid, back it up and
-#      reinstall the repo's known-good Caddyfile;
-#   3. reload if running, restart if dead;
-#   4. fail LOUDLY if Caddy still is not active.
-CADDY_LIVE=/etc/caddy/Caddyfile
-CADDY_REPO="$APP_DIR/deploy/hostinger/caddy/Caddyfile"
-echo "    caddy state: $(systemctl is-active caddy 2>&1 || true)"
-sudo journalctl -u caddy --no-pager -n 25 || true
-if ! sudo caddy validate --config "$CADDY_LIVE"; then
-  echo "    ! live Caddyfile INVALID — reinstalling repo config (backup kept)"
-  sudo cp -a "$CADDY_LIVE" "$CADDY_LIVE.broken.$(date +%s)" || true
-  sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"
-  sudo caddy validate --config "$CADDY_LIVE"
-fi
-sudo systemctl enable caddy >/dev/null 2>&1 || true
-if systemctl is-active --quiet caddy; then
-  sudo systemctl reload caddy || sudo systemctl restart caddy
-else
+echo "==> Checking Caddy is still serving"
+# The config went in before the restarts (see "Installing the Caddy config").
+# This is a check only. It never reloads or restarts a running Caddy, because
+# a restart cuts every open connection (H-60).
+if ! systemctl is-active --quiet caddy; then
   echo "    caddy is DOWN — restarting"
-  sudo systemctl restart caddy
+  sudo systemctl restart caddy || true
+  sleep 2
+  systemctl is-active --quiet caddy || {
+    echo "CADDY FAILED TO START"
+    sudo journalctl -u caddy --no-pager -n 40 || true
+    exit 1
+  }
 fi
-sleep 2
-systemctl is-active --quiet caddy || {
-  echo "CADDY FAILED TO START"
-  sudo journalctl -u caddy --no-pager -n 40 || true
-  exit 1
-}
 echo "Caddy is active"
 
 echo "==> Installing health watchdog (systemd timer)"

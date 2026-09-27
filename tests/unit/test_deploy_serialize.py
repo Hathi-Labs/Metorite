@@ -714,3 +714,312 @@ class TestAnEndedSessionEndsTheBuild:
         assert apply.returncode == 1, out
         assert "ended while this apply waited" in out, out
         assert "Pulling latest" not in out, "it went past the lock"
+
+
+# ── H-60: a deploy gives live users no 502 window ────────────────────────────
+#
+# Measured 2026-09-27, run 36320367460. The gateway restart ALSO restarted the
+# workbench (`Requires=`), and browsers got a 502 from 127.0.0.1:3001. `npm ci`
+# deleted `node_modules` under the running workbench for 38 s, and it answered
+# 500. The Caddy step restarted Caddy on every deploy, because `admin off`
+# makes a reload fail, and that cut every open connection. The tests below
+# fence the four fixes: Caddy waits for a restarting upstream, a gateway
+# restart leaves the workbench alone, an unchanged dependency tree is kept,
+# and each restart waits until the service answers.
+
+_CADDYFILE = _ROOT / "deploy/hostinger/caddy/Caddyfile"
+_WB_UNIT = _ROOT / "deploy/hostinger/acb-workbench.service"
+
+
+def _caddy_proxy_block(upstream: str) -> str:
+    """The body of the `reverse_proxy <upstream> { ... }` block."""
+    lines = [ln.split("#", 1)[0] for ln in _CADDYFILE.read_text(encoding="utf-8").splitlines()]
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.split()[:2] == ["reverse_proxy", upstream]),
+        None,
+    )
+    assert start is not None, f"no reverse_proxy to {upstream}"
+    assert lines[start].rstrip().endswith("{"), f"reverse_proxy {upstream} has no block"
+    body: list[str] = []
+    for ln in lines[start + 1 :]:
+        if ln.strip() == "}":
+            return "\n".join(body)
+        body.append(ln.strip())
+    raise AssertionError(f"reverse_proxy {upstream} block is not closed")
+
+
+def _seconds(value: str) -> float:
+    for unit, mult in (("ms", 0.001), ("s", 1.0), ("m", 60.0)):
+        if value.endswith(unit):
+            return float(value[: -len(unit)]) * mult
+    raise AssertionError(f"not a duration: {value}")
+
+
+def _apply_function(name: str) -> str:
+    body = _APPLY.read_text(encoding="utf-8")
+    fn = body[body.index(f"{name}() {{"):]
+    fn = fn[: fn.index("\n}\n")]
+    return "\n".join(ln for ln in fn.splitlines() if not ln.strip().startswith("#"))
+
+
+class TestCaddyHoldsTheRequest:
+    @pytest.mark.parametrize("upstream", ["127.0.0.1:3001", "127.0.0.1:8080", "127.0.0.1:3002"])
+    def test_every_upstream_is_retried_through_a_restart(self, upstream: str) -> None:
+        block = _caddy_proxy_block(upstream)
+        opts = {ln.split()[0]: ln.split()[1] for ln in block.splitlines() if ln.split()}
+        assert "lb_try_duration" in opts, f"{upstream}: a restart answers 502 without it"
+        assert "lb_try_interval" in opts, f"{upstream}: no retry interval"
+        # Longer than the gateway's measured cold start (15 to 23 s).
+        assert _seconds(opts["lb_try_duration"]) >= 25, opts
+        assert _seconds(opts["lb_try_interval"]) <= 1, opts
+
+    def test_the_repo_file_serves_every_hostname_the_box_serves(self) -> None:
+        """The apply installs this file. A hostname missing here goes DOWN on
+        the next deploy. The repo copy had lost three of them by 2026-09-28."""
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        sites = {
+            ln.split()[0]
+            for ln in text.splitlines()
+            if ln and not ln[0].isspace() and ln.rstrip().endswith("{") and "." in ln
+        }
+        assert sites >= {
+            "api.metorite.com", "app.metorite.com", "metorite.com",
+            "www.metorite.com", "operator.metorite.com",
+        }, sites
+
+    def test_the_apply_validates_the_file_before_it_installs_it(self) -> None:
+        lines = _executable_lines(_APPLY)
+        validate = _first(lines, 'caddy validate --config "$CADDY_REPO"')
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert validate < install
+        assert lines[validate].lstrip().startswith("if ! "), "a bad file must stop the apply"
+        assert "exit 1" in "\n".join(lines[validate : validate + 6])
+
+    def test_the_config_goes_in_before_the_first_restart(self) -> None:
+        lines = _executable_lines(_APPLY)
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert install < _first(lines, "sudo systemctl restart acb-gateway")
+
+    def test_caddy_is_never_reloaded_and_restarts_only_on_a_change(self) -> None:
+        """`admin off`: a reload always fails, and `reload || restart` then
+        restarted Caddy on every deploy and cut every open stream."""
+        lines = _executable_lines(_APPLY)
+        assert not any("systemctl reload caddy" in ln for ln in lines)
+        assert any('cmp -s "$CADDY_REPO" "$CADDY_LIVE"' in ln for ln in lines)
+        restarts = [ln for ln in lines if "systemctl restart caddy" in ln]
+        assert restarts
+        for ln in restarts:
+            assert ln.startswith((" ", "\t")), f"an unconditional Caddy restart: {ln!r}"
+
+    def test_a_changed_config_restarts_caddy_even_without_a_backup(self) -> None:
+        """The restart must follow the INSTALL, not the backup. A backup that
+        fails must never leave a new file on disk and the old one running."""
+        lines = _executable_lines(_APPLY)
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert lines[install + 1].strip() == "CADDY_CHANGED=1"
+        restart = _first(lines, "systemctl restart caddy", install)
+        cond = lines[restart - 2 : restart]
+        assert any('[ "$CADDY_CHANGED" = "1" ]' in ln for ln in cond), cond
+
+    def test_a_config_that_does_not_start_is_rolled_back(self) -> None:
+        lines = _executable_lines(_APPLY)
+        backup = _first(lines, 'sudo cp -a "$CADDY_LIVE" "$CADDY_BAK"')
+        restore = _first(lines, 'sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"')
+        assert backup < restore
+
+
+class TestAGatewayRestartLeavesTheWorkbenchAlone:
+    def _unit(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for ln in _WB_UNIT.read_text(encoding="utf-8").splitlines():
+            if "=" in ln and not ln.lstrip().startswith(("#", ";")):
+                k, v = ln.split("=", 1)
+                out.setdefault(k.strip(), []).extend(v.split())
+        return out
+
+    def test_no_hard_dependency_on_the_gateway(self) -> None:
+        unit = self._unit()
+        for key in ("Requires", "BindsTo", "PartOf", "Requisite"):
+            assert "acb-gateway.service" not in unit.get(key, []), (
+                f"{key}= makes a gateway restart take the workbench down (H-60)"
+            )
+
+    def test_the_gateway_still_starts_first(self) -> None:
+        unit = self._unit()
+        assert "acb-gateway.service" in unit.get("Wants", [])
+        assert "acb-gateway.service" in unit.get("After", [])
+
+    def test_the_new_unit_is_on_the_box_before_the_gateway_restart(self) -> None:
+        lines = _executable_lines(_APPLY)
+        cp = _first(lines, "deploy/hostinger/acb-workbench.service")
+        reload_ = _first(lines, "sudo systemctl daemon-reload", cp)
+        assert cp < reload_ < _first(lines, "sudo systemctl restart acb-gateway")
+
+    def test_the_workbench_restarts_once(self) -> None:
+        lines = _executable_lines(_APPLY)
+        assert sum("systemctl restart acb-workbench" in ln for ln in lines) == 1
+
+
+class TestTheRestartOrder:
+    def test_each_restart_waits_for_the_one_before_it(self) -> None:
+        lines = _executable_lines(_APPLY)
+        order = [
+            _first(lines, "apply_migrations.sh"),
+            _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"'),
+            _first(lines, "sudo systemctl restart acb-gateway"),
+            _first(lines, 'wait_ready "gateway" "http://127.0.0.1:8080/health"'),
+            _first(lines, "sudo systemctl restart acb-customer-console"),
+            _first(lines, 'wait_ready "Customer Console"'),
+            _first(lines, 'npm_install_here "workbench"'),
+            _first(lines, 'build_next_staged "workbench"'),
+            _first(lines, "sudo systemctl restart acb-workbench"),
+            _first(lines, 'wait_ready "workbench" "http://127.0.0.1:3001/"'),
+            _first(lines, 'sudo systemctl restart "$OC_UNIT"'),
+            _first(lines, 'wait_ready "$OC_UNIT"'),
+        ]
+        assert order == sorted(order), order
+
+    def test_a_service_that_never_answers_fails_the_apply(self) -> None:
+        lines = _executable_lines(_APPLY)
+        for needle in ('wait_ready "gateway"', 'wait_ready "workbench"'):
+            i = _first(lines, needle)
+            tail = "\n".join(lines[i : i + 2])
+            assert "exit 1" in tail, f"{needle}: a cold service must not pass"
+
+
+class TestTheInstallKeepsAnUnchangedTree:
+    def test_the_check_runs_before_the_first_npm_ci(self) -> None:
+        fn = _apply_function("npm_install_here")
+        assert fn.index("deps_unchanged") < fn.index("npm ci")
+
+    def test_every_successful_install_records_the_stamp(self) -> None:
+        fn = _apply_function("npm_install_here")
+        installs = [
+            ln for ln in fn.splitlines() if ln.strip().startswith(("npm ci", "npm install"))
+        ]
+        assert len(installs) == 3, installs
+        for ln in installs:
+            assert "record_deps_stamp" in ln, f"an install that leaves no stamp: {ln!r}"
+
+    def test_a_failed_install_removes_the_stamp(self) -> None:
+        fn = _apply_function("npm_install_here")
+        last = [ln for ln in fn.splitlines() if ln.strip().startswith("npm install")][-1]
+        assert "rm -f node_modules/.acb-deps-stamp" in fn[fn.index(last) :]
+
+
+@linux_only
+class TestTheReadinessWait:
+    def _wait(
+        self, tmp_path: pathlib.Path, url: str, seconds: int
+    ) -> subprocess.CompletedProcess:
+        helpers = _helpers(tmp_path, tmp_path)
+        return subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; wait_ready svc "{url}" {seconds}; echo "rc=$?"'],
+            env=_env(tmp_path, WAIT_READY_POLL="0.2"),
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def _server(self, status: int, delay: float) -> tuple[subprocess.Popen, int]:
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        code = (
+            "import http.server, time\n"
+            f"time.sleep({delay})\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            f"        self.send_response({status}); self.end_headers()\n"
+            "    def log_message(self, *a): pass\n"
+            f"http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
+        )
+        return subprocess.Popen([sys.executable, "-c", code]), port
+
+    def test_it_waits_for_a_cold_service(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(200, delay=1.5)
+        try:
+            t0 = time.monotonic()
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/health", 20)
+            took = time.monotonic() - t0
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout + res.stderr
+        assert "answers HTTP 200" in res.stdout
+        assert took >= 1.0, f"it returned after {took:.1f}s, before the service listened"
+
+    def test_a_service_that_never_listens_times_out(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(200, delay=600)
+        try:
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 2)
+        finally:
+            _stop(srv)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "did not answer" in res.stdout
+
+    def test_a_5xx_is_not_ready(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server(500, delay=0)
+        try:
+            time.sleep(0.5)
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 2)
+        finally:
+            _stop(srv)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "last answer: 500" in res.stdout
+
+    def test_a_redirect_is_ready(self, tmp_path: pathlib.Path) -> None:
+        """The workbench answers `/` with 307 to the login page."""
+        srv, port = self._server(307, delay=0)
+        try:
+            res = self._wait(tmp_path, f"http://127.0.0.1:{port}/", 10)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout + res.stderr
+
+
+@linux_only
+class TestTheDependencyStamp:
+    def _app(self, tmp_path: pathlib.Path) -> pathlib.Path:
+        app = tmp_path / "wb"
+        (app / "node_modules/.bin").mkdir(parents=True)
+        nxt = app / "node_modules/.bin/next"
+        nxt.write_text("#!/bin/sh\n")
+        nxt.chmod(0o755)
+        (app / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+        return app
+
+    def _run(self, tmp_path: pathlib.Path, app: pathlib.Path, cmd: str, **extra: str) -> str:
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; cd "{app}"; {cmd}'],
+            env=_env(tmp_path, **extra), capture_output=True, text=True, timeout=30,
+        )
+        return res.stdout + res.stderr
+
+    def _kept(self, tmp_path: pathlib.Path, app: pathlib.Path, **extra: str) -> bool:
+        return "KEEP" in self._run(tmp_path, app, "deps_unchanged && echo KEEP", **extra)
+
+    def test_no_stamp_means_install(self, tmp_path: pathlib.Path) -> None:
+        assert not self._kept(tmp_path, self._app(tmp_path))
+
+    def test_a_recorded_install_is_kept(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert self._kept(tmp_path, app)
+
+    def test_a_changed_lock_file_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        (app / "package-lock.json").write_text('{"lockfileVersion": 3, "x": 1}\n')
+        assert not self._kept(tmp_path, app)
+
+    def test_force_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert not self._kept(tmp_path, app, DEPLOY_FORCE="1")
+
+    def test_a_tree_without_next_means_install(self, tmp_path: pathlib.Path) -> None:
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        (app / "node_modules/.bin/next").unlink()
+        assert not self._kept(tmp_path, app)
