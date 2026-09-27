@@ -91,11 +91,13 @@ def test_the_route_answers_all_13_and_only_the_live_three_are_live(monkeypatch) 
 def test_the_catalogue_route_is_matched_before_the_id_route() -> None:
     from starlette.routing import Match
 
+    from tests.unit._routes import served_routes
+
     app = FastAPI()
     app.include_router(rep.router)
     scope = {"type": "http", "method": "GET",
              "path": "/projects/reports/templates", "root_path": ""}
-    first = next(r for r in app.router.routes if r.matches(scope)[0] == Match.FULL)
+    first = next(r for r in served_routes(app.routes) if r.matches(scope)[0] == Match.FULL)
     assert first.endpoint is rep.list_report_templates
 
 

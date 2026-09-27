@@ -4,16 +4,18 @@ version = "0.0.1"
 description = "FastAPI + Google SSO. Pull queries, push notifications, approvals."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-    "authlib>=1.3",
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.54",
+    "authlib>=1.8",
     "itsdangerous>=2.2",
     "httpx>=0.27",
+    # main.py imports `openai` directly. See acb-llm for the <3 cap.
+    "openai>=2.54.0",
     # WebSocket CLIENT for the WhatsApp call-audio proxy (transport/calls_audio.py).
     # uvicorn[standard] already pulls this in for the SERVER side, but relying on
     # that would make duplex call audio break on a transitive-dependency change,
     # and only at the moment someone tries to speak.
-    "websockets>=12",
+    "websockets>=17",
     # AG-UI streaming endpoint (replaces copilot_chat.py SSE path — WBS 0.7)
     "agent-framework-ag-ui>=1.4.0",
     "acb-common",

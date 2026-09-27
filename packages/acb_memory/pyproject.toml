@@ -4,15 +4,17 @@ version = "0.0.1"
 description = "Mem0 episodic memory + Graphiti bi-temporal KG for Metorite agents."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "mem0ai>=1.0.11",
-    "graphiti-core>=0.29.1",
+    "mem0ai>=2.2.1",
+    "graphiti-core>=0.30.2",
     "psycopg2-binary>=2.9",
+    # graphiti_client.py imports `openai` directly. See acb-llm for the <3 cap.
+    "openai>=2.54.0",
     "acb-common",
 ]
 
 [project.optional-dependencies]
 # Install these to actually run; omit in test environments without Neo4j
-graphiti = ["graphiti-core>=0.29.1"]
+graphiti = ["graphiti-core>=0.30.2"]
 
 [build-system]
 requires = ["hatchling"]

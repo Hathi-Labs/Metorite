@@ -4,11 +4,11 @@ version = "0.0.1"
 description = "RBAC roles, user context, and FastAPI dependency helpers (WBS 1.7)."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.141",
     "acb-common",
     # Org access control resolves roles/overrides from Postgres (acb_auth.access).
     # Imported lazily so the pure permission model stays usable without a DB.
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.1",
     # WS-31 CP-2b — `acb_auth.console_resolve` calls the Customer Console over
     # HTTP at sign-in. Declared HERE and not inherited from the gateway service
     # (which already has it): a package that is importable-but-broken anywhere

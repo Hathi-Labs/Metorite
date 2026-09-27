@@ -114,3 +114,67 @@ def test_a_response_with_no_reported_cost_leaves_the_field_none() -> None:
 def test_the_field_defaults_to_none_so_old_callers_are_unchanged() -> None:
     # Every existing construction of ExtractedUsage predates this field.
     assert ExtractedUsage().vendor_reported_cost_usd is None
+
+
+# ── The contract with the INSTALLED litellm ─────────────────────────────────
+
+
+def test_litellms_own_openrouter_transform_writes_the_key_we_read() -> None:
+    """🔴 **Every test above hands the reader a stub. This one does not.**
+
+    `_LITELLM_COST_KEY` is litellm's internal shape, not a public contract.
+    A litellm release that renames the key, or moves it out of
+    `_hidden_params["additional_headers"]`, turns every vendor-stated cost
+    into ``None`` with no error, and every stub test above stays green.
+
+    So this test runs litellm's REAL OpenRouter response transform over an
+    OpenRouter body that states ``usage.cost``, and reads the result through
+    the reader production uses. Measured in litellm 1.103.0 on 2026-09-28.
+    A litellm upgrade that breaks the contract fails here.
+    """
+    from unittest.mock import MagicMock
+
+    import httpx
+    from litellm.llms.openrouter.chat.transformation import OpenrouterConfig
+    from litellm.types.utils import ModelResponse
+
+    body = {
+        "id": "gen-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "deepseek/deepseek-v4-pro",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "hi"},
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 3,
+            "total_tokens": 15,
+            "cost": 0.000075,
+        },
+    }
+    raw = httpx.Response(
+        200,
+        json=body,
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+    resp = OpenrouterConfig().transform_response(
+        model="openrouter/deepseek/deepseek-v4-pro",
+        raw_response=raw,
+        model_response=ModelResponse(),
+        logging_obj=MagicMock(),
+        request_data={},
+        messages=[{"role": "user", "content": "x"}],
+        optional_params={},
+        litellm_params={},
+        encoding=None,
+    )
+
+    got = usage_from_response(resp)
+    assert got.prompt_tokens == 12
+    assert got.completion_tokens == 3
+    assert got.vendor_reported_cost_usd == Decimal("0.00007500")

@@ -635,9 +635,67 @@ def _route_template(request: Request) -> str:
 
     Always the template, never the concrete URL: matching on the URL would let
     a path parameter be crafted to spell an exempt path.
+
+    🔴 **The FULL template, with every include prefix on it.** FastAPI 0.137
+    stopped copying a router's routes into its parent. Since then
+    ``scope["route"]`` is the ORIGINAL ``APIRoute``, and its ``.path`` does not
+    carry a prefix given to ``include_router(prefix=...)`` or the prefix of a
+    parent router. Measured on 0.141.1: a route reached as
+    ``/api/outer/inner/x/{item}`` reports ``/inner/x/{item}``. Read that way, a
+    public or exempt template fails CLOSED for its own route, and it fails OPEN
+    for any other route whose short path happens to spell it. The gateway
+    includes every router with no prefix today, so no live route differs yet.
+
+    So this function asks FastAPI's public ``iter_route_contexts`` (0.137.2)
+    for the effective path of the route that matched. Fence:
+    ``tests/unit/test_route_template_prefixes.py``.
     """
     route = request.scope.get("route")
+    full = _effective_template(request, route)
+    if full:
+        return full
     return getattr(route, "path", None) or request.url.path
+
+
+#: ``id(route)`` → (the route, the contexts FastAPI serves it at). The route
+#: is held, so an id that Python reuses cannot answer for another route.
+_TEMPLATES: dict[int, tuple[object, tuple[object, ...]]] = {}
+
+
+def _effective_template(request: Request, route: object) -> str | None:
+    """The prefixed template FastAPI matched for ``route``, or None."""
+    if route is None:
+        return None
+    routes = getattr(request.scope.get("app"), "routes", None)
+    if routes is None:
+        return None
+    try:
+        from fastapi.routing import iter_route_contexts
+        from starlette.routing import Match
+    except ImportError:  # FastAPI < 0.137.2 copies the prefix onto the route
+        return None
+
+    cached = _TEMPLATES.get(id(route))
+    if cached is None or cached[0] is not route:
+        contexts = tuple(
+            c for c in iter_route_contexts(routes)
+            if getattr(c, "original_route", None) is route
+        )
+        cached = (route, contexts)
+        _TEMPLATES[id(route)] = cached
+    contexts = cached[1]
+    if len(contexts) == 1:
+        return getattr(contexts[0], "path", None)
+    # One route object included at two prefixes. The context that matches
+    # THIS request is the one that served it.
+    for context in contexts:
+        try:
+            match, _ = context.matches(request.scope)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if match == Match.FULL:
+            return getattr(context, "path", None)
+    return None
 
 
 def require_authenticated(public: Collection[str] = ()) -> Depends:

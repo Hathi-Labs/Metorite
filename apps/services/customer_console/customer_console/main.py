@@ -7727,7 +7727,7 @@ class ImageRequest(BaseModel):
     client_ref: str | None = None
 
     # 🔴 **THERE IS NO `size` FIELD, and the absence is the rule** (clause 1).
-    # The vendor prices a picture BY SIZE. litellm 1.86.0 holds
+    # The vendor prices a picture BY SIZE. litellm 1.86.0 and 1.103.0 hold
     # `standard/1024-x-1024/dall-e-3` at 3.81469e-08 per pixel, which is
     # $0.040, and `standard/1024-x-1792/dall-e-3` at 4.359e-08, which is
     # $0.080. Our own price column carries NO size axis:

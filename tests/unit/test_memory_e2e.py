@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.unit._routes import served_routes
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -336,7 +338,7 @@ def test_agent_run_stream_endpoint_registered() -> None:
     # assuming every route is HTTP.
     routes = {
         r.path: r.methods
-        for r in app.routes
+        for r in served_routes(app.routes)
         if hasattr(r, "path") and hasattr(r, "methods")
     }
     assert "/agent/run/stream" in routes, (
@@ -454,7 +456,7 @@ def test_memory_list_endpoint_exists() -> None:
     """
     from gateway.main import app
 
-    paths = {r.path for r in app.routes if hasattr(r, "path")}
+    paths = {r.path for r in served_routes(app.routes) if hasattr(r, "path")}
     memory_paths = sorted(p for p in paths if "/memory" in p)
     assert any("{scope}" in p for p in memory_paths), (
         f"No /memory/{{scope}} route. Memory paths: {memory_paths}"
@@ -856,7 +858,7 @@ def test_pull_endpoint_registered() -> None:
     # assuming every route is HTTP.
     routes = {
         r.path: r.methods
-        for r in app.routes
+        for r in served_routes(app.routes)
         if hasattr(r, "path") and hasattr(r, "methods")
     }
     assert "/pull" in routes, f"Expected /pull, got: {sorted(routes)}"
@@ -947,7 +949,7 @@ def test_gateway_imports_memory_for_copilot_chat() -> None:
     # assuming every route is HTTP.
     routes = {
         r.path: r.methods
-        for r in app.routes
+        for r in served_routes(app.routes)
         if hasattr(r, "path") and hasattr(r, "methods")
     }
     assert (
@@ -959,7 +961,7 @@ def test_gateway_memory_router_registered() -> None:
     """The memory router must be included in the FastAPI app."""
     from gateway.main import app
 
-    paths = sorted(r.path for r in app.routes if hasattr(r, "path"))
+    paths = sorted(r.path for r in served_routes(app.routes) if hasattr(r, "path"))
     memory_paths = [p for p in paths if p.startswith("/memory")]
     assert len(memory_paths) >= 4, (
         f"Expected >=4 /memory/* routes (list, search, add, delete, status). "

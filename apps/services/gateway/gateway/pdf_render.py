@@ -586,16 +586,18 @@ def _layout(source: str) -> bytes:
     clean = sanitize_html(source)
     check_word_lengths(clean)
     clean = wrap_pre_lines(clean)
-    import fitz  # pymupdf, a gateway dependency since the résumé parser
+    # `pymupdf`, never `fitz`: from 1.28.2 the `fitz` shim prints a deprecation
+    # notice to STDOUT on import, and the child sends the PDF on stdout.
+    import pymupdf  # a gateway dependency since the résumé parser
 
     try:
         # ⚠️ No `archive`: the renderer has nowhere to load an image, a font
         # or a stylesheet from, whatever the sanitizer misses.
-        story = fitz.Story(html=f"<body>{clean}</body>", user_css=_CSS)
+        story = pymupdf.Story(html=f"<body>{clean}</body>", user_css=_CSS)
         buf = io.BytesIO()
-        writer = fitz.DocumentWriter(buf)
-        mediabox = fitz.paper_rect("a4")
-        where = fitz.Rect(
+        writer = pymupdf.DocumentWriter(buf)
+        mediabox = pymupdf.paper_rect("a4")
+        where = pymupdf.Rect(
             _MARGIN, _MARGIN, mediabox.width - _MARGIN, mediabox.height - _MARGIN
         )
         pages = 0

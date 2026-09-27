@@ -20,6 +20,8 @@ from acb_auth.deps import require_llm_api_auth
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from tests.unit._routes import served_routes
+
 LLM_KEY = "llm-key-for-test"
 SERVICE = "service-token-for-test"
 
@@ -130,7 +132,7 @@ def test_every_listed_real_route_carries_its_own_lock(monkeypatch, keys) -> None
     app = FastAPI(dependencies=[require_authenticated(public=public)])
     for r in v1_compat.routers:
         app.include_router(r)
-    listed = [r for r in app.routes if getattr(r, "path", None) in public]
+    listed = [r for r in served_routes(app.routes) if getattr(r, "path", None) in public]
     assert {r.path for r in listed} == {"/v1/chat/completions", "/chat/completions"}
 
     client = TestClient(app)

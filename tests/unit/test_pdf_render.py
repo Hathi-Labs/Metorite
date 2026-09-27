@@ -11,6 +11,7 @@ import http.server
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from gateway import pdf_render
@@ -35,7 +36,7 @@ ORG = "org-test"
 
 
 def _text(pdf: bytes) -> str:
-    import fitz
+    import pymupdf as fitz
 
     with fitz.open(stream=pdf, filetype="pdf") as doc:
         return "".join(page.get_text() for page in doc)
@@ -251,7 +252,7 @@ def test_p1_a_long_run_through_render_pdf_is_a_fast_4xx() -> None:
 
 
 def test_p2_a_mupdf_error_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
-    import fitz
+    import pymupdf as fitz
 
     class FzErrorSyntax(Exception):
         pass
@@ -269,6 +270,27 @@ def test_render_pdf_returns_a_pdf_from_the_child() -> None:
     pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText.", member=MEMBER, org=ORG))
     assert pdf.startswith(b"%PDF")
     assert "Title" in _text(pdf)
+
+
+def test_no_product_code_imports_the_deprecated_fitz_name() -> None:
+    """🔴 **From pymupdf 1.28.2, ``import fitz`` prints to STDOUT.**
+
+    The shim calls ``message_warning`` on import, and pymupdf writes its
+    messages to stdout. The render child sends the PDF on stdout, so every
+    PDF began with a line of text and the parent refused it. Measured on
+    2026-09-28 at the upgrade from 1.28.0. ``import pymupdf`` prints nothing.
+    """
+    root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for base in ("apps", "packages"):
+        for path in (root / base).rglob("*.py"):
+            if ".venv" in path.parts or "node_modules" in path.parts:
+                continue
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("import fitz", "from fitz ")):
+                    offenders.append(f"{path.relative_to(root)}: {stripped}")
+    assert offenders == []
 
 
 def test_render_pdf_refuses_before_starting_a_child(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,7 +311,7 @@ def test_devanagari_draws_in_a_devanagari_font() -> None:
     built-in Noto Serif Devanagari (checked by eye on a rendered page). Text
     EXTRACTION from the PDF is garbled for conjuncts, which is a known limit
     recorded in spec §14.6 and not asserted here."""
-    import fitz
+    import pymupdf as fitz
 
     with fitz.open(stream=html_to_pdf("<p>नमस्ते दुनिया</p>"), filetype="pdf") as doc:
         fonts = [f[3] for f in doc[0].get_fonts()]
