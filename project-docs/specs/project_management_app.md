@@ -8144,6 +8144,10 @@ both; where it disagrees with §6, §7 or §11, **this section wins**.
 | **§11 ClickUp parity — the measured gap** | **Kept, re-classified as history.** Its verdicts stand and its backlog closed on 2026-08-09; it is the record of what parity cost, not a plan. Do not dispatch from it. |
 | **§9.7 sequencing letters `c`, `g`, `h`** | **`c` cancelled** (two-way sync, unbuilt by decision). **`g` reduced** to the two owner acts in `work_plan.md` §6 (c-1)/(c-2). **`h` absorbed into WS-39 S3a–S3c.** |
 
+**2026-09-26 — D80.** §7 stays superseded. A one-shot FILE importer came back under
+D80, and `specs/project_import.md` (board **WS-41**) owns it. It adds no connector
+and no sync. This section adds nothing more to it.
+
 ### 12.3 What Projects becomes
 
 **One store, three lenses.** `pm_tasks` + `pm_task_personal` hold every task in the
