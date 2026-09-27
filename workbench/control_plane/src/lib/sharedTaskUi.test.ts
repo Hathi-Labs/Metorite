@@ -264,9 +264,9 @@ const SEAM: {
      * itself, next to a parent title, is a second copy of it, and a second
      * copy is how the board and My Tasks would come to say "subtask" two
      * ways. So every other use of the icon is named here with its reason.
-     * The rows marked S3 or S4 are drawn by hand today and move onto the
-     * shared mark in those slices. Delete each exemption in the change that
-     * retires it.
+     * S3 moved the Projects views onto the shared mark, and S4 moved My
+     * Tasks. No subtask row draws the icon by hand now, so every exemption
+     * left is a use that is not a subtask.
      */
     what: "the subtask's parent crumb",
     home: "components/TaskMeta.tsx",
@@ -280,10 +280,6 @@ const SEAM: {
       "app/projects/components/NodeDashboard.tsx":
         "the 'Direct work' row: tasks that sit on a project in no " +
         "subproject. A project fact, not a subtask",
-      "app/tasks/components/TaskListGrouped.tsx":
-        "S4. My Tasks draws a subtask row under its expanded parent by hand. " +
-        "S4 dedupes My Tasks (each subtask once, with its parent named) and " +
-        "moves this onto ParentCrumb",
     },
   },
   {

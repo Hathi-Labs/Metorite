@@ -3,7 +3,7 @@
 import Icon, { themedIcon } from "@/components/Icon";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
-import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import { AvatarStack, ParentCrumb, TaskMeta } from "@/components/TaskMeta";
 import { StatusMenu } from "@/components/ui/StatusMenu";
 import { pointAnchor } from "@/components/ui/AnchoredPanel";
 import { useMemo, useState } from "react";
@@ -47,8 +47,14 @@ export function TaskCard({
   onToggleSelected,
   onDragStart,
   onDragEnd,
+  showParent = true,
 }: {
   item: MyTask;
+  /** D-PM-38 (Subtasks S4) — draw the "↳ Parent" crumb when the task is a
+   *  subtask. On by default, because every flat view names a subtask's
+   *  parent. A row drawn indented UNDER its parent passes `false`: the indent
+   *  already says whose step it is. */
+  showParent?: boolean;
   /** "board" = full card (default); "row" = denser one-line-ish list row. */
   variant?: "board" | "row";
   draggable?: boolean;
@@ -289,11 +295,14 @@ export function TaskCard({
           // titles aren't crushed to a few characters; sm:+ single line as before.
           className="tech-transition group flex w-full cursor-pointer flex-col items-stretch gap-1 border-b border-border px-3.5 py-2.5 text-left hover:bg-secondary/50 sm:flex-row sm:items-center sm:gap-2.5"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            {showStage && <StatusPill item={item} />}
-            <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-              {item.title}
-            </span>
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              {showStage && <StatusPill item={item} />}
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                {item.title}
+              </span>
+            </div>
+            {showParent ? <ParentCrumb parent={item.parent} /> : null}
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {meta}
@@ -363,6 +372,9 @@ export function TaskCard({
           onActivate={activate}
           onContextMenu={openMenu}
           selected={selected}
+          // D-PM-38 S4 — the board is Separate: a subtask card names its
+          // parent, in the shell, as the Projects board does.
+          parent={showParent ? item.parent : undefined}
         >
           {/* Top corners: priority pill top-LEFT (above the title — always
               shown on the board, it's the ranking signal) · the action nudge

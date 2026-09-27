@@ -45,6 +45,7 @@ from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
     _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
+    TRIAGE_CATEGORY,
     ListResponse,
     Page,
     TaskModel,
@@ -2127,14 +2128,67 @@ def _is_delegated(payload: OrganizeIn) -> bool:
     )
 
 
+async def step_status(db: Any, parent: Any) -> Any:
+    """The status a new step of ``parent`` lands in (D-PM-38, Subtasks S4).
+
+    The parent's own status, when that lane is open: a step of work that is in
+    progress is in progress too. A step is in the parent's project, so the
+    parent's status is in the step's status set.
+
+    Otherwise, and for a triage lane, the answer is ``load_default_status``,
+    the one resolver (D79). This adds no second first-by-position rule.
+
+    Before S4 every step took the first lane. In a personal project that lane
+    is Inbox, category ``backlog``, so ``derive_disposition`` read the step as
+    SOMEDAY and it left the member's Next Actions the moment it was made.
+    """
+    lane = (await db.execute(
+        text("SELECT * FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+        {"sid": str(parent.status_id)},
+    )).fetchone() if getattr(parent, "status_id", None) else None
+    category = getattr(lane, "category", None) if lane is not None else None
+    if lane is not None and category not in CLOSING_CATEGORIES \
+            and category != TRIAGE_CATEGORY:
+        return lane
+    return await load_default_status(
+        db, await status_owner_id(db, str(parent.project_id)))
+
+
+async def step_overlay(db: Any, email: str, parent: Any) -> dict[str, Any] | None:
+    """What a new step states on MY list: NEXT when I stated NEXT on the parent.
+
+    D-PM-38 (Subtasks S4). A step is a piece of the parent's work. When the
+    member said the parent is a next action, a step of it is one too. Any
+    other stated value, or none, states nothing, and the step derives its
+    disposition off its lane, as every untriaged task does.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT disposition FROM pm_task_personal "
+            "WHERE task_id = CAST(:tid AS uuid) AND lower(member_email) = :who"
+        ),
+        {"tid": str(parent.id), "who": email.lower()},
+    )).fetchone()
+    if row is not None and getattr(row, "disposition", None) == "NEXT":
+        return {"disposition": "NEXT"}
+    return None
+
+
 async def _add_subtasks(
     db: Any, email: str, parent: Any, titles: list[str],
 ) -> list[str]:
     """Child ``pm_tasks`` under ``parent``: same project, self-assigned, in the
-    order given. Blank titles are skipped. Returns the new ids."""
+    order given. Blank titles are skipped. Returns the new ids.
+
+    Each step lands in the parent's lane when that lane is open
+    (:func:`step_status`) and states NEXT when the parent does
+    (:func:`step_overlay`). Both doors that add a step from My Tasks come
+    here: organize, and ``POST /my/tasks/{id}/subtasks``.
+    """
     project_id = str(parent.project_id)
     root = str(parent.root_project_id)
-    status = await load_default_status(db, await status_owner_id(db, project_id))
+    status = await step_status(db, parent)
+    overlay = await step_overlay(db, email, parent)
     created: list[str] = []
     for raw in titles:
         title = (raw or "").strip()
@@ -2150,7 +2204,7 @@ async def _add_subtasks(
                 # R5: the tenant travels with the row, read off the parent it
                 # hangs from rather than inferred later.
                 "organization_id": getattr(parent, "organization_id", None),
-            })
+            }, dict(overlay) if overlay else None)
         created.append(str(child.id))
     if created:
         # Subtask membership is a satellite of the PARENT (WS-27ae / P-27):
@@ -2331,6 +2385,48 @@ async def organize_my_task(
     if moved:
         await emit("pm.task.moved", {"task_id": task_id})
     return result
+
+
+class StepsIn(BaseModel):
+    titles: list[str]
+
+
+@router.post("/my/tasks/{task_id}/subtasks", status_code=201)
+async def add_my_steps(
+    task_id: str, payload: StepsIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Add steps under a task from My Tasks (D-PM-38, Subtasks S4).
+
+    The same helper organize calls, so the two ways of adding a step from
+    My Tasks agree: each step is self-assigned, lands in the parent's lane
+    when that lane is open, and states NEXT when I stated NEXT on the parent.
+    Before S4 the checklist wrote each step through ``POST /tasks`` with no
+    status, so a step took the first lane and read SOMEDAY.
+
+    The parent is read through the visibility the organize door uses
+    (``load_visible_task``), which admits a task I reach by assignment. That
+    reach is intended: an assignee adds steps under their own work, as
+    organize lets them. A parent I cannot see answers 404 and writes nothing.
+    Answers ``{created: [ids]}`` in the order given.
+    """
+    email = actor(user).lower()
+    titles = [t for t in (payload.titles or []) if (t or "").strip()]
+    if not titles:
+        raise HTTPException(status_code=422, detail="A step needs a title.")
+    # Bounded for the reason the batch capture is (`MAX_BATCH`).
+    if len(payload.titles or []) > MAX_BATCH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_BATCH} steps per request; "
+                   f"got {len(payload.titles)}.",
+        )
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        parent = await load_visible_task(db, vis, task_id)
+        # `create_personal_task` emits `pm.task.created` for each step.
+        created = await _add_subtasks(db, email, parent, titles)
+    return {"created": created}
 
 
 class DeferIn(BaseModel):

@@ -80,11 +80,10 @@ class ItemSource:
         """One of MY items, or a 404."""
         raise NotImplementedError
 
-    async def open_items(
-        self, db: Any, uid: str, limit: int, *, top_level: bool = False,
-    ) -> list[Any]:
-        """My open items, newest first. ``top_level`` drops subtasks and
-        archived rows (the "you may already have this" list)."""
+    async def open_items(self, db: Any, uid: str, limit: int) -> list[Any]:
+        """My open items, newest first, subtasks included (D-PM-38: a
+        subtask assigned to me is my work). The "you may already have
+        this" list."""
         raise NotImplementedError
 
     async def contexts_for(self, db: Any, uid: str) -> list[str]:
@@ -99,7 +98,8 @@ class ItemSource:
     async def siblings(
         self, db: Any, uid: str, project_id: str, exclude_id: str, limit: int,
     ) -> list[Any]:
-        """Open top-level tasks in one project, other than ``exclude_id``."""
+        """My open tasks in one project, other than ``exclude_id``. A
+        subtask is a candidate too, because a step can hold steps."""
         raise NotImplementedError
 
     async def local_tree(self, db: Any, uid: str) -> tuple[list[Any], list[Any]]:

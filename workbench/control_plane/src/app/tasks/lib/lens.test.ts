@@ -794,13 +794,10 @@ describe("the CRUD tail (S6a)", () => {
     expect(detail.subtasks[0].assignees[0].email).toBe("al@x");
   });
 
-  it("adds subtasks in the parent's project, assigned to ME, in order", async () => {
+  it("adds steps through ONE my/* request, the helper organize calls (S4)", async () => {
     const original = globalThis.fetch;
     const { calls, restore } = stub([
-      { id: "task-1", project_id: "proj-1" },   // GET tasks/task-1
-      { email: "me@fracktal.in" },              // /api/auth/me
-      { id: "c1" }, {},                         // POST tasks, PUT assignees
-      { id: "c2" }, {},
+      { created: ["c1", "c2"] },                // POST my/tasks/task-1/subtasks
       { rows: [{ id: "c1", title: "a" }, { id: "c2", title: "b", completed_at: "x" }], total: 2 },
     ]);
     let items: Awaited<ReturnType<typeof lensAddSubtasks>> = [];
@@ -810,17 +807,14 @@ describe("the CRUD tail (S6a)", () => {
       restore();
       globalThis.fetch = original;
     }
+    // D-PM-38 S4: never `POST tasks`, which takes the first lane and reads
+    // SOMEDAY. The gateway assigns me, picks the lane and states NEXT.
     const creates = calls.filter((c) => c.method === "POST");
-    expect(creates.map((c) => c.body)).toEqual([
-      { project_id: "proj-1", parent_task_id: "task-1", title: "a" },
-      { project_id: "proj-1", parent_task_id: "task-1", title: "b" },
+    expect(creates.map((c) => c.url)).toEqual([
+      "/api/projects/my/tasks/task-1/subtasks",
     ]);
-    const assigns = calls.filter((c) => c.method === "PUT");
-    expect(assigns.map((c) => c.url)).toEqual([
-      "/api/projects/tasks/c1/assignees",
-      "/api/projects/tasks/c2/assignees",
-    ]);
-    expect(assigns[0].body).toEqual({ assignees: ["me@fracktal.in"] });
+    expect(creates[0].body).toEqual({ titles: ["a", "b"] });
+    expect(calls.filter((c) => c.method === "PUT")).toEqual([]);
     // The checklist reads DONE off completed_at — the one fact a
     // project-shaped row holds.
     expect(items.map((i) => i.disposition)).toEqual(["INBOX", "DONE"]);

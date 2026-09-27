@@ -8021,6 +8021,100 @@ Before S3 it was no row.
   mobile layout drops the selected project when the width changes, so the
   mobile shots do not show the S3 rows.
 
+### 11.40 D-PM-38 — the build record for Subtasks S4 (2026-09-27)
+
+**The rule is in §12.9.** S4 draws My Tasks and the Calendar app. My Tasks
+is always Separate. The Calendar app always shows subtasks.
+
+No migration. One new gateway door: `POST /projects/my/tasks/{id}/subtasks`.
+
+| Item | Where | Fence |
+|---|---|---|
+| My Tasks draws each subtask once: under its parent, or flat with its crumb (B2) | `tasks/lib/subtaskRows.myTaskRows`, `TaskListGrouped.tsx`, `FlatList.tsx` | `subtaskRows.test.ts` |
+| The parent's expander lists only the steps that are not on the list | `subtaskRows.otherSteps`, `stepsNotShown` | `subtaskRows.test.ts` |
+| The My Tasks board and every flat row carry the crumb | `TaskCard.tsx` `showParent` | `subtaskRows.test.ts`, visual check |
+| My Tasks draws no subtask icon by hand | `TaskListGrouped.tsx` uses `NestedRowMark` | `sharedTaskUi.test.ts`, exemption removed |
+| "File as subtask" keeps the task on the list, before and after a reload (B8) | `taskStore.fileUnderParent` | `subtaskRows.test.ts` |
+| A new step lands in the parent's open lane and states NEXT under a NEXT parent (B9) | `personal.step_status`, `step_overlay`, `_add_subtasks` | `test_subtasks_s4.py`, live check (c) |
+| The checklist adds steps through the organize helper | `personal.add_my_steps`, `lens.lensAddSubtasks` | `lens.test.ts`, `test_client_route_contract.py` |
+| A scheduled subtask is busy time for the planner (B1) | `planning._PM_*_WHERE` | `test_subtasks_s4.py`, live check (a) |
+| A parent with a NEXT step of mine is not a candidate | `planning._LensSource.candidates`, `_PM_MY_STEPS_WHERE`, `calendar/components/shared.plannerCandidates` | `subtask_planner_parity.json`, `shared.test.ts`, `test_subtasks_s4.py`, live check (b) |
+| The rail and a Calendar block carry the crumb | `UnscheduledRail.tsx`, `TimeGrid.tsx` | visual check |
+| A one-hour step block keeps its crumb and drops the outcome line | `calendar/components/shared.blockLines` | `shared.test.ts`, visual check |
+| The AI seam reads subtasks on every read (B13) | `item_lens._PmLens` | `test_subtasks_s4.py`, live check (d) |
+| The clarify parent candidates leave out the item's descendants and rank top-level tasks first | `item_lens._PmLens.siblings` | live check (d) |
+| The step door answers 404 for a parent I cannot see, and takes at most `MAX_BATCH` titles | `personal.add_my_steps` | `test_subtasks_s4.py`, live check (e) |
+| The expander draws the other steps after my nested steps | `subtaskRows.expanderSlots` | `subtaskRows.test.ts` |
+| Undo of "File as subtask" moves the task back, and the store rolls back when the gateway refuses the move | `taskStore.fileUnderParent`, `undoLastChange` `refiled` | `subtaskRows.test.ts` |
+
+The live checks are `tests/live/live_ws39_subtask_planner.py`, on a fresh
+database.
+
+**B9 was real.** A step took the first lane of its project. In a personal
+project that lane is Inbox, with the category `backlog`. The step had no
+stated disposition, so `derive_disposition` read it as SOMEDAY. The step left
+Next Actions at the moment the member made it. The live check proves this:
+with the NEXT inheritance removed, the organized step reads SOMEDAY.
+
+**The step rule (B9).** A new step takes the parent's status when that lane is
+open and is not triage. Otherwise it takes `load_default_status`, the one
+resolver (D79). A step states NEXT only when the member stated NEXT on the
+parent. Any other value states nothing, and the step derives its disposition
+as every untriaged task does.
+
+**The candidate rule (B1).** The planner may pack a task when it is mine,
+NEXT, open, not archived and has no block. A parent is not a candidate when I
+hold a step of it that is itself NEXT, because the NEXT steps are the units
+the member schedules. A step in INBOX, SOMEDAY or WAITING cannot be
+scheduled. So it leaves its parent a candidate, or the member could plan
+nothing of that work. The test is on the EFFECTIVE disposition, so the gateway applies
+it in Python over `_PM_MY_STEPS_WHERE`, not in SQL. The fixture holds both
+copies of the rule to one set of cases, the INBOX, SOMEDAY, WAITING and TRASH
+steps included.
+
+**The AI rule (B13).** A subtask assigned to me is my work. So the AI seam
+reads it on every read: the open list, the siblings, the context backfill and
+the insight counts. `open_items` lost its `top_level` switch. The e-mail
+"similar tasks" check now compares against steps too.
+
+**The clarify parent candidates.** `siblings` is the list the clarify check
+reads when it asks "is this a step of X?". It leaves out the item's own
+descendants, because filing a task under its own step is a cycle. It ranks
+top-level tasks first, then the newest. This is the smaller change: steps stay
+in the list, because a step can hold steps, and a burst of edited steps cannot
+push the real parents out of the 40-row cap.
+
+**The step door's reach is on purpose.** `POST /my/tasks/{id}/subtasks` reads
+the parent through `load_visible_task`, which admits a task the member reaches
+by assignment alone. So an assignee can add steps under their own work, as the
+organize door already lets them. The old checklist path went through
+`POST /tasks`, which needs a project grant. A parent the member cannot see
+answers 404 and writes nothing. One request takes at most `MAX_BATCH` titles.
+
+**Undo of "File as subtask".** Undo moves the task back to the parent it had
+before, or to the top level (`POST tasks/{id}/move` with `parent_task_id`, or
+with null). The snapshot puts the local rows back. When the gateway refuses
+the move (a cycle, a parent the member cannot see), the store puts both rows
+back, offers no undo, and shows the reason. The pre-S4 undo re-created a
+"deleted" row, so it made a copy of the task.
+
+**The expander order.** An open expander draws the other people's steps after
+the LAST row of the parent's subtree. So my nested steps come first, and the
+muted steps follow them at the same indent.
+
+**Known gaps, not fixed here.**
+
+- The assistant's subtask tool (`skill-my-tasks`) still writes a step through
+  `POST /projects/tasks`. It takes the first lane and states nothing.
+- The Projects panel's "add subtask" also takes the first lane. §12.9 does
+  not say what Projects does, so S4 did not change it.
+- A filed capture keeps its stated INBOX. It shows in the Inbox with its
+  crumb until the member clarifies it.
+- A step block shorter than one hour still has more lines than room. The
+  block clips the clock line, as it did before S4 for any short block.
+- A drop between nested rows ranks against the drawn neighbours. A step's
+  own rank then sits between two tasks that are not its siblings.
+
 ---
 
 ## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)

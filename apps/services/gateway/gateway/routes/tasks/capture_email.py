@@ -492,7 +492,7 @@ async def _find_similar_tasks(
     # Fuzzy title match over the user's other OPEN items. Capture is a
     # low-frequency action, so scanning open titles in Python is fine and keeps
     # us off a pg_trgm migration.
-    rows = await src.open_items(db, uid, 400, top_level=True)
+    rows = await src.open_items(db, uid, 400)
     scored: list[tuple[float, Any]] = []
     for r in rows:
         if str(r.id) in seen:
