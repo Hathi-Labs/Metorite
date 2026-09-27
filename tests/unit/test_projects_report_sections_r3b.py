@@ -86,13 +86,14 @@ def test_rebalance_is_an_opt_in_section_and_the_last() -> None:
     assert got["sections"] == ["load", "stuck", "rebalance"]
 
 
-def test_no_template_goes_live_and_team_pulse_waits_for_pulse_only() -> None:
-    # R3b made no template live. R3c made `data_hygiene` live after it.
+def test_no_template_goes_live_and_team_pulse_is_live_since_r3d() -> None:
+    # R3b made no template live. R3c made `data_hygiene` live after it,
+    # and R3d made `team_pulse` live, with `rebalance` in it.
     live = [k for k, t in rep.TEMPLATES.items() if t["available"]]
-    assert live == ["weekly_delivery", "project_status", "data_hygiene"]
-    assert rep.TEMPLATES["team_pulse"]["waits_for"] == (
-        "The pulse section and a today period"
-    )
+    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    t1 = rep.TEMPLATES["team_pulse"]
+    assert "waits_for" not in t1
+    assert t1["sections"] == ["pulse", "conflicts", "rebalance"]
 
 
 # ── Hermetic: the chat card and the chat text ───────────────────────────────

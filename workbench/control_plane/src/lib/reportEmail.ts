@@ -109,6 +109,29 @@ export interface RenderedReport {
       hr_visible: boolean;
       horizon_days: number;
     };
+    /**
+     * WS-27bn R3d. Opt-in. One card for each person, read today. A row
+     * without its HR half has no `status` and no hours key, and only the
+     * reader's own row has `waiting_count`.
+     */
+    pulse?: {
+      people_total: number;
+      hidden_people: number;
+      help_note?: string;
+      rows: {
+        assignee: string;
+        name: string | null;
+        open_tasks: number;
+        overdue: number;
+        focus_total: number;
+        help_reasons: string[];
+        status?: string;
+        hours_basis?: boolean;
+        working_hours_this_week?: number;
+        committed_hours_this_week?: number;
+        waiting_count?: number;
+      }[];
+    };
     stuck?: {
       overdue: { name: string; overdue: number }[];
       overdue_total: number;
@@ -226,6 +249,40 @@ export const HYGIENE_WORDS: readonly [string, string][] = [
   ["no_estimate", "No estimate"],
   ["stale_in_progress", "Stale in progress"],
 ];
+
+/**
+ * WS-27bn R3d. The status of a pulse card, in words. The five pills are the
+ * People dashboard's `PILL_LABEL`, and `on_leave` is "On leave".
+ * `app/projects/lib/pulse.test.ts` holds this map equal to `PILL_LABEL`.
+ */
+export const PULSE_STATUS_WORDS: Readonly<Record<string, string>> = {
+  on_leave: "On leave",
+  behind: "Behind",
+  at_risk: "At risk",
+  overloaded: "Overloaded",
+  idle: "Idle",
+  on_track: "On track",
+};
+
+/**
+ * WS-27bn R3d. A help reason, in words. The panel, the email and the chat
+ * card (`views.py` `HELP_REASON_WORDS`) say the same words.
+ */
+export const HELP_REASON_WORDS: Readonly<Record<string, string>> = {
+  blocked: "Blocked",
+  stale: "Stale",
+  waiting_overdue: "Waiting past its date",
+};
+
+/**
+ * WS-27bn R3d, edit E5. "This report hides N other people", or null when
+ * the report hides nobody. The panel, the email and the chat card
+ * (`reads.py` `hidden_people_line`) print these words.
+ */
+export function hiddenPeopleLine(n: number | null | undefined): string | null {
+  if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) return null;
+  return `This report hides ${n} other ${n === 1 ? "person" : "people"}`;
+}
 
 /** How many project lines a message carries before it stops being readable. */
 export const MAX_EMAIL_ROWS = 10;
@@ -467,6 +524,55 @@ export function reportLayout(
         return `${who}: ${p.open_tasks} open${hoursPart}${barPart}`;
       }),
       notes: cap.hr_visible ? [] : ["Hours need HR read access."],
+    });
+  }
+
+  const pulse = sections.pulse;
+  if (pulse) {
+    // WS-27bn R3d. One line a card, with no colour. The status is words.
+    // The bar draws two server figures: committed of working hours this
+    // week when the row carries them, else overdue of open tasks. A row
+    // without its HR half has no status, so the line prints none.
+    const items = pulse.rows.slice(0, maxRows).map((r) => {
+      const who = r.name || r.assignee;
+      const status =
+        typeof r.status === "string"
+          ? ` · ${PULSE_STATUS_WORDS[r.status] ?? r.status}`
+          : "";
+      const bar =
+        r.hours_basis &&
+        typeof r.committed_hours_this_week === "number" &&
+        typeof r.working_hours_this_week === "number"
+          ? ` · ${textBar(r.committed_hours_this_week, r.working_hours_this_week)}` +
+            ` ${figure(r.committed_hours_this_week)} of` +
+            ` ${figure(r.working_hours_this_week)} h this week`
+          : ` · ${textBar(r.overdue, r.open_tasks)} ${r.overdue} of ${r.open_tasks} overdue`;
+      const focus = ` · ${r.focus_total} focus`;
+      const waiting =
+        typeof r.waiting_count === "number" && r.waiting_count > 0
+          ? ` · ${r.waiting_count} waiting past the date`
+          : "";
+      const help = r.help_reasons.length
+        ? ` · Needs help: ${r.help_reasons.map((h) => HELP_REASON_WORDS[h] ?? h).join(", ")}`
+        : "";
+      return `${who}${status}: ${r.open_tasks} open${bar}${focus}${waiting}${help}`;
+    });
+    const notes: string[] = [];
+    // The server already cuts an admin's rows to MAX_PEOPLE, so the rows
+    // sent do not count everybody. The count is two server figures less
+    // the lines shown: people_total - hidden_people - items.length. The
+    // hidden people have their own line below.
+    const more = pulse.people_total - pulse.hidden_people - items.length;
+    if (more > 0) {
+      notes.push(`…and ${more} more ${more === 1 ? "person" : "people"}`);
+    }
+    const hidden = hiddenPeopleLine(pulse.hidden_people);
+    if (hidden) notes.push(hidden);
+    if (pulse.help_note) notes.push(pulse.help_note);
+    parts.push({
+      head: { lead: `Team pulse: ${pulse.people_total} people`, strong: true },
+      items,
+      notes,
     });
   }
 

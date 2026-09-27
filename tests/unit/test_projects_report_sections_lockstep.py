@@ -261,9 +261,10 @@ def test_project_status_is_live_in_sections_order() -> None:
     assert t5["scope_kinds"] == ["project"]
 
 
-def test_the_live_templates_are_exactly_the_pinned_three() -> None:
+def test_the_live_templates_are_exactly_the_pinned_four() -> None:
+    """WS-27bn R3d makes T1 `team_pulse` live."""
     live = [k for k, t in reports.TEMPLATES.items() if t["available"]]
-    assert live == ["weekly_delivery", "project_status", "data_hygiene"]
+    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
 
 
 def test_weekly_delivery_is_exactly_the_default_report() -> None:
@@ -274,12 +275,18 @@ def test_weekly_delivery_is_exactly_the_default_report() -> None:
 
 
 def test_the_template_fence_fires_on_a_missing_section() -> None:
-    """The fence's own fence: `pulse` is not a section until R3."""
+    """The fence's own fence: a name that is not a section fires it.
+
+    WS-27bn R3d. `pulse` IS a section now, so the fake uses a name that
+    no slice will ever add.
+    """
     fake = {
         "team_pulse": {"key": "team_pulse", "available": True,
-                       "sections": ["pulse", "conflicts"]},
+                       "sections": ["not_a_section", "conflicts"]},
     }
-    assert any("pulse" in f for f in template_faults(fake, reports.SECTIONS))
+    assert any(
+        "not_a_section" in f for f in template_faults(fake, reports.SECTIONS)
+    )
 
 
 def test_the_template_fence_fires_on_order_and_on_coming_soon_sections() -> None:

@@ -609,6 +609,88 @@ export interface HygieneReport {
   rows: HygieneRow[];
 }
 
+/** WS-27bn R3d — the three reasons a person needs help. */
+export type PulseHelpReason = "blocked" | "stale" | "waiting_overdue";
+
+/** One focus task on a pulse card: in progress, or due today or tomorrow. */
+export interface PulseFocusTask {
+  id: string;
+  title: string;
+  task_number: number | null;
+  project_name: string | null;
+  due_at: string | null;
+  in_progress: boolean;
+  /** Only on the reader's own card: the reader scheduled it for today. */
+  scheduled_today?: boolean;
+}
+
+/**
+ * One overdue waiting item. Only the reader's own card carries these. The
+ * item is judged on `expected_by`, or on `due_at` when nobody stated a
+ * promise: the rule of `app/tasks/lib/waiting.ts`.
+ */
+export interface PulseWaitingItem {
+  id: string;
+  title: string;
+  task_number: number | null;
+  project_name: string | null;
+  expected_by: string | null;
+  due_at?: string | null;
+}
+
+/**
+ * WS-27bn R3d — one card of the `pulse` section.
+ *
+ * ⚠️ **The HR half is decided PER ROW, by key presence** (edit E4). A row
+ * the reader may not see the HR half of has NO `pill`, `status`,
+ * `has_room` or hours key. They are absent, never null. The reader's own
+ * row carries them even without the grant (the self door).
+ *
+ * ⚠️ **`waiting` and `waiting_count` are on the reader's own row only**
+ * (owner Q6), and that binds an admin too.
+ */
+export interface PulseRow {
+  assignee: string;
+  name: string | null;
+  open_tasks: number;
+  overdue: number;
+  blocked_count: number;
+  stale_count: number;
+  focus: PulseFocusTask[];
+  focus_total: number;
+  help_reasons: PulseHelpReason[];
+  needs_help: boolean;
+  pill?: "behind" | "at_risk" | "overloaded" | "idle" | "on_track";
+  pill_reason?: string | null;
+  hours_basis?: boolean;
+  working_hours_this_week?: number;
+  committed_hours_this_week?: number;
+  status?: "on_leave" | "behind" | "at_risk" | "overloaded" | "idle" | "on_track";
+  has_room?: boolean;
+  waiting_count?: number;
+  waiting?: PulseWaitingItem[];
+}
+
+/**
+ * WS-27bn R3d — the `pulse` section (`analytics_pulse.py` `pulse_body`).
+ *
+ * ⚠️ **The server filters the rows** (edit E5). An admin gets every card,
+ * up to twenty. Any other reader gets their own card only, and
+ * `hidden_people` counts the cards the server kept back.
+ */
+export interface PulseReport {
+  /** The one UTC day the section read. */
+  today: string;
+  stale_days: number;
+  /** The READER's grant. A panel decides the HR half per row, not by this. */
+  hr_visible: boolean;
+  people_total: number;
+  hidden_people: number;
+  /** Says that "behind two runs in a row" is not checked yet (R4). */
+  help_note: string;
+  rows: PulseRow[];
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -929,6 +1011,12 @@ export interface RenderedReportBody {
       horizon_days: number;
       windows: CapacityReport["windows"];
     };
+    /**
+     * WS-27bn R3d. Opt-in. One card for each person who holds open work in
+     * the scope, read today. The server removes the cards this reader may
+     * not see (edit E5).
+     */
+    pulse?: PulseReport;
     stuck?: {
       overdue: { project_id: string; name: string; overdue: number }[];
       overdue_total: number;

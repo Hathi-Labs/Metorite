@@ -4,15 +4,15 @@
  * Spec: `project-docs/specs/projects_reports.md` §8 R2b, "Done when". This
  * file is the fence the spec names, in three parts:
  *
- *   (a) RENDER. `RenderedBody` draws each of the nine sections as its
+ *   (a) RENDER. `RenderedBody` draws each of the ten sections as its
  *       Analytics panel, with its table folded under it (WS-27bn R3a adds
  *       `outlook`, and the ageing bands in `stuck`. R3b adds `rebalance`,
- *       and its HR hint. R3c adds `hygiene`). A sentinel figure
+ *       and its HR hint. R3c adds `hygiene`. R3d adds `pulse`). A sentinel figure
  *       per section appears in the panel AND in the table ("agree"). A body
  *       in the report's own shape carries no "undefined", no "NaN" and no
  *       "No open work in this scope" unless every band is zero
  *       ("degrade"). A tile hides when its section is not in the report.
- *   (b) SOURCE. `ReportsView.tsx` imports the nine panels from
+ *   (b) SOURCE. `ReportsView.tsx` imports the ten panels from
  *       `./AnalyticsPanels` and renders each one. It holds no inline width
  *       or height style and no function named for a bar or a chart. A
  *       self-test proves a hand-drawn bar fires the fence.
@@ -30,7 +30,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { CapacityRow, HygieneKind, RenderedReportBody } from "../lib/api";
+import type {
+  CapacityRow,
+  HygieneKind,
+  PulseRow,
+  RenderedReportBody,
+} from "../lib/api";
 import {
   capacityPanelData,
   conflictsPanelData,
@@ -38,6 +43,7 @@ import {
   hygienePanelData,
   loadPanelData,
   outlookPanelData,
+  pulsePanelData,
   rebalancePanelData,
   reportTiles,
   stuckPanelData,
@@ -47,6 +53,7 @@ import { rebalancePickups, rebalanceTasks } from "../lib/rebalance";
 import {
   CapacityPanel,
   OutlookPanel,
+  PulsePanel,
   StuckPanel,
   ThroughputPanel,
 } from "./AnalyticsPanels";
@@ -211,6 +218,96 @@ const HYGIENE: NonNullable<Sections["hygiene"]> = {
   ],
 };
 
+/** Seven focus tasks: the card names three, the table names five. */
+const focusTasks = (n: number, first: string) =>
+  Array.from({ length: n }, (_, i) => ({
+    id: `f-${i}`,
+    title: i === 0 ? first : `focus task ${i}`,
+    task_number: i,
+    project_name: "Rig",
+    due_at: null,
+    in_progress: true,
+  }));
+
+/** A pulse card with its HR half: the admin's view of any card. */
+const pulseRow = (over: Partial<PulseRow> = {}): PulseRow => ({
+  assignee: "dee@example.test",
+  name: "Dee",
+  open_tasks: 9,
+  overdue: 1,
+  blocked_count: 1,
+  stale_count: 1,
+  focus: focusTasks(5, "Mill the base 8101"),
+  focus_total: 7,
+  help_reasons: ["blocked", "stale"],
+  needs_help: true,
+  pill: "on_track",
+  pill_reason: "12h of 40h this week.",
+  hours_basis: true,
+  working_hours_this_week: 40,
+  committed_hours_this_week: 12,
+  status: "on_track",
+  has_room: false,
+  ...over,
+});
+
+/** A card without its HR half: no pill, no status, no hours key. */
+const TASK_HALF: PulseRow = {
+  assignee: "eli@example.test",
+  name: null,
+  open_tasks: 4,
+  overdue: 1,
+  blocked_count: 0,
+  stale_count: 0,
+  focus: [],
+  focus_total: 0,
+  help_reasons: [],
+  needs_help: false,
+};
+
+/** `pulse_body` for an admin: every card, and nobody hidden (WS-27bn R3d). */
+const PULSE: NonNullable<Sections["pulse"]> = {
+  today: "2026-09-28",
+  stale_days: 14,
+  hr_visible: true,
+  people_total: 3,
+  hidden_people: 0,
+  help_note:
+    'The report does not check "behind two runs in a row" yet. It needs the stored runs of slice R4.',
+  rows: [
+    pulseRow(),
+    // On leave today, and idle: the card must say "On leave", never "Idle".
+    pulseRow({
+      assignee: "fay@example.test",
+      name: "Fay",
+      focus: [],
+      focus_total: 0,
+      help_reasons: [],
+      needs_help: false,
+      pill: "idle",
+      status: "on_leave",
+      has_room: false,
+    }),
+    TASK_HALF,
+  ],
+};
+
+/** `pulse_body` for a member: their own card only, and two hidden. */
+const PULSE_MEMBER: NonNullable<Sections["pulse"]> = {
+  ...PULSE,
+  hr_visible: false,
+  people_total: 3,
+  hidden_people: 2,
+  rows: [
+    pulseRow({
+      waiting_count: 1,
+      waiting: [{ id: "w1", title: "Steel quote", task_number: 4,
+                  project_name: "Rig", expected_by: "2026-09-27T00:00:00+00:00" }],
+      help_reasons: ["blocked", "stale", "waiting_overdue"],
+    }),
+  ],
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -293,6 +390,7 @@ const SECTIONS: Required<Sections> = {
   },
   rebalance: REBALANCE,
   hygiene: HYGIENE,
+  pulse: PULSE,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -305,6 +403,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   conflicts: "7601",
   rebalance: "7801",
   hygiene: "7901",
+  pulse: "8101",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -350,19 +449,69 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   conflicts: "Where the plan conflicts",
   rebalance: "Who could help",
   hygiene: "What open tasks are missing",
+  pulse: "Who needs help today",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all nine panels and nine tables in one report", () => {
+  it("draws all ten panels and ten tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(", as a table<").length).toBe(10);
+    expect(html.split(", as a table<").length).toBe(11);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(9);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(10);
+  });
+
+  it("pulse draws one card a person: the load bar, the status and three focus tasks", () => {
+    const { panel, table } = panelAndTable(draw({ pulse: PULSE }));
+    // Committed of working hours, from the row that carries them.
+    expect(panel).toContain("12 of 40h");
+    expect(panel).toContain('aria-label="Committed hours: 12 of 40"');
+    // The row with no HR half falls back to overdue of open tasks.
+    expect(panel).toContain("1 of 4 overdue");
+    expect(panel).toContain('aria-label="Overdue: 1 of 4"');
+    // The status is words beside its dot, never the dot alone.
+    expect(panel).toContain("On track");
+    // Three focus tasks, then the server's count less the three.
+    expect(panel).toContain("Mill the base 8101");
+    expect(panel).toContain("focus task 2");
+    expect(panel).not.toContain("focus task 3");
+    expect(panel).toContain("…and 4 more");
+    expect(panel).toContain("Needs help: Blocked, Stale");
+    expect(panel).toContain("two runs in a row");
+    // An admin hides nobody, so no hidden line.
+    expect(panel + table).not.toContain("This report hides");
+    // The table names each card and every focus task the server sent.
+    expect(table).toContain("focus task 4");
+    expect(table).toContain("eli@example.test");
+  });
+
+  it("pulse draws 'On leave' for a person away today, never 'Idle'", () => {
+    const html = draw({ pulse: { ...PULSE, rows: [PULSE.rows[1]] } });
+    expect(html).toContain("On leave");
+    expect(html).not.toContain(">Idle<");
+    expect(html).not.toMatch(/Idle/);
+  });
+
+  it("pulse draws no status for a card without its HR half", () => {
+    const html = draw({ pulse: { ...PULSE, rows: [TASK_HALF] } });
+    const { panel } = panelAndTable(html);
+    for (const word of ["On track", "On leave", "Idle", "Behind", "At risk", "Overloaded"]) {
+      expect(panel, word).not.toContain(word);
+    }
+    expect(panel).toContain("eli@example.test");
+  });
+
+  it("pulse, for a member: one card, the waiting count and the hidden line", () => {
+    const { panel, table } = panelAndTable(draw({ pulse: PULSE_MEMBER }));
+    expect(panel.match(/<li[^>]*rounded-md/g)?.length).toBe(1);
+    expect(panel).toContain("1 waiting past the date");
+    expect(panel).toContain("Needs help: Blocked, Stale, Waiting past its date");
+    expect(panel).toContain("This report hides 2 other people");
+    expect(table).toContain("This report hides 2 other people");
   });
 
   it("hygiene draws one bar a kind, five titles, then the rest as a count", () => {
@@ -533,6 +682,10 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     ["with no open work to check", {
       hygiene: { open_total: 0, stale_days: 14, by_kind: {}, rows: [] },
     }],
+    ["with no card for this reader", {
+      pulse: { ...PULSE_MEMBER, rows: [], hidden_people: 3 },
+    }],
+    ["with no HR half on any card", { pulse: { ...PULSE, rows: [TASK_HALF] } }],
   ] as [string, Sections][]) {
     it(`prints none of them ${label}`, () => {
       const html = draw(sections);
@@ -550,6 +703,14 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     });
     expect(zero).toContain("No open work in this scope.");
     expect(draw({ stuck: SECTIONS.stuck })).not.toContain("No open work in this scope");
+  });
+
+  it("pulse with no card says so, and still counts the hidden people", () => {
+    const html = draw({ pulse: { ...PULSE_MEMBER, rows: [], hidden_people: 3 } });
+    expect(html).toContain("No card to show.");
+    expect(html).toContain("This report hides 3 other people");
+    const { panel } = panelAndTable(html);
+    expect(panel).not.toContain('role="img"');
   });
 
   it("draws no slip bar and shows the verdict when the forecast has no date", () => {
@@ -710,6 +871,7 @@ const PANELS = [
   "ConflictsPanel",
   "RebalancePanel",
   "HygienePanel",
+  "PulsePanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -728,13 +890,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the nine panels from ./AnalyticsPanels", () => {
+  it("imports the ten panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the nine", () => {
+  it("renders each of the ten", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 
@@ -840,6 +1002,23 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
     expect(Object.keys(got).sort()).toEqual(
       ["by_kind", "open_total", "rows", "stale_days"]
     );
+  });
+
+  it("pulse: the section is the body, copied, and absent HR keys stay absent", () => {
+    const got = pulsePanelData(PULSE);
+    expect(got).toEqual(PULSE);
+    expect(got).not.toBe(PULSE);
+    expect(got.rows[2]).not.toBe(PULSE.rows[2]);
+    for (const key of ["pill", "status", "has_room", "hours_basis", "waiting"]) {
+      expect(key in got.rows[2], key).toBe(false);
+    }
+  });
+
+  it("the pulse panel renders on its own, as a report mounts it", () => {
+    const html = renderToStaticMarkup(
+      createElement(PulsePanel, { data: pulsePanelData(PULSE) })
+    );
+    expect(html).toContain("Who needs help today");
   });
 
   describe("the browser counts nothing", () => {
