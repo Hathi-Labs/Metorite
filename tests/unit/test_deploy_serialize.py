@@ -828,6 +828,43 @@ class TestCaddyHoldsTheRequest:
         assert backup < restore
 
 
+class TestProbesOutwaitTheRetry:
+    """`lb_try_duration` makes Caddy HOLD a request to a down upstream. A probe
+    with a shorter bound then reads 000. The watchdog restarted a healthy Caddy
+    on that, and vps-health.yml blamed the network."""
+
+    def _try_seconds(self) -> float:
+        opts = dict(
+            ln.split()[:2]
+            for ln in _caddy_proxy_block("127.0.0.1:8080").splitlines()
+            if len(ln.split()) >= 2
+        )
+        return _seconds(opts["lb_try_duration"])
+
+    def test_the_watchdog_probes_caddy_on_a_path_caddy_answers_itself(self) -> None:
+        wd = _executable_lines(_ROOT / "deploy/hostinger/health-watchdog.sh")
+        probe = next(ln for ln in wd if ln.strip().startswith("probe_http caddy "))
+        url = probe.split('"')[1]
+        path = url.split("}", 1)[1]
+        assert path.startswith("/internal/"), (
+            f"{url}: a path Caddy proxies waits for the gateway and restarts Caddy"
+        )
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        api = text[text.index("api.metorite.com {") :]
+        api = api[: api.index("\n}\n")]
+        assert "@internal path /internal/*" in api
+        assert "respond @internal 404" in api
+        assert api.index("respond @internal 404") < api.index("reverse_proxy")
+
+    def test_vps_health_outwaits_the_retry(self) -> None:
+        wf = (_ROOT / ".github/workflows/vps-health.yml").read_text(encoding="utf-8")
+        probe = next(
+            ln for ln in wf.splitlines() if "curl -s -o /dev/null -m" in ln and '"$url"' in ln
+        )
+        bound = int(probe.split("-m ", 1)[1].split()[0])
+        assert bound > self._try_seconds(), f"-m {bound} reads a held request as UNREACHABLE"
+
+
 class TestAGatewayRestartLeavesTheWorkbenchAlone:
     def _unit(self) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}

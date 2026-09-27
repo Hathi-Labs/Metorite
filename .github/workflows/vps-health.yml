@@ -63,7 +63,10 @@ jobs:
             url="${target#*|}"
             code=000
             for attempt in 1 2 3; do
-              code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+              # -m 40, not 25 (H-60): Caddy holds a request to a down
+              # upstream for 30 s (lb_try_duration) before its 502. A shorter
+              # bound reads that as 000, UNREACHABLE, and points at the network.
+              code="$(curl -s -o /dev/null -m 40 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
               # 2xx/3xx/4xx are all "alive" — a redirect to sign-in and a 401
               # both prove the stack compiled and is serving.
               #
