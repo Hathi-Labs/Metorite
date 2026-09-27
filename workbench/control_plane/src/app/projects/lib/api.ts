@@ -335,8 +335,12 @@ export interface OutlookReport {
     hours_per_week: number;
     /** False: leave did not reduce the hours, because the reader is not an admin. */
     absences_applied: boolean;
-    /** An engagement ending inside the window — a risk no velocity can see. */
-    leaving_within_90d: number;
+    /**
+     * An engagement ending inside the window — a risk no velocity can see.
+     * WS-27bm S12 (H-188): only an admin receives it. For anyone else the key
+     * is absent, and absent means "no count", never "nobody leaves".
+     */
+    leaving_within_90d?: number;
   };
 }
 

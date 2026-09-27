@@ -249,3 +249,59 @@ describe("every /projects canvas renders inside the boundary", () => {
     ).toBe(everywhere);
   });
 });
+
+describe("every Analytics panel renders inside its own boundary (WS-27bm S12)", () => {
+  // The analytics branch of `app/projects/page.tsx` sits outside the canvas
+  // boundary. So a panel that throws on one missing date blanked the whole
+  // page. Each panel is now the ONLY child of its own boundary. Adjacency is
+  // the check, so a panel added without a boundary fails here.
+  const VIEW = "app/projects/components/AnalyticsView.tsx";
+  const view = code(VIEW);
+  const PANEL = /<([A-Z]\w*Panel)\b/g;
+  const panels = [...view.matchAll(PANEL)];
+
+  it("renders the seven panels", () => {
+    expect(panels.map((m) => m[1]).sort()).toEqual([
+      "CapacityPanel",
+      "ConflictsPanel",
+      "FinishedPanel",
+      "LoadPanel",
+      "OutlookPanel",
+      "StuckPanel",
+      "ThroughputPanel",
+    ]);
+  });
+
+  it("imports the one boundary from the shared home", () => {
+    expect(view).toMatch(
+      /import\s*\{\s*LayoutBoundary\s*\}\s*from\s+["']@\/components\/LayoutBoundary["']/,
+    );
+  });
+
+  it.each(panels.map((m) => [m[1], m.index!] as const))(
+    "%s opens straight after a <LayoutBoundary> tag and closes straight into its end",
+    (name, at) => {
+      const before = view.slice(0, at);
+      expect(
+        before,
+        `${name} is not the first child of a <LayoutBoundary>. One throw in it ` +
+          "blanks the whole Analytics page.",
+      ).toMatch(/<LayoutBoundary\b[^<>]*\blayout="[^"]+"[^<>]*>\s*$/);
+      const after = view.slice(at);
+      expect(
+        after,
+        `${name} has a sibling inside its boundary. Each panel gets its own.`,
+      ).toMatch(new RegExp(`^<${name}\\b[^<>]*/>\\s*</LayoutBoundary>`));
+    },
+  );
+
+  it("names each panel in words the fallback can use", () => {
+    // The fallback says "the {layout} view". A label that ends in "panel" or
+    // "view" reads "the forecast panel view" (S12 fix round 1).
+    const labels = [...view.matchAll(/<LayoutBoundary\b[^<>]*\blayout="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(labels).toHaveLength(panels.length);
+    for (const label of labels) expect(label).not.toMatch(/\b(panel|view)$/i);
+  });
+});

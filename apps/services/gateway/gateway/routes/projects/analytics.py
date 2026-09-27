@@ -1394,6 +1394,15 @@ FORECAST_WEEKS = 6
 #: How far ahead "leaving soon" looks, for an engagement that ends.
 LEAVING_HORIZON_DAYS = 90
 
+#: Every ``people`` key the outlook sends only to an ``admin:members:read``
+#: holder. WS-27bm S12 (H-188), ``projects_ai_chat.md`` §18.2 rule 2.
+#:
+#: ⚠️ **This tuple is the one list.** A count of engagements that end tells
+#: the reader about end dates, and the Capacity panel keeps those behind the
+#: same grant. Without the grant the key is ABSENT: not null and not 0. A zero
+#: would tell a member that nobody leaves, which the member cannot know.
+OUTLOOK_HR_KEYS: tuple[str, ...] = ("leaving_within_90d",)
+
 #: How many whole weeks ahead the capacity rate reads — WS-27bm S11.
 #:
 #: ⚠️ **One fixed forward window, and the divisor is this number.** The
@@ -1796,13 +1805,27 @@ async def outlook_body(
             # False means leave did not reduce the hours: the reader does not
             # hold `admin:members:read` (§17.3 rule 10).
             "absences_applied": hr_visible,
-            # ⚠️ An engagement that ends inside the forecast window is a risk
-            # no velocity can see. `people.end_date` already exists for
-            # "assignment past it is a mistake" (spec §6.1); this is the same
-            # fact asked at project scale.
-            "leaving_within_90d": int(cap.leaving_soon or 0),
+            # The HR tier joins below, and only for a holder of the grant.
+            **(_outlook_hr_people(cap) if hr_visible else {}),
         },
     }
+
+
+def _outlook_hr_people(cap: Any) -> dict[str, Any]:
+    """The ``people`` keys only an ``admin:members:read`` holder receives.
+
+    WS-27bm S12 (H-188). The result is read through :data:`OUTLOOK_HR_KEYS`,
+    so the tuple and the payload cannot name different keys. A key added
+    here and not to the tuple never leaves this function.
+    """
+    values = {
+        # ⚠️ An engagement that ends inside the forecast window is a risk
+        # no velocity can see. `people.end_date` already exists for
+        # "assignment past it is a mistake" (spec §6.1); this is the same
+        # fact asked at project scale.
+        "leaving_within_90d": int(cap.leaving_soon or 0),
+    }
+    return {key: values[key] for key in OUTLOOK_HR_KEYS}
 
 
 # ── Hygiene: open tasks that make every other report wrong — WS-27bn R3c ────
