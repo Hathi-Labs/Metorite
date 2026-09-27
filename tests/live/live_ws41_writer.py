@@ -370,6 +370,57 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     after = await tree_counts(org)
     check("4.4 the tree is still 5 / 9 / 48", after == kinds, str(after))
 
+    # A list moved to another space since: the old map is stale, so the list
+    # is created again rather than reused with a wrong root.
+    progress = as_dict(
+        await one(
+            org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=run_id
+        )
+    )
+    spaces = sorted(set(progress["roots"].values()))
+    _list_ref, list_id = next(
+        (ref, node)
+        for ref, node in progress["nodes"].items()
+        if progress["roots"][ref] == spaces[0]
+    )
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "UPDATE pm_projects SET parent_project_id = CAST(:s AS uuid) WHERE id = CAST(:p AS uuid)"
+            ),
+            {"s": spaces[1], "p": list_id},
+        )
+    moved, lease = await new_run(org, ADMIN, bundle, raw, ImportMapping())
+    await import_writer.apply_run(org, moved, lease)
+    created = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=moved)
+    ).get("created", {})
+    check(
+        "4.5 a list moved since is created again, the rest reused",
+        created.get("projects") == 1 and created.get("reused") == 61,
+        json.dumps(created),
+    )
+
+    # A DIFFERENT workspace whose Spaces carry the same names: new ids, the
+    # same names. It must never land in this import's spaces (§6.9).
+    other = raw.replace(b"zz", b"yy").replace(b"90000000", b"80000000")
+    other_bundle = clickup.parse([(FIXTURE.name, other)])
+    stranger, lease = await new_run(org, ADMIN, other_bundle, other, ImportMapping())
+    await import_writer.apply_run(org, stranger, lease)
+    report = as_dict(
+        await one(
+            org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=stranger
+        )
+    )
+    created = report.get("created", {})
+    check(
+        "4.6 a different workspace with the same Space names gets new spaces",
+        created.get("spaces") == 5
+        and created.get("reused") == 0
+        and report.get("tasks_written") == 2423,
+        json.dumps(created),
+    )
+
     # ── 5. a failure is recorded with its reason ────────────────────────
     broken, lease = await new_run(org, ADMIN, bundle, raw, ImportMapping())
     for path in Path(os.environ["PROJECT_IMPORT_DIR"]).rglob("*"):

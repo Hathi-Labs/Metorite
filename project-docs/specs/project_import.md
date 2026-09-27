@@ -566,7 +566,19 @@ themselves, uploaded as a ZIP.
 - **Nodes are reused (built in I-3).** An earlier run of the same source
   may have written a space, folder or project for the SAME target. Batch 0
   reuses that node when it still exists and is not archived. A re-run therefore creates
-  nothing. A re-upload after a failure continues in the same tree, so its
+  nothing.
+- **Reuse needs a real continuation.** Space and Folder refs are NAMES. So
+  a different workspace with a Space called "Team Space" must never land in
+  an earlier import's "Team Space". A run continues an earlier run only
+  when it is the same export. The file hashes match, or the earlier run
+  already wrote a task of this file. The target, the grant and the admin's space
+  name must also be the same. A reused node must still sit under the parent
+  this run resolved. A node moved since is created again, so its root never
+  comes from an old map. The report names the runs it continued
+  (`continued_from`).
+- **A reused status set.** A name the set already holds keeps ITS stage, and
+  the task takes that stage, completion date included. A new name goes after
+  the last status of its own stage. A re-upload after a failure continues in the same tree, so its
   subtasks keep their parents. A new-space run reuses only earlier new-space
   runs. An existing-space run reuses only earlier runs into that same space.
   The report counts reused nodes as `created.reused`.
@@ -761,7 +773,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
-| **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 35 of 35 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
+| **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 39 of 39 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. A list moved since is created again. A different workspace with the same Space names gets new spaces. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |

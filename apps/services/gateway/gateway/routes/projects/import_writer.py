@@ -55,6 +55,7 @@ from gateway.routes.projects.core import (
     record_activity,
     reserve_task_numbers,
     resolve_visibility_for,
+    status_owner_id,
     vocabulary_scope,
 )
 from gateway.routes.projects.importer.bundle import ImportBundle, Task
@@ -66,7 +67,6 @@ from gateway.routes.projects.importer.layout import (
     completed_estimate,
     description,
     due_instant,
-    is_closed,
     order_tasks,
     origin,
     project_statuses,
@@ -170,17 +170,27 @@ EXISTING_IN_BATCH_SQL = (
     "   AND clickup_id = ANY(:refs)"
 )
 #: The node maps of earlier runs of the same source in this organization,
-#: newest first. Batch 0 reuses a node when the run had the same target.
+#: newest first. Batch 0 reuses a node only when this run CONTINUES one of
+#: them (see :func:`_earlier_nodes`).
 EARLIER_NODES_SQL = (
-    "SELECT mapping->'target' AS target, progress->'node_ids' AS node_ids, "
-    "       progress->'node_roots' AS node_roots "
+    "SELECT id, files, mapping->'target' AS target, mapping->>'grant' AS grant_subject, "
+    "       progress->'node_ids' AS node_ids "
     "  FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) AND source = :source "
     "   AND id <> CAST(:id AS uuid) AND progress ? 'node_ids' "
     " ORDER BY created_at DESC"
 )
+#: The runs that already wrote a task of THIS file: the proof that this run
+#: continues them rather than importing a different workspace.
+CONTINUED_RUNS_SQL = (
+    "SELECT DISTINCT origin->>'run_id' AS run_id FROM pm_tasks "
+    " WHERE organization_id = CAST(:org AS uuid) AND origin->>'kind' = 'import' "
+    "   AND origin->>'source' = :source AND origin->>'external_id' = ANY(:refs)"
+)
+#: A node is reused only where it still stands: alive, not archived, and
+#: under the same parent (a move re-stamps the roots, so the old map is stale).
 LIVE_NODES_SQL = (
-    "SELECT id FROM pm_projects "
+    "SELECT id, parent_project_id FROM pm_projects "
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:ids AS uuid[])) "
     "   AND archived_at IS NULL"
 )
@@ -284,11 +294,12 @@ async def apply_run(
     final = resolve_statuses(bundle, mapping)
 
     if not progress.get("nodes"):
+        hashes = [str(f.get("sha256")) for f in (imports._json(row.files) or [])]
         progress = await _retrying(
             "nodes",
             run_id,
             lambda: _write_nodes(
-                organization_id, run_id, lease, bundle, mapping, admin, final, progress
+                organization_id, run_id, lease, bundle, mapping, admin, final, progress, hashes
             ),
         )
 
@@ -366,10 +377,11 @@ async def _write_nodes(
     admin: str,
     final: dict[str, Any],
     base: dict[str, Any],
+    file_hashes: list[str],
 ) -> dict[str, Any]:
     """Batch 0 — the node tree and each project's status set, in ONE
-    transaction with the progress row. A node an earlier run wrote for the
-    same source and target is reused (§6.9)."""
+    transaction with the progress row. A node an earlier run of THIS export
+    wrote, for the same target and grant, is reused (§6.9)."""
     specs, home = build_nodes(bundle, mapping.target)
     statuses, done_added = project_statuses(bundle, final)
     node_ids: dict[str, str] = {}
@@ -379,15 +391,23 @@ async def _write_nodes(
     label = SOURCE_LABEL.get(bundle.source, bundle.source)
 
     async with _tenant_session(organization_id) as db:
-        reusable = await _earlier_nodes(db, organization_id, run_id, bundle.source, mapping)
+        reusable, continued = await _earlier_nodes(
+            db, organization_id, run_id, bundle, mapping, file_hashes
+        )
         grant_checked = False
         for spec in specs:
             if spec.existing_id:
                 node_ids[spec.ref] = spec.existing_id
                 root_of[spec.ref] = spec.existing_id
                 continue
-            if spec.ref in reusable:
-                node_ids[spec.ref], root_of[spec.ref] = reusable[spec.ref]
+            parent = node_ids.get(spec.parent_ref) if spec.parent_ref else None
+            candidate = reusable.get(spec.ref)
+            # Reuse only a node that still sits under the parent this run just
+            # resolved. Its root then follows from the parent, never from an
+            # old map, so a node moved since is created again instead.
+            if candidate is not None and candidate[1] == parent:
+                node_ids[spec.ref] = candidate[0]
+                root_of[spec.ref] = root_of[spec.parent_ref] if spec.parent_ref else candidate[0]
                 counts["reused"] += 1
                 if spec.kind == "project":
                     status_ids[spec.ref] = await _reuse_statuses(
@@ -397,7 +417,6 @@ async def _write_nodes(
             if spec.kind == "space" and not grant_checked:
                 await _check_grant(db, organization_id, mapping.grant)
                 grant_checked = True
-            parent = node_ids.get(spec.parent_ref) if spec.parent_ref else None
             row = await insert_row(
                 db,
                 "pm_projects",
@@ -454,16 +473,16 @@ async def _write_nodes(
                             "is_default": position == 1,
                         },
                     )
-                    ids.append([name.lower(), str(status.id)])
+                    ids.append([name.lower(), str(status.id), category])
                 status_ids[spec.ref] = ids
         progress = {
             **base,
             "nodes": {ref: node_ids[node] for ref, node in home.items()},
             "roots": {ref: root_of[node] for ref, node in home.items()},
             "node_ids": node_ids,
-            "node_roots": root_of,
             "statuses": status_ids,
             "created": counts,
+            "continued_from": sorted(continued),
             "done_status_added": done_added,
             "cursor": 0,
         }
@@ -472,65 +491,109 @@ async def _write_nodes(
 
 
 async def _earlier_nodes(
-    db: Any, organization_id: str, run_id: str, source: str, mapping: ImportMapping
-) -> dict[str, tuple[str, str]]:
-    """``spec ref → (node id, root id)`` from earlier runs with the SAME
-    target, newest first, for nodes that still exist and are not archived.
-    A new-space run reuses only new-space runs; an existing-space run only
-    runs into that same space."""
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    file_hashes: list[str],
+) -> tuple[dict[str, tuple[str, str | None]], set[str]]:
+    """``spec ref → (node id, its parent now)`` for the nodes this run may
+    reuse, and the ids of the runs it continues.
+
+    A run CONTINUES an earlier one only when all of these hold:
+
+    * it is the same export: the same file hashes, or the earlier run already
+      wrote a task of this file. Space and Folder refs are NAMES, so a
+      different workspace with a Space called "Team Space" must never land
+      in an earlier import's "Team Space";
+    * the target is the same: a new space, or the same existing space;
+    * the grant and the admin's space name are the same, so a reused space
+      never ignores what the admin confirmed this time.
+    """
+    target = mapping.target
     wanted = (
-        mapping.target.kind,
-        mapping.target.project_id if mapping.target.kind == "existing" else None,
+        target.kind,
+        target.project_id if target.kind == "existing" else None,
+        (target.name or "").strip(),
+        mapping.grant,
     )
-    found: dict[str, tuple[str, str]] = {}
-    for row in (
-        await db.execute(
-            text(EARLIER_NODES_SQL),
-            {"org": organization_id, "source": source, "id": run_id},
-        )
-    ).fetchall():
-        target = _json(row.target) or {}
-        kind = target.get("kind", "new_space")
-        if (kind, target.get("project_id") if kind == "existing" else None) != wanted:
-            continue
-        ids, roots = _json(row.node_ids) or {}, _json(row.node_roots) or {}
-        for ref, node in ids.items():
-            if ref not in found and ref in roots:
-                found[ref] = (str(node), str(roots[ref]))
-    if not found:
-        return {}
-    alive = {
-        str(r.id)
+    wrote_this_file = {
+        str(r.run_id)
         for r in (
             await db.execute(
-                text(LIVE_NODES_SQL),
+                text(CONTINUED_RUNS_SQL),
                 {
                     "org": organization_id,
-                    "ids": sorted({n for pair in found.values() for n in pair}),
+                    "source": bundle.source,
+                    "refs": [t.ref for t in bundle.tasks],
                 },
             )
         ).fetchall()
+        if r.run_id
     }
-    return {ref: pair for ref, pair in found.items() if pair[0] in alive and pair[1] in alive}
+    found: dict[str, str] = {}
+    continued: set[str] = set()
+    for row in (
+        await db.execute(
+            text(EARLIER_NODES_SQL),
+            {"org": organization_id, "source": bundle.source, "id": run_id},
+        )
+    ).fetchall():
+        hashes = sorted(str(f.get("sha256")) for f in (_json(row.files) or []))
+        if hashes != sorted(file_hashes) and str(row.id) not in wrote_this_file:
+            continue
+        earlier = _json(row.target) or {}
+        kind = earlier.get("kind", "new_space")
+        seen = (
+            kind,
+            earlier.get("project_id") if kind == "existing" else None,
+            (earlier.get("name") or "").strip(),
+            row.grant_subject or "org",
+        )
+        if seen != wanted:
+            continue
+        continued.add(str(row.id))
+        for ref, node in (_json(row.node_ids) or {}).items():
+            found.setdefault(ref, str(node))
+    if not found:
+        return {}, continued
+    alive = {
+        str(r.id): (str(r.parent_project_id) if r.parent_project_id else None)
+        for r in (
+            await db.execute(
+                text(LIVE_NODES_SQL),
+                {"org": organization_id, "ids": sorted(set(found.values()))},
+            )
+        ).fetchall()
+    }
+    return {ref: (node, alive[node]) for ref, node in found.items() if node in alive}, continued
 
 
 async def _reuse_statuses(
     db: Any, project_id: str, wanted: list[tuple[str, Any]]
 ) -> list[list[str]]:
-    """A reused project's status set, plus any name this run needs that it
-    lacks. Existing statuses keep their ids, order and stages."""
-    rows = (await db.execute(text(STATUSES_OF_SQL), {"project": project_id})).fetchall()
-    have = [[str(r.name).lower(), str(r.id)] for r in rows]
-    position = max((int(r.position or 0) for r in rows), default=0)
+    """The status set a reused project uses, plus any name this run needs that
+    it lacks. The set is the one its status OWNER holds (migration 196), which
+    is the project itself unless somebody set it to inherit.
+
+    A name the set already holds keeps ITS stage. The task then takes that
+    stage, and so does its completion date, so the lane and the date agree.
+    A new name goes in after the last status of its own stage or an earlier one."""
+    owner = await status_owner_id(db, project_id)
+    rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
+    have = [[str(r.name).lower(), str(r.id), str(r.category)] for r in rows]
+    positions = [(STAGE_ORDER.get(str(r.category), 2), int(r.position or 0)) for r in rows]
     for name, category in sorted(wanted, key=lambda nc: STAGE_ORDER[nc[1]]):
-        if name.lower() in {n for n, _ in have}:
+        if name.lower() in {n for n, _, _ in have}:
             continue
-        position += 10
+        stage = STAGE_ORDER[category]
+        position = max((pos for st, pos in positions if st <= stage), default=0) + 1
         status = await insert_row(
             db,
             "pm_task_statuses",
             {
-                "project_id": project_id,
+                "project_id": owner,
                 "name": name,
                 "color": STAGE_COLOR[category],
                 "position": position,
@@ -538,7 +601,8 @@ async def _reuse_statuses(
                 "is_default": False,
             },
         )
-        have.append([name.lower(), str(status.id)])
+        have.append([name.lower(), str(status.id), category])
+        positions.append((stage, position))
     return have
 
 
@@ -630,7 +694,7 @@ async def _write_tasks(
             continue
         project_id = progress["nodes"][task.container_ref]
         root = progress["roots"][task.container_ref]
-        status_id = _status_for(task, progress["statuses"][task.container_ref], final)
+        status_id, stage = _status_for(task, progress["statuses"][task.container_ref], final)
 
         parent_id = None
         if task.parent_ref:
@@ -650,7 +714,9 @@ async def _write_tasks(
 
         members = [m for r in task.assignee_refs if (m := people.get(r))]
         unassigned = [names.get(r, r) for r in task.assignee_refs if not people.get(r)]
-        closed = is_closed(task, final)
+        # The stage of the status the task LANDS in, not of the mapping: in a
+        # reused set, an existing name keeps its own stage.
+        closed = stage in ("done", "cancelled")
         completed_at = (
             completed_estimate(task, comments.get(task.ref, []), bundle.utc_offset, now)
             if closed
@@ -679,7 +745,7 @@ async def _write_tasks(
                 completed_at_estimated=True if closed else None,
                 assignee_names=unassigned,
             ),
-            "task_number": numbers[root].pop(0),
+            "task_number": await _next_number(db, numbers, root),
         }
         if task.created_at is not None:
             values["created_at"] = task.created_at
@@ -717,6 +783,15 @@ async def _write_tasks(
     return dict(counts), dict(by_root)
 
 
+async def _next_number(db: Any, numbers: dict[str, list[int]], root: str) -> int:
+    """A reserved number, or one more when the reservation ran out. It runs
+    out only when a task vanished between the pre-read and the batch."""
+    pool = numbers.setdefault(root, [])
+    if pool:
+        return pool.pop(0)
+    return await reserve_task_numbers(db, root, 1)
+
+
 async def _fit_tags(db: Any, root: str, raw: list[str]) -> tuple[list[str], int]:
     """The tags that fit the shared caps (``tags.py``): a legal tag, at most
     :data:`MAX_TAGS_PER_TASK` on the task, and room in the space's registry.
@@ -745,18 +820,26 @@ async def _fit_tags(db: Any, root: str, raw: list[str]) -> tuple[list[str], int]
         room = max(MAX_TAGS_PER_PROJECT - used, 0)
         keep = {n.lower() for n in fresh[:room]}
         clean = [n for n in clean if n.lower() in registry or n.lower() in keep]
-    return clean, len(raw) - len(clean)
+    distinct = set()
+    for tag in raw:
+        try:
+            name = normalise_tag(tag)
+        except HTTPException:
+            name = None
+        distinct.add((name or str(tag)).lower())
+    # A tag that differs from another only by case is one tag, not a drop.
+    return clean, len(distinct) - len(clean)
 
 
-def _status_for(task: Task, statuses: list[list[str]], final: dict[str, Any]) -> str:
-    """The exact status id (D79 rule 1): the task's mapped name in its own
-    project's set, else the set's first status."""
+def _status_for(task: Task, statuses: list[list[str]], final: dict[str, Any]) -> tuple[str, str]:
+    """The exact status (D79 rule 1) and ITS stage: the task's mapped name in
+    its project's set, else the set's first status."""
     if task.status_name is not None:
         wanted = final[task.status_name][0].lower()
-        for name, status_id in statuses:
+        for name, status_id, category in statuses:
             if name == wanted:
-                return status_id
-    return statuses[0][1]
+                return status_id, category
+    return statuses[0][1], statuses[0][2]
 
 
 async def _types_by_root(db: Any, roots: set[str]) -> dict[str, dict[str, tuple[str, bool]]]:
