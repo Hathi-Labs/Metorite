@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — I-1 built 2026-09-27, the rest is spec.** Owner
+**Status: ACTIVE — I-1 and I-2 built 2026-09-27, the rest is spec.** Owner
 directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
@@ -579,7 +579,7 @@ test proves the flag suppresses each one (§8).
 | `progress` | JSONB | Tasks written, the last batch, `node_map` of source ref to node id |
 | `report` | JSONB | The final counts |
 | `heartbeat_at` | TIMESTAMPTZ | The writer bumps it each batch |
-| `created_at`, `finished_at` | TIMESTAMPTZ | |
+| `created_at`, `updated_at`, `finished_at` | TIMESTAMPTZ | `updated_at` moves on each mapping save |
 
 R6 expand only: a new table and a new index. Nothing existing changes.
 
@@ -590,6 +590,13 @@ The upload goes to local disk, beside attachments, under a new
 writer re-parses the file at apply, so the stored plan never has to hold every
 task. The files are deleted when the run reaches `done`, `failed` or
 `discarded`, and a nightly sweep deletes any file older than 14 days.
+
+**Built in I-2:** the delete on `discarded`. A new upload discards the
+organization's open run (§7.4), so the disk holds one open upload per
+organization at most, which is 250 MB. **Owed by I-3:** the delete on `done`
+and `failed`. **Owed before I-7:** the nightly sweep. It also removes the
+folder of an organization that no longer exists, because the row CASCADEs
+and the folder does not.
 
 ### 7.3 The apply job
 
@@ -615,6 +622,7 @@ because §6.1's index skips every task already written.
 | Upload size | 50 MB per file, 5 files per run | The largest reasonable Space export |
 | Tasks per run | 20,000 | Twice the Jira file cap. A larger workspace imports one Space per run |
 | Runs in flight | 1 per organization | One writer at a time in one tree |
+| Open runs | 1 per organization | A new upload discards the open run and deletes its files (built in I-2). This caps the disk an organization can hold |
 | Who may run it | `admin:access:manage` | The same gate the CRM Zoho import uses (`crm/import_zoho.py`). §11 Q-2 |
 
 ### 7.5 Flags
@@ -622,8 +630,14 @@ because §6.1's index skips every task already written.
 Ship dark, default OFF:
 
 - Gateway: `PROJECTS_IMPORT`, read at call time like `PROJECTS_ORG_VOCABULARIES`
-  (`core.py:2096-2117`). OFF, every import route answers 404.
+  (`core.py:2096-2117`). OFF, every import route answers 404 to a member
+  who can reach Projects. The router's own gate runs first. So a caller who
+  is not signed in still gets 401. A member without `feature:projects` still
+  gets 403, as on every other Projects route.
 - Client: `NEXT_PUBLIC_PROJECTS_IMPORT`, as a literal `process.env` read.
+  I-4 adds it with the wizard. No client code exists before I-4.
+- Storage: `PROJECT_IMPORT_DIR` (§7.2). Both gateway values are in
+  `.env.example`.
 
 ### 7.6 Routes
 
@@ -665,11 +679,11 @@ look (`DESIGN_SYSTEM.md`):
 | The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
 | Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
 | The bundle holds `None`, never a guess | `tests/unit/test_import_clickup_adapter.py` — `test_every_whole_field_the_file_lacks_is_a_loss` (no guessed `completed_at`) and `test_every_column_of_the_real_file_has_a_stated_fate` |
-| The plan writes nothing | `tests/unit/test_import_plan.py` — a plan run against a session that refuses every write |
+| The plan writes nothing | `tests/unit/test_import_plan.py` — the plan module imports no database client (`test_the_plan_module_cannot_reach_a_database`). `tests/unit/test_projects_import_routes.py` records every statement an upload sends, and finds no write but the run's own |
 | Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
 | The SQL works (R8) | `tests/live/live_ws41_import.py` — a real Postgres: apply, re-run skips, resume after a kill, discard |
-| The flag is dark by default | `tests/unit/test_import_flag.py`, and `publicFlags.test.ts` for the client flag |
+| The flag is dark by default | `tests/unit/test_projects_import_routes.py` (`test_the_flag_off_answers_404`, and the gate order on every route). `publicFlags.test.ts` holds the client flag from I-4 |
 
 ## 9. Slices
 
@@ -679,12 +693,12 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 |---|---|---|
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
-| **I-2** | Migration for `pm_import_runs` and the origin index. Upload, get and mapping routes. The plan. The D80 docstring and `CLAUDE.md` edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes |
-| **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts |
+| **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
+| **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **From the I-2 review:** name the conflict target in full — `ON CONFLICT (organization_id, (origin->>'source'), (origin->>'external_id')) WHERE origin->>'kind' = 'import' DO NOTHING`. A bare `DO NOTHING` also swallows a `task_number` clash and drops a task in silence. Never write an import row with a NULL `external_id`, because NULLs never conflict. Skip the plan's `legacy_refs` too, which the index does not cover. Check that `group:<slug>` names a group of this organization. Delete the files on `done` and `failed` |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |
-| **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box) |
+| **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed |
 
 **Then one adapter per slice, in this order.** Each needs its own real sample
 file first, exactly like P-1:
@@ -722,14 +736,28 @@ uv run mypy apps/services/gateway/gateway/routes/projects/importer
 node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
 ```
 
-**I-2 and later (planned — these files do not exist yet):**
+**I-2 (built):**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
-  tests/unit/test_pm_task_insert_sites.py tests/unit/test_tenant_coverage.py \
-  tests/unit/test_import_flag.py
-uv run pytest tests/live/live_ws41_import.py
+uv run pytest tests/unit/test_import_plan.py tests/unit/test_projects_import_routes.py \
+  tests/unit/test_projects_routes.py tests/unit/test_tenant_coverage.py \
+  tests/unit/test_migration_prefixes.py tests/unit/test_projects_migration.py \
+  tests/unit/test_projects_chat_coverage.py tests/unit/test_import_no_network.py
+uv run python tests/live/live_ws41_import.py
+uv run ruff check apps/services/gateway/gateway/routes/projects/imports.py
+```
+
+`test_projects_chat_coverage.py` fails when a Projects route has no row in
+the assistant's manifest. Each new route needs one, even an excluded one.
+`test_projects_import_routes.py` holds the flag tests that §8 names
+`test_import_flag.py`. The live test is a script, as every file in
+`tests/live/` is, so run it with `python` and read its PASS lines.
+
+**I-3 and later (planned — these files do not exist yet):**
+
+```bash
+uv run pytest tests/unit/test_import_quiet.py tests/unit/test_pm_task_insert_sites.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 

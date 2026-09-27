@@ -25,14 +25,18 @@ that calls its route function directly still passes. That trap is documented in
 ``department_centers.md`` C1 and it is why ``tests/unit/test_projects_routes.py``
 asserts the mounted path set rather than only calling the functions.
 
-⚠️ **There is no ``sync.py``, no ``import_clickup.py``, no ``import_tasks.py`` and
-no ``mapping.py``, and their absence is a DECISION rather than a backlog.**
-**D52** (2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the
-project-management system of record, so there is no external system to import
-from, sync with or map onto. WS-27c is cancelled, not deferred. Do not re-add an
-importer here — the ``gtd_*`` → ``pm_*`` move that D53 still needs is a **backfill
-migration**, not an HTTP endpoint, precisely so this package keeps exactly one
-write path into ``pm_tasks``.
+⚠️ **There is no ``sync.py``, no ``import_clickup.py`` and no ``import_tasks.py``,
+and their absence is a DECISION rather than a backlog.** **D52** (2026-08-24,
+board WS-39 S1) retired ClickUp outright: Metorite is the project-management
+system of record, so there is no external system to sync with or to call. WS-27c
+is cancelled, not deferred. Do not add a connector, a token or a sync here.
+
+**D80** (2026-09-26, board WS-41) amends D52.2 on exactly two conditions, and
+``imports.py`` with the ``importer/`` package is what it allows: a one-shot
+import from an UPLOADED EXPORT FILE. (1) It opens no network connection —
+``tests/unit/test_import_no_network.py``. (2) It writes through the helpers the
+routes here use, so ``pm_tasks`` keeps one write path. Spec:
+``project-docs/specs/project_import.md``.
 """
 
 from gateway.routes.projects import analytics as _analytics  # noqa: F401
@@ -50,6 +54,7 @@ from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
+from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
 from gateway.routes.projects import me as _me  # noqa: F401
 from gateway.routes.projects import merge as _merge  # noqa: F401

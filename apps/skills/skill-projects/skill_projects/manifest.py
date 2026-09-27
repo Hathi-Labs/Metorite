@@ -111,6 +111,11 @@ _NUDGE_REASON = (
     "A nudge contacts a colleague. §9.12.9 makes it an explicit human act, and "
     "whether the chat may chase somebody is an owner question."
 )
+#: A file import is an admin's upload through a wizard (project_import.md §7.7).
+_IMPORT_REASON = (
+    "A file import is an admin's upload and review through the import wizard "
+    "(project_import.md §7.7). A chat holds no file and makes no bulk write."
+)
 
 MANIFEST: tuple[Route, ...] = (
     # ── tree.py ──────────────────────────────────────────────────────────
@@ -315,6 +320,11 @@ MANIFEST: tuple[Route, ...] = (
         "X",
         "The sync feed for a client cache. A chat holds no cache.",
     ),
+    # ── imports.py (WS-41, D80) ──────────────────────────────────────────
+    Route("POST", "/projects/import/runs", "", "X", _IMPORT_REASON),
+    Route("GET", "/projects/import/runs", "", "X", _IMPORT_REASON),
+    Route("GET", "/projects/import/runs/{run_id}", "", "X", _IMPORT_REASON),
+    Route("PUT", "/projects/import/runs/{run_id}/mapping", "", "X", _IMPORT_REASON),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),

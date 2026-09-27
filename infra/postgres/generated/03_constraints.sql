@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 137
+-- Tables in this phase: 138
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -838,6 +838,18 @@ ALTER TABLE calendar_rollover_log ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE calendar_rollover_log ADD CONSTRAINT gtd_rollover_log_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS gtd_rollover_log_org_idx ON calendar_rollover_log (organization_id);
+
+-- pm_import_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_import_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_import_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_import_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_import_runs ADD CONSTRAINT pm_import_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_import_runs_org_idx ON pm_import_runs (organization_id);
 
 -- user_settings
 DO $$

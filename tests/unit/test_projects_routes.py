@@ -102,6 +102,11 @@ def test_every_feature_module_is_actually_mounted() -> None:
         "/projects/analytics/rebalance",
         # WS-27bm S7d — the plan preview. A literal path, so it shadows nothing.
         "/projects/plan/preview",
+        # WS-41 I-2 — the file import (D80). Literal segments, so they shadow
+        # nothing and nothing shadows them.
+        "/projects/import/runs",
+        "/projects/import/runs/{run_id}",
+        "/projects/import/runs/{run_id}/mapping",
     ):
         assert expected in paths, f"{expected} is not mounted"
 
