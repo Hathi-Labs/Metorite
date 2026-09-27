@@ -60,6 +60,9 @@ class Task(BaseModel):
     title: str
     description_md: str | None = None
     status_name: str | None = None
+    #: The source tool's own type name, for example ClickUp's ``Task``. §6.5
+    #: maps it by name onto ``pm_task_types``.
+    task_type: str | None = None
     #: 0-3 on Metorite's own scale (D78), mapped by the adapter from the
     #: source tool's meaning. ``None`` = the file set no priority.
     importance: int | None = None

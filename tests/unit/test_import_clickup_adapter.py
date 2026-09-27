@@ -397,3 +397,52 @@ def test_a_wide_row_is_reported() -> None:
 def test_a_negative_epoch_reads_on_every_platform() -> None:
     b = _file({"Task ID": "a", "Date Created": "-86400000"})
     assert b.tasks[0].created_at == dt.datetime(1969, 12, 31, tzinfo=dt.UTC)
+
+
+# ── verifier findings (I-1 verification, 2026-09-27) ────────────────────────
+
+
+def test_every_column_of_the_real_file_has_a_stated_fate() -> None:
+    """§9 I-1: every column lands in the bundle, or is skipped for a stated
+    reason. None is dropped in silence."""
+    from gateway.routes.projects.importer.text import decode, read_csv
+
+    header = read_csv(decode(FIXTURE.read_bytes())[0]).header
+    assert len(header) == 34
+    assert set(header) <= set(clickup.COLUMNS)
+    for column, fate in clickup.COLUMNS.items():
+        assert fate == clickup.READ or len(fate) > 20, column
+
+
+def test_task_type_lands(bundle: ImportBundle) -> None:
+    assert Counter(t.task_type for t in bundle.tasks) == {"Task": 2423}
+
+
+def test_the_remaining_measured_counts(bundle: ImportBundle) -> None:
+    assert sum(1 for t in bundle.tasks if t.description_md) == 447
+    assert sum(1 for t in bundle.tasks if t.start_date) == 15
+    done_like = {"closed", "done", "completed"}
+    per_list: dict[str, set[str]] = {}
+    for s in bundle.statuses:
+        per_list.setdefault(s.container_ref, set()).add(s.name.lower())
+    assert sum(1 for names in per_list.values() if not names & done_like) == 7
+
+
+def test_fact_2_subtasks_ids_disagrees_with_parent_id_on_182_tasks() -> None:
+    """Why ``Parent ID`` is the truth: ``Subtasks IDs`` disagrees with it on
+    182 tasks, and 166 of those leave ``Subtasks IDs`` empty."""
+    import csv
+    import io
+    from collections import defaultdict
+
+    first: dict[str, dict[str, str]] = {}
+    for row in csv.DictReader(io.StringIO(FIXTURE.read_text(encoding="utf-8"))):
+        first.setdefault(row["Task ID"], row)
+    kids: dict[str, set[str]] = defaultdict(set)
+    for tid, row in first.items():
+        if row["Parent ID"] != "null":
+            kids[row["Parent ID"]].add(tid)
+    listed = {tid: set(filter(None, row["Subtasks IDs"].split(","))) for tid, row in first.items()}
+    disagree = [tid for tid in first if listed[tid] != kids.get(tid, set())]
+    assert len(disagree) == 182
+    assert sum(1 for tid in disagree if not listed[tid]) == 166

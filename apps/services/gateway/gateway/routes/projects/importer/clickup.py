@@ -41,47 +41,49 @@ REQUIRED = (
     "Space Name",
 )
 
-#: Every column the measured export carries. Anything else is reported,
-#: because a later ClickUp release may add custom-field columns.
-KNOWN = frozenset(
-    {
-        "Task ID",
-        "Task Link",
-        "Task Type",
-        "Task Custom ID",
-        "Task Name",
-        "Task Content",
-        "Status",
-        "Date Created",
-        "Date Created Text",
-        "Due Date",
-        "Due Date Text",
-        "Start Date",
-        "Start Date Text",
-        "Parent ID",
-        "Subtasks IDs",
-        "Attachments",
-        "Assignees",
-        "Tags",
-        "Priority",
-        "List Name",
-        "Folder Name/Path",
-        "Space Name",
-        "Time Estimated",
-        "Time Estimated Text",
-        "Checklists",
-        "Comments",
-        "Assigned Comments",
-        "Time Spent",
-        "Time Spent Text",
-        "Rolled Up Time",
-        "Rolled Up Time Text",
-        "Home Location ID",
-        "Home Location",
-        "Other Location IDs",
-        "Other Locations",
-    }
-)
+READ = "read"
+
+#: Every column the measured export carries, and what becomes of it. A column
+#: is either READ into the bundle, or skipped for the reason given, so no
+#: column is dropped in silence (spec §9 I-1). Anything else is reported as
+#: ``unknown_columns``, because a later ClickUp release may add custom fields.
+COLUMNS: dict[str, str] = {
+    "Task ID": READ,
+    "Task Link": READ,
+    "Task Type": READ,
+    "Task Custom ID": READ,
+    "Task Name": READ,
+    "Task Content": READ,
+    "Status": READ,
+    "Date Created": READ,
+    "Date Created Text": "read for its UTC offset only; the epoch column is the date (§4.3 item 1)",
+    "Due Date": READ,
+    "Due Date Text": "read for its UTC offset only; the epoch column is the date (§4.3 item 1)",
+    "Start Date": READ,
+    "Start Date Text": "read for its UTC offset only; the epoch column is the date (§4.3 item 1)",
+    "Parent ID": READ,
+    "Subtasks IDs": "merged across duplicate rows, never used for the tree: Parent ID is the truth (fact 2)",
+    "Attachments": READ,
+    "Assignees": READ,
+    "Tags": READ,
+    "Priority": READ,
+    "List Name": READ,
+    "Folder Name/Path": READ,
+    "Space Name": READ,
+    "Time Estimated": READ,
+    "Time Estimated Text": "the text twin of Time Estimated",
+    "Checklists": READ,
+    "Comments": READ,
+    "Assigned Comments": "a count of open assigned comments; the comments themselves are read",
+    "Time Spent": READ,
+    "Time Spent Text": "the text twin of Time Spent",
+    "Rolled Up Time": "the task's time plus its subtasks' time; the writer can sum Time Spent",
+    "Rolled Up Time Text": "the text twin of Rolled Up Time",
+    "Home Location ID": READ,
+    "Home Location": "the Space > Folder > List path, which the three name columns already give",
+    "Other Location IDs": READ,
+    "Other Locations": "the names of the Other Location IDs, which are read",
+}
 
 #: Fact 7 — ClickUp writes the number. 1 is Urgent and 4 is Low. §6.4 maps
 #: it onto ``importance`` 0-3 (D78).
@@ -102,6 +104,10 @@ LOSSES = (
     ),
     Loss(what="dependencies", why="the workspace export has no dependency column"),
     Loss(what="watchers", why="the workspace export has no watcher column"),
+    Loss(
+        what="comment assignment",
+        why="a comment's assigned and resolved flags have no place on a Metorite comment",
+    ),
 )
 
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
@@ -140,7 +146,7 @@ def parse(files: list[tuple[str, bytes]]) -> ImportBundle:
             raise ValueError(
                 f"{name}: not a ClickUp workspace export — missing {', '.join(missing)}"
             )
-        unknown.update(h for h in header if h not in KNOWN)
+        unknown.update(h for h in header if h not in COLUMNS)
         repeated = sorted(h for h, n in Counter(header).items() if n > 1)
         if repeated:
             # ClickUp never repeats a header, so a dict keeps the last copy.
@@ -304,6 +310,7 @@ def _task(bundle: ImportBundle, row: dict[str, str], people: dict[str, Person]) 
         time_spent_mins=_ms_to_mins(row.get("Time Spent", "")),
         checklists=_checklists(bundle, tid, row.get("Checklists", "")),
         attachment_names=_attachment_names(bundle, tid, row.get("Attachments", "")),
+        task_type=_nullable(row.get("Task Type", "")),
         custom_id=_nullable(row.get("Task Custom ID", "")),
         url=_nullable(row.get("Task Link", "")),
     )

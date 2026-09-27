@@ -198,8 +198,9 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
    sits on three. The two rows differ only in `Assignees` (5 ids) or
    `Subtasks IDs` (3 ids). The parser merges them into one task and takes
    the union of both lists. The dry run reports the count.
-2. **`Parent ID` is the truth, not `Subtasks IDs`.** The two disagree on 18
-   rows. The parser builds the tree from `Parent ID` alone.
+2. **`Parent ID` is the truth, not `Subtasks IDs`.** The two disagree on
+   182 tasks. On 166 of them, `Subtasks IDs` is empty while the task has
+   children. The parser builds the tree from `Parent ID` alone.
 3. **Subtasks nest four deep.** Depth counts: 1,140 at the top, then 872,
    317, 81 and 13. `pm_tasks.parent_task_id` has no depth cap, so every
    level lands.
@@ -320,15 +321,29 @@ report ◄── apply (one writer, batched, resumable) ◄───────
 
 One Pydantic model in `apps/services/gateway/gateway/routes/projects/importer/bundle.py`:
 
+The table is the model as built in I-1. `bundle.py` is the source of truth.
+
 | Entity | Fields |
 |---|---|
-| `Container` | `ref` (source id, or the name path when the file has no id), `kind` (space, folder or project), `name`, `parent_ref` |
+| `Container` | `ref` (source id, or the name path when the file has no id), `kind` (space, folder or project), `name`, `parent_ref`, `source_id` |
 | `Person` | `ref`, `display_name`, `email` (optional) |
-| `StatusSeen` | `container_ref`, `name`, `done_hint` (true, false or unknown) |
-| `FieldDef` | `container_ref`, `name`, `type_guess`, `options` |
-| `Task` | `ref`, `container_ref`, `parent_ref`, `title`, `description_md`, `status_name`, `priority_name`, `assignee_refs`, `tags`, `created_at`, `start_date`, `due_at`, `completed_at`, `estimate_mins`, `time_spent_mins`, `custom_values`, `checklist`, `attachment_names`, `blocks_refs`, `custom_id`, `url` |
+| `StatusSeen` | `container_ref`, `name`, `task_count`, `done_hint` (true, false or unknown) |
+| `FieldDef` | `container_ref`, `name`, `type_guess`, `options` — not built yet. I-5 adds it with the view export |
+| `Task` | `ref`, `container_ref`, `parent_ref`, `title`, `description_md`, `status_name`, `task_type`, `importance`, `assignee_refs`, `tags`, `created_at`, `start_date`, `due_at`, `due_date`, `completed_at`, `estimate_mins`, `time_spent_mins`, `custom_values`, `checklists`, `attachment_names`, `blocks_refs`, `custom_id`, `url` |
+| `Checklist` | `name`, `items` |
 | `Comment` | `task_ref`, `author_ref`, `created_at`, `body_md` |
 | `Loss` | `what`, `count`, `why` — one row per thing the file could not carry |
+| `BundleWarning` | `code`, `message`, `count`, `sample_refs` — one row per defect in this file |
+
+Three choices differ from the first draft of this table:
+
+- **`importance`, not `priority_name`.** The adapter maps priority by the
+  source tool's own meaning (§6.4), so the bundle holds Metorite's 0–3 value.
+- **`due_at` or `due_date`.** A due date with no time is a date (§4.3 item
+  1). At most one of the two is set.
+- **Every column has a stated fate.** `clickup.COLUMNS` marks each column
+  as read, or says why the adapter skips it. A test fails if a column of the
+  real file has no entry.
 
 A value the file does not carry is `None`, never a guess. The adapter writes
 a `Loss` row for each whole field that its tool never exports. An example is
@@ -649,7 +664,7 @@ look (`DESIGN_SYSTEM.md`):
 | The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/unit/import_fixtures/clickup_workspace.csv` (P-1). The fixture sits beside its test, because `tests/fixtures/` holds only fixtures that two languages read |
 | The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
 | Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
-| The bundle holds `None`, never a guess | `tests/unit/test_import_bundle.py` |
+| The bundle holds `None`, never a guess | `tests/unit/test_import_clickup_adapter.py` — `test_every_whole_field_the_file_lacks_is_a_loss` (no guessed `completed_at`) and `test_every_column_of_the_real_file_has_a_stated_fate` |
 | The plan writes nothing | `tests/unit/test_import_plan.py` — a plan run against a session that refuses every write |
 | Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
@@ -693,16 +708,29 @@ path before it extracts anything (zip-bomb and path-traversal checks).
 
 ## 10. Verification commands
 
+Each slice adds its files to this list. Run every line that exists at
+the slice you verify.
+
+**I-1 (built):**
+
+```bash
+uv run pytest tests/unit/test_import_clickup_adapter.py tests/unit/test_import_text.py \
+  tests/unit/test_import_no_network.py tests/unit/test_no_task_provider_connectors.py
+uv run ruff check apps/services/gateway/gateway/routes/projects/importer \
+  scripts/import_scrub_clickup.py tests/unit/test_import_*.py
+uv run mypy apps/services/gateway/gateway/routes/projects/importer
+node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
+```
+
+**I-2 and later (planned — these files do not exist yet):**
+
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_import_bundle.py tests/unit/test_import_clickup_adapter.py \
-  tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
-  tests/unit/test_import_no_network.py tests/unit/test_pm_task_insert_sites.py \
-  tests/unit/test_no_task_provider_connectors.py tests/unit/test_tenant_coverage.py \
+uv run pytest tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
+  tests/unit/test_pm_task_insert_sites.py tests/unit/test_tenant_coverage.py \
   tests/unit/test_import_flag.py
 uv run pytest tests/live/live_ws41_import.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
-node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
 ```
 
 Without the database, the live suite SKIPS and the run reads green. Check the
