@@ -22,6 +22,7 @@ import { TaskBoard } from "./TaskBoard";
 import { TaskListGrouped } from "./TaskListGrouped";
 import { TaskToolbar } from "./TaskToolbar";
 import { WaitingForView } from "./WaitingForView";
+import { bulkSubtaskSummary, bulkSummaryLine } from "@/lib/subtaskCascade";
 
 // View mode (list vs kanban board) for the processed-task views, sticky per
 // browser via useSyncExternalStore (SSR-safe, same recipe as the inbox density
@@ -155,6 +156,20 @@ export function ItemList() {
   // renders this same set.
   const visibleIds = useMemo(() => visible.map((i) => i.id), [visible]);
   const allChecked = allSelected(selectedIds, visibleIds);
+  // D-PM-38 (S5) — the parents in the selection and their open subtasks.
+  const subtaskLine = useMemo(
+    () =>
+      bulkSummaryLine(
+        bulkSubtaskSummary(
+          items.map((i) => ({
+            id: i.id,
+            subtasks: { done: i.subtaskDone ?? 0, total: i.subtaskCount ?? 0 },
+          })),
+          selectedIds,
+        ),
+      ),
+    [items, selectedIds],
+  );
   // A selection that outlives its filter is how a bulk action hits rows nobody
   // can see any more (`@/lib/selection.prune` says it at length). /projects
   // prunes on every change of its visible set; this is the same effect.
@@ -344,6 +359,13 @@ export function ItemList() {
       {selectedIds.size > 0 && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-muted px-3 py-2">
           <Badge tone="primary">{selectedIds.size} selected</Badge>
+          {/* D-PM-38 (S5) — "includes 2 parents with 5 open subtasks". Archive
+              then asks once for the batch, with the box ticked. */}
+          {subtaskLine ? (
+            <span className="text-xs text-muted-foreground" data-subtask-summary>
+              {subtaskLine}
+            </span>
+          ) : null}
           {isArchiveView ? (
             <Button
               variant="secondary"

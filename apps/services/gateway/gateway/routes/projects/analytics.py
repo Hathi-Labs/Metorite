@@ -34,12 +34,15 @@ the closed set must not leave this endpoint reporting finished work as late.
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Query
+from gateway.capacity import absences_for, horizon_window
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -52,6 +55,13 @@ from gateway.routes.projects.core import (
     router,
     task_visibility_clause,
     triage_exclusion_clause,
+)
+from gateway.routes.projects.filters import attach_parent_context
+from gateway.routes.tasks.core import can_read_hr_fields
+from gateway.work_schedule import (
+    load_policy,
+    person_schedule,
+    working_hours_between,
 )
 from sqlalchemy import text
 
@@ -294,7 +304,8 @@ async def stuck(
 
         blocked_rows = (await db.execute(
             text(
-                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id"
+                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id,"
+                f"       t.parent_task_id"
                 f"  FROM pm_tasks t"
                 f"  JOIN pm_task_statuses s ON s.id = t.status_id"
                 f" WHERE {open_where} AND {blocker_join}"
@@ -311,25 +322,34 @@ async def stuck(
             text(overdue_by_project_sql(open_where)), params,
         )).fetchall()
 
+        blocked = [
+            {
+                "id": str(row.id),
+                "title": row.title,
+                "task_number": row.task_number,
+                "due_at": row.due_at.isoformat() if row.due_at else None,
+                # WS-27bm S4: the status report flags the PROJECT a
+                # blocked task lives in. Without this the flag was
+                # unreachable, and a fake that invented the key hid it.
+                "project_id": str(row.project_id),
+                "parent_task_id": (
+                    str(row.parent_task_id)
+                    if getattr(row, "parent_task_id", None) else None
+                ),
+            }
+            for row in blocked_rows
+        ]
+        # D-PM-38 — a blocked subtask names its parent, under the reader's
+        # grants.
+        await attach_parent_context(db, vis, blocked)
+
         return {
             "project_id": project_id,
             "scope": "portfolio" if project_id is None else "node",
             "include_subtree": include_subtree,
             "stale": stale,
             "blocked_total": blocked_total,
-            "blocked": [
-                {
-                    "id": str(row.id),
-                    "title": row.title,
-                    "task_number": row.task_number,
-                    "due_at": row.due_at.isoformat() if row.due_at else None,
-                    # WS-27bm S4: the status report flags the PROJECT a
-                    # blocked task lives in. Without this the flag was
-                    # unreachable, and a fake that invented the key hid it.
-                    "project_id": str(row.project_id),
-                }
-                for row in blocked_rows
-            ],
+            "blocked": blocked,
             # ⚠️ BY PROJECT, which is what §9.12.7(a) asks for — "Overdue by
             # project". This answered a bare integer until 2026-09-17, and the
             # panel that consumed it declared a LIST. `number.length` is
@@ -1045,11 +1065,19 @@ def team_capacity_sql(open_where: str) -> str:
     is capacity for this project. The join is what makes the number mean
     something.
 
-    ⚠️ **`capacity_hours_per_week` is the stated fact and wins.**
-    `working_hours` is the fallback — a JSONB record of days and a start and
-    end, from which a week's hours are arithmetic. Neither is required, so
-    `known` travels beside the total: a sum over 2 of 7 people is not the
-    team's capacity, and it looks identical to one that is.
+    ⚠️ **The schedule wins, and the typed figure never enters** (WS-27bm
+    S11, `projects_ai_chat.md` §17.3 rules 1 and 2). This statement returns
+    each directory holder's id and `working_hours` override as one JSON list,
+    and :func:`outlook_rate` turns them into hours through
+    `work_schedule.person_schedule` and `working_hours_between`. That module
+    is the ONE place that knows what a `working_hours` record means. A second
+    reading of that JSONB in SQL is how the two start to differ.
+    `capacity_hours_per_week` is not read here at all: D-PC-18 made it an
+    override that `capacity_disagreement` reports, not a denominator.
+
+    ⚠️ **The holders CTE is the contract** (§17.3 rule 6). S11 changed the
+    columns and left the CTE alone. A change to it changes WHO the forecast
+    counts, and the R8 suite pins that set.
     """
     return (
         f"WITH holders AS ("
@@ -1062,13 +1090,13 @@ def team_capacity_sql(open_where: str) -> str:
         f"     AND a.assignee NOT LIKE 'agent:%%'"
         f")"
         f" SELECT count(*) AS people,"
-        f"        count(p.capacity_hours_per_week) AS with_stated,"
-        f"        coalesce(sum(p.capacity_hours_per_week), 0) AS stated_hours,"
-        # ⚠️ Counted, not summed — the fallback's arithmetic happens in
-        # Python through `work_schedule.working_hours_between`, which is the
-        # ONE place that knows what a `working_hours` record means. A second
-        # interpretation of that JSONB in SQL is how the two start to differ.
-        f"        count(p.working_hours) AS with_schedule,"
+        f"        count(p.id) AS in_directory,"
+        # One row per directory holder, as JSON, so the statement stays one
+        # aggregate row. A holder with no `people` row is absent from the
+        # list and adds zero hours (§17.3 rule 2).
+        f"        coalesce(json_agg(json_build_object("
+        f"          'id', p.id, 'working_hours', p.working_hours"
+        f"        )) FILTER (WHERE p.id IS NOT NULL), '[]'::json) AS schedules,"
         f"        count(p.end_date) FILTER ("
         f"          WHERE p.end_date IS NOT NULL AND p.end_date <= "
         f"                (now() + make_interval(days => :horizon_days))::date"
@@ -1366,6 +1394,16 @@ FORECAST_WEEKS = 6
 #: How far ahead "leaving soon" looks, for an engagement that ends.
 LEAVING_HORIZON_DAYS = 90
 
+#: How many whole weeks ahead the capacity rate reads — WS-27bm S11.
+#:
+#: ⚠️ **One fixed forward window, and the divisor is this number.** The
+#: window is 84 days: today and the 83 days after it. `horizon_window` treats
+#: its end as INCLUSIVE, so the call asks for `7 * 12 - 1` days. Asking for
+#: 84 would sum 85 days and divide by twelve weeks, which inflates the rate.
+#: Twelve weeks is long enough that one week of leave moves the rate by a
+#: twelfth, and short enough to stay inside `capacity.MAX_HORIZON_DAYS`.
+OUTLOOK_RATE_WEEKS = 12
+
 #: Below this, a forecast is arithmetic on a rumour.
 #:
 #: ⚠️ Two finished weeks is not a velocity, it is two numbers. The verdict
@@ -1484,6 +1522,71 @@ def capacity_forecast(
     }
 
 
+def outlook_window(today: date) -> tuple[date, date]:
+    """The capacity rate's forward window: today to the 84th day, inclusive.
+
+    WS-27bm S11, `projects_ai_chat.md` §17.3 rule 3. It reuses
+    `capacity.horizon_window`, whose end day is inside the window, so the
+    span is ``OUTLOOK_RATE_WEEKS * 7 - 1`` days after today.
+    """
+    return horizon_window(today, OUTLOOK_RATE_WEEKS * 7 - 1)
+
+
+def _schedule_rows(raw: Any) -> list[Any]:
+    """`team_capacity_sql`'s ``schedules`` column → rows ``person_schedule`` reads.
+
+    asyncpg hands a ``json`` column back as a string, because raw ``text()``
+    declares no column type. psycopg parses it. Both arrive here.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = []
+    return [
+        SimpleNamespace(
+            id=str(item.get("id")), working_hours=item.get("working_hours"),
+        )
+        for item in raw or []
+        if isinstance(item, dict) and item.get("id")
+    ]
+
+
+def outlook_rate(
+    *,
+    policy: dict[str, Any],
+    holders: list[Any],
+    absences: dict[str, list[dict[str, Any]]] | None,
+    today: date,
+) -> float:
+    """The team's weekly hours for the outlook — one rate, from the schedule.
+
+    WS-27bm S11, `projects_ai_chat.md` §17.3 rules 1 to 4. Pure.
+
+    ``holders`` are the directory rows of the people who hold open work in
+    scope. Each one's hours come from ``person_schedule(policy, row)``, so
+    the typed ``capacity_hours_per_week`` never enters (D-PC-18). The sum of
+    ``working_hours_between`` over the fixed window, divided by
+    :data:`OUTLOOK_RATE_WEEKS`, is the rate.
+
+    ⚠️ ``absences`` is ``None`` for a viewer without ``admin:members:read``.
+    Then every span is ``None`` and leave does not reduce the hours. The
+    CALLER decides, because only the caller knows who is reading.
+
+    ⚠️ It calls ``working_hours_between`` and not ``person_capacity``. That
+    function's horizon adds one day to the one it is given, so dividing its
+    hours by twelve would count an extra day each time.
+    """
+    start, end = outlook_window(today)
+    total = 0.0
+    for row in holders:
+        spans = None if absences is None else absences.get(str(row.id), [])
+        total += working_hours_between(
+            person_schedule(policy, row), start, end, spans,
+        )
+    return total / OUTLOOK_RATE_WEEKS
+
+
 def slip_days(planned: Any, projected: str | None) -> int | None:
     """How late the forecast is against the plan. Negative means early.
 
@@ -1533,11 +1636,17 @@ async def outlook(
 
     The body is :func:`outlook_body`, which the report section ``outlook``
     also calls (WS-27bn R3a). The panel and the report are one computation.
+
+    ⚠️ **The caller's grant decides whether leave counts** (WS-27bm S11,
+    `projects_ai_chat.md` §17.3 rule 5). ``admin:members:read`` applies
+    absences to the hours. Without it the forecast ignores leave, and the
+    payload says so.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         return await outlook_body(
             db, vis,
+            hr_visible=can_read_hr_fields(user),
             project_id=project_id,
             include_subtree=include_subtree,
             weeks=weeks,
@@ -1548,14 +1657,22 @@ async def outlook_body(
     db: Any,
     vis: Any,
     *,
+    hr_visible: bool,
     project_id: str | None,
     include_subtree: bool,
     weeks: int = FORECAST_WEEKS,
+    today: date | None = None,
 ) -> dict[str, Any]:
     """The outlook answer, on a session and a visibility the caller resolved.
 
     WS-27bn R3a. Shared by the route and by the report section ``outlook``,
     so a report and the panel it came from are one computation.
+
+    ⚠️ **``hr_visible`` has NO default, on purpose** (WS-27bm S11, §17.3
+    rule 4). It is the READER's ``admin:members:read``. True reads the
+    holders' absences and subtracts them. False runs no ``people_absences``
+    statement at all. A default would let a new caller skip the decision.
+    The capacity body takes the same argument for the same reason.
 
     ⚠️ **``weeks`` is the history the forecast reads, not a report period.**
     A report passes nothing here and gets :data:`FORECAST_WEEKS`. Passing a
@@ -1614,22 +1731,44 @@ async def outlook_body(
         {**params, "horizon_days": LEAVING_HORIZON_DAYS},
     )).one()
 
+    # ── WS-27bm S11: the capacity rate reads each holder's schedule ────────
+    today = today or date.today()
+    holders = _schedule_rows(cap.schedules)
+    policy = await load_policy(db) if holders else {}
+    # §17.3 rule 4. Without the grant, no absence statement runs at all.
+    absences = (
+        await absences_for(db, [h.id for h in holders]) if hr_visible else None
+    )
+    rate = outlook_rate(
+        policy=policy, holders=holders, absences=absences, today=today,
+    )
+    window_start, window_end = outlook_window(today)
+
     velocity = project_forecast(
         remaining_tasks=remaining,
         finished=[int(r.finished or 0) for r in rows],
         created=[int(r.created or 0) for r in rows],
     )
-    capacity = capacity_forecast(
-        left_mins=int(left.mins or 0),
-        left_estimated=int(left.estimated or 0),
-        left_tasks=int(left.tasks or 0),
-        hours_per_week=float(cap.stated_hours or 0),
-    )
+    capacity = {
+        **capacity_forecast(
+            left_mins=int(left.mins or 0),
+            left_estimated=int(left.estimated or 0),
+            left_tasks=int(left.tasks or 0),
+            hours_per_week=rate,
+        ),
+        # §17.3 rule 8. The payload names the window the rate read.
+        "window": {
+            "starts_on": window_start.isoformat(),
+            "ends_on": window_end.isoformat(),
+            "weeks": OUTLOOK_RATE_WEEKS,
+        },
+    }
     return {
         "project_id": project_id,
         "scope": "portfolio" if project_id is None else "node",
         "include_subtree": include_subtree,
         "weeks": weeks,
+        "hr_visible": hr_visible,
         "velocity": velocity,
         "capacity": capacity,
         "plan": {
@@ -1647,11 +1786,16 @@ async def outlook_body(
         },
         "people": {
             "holding_open_work": int(cap.people or 0),
-            # `stated_hours` over `with_stated` people. A sum over 2 of 7 is
-            # not the team's capacity and looks identical to one that is.
-            "with_stated_capacity": int(cap.with_stated or 0),
-            "with_schedule_only": int(cap.with_schedule or 0),
-            "hours_per_week": float(cap.stated_hours or 0),
+            # The hours are summed over `in_directory` of the holders. A
+            # holder with no `people` row adds zero, so a sum over 2 of 7
+            # travels with the 2 (§17.3 rule 2).
+            "in_directory": int(cap.in_directory or 0),
+            # The same figure as `capacity.hours_per_week`, rounded the same
+            # way, so the two lines of the panel cannot disagree.
+            "hours_per_week": round(rate, 1),
+            # False means leave did not reduce the hours: the reader does not
+            # hold `admin:members:read` (§17.3 rule 10).
+            "absences_applied": hr_visible,
             # ⚠️ An engagement that ends inside the forecast window is a risk
             # no velocity can see. `people.end_date` already exists for
             # "assignment past it is a mistake" (spec §6.1); this is the same
@@ -1706,6 +1850,7 @@ def hygiene_rows_sql(open_where: str) -> str:
             f"        row_number() OVER (ORDER BY {order}) AS rn,"
             f"        '{kind}' AS kind,"
             f"        t.id, t.title, t.task_number, t.project_id,"
+            f"        t.parent_task_id,"
             f"        p.name AS project_name, t.due_at, t.updated_at"
             f"   FROM pm_tasks t"
             f"   JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -1715,8 +1860,8 @@ def hygiene_rows_sql(open_where: str) -> str:
             f"  LIMIT :max_named)"
         )
     return (
-        "SELECT kind, id, title, task_number, project_id, project_name,"
-        "       due_at, updated_at"
+        "SELECT kind, id, title, task_number, project_id, parent_task_id,"
+        "       project_name, due_at, updated_at"
         "  FROM (" + " UNION ALL ".join(arms) + ") h"
         " ORDER BY position, rn"
     )
@@ -1764,6 +1909,27 @@ async def hygiene_body(
         text(hygiene_rows_sql(open_where)),
         {**params, "max_named": MAX_NAMED},
     )).fetchall()
+    named = [
+        {
+            "kind": r.kind,
+            "id": str(r.id),
+            "title": r.title,
+            "task_number": (
+                int(r.task_number) if r.task_number is not None else None
+            ),
+            "project_id": str(r.project_id),
+            "project_name": r.project_name,
+            "due_at": r.due_at.isoformat() if r.due_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "parent_task_id": (
+                str(r.parent_task_id)
+                if getattr(r, "parent_task_id", None) else None
+            ),
+        }
+        for r in rows
+    ]
+    # D-PM-38 — the same "↳ Parent" every flat row carries.
+    await attach_parent_context(db, vis, named)
 
     return {
         "open_total": open_total,
@@ -1771,19 +1937,5 @@ async def hygiene_body(
         "by_kind": {
             kind: int(getattr(counts, kind, 0) or 0) for kind, _ in HYGIENE_KINDS
         },
-        "rows": [
-            {
-                "kind": r.kind,
-                "id": str(r.id),
-                "title": r.title,
-                "task_number": (
-                    int(r.task_number) if r.task_number is not None else None
-                ),
-                "project_id": str(r.project_id),
-                "project_name": r.project_name,
-                "due_at": r.due_at.isoformat() if r.due_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ],
+        "rows": named,
     }

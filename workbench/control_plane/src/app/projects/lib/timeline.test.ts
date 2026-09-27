@@ -65,6 +65,7 @@ import {
   roundedPath,
   isWeekend,
   monthCells,
+  openTimelineRows,
   resizeEnd,
   resizeStart,
   rowInterval,
@@ -115,7 +116,7 @@ const at = (key: string) => {
 };
 
 const RANGE = timelineRange(
-  [{ task: task({ start_date: "2026-08-01", due_at: at("2026-08-31") }), depth: 0, children: [] }],
+  [{ task: task({ start_date: "2026-08-01", due_at: at("2026-08-31") }), depth: 0, subrows: [], orphan: false, children: [] }],
   "2026-08-15",
 );
 
@@ -229,8 +230,64 @@ describe("timelineRows", () => {
     // The gateway refuses this (assert_no_task_cycle), so it can only arrive
     // from corrupt data — and an infinite loop in the renderer is a worse
     // outcome than a row.
+    //
+    // S3 changed the answer from "no row" to "one row". The walk is now the
+    // shared `taskTree`, whose rule is that bad data degrades to a flat row
+    // and never to a lost one. It is still one row, and it still ends.
     const rows = timelineRows([task({ id: "a", parent_task_id: "a" })]);
-    expect(rows.map((r) => r.task.id)).toEqual([]);
+    expect(rows.map((r) => r.task.id)).toEqual(["a"]);
+    expect(rows[0].subrows).toEqual([]);
+  });
+
+  // ── B3 (Subtasks S3): every level nests ──────────────────────────────────
+
+  const tree = () => [
+    task({ id: "parent" }),
+    task({ id: "child", parent_task_id: "parent" }),
+    task({ id: "grandchild", parent_task_id: "child", start_date: "2026-09-20" }),
+  ];
+
+  it("draws the grandchild when its parent and grandparent are open (B3)", () => {
+    // Fails on the pre-S3 code: `timelineRows` grouped one level, so the
+    // grandchild sat under a child that was never a row and was never drawn.
+    const drawn = openTimelineRows(timelineRows(tree()), new Set(["parent", "child"]));
+    expect(drawn.map((r) => [r.task.id, r.depth])).toEqual([
+      ["parent", 0],
+      ["child", 1],
+      ["grandchild", 2],
+    ]);
+  });
+
+  it("a closed row hides its whole subtree", () => {
+    expect(
+      openTimelineRows(timelineRows(tree()), new Set(["child"])).map((r) => r.task.id),
+    ).toEqual(["parent"]);
+    expect(
+      openTimelineRows(timelineRows(tree()), new Set(["parent"])).map((r) => r.task.id),
+    ).toEqual(["parent", "child"]);
+  });
+
+  it("a row's bar folds in the dates of EVERY level under it", () => {
+    // The parent and the child have no dates. Before S3 the nested child was
+    // drawn with `children: []`, so it had no bar at all.
+    const [parent] = timelineRows(tree());
+    expect(parent.children.map((t) => t.id)).toEqual(["child", "grandchild"]);
+    expect(rowInterval(parent.task, parent.children)).toEqual({
+      from: "2026-09-20", to: "2026-09-20", derived: true,
+    });
+    const [child] = parent.subrows;
+    expect(child.children.map((t) => t.id)).toEqual(["grandchild"]);
+  });
+
+  it("marks a promoted orphan, so the rail can draw its crumb", () => {
+    const rows = timelineRows([
+      task({ id: "orphan", parent_task_id: "elsewhere" }),
+      task({ id: "top" }),
+    ]);
+    expect(rows.map((r) => [r.task.id, r.orphan])).toEqual([
+      ["orphan", true],
+      ["top", false],
+    ]);
   });
 });
 
@@ -239,7 +296,7 @@ describe("timelineRows", () => {
 describe("timelineRange", () => {
   it("pads the data's own span on both sides", () => {
     const range = timelineRange(
-      [{ task: task({ start_date: "2026-08-10", due_at: at("2026-08-20") }), depth: 0, children: [] }],
+      [{ task: task({ start_date: "2026-08-10", due_at: at("2026-08-20") }), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-08-15",
     );
     expect(range.from).toBe("2026-08-03");
@@ -251,7 +308,7 @@ describe("timelineRange", () => {
     // An empty chart still needs an axis to read, and a zero-width one cannot
     // render at all.
     const range = timelineRange(
-      [{ task: task(), depth: 0, children: [] }],
+      [{ task: task(), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-08-15",
     );
     expect(range.from).toBe("2026-08-01");
@@ -261,7 +318,7 @@ describe("timelineRange", () => {
 
   it("covers a child's dates when only the child has them", () => {
     const range = timelineRange(
-      [{ task: task(), depth: 0, children: [task({ id: "c", start_date: "2026-09-10" })] }],
+      [{ task: task(), depth: 0, subrows: [], orphan: false, children: [task({ id: "c", start_date: "2026-09-10" })] }],
       "2026-08-15",
     );
     expect(range.from <= "2026-09-10").toBe(true);
@@ -292,7 +349,7 @@ describe("dayPx", () => {
     // two days either side of midsummer are in the same regime and would pass
     // with the rounding removed. That was the first version of this test.
     const range = timelineRange(
-      [{ task: task({ start_date: "2026-02-01", due_at: at("2026-08-31") }), depth: 0, children: [] }],
+      [{ task: task({ start_date: "2026-02-01", due_at: at("2026-08-31") }), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-05-01",
     );
     expect(dayPx("2026-08-02", range) - dayPx("2026-08-01", range)).toBe(PX_PER_DAY);
@@ -331,7 +388,7 @@ describe("monthCells", () => {
 
   it("handles a range inside a single month", () => {
     const range = timelineRange(
-      [{ task: task({ start_date: "2026-08-10", due_at: at("2026-08-12") }), depth: 0, children: [] }],
+      [{ task: task({ start_date: "2026-08-10", due_at: at("2026-08-12") }), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-08-11",
     );
     const cells = monthCells(range);
@@ -341,7 +398,7 @@ describe("monthCells", () => {
 
   it("crosses a year boundary", () => {
     const range = timelineRange(
-      [{ task: task({ start_date: "2026-12-20", due_at: at("2027-01-10") }), depth: 0, children: [] }],
+      [{ task: task({ start_date: "2026-12-20", due_at: at("2027-01-10") }), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-12-25",
     );
     expect(monthCells(range).map((c) => c.key)).toEqual(["2026-12", "2027-01"]);
@@ -903,7 +960,7 @@ describe("windowIncluding", () => {
 describe("timelineRange over a window", () => {
   const window = windowFor("month", "2026-08-15");
   const rows = [
-    { task: task({ start_date: "2026-08-10", due_at: at("2026-08-12") }), depth: 0, children: [] },
+    { task: task({ start_date: "2026-08-10", due_at: at("2026-08-12") }), depth: 0, subrows: [], orphan: false, children: [] },
   ];
 
   it("covers the whole window, not just the data", () => {
@@ -918,7 +975,7 @@ describe("timelineRange over a window", () => {
   it("does not move when the data inside it moves", () => {
     const before = timelineRange(rows, "2026-08-15", "month", window);
     const after = timelineRange(
-      [{ task: task({ start_date: "2026-08-28", due_at: at("2026-08-30") }), depth: 0, children: [] }],
+      [{ task: task({ start_date: "2026-08-28", due_at: at("2026-08-30") }), depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-08-15",
       "month",
       window,
@@ -931,7 +988,7 @@ describe("timelineRange over a window", () => {
     // The window can move out from under a row that is already on screen.
     // Clipping it would hide a task the user can see in the left-hand column.
     const outside = [
-      { task: task({ start_date: "2020-01-01", due_at: at("2020-01-05") }), depth: 0, children: [] },
+      { task: task({ start_date: "2020-01-01", due_at: at("2020-01-05") }), depth: 0, subrows: [], orphan: false, children: [] },
     ];
     const range = timelineRange(outside, "2026-08-15", "month", window);
     expect(range.from < "2020-01-01").toBe(true);
@@ -959,7 +1016,7 @@ describe("zoom", () => {
 
   it("lays the same range out wider or narrower per zoom", () => {
     const rows = [
-      { task: task({ start_date: "2026-08-01", due_at: at("2026-08-10") }), depth: 0, children: [] },
+      { task: task({ start_date: "2026-08-01", due_at: at("2026-08-10") }), depth: 0, subrows: [], orphan: false, children: [] },
     ];
     const week = timelineRange(rows, "2026-08-05", "week");
     const quarter = timelineRange(rows, "2026-08-05", "quarter");
@@ -982,7 +1039,7 @@ describe("zoom", () => {
   it("measures every x from the range's own pxPerDay, not the constant", () => {
     const subject = task({ start_date: "2026-08-01", due_at: at("2026-08-03") });
     const range = timelineRange(
-      [{ task: subject, depth: 0, children: [] }],
+      [{ task: subject, depth: 0, subrows: [], orphan: false, children: [] }],
       "2026-08-02",
       "week",
     );
@@ -1238,7 +1295,7 @@ describe("barForSpan", () => {
 
 describe("dayCells", () => {
   const range = timelineRange(
-    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-16") }), depth: 0, children: [] }],
+    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-16") }), depth: 0, subrows: [], orphan: false, children: [] }],
     "2026-08-10",
   );
   const cells = dayCells(range, "2026-08-10");
@@ -1274,7 +1331,7 @@ describe("dayCells", () => {
 
 describe("weekCells", () => {
   const range = timelineRange(
-    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-25") }), depth: 0, children: [] }],
+    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-25") }), depth: 0, subrows: [], orphan: false, children: [] }],
     "2026-08-10",
   );
   const cells = weekCells(range, "2026-08-10");

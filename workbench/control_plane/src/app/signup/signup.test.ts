@@ -266,3 +266,35 @@ describe("the form ASKS how many people, instead of silently meaning one", () =>
     expect(form).toMatch(/const MAX_TEAM_SIZE = 10;/);
   });
 });
+
+describe("a signed-in visitor can change the address", () => {
+  // 🔴 Measured 2026-09-26: the owner was signed in with an address that
+  // already owned an organization, and this page offered no way to change it.
+  it("offers a sign-out that returns to this page", () => {
+    expect(form).toContain("Use a different email");
+    expect(form).toMatch(/signOut\(\{\s*callbackUrl:\s*"\/signup"\s*\}\)/);
+  });
+});
+
+describe("the AlreadyMember refusal names the address and the organization", () => {
+  it("says which email is linked to which organization, and what to do", async () => {
+    const { alreadyMemberMessage } = await import("./SignUpForm");
+    const m = alreadyMemberMessage("a@hathilabs.com", "Hathi Labs LLP");
+    expect(m).toContain("a@hathilabs.com");
+    expect(m).toContain("Hathi Labs LLP");
+    expect(m).toContain("use a different email");
+  });
+
+  it("still reads well with neither value", async () => {
+    const { alreadyMemberMessage } = await import("./SignUpForm");
+    expect(alreadyMemberMessage(null, null)).toBe(
+      "This email address is already linked to another organization. One email " +
+        "address can belong to only one organization. To create a new " +
+        "organization, use a different email. To use the existing one, sign in.",
+    );
+  });
+
+  it("is what the form shows for the code", () => {
+    expect(form).toMatch(/data\.code === "AlreadyMember"[\s\S]{0,400}alreadyMemberMessage\(/);
+  });
+});

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "App Workshop builder agent — builds Custom Apps from chat"
 requires-python = ">=3.12"
 dependencies = [
-    "agent-framework-github-copilot",
+    "agent-framework-github-copilot>=2.0.0",
 ]
 
 [build-system]

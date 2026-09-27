@@ -1155,3 +1155,52 @@ async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
     )
     assert single["subtask_count"] == 0
     assert single["assignees"] == ["alice@fracktal.in"]
+
+
+# ── D-PM-38 — My Tasks counts only the children the member can see ─────────
+
+async def test_my_tasks_counts_only_children_the_member_can_see(
+    db: FakeProjectsDB,
+) -> None:
+    """B4 for My Tasks. A child in a project the member holds no grant on
+    must not show in `subtask_count` or `subtask_done`: the count would say
+    the task has work the member can never open."""
+    project, todo, done = _team_project(db)
+    secret = db.seed_project(name="Secret", subject=None)
+    secret_todo = db.seed_status(
+        secret.id, name="To do", category="todo", is_default=True,
+    )
+    secret_done = db.seed_status(
+        secret.id, name="Done", category="done", is_default=False, position=40,
+    )
+    parent = db.seed_task(project.id, todo.id, title="Parent")
+    _assign(db, parent.id, "alice@fracktal.in")
+    db.seed_task(project.id, done.id, title="Seen, done", parent_task_id=parent.id)
+    db.seed_task(project.id, todo.id, title="Seen, open", parent_task_id=parent.id)
+    db.seed_task(
+        secret.id, secret_done.id, title="Hidden, done", parent_task_id=parent.id,
+    )
+    db.seed_task(
+        secret.id, secret_todo.id, title="Hidden, open", parent_task_id=parent.id,
+    )
+
+    inbox = await pm_personal.my_inbox(user=ALICE, page=page())
+    row = next(r for r in inbox.rows if r["id"] == str(parent.id))
+
+    assert row["subtask_count"] == 2
+    assert row["subtask_done"] == 1
+
+
+def test_the_my_tasks_roll_up_carries_the_visibility_clause() -> None:
+    """The statement text, because a fake answers whatever SQL it is handed.
+    Both correlated subqueries must carry `core.task_visibility_clause` on the
+    alias `c` — the real clause, never a copy — and the archived filter."""
+    clause = pm_core.task_visibility_clause(
+        pm_core.Visibility(unrestricted=False, email="", groups=()), "c",
+    )
+    sql = pm_personal._MY_TASKS_SQL
+    for alias in ("AS subtask_count", "AS subtask_done"):
+        head = sql[: sql.index(alias)]
+        subquery = head[head.rindex("(SELECT count(*) FROM pm_tasks c"):]
+        assert clause in subquery, alias
+        assert "c.archived_at IS NULL" in subquery, alias

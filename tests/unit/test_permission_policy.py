@@ -234,17 +234,46 @@ def test_custom_deny_patterns_env(monkeypatch):
 # ── handler(): SDK result mapping + modes ────────────────────────────────────
 
 
+# SDK 1.0 (H-181): one decision class per outcome. A handler answers with the
+# REQUEST variants — "approve-once" (what the SDK's own approve_all returns)
+# and "reject", the one that carries agent-visible feedback.
+_APPROVE = "approve-once"
+_DENY = "reject"
+
+
 def test_handler_enforce_denies_dangerous_shell():
     res = pp.risk_aware_permission_handler(
         {"full_command_text": "rm -rf /home"}, {},
     )
-    assert res.kind == "denied-by-rules"
+    assert res.kind == _DENY
     assert "permission policy" in (res.feedback or "")
+
+
+def test_handler_reads_the_SDK_1_0_typed_shell_request():
+    """🔴 The SDK now hands the handler a typed ``PermissionRequestShell``,
+    not the old flat record. ``decide`` must still see the command on it."""
+    from copilot.session_events import PermissionRequestShell
+
+    req = PermissionRequestShell(
+        can_offer_session_approval=False, commands=[],
+        full_command_text="rm -rf /home", has_write_file_redirection=False,
+        intention="clean", possible_paths=[], possible_urls=[],
+    )
+    res = pp.risk_aware_permission_handler(req, {})
+    assert res.kind == _DENY
+
+
+def test_the_SDK_accepts_what_the_handler_returns():
+    """Both answers serialise the way the SDK sends them to the CLI."""
+    ok = pp.risk_aware_permission_handler({"read_only": True}, {})
+    no = pp.risk_aware_permission_handler({"full_command_text": "rm -rf /home"}, {})
+    assert ok.to_dict() == {"kind": _APPROVE}
+    assert no.to_dict()["kind"] == _DENY and no.to_dict()["feedback"]
 
 
 def test_handler_enforce_approves_readonly():
     res = pp.risk_aware_permission_handler({"read_only": True}, {})
-    assert res.kind == "approved"
+    assert res.kind == _APPROVE
 
 
 def test_handler_audit_mode_approves_but_would_deny(monkeypatch):
@@ -253,13 +282,13 @@ def test_handler_audit_mode_approves_but_would_deny(monkeypatch):
         {"full_command_text": "rm -rf /home"}, {},
     )
     # audit never blocks — it only logs the would-be decision.
-    assert res.kind == "approved"
+    assert res.kind == _APPROVE
 
 
 def test_handler_never_raises_on_bad_request(monkeypatch):
     # A malformed request must not brick the run — approve on internal error.
     res = pp.risk_aware_permission_handler(object(), {})
-    assert res.kind == "approved"
+    assert res.kind == _APPROVE
 
 
 # ── Injected-tool gate wrapper (closes the live BYOK/streaming bypass) ───────

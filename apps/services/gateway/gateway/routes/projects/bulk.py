@@ -39,13 +39,22 @@ from gateway.routes.projects.automation import (
     TaskPatchError,
     apply_task_patch,
 )
+from gateway.routes.projects.cascade import (
+    Cascade,
+    archive_subtree,
+    complete_subtree,
+    current_category,
+    emit_all,
+)
 from gateway.routes.projects.core import (
+    COMPLETED_CATEGORY,
     _tenant_session,
     actor,
     archive_note,
     assert_assignable_here,
     clean_payload,
     emit,
+    lift_subtasks_to_grandparent,
     load_visible_task,
     now,
     record_activity,
@@ -105,6 +114,12 @@ class BulkIn(BaseModel):
     #: keep, and conflating them here would let one bulk request move the
     #: team's board and my triage in a single unreadable body.
     personal: PersonalIn | None = None
+    #: D-PM-38 decisions 2 and 4 (S5), asked ONCE for the whole selection.
+    #: With a status patch that lands a task in a `done` lane, its open
+    #: descendants complete too. With `action: "archive"`, its descendants go
+    #: on the shelf too. Ignored by every other verb. FALSE by default, so an
+    #: old caller and the chat tools touch only the tasks they name.
+    include_subtasks: bool = False
 
 
 def validate_personal(
@@ -414,13 +429,11 @@ async def _act_on_one(
     if action == "delete":
         # The tombstone is migration 168's AFTER DELETE trigger, not a
         # statement here — see `tasks.delete_task`, which explains why. The
-        # subtasks are PROMOTED by the FK's SET NULL, never destroyed.
-        children = [
-            str(r.id) for r in (await db.execute(
-                text("SELECT id FROM pm_tasks WHERE parent_task_id = CAST(:t AS uuid)"),
-                {"t": task_id},
-            )).fetchall()
-        ]
+        # subtasks are PROMOTED, never destroyed: D-PM-38 moves them up ONE
+        # level, to this task's own parent, through the one helper the single
+        # delete uses. It reads the parent from the database, because an
+        # earlier delete in this same selection may have changed it.
+        children = await lift_subtasks_to_grandparent(db, task_id)
         await db.execute(
             text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": task_id},
         )
@@ -532,6 +545,10 @@ async def bulk_edit(
     #: address → the tasks they were newly put on, for one notification each.
     newly_assigned: dict[str, list[str]] = {}
     changed_ids: list[str] = []
+    #: D-PM-38 — what the subtree cascades did, across the whole selection.
+    cascaded = Cascade()
+    completed_by_cascade = 0
+    archived_by_cascade = 0
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -553,6 +570,15 @@ async def bulk_edit(
                     skipped.append({"task_id": task_id, "reason": detail})
                 else:
                     failed.append({"task_id": task_id, "reason": detail})
+                if action == "archive" and payload.include_subtasks:
+                    # Whether this task was shelved now or before: the box
+                    # asks about its subtasks either way. A subtask that is
+                    # also in the selection is skipped as "unchanged" when
+                    # its own turn comes, because it is already shelved.
+                    shelved = await archive_subtree(db, vis, task_id, by=who)
+                    archived_by_cascade += len(shelved.ids)
+                    cascaded.ids.extend(shelved.ids)
+                    cascaded.events.extend(shelved.events)
                 continue
 
             try:
@@ -568,6 +594,18 @@ async def bulk_edit(
                 continue
             for person in newly:
                 newly_assigned.setdefault(person, []).append(task_id)
+
+            if (
+                payload.include_subtasks
+                and "status" in outcome["changed"]
+                and await current_category(db, task_id) == COMPLETED_CATEGORY
+            ):
+                # Each descendant into the first Done status of its OWN set.
+                closed = await complete_subtree(db, vis, task_id, by=who)
+                completed_by_cascade += len(closed.ids)
+                cascaded.ids.extend(closed.ids)
+                cascaded.changes.extend(closed.changes)
+                cascaded.events.extend(closed.events)
 
             if outcome["changed"]:
                 applied.append(outcome)
@@ -592,14 +630,22 @@ async def bulk_edit(
     # construction, so an automation that fails cannot roll back a re-triage.
     for task_id in changed_ids:
         await emit("pm.task.updated", {"task_id": task_id})
+    await emit_all(cascaded.events)
 
-    return {
+    answer: dict[str, Any] = {
         "requested": len(ids),
         "applied": len(applied),
         "results": applied,
         "skipped": skipped,
         "failed": failed,
     }
+    if payload.include_subtasks:
+        # The counts the receipt names, and the ids and statuses Undo needs.
+        answer["subtasks_completed"] = completed_by_cascade
+        answer["subtasks_archived"] = archived_by_cascade
+        answer["subtask_ids"] = cascaded.ids
+        answer["subtask_changes"] = cascaded.changes
+    return answer
 
 
 __all__ = [

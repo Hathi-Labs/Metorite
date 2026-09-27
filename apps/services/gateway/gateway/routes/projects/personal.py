@@ -41,13 +41,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
     _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
+    TRIAGE_CATEGORY,
     ListResponse,
     Page,
     TaskModel,
+    Visibility,
     _bindable,
     _placeholder,
     _tenant_session,
@@ -70,10 +73,11 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     status_owner_id,
+    task_visibility_clause,
     touch_task,
     update_row,
 )
-from gateway.routes.projects.filters import attach_assignees
+from gateway.routes.projects.filters import attach_assignees, attach_parent_context
 
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
@@ -232,6 +236,11 @@ class OrganizeIn(BaseModel):
     #: them. Without them a promote from Clarify was refused after the card
     #: had already moved the row.
     custom_fields: dict | None = None
+    #: D-PM-38 decision 4 (S5). A promote from Clarify takes the task's
+    #: subtasks along, as the Move dialog's ticked box does. Passed to the ONE
+    #: move seam (`MoveTask.include_subtasks`). FALSE by default, so the chat
+    #: tool's organize and every old caller move one task.
+    include_subtasks: bool = False
 
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
@@ -1210,6 +1219,40 @@ async def my_tasks_binds(
     }
 
 
+#: D-PM-38 — which children the roll-up counts. The same two rules the Projects
+#: chip applies (`filters._SUBTASK_COUNTS_SQL`): the child is not archived, and
+#: the member can see it. Until 2026-09-26 this counted every child, so a
+#: subtask in a project the member holds no grant on still showed in the count.
+#:
+#: The grant closure is the MEMBER'S OWN (`my_tasks_binds` binds `:vis_email`,
+#: `:vis_groups` and `:vis_org`), for the reason `MY_TASKS_FROM` gives:
+#: `data:org:read` widens the board, not a member's private list. The clause is
+#: `core.task_visibility_clause` itself, never a copy, on the alias `c`.
+_CHILD_VISIBLE = task_visibility_clause(
+    Visibility(unrestricted=False, email="", groups=()), "c",
+)
+_CLOSED_LITERAL = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+
+async def attach_my_parents(
+    db: Any, binds: dict[str, Any], items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """D-PM-38 — "↳ Parent" on each My Tasks row, under the member's grants.
+
+    My Tasks shows every subtask once, as its own row, so each one names its
+    parent. The visibility is built from the binds ``my_tasks_binds``
+    assembled, which are the member's own grants and never request input. A
+    parent the member cannot see comes back as ``{hidden: True}``, with no
+    title.
+    """
+    vis = Visibility(
+        unrestricted=False,
+        email=str(binds.get("vis_email") or ""),
+        groups=tuple(binds.get("vis_groups") or ()),
+        organization_id=binds.get("vis_org"),
+    )
+    return await attach_parent_context(db, vis, items)
+
+
 #: My work: everything assigned to me, plus everything in my personal project.
 #:
 #: The second arm matters — a task I captured and then unassigned is still mine
@@ -1274,8 +1317,18 @@ SELECT t.*,
                             AS tag_colors,
        proj.name            AS project_name,
        (SELECT count(*) FROM pm_tasks c
-         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL)
+         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL
+           AND """ + _CHILD_VISIBLE + """)
                             AS subtask_count,
+       -- D-PM-38: the "done" half of the chip, so My Tasks can draw
+       -- "done/total" as Projects does. Done means the status CATEGORY is
+       -- closed, the rule `relations.subtask_progress` applies.
+       (SELECT count(*) FROM pm_tasks c
+          JOIN pm_task_statuses cs ON cs.id = c.status_id
+         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL
+           AND cs.category IN (""" + _CLOSED_LITERAL + """)
+           AND """ + _CHILD_VISIBLE + """)
+                            AS subtask_done,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -1346,6 +1399,7 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # such field. Owner directive 2026-09-03 — Tasks sees the mapped status.
     task["status_category"] = getattr(row, "status_category", None)
     task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
+    task["subtask_done"] = int(getattr(row, "subtask_done", 0) or 0)
     # The lane's stored colour and each tag's registry colour. My Tasks
     # passes both through `statusAccent`, the path Projects draws them by.
     # Without them a custom-coloured lane drew two colours in two apps, and
@@ -1523,6 +1577,7 @@ async def my_inbox(
         # so this is one extra query for the page rather than N for the rows —
         # and paying it for rows the filters just dropped is waste.
         await attach_assignees(db, items)
+        await attach_my_parents(db, params, items)
         if untriaged:
             await _attach_assigned_by(db, email, items)
 
@@ -1656,6 +1711,7 @@ async def led_projects_for(
             continue
         mine.append(task)
     await attach_assignees(db, mine)
+    await attach_my_parents(db, params, mine)
     for task in mine:
         led[str(task["project_id"])]["my_tasks"].append(task)
     return list(led.values())
@@ -1824,13 +1880,13 @@ async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:
     # Reachable when archived: the client reads a task back after archiving
     # it, and a 404 there would look like the task was destroyed rather than
     # filed.
-    row = (await db.execute(
-        text(sql), await my_tasks_binds(db, email, archived=True, tid=task_id),
-    )).fetchone()
+    binds = await my_tasks_binds(db, email, archived=True, tid=task_id)
+    row = (await db.execute(text(sql), binds)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="No such task")
     task, _ = _project_task(row)
     await attach_assignees(db, [task])
+    await attach_my_parents(db, binds, [task])
     return task
 
 
@@ -1917,6 +1973,7 @@ async def my_calendar(
                 continue
             items.append(task)
         await attach_assignees(db, items)
+        await attach_my_parents(db, params, items)
 
     items.sort(key=lambda t: t["scheduled_start"] or "")
     # Deliberately unpaged: a window is already the bound, and a paged calendar
@@ -2022,6 +2079,7 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
 @router.post("/tasks/{task_id}/complete")
 async def complete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    include_subtasks: bool = False,
 ) -> dict:
     """Tick a task off from my inbox.
 
@@ -2031,13 +2089,35 @@ async def complete_task(
     same instant, because there is one row. A personal-only completion would be
     a member quietly marking a team task finished while the board still shows it
     open, which is the exact drift a mirror produces.
+
+    D-PM-38 decision 2 (S5). ``?include_subtasks=true`` completes every open
+    descendant too, each into the first Done status of its OWN set
+    (``cascade.complete_subtree``), in this transaction. The default is
+    false: the owner's prompt defaults to "Only this task", and the chat tool
+    and old callers keep completing one task. The reply then carries
+    ``subtasks_completed`` and ``subtask_changes`` (each child's status before
+    and after), which is what the client's Undo puts back.
     """
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # The subtree FIRST. `complete_for_member` emits the parent's
+        # `pm.task.status_changed` inside this transaction, so a cascade that
+        # refuses after it would have announced a completion that rolled back
+        # (review of #493). The cascade's own events wait for the commit.
+        cascade = (
+            await complete_subtree(db, vis, task_id, by=email)
+            if include_subtasks else None
+        )
         moved = await complete_for_member(db, task, email)
-        return row_to_dict(moved["row"], TaskModel)
+        result = row_to_dict(moved["row"], TaskModel)
+        if cascade is not None:
+            result["subtasks_completed"] = len(cascade.ids)
+            result["subtask_changes"] = cascade.changes
+    if cascade is not None:
+        await emit_all(cascade.events)
+    return result
 
 
 # ── Organize: one clarify decision, atomically ──────────────────────────────
@@ -2077,14 +2157,67 @@ def _is_delegated(payload: OrganizeIn) -> bool:
     )
 
 
+async def step_status(db: Any, parent: Any) -> Any:
+    """The status a new step of ``parent`` lands in (D-PM-38, Subtasks S4).
+
+    The parent's own status, when that lane is open: a step of work that is in
+    progress is in progress too. A step is in the parent's project, so the
+    parent's status is in the step's status set.
+
+    Otherwise, and for a triage lane, the answer is ``load_default_status``,
+    the one resolver (D79). This adds no second first-by-position rule.
+
+    Before S4 every step took the first lane. In a personal project that lane
+    is Inbox, category ``backlog``, so ``derive_disposition`` read the step as
+    SOMEDAY and it left the member's Next Actions the moment it was made.
+    """
+    lane = (await db.execute(
+        text("SELECT * FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+        {"sid": str(parent.status_id)},
+    )).fetchone() if getattr(parent, "status_id", None) else None
+    category = getattr(lane, "category", None) if lane is not None else None
+    if lane is not None and category not in CLOSING_CATEGORIES \
+            and category != TRIAGE_CATEGORY:
+        return lane
+    return await load_default_status(
+        db, await status_owner_id(db, str(parent.project_id)))
+
+
+async def step_overlay(db: Any, email: str, parent: Any) -> dict[str, Any] | None:
+    """What a new step states on MY list: NEXT when I stated NEXT on the parent.
+
+    D-PM-38 (Subtasks S4). A step is a piece of the parent's work. When the
+    member said the parent is a next action, a step of it is one too. Any
+    other stated value, or none, states nothing, and the step derives its
+    disposition off its lane, as every untriaged task does.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT disposition FROM pm_task_personal "
+            "WHERE task_id = CAST(:tid AS uuid) AND lower(member_email) = :who"
+        ),
+        {"tid": str(parent.id), "who": email.lower()},
+    )).fetchone()
+    if row is not None and getattr(row, "disposition", None) == "NEXT":
+        return {"disposition": "NEXT"}
+    return None
+
+
 async def _add_subtasks(
     db: Any, email: str, parent: Any, titles: list[str],
 ) -> list[str]:
     """Child ``pm_tasks`` under ``parent``: same project, self-assigned, in the
-    order given. Blank titles are skipped. Returns the new ids."""
+    order given. Blank titles are skipped. Returns the new ids.
+
+    Each step lands in the parent's lane when that lane is open
+    (:func:`step_status`) and states NEXT when the parent does
+    (:func:`step_overlay`). Both doors that add a step from My Tasks come
+    here: organize, and ``POST /my/tasks/{id}/subtasks``.
+    """
     project_id = str(parent.project_id)
     root = str(parent.root_project_id)
-    status = await load_default_status(db, await status_owner_id(db, project_id))
+    status = await step_status(db, parent)
+    overlay = await step_overlay(db, email, parent)
     created: list[str] = []
     for raw in titles:
         title = (raw or "").strip()
@@ -2100,7 +2233,7 @@ async def _add_subtasks(
                 # R5: the tenant travels with the row, read off the parent it
                 # hangs from rather than inferred later.
                 "organization_id": getattr(parent, "organization_id", None),
-            })
+            }, dict(overlay) if overlay else None)
         created.append(str(child.id))
     if created:
         # Subtask membership is a satellite of the PARENT (WS-27ae / P-27):
@@ -2111,6 +2244,7 @@ async def _add_subtasks(
 
 async def _organize(
     db: Any, vis: Any, email: str, task: Any, payload: OrganizeIn,
+    moved_subtasks: list[str] | None = None,
 ) -> str:
     """Apply one decision to ``task`` inside the caller's transaction.
 
@@ -2156,9 +2290,15 @@ async def _organize(
         # They mean something only when the task changes project.
         custom_fields=payload.custom_fields if dest else None,
         assignees=[who] if who else None,
+        # D-PM-38 decision 4. Means something only when the task changes
+        # project, which `move_task_in` checks itself.
+        include_subtasks=bool(payload.include_subtasks and dest),
     )
     if move.project_id or move.assignees is not None:
-        await move_task_in(db, vis, task, move, by=email)
+        shifted = await move_task_in(db, vis, task, move, by=email)
+        if moved_subtasks is not None:
+            # D-PM-38 — the caller emits one "moved" event per subtask.
+            moved_subtasks.extend(shifted.get("subtask_ids", []))
         task = await load_visible_task(db, vis, task_id)
 
     # ── 2. The shared facts — one deadline, one estimate, on the task ───────
@@ -2255,7 +2395,10 @@ async def organize_my_task(
         task = await load_visible_task(db, vis, task_id)
         title = str(getattr(task, "title", "") or "")
         before = str(getattr(task, "project_id", "") or "")
-        disposition = await _organize(db, vis, email, task, payload)
+        moved_subtasks: list[str] = []
+        disposition = await _organize(
+            db, vis, email, task, payload, moved_subtasks=moved_subtasks,
+        )
         result = await _read_my_task(db, email, task_id)
     # S6g — a decision that changed the project IS a move, and says so the
     # way `POST /tasks/{id}/move` does. Automations bound to "Task moved"
@@ -2280,7 +2423,51 @@ async def organize_my_task(
     await emit("pm.task.updated", {"task_id": task_id})
     if moved:
         await emit("pm.task.moved", {"task_id": task_id})
+    for child_id in moved_subtasks:
+        await emit("pm.task.moved", {"task_id": child_id})
     return result
+
+
+class StepsIn(BaseModel):
+    titles: list[str]
+
+
+@router.post("/my/tasks/{task_id}/subtasks", status_code=201)
+async def add_my_steps(
+    task_id: str, payload: StepsIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Add steps under a task from My Tasks (D-PM-38, Subtasks S4).
+
+    The same helper organize calls, so the two ways of adding a step from
+    My Tasks agree: each step is self-assigned, lands in the parent's lane
+    when that lane is open, and states NEXT when I stated NEXT on the parent.
+    Before S4 the checklist wrote each step through ``POST /tasks`` with no
+    status, so a step took the first lane and read SOMEDAY.
+
+    The parent is read through the visibility the organize door uses
+    (``load_visible_task``), which admits a task I reach by assignment. That
+    reach is intended: an assignee adds steps under their own work, as
+    organize lets them. A parent I cannot see answers 404 and writes nothing.
+    Answers ``{created: [ids]}`` in the order given.
+    """
+    email = actor(user).lower()
+    titles = [t for t in (payload.titles or []) if (t or "").strip()]
+    if not titles:
+        raise HTTPException(status_code=422, detail="A step needs a title.")
+    # Bounded for the reason the batch capture is (`MAX_BATCH`).
+    if len(payload.titles or []) > MAX_BATCH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_BATCH} steps per request; "
+                   f"got {len(payload.titles)}.",
+        )
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        parent = await load_visible_task(db, vis, task_id)
+        # `create_personal_task` emits `pm.task.created` for each step.
+        created = await _add_subtasks(db, email, parent, titles)
+    return {"created": created}
 
 
 class DeferIn(BaseModel):

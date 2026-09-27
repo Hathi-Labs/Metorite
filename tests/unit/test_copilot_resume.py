@@ -22,7 +22,8 @@ class _CapturingClient:
         self.resume_config: dict[str, Any] | None = None
         self.resume_session = AsyncMock(side_effect=self._resume)
 
-    async def _resume(self, session_id: str, config: dict[str, Any]) -> Any:
+    async def _resume(self, session_id: str, **config: Any) -> Any:
+        # SDK 1.0 (H-181): resume_session(session_id, **kwargs).
         self.resume_config = config
         return MagicMock(session_id=session_id)
 

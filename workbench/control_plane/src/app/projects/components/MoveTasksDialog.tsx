@@ -32,6 +32,8 @@ import { useState } from "react";
 
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import { IncludeSubtasksBox } from "@/components/SubtaskCascade";
+import { CASCADE_DEFAULTS } from "@/lib/subtaskCascade";
 import SelectButton from "@/components/ui/SelectButton";
 
 import type { FieldDef } from "../lib/customFields";
@@ -65,7 +67,12 @@ interface Props {
     destinationId: string,
     statusMap: Record<string, string>,
     acceptedDrops: string[] | null,
-    promote?: PromoteAnswers
+    promote?: PromoteAnswers,
+    /**
+     * D-PM-38 decision 4 (S5) — take the subtasks along. True when the
+     * selection has subtasks and the pre-ticked box is still ticked.
+     */
+    includeSubtasks?: boolean
   ) => void;
   busy?: boolean;
   /** The server's refusal, rendered IN the card — see H-120's sibling note. */
@@ -109,12 +116,16 @@ export function MoveTasksDialog({
   // S6g — the promote door's answers come up from `PromoteFields`, the one
   // component Clarify draws too.
   const [answers, setAnswers] = useState<PromoteFieldsState | null>(null);
+  // D-PM-38 decision 4 — the bulk path's "Include N subtasks", TICKED. The
+  // preview reads the plan WITH the subtasks while it is ticked, so their
+  // drops and required fields are on the card before the member agrees.
+  const [withSubtasks, setWithSubtasks] = useState<boolean>(CASCADE_DEFAULTS.move);
 
   const ids = taskIds ?? [];
   const promoting = Boolean(promote);
   // The bulk path's preview. The promote path reads its own inside
   // `PromoteFields`, so this one stays idle there (no destination).
-  const bulk = useMovePreview(ids, promoting ? null : destination, false);
+  const bulk = useMovePreview(ids, promoting ? null : destination, false, withSubtasks);
 
   if (!taskIds || ids.length === 0) return null;
 
@@ -131,9 +142,14 @@ export function MoveTasksDialog({
     nameOf(destRows, destination) || nameOf(destRows, plan?.destination_project_id ?? null);
 
   const promoteDrops = answers?.drops ?? null;
+  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0, refused: [] };
+  const carrying = withSubtasks && subtasks.count + subtasks.hidden > 0;
+  // A ticked box over a hidden subtask is a move the gateway refuses (409),
+  // and so is one over a subtask D62 refuses (422). The box says why.
+  const splitRefused = carrying && (subtasks.hidden > 0 || subtasks.refused.length > 0);
   const canMove = promoting
     ? !!destination && !!answers?.ready && !!answers.destinationProjectId
-    : !!plan && !bulk.planning;
+    : !!plan && !bulk.planning && !splitRefused;
   const loud = promoting ? (promoteDrops?.length ?? 0) > 0 : drops.length > 0;
 
   return (
@@ -221,6 +237,14 @@ export function MoveTasksDialog({
               </p>
             ) : null}
             <MoveLosses reading={reading} />
+            <IncludeSubtasksBox
+              count={subtasks.count}
+              hidden={subtasks.hidden}
+              refused={subtasks.refused.map((r) => r.reason)}
+              checked={withSubtasks}
+              onChange={setWithSubtasks}
+              disabled={busy}
+            />
           </>
         ) : null}
 
@@ -247,12 +271,24 @@ export function MoveTasksDialog({
              promote door a blank required field holds the button too, and
              `title` says which one. */
           disabled={!canMove}
-          title={(promoting ? answers?.blocked : null) || undefined}
+          title={
+            (promoting
+              ? answers?.blocked
+              : splitRefused
+                ? (subtasks.refused[0]?.reason ?? "Some subtasks are hidden from you.")
+                : null) || undefined
+          }
           variant={loud ? "destructive" : "primary"}
           onClick={() => {
             if (promoting) {
               if (!answers?.ready || !answers.destinationProjectId) return;
-              onConfirm(answers.destinationProjectId, {}, promoteDrops, answers.answers);
+              onConfirm(
+                answers.destinationProjectId,
+                {},
+                promoteDrops,
+                answers.answers,
+                answers.includeSubtasks,
+              );
               return;
             }
             if (!plan) return;
@@ -260,6 +296,8 @@ export function MoveTasksDialog({
               plan.destination_project_id,
               overrides,
               drops.length > 0 ? drops.map(([key]) => key) : null,
+              undefined,
+              carrying,
             );
           }}
         >

@@ -4325,8 +4325,8 @@ async def run_agent_stream(
                     # may not be installed.  Our Python tools (e.g. zoho_crm) work fine
                     # without it, and we don't want the LLM to fall back to shell execution.
                     try:
-                        from copilot import \
-                            CopilotClient as _CopilotClient
+                        from copilot import CopilotClient as _CopilotClient
+                        from copilot import RuntimeConnection as _RuntimeConnection
                         if hasattr(agent, "_client") and agent._client is None:
                             _agent_settings = getattr(agent, "_settings", {}) or {}
                             _cli_opts: dict[str, Any] = {}
@@ -4334,11 +4334,18 @@ async def run_agent_stream(
                             # including shell — pwsh 7.6.2 is installed. For local/built-in
                             # MAF agents with Python tools, deny shell to prevent the LLM
                             # from bypassing structured Python tools with raw shell calls.
-                            if _agent_runtime != "github-copilot":
-                                _cli_opts["cli_args"] = ["--deny-tool", "shell"]
+                            # SDK 1.0 (H-181): cli_path + cli_args became one
+                            # stdio RuntimeConnection, and the client takes
+                            # keywords instead of an options dict.
+                            _cli_args = (
+                                ["--deny-tool", "shell"]
+                                if _agent_runtime != "github-copilot" else []
+                            )
                             _cli_path = _agent_settings.get("cli_path")
-                            if _cli_path:
-                                _cli_opts["cli_path"] = _cli_path
+                            if _cli_path or _cli_args:
+                                _cli_opts["connection"] = _RuntimeConnection.for_stdio(
+                                    path=_cli_path or None, args=_cli_args,
+                                )
                             _log_level = _agent_settings.get("log_level")
                             if _log_level:
                                 _cli_opts["log_level"] = _log_level
@@ -4357,7 +4364,7 @@ async def run_agent_stream(
                             ).strip()
                             if _cop_tok:
                                 _cli_opts["github_token"] = _cop_tok
-                            agent._client = _CopilotClient(_cli_opts if _cli_opts else None)
+                            agent._client = _CopilotClient(**_cli_opts)
                             agent._owns_client = True
                     except Exception:
                         pass

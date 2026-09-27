@@ -5,6 +5,8 @@
  * `tests/unit/test_genui_catalog_lockstep.py`. This file covers the one
  * function a wrong input would break silently: the app link a row carries.
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -91,5 +93,45 @@ describe("isDateCell", () => {
     for (const cell of ["Due 2026-09-30 or later", 42, "", null, "2026-09"]) {
       expect(isDateCell(cell)).toBe(false);
     }
+  });
+});
+
+// ── WS-27bm S10 — the plan card's "Waits on" control ────────────────────────
+
+describe("the plan card's Waits on control", () => {
+  const plan = (tasks: unknown[]) =>
+    renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.planCard({ project: { name: "Steps" }, tasks })));
+  const row = (key: string, after: string[] = []) =>
+    ({ key, title: key, owner: "a@x.io", effort_mins: 30, due: "2026-10-01", after });
+
+  it("draws on each row that has another row to wait on", () => {
+    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    // t1 has no option (both others wait on it). t2 and t3 each have one.
+    expect(html.match(/aria-label="Waits on \(for /g) ?? []).toHaveLength(2);
+  });
+
+  it("names each control after its row (fix round 1, a11y)", () => {
+    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    expect(html).toContain('aria-label="Waits on (for t2)"');
+    expect(html).toContain('aria-label="Waits on (for t3)"');
+    expect(html).not.toContain('aria-label="Waits on (for t1)"');
+  });
+
+  it("counts only the rows that are still on the card", () => {
+    // t9 was dropped from the card, and its key is still in t2's after.
+    const html = plan([row("t1"), row("t2", ["t1", "t9"])]);
+    const t2 = html.split('aria-label="Waits on (for t2)"')[1].split("</button>")[0];
+    expect(t2).toContain("· 1</span>");
+    expect(t2).not.toContain("· 2</span>");
+  });
+
+  it("tells a row with no option why, and does not hide it", () => {
+    const html = plan([row("t1"), row("t2", ["t1"])]);
+    expect(html).toContain("Waits on: none. Every other task waits on this one.");
+    expect(html.match(/Waits on: none/g) ?? []).toHaveLength(1);
+  });
+
+  it("is absent from a plan of one task", () => {
+    expect(plan([row("t1")])).not.toContain("Waits on");
   });
 });

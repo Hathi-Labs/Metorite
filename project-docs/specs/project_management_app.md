@@ -4520,6 +4520,10 @@ database (R8). No metric is computed client-side. Charts use the categorical
 ramp through `src/lib/categorical.ts`, never a raw palette class.
 **Gate:** AGENT-SAFE.
 
+**The Forecast's capacity rules live in `projects_ai_chat.md` §17** (S11,
+2026-09-26). Members see the name "Forecast". The route and the key stay
+`outlook`.
+
 #### 9.12.8 Reporting — analytics, rendered and sent (owner decision, 2026-08-31)
 
 **The owner drew the line: analytics is what you look at, a report is what gets
@@ -7891,6 +7895,373 @@ returned to a known state, or the later check measures the earlier one's leftove
 
 ---
 
+### 11.38 D-PM-38 — the build record for Subtasks S1 and S2 (2026-09-26)
+
+**The rule is in §12.9, and §12.9 is binding.** This section records what
+slices S1 and S2 built against it. Read §12.9 for the owner's four decisions,
+the approved design, and the engineering defaults.
+
+#### What S1 and S2 built (2026-09-26)
+
+No migration. A member sees two changes only. The delete copy is now true, and
+the chip count leaves out hidden and archived children. The views draw nothing
+new until S3 and S4.
+
+| Item | Where | Fence |
+|---|---|---|
+| The parent of each row, in one query, under `task_visibility_clause` | `filters.attach_parent_context` | `test_projects_routes.py`, live check (a) |
+| The chip counts visible children that are not archived (B4) | `filters._SUBTASK_COUNTS_SQL` | `test_projects_routes.py`, live check (b) |
+| `top_level` on the list, the calendar, the export and the analytics dataset | `filters.build_task_filters` | `test_projects_filters.py` |
+| `subtasks` in the view config and in the overlay | `filters.normalise_view_config`, `normalise_view_user_state` | `test_projects_filters.py` |
+| My Tasks: `subtask_done`, a visible child count, and `parent` | `personal._MY_TASKS_SQL`, `attach_my_parents` | live checks (a) and (b) |
+| A delete moves the subtasks to the grandparent (B10) | `core.lift_subtasks_to_grandparent` | `test_projects_routes.py`, live check (c) |
+| The crumb words, the crumb, and the card shell's `parent` | `lib/taskCard.ts`, `components/TaskMeta.tsx` | `taskCard.test.ts`, `sharedTaskUi.test.ts` |
+| The tree: any depth, orphans and cycles | `lib/taskTree.ts` | `taskTree.test.ts` |
+
+The live checks are `tests/live/live_subtask_views.py`, on a fresh database.
+
+**A hidden parent's title never leaves the server.** The visibility clause is
+the WHERE of the parent query. A parent that the reader cannot see returns no
+row, so the child carries `{hidden: true}` and no title.
+
+**Why the delete changed.** The FK is `ON DELETE SET NULL`. So a delete made a
+subtask of a subtask a top-level task, while the dialog said "moved up a
+level". Both delete paths now move the children to the parent of the deleted
+task first, in the same transaction.
+
+**Two known gaps, recorded and not fixed here.**
+
+- My Tasks counts children under the member's OWN grants, for the reason
+  `MY_TASKS_FROM` gives. Its expander lists them through the board's
+  visibility. For a `data:org:read` holder the two can differ, so the count
+  can be lower than the list, or 0 with children behind it.
+- A PROJECT delete still takes its tasks through the FK cascade. A child in
+  another project then becomes top-level through `ON DELETE SET NULL`, not a
+  child of its grandparent.
+- The delta feed does not take `top_level` yet. §12.9 gives S3 the job.
+
+**The overlay exception.** `subtasks` is the one overlay key that can fold
+rows. §12.9 names it and says why.
+
+S3 and S4 draw the views: the list nesting, the board modes, the FilterBar
+control, the timeline and the My Tasks dedupe. S5 builds decisions 2 and 4.
+
+### 11.39 D-PM-38 — the build record for Subtasks S3 (2026-09-27)
+
+**The rule is in §12.9.** S3 draws the Projects views. My Tasks and the
+Calendar app are S4.
+
+No migration. One gateway change: the delta feed takes `top_level`.
+
+| Item | Where | Fence |
+|---|---|---|
+| The Subtasks control, per canvas, with its default | `FilterBar.tsx`, `lib/subtaskView.ts` | `subtaskView.test.ts` |
+| The member's overlay holds the mode, and the view is the fallback | `page.tsx` `changeSubtasks`, `subtaskView.storedSubtasks` | `subtaskView.test.ts` |
+| `toConfig` and `fromConfig` keep `subtasks` | `lib/grouping.ts` | `grouping.test.ts`, `test_projects_filters.py` |
+| Hidden sends `top_level`, and the delta feed takes it | `page.tsx`, `delta.py` | `test_projects_delta.py`, live check (d) |
+| The list nests at any depth, and a new filter opens every parent | `TaskList.tsx`, `subtaskView.subtaskSections` | `subtaskViews.test.ts` |
+| The list and the table draw one row set | `subtaskView.subtaskSections` | `subtaskViews.test.ts` |
+| The table group count does not change on collapse (B7) | `SubtaskSection.count` | `subtaskView.test.ts`, `subtaskViews.test.ts` |
+| The board draws each subtask card with its crumb | `TaskBoard.tsx` | `subtaskViews.test.ts` |
+| A drag changes only the dragged subtask | `board.optimisticDrop` | `board.test.ts` |
+| The calendar chip carries the crumb, and Hidden hides it | `CalendarView.tsx` | `subtaskViews.test.ts` |
+| The timeline draws every level (B3) | `timeline.timelineRows`, `openTimelineRows` | `timeline.test.ts` |
+| A promoted orphan on the timeline carries the crumb | `TimelineView.tsx` | `TimelineView.test.ts` |
+| A subtask hit in search carries the crumb | `SearchPalette.tsx` | none, advisory |
+| The nested-row mark is one component | `TaskMeta.NestedRowMark` | `sharedTaskUi.test.ts` |
+
+**Where the mode lives.** A member's choice goes to that member's overlay on
+the applied view. With no saved view applied, it goes to the project's board
+view. So the choice is kept for each member and each project. The shared view
+config keeps a mode only when somebody saves the view.
+
+**The defaults.** The list and the table default to Nested. The board and the
+calendar default to Separate and offer only Separate and Hidden. The timeline
+is always Nested and shows no control.
+
+**Hidden and the three list canvases.** The board, the list and the table share
+one task read. The page sends `top_level` when the stored mode says Hidden, so a
+switch between the three does not read again. On the board, a stored Nested
+falls back to Separate.
+
+**Each group finds its own orphans.** With the list grouped by status, a
+subtask in another status than its parent is an orphan in its own group. It
+shows alone with its crumb (decision 3).
+
+**The timeline fix (B3).** `timelineRows` now walks `taskTree`, so every level
+nests. Each row carries all of its descendants, so a parent bar folds in the
+dates of a grandchild. A task that names itself as its parent is now one row.
+Before S3 it was no row.
+
+**The review round (PR #491).**
+
+- **Select-all takes only the drawn rows.** It read every task in the groups,
+  so a collapsed parent's subtasks were selected too. A bulk Done then
+  completed tasks the member could not see. The list now builds the next
+  selection from `drawnIds` (`subtaskView.selectAllDrawn`), the same rows the
+  keyboard cursor walks. Fence: `subtaskView.test.ts`.
+- **The client half of Hidden has a fence.** `paging.boardReadParams` builds
+  the board read, and Hidden adds `top_level`. Without the flag, "Load more"
+  pages over the full set and brings pages of subtasks. Fence:
+  `paging.test.ts`.
+- **The export follows Hidden.** `export.exportQuery` sends `top_level` for a
+  Hidden board, so the file holds the rows on screen. Fence:
+  `export.test.ts`.
+
+**Known gaps, not fixed here.**
+
+- The analytics dataset takes `top_level`, and no surface sends it.
+- On a cold load, a member whose overlay says Hidden sees the subtasks for
+  one read. The views read has not landed, so the first task read goes out
+  without `top_level`. The page already reads the tasks again when the views
+  arrive, and that second read is folded.
+- The search palette crumb has no rendered test. The palette mounts a
+  `Modal`, which does not render on the server.
+- The visual rig at 390px shows the space overview and not the canvas. The
+  mobile layout drops the selected project when the width changes, so the
+  mobile shots do not show the S3 rows.
+
+### 11.40 D-PM-38 — the build record for Subtasks S4 (2026-09-27)
+
+**The rule is in §12.9.** S4 draws My Tasks and the Calendar app. My Tasks
+is always Separate. The Calendar app always shows subtasks.
+
+No migration. One new gateway door: `POST /projects/my/tasks/{id}/subtasks`.
+
+| Item | Where | Fence |
+|---|---|---|
+| My Tasks draws each subtask once: under its parent, or flat with its crumb (B2) | `tasks/lib/subtaskRows.myTaskRows`, `TaskListGrouped.tsx`, `FlatList.tsx` | `subtaskRows.test.ts` |
+| The parent's expander lists only the steps that are not on the list | `subtaskRows.otherSteps`, `stepsNotShown` | `subtaskRows.test.ts` |
+| The My Tasks board and every flat row carry the crumb | `TaskCard.tsx` `showParent` | `subtaskRows.test.ts`, visual check |
+| My Tasks draws no subtask icon by hand | `TaskListGrouped.tsx` uses `NestedRowMark` | `sharedTaskUi.test.ts`, exemption removed |
+| "File as subtask" keeps the task on the list, before and after a reload (B8) | `taskStore.fileUnderParent` | `subtaskRows.test.ts` |
+| A new step lands in the parent's open lane and states NEXT under a NEXT parent (B9) | `personal.step_status`, `step_overlay`, `_add_subtasks` | `test_subtasks_s4.py`, live check (c) |
+| The checklist adds steps through the organize helper | `personal.add_my_steps`, `lens.lensAddSubtasks` | `lens.test.ts`, `test_client_route_contract.py` |
+| A scheduled subtask is busy time for the planner (B1) | `planning._PM_*_WHERE` | `test_subtasks_s4.py`, live check (a) |
+| A parent with a NEXT step of mine is not a candidate | `planning._LensSource.candidates`, `_PM_MY_STEPS_WHERE`, `calendar/components/shared.plannerCandidates` | `subtask_planner_parity.json`, `shared.test.ts`, `test_subtasks_s4.py`, live check (b) |
+| The rail and a Calendar block carry the crumb | `UnscheduledRail.tsx`, `TimeGrid.tsx` | visual check |
+| A one-hour step block keeps its crumb and drops the outcome line | `calendar/components/shared.blockLines` | `shared.test.ts`, visual check |
+| The AI seam reads subtasks on every read (B13) | `item_lens._PmLens` | `test_subtasks_s4.py`, live check (d) |
+| The clarify parent candidates leave out the item's descendants and rank top-level tasks first | `item_lens._PmLens.siblings` | live check (d) |
+| The step door answers 404 for a parent I cannot see, and takes at most `MAX_BATCH` titles | `personal.add_my_steps` | `test_subtasks_s4.py`, live check (e) |
+| The expander draws the other steps after my nested steps | `subtaskRows.expanderSlots` | `subtaskRows.test.ts` |
+| Undo of "File as subtask" moves the task back, and the store rolls back when the gateway refuses the move | `taskStore.fileUnderParent`, `undoLastChange` `refiled` | `subtaskRows.test.ts` |
+
+The live checks are `tests/live/live_ws39_subtask_planner.py`, on a fresh
+database.
+
+**B9 was real.** A step took the first lane of its project. In a personal
+project that lane is Inbox, with the category `backlog`. The step had no
+stated disposition, so `derive_disposition` read it as SOMEDAY. The step left
+Next Actions at the moment the member made it. The live check proves this:
+with the NEXT inheritance removed, the organized step reads SOMEDAY.
+
+**The step rule (B9).** A new step takes the parent's status when that lane is
+open and is not triage. Otherwise it takes `load_default_status`, the one
+resolver (D79). A step states NEXT only when the member stated NEXT on the
+parent. Any other value states nothing, and the step derives its disposition
+as every untriaged task does.
+
+**The candidate rule (B1).** The planner may pack a task when it is mine,
+NEXT, open, not archived and has no block. A parent is not a candidate when I
+hold a step of it that is itself NEXT, because the NEXT steps are the units
+the member schedules. A step in INBOX, SOMEDAY or WAITING cannot be
+scheduled. So it leaves its parent a candidate, or the member could plan
+nothing of that work. The test is on the EFFECTIVE disposition, so the gateway applies
+it in Python over `_PM_MY_STEPS_WHERE`, not in SQL. The fixture holds both
+copies of the rule to one set of cases, the INBOX, SOMEDAY, WAITING and TRASH
+steps included.
+
+**The AI rule (B13).** A subtask assigned to me is my work. So the AI seam
+reads it on every read: the open list, the siblings, the context backfill and
+the insight counts. `open_items` lost its `top_level` switch. The e-mail
+"similar tasks" check now compares against steps too.
+
+**The clarify parent candidates.** `siblings` is the list the clarify check
+reads when it asks "is this a step of X?". It leaves out the item's own
+descendants, because filing a task under its own step is a cycle. It ranks
+top-level tasks first, then the newest. This is the smaller change: steps stay
+in the list, because a step can hold steps, and a burst of edited steps cannot
+push the real parents out of the 40-row cap.
+
+**The step door's reach is on purpose.** `POST /my/tasks/{id}/subtasks` reads
+the parent through `load_visible_task`, which admits a task the member reaches
+by assignment alone. So an assignee can add steps under their own work, as the
+organize door already lets them. The old checklist path went through
+`POST /tasks`, which needs a project grant. A parent the member cannot see
+answers 404 and writes nothing. One request takes at most `MAX_BATCH` titles.
+
+**Undo of "File as subtask".** Undo moves the task back to the parent it had
+before, or to the top level (`POST tasks/{id}/move` with `parent_task_id`, or
+with null). The snapshot puts the local rows back. When the gateway refuses
+the move (a cycle, a parent the member cannot see), the store puts both rows
+back, offers no undo, and shows the reason. The pre-S4 undo re-created a
+"deleted" row, so it made a copy of the task.
+
+**The expander order.** An open expander draws the other people's steps after
+the LAST row of the parent's subtree. So my nested steps come first, and the
+muted steps follow them at the same indent.
+
+**Known gaps, not fixed here.**
+
+- The assistant's subtask tool (`skill-my-tasks`) still writes a step through
+  `POST /projects/tasks`. It takes the first lane and states nothing.
+- The Projects panel's "add subtask" also takes the first lane. §12.9 does
+  not say what Projects does, so S4 did not change it.
+- A filed capture keeps its stated INBOX. It shows in the Inbox with its
+  crumb until the member clarifies it.
+- A step block shorter than one hour still has more lines than room. The
+  block clips the clock line, as it did before S4 for any short block.
+- A drop between nested rows ranks against the drawn neighbours. A step's
+  own rank then sits between two tasks that are not its siblings.
+
+### 11.41 D-PM-38 — the build record for Subtasks S5 (2026-09-27)
+
+**The rule is in §12.9.** S5 builds owner decisions 2 and 4: complete asks
+about open subtasks, and move and archive take the subtree along. It is the
+last slice of D-PM-38.
+
+No migration. The gateway change is additive: one option on seven doors.
+
+| Item | Where | Fence |
+|---|---|---|
+| The walk: every descendant, top down, with `visible` as a column | `cascade.load_subtree` | `test_subtasks_s5.py`, live checks (a) and (b) |
+| Complete: each open descendant into the first Done status of its own set | `cascade.complete_subtree` | `test_subtasks_s5.py`, live check (c) |
+| Archive: each visible descendant goes on the shelf | `cascade.archive_subtree` | `test_subtasks_s5.py`, live check (e) |
+| Move: each descendant through the one move seam, or a 409 | `tasks.move_task_in`, `cascade.movable_subtree` | `test_subtasks_s5.py`, live checks (a) and (b) |
+| `include_subtasks` on complete, PATCH, archive, the single move, the bulk move, bulk edit and organize | `personal.py`, `tasks.py`, `move.py`, `bulk.py` | `test_subtasks_s5.py` |
+| The move preview counts the descendants, and the hidden ones | `move._plan` `subtasks` | live check (a) |
+| The words, the defaults, the bulk line and the Undo rule | `lib/subtaskCascade.ts` | `subtaskCascade.test.ts` |
+| The complete prompt and the ticked box | `components/SubtaskCascade.tsx`, `ConfirmDialog` | `subtaskCascade.test.ts`, `ConfirmDialog.test.ts` |
+| Every Projects door asks: the tick, the status menus, a drag, the table cell | `projects/lib/cascadeAsk.ts`, `useSubtaskComplete.tsx` | `cascadeAsk.test.ts` |
+| My Tasks asks, and Undo reverses the cascade | `taskStore` `subtaskPrompt`, `cascadeRevert` | `tasks/lib/subtaskCascade.test.ts` |
+| The chat tools keep the default, and name the option | `skill_my_tasks.core`, `skill_projects.writes`, `guarded` | `test_subtasks_s5.py` |
+
+The live checks are `tests/live/live_subtask_lifecycle.py`, on a fresh
+database.
+
+**The review round (PR #493).**
+
+- **The My Tasks question has ONE host, in `AppShell`.** The store is global,
+  and Focus Mode and the Calendar complete tasks too. A host on the My Tasks
+  page alone left those gestures doing nothing. Fence: `subtaskCascade.test.ts`.
+- **My Tasks' Undo reads each subtask through the project door.** The cascade
+  closes subtasks that are not mine, and `/my/tasks/{id}` answers 404 for
+  them. Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A move WITH subtasks shows what they cost.** The preview takes
+  `include_subtasks`, and the carried subtasks join the drops, the required
+  fields, the types and the tags. So `accept_drops` gates a subtask's loss,
+  and a missing required field refuses the move before any write (D-PM-29).
+  Each subtask lands by the map of its own root, and the apply hands that map
+  to `move_task_in`. Fences: `test_subtasks_s5.py`, live check (g).
+- **Complete runs the cascade before the parent's completion.** The parent's
+  event goes out inside the transaction, so a refused cascade must come
+  first. Fence: `test_subtasks_s5.py`.
+- **A drop into Done writes the card's slot before the board reloads.**
+
+**Why the server default is false on every door.** The owner's defaults are
+the dialog's defaults. The prompt defaults to "Only this task", and the move
+and archive dialogs tick their box. A server default of true would change what the
+chat tools, the API and every old caller do, with no dialog to show it. So
+the gateway takes the flag and the UI sends it. The chat tools send nothing,
+and their descriptions now say that the option exists.
+
+**What each cascade touches.**
+
+- Complete closes each descendant that is open, visible to the actor and not
+  archived. A child in another set lands in that set's first Done status,
+  through `load_default_status`, the one resolver (D79). A recurring child
+  spawns its next instance, because the cascade uses
+  `apply_status_transition`.
+- A set with no Done status refuses the whole cascade with a 409. The parent
+  then stays open too. "Only this task" still works.
+- A move into `cancelled` never cascades. Nobody asked to cancel the children.
+- Archive shelves each visible descendant. The timeline row names the lane,
+  as a single archive does, and `meta.cascade_from` names the parent.
+- A move takes every descendant to the new project. Each one goes through
+  `move_task_in`, so each gets the D62 refusal, its own status remap, the
+  required-field check and its drop record. One refusal rolls the whole move
+  back.
+
+**A hidden descendant refuses the move (409).** The member asked to take the
+subtasks along. Moving only the visible ones would split the tree, and
+nothing on screen would say so. So the gateway refuses before any write, and
+the message names the count. The count tells the member that hidden subtasks
+exist, and nothing else about them. The dialog reads the same count from the
+preview, and it holds the Move button while the member keeps the box ticked.
+
+Complete and archive do not refuse. They skip a hidden child, because a
+closed or shelved parent with an open child is a legal state (WS-27p).
+
+**Unarchive does not cascade.** A child can be on the shelf for its own
+reason, and nothing on the row says whether its parent took it there. The
+archive door reports `subtask_ids`, and Undo restores exactly those.
+
+**What Undo covers.**
+
+- Complete: the parent and each subtask the cascade closed. Each goes back to
+  its exact prior status, and only while it still holds the status the
+  cascade set. The write carries If-Match, so a newer move answers 412 and
+  stays. The toast says how many stayed. This is the rule My Tasks' single
+  Undo already uses (D79), and `revertCascade` applies it per task.
+- Archive: the task and exactly the ids the gateway shelved.
+- Move: no Undo, as before S5. A move had none in Projects, and a promote
+  from My Tasks has none after it is sent (D62).
+- A recurring subtask's next instance stays after Undo. The single Mark done
+  has the same limit.
+- The Projects bulk bar has no Undo, as before S5. The My Tasks bulk Done
+  has its Undo, and with "Complete all" that Undo puts back each subtask too.
+
+**Where the prompt asks.** Projects asks on the board's tick, its status menu,
+a drag into a Done column, the panel's status menu and the table's status
+cell. My Tasks asks on every gesture that reaches Mark done, the bulk Done
+included, and on a status pick into a later Done status. The count is the
+chip: the open children the reader can see. The receipt counts what the
+server closed, at every depth.
+
+**"Only this task" carries the weight.** The owner made it the default, so it
+is the solid main button, it has focus, and Escape means it. "Complete
+all" is the outline button. `ConfirmDialog` takes `emphasis="cancel"` for a
+question whose default is no. The move and archive box is different: there
+the ticked box IS the owner's default.
+
+**The bulk bars** say "includes K parents with M open subtasks". The app asks
+the choice once for the batch: the complete prompt for a Done status, and the
+ticked box for Archive and Move.
+
+**The second review round (PR #493).**
+
+- **The preview runs D62 on each carried subtask.** A personal parent can
+  carry a subtask that lives in a team project. The preview names that
+  subtask in `subtasks.refused`, and the dialog holds Move and says why while
+  the member keeps the box ticked. Both moves refuse it before any write, and the message
+  names the subtask, not the parent. Fences: `test_subtasks_s5.py`, live
+  check (h).
+- **The preview sends `subtasks.hidden` only with `include_subtasks`.** The
+  count says that hidden tasks exist, so it appears only when it changes the
+  act. Fence: `test_subtasks_s5.py`.
+- **The Projects Undo reads the parent's prior status from the server**, just
+  before the write (`cascadeAsk.writeCompletion`), as My Tasks does (D79).
+  The row on the board can be older than a teammate's move. Fence:
+  `cascadeAsk.test.ts`.
+- **A My Tasks bulk Done asks once for the batch**, with the bulk line.
+  Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A redo of an archive restores what THAT archive shelved** on the next
+  Undo.
+
+**Known gaps, not fixed here.**
+
+- The prompt counts the direct children from the chip. A closed child with
+  an open grandchild does not make the parent ask.
+- A bulk move remaps each descendant's STATUS by the automatic rule. The
+  member's status overrides name the selection's lanes only.
+- The move preview reads the subtree once per selected task.
+- A board drop that moves two axes at once does not ask.
+- An organize that promotes WITH subtasks names only the parent in the card's
+  receipt.
+
+---
+
 ## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)
 
 **Status:** owner directive 2026-08-24, recorded as **D52** and **D53** in
@@ -7917,6 +8288,10 @@ both; where it disagrees with §6, §7 or §11, **this section wins**.
 | **§8 D-PM-10** (owner confirms the Space→Center mapping) | **Moot.** There is no import, so there is no mapping to confirm. Kept in §8 as a record of *why* a mapping was owner-gated — the reasoning generalises to any future bulk grant. |
 | **§11 ClickUp parity — the measured gap** | **Kept, re-classified as history.** Its verdicts stand and its backlog closed on 2026-08-09; it is the record of what parity cost, not a plan. Do not dispatch from it. |
 | **§9.7 sequencing letters `c`, `g`, `h`** | **`c` cancelled** (two-way sync, unbuilt by decision). **`g` reduced** to the two owner acts in `work_plan.md` §6 (c-1)/(c-2). **`h` absorbed into WS-39 S3a–S3c.** |
+
+**2026-09-26 — D80.** §7 stays superseded. A one-shot FILE importer came back under
+D80, and `specs/project_import.md` (board **WS-41**) owns it. It adds no connector
+and no sync. This section adds nothing more to it.
 
 ### 12.3 What Projects becomes
 
@@ -8150,6 +8525,63 @@ values, before designing the target rows.
 ⚠️ **Still owner-gated, unchanged.** Running either against a real database is
 the owner's act. `docs/TASKS_LENS.md` carries the runbook; `H-29` is the queue
 entry.
+
+---
+
+### 12.9 D-PM-38 — how a view shows a subtask (ACTIVE, 2026-09-26)
+
+**D-PM-38 is binding.** It sits in §12 because §12 is the part of this spec
+that plans. §11.38 is the build record for slices S1 and S2. A subtask is a
+task with a parent (§3.4).
+
+**The owner approved the design on 2026-09-26.** It has three parts:
+
+- Each view has one Subtasks setting: Nested, Separate or Hidden. The view
+  stores it, and the member's overlay remembers it for that member.
+- One "↳ Parent" visual language. In every flat view, a subtask carries
+  "↳ Parent title". A nested row carries an indent and the CornerDownRight
+  icon.
+- A parent carries a "done/total" chip. The chip counts only the children
+  that the reader can see and that are not archived.
+
+**The owner took four decisions the same day. Cite them, and do not reopen
+them.**
+
+1. **The board defaults to Separate.**
+2. **A member completes a parent that has open subtasks: ask, and do not
+   block.** The default completes this task only. **BUILT in S5** (§11.41).
+3. **A filter matches a subtask but not its parent: show the subtask alone.**
+   It carries its "↳ Parent" line. The view shows no greyed context rows.
+4. **A member moves or archives a parent: its subtasks go with it by
+   default.** A pre-ticked "Include N subtasks" box sets this. **BUILT in S5**
+   (§11.41).
+
+**How S5 builds decisions 2 and 4.** Every lifecycle door takes
+`include_subtasks`, and the gateway default is false on each one. The UI
+sends true for a ticked box or for "Complete all". The gateway refuses (409)
+a move with the box ticked when any descendant is hidden from the actor, so
+no tree splits. Unarchive does not cascade. §11.41 is the build record.
+
+**The other defaults are ENGINEERING defaults.** They come from the approved
+design, and a later decision may change them. They are not owner decisions.
+
+- The list and the table default to Nested.
+- The Projects calendar defaults to Separate, and offers only Separate and
+  Hidden.
+- The timeline is Nested. D-PM-11 decides this, and D-PM-11 is binding.
+- My Tasks is always Separate and has no setting. It shows each subtask once,
+  with its parent named.
+- The Calendar app and Search always show subtasks.
+
+**The one exception to "presentation only".** A member's overlay may carry
+presentation keys and no filters (`VIEW_USER_STATE_KEYS`). `subtasks` is the
+one overlay key that can fold rows: Hidden sends `top_level`, so two members
+of one shared view can see different rows. This is on purpose, because the
+design remembers the setting for each member. A hidden subtask still counts
+in its parent's chip, so the parent still says that it has children.
+
+⚠️ **The delta feed takes `top_level` too** (S3, §11.39). Without it, a
+synced board shows the subtasks that Hidden folded away.
 
 ---
 

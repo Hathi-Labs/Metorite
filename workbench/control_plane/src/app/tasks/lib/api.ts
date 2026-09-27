@@ -11,7 +11,10 @@ import type { ClarifyProposal, ClarifyDisposition, Confidence } from "./clarify"
 import {
   lensAddSubtasks,
   lensArchiveItem,
+  lensArchiveCascade,
   lensBulkArchive,
+  lensCompleteCascade,
+  lensSetStatusCascade,
   lensBulkDispose,
   lensCapture,
   lensCaptureBatch,
@@ -27,6 +30,7 @@ import {
   lensMyTaskLanes,
   lensFetchProjects,
   lensFileUnder,
+  lensSetParent,
   lensItemDetail,
   lensListSubtasks,
   lensMergeInto,
@@ -525,6 +529,21 @@ export async function apiArchiveItem(
   return lensArchiveItem(id, archived);
 }
 
+/** D-PM-38 (S5) — complete a parent WITH its open subtasks. */
+export async function apiCompleteCascade(id: string) {
+  return lensCompleteCascade(id);
+}
+
+/** D-PM-38 (S5) — a status pick into a later Done status, WITH subtasks. */
+export async function apiSetStatusCascade(id: string, statusId: string) {
+  return lensSetStatusCascade(id, statusId);
+}
+
+/** D-PM-38 (S5) — archive WITH the subtasks; answers the ids it shelved. */
+export async function apiArchiveCascade(ids: string[]): Promise<string[]> {
+  return lensArchiveCascade(ids);
+}
+
 export async function apiBulkDispose(
   ids: string[],
   disposition: Disposition
@@ -557,6 +576,8 @@ export interface OrganizeBody {
   subtasks?: string[];
   /** S6g — the destination's required custom fields, for a promote. */
   custom_fields?: Record<string, unknown>;
+  /** D-PM-38 decision 4 (S5) — a promote takes the task's subtasks along. */
+  include_subtasks?: boolean;
 }
 
 export async function apiOrganize(id: string, body: OrganizeBody): Promise<MyTask> {
@@ -997,6 +1018,12 @@ export async function apiMergeInto(id: string, targetId: string): Promise<MyTask
  *  step of X"). Returns the parent task (now with the new child). */
 export async function apiFileUnder(id: string, parentId: string): Promise<MyTask> {
   return lensFileUnder(id, parentId);
+}
+
+/** Put a task back under `parentId`, or at the top level with `null` — the
+ *  undo of "File as subtask" (D-PM-38 S4). */
+export async function apiSetParent(id: string, parentId: string | null): Promise<void> {
+  return lensSetParent(id, parentId);
 }
 
 // ── Project planning (§7, Phase 3): a brief → phases → tasks → subtasks ───────

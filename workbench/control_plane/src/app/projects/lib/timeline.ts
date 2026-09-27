@@ -24,6 +24,8 @@
  * anywhere west of Greenwich.
  */
 
+import { treeRows } from "@/lib/taskTree";
+
 import { dayKey, fromDayKey, mondayOffset, shiftDay } from "./calendar";
 import { dueInstantForDay } from "./quickAdd";
 
@@ -252,8 +254,23 @@ export interface Bar {
 export interface TimelineRow {
   task: TaskRow;
   depth: number;
-  /** Subtasks of this row present in the window — drawn when expanded. */
+  /**
+   * EVERY subtask under this row present in the window, at any depth. The
+   * row's bar folds in their dates (`rowInterval`), so a parent whose only
+   * dated work is a grandchild still draws a derived bar.
+   */
   children: TaskRow[];
+  /**
+   * The DIRECT subtask rows, each with its own `subrows` — drawn when this
+   * row is expanded. B3: this used to be one level only, so a grandchild
+   * was never drawn at all.
+   */
+  subrows: TimelineRow[];
+  /**
+   * A subtask whose parent is not in the window. It is promoted to a row of
+   * its own and carries the "↳ Parent" crumb (D-PM-38 decision 3).
+   */
+  orphan: boolean;
 }
 
 export interface Edge {
@@ -304,28 +321,57 @@ export function rowInterval(
  * own**, rather than hidden under a parent that is not there. Hiding it would
  * make a filtered timeline silently drop work — the same failure the `undated`
  * count exists to prevent, one level down.
+ *
+ * **Every level nests (B3, fixed in Subtasks S3).** The tree is the shared
+ * `@/lib/taskTree` walk, so depth, orphans and a loop in the data are decided
+ * the same way the list and the table decide them. Before S3 this grouped one
+ * level only: a grandchild went under a child that was never a row, so the
+ * grandchild was never drawn.
  */
 export function timelineRows(tasks: readonly TaskRow[]): TimelineRow[] {
-  const present = new Set(tasks.map((t) => t.id));
-  const childrenOf = new Map<string, TaskRow[]>();
-  const roots: TaskRow[] = [];
+  const roots: TimelineRow[] = [];
+  // The open path from the root to the row being placed. `treeRows` walks in
+  // pre-order, so a row's parent is always the entry one level up.
+  const path: TimelineRow[] = [];
+  for (const tree of treeRows(tasks)) {
+    path.length = tree.depth;
+    const row: TimelineRow = {
+      task: tree.task,
+      depth: tree.depth,
+      children: [],
+      subrows: [],
+      orphan: tree.orphan,
+    };
+    // Every ancestor's bar folds this row's dates in.
+    for (const ancestor of path) ancestor.children.push(tree.task);
+    if (tree.depth === 0) roots.push(row);
+    else path[tree.depth - 1].subrows.push(row);
+    path.push(row);
+  }
+  return roots;
+}
 
-  for (const task of tasks) {
-    const parent = task.parent_task_id;
-    if (parent && present.has(parent)) {
-      const kids = childrenOf.get(parent) ?? [];
-      kids.push(task);
-      childrenOf.set(parent, kids);
-    } else {
-      roots.push(task);
+/**
+ * The rows the rail draws, in order: each row, then its subrows when it is
+ * expanded, at EVERY depth (B3).
+ *
+ * An explicit stack, like `taskTree`, so depth is limited by memory and not
+ * by the call stack. A collapsed row hides its whole subtree.
+ */
+export function openTimelineRows(
+  source: readonly TimelineRow[],
+  expanded: ReadonlySet<string>,
+): TimelineRow[] {
+  const out: TimelineRow[] = [];
+  const stack = [...source].reverse();
+  while (stack.length) {
+    const row = stack.pop()!;
+    out.push(row);
+    if (expanded.has(row.task.id)) {
+      for (let i = row.subrows.length - 1; i >= 0; i -= 1) stack.push(row.subrows[i]);
     }
   }
-
-  return roots.map((task) => ({
-    task,
-    depth: 0,
-    children: childrenOf.get(task.id) ?? [],
-  }));
+  return out;
 }
 
 /**

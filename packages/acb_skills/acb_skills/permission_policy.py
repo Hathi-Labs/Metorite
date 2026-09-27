@@ -267,16 +267,24 @@ def build_tool_call_context(tool_name: str, kwargs: dict) -> dict:
 
 
 def _approved_result() -> Any:
-    """The installed SDK's 'approved' PermissionRequestResult."""
-    from copilot.types import PermissionRequestResult
-    return PermissionRequestResult(kind="approved")
+    """The installed SDK's one-shot approval.
+
+    SDK 1.0 (H-181) replaced the ``PermissionRequestResult(kind=...)`` record
+    with one class per decision, and removed ``copilot.types``.
+    """
+    from copilot.generated.rpc import PermissionDecisionApproveOnce
+    return PermissionDecisionApproveOnce()
 
 
 def _denied_result(reason: str) -> Any:
-    """The installed SDK's 'denied' result carrying agent-visible feedback."""
-    from copilot.types import PermissionRequestResult
-    return PermissionRequestResult(
-        kind="denied-by-rules",
+    """The installed SDK's refusal, carrying agent-visible feedback.
+
+    ``Reject`` is the SDK 1.0 decision that carries ``feedback``, so the model
+    still reads WHY it was blocked. ``DeniedByRules`` takes a rule list and no
+    text, which would lose that sentence.
+    """
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
         feedback=(
             "Blocked by Metorite's permission policy: " + reason +
             ". If you need this, ask the user to approve it explicitly."

@@ -62,6 +62,7 @@ from gateway.routes.projects.core import (
 )
 from gateway.routes.projects.filters import (
     attach_assignees,
+    attach_parent_context,
     attach_relation_counts,
     build_task_filters,
     window_links,
@@ -225,6 +226,9 @@ async def get_calendar(
     # `test_every_list_filter_is_accepted_by_the_calendar_or_named_as_excluded`
     # is the fence, and it caught exactly this.
     watching: bool = False,
+    # D-PM-38. The Projects calendar offers Separate and Hidden. Hidden sends
+    # this, as the list does, so the two views agree on the SET.
+    top_level: bool = False,
 ) -> dict:
     """Every visible task whose schedule overlaps ``[from, to)``.
 
@@ -265,6 +269,7 @@ async def get_calendar(
             tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
+            top_level=top_level,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)
@@ -293,7 +298,8 @@ async def get_calendar(
             row_to_dict(r, TaskModel) for r in rows[:MAX_WINDOW_ROWS]
         ]
         await attach_assignees(db, window_rows)
-        await attach_relation_counts(db, window_rows)
+        await attach_relation_counts(db, window_rows, vis)
+        await attach_parent_context(db, vis, window_rows)
 
         # Counted with the SAME filters, so "12 unscheduled" means twelve of the
         # tasks you are looking at — not twelve somewhere in the workspace.
@@ -320,7 +326,8 @@ async def get_calendar(
             )).fetchall()
             unscheduled = [row_to_dict(r, TaskModel) for r in rows_u]
             await attach_assignees(db, unscheduled)
-            await attach_relation_counts(db, unscheduled)
+            await attach_relation_counts(db, unscheduled, vis)
+            await attach_parent_context(db, vis, unscheduled)
 
         return {
             "from": window_from.date().isoformat(),

@@ -3,14 +3,48 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { EMPTY_FILTERS } from "./grouping";
 import {
   TASK_PAGE_SIZE,
   appendTasks,
+  boardReadParams,
   hasMoreTasks,
   nextBatchSize,
   nextTaskPage,
   truncationNote,
 } from "./paging";
+
+const BASE = {
+  projectId: "p1",
+  filters: EMPTY_FILTERS,
+  sort: null,
+  viewId: "v1",
+  subtasks: null,
+} as const;
+
+// ── D-PM-38 (S3): Hidden pages on the server, not on the client ─────────────
+
+describe("boardReadParams and the Subtasks mode", () => {
+  it("Hidden asks for top-level tasks only", () => {
+    // Review of PR #491. Without the flag the server pages over the full set,
+    // so "Load more" brings pages that are mostly subtasks the client drops.
+    expect(boardReadParams({ ...BASE, subtasks: "hidden" }).top_level).toBe(true);
+  });
+
+  it("every other mode sends no flag, so their read keys do not change", () => {
+    for (const subtasks of ["nested", "separate", null] as const) {
+      expect(boardReadParams({ ...BASE, subtasks })).not.toHaveProperty("top_level");
+    }
+  });
+
+  it("the page reads the board through this builder, with the stored mode", () => {
+    const page = readFileSync(
+      fileURLToPath(new URL("../page.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(page).toMatch(/boardReadParams\(\{[\s\S]{0,200}subtasks:\s*storedMode/);
+  });
+});
 
 const row = (id: string, over: Record<string, unknown> = {}) =>
   ({ id, ...over }) as { id: string } & Record<string, unknown>;
@@ -180,11 +214,15 @@ describe("the client page size agrees with the server's cap", () => {
   it("the board asks with that constant, not a literal", () => {
     // Without this, the constant can be correct while `loadProject` still
     // carries the hardcoded 100 it had before — green, and unchanged.
+    // S3 moved the bag into `boardReadParams`, so the page must build its
+    // read with that builder, and the builder must use the constant.
     const page = readFileSync(
       fileURLToPath(new URL("../page.tsx", import.meta.url)),
       "utf8"
     );
-    expect(page).toMatch(/page_size:\s*TASK_PAGE_SIZE/);
-    expect(page).not.toMatch(/page_size:\s*\d+\s*,\s*\n\s*\.\.\.toQuery/);
+    expect(page).toMatch(/boardReadParams\(\{/);
+    // `page_size: 1` for the archive count is fine; a page-sized literal is not.
+    expect(page).not.toMatch(/page_size:\s*\d{2,}/);
+    expect(boardReadParams(BASE).page_size).toBe(TASK_PAGE_SIZE);
   });
 });

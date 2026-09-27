@@ -34,7 +34,7 @@ import { flatten } from "./tree";
 export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "finished", label: "What we finished" },
   { key: "throughput", label: "How long it took" },
-  { key: "outlook", label: "Outlook" },
+  { key: "outlook", label: "Forecast" },
   { key: "load", label: "Open work" },
   { key: "capacity", label: "Who has the hours" },
   { key: "stuck", label: "Overdue" },

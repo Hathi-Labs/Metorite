@@ -112,7 +112,8 @@ reference tied to code. Do not put product specs in `docs/`.
   **`my_tasks_horizons`** and **`my_tasks_reviews`**. Migration 217 drops the
   rest. No `gtd_` table remains, and `tests/unit/test_no_gtd_table_names.py`
   refuses a new one in the code. The chat tool names stay until S9.
-  ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
+  ⚠️ **ClickUp is gone** — no connector, no sync. A FILE importer reads export files and nothing else
+  (D80, 2026-09-26, `specs/project_import.md`, board `WS-41`). Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. Center packages, add-ons and Complete are

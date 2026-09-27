@@ -7,7 +7,11 @@
  * 168's trigger writes a tombstone so a sync client can see the delete, and
  * nothing restores a row from it. There is no Undo toast on this path.
  *
- * Subtasks are PROMOTED, not deleted: `parent_task_id` SET NULLs. The copy
+ * Subtasks are PROMOTED, not deleted. They move up ONE level, to the deleted
+ * task's own parent (D-PM-38). Both delete paths call
+ * `core.lift_subtasks_to_grandparent` first. Until 2026-09-26 the FK's SET NULL
+ * made them top-level, and "moved up a level" was false for a subtask of a
+ * subtask. `test_projects_routes.py` holds the server half. The copy
  * says that as well, because somebody who expects a cascade would otherwise
  * delete a parent to be rid of a subtree and find the subtree still there.
  *

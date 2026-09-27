@@ -59,6 +59,8 @@
  */
 
 import { projectsCall } from "@/app/projects/lib/api";
+import type { ParentFact } from "@/lib/taskCard";
+import type { CascadeChange } from "@/lib/subtaskCascade";
 
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import { importanceFor, importantFromImportance } from "./priority";
@@ -115,6 +117,23 @@ const tri = (v: unknown): boolean | undefined =>
 
 const num = (v: unknown): number | undefined =>
   v === null || v === undefined ? undefined : Number(v);
+
+/**
+ * D-PM-38 — the gateway's `parent` → a `ParentFact`. A hidden parent keeps
+ * ONLY `hidden: true`: the wire never carries its title, and a mapper that
+ * copied other keys through would make room for one.
+ */
+export const parentFact = (v: unknown): ParentFact | null => {
+  if (!v || typeof v !== "object") return null;
+  const p = v as Raw;
+  if (p.hidden === true) return { hidden: true };
+  return {
+    id: text(p.id),
+    ref: text(p.ref) ?? null,
+    title: text(p.title) ?? null,
+    archived: p.archived === true,
+  };
+};
 
 /**
  * `pm_task_assignees.assignee` is a bare email (D-PM-4), not a `{name, email}`
@@ -217,6 +236,8 @@ export function mapLensItem(raw: Raw): MyTask {
     sortKey: num(raw.sort_key),
     parentItemId: text(raw.parent_task_id),
     subtaskCount: raw.subtask_count == null ? 0 : Number(raw.subtask_count),
+    subtaskDone: raw.subtask_done == null ? 0 : Number(raw.subtask_done),
+    parent: parentFact(raw.parent),
     archivedAt: text(raw.archived_at),
 
     dueAt: text(raw.due_at),
@@ -368,6 +389,9 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   batch: "my/tasks/batch",
   task: "my/tasks/{task_id}",
   organize: "my/tasks/{task_id}/organize",
+  // D-PM-38 (Subtasks S4) — add steps under a task, the helper organize
+  // calls (`personal.add_my_steps`).
+  steps: "my/tasks/{task_id}/subtasks",
   project: "my/project",
   // S6b — a member's own categories (`routes/projects/personal.py`, PR #391).
   areas: "my/areas",
@@ -724,6 +748,66 @@ export async function lensCompleteItem(id: string): Promise<MyTask> {
 }
 
 /**
+ * D-PM-38 decision 2 (S5) — tick a parent off WITH its open subtasks.
+ *
+ * `/complete?include_subtasks=true` closes each open descendant into the
+ * first Done status of its own set, in the same transaction. `changes` is
+ * each child's status before and after, which is what Undo puts back.
+ */
+export async function lensCompleteCascade(id: string): Promise<{
+  item: MyTask;
+  changes: CascadeChange[];
+  cascaded: number;
+}> {
+  const raw = await post(`tasks/${id}/complete?include_subtasks=true`);
+  return {
+    item: await lensGetItem(id),
+    changes: cascadeChanges(raw),
+    cascaded: Number(raw?.subtasks_completed ?? 0),
+  };
+}
+
+/**
+ * D-PM-38 decision 2 (S5) — a status pick into a Done status that is not
+ * the first one, WITH the open subtasks. The PATCH door takes the flag too.
+ */
+export async function lensSetStatusCascade(
+  taskId: string,
+  statusId: string,
+): Promise<CascadeChange[]> {
+  const raw = await projectsCall<Raw>(`tasks/${taskId}?include_subtasks=true`, {
+    method: "PATCH",
+    body: JSON.stringify({ status_id: statusId }),
+  });
+  return cascadeChanges(raw);
+}
+
+/**
+ * D-PM-38 decision 4 (S5) — archive WITH the subtasks. Answers the ids the
+ * gateway shelved, so Undo restores exactly those: unarchive does not
+ * cascade.
+ */
+export async function lensArchiveCascade(ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  const raw = await post("tasks/bulk", {
+    task_ids: ids,
+    action: "archive",
+    include_subtasks: true,
+  });
+  return Array.isArray(raw?.subtask_ids) ? raw.subtask_ids.map(String) : [];
+}
+
+/** The gateway's Undo record, read defensively: an older gateway sends none. */
+function cascadeChanges(raw: Raw | null | undefined): CascadeChange[] {
+  const rows = Array.isArray(raw?.subtask_changes) ? raw.subtask_changes : [];
+  return rows.map((row: Raw) => ({
+    task_id: String(row.task_id),
+    from_status_id: String(row.from_status_id),
+    to_status_id: String(row.to_status_id),
+  }));
+}
+
+/**
  * Soft-delete, with the undo intact.
  *
  * ⚠️ Deliberately NOT `DELETE /projects/tasks/{id}`, which is a HARD delete
@@ -956,6 +1040,11 @@ export interface LensMoveRequest {
   customFields?: Record<string, unknown>;
   /** Assignees to set atomically with the move. `undefined` leaves them alone. */
   assignees?: string[];
+  /**
+   * D-PM-38 decision 4 (S5) — take the subtasks along, in the same
+   * transaction. The Move dialog's box is ticked by default.
+   */
+  includeSubtasks?: boolean;
 }
 
 /**
@@ -1006,6 +1095,7 @@ export async function lensMoveTask(
     // untouched, an empty array clears them. Collapsing the two would make
     // "promote without touching who owns it" impossible to express.
     ...(req.assignees === undefined ? {} : { assignees: req.assignees }),
+    ...(req.includeSubtasks ? { include_subtasks: true } : {}),
   });
 }
 
@@ -1238,49 +1328,21 @@ export async function lensListSubtasks(id: string): Promise<MyTask[]> {
   return rowsOf(res).map(mapSubtask);
 }
 
-let whoAmI: Promise<string> | undefined;
-
-/**
- * My own address, from the session — needed once, to self-assign a subtask
- * (`POST /projects/tasks` assigns nobody). Memoised: it cannot change within
- * a page, and it is the same door `resolveAccess` opens.
- */
-export function lensWhoAmI(): Promise<string> {
-  whoAmI ??= (async () => {
-    const res = await fetch("/api/auth/me", { cache: "no-store" });
-    if (!res.ok) throw new Error(`Tasks lens: who am I? (${res.status})`);
-    const email = text(((await res.json()) as Raw).email);
-    if (!email) throw new Error("Tasks lens: the session has no email.");
-    return email;
-  })();
-  // A failed lookup must not be cached as the answer.
-  whoAmI.catch(() => {
-    whoAmI = undefined;
-  });
-  return whoAmI;
-}
-
 /**
  * Add steps under a task: each an ordinary task in the parent's project,
  * assigned to me, created in the order given so the list reads as typed.
+ *
+ * D-PM-38 (Subtasks S4): ONE request to `my/tasks/{task_id}/subtasks`, the
+ * helper organize calls too. Each step lands in the parent's lane when that
+ * lane is open, and states NEXT when I stated NEXT on the parent. The old
+ * way wrote each step through `POST tasks` with no status, so it took the
+ * project's first lane and read SOMEDAY.
  */
 export async function lensAddSubtasks(
   id: string,
   titles: string[],
 ): Promise<MyTask[]> {
-  const parent = await projectsCall<Raw>(`tasks/${id}`);
-  const me = await lensWhoAmI();
-  for (const title of titles) {
-    const child = await post("tasks", {
-      project_id: parent.project_id,
-      parent_task_id: id,
-      title,
-    });
-    await projectsCall<Raw>(`tasks/${String(child.id)}/assignees`, {
-      method: "PUT",
-      body: JSON.stringify({ assignees: [me] }),
-    });
-  }
+  await post(at(MY_ROUTES.steps, id), { titles });
   return lensListSubtasks(id);
 }
 
@@ -1300,6 +1362,17 @@ export async function lensFileUnder(
 ): Promise<MyTask> {
   await post(`tasks/${id}/move`, { parent_task_id: parentId });
   return lensGetItem(parentId);
+}
+
+/**
+ * Set a task's parent, or clear it with `null`: the move route takes an
+ * explicit null (`move_task_in`). The undo of "File as subtask" (S4).
+ */
+export async function lensSetParent(
+  id: string,
+  parentId: string | null,
+): Promise<void> {
+  await post(`tasks/${id}/move`, { parent_task_id: parentId });
 }
 
 /**

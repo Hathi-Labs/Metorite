@@ -16,7 +16,8 @@
  * fetching rather than navigating.
  */
 
-import { type Filters, toQuery } from "./grouping";
+import { type Filters, type SubtaskMode, toQuery } from "./grouping";
+import { subtaskReadParams } from "./subtaskView";
 import { type TableSort, sortQuery } from "./table";
 
 /** What the export needs to know, all of it already on screen. */
@@ -28,6 +29,11 @@ export interface ExportRequest {
   shownFields: readonly string[];
   /** The table's header sort, or `null` for the endpoint's default. */
   sort: TableSort | null;
+  /**
+   * D-PM-38 — the STORED Subtasks mode. Hidden sends `top_level`, so the
+   * file holds the rows the board shows. Absent reads as "no mode".
+   */
+  subtasks?: SubtaskMode | null;
 }
 
 /**
@@ -47,6 +53,8 @@ export function exportQuery(request: ExportRequest): Record<string, string> {
     ...toQuery(request.filters),
     ...sortQuery(request.sort),
     shown_fields: request.shownFields.join(","),
+    // A query string holds text, so the flag is the word "true".
+    ...(subtaskReadParams(request.subtasks).top_level ? { top_level: "true" } : {}),
   };
   if (request.projectId) {
     params.project_id = request.projectId;

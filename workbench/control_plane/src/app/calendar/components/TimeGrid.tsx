@@ -1,6 +1,7 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
+import { ParentCrumb } from "@/components/TaskMeta";
 import { useRef, useState } from "react";
 import {
   type EnergyWindow,
@@ -19,6 +20,7 @@ import {
   HOUR_PX,
   DOW,
   SNAP_MINS,
+  blockLines,
   DRAG_TYPE,
   snap,
   minutesInto,
@@ -495,6 +497,7 @@ export function TimeGrid({
                         ),
                       )
                     : null;
+                const lines = blockLines(mins, Boolean(b.item.parent));
                 const leftPct = (lane / lanes) * 100;
                 const widthPct = 100 / lanes;
                 return (
@@ -598,14 +601,27 @@ export function TimeGrid({
                         {b.item.title}
                       </button>
                     </div>
-                    {/* outcome ribbon — why this block matters (tall blocks) */}
-                    {outcome && mins >= 45 && (
+                    {/* D-PM-38 S4 — a scheduled step is a block like any
+                        other, and names its parent with the shared crumb.
+                        On a short block the crumb shares the clock line, so
+                        the block keeps both and nothing falls off its edge
+                        (`blockLines`). */}
+                    {lines.crumb === "own" && (
+                      <ParentCrumb parent={b.item.parent} className="pl-[18px]" />
+                    )}
+                    {/* outcome ribbon — why this block matters (tall blocks).
+                        A step's block spends one line on its crumb, so the
+                        ribbon needs a taller block there. */}
+                    {outcome && lines.outcome && (
                       <div className="truncate pr-3 text-[9px] font-medium text-amber-500/90">
                         → {outcome}
                       </div>
                     )}
-                    <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
-                      {fmtClock(b.start)}
+                    <div className="flex min-w-0 items-center gap-1 text-[9px] text-muted-foreground">
+                      <span className="shrink-0">{fmtClock(b.start)}</span>
+                      {lines.crumb === "inline" && (
+                        <ParentCrumb parent={b.item.parent} className="min-w-0" />
+                      )}
                       {b.item.energy && (
                         <span className="capitalize">· {b.item.energy}</span>
                       )}

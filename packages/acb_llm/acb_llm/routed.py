@@ -167,7 +167,22 @@ def router_tier(tier: str) -> str:
     """
     from acb_llm.client import _TIER_ALIAS_MAP
 
-    return {v: k for k, v in _TIER_ALIAS_MAP.items()}.get(tier, tier)
+    legacy = {v: k for k, v in _TIER_ALIAS_MAP.items()}
+    return legacy.get(tier) or PICKER_WIRE_IDS.get(tier) or tier
+
+
+#: The chat picker's three wire ids, and the slate name each one means.
+#:
+#: 🔴 **Measured on production, 2026-09-24:** a chat sent `tier3-opus` and the
+#: Router refused it with `tier_unknown`. `ai_metering_and_analytics.md` keeps
+#: these ids on purpose ("the three wire ids do not move"), because a member's
+#: saved choice holds one. So the hop translates them and neither side renames.
+#: The control plane mirrors this map as `CONSOLE_SLUG_BY_WIRE_ID`.
+PICKER_WIRE_IDS: dict[str, str] = {
+    "tier1-local-qwen3": "tier-fast",
+    "tier2-sonnet": "tier-balanced",
+    "tier3-opus": "tier-powerful",
+}
 
 
 async def completion_on_router(

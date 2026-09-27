@@ -105,9 +105,9 @@ const OUTLOOK: NonNullable<Sections["outlook"]> = {
   },
   people: {
     holding_open_work: 5,
-    with_stated_capacity: 5,
-    with_schedule_only: 0,
+    in_directory: 5,
     hours_per_week: 60,
+    absences_applied: true,
     leaving_within_90d: 0,
   },
 };

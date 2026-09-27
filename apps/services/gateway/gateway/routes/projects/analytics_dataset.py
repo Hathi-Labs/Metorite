@@ -116,7 +116,7 @@ CYCLE_WEEKS = MAX_WEEKS
 #: paragraph). ``include_archived`` and ``archived_only`` are not here: the
 #: scope already decides the archive (rule 2). ``viewer`` is not here: the
 #: route takes it from the caller, never from the query (R11).
-BOOL_FILTERS: tuple[str, ...] = ("unassigned", "overdue", "watching")
+BOOL_FILTERS: tuple[str, ...] = ("unassigned", "overdue", "watching", "top_level")
 UUID_FILTERS: tuple[str, ...] = ("parent_task_id", "status_id")
 INT_FILTERS: tuple[str, ...] = ("importance_gte",)
 TEXT_FILTERS: tuple[str, ...] = (
@@ -393,6 +393,7 @@ def filter_clauses(
         include_archived=True,
         watching=bool(f.get("watching")),
         viewer=viewer if f.get("watching") else None,
+        top_level=bool(f.get("top_level")),
     )
     d = query.dates
     if "created_after" in d:

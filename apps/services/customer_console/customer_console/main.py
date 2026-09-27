@@ -432,6 +432,19 @@ class SeatWriteRequest(BaseModel):
     source: str = "alacarte"
 
 
+class SeatCountRequest(BaseModel):
+    """Set how many seats an organization holds on one plan."""
+
+    org_slug: str
+    plan_slug: str = "core"
+    #: The TARGET total, not a delta. An operator reads "10 seats" on the page
+    #: and types the number they want, so a delta would invite an off-by-N.
+    seats: int = Field(ge=0, le=100_000)
+    #: Why. Required: a seat count that moves with no payment behind it is the
+    #: one change an invoice dispute asks about first.
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class AdminSchemeRequest(BaseModel):
     """The two fields that decide WHICH SCHEME a customer-admin write is under.
 
@@ -5181,6 +5194,84 @@ def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
         )
 
     return {"assigned": True, "plan_slug": req.plan_slug}
+
+
+@app.post("/billing/seats/count")
+def set_seat_count(req: SeatCountRequest, staff: Operator) -> dict[str, Any]:
+    """Set the number of seats an organization holds on a plan. Owner request,
+    2026-09-26: an operator could assign a seat to a person but could not
+    change how many seats the organization has.
+
+    ⚠️ **It writes the DIFFERENCE as a signed `seat_grant` row**, never an
+    UPDATE. A reduction is a negative grant, the rule migration 001 sets, so
+    the history of what a customer held survives for an invoice dispute.
+
+    ⚠️ **It refuses to go below the seats in use**, with a 409 that names the
+    number. Releasing a person is a separate, deliberate act on the Seats
+    panel, and a count change must never do it silently.
+
+    ⚠️ **`admin` with an open elevation window.** Unlike "Activate
+    subscription", no payment stands behind this change, and the count drives
+    MRR (`purchased x price`). The same gate as access changes and keys.
+
+    ⚠️ **It takes the capacity lock** that sign-in takes, so a first sign-in
+    cannot land between the in-use count and the reduction.
+    """
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).can_write_seats:
+            raise HTTPException(
+                status_code=403, detail=f"organization is {state}; seats are locked"
+            )
+        if conn.execute(
+            text("SELECT 1 FROM plan_catalog WHERE slug = :p"), {"p": req.plan_slug}
+        ).first() is None:
+            raise HTTPException(status_code=400, detail=f"unknown plan {req.plan_slug!r}")
+
+        store.lock_seat_capacity(conn, org_id=org_id, plan_slug=req.plan_slug)
+        grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=req.plan_slug)
+        previous = sum(grants)
+        if req.seats < assigned:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{assigned} seats are in use, so the count cannot go below "
+                    f"{assigned}. Release a seat first."
+                ),
+            )
+        delta = req.seats - previous
+        if delta != 0:
+            store.grant_seats(
+                conn,
+                org_id=org_id,
+                plan_slug=req.plan_slug,
+                quantity=delta,
+                reason=f"operator: {req.reason.strip()}",
+            )
+            _audit(
+                conn,
+                org_id,
+                "seat.count",
+                {
+                    "plan": req.plan_slug,
+                    "from": previous,
+                    "to": req.seats,
+                    "reason": req.reason.strip(),
+                },
+                actor=staff.actor,
+            )
+
+    return {
+        "org_slug": req.org_slug,
+        "plan_slug": req.plan_slug,
+        "previous": previous,
+        "seats": req.seats,
+        "assigned": assigned,
+        "changed": delta != 0,
+    }
 
 
 @app.post("/billing/seats/release")

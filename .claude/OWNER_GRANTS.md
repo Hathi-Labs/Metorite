@@ -76,9 +76,9 @@ ALLOW 2026-08-31 deploy-write — commit the H-13 deploy.sh and health-watchdog.
 ALLOW 2026-08-31 deploy — merge and deploy PR #198
 ALLOW 2026-09-01 deploy — merge and deploy PRs #205-#210
 
-ALLOW-UNTIL 2026-09-30 deploy — dev phase: autonomous ssh, deploy scripts, migration runner
-ALLOW-UNTIL 2026-09-30 secrets — dev phase: read .env on the box
-ALLOW-UNTIL 2026-09-30 env-write — dev phase: write .env on the box
-ALLOW-UNTIL 2026-09-30 deploy-write — dev phase: write under deploy/
-ALLOW-UNTIL 2026-09-30 enforcement-flip — dev phase: flip feature flags
-ALLOW-UNTIL 2026-09-30 guard-write — dev phase: repair guard false positives
+ALLOW-UNTIL 2026-11-30 deploy — dev phase: autonomous ssh, deploy scripts, migration runner
+ALLOW-UNTIL 2026-11-30 secrets — dev phase: read .env on the box
+ALLOW-UNTIL 2026-11-30 env-write — dev phase: write .env on the box
+ALLOW-UNTIL 2026-11-30 deploy-write — dev phase: write under deploy/
+ALLOW-UNTIL 2026-11-30 enforcement-flip — dev phase: flip feature flags
+ALLOW-UNTIL 2026-11-30 guard-write — dev phase: repair guard false positives

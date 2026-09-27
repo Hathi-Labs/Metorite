@@ -9,6 +9,8 @@
  * Kept out of the component so those can be asserted rather than clicked.
  */
 
+import type { ParentFact } from "@/lib/taskCard";
+
 /** One hit, exactly as `GET /projects/search` returns it. */
 export interface Hit {
   id: string;
@@ -21,6 +23,9 @@ export interface Hit {
   due_at?: string | null;
   completed_at?: string | null;
   rank: number;
+  parent_task_id?: string | null;
+  /** D-PM-38 — search always shows subtasks, so each hit names its parent. */
+  parent?: ParentFact | null;
 }
 
 /** Mirrors the gateway's `MIN_QUERY`. Below it the endpoint answers empty. */

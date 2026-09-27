@@ -18,6 +18,15 @@
  * Focus opens on the confirm button, so Enter confirms and Escape cancels.
  * That keeps the keys My Tasks' dialog had.
  *
+ * **A question is not always a warning** (D-PM-38, Subtasks S5). The subtask
+ * prompt asks "Complete them too?", and its SAFE answer is the one the owner
+ * made the default. So a caller can name the cancel button
+ * (`cancelLabel`), open with focus on the cancel button (`defaultFocus`),
+ * and put the EMPHASIS on the cancel button (`emphasis="cancel"`): it is then
+ * the solid primary button and the confirm button is the outline one. The
+ * visual weight follows the owner's default, not the act. Escape and the
+ * close button always mean cancel.
+ *
  * Fence: `ConfirmDialog.test.ts`.
  */
 
@@ -37,6 +46,23 @@ export interface ConfirmDialogProps {
   /** A second fact, drawn in a quiet box. */
   note?: string | null;
   confirmLabel: string;
+  /** The cancel button's words. Escape and the close button mean it too. */
+  cancelLabel?: string;
+  /** `destructive` for a delete. `primary` for a question with no loss. */
+  confirmVariant?: "destructive" | "primary";
+  /** Which button has focus when the dialog opens, so Enter means it. */
+  defaultFocus?: "confirm" | "cancel";
+  /**
+   * Which button is the solid one. `cancel` makes the cancel button the
+   * primary action and draws the confirm button as secondary, whatever
+   * `confirmVariant` says: for a question whose default is "no".
+   */
+  emphasis?: "confirm" | "cancel";
+  /**
+   * One control that shapes the answer, drawn under the words: the archive
+   * dialog's "Include N subtasks" box (D-PM-38, S5). Not a second form.
+   */
+  children?: React.ReactNode;
   /** A Lucide name for the heading and the confirm button. */
   icon?: string;
   busy?: boolean;
@@ -51,6 +77,11 @@ export default function ConfirmDialog({
   body,
   note,
   confirmLabel,
+  cancelLabel = "Cancel",
+  confirmVariant = "destructive",
+  defaultFocus = "confirm",
+  emphasis = "confirm",
+  children,
   icon = "Trash2",
   busy = false,
   onConfirm,
@@ -62,10 +93,12 @@ export default function ConfirmDialog({
   // case's text) in the same render that starts the close animation. The
   // dialog shows the last words it had while open. Set during render, the
   // adjust-state-on-a-prop-change pattern, like `Modal`'s opener capture.
-  const live = { title, subject, body, note, confirmLabel, icon };
+  const live = { title, subject, body, note, confirmLabel, cancelLabel, icon };
   const [held, setHeld] = useState(live);
   if (open && JSON.stringify(held) !== JSON.stringify(live)) setHeld(live);
   const words = open ? live : held;
+  const cancelVariant = emphasis === "cancel" ? "primary" : "secondary";
+  const confirmAs = emphasis === "cancel" ? "secondary" : confirmVariant;
   return (
     <Modal
       open={open}
@@ -76,9 +109,11 @@ export default function ConfirmDialog({
       // A confirmation paints above every overlay, including My Tasks'
       // hand-rolled `z-[80]` focus view it is often raised from (`LAYERS`).
       layer="alert"
-      closeLabel="Cancel"
+      closeLabel={words.cancelLabel}
       initialFocus={() =>
-        footer.current?.querySelector<HTMLElement>("[data-confirm]") ?? true
+        footer.current?.querySelector<HTMLElement>(
+          defaultFocus === "cancel" ? "[data-cancel]" : "[data-confirm]",
+        ) ?? true
       }
     >
       <div className="space-y-2 px-3 py-3">
@@ -94,16 +129,23 @@ export default function ConfirmDialog({
             <span>{words.note}</span>
           </p>
         ) : null}
+        {children}
       </div>
       <div
         ref={footer}
         className="flex items-center justify-end gap-2 border-t border-border px-3 py-2"
       >
-        <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
-          Cancel
+        <Button
+          variant={cancelVariant}
+          size="sm"
+          onClick={onCancel}
+          disabled={busy}
+          data-cancel=""
+        >
+          {words.cancelLabel}
         </Button>
         <Button
-          variant="destructive"
+          variant={confirmAs}
           size="sm"
           icon={words.icon}
           loading={busy}

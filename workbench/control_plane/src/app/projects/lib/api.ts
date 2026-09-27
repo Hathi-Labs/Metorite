@@ -1,5 +1,6 @@
 import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
+import type { ParentFact } from "@/lib/taskCard";
 
 import type { Rule as RecurrenceRule } from "./recurrence";
 
@@ -56,6 +57,24 @@ export interface MoveRequest {
    * shown set lets the server answer 409 instead.
    */
   accepted_drops?: string[];
+  /**
+   * D-PM-38 decision 4 (S5). Take every descendant along. The gateway's
+   * default is false; the Move dialog sends true because its box is ticked.
+   */
+  include_subtasks?: boolean;
+}
+
+/**
+ * D-PM-38 (S5) — what a door that took `include_subtasks` reports. Present
+ * only when the caller sent the flag. `subtask_changes` is each child's
+ * status before and after, which is what Undo puts back (D79).
+ */
+export interface CascadeReport {
+  subtasks_completed?: number;
+  subtasks_archived?: number;
+  subtasks_moved?: number;
+  subtask_ids?: string[];
+  subtask_changes?: import("@/lib/subtaskCascade").CascadeChange[];
 }
 
 export interface MoveMapRow<T> {
@@ -98,9 +117,22 @@ export interface MovePlan {
   >;
   types: MoveMapRow<{ id: string; name?: string | null }>[];
   tags: { carried: string[]; unregistered: string[] };
+  /**
+   * D-PM-38 (S5) — the descendants a move WITH its subtasks would take, at
+   * every depth, not counting the selection. `hidden` is how many the member
+   * cannot see: the move is refused (409) with the box ticked. Absent on an
+   * older gateway, which the card reads as none.
+   */
+  subtasks?: {
+    count: number;
+    /** Sent only with `include_subtasks` (review of #493). */
+    hidden: number;
+    /** D62: carried subtasks that cannot move there, each named. */
+    refused?: { task_id: string; ref: string; reason: string }[];
+  };
 }
 
-export interface MoveResult {
+export interface MoveResult extends CascadeReport {
   moved: number;
   task_ids: string[];
   destination_project_id: string;
@@ -262,7 +294,10 @@ export interface VelocityForecast {
 }
 
 export interface CapacityForecast {
-  /** Stated weekly hours of the people holding open work here. */
+  /**
+   * Weekly working hours of the people holding open work here, from each
+   * person's schedule over `window` (WS-27bm S11). Never the typed figure.
+   */
   hours_per_week: number;
   hours_left: number;
   /** 0–1. Share of open tasks carrying an estimate. */
@@ -270,12 +305,16 @@ export interface CapacityForecast {
   weeks_remaining: number | null;
   finish_date: string | null;
   verdict: "ok" | "no_estimates" | "no_capacity" | "nothing_left";
+  /** The forward window the weekly rate read. Optional: an older server omits it. */
+  window?: { starts_on: string; ends_on: string; weeks: number };
 }
 
 export interface OutlookReport {
   project_id: string | null;
   scope: "portfolio" | "node";
   weeks: number;
+  /** The reader holds `admin:members:read` (WS-27bm S11). */
+  hr_visible?: boolean;
   /** What WILL happen, at the rate this team actually goes. */
   velocity: VelocityForecast;
   /** What the plan would NEED, if the estimates are right. */
@@ -290,9 +329,12 @@ export interface OutlookReport {
   };
   people: {
     holding_open_work: number;
-    with_stated_capacity: number;
-    with_schedule_only: number;
+    /** How many of the holders have a directory row. Only they add hours. */
+    in_directory: number;
+    /** Equal to `capacity.hours_per_week`, rounded the same way. */
     hours_per_week: number;
+    /** False: leave did not reduce the hours, because the reader is not an admin. */
+    absences_applied: boolean;
     /** An engagement ending inside the window — a risk no velocity can see. */
     leaving_within_90d: number;
   };
@@ -539,6 +581,13 @@ export interface HygieneRow {
   project_name: string;
   due_at: string | null;
   updated_at: string | null;
+  parent_task_id?: string | null;
+  /**
+   * D-PM-38 — the parent of a subtask, under the reader's grants: its
+   * `{id, ref, title, archived}`, or `{hidden: true}` when the reader cannot
+   * see it, or `null` for a top-level task. `ParentCrumb` draws it.
+   */
+  parent?: ParentFact | null;
 }
 
 /**
@@ -583,6 +632,9 @@ export interface StuckReport {
     title: string;
     task_number: number | null;
     due_at: string | null;
+    parent_task_id?: string | null;
+    /** D-PM-38 — see `TaskRow.parent`. */
+    parent?: ParentFact | null;
   }[];
   blocked_total?: number;
   /**
@@ -972,6 +1024,11 @@ export interface TaskRow {
   completed_at?: string | null;
   tags?: string[];
   created_at?: string | null;
+  /**
+   * The row version `TaskModel` sends. An If-Match write names it, so a
+   * write after somebody else's answers 412 (D-PM-20, D79 Undo).
+   */
+  updated_at?: string | null;
   assignees?: string[];
   view_position?: number | null;
   view_group_key?: string | null;
@@ -989,6 +1046,12 @@ export interface TaskRow {
    */
   subtasks?: { done: number; total: number };
   blocked_by_count?: number;
+  /**
+   * D-PM-38 — the parent of a subtask, under the reader's grants: its
+   * `{id, ref, title, archived}`, or `{hidden: true}` when the reader cannot
+   * see it, or `null` for a top-level task. `ParentCrumb` draws it.
+   */
+  parent?: ParentFact | null;
   /**
    * D77 — minutes every member has timed on this task (their overlay
    * actuals, summed). Only the single read (`GET /tasks/{id}`) carries it;
@@ -1138,6 +1201,13 @@ export interface ViewRow {
    */
   config: Record<string, unknown>;
   position?: number | null;
+  /**
+   * WS-27ae — the CALLER's own overlay on this view (`pm_view_user_state`),
+   * attached by `GET /nodes/{id}/views`. Presentation keys only
+   * (`grouping.VIEW_USER_STATE_KEYS`). S3 reads and writes its `subtasks`.
+   * Absent on a view the caller has never arranged, and on a create's reply.
+   */
+  user_state?: Record<string, unknown>;
 }
 
 /** WS-27m — a registered tag. `task_count` is present on the list endpoint. */
@@ -1765,11 +1835,25 @@ export const projectsApi = {
       `people/names?emails=${encodeURIComponent(emails.join(","))}`,
     ),
 
-  patchTask: (taskId: string, payload: Record<string, unknown>) =>
-    call<TaskRow>(`tasks/${taskId}`, {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }),
+  /**
+   * `opts.includeSubtasks` (D-PM-38 S5): a move INTO a done lane completes
+   * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
+   * read, so a write that lands after somebody else's answers 412 (D79,
+   * Undo). Both are optional and absent means the old request exactly.
+   */
+  patchTask: (
+    taskId: string,
+    payload: Record<string, unknown>,
+    opts?: { includeSubtasks?: boolean; ifMatch?: string | null },
+  ) =>
+    call<TaskRow & CascadeReport>(
+      `tasks/${taskId}${opts?.includeSubtasks ? "?include_subtasks=true" : ""}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+        ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
+      },
+    ),
 
   /**
    * File a task out of every default list, board, calendar and search.
@@ -1783,8 +1867,11 @@ export const projectsApi = {
    * overdue, the forecast) while staying in the historical ones. That is
    * correct for a shelf and is why the archive has a view of its own.
    */
-  archiveTask: (taskId: string) =>
-    call<TaskRow>(`tasks/${taskId}/archive`, { method: "POST" }),
+  archiveTask: (taskId: string, opts?: { includeSubtasks?: boolean }) =>
+    call<TaskRow & CascadeReport>(
+      `tasks/${taskId}/archive${opts?.includeSubtasks ? "?include_subtasks=true" : ""}`,
+      { method: "POST" },
+    ),
 
   /** Bring one back. No guard in this direction. */
   unarchiveTask: (taskId: string) =>
@@ -1793,8 +1880,9 @@ export const projectsApi = {
   /**
    * Delete a task for good, and say what went with it.
    *
-   * ⚠️ Subtasks are PROMOTED, not destroyed — `parent_task_id` SET NULLs — so
-   * `subtasks_promoted` is not a cascade count but its opposite. Reporting it
+   * ⚠️ Subtasks are PROMOTED, not destroyed. D-PM-38 moves them up ONE level,
+   * to this task's own parent, so `subtasks_promoted` is not a cascade count
+   * but its opposite. Reporting it
    * as deleted would reassure in the wrong direction.
    */
   deleteTask: (taskId: string) =>
@@ -1895,13 +1983,15 @@ export const projectsApi = {
    * fact about that task, not a reason to fail the batch.
    */
   bulkEdit: (payload: Record<string, unknown>) =>
-    call<{
-      requested: number;
-      applied: number;
-      results: Array<{ task_id: string; changed: string[]; status?: string | null }>;
-      skipped: Array<{ task_id: string; reason: string }>;
-      failed: Array<{ task_id: string; reason: string }>;
-    }>("tasks/bulk", { method: "POST", body: JSON.stringify(payload) }),
+    call<
+      {
+        requested: number;
+        applied: number;
+        results: Array<{ task_id: string; changed: string[]; status?: string | null }>;
+        skipped: Array<{ task_id: string; reason: string }>;
+        failed: Array<{ task_id: string; reason: string }>;
+      } & CascadeReport
+    >("tasks/bulk", { method: "POST", body: JSON.stringify(payload) }),
 
   tags: (projectId: string) =>
     call<{ rows: TagRow[]; total: number }>(`nodes/${projectId}/tags`),
@@ -1995,6 +2085,17 @@ export const projectsApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+
+  /**
+   * WS-27ae — replace the CALLER's overlay on a view. A PUT of the whole
+   * overlay, so send every key you hold, not only the one that changed. The
+   * server takes the member from the session, never from the body.
+   */
+  setViewState: (viewId: string, config: Record<string, unknown>) =>
+    call<{ view_id: string; member: string; config: Record<string, unknown> }>(
+      `views/${viewId}/state`,
+      { method: "PUT", body: JSON.stringify({ config }) }
+    ),
 
   deleteView: (viewId: string) =>
     call<{ deleted: string; cascaded: { positions: number } }>(`views/${viewId}`, {

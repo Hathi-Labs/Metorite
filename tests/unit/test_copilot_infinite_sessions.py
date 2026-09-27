@@ -74,11 +74,14 @@ def test_bad_threshold_falls_back_and_clamps(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 class _FakeClient:
-    """Stands in for the Copilot SDK client; records what create_session got."""
+    """Stands in for the Copilot SDK client; records what create_session got.
+
+    SDK 1.0 (H-181): ``create_session`` takes keyword arguments, not a dict.
+    """
     def __init__(self) -> None:
         self.received_config: dict | None = None
 
-    async def create_session(self, config: dict):
+    async def create_session(self, **config):
         self.received_config = config
         return MagicMock(session_id="sess-1")
 
@@ -97,7 +100,7 @@ class _FakeCopilotAgent:
     async def _create_session(self, streaming: bool, runtime_options=None):
         # Mirrors the real _create_session: a FIXED key set, no infinite_sessions.
         config = {"streaming": streaming, "model": "tier-balanced"}
-        return await self._client.create_session(config)
+        return await self._client.create_session(**config)
 
 
 def test_wrap_injects_infinite_sessions_into_client_config(monkeypatch) -> None:
@@ -188,12 +191,18 @@ def test_wrap_is_idempotent(monkeypatch) -> None:
     assert ex._apply_copilot_infinite_sessions(agent) is False
 
 
-def test_wrap_noop_when_opted_out(monkeypatch) -> None:
+def test_opt_out_still_wraps_but_injects_no_block(monkeypatch) -> None:
+    """``default`` leaves the SDK's compaction alone, and the wrap STAYS.
+
+    Until H-181 the opt-out skipped the wrap entirely. The wrap now also
+    stamps the run's attribution headers on the batch and sub-agent paths,
+    so skipping it would bill those runs to nobody.
+    """
     monkeypatch.setenv("COPILOT_INFINITE_SESSIONS", "default")
     agent = _FakeCopilotAgent()
-    # Opted out → no wrap, no flag, original method intact.
-    assert ex._apply_copilot_infinite_sessions(agent) is False
-    assert getattr(agent, "__cc_inf_sessions__", False) is False
+    assert ex._apply_copilot_infinite_sessions(agent) is True
+    asyncio.run(agent._create_session(True, None))
+    assert "infinite_sessions" not in agent._client.received_config
 
 
 def test_off_flows_through_to_client(monkeypatch) -> None:
@@ -221,11 +230,11 @@ class _RebindFakeClient:
     def __init__(self) -> None:
         self.received_config: dict | None = None
 
-    async def create_session(self, config: dict):
+    async def create_session(self, **config):
         self.received_config = config
         return MagicMock(session_id="sess-2")
 
-    async def resume_session(self, session_id: str, config: dict):
+    async def resume_session(self, session_id: str, **config):
         self.received_config = config
         return MagicMock(session_id=session_id)
 
@@ -241,11 +250,10 @@ class _RebindAgent:
         self._settings: dict = {}
         self._tools: list = []
         self._permission_handler = None
-        self._mcp_servers = None
 
     async def _create_session(self, streaming, runtime_options=None):
         # The base-wrapper behaviour (drops infinite_sessions) the wrap patches.
-        return await self._client.create_session({"streaming": streaming})
+        return await self._client.create_session(streaming=streaming)
 
 
 def _rebind(agent):

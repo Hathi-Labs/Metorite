@@ -201,6 +201,9 @@ export const activateSubscription = (body: unknown, d?: Deps) =>
 export const assignSeat = (body: unknown, d?: Deps) =>
   callConsole("/billing/seats", { method: "POST", body }, d ?? {});
 
+export const setSeatCount = (body: unknown, d?: Deps) =>
+  callConsole("/billing/seats/count", { method: "POST", body }, d ?? {});
+
 export const releaseSeat = (body: unknown, d?: Deps) =>
   callConsole("/billing/seats/release", { method: "POST", body }, d ?? {});
 

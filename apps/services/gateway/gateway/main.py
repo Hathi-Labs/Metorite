@@ -120,7 +120,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             import time as _t
 
             from copilot import CopilotClient as _CC
-            _c = _CC(options={"github_token": _gh}); await _c.start()
+            _c = _CC(github_token=_gh); await _c.start()  # SDK 1.0: keywords (H-181)
             try:
                 _m = await _c.list_models()
             finally:
@@ -1753,7 +1753,7 @@ async def copilot_models() -> dict:
         try:
             os.environ.setdefault("GITHUB_TOKEN", github_token)
             from copilot import CopilotClient
-            _sdk = CopilotClient(options={"github_token": github_token})
+            _sdk = CopilotClient(github_token=github_token)  # SDK 1.0: keywords (H-181)
             await _sdk.start()
             try:
                 _models = await _sdk.list_models()

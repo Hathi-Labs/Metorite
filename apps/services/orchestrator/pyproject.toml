@@ -5,14 +5,19 @@ description = "MAF workflow harness; tiered router; specialist sub-agents."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     # MAF core (includes OpenAI + Azure OpenAI support by default)
-    "agent-framework-core",
+    "agent-framework-core>=1.19.0",
     # Separate OpenAI sub-package (explicit — avoids agent-framework[openai] meta-extra
     # which drags in agent-framework-core[all] → broken azure-search-documents on Windows)
-    "agent-framework-openai",
-    # GitHub Copilot agent (pre-release — install with: uv add --pre agent-framework-github-copilot)
-    "agent-framework-github-copilot",
+    "agent-framework-openai>=1.14.4",
+    # GitHub Copilot agent. 2.0 is the first release on the 1.x Copilot SDK
+    # (H-181), and it pins the SDK exactly (2.0.0 → github-copilot-sdk==1.0.11).
+    "agent-framework-github-copilot>=2.0.0",
+    # Imported directly (copilot_agent.py, mutation_runner.py). 1.0 is the
+    # first SDK whose ProviderConfig carries `headers` and whose send() takes
+    # per-turn `request_headers` — the attribution seam H-181 needs.
+    "github-copilot-sdk>=1.0.11",
     # AG-UI streaming endpoint (replaces copilot_chat.py SSE path)
-    "agent-framework-ag-ui",
+    "agent-framework-ag-ui>=1.4.0",
     # RedisHistoryProvider + RedisContextProvider (pre-release)
     "agent-framework-redis",
     "httpx>=0.27",

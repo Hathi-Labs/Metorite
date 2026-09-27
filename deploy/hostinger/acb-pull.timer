@@ -14,9 +14,9 @@ OnBootSec=2min
 # when nothing moved.
 #
 # ⚠️ A tick that lands while an apply is still running is NOT a problem and does
-# not need a longer interval to avoid. vps_pull.sh takes an flock and a second
-# invocation exits 0 quietly, because "someone else is already applying" is a
-# normal state rather than a fault. So the interval can be chosen for latency,
+# not need a longer interval to avoid. vps_pull.sh takes the box's one deploy
+# lock, the same one the CI path takes, and exits 0 when it is busy, because
+# "someone else is already applying" is a normal state rather than a fault. So the interval can be chosen for latency,
 # which is the thing that actually matters, instead of for collision-avoidance.
 OnUnitActiveSec=5min
 

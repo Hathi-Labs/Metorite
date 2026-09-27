@@ -25,6 +25,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { IncludeSubtasksBox } from "@/components/SubtaskCascade";
+import { CASCADE_DEFAULTS } from "@/lib/subtaskCascade";
 import SelectButton from "@/components/ui/SelectButton";
 
 import { type MovePlan, projectsApi } from "../lib/api";
@@ -75,6 +77,11 @@ export interface PromoteFieldsState {
   drops: string[] | null;
   /** "Fill in PO first." or null. */
   blocked: string | null;
+  /**
+   * D-PM-38 decision 4 (S5) — send `include_subtasks`. True only when the
+   * task HAS subtasks and the pre-ticked box is still ticked.
+   */
+  includeSubtasks: boolean;
 }
 
 /** Control values → wire values, for the blank check the server will make. */
@@ -100,6 +107,12 @@ export function useMovePreview(
   taskIds: readonly string[],
   destinationId: string | null,
   askRequired: boolean,
+  /**
+   * D-PM-38 (S5) — preview the move WITH the subtasks, so the drops, the
+   * required fields, the types and the tags cover them too (D-PM-29). The
+   * box's state, so ticking or unticking it reads the plan again.
+   */
+  includeSubtasks = false,
 ) {
   const [plan, setPlan] = useState<MovePlan | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -129,6 +142,7 @@ export function useMovePreview(
         const next = await projectsApi.previewMove({
           task_ids: key.split(","),
           destination_project_id: dest,
+          ...(includeSubtasks ? { include_subtasks: true } : {}),
         });
         if (stale()) return;
         setPlan(next);
@@ -153,7 +167,7 @@ export function useMovePreview(
         if (!stale()) setPlanning(false);
       }
     },
-    [key, askRequired],
+    [key, askRequired, includeSubtasks],
   );
 
   useEffect(() => {
@@ -379,10 +393,14 @@ export function PromoteFields({
   showAssignees?: boolean;
   onChange: (state: PromoteFieldsState) => void;
 }) {
+  // D-PM-38 decision 4 — the "Include N subtasks" box starts TICKED, and the
+  // preview reads the plan with the subtasks while it is ticked.
+  const [withSubtasks, setWithSubtasks] = useState<boolean>(CASCADE_DEFAULTS.move);
   const { plan, planning, planError, requiredDefs, draft, setDraft } = useMovePreview(
     taskIds,
     destinationId,
     true,
+    withSubtasks,
   );
   const [assignees, setAssignees] = useState<string[]>(() => initialAssignees);
   const [assigneeText, setAssigneeText] = useState("");
@@ -395,7 +413,13 @@ export function PromoteFields({
   const rows = destinations(roots);
   const sourceName = nameOf(rows, plan?.source_project_id ?? null);
   const destName = nameOf(rows, destinationId) || nameOf(rows, plan?.destination_project_id ?? null);
-  const ready = !!plan && !planning && asked !== null && missing.length === 0;
+  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0, refused: [] };
+  const carrying = withSubtasks && subtasks.count + subtasks.hidden > 0;
+  // A ticked box over a hidden subtask is a move the gateway refuses (409),
+  // and so is one over a subtask D62 refuses (422). The box says why.
+  const splitRefused = carrying && (subtasks.hidden > 0 || subtasks.refused.length > 0);
+  const ready =
+    !!plan && !planning && asked !== null && missing.length === 0 && !splitRefused;
 
   // Reported on every change of what the host needs. `onChange` is the host's
   // state setter (stable), and the report is a fresh object, so the effect
@@ -407,10 +431,11 @@ export function PromoteFields({
       destinationProjectId: plan?.destination_project_id ?? null,
       answers: { fields: asked ?? [], draft, assignees, initialAssignees },
       drops: dropKeys ? dropKeys.split(",") : null,
-      blocked: blocked || null,
+      blocked: blocked || (splitRefused ? (subtasks.refused[0]?.reason ?? null) : null),
+      includeSubtasks: carrying,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onChange, ready, plan, draft, assignees, dropKeys, blocked, requiredDefs, refusedFields]);
+  }, [onChange, ready, plan, draft, assignees, dropKeys, blocked, requiredDefs, refusedFields, carrying]);
 
   if (!destinationId) return null;
 
@@ -492,6 +517,15 @@ export function PromoteFields({
           ) : null}
 
           <MoveLosses reading={reading} />
+
+          <IncludeSubtasksBox
+            count={subtasks.count}
+            hidden={subtasks.hidden}
+            refused={subtasks.refused.map((r) => r.reason)}
+            checked={withSubtasks}
+            onChange={setWithSubtasks}
+            disabled={busy}
+          />
         </>
       ) : null}
     </div>

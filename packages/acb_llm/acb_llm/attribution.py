@@ -36,7 +36,7 @@ from typing import Any
 
 import httpx
 
-__all__ = ["attributed_openai", "attribution_headers"]
+__all__ = ["attributed_copilot_provider", "attributed_openai", "attribution_headers"]
 
 #: The headers the gateway's ``/v1`` reads. Named once, so the gateway and this
 #: module cannot spell one of them two ways. ``X-CC-Source`` was the second
@@ -107,6 +107,34 @@ def attribution_headers(ctx: dict[str, str] | None = None) -> dict[str, str]:
     if agent:
         out[AGENT] = agent
     return out
+
+
+def attributed_copilot_provider(provider: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A COPY of a Copilot SDK ``provider`` dict that carries this run's headers.
+
+    The Copilot SDK path has no ``httpx`` client of ours to hook. Its CLI makes
+    the model call, and it sends the ``headers`` of the session's
+    ``ProviderConfig`` (SDK 1.0 and later, H-181). So the stamp happens when
+    the session is created or resumed, inside the run that uses it.
+
+    ⚠️ **Call it at session time, never when the agent is built.** One agent
+    object serves every run, so a provider stamped at build time names the
+    first person forever. That is a wrong bill, which is worse than a blank.
+
+    ⚠️ **It returns a copy.** The agent's ``_default_options["provider"]`` is
+    shared by every run of that agent. Writing into it would race.
+
+    ⚠️ **The run context wins over a stale stamp.** Any ``X-CC-*`` header the
+    input already carries is dropped first, so a provider that was stamped
+    for one run cannot leak its member into the next run.
+    """
+    if not provider:
+        return provider
+    kept = {
+        k: v for k, v in dict(provider.get("headers") or {}).items()
+        if not str(k).lower().startswith("x-cc-")
+    }
+    return {**provider, "headers": {**kept, **attribution_headers()}}
 
 
 async def _stamp(request: httpx.Request) -> None:

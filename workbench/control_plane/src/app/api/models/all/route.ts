@@ -150,13 +150,22 @@ export async function GET(): Promise<
   // added via the Settings page — never use process.env for this check.
   const configured = new Set<string>();
   let gatewayReachable = false;
+  // True while the Console Router serves chat. The Router serves TIERS and
+  // refuses a bare model id by design (D32.7), so under it a raw model in
+  // this list is a guaranteed 400. Measured on production, 2026-09-24:
+  // `openrouter/qwen/qwen3.7-max` was picked and refused `tier_unknown`.
+  let routerServing = false;
   try {
     const provRes = await fetch(`${GATEWAY_URL}/settings/llm`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(3_000),
     });
     if (provRes.ok) {
-      const data = (await provRes.json()) as { providers?: { id: string; configured: boolean }[] };
+      const data = (await provRes.json()) as {
+        providers?: { id: string; configured: boolean }[];
+        router_serving?: boolean;
+      };
+      routerServing = data.router_serving === true;
       if (Array.isArray(data.providers)) {
         for (const p of data.providers) {
           if (p.configured) configured.add(p.id);
@@ -325,7 +334,9 @@ export async function GET(): Promise<
     //    GitHub-provider models are Copilot-runtime and already surface in the
     //    Copilot group above (different execution path), so exclude them here to
     //    avoid litellm-runtime duplicates pointing at the wrong endpoint.
-    ...enabledModels
+    //    ⚠️ NONE while the Router serves: each of these is a raw model id,
+    //    and the Router answers a raw model with 400 (D32.7).
+    ...(routerServing ? [] : enabledModels)
       .filter((m) => !hiddenSet.has(m.id)
         && !tierModels.some((t) => t.id === m.id)
         && m.provider !== "github"

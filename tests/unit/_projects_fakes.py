@@ -1030,12 +1030,36 @@ class FakeProjectsDB:
         skips_archived = "t.archived_at IS NULL" in statement
         counts_closed = "FILTER (WHERE s.category = ANY(:closed))" in statement
         categories = self._categories()
+        # D-PM-38 (B4) — the children are counted under the READER's
+        # visibility. Applied only when the statement carries the closure,
+        # the `_select` convention, so a roll-up that drops the clause counts
+        # every child here too and the leak test goes red.
+        scoped = "pm_project_grants" in statement
+        visible = self.visible_project_ids(
+            str(args.get("vis_email") or ""), list(args.get("vis_groups") or []),
+            organization_id=(
+                str(args.get("vis_org"))
+                if _CLOSURE_IS_TENANTED.search(statement) else None
+            ),
+            descendant_organization_id=(
+                str(args.get("vis_org"))
+                if _DESCENT_IS_TENANTED.search(statement) else None
+            ),
+        ) if scoped else set()
+        me = str(args.get("vis_email") or "").lower()
+        assignee_escape = (
+            "pm_task_assignees" in statement and "vis_email" in statement
+        )
         grouped: dict[str, list[str]] = {}
         for task in self.rows("pm_tasks"):
             parent = str(task.get("parent_task_id") or "")
             if parent not in wanted:
                 continue
             if skips_archived and task.get("archived_at") is not None:
+                continue
+            if scoped and str(task.get("project_id")) not in visible and not (
+                assignee_escape and me in self._assignees_of(task.get("id"))
+            ):
                 continue
             grouped.setdefault(parent, []).append(
                 categories.get(str(task.get("status_id")), "")
@@ -1797,6 +1821,29 @@ class FakeProjectsDB:
         # disagreed in Postgres.
         only_task = str(args.get("tid")) if "AND t.id = CAST(:tid AS uuid)" in statement else None
 
+        # D-PM-38 — the roll-up counts only children the MEMBER can see
+        # (`personal._CHILD_VISIBLE`, alias `c`). Honoured only when the
+        # statement carries the clause on that alias, the `_select`
+        # convention: a query that drops it counts every child here too, and
+        # the My Tasks count test goes red.
+        counts_visible = "c.project_id IN (" in statement
+        child_closure = self.visible_project_ids(
+            str(args.get("vis_email") or ""),
+            list(args.get("vis_groups") or []),
+            organization_id=args.get("vis_org"),
+        ) if counts_visible else set()
+        child_me = str(args.get("vis_email") or "").lower()
+
+        def child_visible(c: dict) -> bool:
+            if not counts_visible:
+                return True
+            if str(c.get("organization_id")) != str(args.get("vis_org")):
+                return False
+            return str(c.get("project_id")) in child_closure or (
+                "a.task_id = c.id" in statement
+                and child_me in self._assignees_of(c.get("id"))
+            )
+
         out: list[Any] = []
         for task in self.rows("pm_tasks"):
             if task.get("archived_at") is not None and not with_archived:
@@ -1919,6 +1966,22 @@ class FakeProjectsDB:
                     1 for c in self.rows("pm_tasks")
                     if str(c.get("parent_task_id") or "") == str(task["id"])
                     and c.get("archived_at") is None
+                    and child_visible(c)
+                ),
+                # D-PM-38 — the closed children, the chip's "done" half. Only
+                # when the statement selects it, so a query that drops the
+                # column answers None here and the test that reads it fails.
+                subtask_done=(
+                    sum(
+                        1 for c in self.rows("pm_tasks")
+                        if str(c.get("parent_task_id") or "") == str(task["id"])
+                        and c.get("archived_at") is None
+                        and statuses.get(str(c.get("status_id")), {}).get(
+                            "category",
+                        ) in ("done", "cancelled")
+                        and child_visible(c)
+                    )
+                    if "AS subtask_done" in statement else None
                 ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,

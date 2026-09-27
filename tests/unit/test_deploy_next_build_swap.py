@@ -456,16 +456,25 @@ class TestTheBuildTreeIsReclaimed:
             "nothing reclaims a root-owned `.next` before building into it")
 
     def test_every_staged_build_reclaims_FIRST(self):
-        """The repair is worthless after the build has already failed."""
+        """The repair is worthless after the build has already failed. It runs
+        ONCE per app, in `npm_install_here`, before the install. Each staged
+        build must follow an install of the same app (PR #484 review, P3)."""
         body = _APPLY.read_text(encoding="utf-8")
+        inst = body[body.index("npm_install_here() {"):]
+        inst = inst[: inst.index("\n}\n")]
+        assert "reclaim_build_tree" in inst, "the install does not reclaim the tree"
+        assert inst.index("reclaim_build_tree") < inst.index("npm ci"), (
+            "the reclaim must run BEFORE the install writes into the tree")
         fn = body[body.index("build_next_staged() {"):]
         fn = fn[: fn.index("\n}\n")]
-        assert "reclaim_build_tree" in fn, (
-            "`build_next_staged` does not reclaim the tree")
-        # Before the first drop_dir, or a root-owned staging dir defeats it.
-        assert fn.index("reclaim_build_tree") < fn.index("drop_dir"), (
-            "the reclaim must run BEFORE anything tries to remove or write "
-            "the build directories")
+        assert "reclaim_build_tree" not in fn, "a second scan per app costs ~3 s"
+        lines = [ln.strip() for ln in body.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        calls = [i for i, ln in enumerate(lines) if ln.startswith("build_next_staged ")]
+        assert calls, "no staged build"
+        for i in calls:
+            assert lines[i - 1].startswith("npm_install_here "), (
+                f"`{lines[i]}` does not follow an install, so nothing reclaimed its tree")
 
     def test_it_covers_all_three_build_directories(self):
         body = _APPLY.read_text(encoding="utf-8")
@@ -490,3 +499,29 @@ class TestTheBuildTreeIsReclaimed:
         fn = body[body.index("reclaim_build_tree() {"):]
         fn = fn[: fn.index("\n}\n")]
         assert "H-89" in fn
+
+
+class TestTheBuildHeapCap:
+    """The V8 heap cap for `next build` must fit the app.
+
+    On 2026-09-27 the #493 deploy died in all three rounds with
+    "Ineffective mark-compacts near heap limit" at a 1024 MB cap, while the
+    box had about 6 GB free. A cap below the app's real need fails every
+    deploy and keeps the old build serving, so it looks like a slow deploy.
+    """
+
+    def test_the_build_heap_cap_fits_the_app(self):
+        import re
+
+        body = _APPLY.read_text(encoding="utf-8")
+        m = re.search(r'NEXT_BUILD_HEAP_MB="\$\{NEXT_BUILD_HEAP_MB:-(\d+)\}"', body)
+        assert m, "the heap cap default is gone from vps_apply.sh"
+        cap = int(m.group(1))
+        assert cap >= 3072, f"a {cap} MB build heap failed the #493 deploy; keep it at 3072 or more"
+        # The box has 8 GB and no swap, and the servers keep running beside
+        # the build. Leave them room.
+        assert cap <= 5120, f"a {cap} MB build heap leaves the running servers too little memory"
+
+    def test_the_cap_reaches_the_build(self):
+        body = _APPLY.read_text(encoding="utf-8")
+        assert 'NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB"' in body

@@ -25,6 +25,7 @@ import inspect
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -231,8 +232,34 @@ def seeded(_ladder):
                            idle_days=weeks * 7)
                 act(tid, "todo", "in_progress", f"{_weeks_ago(weeks)} - interval '1 day'")
                 act(tid, "in_progress", "done", _weeks_ago(weeks))
+        # WS-27bm S11. The holder is in the directory and is away for one
+        # full working week inside the capacity window. So an admin and a
+        # member get DIFFERENT hours, and each section must equal its route.
+        made["person"] = str(c.execute(
+            text(
+                "INSERT INTO people (id, name, email, status, skills, source,"
+                " source_key, organization_id, updated_by, updated_at)"
+                " VALUES (gen_random_uuid(), :n, :e, 'active', ARRAY[]::text[],"
+                " 'manual', :k, CAST(:o AS uuid), 'test', now()) RETURNING id"
+            ),
+            {"n": f"r3 {tag}", "e": who, "k": f"manual:r3:{tag}", "o": org},
+        ).scalar_one())
+        monday = date.today() - timedelta(days=date.today().isoweekday() - 1)
+        monday += timedelta(weeks=2)
+        c.execute(
+            text(
+                "INSERT INTO people_absences (person_id, organization_id,"
+                " starts_on, ends_on, kind, created_by) VALUES"
+                " (CAST(:p AS uuid), CAST(:o AS uuid), :s, :e, 'away',"
+                " 'r3@example.test')"
+            ),
+            {"p": made["person"], "o": org, "s": monday,
+             "e": monday + timedelta(days=4)},
+        )
     yield made
     with eng.begin() as c:
+        c.execute(text("DELETE FROM people WHERE id = CAST(:i AS uuid)"),
+                  {"i": made["person"]})
         c.execute(
             text(
                 "DELETE FROM pm_activities WHERE task_id IN"
@@ -249,11 +276,12 @@ def seeded(_ladder):
     eng.dispose()
 
 
-def _user() -> Any:
+def _user(*, hr: bool = False) -> Any:
     from acb_auth import UserContext, UserRole, build_access
 
+    grants = ["feature:projects"] + (["admin:members:read"] if hr else [])
     return UserContext(email="r3@example.test", role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:projects"]))
+                       access=build_access(grants))
 
 
 @pytest.fixture
@@ -285,25 +313,32 @@ def wired(seeded, monkeypatch):
     asyncio.run(eng.dispose())
 
 
-def _report(project: str | None, **config: Any) -> dict[str, Any]:
+def _report(project: str | None, *, hr: bool = False, **config: Any) -> dict[str, Any]:
     return asyncio.run(
         rep.preview_report(
-            {"project_id": project, "config": config}, user=_user(),
+            {"project_id": project, "config": config}, user=_user(hr=hr),
         )
     )["sections"]
 
 
 @_needs_db
+@pytest.mark.parametrize("hr", [False, True], ids=["member", "admin"])
 @pytest.mark.parametrize("scope", ["project", "portfolio"])
-def test_the_outlook_section_equals_the_outlook_route(seeded, wired, scope) -> None:
+def test_the_outlook_section_equals_the_outlook_route(seeded, wired, scope, hr) -> None:
+    """WS-27bn R3a, and WS-27bm S11 §17.4 item 7: for each READER's grant."""
     pid = seeded["project"] if scope == "project" else None
-    got = _report(pid, sections=["outlook"], weeks=1)["outlook"]
+    got = _report(pid, hr=hr, sections=["outlook"], weeks=1)["outlook"]
     want = asyncio.run(
         ana.outlook(project_id=pid, include_subtree=True,
-                    weeks=ana.FORECAST_WEEKS, user=_user())
+                    weeks=ana.FORECAST_WEEKS, user=_user(hr=hr))
     )
     assert got == want
+    assert got["hr_visible"] is hr
+    assert got["people"]["absences_applied"] is hr
     if scope == "project":
+        # S11. One holder on the default week, away for one week in twelve.
+        # The reader's grant decides whether that week counts.
+        assert got["capacity"]["hours_per_week"] == (36.7 if hr else 40.0)
         # Real figures, not two nulls that agree by accident.
         assert got["velocity"]["verdict"] == "converging", got["velocity"]
         assert got["velocity"]["finish_date"] is not None

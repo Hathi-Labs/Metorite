@@ -1625,7 +1625,7 @@ def test_the_outlook_card_reads_its_nested_figures() -> None:
     }
     stats, table = _card_section("outlook", section)
     assert stats == [{"label": "Tasks left", "value": 41}]
-    assert table is not None and table["title"] == "Outlook"
+    assert table is not None and table["title"] == "Forecast"
     # H-185 item 1: the card prints a timestamp as its date, as the app does.
     # H-185 item 2: "Slip days" is a tile, and the table does not repeat it.
     assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", ""]

@@ -419,6 +419,18 @@ converged on believing a deploy that had not happened. `--force` is the manual
 escape; the durable fix would be gating the skip on the `/var/lib/acb`
 last-success marker (recorded at the END of an apply), not on git state.
 
+**Update 2026-09-26 (PR #484) — the durable fix landed, and it adds a way to
+re-apply.** Both paths now write one marker, `/opt/acb/acb-deploy.applied`, at
+the end of a complete apply. Both skip a sha that the marker names. To apply
+the same sha again, for example after an `.env` edit, use one of these:
+
+- On the box: `bash scripts/vps_pull.sh --force`. `MODE=force` in the
+  environment also works now.
+- In GitHub: re-run the `deploy` job. A rerun sends `DEPLOY_FORCE=1`.
+- In GitHub: dispatch `deploy` with the `force` input set.
+
+A forced apply still takes the deploy lock, so it waits for a running deploy.
+
 **Defect 4 (2026-08-06) — two `deploy.yml` failures, one green run.**
 (a) `publish-release` used the default depth-1 checkout; `git push` proves
 fast-forward client-side, so every publish after the ref-CREATING one was

@@ -17,6 +17,7 @@ Run::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -383,11 +384,8 @@ class TestEveryClientUsesTheSeam:
     def test_no_agent_builds_a_client_that_cannot_attribute(self):
         """🔴 The fence for the sixth agent — on the FRAMEWORK path.
 
-        ⚠️ **It does not cover the Copilot SDK path, and that is H-181.**
-        ``agent-task-manager``, ``agent-app-builder`` and
-        ``agent-apis-config`` run on the Copilot SDK, whose 0.1.32
-        ``ProviderConfig`` has no ``headers`` field. Version 1.0.14 adds one.
-        ``test_the_copilot_path_is_a_KNOWN_gap`` below pins the two sites.
+        The Copilot SDK path has its own fence, ``TestTheCopilotPathCarriesTheRun``
+        below (H-181).
 
         Every ``OpenAIChatCompletionClient(`` in the tree must take its
         ``async_client`` from :func:`attributed_openai`. A client built the
@@ -413,31 +411,228 @@ class TestEveryClientUsesTheSeam:
         assert not offenders, f"clients that cannot attribute: {offenders}"
 
 
-    def test_the_copilot_path_is_a_KNOWN_gap_until_H_181(self):
-        """Pins the gap so it cannot grow in silence, and FAILS the day it
-        closes, so this test and H-181 are retired together.
+# ── The Copilot SDK path (H-181) ────────────────────────────────────────────
 
-        Reads each provider dict literal and asserts it carries no
-        ``"headers"`` key. A first version only counted the sites, so adding
-        the headers H-181 prescribes left it green forever (found by review).
-        """
-        sites = (
-            "apps/services/orchestrator/orchestrator/_model_resolution.py",
-            "apps/services/orchestrator/orchestrator/executor.py",
+
+class _WireRpc:
+    """The JSON-RPC connection to the Copilot CLI, and nothing else.
+
+    ⚠️ Not a stub of the SDK. The REAL ``CopilotClient.create_session`` /
+    ``resume_session`` and the REAL ``CopilotSession.send`` build their
+    payloads, and only the pipe to the CLI process is replaced. So the params
+    asserted are the ones the CLI would receive.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def request(self, method: str, params: dict | None = None, **_kw):
+        self.calls.append((method, params or {}))
+        if method in ("session.create", "session.resume"):
+            return {"sessionId": params["sessionId"]}
+        if method == "session.send":
+            return {"messageId": "m-1"}
+        return {}
+
+    def sent(self, method: str) -> list[dict]:
+        return [p for m, p in self.calls if m == method]
+
+
+def _wire_client():
+    from copilot import CopilotClient
+
+    client = CopilotClient()
+    rpc = _WireRpc()
+    client._client = rpc  # connected, as far as the SDK can tell
+    return client, rpc
+
+
+def _copilot_agent(client):
+    """A task-manager-shaped agent: the provider dict is built ONCE, with no
+    headers, exactly as ``agent-task-manager/agents.py`` builds it."""
+    from agent_framework_github_copilot import GitHubCopilotAgent
+    from orchestrator.copilot_agent import MetoriteCopilotAgent
+
+    agent = GitHubCopilotAgent(
+        instructions="x", client=client,
+        default_options={
+            "model": "tier-balanced", "mcp_servers": {},
+            "provider": {"type": "openai", "base_url": "http://gw/v1",
+                         "api_key": "k"},
+        },
+    )
+    agent._started = True
+    # The executor's streaming path rebinds these (executor.py, "GitHub
+    # Copilot path"). Rebinding here runs the production methods.
+    for name in ("_create_session", "_resume_session", "_stream_updates"):
+        setattr(agent, name,
+                getattr(MetoriteCopilotAgent, name).__get__(agent, type(agent)))
+    return agent
+
+
+def _run_as(who: str, run_id: str, app: str = "tasks") -> None:
+    bind_run_context(user=who, member_verified=True, app=app, run_id=run_id)
+
+
+class TestTheCopilotPathCarriesTheRun:
+    """🔴 H-181. Three agents run on the Copilot SDK: task-manager,
+    app-builder and apis-config. Once the box serves AI with the deployment
+    key (H-152), the Router refuses a model call that names no member.
+
+    The CLI, not our code, makes the model call. Two things reach it:
+
+    - ``provider.headers`` on ``session.create`` / ``session.resume``. It
+      holds for the session, and every run creates or resumes its session.
+    - ``requestHeaders`` on ``session.send``. It holds for ONE TURN.
+
+    Both are stamped from the run bound on this task, never at build time.
+    Mutation-checked 2026-09-26: delete the provider stamp in
+    ``session_kwargs_for_this_run`` and the four session tests fail. Delete
+    ``request_headers=`` in ``_stream_updates`` and the turn test fails.
+    """
+
+    @staticmethod
+    def _headers(payload: dict) -> dict:
+        return payload["provider"]["headers"]
+
+    def test_session_create_carries_the_RUNS_member_app_and_run(self, secret):
+        from acb_auth.member_proof import verify_member
+
+        client, rpc = _wire_client()
+        agent = _copilot_agent(client)
+
+        async def go():
+            with run_context_scope():
+                _run_as("dana@acme.com", "run-1")
+                await agent._create_session(True, None)
+
+        asyncio.run(go())
+        h = self._headers(rpc.sent("session.create")[0])
+        assert h["X-CC-Member"] == "dana@acme.com"
+        assert verify_member(h["X-CC-Member-Proof"], secret) == "dana@acme.com"
+        assert (h["X-CC-Module"], h["X-CC-Run"]) == ("tasks", "run-1")
+
+    def test_one_agent_bills_EACH_run_and_never_freezes(self):
+        """🔴 One agent object serves every person. A provider stamped when
+        the agent was built would bill the first person forever."""
+        client, rpc = _wire_client()
+        agent = _copilot_agent(client)
+
+        async def as_(who, run_id):
+            with run_context_scope():
+                _run_as(who, run_id)
+                await agent._create_session(True, None)
+
+        asyncio.run(as_("dana@acme.com", "run-1"))
+        asyncio.run(as_("ravi@acme.com", "run-2"))
+        first, second = (self._headers(p) for p in rpc.sent("session.create"))
+        assert (first["X-CC-Member"], first["X-CC-Run"]) == ("dana@acme.com", "run-1")
+        assert (second["X-CC-Member"], second["X-CC-Run"]) == ("ravi@acme.com", "run-2")
+        assert "headers" not in agent._default_options["provider"], (
+            "the shared provider dict was written into, so runs race on it")
+
+    def test_a_RESUMED_session_bills_the_run_that_resumed_it(self):
+        """A thread reopened later, or by someone else, resumes the SAME CLI
+        session. The resume must carry the new run, not the one that made
+        the session."""
+        client, rpc = _wire_client()
+        agent = _copilot_agent(client)
+
+        async def go():
+            with run_context_scope():
+                _run_as("ravi@acme.com", "run-9")
+                await agent._resume_session("sess-1", True)
+
+        asyncio.run(go())
+        h = self._headers(rpc.sent("session.resume")[0])
+        assert (h["X-CC-Member"], h["X-CC-Run"]) == ("ravi@acme.com", "run-9")
+
+    def _send_one_turn(self, *, provider: bool):
+        client, rpc = _wire_client()
+        agent = _copilot_agent(client)
+        if not provider:
+            agent._default_options.pop("provider", None)
+
+        async def go():
+            with run_context_scope():
+                _run_as("dana@acme.com", "run-3")
+                session = await agent._create_session(True, None)
+
+                async def fake_get_or_create(*_a, **_kw):
+                    return session
+
+                agent._get_or_create_session = fake_get_or_create
+                stream = agent._stream_updates(messages="hi")
+                # No CLI answers, so no update ever comes. Stop once the turn
+                # has been sent.
+                task = asyncio.ensure_future(stream.__anext__())
+                for _ in range(100):
+                    if rpc.sent("session.send"):
+                        break
+                    await asyncio.sleep(0.01)
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+
+        asyncio.run(go())
+        sent = rpc.sent("session.send")
+        assert sent, "the turn was never sent"
+        return sent[0]
+
+    def test_each_TURN_carries_the_run_as_request_headers(self):
+        """The per-turn stamp on ``session.send``. It covers a CLI session
+        that outlived the run that created it."""
+        h = self._send_one_turn(provider=True)["requestHeaders"]
+        assert (h["X-CC-Member"], h["X-CC-Module"], h["X-CC-Run"]) == (
+            "dana@acme.com", "tasks", "run-3")
+
+    def test_a_NATIVE_session_sends_github_no_member(self):
+        """🔴 Review of PR #490: with no BYOK provider the session talks to
+        api.githubcopilot.com. The member's email and signed proof must not
+        go there."""
+        turn = self._send_one_turn(provider=False)
+        assert not turn.get("requestHeaders"), turn.get("requestHeaders")
+
+    def test_the_BATCH_and_SUB_AGENT_path_is_stamped_too(self):
+        """The batch run and a delegated sub-agent keep the WRAPPER's own
+        ``_create_session``. The interceptor that tool injection installs
+        (``_apply_copilot_infinite_sessions``) stamps them."""
+        from agent_framework_github_copilot import GitHubCopilotAgent
+        from orchestrator._copilot_session import _apply_copilot_infinite_sessions
+
+        client, rpc = _wire_client()
+        agent = GitHubCopilotAgent(
+            instructions="x", client=client,
+            default_options={"provider": {"type": "openai",
+                                          "base_url": "http://gw/v1",
+                                          "api_key": "k"},
+                             # think-mode keys ride here, and SDK 1.0 would
+                             # raise TypeError on them
+                             "thinking": {"type": "enabled"},
+                             "model_params": {"reasoning_effort": "high"}},
         )
-        for rel in sites:
-            src = (ROOT / rel).read_text(encoding="utf-8")
-            found = list(re.finditer(r'_default_options\["provider"\]\s*=\s*\{', src))
-            assert len(found) == 1, f"{rel}: {len(found)} Copilot provider sites"
-            body_start = found[0].end()
-            depth, i = 1, body_start
-            while depth:
-                depth += (src[i] == "{") - (src[i] == "}")
-                i += 1
-            literal = src[body_start:i]
-            assert '"headers"' not in literal, (
-                f"{rel}: the provider dict now carries headers. H-181 has "
-                "landed: delete this test and the H-181 attribution note.")
+        assert _apply_copilot_infinite_sessions(agent) is True
+
+        async def go():
+            with run_context_scope():
+                _run_as("dana@acme.com", "run-4", app="app-workshop")
+                await agent._create_session(True, None)
+
+        asyncio.run(go())
+        h = self._headers(rpc.sent("session.create")[0])
+        assert (h["X-CC-Member"], h["X-CC-Module"], h["X-CC-Run"]) == (
+            "dana@acme.com", "app-workshop", "run-4")
+
+    def test_a_stale_stamp_never_outlives_its_run(self):
+        """A provider that already carries X-CC-* for one run must not leak
+        that member into a run bound to nobody."""
+        from acb_llm.attribution import attributed_copilot_provider
+
+        stale = {"type": "openai", "headers": {"X-CC-Member": "dana@acme.com",
+                                               "X-Other": "keep"}}
+        out = attributed_copilot_provider(stale)
+        assert out["headers"] == {"X-Other": "keep"}
+        assert stale["headers"]["X-CC-Member"] == "dana@acme.com", "input mutated"
 
 
 # ── The session member on DIRECT AI routes (2026-09-24) ─────────────────────

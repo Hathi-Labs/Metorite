@@ -9,54 +9,55 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from copilot.session import SessionEvent, SessionEventType
-from copilot.generated.session_events import Data
-
+from copilot.session_events import SessionEventType
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _make_data(**kwargs: Any) -> Data:
-    """Build a Copilot SDK Data object with only the fields we specify."""
-    return Data(**kwargs)
 
+def _make_event(event_type: SessionEventType, **data_fields: Any) -> Any:
+    """Build an event with the given type and data fields.
 
-def _make_event(
-    event_type: SessionEventType,
-    **data_fields: Any,
-) -> SessionEvent:
-    """Build a SessionEvent with the given type and data fields."""
-    return SessionEvent(
-        data=_make_data(**data_fields),
-        id=uuid.uuid4(),
-        timestamp=datetime.now(timezone.utc),
-        type=event_type,
+    SDK 1.0 (H-181) replaced the one flat ``Data`` record with a typed class
+    per event, each with its own required fields. The handler under test
+    reads the payload with ``getattr`` only, so a namespace carries exactly
+    the fields a test names and nothing it does not.
+    """
+    return SimpleNamespace(
+        type=event_type, data=SimpleNamespace(**data_fields), id=uuid.uuid4(),
     )
 
 
 # ── Mock CopilotSession that captures the event callback ───────────────────
 
 class _MockCopilotSession:
-    """A CopilotSession stand-in that captures the on() callback."""
+    """A CopilotSession stand-in with the SDK 1.0 shape.
+
+    ``on`` returns the unsubscribe callable (there is no ``off``), and
+    ``send`` takes the prompt plus per-turn ``request_headers``.
+    """
 
     def __init__(self) -> None:
         self._callback: Any = None
         self.session_id = str(uuid.uuid4())
+        self.sent: list[dict[str, Any]] = []
 
-    def on(self, callback: Any) -> None:
+    def on(self, callback: Any) -> Any:
         self._callback = callback
 
-    def off(self, callback: Any) -> None:
-        if self._callback is callback:
-            self._callback = None
+        def _unsubscribe() -> None:
+            if self._callback is callback:
+                self._callback = None
 
-    async def send(self, prompt: Any) -> None:
-        pass  # We feed events manually via _callback
+        return _unsubscribe
+
+    async def send(self, prompt: str, **kwargs: Any) -> str:
+        self.sent.append({"prompt": prompt, **kwargs})
+        return "msg-id"  # We feed events manually via _callback
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ class TestCopilotMessageDedup:
         self,
         agent: Any,
         mock_session: _MockCopilotSession,
-        events: list[SessionEvent],
+        events: list[Any],
     ) -> list[Any]:
         """Run _stream_updates; feed *events* via captured callback.
 
@@ -98,8 +99,8 @@ class TestCopilotMessageDedup:
         # Intercept on() to feed events in background after callback is set.
         _orig_on = _MockCopilotSession.on
 
-        def _on_wrapper(self_mock: Any, callback: Any) -> None:
-            _orig_on(self_mock, callback)
+        def _on_wrapper(self_mock: Any, callback: Any) -> Any:
+            unsubscribe = _orig_on(self_mock, callback)
 
             async def _feed() -> None:
                 # Yield control so send() and the queue loop can start.
@@ -109,6 +110,7 @@ class TestCopilotMessageDedup:
                 callback(_make_event(SessionEventType.SESSION_IDLE))
 
             asyncio.ensure_future(_feed())
+            return unsubscribe
 
         # Patch _get_or_create_session → mock session.
         async def _fake_get_or_create_session(

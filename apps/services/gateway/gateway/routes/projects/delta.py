@@ -90,7 +90,11 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
-from gateway.routes.projects.filters import attach_assignees, attach_relation_counts
+from gateway.routes.projects.filters import (
+    attach_assignees,
+    attach_parent_context,
+    attach_relation_counts,
+)
 from sqlalchemy import text
 
 #: How far back from ``now()`` the feed refuses to look. See rule 3 above: this
@@ -181,8 +185,14 @@ async def delta_tasks(
     include_subtree: bool = True,
     include_archived: bool = False,
     include_triage: bool = False,
+    top_level: bool = False,
 ) -> dict:
     """What changed since ``since``, and what is no longer there.
+
+    ``top_level`` is the board's Subtasks = Hidden (D-PM-38, spec §12.9). It
+    is part of the feed predicate, like ``include_archived``. So a subtask that
+    changed comes back in ``removed``, not in ``rows``, and a client that merges
+    the feed into a Hidden board does not bring the subtasks back.
 
     ⚠️ **The path is ``/projects/delta/tasks``, not ``/projects/tasks/delta``.**
     The second would be shadowed by ``/projects/tasks/{task_id}``, which is
@@ -355,6 +365,10 @@ async def delta_tasks(
                 clauses.append("t.archived_at IS NULL")
             if not include_triage:
                 clauses.append(triage_exclusion_clause())
+            # D-PM-38. The same clause `build_task_filters` writes for the
+            # list, so the feed and the list agree on what "top level" means.
+            if top_level:
+                clauses.append("t.parent_task_id IS NULL")
             rows = (await db.execute(
                 text(
                     "SELECT t.* FROM pm_tasks t WHERE "
@@ -367,7 +381,11 @@ async def delta_tasks(
             # The same attachers the list endpoint uses, so a synced card can
             # draw an owner and a progress count without an N+1 per row.
             await attach_assignees(db, page_rows)
-            await attach_relation_counts(db, page_rows)
+            await attach_relation_counts(db, page_rows, vis)
+            # D-PM-38. The board merges these rows into the list's, so they
+            # carry the same `parent` the list gives, or a synced card would
+            # lose its "↳ Parent" line.
+            await attach_parent_context(db, vis, page_rows)
             kept = {str(r["id"]) for r in page_rows}
             removed.extend(ident for ident in row_ids if ident not in kept)
 

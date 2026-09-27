@@ -3,9 +3,9 @@
  *
  * Pure functions, because the three decisions a table gets subtly wrong are
  * each one assertion here rather than a screenshot: which columns a view's
- * `shown_fields` produces (and in what order), how sub-tasks nest under a
- * parent that is on the same page, and what a header click means for the sort
- * the server is asked for.
+ * `shown_fields` produces (and in what order), and what a header click means
+ * for the sort the server is asked for. How subtasks nest moved to
+ * `@/lib/taskTree` in Subtasks S2, so every nesting view shares one tree.
  *
  * **Sorting is the SERVER's** — a header click maps to the sort keys
  * `GET /projects/tasks` already accepts (`core.py TASK_SORTS`), never a
@@ -15,7 +15,6 @@
  * re-deriving.
  */
 
-import type { TaskRow } from "./api";
 import type { FieldDef } from "./customFields";
 import {
   CUSTOM_FIELD_PREFIX,
@@ -166,72 +165,4 @@ export function customKeyOf(columnKey: string): string | null {
   return columnKey.startsWith(CUSTOM_FIELD_PREFIX)
     ? columnKey.slice(CUSTOM_FIELD_PREFIX.length)
     : null;
-}
-
-export interface TableRow<T extends TaskLike = TaskRow> {
-  task: T;
-  /** 0 for a top-level row; +1 per nesting level under an on-page parent. */
-  depth: number;
-  /** How many DIRECT sub-task rows sit under this one (0 = no caret). */
-  childCount: number;
-}
-
-type TaskLike = { id: string; parent_task_id?: string | null };
-
-/**
- * One group's tasks → the rows the table draws, sub-tasks indented under
- * their parent.
- *
- * The same self-FK the server's `tree.py` walks for projects: hierarchy is
- * `parent_task_id`, nothing else. A task whose parent is NOT in this list —
- * filtered out, on another page, or in another group — renders at the top
- * level rather than disappearing: the filter said "show this task", and
- * hiding it because its parent did not qualify would make a filtered table
- * lose rows silently.
- *
- * Within a nesting level the incoming order is preserved, because the caller
- * has already ordered the list (server sort, or `sortForView`).
- *
- * `collapsed` hides a parent's whole subtree; collapse state is local to the
- * component (per the ticket), so this only needs the set.
- */
-export function treeRows<T extends TaskLike>(
-  tasks: readonly T[],
-  collapsed: ReadonlySet<string>
-): TableRow<T>[] {
-  const present = new Set(tasks.map((t) => t.id));
-  const children = new Map<string, T[]>();
-  const roots: T[] = [];
-  for (const task of tasks) {
-    const parent = task.parent_task_id;
-    if (parent && present.has(parent) && parent !== task.id) {
-      const bucket = children.get(parent);
-      if (bucket) bucket.push(task);
-      else children.set(parent, [task]);
-    } else {
-      roots.push(task);
-    }
-  }
-
-  const out: TableRow<T>[] = [];
-  // Iterative with an explicit visited set: the server forbids parent cycles
-  // (`assert_no_task_cycle`), but a stale page must degrade to missing
-  // indentation, never to a hung tab.
-  const visited = new Set<string>();
-  // `hidden` still traverses (marking visited) so a collapsed subtree's
-  // members are accounted for without being drawn — the rootless sweep below
-  // must not resurface them flat.
-  const walk = (task: T, depth: number, hidden: boolean) => {
-    if (visited.has(task.id)) return;
-    visited.add(task.id);
-    const kids = children.get(task.id) ?? [];
-    if (!hidden) out.push({ task, depth, childCount: kids.length });
-    const hideKids = hidden || collapsed.has(task.id);
-    for (const kid of kids) walk(kid, depth + 1, hideKids);
-  };
-  for (const root of roots) walk(root, 0, false);
-  // A parent cycle (impossible server-side, but this must not depend on it)
-  // leaves its members rootless; surface them flat rather than losing rows.
-  for (const task of tasks) if (!visited.has(task.id)) walk(task, 0, false);
-  return out;
 }

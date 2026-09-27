@@ -53,6 +53,7 @@ import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
+import { useSubtaskComplete } from "./components/useSubtaskComplete";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
@@ -88,8 +89,13 @@ import {
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
-import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
-import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
+import {
+  SAVED_VIEW_POSITION,
+  optimisticDrop,
+  orderBearingView,
+  type planDrop,
+} from "./lib/board";
+import { appendTasks, boardReadParams, nextTaskPage } from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -124,6 +130,7 @@ import {
   type Filters,
   type GroupBy,
   NO_LANES,
+  type SubtaskMode,
   assigneesIn,
   fromConfig,
   groupTasks,
@@ -133,8 +140,24 @@ import {
   toConfig,
   toQuery,
 } from "./lib/grouping";
+import {
+  effectiveSubtaskMode,
+  overlayWithSubtasks,
+  sendsTopLevel,
+  storedSubtasks,
+  visibleTasks,
+} from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
+import {
+  CASCADE_DEFAULTS,
+  archiveReceipt,
+  bulkSubtaskSummary,
+  bulkSummaryLine,
+  moveReceipt,
+  subtaskCount,
+} from "@/lib/subtaskCascade";
+import { IncludeSubtasksBox } from "@/components/SubtaskCascade";
 import { peek, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
@@ -143,9 +166,8 @@ import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
 import { DEFAULT_SHOWN } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
-import { type TableSort, sortQuery } from "./lib/table";
+import type { TableSort } from "./lib/table";
 import {
-  allSelected as everySelected,
   buildRequest,
   clickSelect,
   describeOutcome,
@@ -727,6 +749,10 @@ function ProjectsWorkspace() {
   const [tableSort, setTableSort] = useState<TableSort | null>(null);
   const [views, setViews] = useState<ViewRow[]>([]);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  // D-PM-38 — the Subtasks mode, ONLY for the moment no view is loaded to
+  // hold it. Normally the mode is read from a view (`storedSubtasks`), so the
+  // member's overlay is the one place it lives. See `subtasksView` below.
+  const [localSubtasks, setLocalSubtasks] = useState<SubtaskMode | null>(null);
   const [me, setMe] = useState("");
 
   // WS-27l — the selected node's custom field definitions. Root-scoped, so the
@@ -854,6 +880,18 @@ function ProjectsWorkspace() {
   const [confirmingDelete, setConfirmingDelete] = useState<
     { kind: "one"; taskId: string } | { kind: "bulk"; ids: string[] } | null
   >(null);
+  // D-PM-38 decision 4 (S5) — an archive of tasks that have subtasks, waiting
+  // for the dialog with the pre-ticked "Include N subtasks" box. One task
+  // (the card menu) or the bulk bar's selection. Null while no dialog is up.
+  const [archiving, setArchiving] = useState<{
+    ids: string[];
+    title?: string;
+    subtasks: number;
+    bulk: boolean;
+  } | null>(null);
+  const [archiveSubtasks, setArchiveSubtasks] = useState<boolean>(
+    CASCADE_DEFAULTS.archive,
+  );
   // WS-27ab — the `?` sheet, printed from the same command registry the
   // palette and the key sequences read.
   const [showingShortcuts, setShowingShortcuts] = useState(false);
@@ -916,6 +954,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(`projects:${selected?.id ?? "none"}`);
+  // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
+  const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
   const [timeWindow, setTimeWindow] = useState<TimelineWindow>(() =>
     windowFor("month", dayKey(new Date()))
@@ -1512,6 +1552,23 @@ function ProjectsWorkspace() {
   );
 
   /**
+   * D-PM-38 — the view that holds this member's Subtasks mode.
+   *
+   * The applied saved view, or else the project's own board view. Every
+   * project has one (`tree.py` seeds it), so a member who never saves a view
+   * still has the mode remembered per project, in their own overlay. `null`
+   * only while the views read is in flight, and then `localSubtasks` holds it.
+   */
+  const subtasksView = useMemo(
+    () =>
+      views.find((view) => view.id === activeViewId) ?? orderBearingView(views),
+    [views, activeViewId]
+  );
+  const storedMode = subtasksView ? storedSubtasks(subtasksView) : localSubtasks;
+  /** The mode THIS canvas draws in (`subtaskView.effectiveSubtaskMode`). */
+  const subtaskMode = effectiveSubtaskMode(storedMode, mode);
+
+  /**
    * The question the board asks the server, as a parameter bag.
    *
    * ⚠️ **ONE definition, because two readers now ask it.** `loadProject` reads
@@ -1522,30 +1579,24 @@ function ProjectsWorkspace() {
    * there" this code already warns about.
    */
   const taskParamsFor = useCallback(
-    (project: ProjectRow) => ({
-      project_id: project.id,
-      include_subtree: true,
-      page_size: TASK_PAGE_SIZE,
-      ...toQuery(filters),
-      // WS-27x — the table's header sort; {} when none, so every other
-      // surface keeps the endpoint's default ordering.
-      ...sortQuery(tableSort),
-      // H-64. The view whose hand-arranged order to read back.
+    (project: ProjectRow) =>
+      // `paging.boardReadParams` owns the bag and its fence.
       //
-      // ⚠️ **The drag handler has written this view's positions since
-      // WS-27 and nothing ever asked for them.** Without it every row
-      // arrives with `view_position` undefined, `sortForView` sends them
-      // all down its `created_at` branch, and a drag inside a column is a
-      // silent no-op.
+      // ⚠️ `view_id`: the drag handler has written this view's positions
+      // since WS-27, and without it a drag inside a column is a silent no-op.
       //
-      // ⚠️ Omitted rather than sent as `undefined` when views have not
-      // landed yet. `cacheKey` sorts the params into the read key, so a
-      // present-but-undefined entry would be a DIFFERENT question from the
-      // same read a moment later, and the cached rows could never be
-      // reused. It resolves on the next pass, when `views` arrives.
-      ...(boardViewId ? { view_id: boardViewId } : {}),
-    }),
-    [filters, tableSort, boardViewId]
+      // ⚠️ `subtasks`: the STORED mode, not this canvas's. The board, the list
+      // and the table share one read and all three offer Hidden, so a switch
+      // between them re-reads nothing. A hidden subtask still counts in its
+      // parent's chip: the gateway counts children in their own query.
+      boardReadParams({
+        projectId: project.id,
+        filters,
+        sort: tableSort,
+        viewId: boardViewId,
+        subtasks: storedMode,
+      }),
+    [filters, tableSort, boardViewId, storedMode]
   );
 
   const loadProject = useCallback(
@@ -1665,6 +1716,8 @@ function ProjectsWorkspace() {
           filters,
           shownFields,
           sort: tableSort,
+          // D-PM-38 — a Hidden board exports its top-level rows only.
+          subtasks: storedMode,
         })
       );
       if (!res.ok) {
@@ -1691,7 +1744,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort]);
+  }, [selected, filters, shownFields, tableSort, storedMode]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and
@@ -1706,6 +1759,10 @@ function ProjectsWorkspace() {
     () => calendarGrid(mode === "calendar" ? calLayout : "month", monthAnchor),
     [mode, calLayout, monthAnchor]
   );
+
+  // D-PM-38 — `top_level` for the window read. The calendar may be Hidden;
+  // the timeline never is (`effectiveSubtaskMode` resolves it to Nested).
+  const monthTopLevel = sendsTopLevel(storedMode, mode);
 
   const loadMonth = useCallback(async () => {
     if (!selected) {
@@ -1732,6 +1789,9 @@ function ProjectsWorkspace() {
         // row is what you drag across to schedule it.
         include_undated: mode === "timeline",
         ...toQuery(filters),
+        // D-PM-38 — Hidden on the calendar. Never on the timeline, which is
+        // Nested by D-PM-11 and so never resolves to Hidden.
+        ...(monthTopLevel ? { top_level: true } : {}),
       });
       // ⚠️ Normalised HERE, at the boundary, so nothing downstream has to
       // guard. `monthGroups` spreads `month.unscheduled`, and a spread of
@@ -1756,7 +1816,7 @@ function ProjectsWorkspace() {
       // heading is a calendar confidently showing the wrong dates.
       setMonth(NO_MONTH);
     }
-  }, [selected, grid, filters, mode, timeWindow]);
+  }, [selected, grid, filters, mode, timeWindow, monthTopLevel]);
 
   useEffect(() => {
     // Both date views read the same window endpoint — the WINDOW is the
@@ -1956,12 +2016,26 @@ function ProjectsWorkspace() {
     [roots]
   );
 
+  // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
+  // from the read before the switch are painted first, and the selection
+  // (`onScreen`) must not keep a row nobody can see.
   const groups = useMemo(
-    () => groupTasks(tasks, groupBy, { statuses, projectName }),
-    [tasks, groupBy, statuses, projectName]
+    () =>
+      groupTasks(visibleTasks(tasks, subtaskMode), groupBy, {
+        statuses,
+        projectName,
+      }),
+    [tasks, subtaskMode, groupBy, statuses, projectName]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
+
+  // D-PM-38 (S5) — the parents in the selection and their open subtasks,
+  // from the chips. The bulk bar names it, and a bulk complete asks with it.
+  const selectionSubtasks = useMemo(
+    () => bulkSubtaskSummary(tasks, picked),
+    [tasks, picked],
+  );
 
   /**
    * The same grouping, over the TIMELINE's rows (WS-27t S5).
@@ -2016,14 +2090,29 @@ function ProjectsWorkspace() {
 
   async function applyBulk(request: ReturnType<typeof buildRequest>) {
     if (!request) return;
+    // D-PM-38 decision 2 (S5) — a bulk move into a Done lane asks ONCE for
+    // the whole batch, over the open subtasks of every selected parent. The
+    // default answer is "Only this task", as on one task.
+    const statusName = (request.patch as { status?: unknown } | undefined)?.status;
+    const intoDone =
+      typeof statusName === "string" &&
+      statuses.some((s) => s.name === statusName && s.category === "done");
+    const include = intoDone
+      ? await subtaskComplete.ask(selectionSubtasks.open)
+      : false;
     setBulkBusy(true);
     setBulkNotice(null);
     try {
       const outcome = await projectsApi.bulkEdit({
         ...request,
         task_ids: [...picked],
+        ...(include ? { include_subtasks: true } : {}),
       });
-      setBulkNotice(describeOutcome(outcome));
+      const closed = outcome.subtasks_completed ?? 0;
+      setBulkNotice(
+        describeOutcome(outcome) +
+          (closed ? ` · and ${subtaskCount(closed)} completed with them` : ""),
+      );
       // The selection is KEPT: a sweep is usually several passes over the same
       // set ("these fifty: status, then owner, then tag"), and clearing after
       // each would make the second pass a re-selection.
@@ -2054,6 +2143,7 @@ function ProjectsWorkspace() {
   async function applyBulkAction(
     action: "archive" | "unarchive" | "delete",
     confirmedIds?: string[],
+    includeSubtasks = false,
   ) {
     const ids = confirmedIds ?? [...picked];
     if (ids.length === 0) return;
@@ -2061,11 +2151,32 @@ function ProjectsWorkspace() {
       setConfirmingDelete({ kind: "bulk", ids });
       return;
     }
+    // D-PM-38 decision 4 (S5) — the batch's subtasks are asked about ONCE,
+    // in the archive dialog, with the box ticked. No subtasks, no dialog.
+    if (action === "archive" && !confirmedIds) {
+      const held = ids.reduce(
+        (sum, id) => sum + (tasks.find((t) => t.id === id)?.subtasks?.total ?? 0),
+        0,
+      );
+      if (held > 0) {
+        setArchiveSubtasks(CASCADE_DEFAULTS.archive);
+        setArchiving({ ids, subtasks: held, bulk: true });
+        return;
+      }
+    }
     setBulkBusy(true);
     setBulkNotice(null);
     try {
-      const outcome = await projectsApi.bulkEdit({ action, task_ids: ids });
-      setBulkNotice(describeOutcome(outcome));
+      const outcome = await projectsApi.bulkEdit({
+        action,
+        task_ids: ids,
+        ...(includeSubtasks ? { include_subtasks: true } : {}),
+      });
+      const shelved = outcome.subtasks_archived ?? 0;
+      setBulkNotice(
+        describeOutcome(outcome) +
+          (shelved ? ` · and ${subtaskCount(shelved)} archived with them` : ""),
+      );
       // ⚠️ The selection is DROPPED after a delete and kept otherwise. Keeping
       // it would leave the bar counting rows that no longer exist, and the
       // next button pressed would report fifty "not found".
@@ -2104,7 +2215,8 @@ function ProjectsWorkspace() {
         // saved view stores FILTERS; the canvas it was saved from is not
         // part of what it restores, so 'list' is the honest fallback.
         view_type: mode === "board" ? "board" : "list",
-        config: toConfig(filters, groupBy, lanes, shownFields),
+        // D-PM-38 — the new view starts in the mode this member sees now.
+        config: toConfig(filters, groupBy, lanes, shownFields, storedMode),
         // Above the seeded pair, so the drag handler keeps writing its order
         // into the project's original board rather than into a saved filter.
         position: SAVED_VIEW_POSITION + views.length,
@@ -2129,9 +2241,17 @@ function ProjectsWorkspace() {
   async function updateView(view: ViewRow) {
     try {
       const saved = await projectsApi.patchView(view.id, {
-        config: toConfig(filters, groupBy, lanes, shownFields),
+        // ⚠️ `storedMode` rides along. Before S3 `toConfig` had no slot for
+        // it, so an update from a tab that held the view wiped its mode.
+        config: toConfig(filters, groupBy, lanes, shownFields, storedMode),
       });
-      setViews((current) => current.map((v) => (v.id === view.id ? saved : v)));
+      // The PATCH reply carries no `user_state` (it is the shared row), so
+      // the member's overlay is kept from the row it replaces.
+      setViews((current) =>
+        current.map((v) =>
+          v.id === view.id ? { ...saved, user_state: v.user_state } : v
+        )
+      );
       setActiveViewId(saved.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -2164,6 +2284,38 @@ function ProjectsWorkspace() {
   // WS-27x — same rule for the shown-fields set: it is part of a view.
   function changeShownFields(next: string[]) {
     setShownFields(next);
+  }
+
+  /**
+   * D-PM-38 — the member picks a Subtasks mode.
+   *
+   * It goes to the MEMBER's overlay on `subtasksView`, never to the shared
+   * view config: §12.9 says the member's overlay remembers it for that
+   * member. So a colleague on the same view keeps their own mode, and the
+   * saved view's chip does not turn "edited".
+   *
+   * Optimistic, then confirmed with what the server stored. A failed write
+   * says why and leaves the screen in the mode the member picked, which the
+   * next load corrects.
+   */
+  async function changeSubtasks(next: SubtaskMode) {
+    const view = subtasksView;
+    if (!view) {
+      setLocalSubtasks(next);
+      return;
+    }
+    const overlay = overlayWithSubtasks(view.user_state, next);
+    const withOverlay = (state: Record<string, unknown>) =>
+      setViews((current) =>
+        current.map((v) => (v.id === view.id ? { ...v, user_state: state } : v))
+      );
+    withOverlay(overlay);
+    try {
+      const saved = await projectsApi.setViewState(view.id, overlay);
+      withOverlay(saved.config);
+    } catch (err) {
+      setError(String((err as Error).message));
+    }
   }
 
   // Opening a task always resolves ITS project's statuses. From the board that
@@ -2467,6 +2619,7 @@ function ProjectsWorkspace() {
   const overlayOpen =
     searching ||
     Boolean(confirmingDelete) ||
+    Boolean(archiving) ||
     showingShortcuts ||
     Boolean(managingFields) ||
     Boolean(managingTags) ||
@@ -2743,15 +2896,63 @@ function ProjectsWorkspace() {
    * guard went on 2026-09-21. An error can still arrive (the task moved, the
    * grant changed), so the strip still shows one.
    */
-  async function setTaskArchived(taskId: string, archived: boolean) {
+  async function setTaskArchived(
+    taskId: string,
+    archived: boolean,
+    answer?: { includeSubtasks: boolean },
+  ) {
+    // D-PM-38 decision 4 (S5) — a task with subtasks asks first, in a dialog
+    // whose "Include N subtasks" box is TICKED. A task without any archives
+    // on the click, as before.
+    const row = tasks.find((t) => t.id === taskId);
+    const held = row?.subtasks?.total ?? 0;
+    if (archived && !answer && held > 0) {
+      setArchiveSubtasks(CASCADE_DEFAULTS.archive);
+      setArchiving({ ids: [taskId], title: row?.title, subtasks: held, bulk: false });
+      return;
+    }
     try {
-      if (archived) await projectsApi.archiveTask(taskId);
-      else await projectsApi.unarchiveTask(taskId);
+      if (!archived) {
+        await projectsApi.unarchiveTask(taskId);
+        await refreshRef.current();
+        setTreeKey((k) => k + 1);
+        toast.show({ variant: "success", title: "Task restored from the archive" });
+        return;
+      }
+      const include = Boolean(answer?.includeSubtasks);
+      const res = await projectsApi.archiveTask(taskId, { includeSubtasks: include });
       await refreshRef.current();
       setTreeKey((k) => k + 1);
+      // Undo restores EXACTLY what this archive shelved: the task and the
+      // ids the gateway reported. Unarchive itself does not cascade.
+      let shelved = [taskId, ...(res.subtask_ids ?? [])];
+      let applied = true;
+      const restore = async () => {
+        if (!applied) return;
+        applied = false;
+        for (const id of shelved) await projectsApi.unarchiveTask(id);
+        await refreshRef.current();
+        setTreeKey((k) => k + 1);
+      };
+      undoApi.record({
+        label: `archived ${row?.title ?? "a task"}`,
+        undo: restore,
+        redo: async () => {
+          if (applied) return;
+          applied = true;
+          // The redo may shelve other subtasks than the first archive did, so
+          // the next Undo restores what THIS archive reported.
+          const again = await projectsApi.archiveTask(taskId, { includeSubtasks: include });
+          shelved = [taskId, ...(again.subtask_ids ?? [])];
+          await refreshRef.current();
+          setTreeKey((k) => k + 1);
+        },
+      });
       toast.show({
+        key: `projects:archive:${taskId}`,
         variant: "success",
-        title: archived ? "Task archived" : "Task restored from the archive",
+        title: archiveReceipt(res.subtasks_archived ?? 0),
+        action: { label: "Undo", onClick: () => void restore() },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -2762,8 +2963,10 @@ function ProjectsWorkspace() {
    * Delete one task for good.
    *
    * ⚠️ **The subtask sentence is not decoration.** Deleting a parent PROMOTES
-   * its children — `parent_task_id` SET NULLs — so they survive at the top
-   * level. Somebody who expects a cascade would otherwise delete a parent to
+   * its children ONE level, to the deleted task's own parent (D-PM-38,
+   * `core.lift_subtasks_to_grandparent`). Before 2026-09-26 the FK's SET NULL
+   * made them top-level, so "moved up a level" was false for a subtask of a
+   * subtask. Somebody who expects a cascade would otherwise delete a parent to
    * be rid of a subtree and find the subtree still there, or, worse, hesitate
    * to delete anything because they cannot tell which it does. The words
    * are `deleteTaskCopy`'s, drawn by the shared `ConfirmDialog`.
@@ -2795,6 +2998,7 @@ function ProjectsWorkspace() {
     destinationId: string,
     statusMap: Record<string, string>,
     acceptedDrops: string[] | null,
+    includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
     setMovingTasksBusy(true);
@@ -2808,6 +3012,8 @@ function ProjectsWorkspace() {
         // What the card actually SHOWED as dropping. The server answers 409
         // if the destination changed and the real loss is now larger.
         ...(acceptedDrops ? { accepted_drops: acceptedDrops } : {}),
+        // D-PM-38 decision 4 — the dialog's box, ticked by default.
+        ...(includeSubtasks ? { include_subtasks: true } : {}),
       });
       setMovingTasks(null);
       setPicked(new Set());
@@ -2820,12 +3026,19 @@ function ProjectsWorkspace() {
       // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
       await refreshRef.current();
+      // "Moved 4 tasks to Website relaunch" — the subtasks the move took
+      // along are counted, from the server's answer.
+      const moved = moveReceipt(
+        res.moved,
+        res.subtasks_moved ?? 0,
+        projectName(res.destination_project_id ?? destinationId),
+      );
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
-            ? `Moved ${res.moved} task(s) — dropped ${res.dropped_fields.join(", ")}`
-            : `Moved ${res.moved} task(s)`,
+            ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
+            : moved,
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -3069,12 +3282,36 @@ function ProjectsWorkspace() {
     // Optimistic: the card moves now and the truth arrives on reload. A drag
     // that waits for a round trip feels broken even when it is correct. The
     // WHOLE patch applies — a lane-cell drop moves two axes at once (WS-27y).
+    // D-PM-38 decision 2 (S5) — a move INTO a Done lane of a parent with open
+    // subtasks asks first: the tick, the status menu and a drag all arrive
+    // here. The hook writes the status itself, with the member's answer, and
+    // the drop's order write still follows.
+    const status = patch && typeof patch.status_id === "string" ? patch.status_id : null;
+    if (status && Object.keys(patch ?? {}).length === 1) {
+      try {
+        // The drop's slot is written ONCE, before the first reload, so the
+        // board redraws the card where it was dropped (review of #493).
+        let placed = writes.length === 0;
+        const asked = await subtaskComplete.changeStatus(task, status, statuses, async () => {
+          if (!placed) {
+            placed = true;
+            const rootViews = await projectsApi.views(task.root_project_id);
+            const board = orderBearingView(rootViews.rows);
+            if (board) await projectsApi.setPositions(board.id, writes);
+          }
+          if (selected) await loadProject(selected);
+        });
+        if (asked) return;
+      } catch (err) {
+        setError(String((err as Error).message));
+        if (selected) await loadProject(selected);
+        return;
+      }
+    }
+    // D-PM-38 — `optimisticDrop` moves the DRAGGED task only. A subtask
+    // dropped in a lane does not take its parent or its siblings with it.
     if (patch) {
-      setTasks((current) =>
-        current.map((t) =>
-          t.id === task.id ? { ...t, ...(patch as Partial<TaskRow>) } : t
-        )
-      );
+      setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
       if (patch) await projectsApi.patchTask(task.id, patch);
@@ -3470,6 +3707,8 @@ function ProjectsWorkspace() {
               collapsedLanes: [],
             }));
           }}
+          subtasks={subtaskMode}
+          onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           people={people}
           tags={tags}
@@ -3508,6 +3747,8 @@ function ProjectsWorkspace() {
           }}
           onApply={(request) => void applyBulk(request)}
           onAction={(action) => void applyBulkAction(action)}
+          // D-PM-38 (S5) — "includes 2 parents with 5 open subtasks".
+          subtaskSummary={bulkSummaryLine(selectionSubtasks)}
           onMove={() => {
             setMoveTasksError(null);
             setMovingTasks([...picked]);
@@ -3660,6 +3901,7 @@ function ProjectsWorkspace() {
             <CalendarView
               grid={grid}
               tasks={month.rows}
+              subtasks={subtaskMode}
               undated={month.undated}
               truncated={month.truncated}
               today={dayKey(new Date())}
@@ -3680,6 +3922,8 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
+              filters={filters}
               statuses={statuses}
               fields={fields}
               taskTypes={taskTypes}
@@ -3693,6 +3937,7 @@ function ProjectsWorkspace() {
                   current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
                 )
               }
+              onReload={() => void loadProject(selected)}
               onSelect={(task) => void openWithStatuses(task)}
             />
           ) : mode === "board" ? (
@@ -3700,6 +3945,7 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
               // S4 — the empty state has to know whether the filters emptied it.
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
@@ -3747,6 +3993,7 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               statuses={statuses}
@@ -3757,12 +4004,10 @@ function ProjectsWorkspace() {
               onCreated={() => void loadProject(selected)}
               selected={picked}
               onToggle={toggleSelection}
-              allChecked={everySelected(picked, onScreen)}
-              onToggleAll={() =>
-                setPicked(
-                  everySelected(picked, onScreen) ? new Set() : new Set(onScreen)
-                )
-              }
+              // The list builds the next selection from the rows it DRAWS
+              // (`subtaskView.selectAllDrawn`), so a collapsed parent's
+              // subtasks are never selected unseen. Review of PR #491.
+              onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
             />
@@ -3877,6 +4122,10 @@ function ProjectsWorkspace() {
         onMerge={(targetId) => void mergeInto(targetId)}
       />
 
+      {/* D-PM-38 decision 2 — "N subtasks are still open. Complete them
+          too?" In `overlays`, so the phone branch has it too. */}
+      {subtaskComplete.dialog}
+
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
@@ -3887,8 +4136,8 @@ function ProjectsWorkspace() {
           setMovingTasks(null);
           setMoveTasksError(null);
         }}
-        onConfirm={(destinationId, statusMap, acceptedDrops) =>
-          void moveTasksTo(destinationId, statusMap, acceptedDrops)
+        onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
+          void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
         }
       />
 
@@ -3918,6 +4167,40 @@ function ProjectsWorkspace() {
           if (pending?.kind === "bulk") void applyBulkAction("delete", pending.ids);
         }}
       />
+
+      {/* D-PM-38 decision 4 (S5) — archive a task that has subtasks, or a
+          selection that holds some. The box is TICKED: the subtasks go on the
+          shelf with it unless the member unticks it. */}
+      <ConfirmDialog
+        open={Boolean(archiving)}
+        title={
+          archiving && archiving.ids.length > 1
+            ? `Archive ${archiving.ids.length} tasks?`
+            : "Archive this task?"
+        }
+        subject={archiving?.title}
+        body="It leaves every board, list and search. You can restore it from the archive."
+        confirmLabel="Archive"
+        confirmVariant="primary"
+        icon="Archive"
+        onCancel={() => setArchiving(null)}
+        onConfirm={() => {
+          const pending = archiving;
+          setArchiving(null);
+          if (!pending) return;
+          if (pending.bulk) {
+            void applyBulkAction("archive", pending.ids, archiveSubtasks);
+          } else {
+            void setTaskArchived(pending.ids[0], true, { includeSubtasks: archiveSubtasks });
+          }
+        }}
+      >
+        <IncludeSubtasksBox
+          count={archiving?.subtasks ?? 0}
+          checked={archiveSubtasks}
+          onChange={setArchiveSubtasks}
+        />
+      </ConfirmDialog>
 
       <SearchPalette
         open={searching}

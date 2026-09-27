@@ -125,30 +125,53 @@ _PM_MINE = (
     " AND EXISTS (SELECT 1 FROM pm_task_assignees a4"
     "             WHERE a4.task_id = t.id AND lower(a4.assignee) = :who)"
 )
+#: D-PM-38 (Subtasks S4) — the Calendar app always shows subtasks, so the
+#: planner reads them too. A scheduled subtask is a block on my grid, and a
+#: block is busy time. Until S4 every query below carried
+#: `t.parent_task_id IS NULL`, so the grid drew a scheduled step while the
+#: planner counted its slot as FREE and could book over it.
+#:
+#: What replaces that clause on CANDIDATE is narrower: a parent that has a
+#: step of mine which is itself NEXT is not a candidate. The NEXT steps are
+#: the units I schedule, and packing the parent too would book the same work
+#: twice. A step in INBOX, SOMEDAY or WAITING is not schedulable, so it must
+#: not take its parent out either: then nothing of that work could be planned.
+#:
+#: NEXT is the EFFECTIVE disposition (`effective_disposition`, D77), so the
+#: rule is applied in Python (`_LensSource.candidates`) over the rows of
+#: `_PM_MY_STEPS_WHERE`. A SQL copy of the rule would be the mirror the note
+#: on `_PM_ALIVE` refuses.
+#:
+#: The rail's copy of this rule is `plannerCandidates` in
+#: `app/calendar/components/shared.ts`. `tests/fixtures/subtask_planner_parity.json`
+#: holds both to one set of cases: `shared.test.ts` reads it, and so does
+#: `tests/live/live_ws39_subtask_planner.py` on a real Postgres.
+_PM_MY_STEPS_WHERE = (
+    " AND t.parent_task_id IS NOT NULL" + _PM_ALIVE + _PM_MINE
+)
 _PM_TODAY_WHERE = (
-    " AND t.parent_task_id IS NULL"
     " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')"
     " AND p.scheduled_start IS NOT NULL"
     " AND p.scheduled_start >= :day0 AND p.scheduled_start < :day1"
 )
 _PM_CARRY_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE + _PM_MINE
+    _PM_ALIVE + _PM_MINE
     + " AND coalesce(p.flexible, true) = true"
     " AND p.scheduled_start IS NOT NULL AND p.scheduled_start < :day0"
 )
 _PM_CANDIDATE_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_MINE
+    _PM_MINE
     + " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'DONE'))"
     + _CLOSED_LANE
     + " AND p.scheduled_start IS NULL"
 )
 _PM_OVERDUE_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE
+    _PM_ALIVE
     + " AND coalesce(p.flexible, true) = true"
     " AND p.scheduled_start IS NOT NULL AND p.scheduled_end < :now"
 )
 _PM_BUSY_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE
+    _PM_ALIVE
     + " AND p.scheduled_start IS NOT NULL"
     " AND p.scheduled_start < :win_end AND p.scheduled_end > :win_start"
 )
@@ -247,8 +270,15 @@ class _LensSource(TaskSource):
             lambda d: d not in ("DONE", "TRASH", "WAITING"))
 
     async def candidates(self, db, uid):
-        return await self._rows(
+        rows = await self._rows(
             db, uid, _PM_CANDIDATE_WHERE, {}, lambda d: d == "NEXT")
+        # D-PM-38 S4 — a parent with a NEXT step of mine is not a candidate
+        # (see `_PM_MY_STEPS_WHERE`). A scheduled step still counts: the work
+        # is planned through the step.
+        steps = await self._rows(
+            db, uid, _PM_MY_STEPS_WHERE, {}, lambda d: d == "NEXT")
+        held = {str(s.parent_task_id) for s in steps if s.parent_task_id}
+        return [r for r in rows if str(r.id) not in held]
 
     async def overdue(self, db, uid, now):
         return await self._rows(

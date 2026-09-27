@@ -800,7 +800,7 @@ async def analytics_outlook(project_id: str = "") -> str:
     against the hours assigned people have), the planned finish from due
     dates with its coverage, and who is holding open work."""
     payload = await get("/projects/analytics/outlook", _scope_params(project_id))
-    out = [f"Outlook for {_scope_title(payload)}:"]
+    out = [f"Forecast for {_scope_title(payload)}:"]
     for name in ("velocity", "capacity"):
         block = payload.get(name) or {}
         if block:

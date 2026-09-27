@@ -295,6 +295,8 @@ async def export_tasks_csv(
     # applies and the export ignores hands somebody a file of the wrong rows,
     # and nothing on the way says so.
     watching: bool = False,
+    # D-PM-38. A view with subtasks hidden exports what it shows.
+    top_level: bool = False,
     #: The view's field set, CSV, in the wire vocabulary `shown_fields` is
     #: stored under. Absent = the two unconditional columns only.
     shown_fields: str | None = None,
@@ -359,6 +361,7 @@ async def export_tasks_csv(
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
+            top_level=top_level,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)
@@ -393,7 +396,7 @@ async def export_tasks_csv(
         )).fetchall()
         exported = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, exported)
-        await attach_relation_counts(db, exported)
+        await attach_relation_counts(db, exported, vis)
 
         ids = [str(r["id"]) for r in exported if r.get("id")]
         statuses: dict[str, str] = {}

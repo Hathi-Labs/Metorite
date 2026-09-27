@@ -16,11 +16,14 @@
 import Icon from "@/components/Icon";
 import { accentForHue } from "@/lib/statusAccent";
 import {
+  CRUMB_GLYPH,
   type MetaChip,
   type MetaTone,
+  type ParentFact,
   type PillRank,
   avatarStack,
   initials,
+  parentCrumb,
 } from "@/lib/taskCard";
 
 const TONE: Record<MetaTone, string> = {
@@ -141,6 +144,66 @@ export function TaskMeta({
         </span>
       ))}
     </span>
+  );
+}
+
+/**
+ * THE "↳ Parent" line (D-PM-38, decision 5), in both apps and every flat
+ * view. `parentCrumb` decides the words. This draws them, in the muted tone,
+ * with the CornerDownRight icon in place of the "↳" glyph.
+ *
+ * Not a chip, and not in `shown_fields`: a member cannot hide it, for the
+ * reason they cannot hide the Archived badge. Without it a subtask on a board
+ * reads as a top-level task. Renders nothing for a task with no parent.
+ *
+ * Fence: `sharedTaskUi.test.ts` — a file under `app/` that draws the icon
+ * next to a parent title itself is a second copy of this.
+ */
+export function ParentCrumb({
+  parent,
+  className = "",
+}: {
+  parent?: ParentFact | null;
+  className?: string;
+}) {
+  const crumb = parentCrumb(parent);
+  if (!crumb) return null;
+  const text = crumb.label.startsWith(CRUMB_GLYPH)
+    ? crumb.label.slice(CRUMB_GLYPH.length)
+    : crumb.label;
+  return (
+    <span
+      title={crumb.title}
+      className={`flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground ${className}`}
+    >
+      <Icon name="CornerDownRight" className="h-3 w-3 shrink-0" aria-hidden />
+      <span className="truncate">{text}</span>
+    </span>
+  );
+}
+
+/**
+ * THE nested-row mark (D-PM-38, decision 5): the CornerDownRight icon a
+ * subtask row carries under its parent, in a view that nests. The indent is
+ * the caller's, because a table cell and a list cell pad differently. The
+ * icon is this one, so a nested row reads the same on every canvas.
+ *
+ * Renders nothing at depth 0. Fence: `sharedTaskUi.test.ts`.
+ */
+export function NestedRowMark({
+  depth,
+  className = "",
+}: {
+  depth: number;
+  className?: string;
+}) {
+  if (depth <= 0) return null;
+  return (
+    <Icon
+      name="CornerDownRight"
+      className={`h-3 w-3 shrink-0 text-muted-foreground ${className}`}
+      aria-hidden
+    />
   );
 }
 

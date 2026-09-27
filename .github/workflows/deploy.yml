@@ -19,7 +19,8 @@
 # only mechanism is vps_apply.sh READING /opt/acb/app/.env and reconciling
 # workbench/control_plane/.env.local to match it. So `.env` on the box is the
 # source of truth for that token, and rotating it needs no GitHub secret and no
-# push-path deploy — edit .env, then run scripts/vps_pull.sh --force.
+# push-path deploy — edit .env, then run scripts/vps_pull.sh --force, or re-run
+# this workflow (a rerun sends DEPLOY_FORCE=1, and so does the `force` input).
 # The stale comment mattered: it sent the rotation runbook through a mechanism
 # that does not exist, and that runbook's failure mode is locking out every
 # signed-in member.
@@ -49,6 +50,10 @@ on:
     inputs:
       skip_tests:
         description: "Skip test suite (use only for emergency hotfixes)"
+        type: boolean
+        default: false
+      force:
+        description: "Re-apply even if the box already runs this sha (for an .env edit)"
         type: boolean
         default: false
 
@@ -232,6 +237,11 @@ jobs:
           SSH_USER: ${{ secrets.HOSTINGER_USER }}
           SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
           SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          # The apply skips a sha that already has a complete apply. A RERUN
+          # of this job, or a dispatch with `force`, means "apply it again",
+          # usually after an .env edit on the box. So both send DEPLOY_FORCE=1.
+          # A forced apply still takes the deploy lock.
+          DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force) && '1' || '0' }}
         run: |
           set -uo pipefail
 
@@ -277,7 +287,7 @@ jobs:
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=30 -o ServerAliveInterval=15 \
               -o ServerAliveCountMax=8 -o BatchMode=yes \
-              "$SSH_USER@$SSH_HOST" 'bash -s' < /tmp/deploy_remote.sh
+              "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} bash -s" < /tmp/deploy_remote.sh
           }
 
           # The apply script's own last line. `vps_apply.sh` prints it and

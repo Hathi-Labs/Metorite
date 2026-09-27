@@ -55,7 +55,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_load: { icon: "Scale", label: "Load" },
   analytics_throughput: { icon: "TrendingUp", label: "Throughput" },
   analytics_finished: { icon: "CheckCircle2", label: "Finished" },
-  analytics_outlook: { icon: "Telescope", label: "Outlook" },
+  analytics_outlook: { icon: "Telescope", label: "Forecast" },
   // S7a — who holds the work, and whether they have the hours.
   team_capacity: { icon: "Gauge", label: "Capacity" },
   // S7b — who fits one task, and who could help whom.

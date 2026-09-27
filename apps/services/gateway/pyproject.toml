@@ -15,7 +15,7 @@ dependencies = [
     # and only at the moment someone tries to speak.
     "websockets>=12",
     # AG-UI streaming endpoint (replaces copilot_chat.py SSE path — WBS 0.7)
-    "agent-framework-ag-ui",
+    "agent-framework-ag-ui>=1.4.0",
     "acb-common",
     "acb-llm",
     "acb-stt",

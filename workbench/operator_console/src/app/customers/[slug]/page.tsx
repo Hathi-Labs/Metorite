@@ -616,6 +616,7 @@ export default async function CustomerDetailPage({
 
       <Actions
         slug={org.slug}
+        seats={org.seats}
         status={org.status}
         subscriptionStatus={org.subscription_status}
         plans={plans}

@@ -337,7 +337,7 @@ export function RenderedBody({
       {sections.outlook && (
         <div className="space-y-1">
           <OutlookPanel data={outlookPanelData(sections.outlook)} />
-          <Table title="Outlook">
+          <Table title="Forecast">
             <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
               <dt className="text-muted-foreground">Forecast</dt>
               <dd className="font-medium">
