@@ -8209,17 +8209,45 @@ archive door reports `subtask_ids`, and Undo restores exactly those.
   from My Tasks has none after it is sent (D62).
 - A recurring subtask's next instance stays after Undo. The single Mark done
   has the same limit.
-- The bulk bar has no Undo, as before S5.
+- The Projects bulk bar has no Undo, as before S5. The My Tasks bulk Done
+  has its Undo, and with "Complete all" that Undo puts back each subtask too.
 
 **Where the prompt asks.** Projects asks on the board's tick, its status menu,
 a drag into a Done column, the panel's status menu and the table's status
-cell. My Tasks asks on every gesture that reaches Mark done, and on a status
-pick into a later Done status. The count is the chip: the open children the
-reader can see. The receipt counts what the server closed, at every depth.
+cell. My Tasks asks on every gesture that reaches Mark done, the bulk Done
+included, and on a status pick into a later Done status. The count is the
+chip: the open children the reader can see. The receipt counts what the
+server closed, at every depth.
+
+**"Only this task" carries the weight.** The owner made it the default, so it
+is the solid main button, it has focus, and Escape means it. "Complete
+all" is the outline button. `ConfirmDialog` takes `emphasis="cancel"` for a
+question whose default is no. The move and archive box is different: there
+the ticked box IS the owner's default.
 
 **The bulk bars** say "includes K parents with M open subtasks". The app asks
 the choice once for the batch: the complete prompt for a Done status, and the
 ticked box for Archive and Move.
+
+**The second review round (PR #493).**
+
+- **The preview runs D62 on each carried subtask.** A personal parent can
+  carry a subtask that lives in a team project. The preview names that
+  subtask in `subtasks.refused`, and the dialog holds Move and says why while
+  the member keeps the box ticked. Both moves refuse it before any write, and the message
+  names the subtask, not the parent. Fences: `test_subtasks_s5.py`, live
+  check (h).
+- **The preview sends `subtasks.hidden` only with `include_subtasks`.** The
+  count says that hidden tasks exist, so it appears only when it changes the
+  act. Fence: `test_subtasks_s5.py`.
+- **The Projects Undo reads the parent's prior status from the server**, just
+  before the write (`cascadeAsk.writeCompletion`), as My Tasks does (D79).
+  The row on the board can be older than a teammate's move. Fence:
+  `cascadeAsk.test.ts`.
+- **A My Tasks bulk Done asks once for the batch**, with the bulk line.
+  Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A redo of an archive restores what THAT archive shelved** on the next
+  Undo.
 
 **Known gaps, not fixed here.**
 

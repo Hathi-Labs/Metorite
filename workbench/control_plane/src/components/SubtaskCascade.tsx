@@ -6,9 +6,9 @@
  *
  * - `CompleteSubtasksDialog` — "3 subtasks are still open. Complete them
  *   too?" It is the shared `ConfirmDialog` (Modal `layer="alert"`).
- *   [Only this task] is focused and is what Escape and the close button
- *   mean, and it still completes the parent. [Complete all] is a plain
- *   primary button, because nothing is lost.
+ *   [Only this task] is the owner's default, so it is the SOLID primary
+ *   button, it has focus, and Escape and the close button mean it. It still
+ *   completes the parent. [Complete all] is the secondary, outline button.
  * - `IncludeSubtasksBox` — the pre-ticked "Include N subtasks" box the move
  *   and archive dialogs and the bulk bar draw. It draws NOTHING when N is 0.
  *
@@ -24,12 +24,15 @@ import { completePrompt, includeSubtasksLabel } from "@/lib/subtaskCascade";
 export function CompleteSubtasksDialog({
   open,
   subject,
+  note,
   onAnswer,
 }: {
   /** Open subtasks, from the chip. 0 closes the dialog. */
   open: number;
   /** The parent's title, quoted under the heading. */
   subject?: string | null;
+  /** The bulk bar's line, for a batch: "includes 2 parents with 5 open subtasks". */
+  note?: string | null;
   /** `true` for Complete all, `false` for Only this task (and Escape). */
   onAnswer: (includeSubtasks: boolean) => void;
 }) {
@@ -39,11 +42,12 @@ export function CompleteSubtasksDialog({
       open={words !== null}
       title={words?.title ?? ""}
       subject={subject}
+      note={note}
       body={words?.body ?? ""}
       confirmLabel={words?.confirmLabel ?? ""}
       cancelLabel={words?.cancelLabel}
-      confirmVariant="primary"
       defaultFocus="cancel"
+      emphasis="cancel"
       icon="ListChecks"
       onConfirm={() => onAnswer(true)}
       onCancel={() => onAnswer(false)}
@@ -97,6 +101,7 @@ export function IncludeSubtasksBox({
   onChange,
   disabled,
   hidden = 0,
+  refused = [],
 }: {
   /** Subtasks the act would take along. The box draws nothing at 0. */
   count: number;
@@ -105,6 +110,11 @@ export function IncludeSubtasksBox({
   disabled?: boolean;
   /** Subtasks the member cannot see. A move with them is refused (409). */
   hidden?: number;
+  /**
+   * Why Move is held for a carried subtask (D62), in the gateway's words.
+   * Drawn only while the box is ticked, because unticking is the remedy.
+   */
+  refused?: readonly string[];
 }) {
   if (count <= 0 && hidden <= 0) return null;
   return (
@@ -125,6 +135,13 @@ export function IncludeSubtasksBox({
           subtasks.
         </p>
       ) : null}
+      {checked
+        ? refused.map((reason) => (
+            <p key={reason} role="alert" className="text-[11px] text-destructive">
+              {reason}
+            </p>
+          ))
+        : null}
     </div>
   );
 }

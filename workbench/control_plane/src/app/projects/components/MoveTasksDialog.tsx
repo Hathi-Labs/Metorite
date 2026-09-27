@@ -142,10 +142,11 @@ export function MoveTasksDialog({
     nameOf(destRows, destination) || nameOf(destRows, plan?.destination_project_id ?? null);
 
   const promoteDrops = answers?.drops ?? null;
-  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0 };
+  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0, refused: [] };
   const carrying = withSubtasks && subtasks.count + subtasks.hidden > 0;
-  // A ticked box over a hidden subtask is a move the gateway refuses (409).
-  const splitRefused = carrying && subtasks.hidden > 0;
+  // A ticked box over a hidden subtask is a move the gateway refuses (409),
+  // and so is one over a subtask D62 refuses (422). The box says why.
+  const splitRefused = carrying && (subtasks.hidden > 0 || subtasks.refused.length > 0);
   const canMove = promoting
     ? !!destination && !!answers?.ready && !!answers.destinationProjectId
     : !!plan && !bulk.planning && !splitRefused;
@@ -239,6 +240,7 @@ export function MoveTasksDialog({
             <IncludeSubtasksBox
               count={subtasks.count}
               hidden={subtasks.hidden}
+              refused={subtasks.refused.map((r) => r.reason)}
               checked={withSubtasks}
               onChange={setWithSubtasks}
               disabled={busy}
@@ -269,7 +271,13 @@ export function MoveTasksDialog({
              promote door a blank required field holds the button too, and
              `title` says which one. */
           disabled={!canMove}
-          title={(promoting ? answers?.blocked : null) || undefined}
+          title={
+            (promoting
+              ? answers?.blocked
+              : splitRefused
+                ? (subtasks.refused[0]?.reason ?? "Some subtasks are hidden from you.")
+                : null) || undefined
+          }
           variant={loud ? "destructive" : "primary"}
           onClick={() => {
             if (promoting) {

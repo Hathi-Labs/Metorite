@@ -26,6 +26,9 @@ judge, so it runs on a real database (R8):
   drops, and the apply refuses it until the member accepts. A field the
   destination requires and a subtask lacks is in `required_missing`, and the
   apply refuses the whole move.
+* **(h) D62 names the subtask** (review of #493). A personal parent carries
+  a subtask that lives in a team project. The preview names the subtask, and
+  both moves refuse before any write, naming the subtask, not the parent.
 
 Running it, on a FRESH database (01_schema.sql, then apply_migrations.sh)::
 
@@ -212,6 +215,33 @@ async def seed() -> dict:
         await task("p_child", "b", "To do", parent="p_parent")
         await task("x_parent", "a", "To do")
         await task("x_child", "b", "To do", parent="x_parent")
+
+        # (h) The owner's personal root and an Area under it (one personal
+        # root per member). The parent is in the root, and its subtask is in
+        # the team project `a`.
+        for key, under in (("mine1", None), ("mine2", "mine1")):
+            pid = str(uuid.uuid4())
+            await db.execute(text(
+                "INSERT INTO pm_projects (id, organization_id, name, source, "
+                "created_by, owns_statuses, personal_owner, parent_project_id) "
+                "VALUES (CAST(:id AS uuid), CAST(:o AS uuid), :n, 'manual', :me, "
+                "true, :me, CAST(:up AS uuid))"),
+                {"id": pid, "o": org_id, "n": f"{MARK} {key}", "me": OWNER,
+                 "up": made["projects"][under]["id"] if under else None})
+            lanes = {}
+            for pos, (name, cat) in enumerate(LANES["a"], start=1):
+                sid = str(uuid.uuid4())
+                await db.execute(text(
+                    "INSERT INTO pm_task_statuses (id, project_id, name, position, "
+                    "category, is_default) VALUES (CAST(:id AS uuid), "
+                    "CAST(:p AS uuid), :n, :pos, :c, false)"),
+                    {"id": sid, "p": pid, "n": name, "pos": pos * 10, "c": cat})
+                lanes[name] = sid
+            made["projects"][key] = {"id": pid, "lanes": lanes}
+        LANES["mine1"] = LANES["a"]
+        LANES["mine2"] = LANES["a"]
+        await task("d_parent", "mine1", "To do")
+        await task("d_child", "a", "To do", parent="d_parent")
 
         # (g) A field `sev` on `a` that the destination `c` does not have, and
         # a subtask that carries a value in it.
@@ -458,7 +488,7 @@ async def main():  # noqa: C901
             user=owner())
         check("preview without subtasks: nothing drops", plain["drops"], {})
         check("preview without subtasks: the box still has its count",
-              plain["subtasks"], {"count": 1, "hidden": 0})
+              plain["subtasks"], {"count": 1, "hidden": 0, "refused": []})
         full = await pm_move.preview_move(
             pm_move.MoveIn(task_ids=[t["g_parent"]], destination_project_id=pc,
                            include_subtasks=True),
@@ -529,6 +559,40 @@ async def main():  # noqa: C901
             check("apply with a subtask missing PO: refused", "no refusal", 422)
         except HTTPException as exc:
             check("apply with a subtask missing PO: refused", exc.status_code, 422)
+
+        # ── (h) D62 names the subtask, before any write ─────────────────────
+        mine2 = made["projects"]["mine2"]["id"]
+        seen = await pm_move.preview_move(
+            pm_move.MoveIn(task_ids=[t["d_parent"]], destination_project_id=mine2,
+                           include_subtasks=True),
+            user=owner())
+        check("D62 preview: the subtask is named",
+              [r["task_id"] for r in seen["subtasks"]["refused"]], [t["d_child"]])
+        for label, attempt in (
+            ("single", lambda: pm_tasks.move_task(
+                t["d_parent"],
+                pm_tasks.MoveTask(project_id=mine2, include_subtasks=True),
+                user=owner())),
+            ("bulk", lambda: pm_move.move_tasks(
+                pm_move.MoveIn(task_ids=[t["d_parent"]], destination_project_id=mine2,
+                               include_subtasks=True),
+                user=owner())),
+        ):
+            try:
+                await attempt()
+                check(f"D62 {label}: refused", "no refusal", 422)
+            except HTTPException as exc:
+                check(f"D62 {label}: refused", exc.status_code, 422)
+                check(f"D62 {label}: the message names the subtask",
+                      str(exc.detail).startswith("Subtask #"), True)
+            row = await one("SELECT project_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+                            i=t["d_parent"])
+            check(f"D62 {label}: the parent did not move",
+                  str(row.project_id), made["projects"]["mine1"]["id"])
+        alone = await pm_move.move_tasks(
+            pm_move.MoveIn(task_ids=[t["d_parent"]], destination_project_id=mine2),
+            user=owner())
+        check("D62: without the subtasks the parent moves", alone["moved"], 1)
 
         # ── the bulk door, once for the batch ───────────────────────────────
         outcome = await pm_bulk.bulk_edit(

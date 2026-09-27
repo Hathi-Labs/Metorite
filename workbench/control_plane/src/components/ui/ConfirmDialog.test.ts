@@ -98,7 +98,10 @@ describe("ConfirmDialog", () => {
     // The DEFAULTS are the delete's: a destructive confirm, focused.
     expect(src).toMatch(/confirmVariant = "destructive"/);
     expect(src).toMatch(/defaultFocus = "confirm"/);
-    expect(src).toMatch(/variant=\{confirmVariant\}[\s\S]*?data-confirm=""/);
+    expect(src).toMatch(/emphasis = "confirm"/);
+    expect(src).toMatch(/const confirmAs = emphasis === "cancel" \? "secondary" : confirmVariant;/);
+    expect(src).toMatch(/variant=\{confirmAs\}[\s\S]*?data-confirm=""/);
+    expect(src).toMatch(/variant=\{cancelVariant\}[\s\S]*?data-cancel=""/);
     expect(src).toMatch(/defaultFocus === "cancel" \? "\[data-cancel\]" : "\[data-confirm\]"/);
   });
 

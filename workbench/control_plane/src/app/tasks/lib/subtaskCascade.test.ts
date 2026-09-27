@@ -218,6 +218,54 @@ describe("Undo covers the cascade (D79)", () => {
   });
 });
 
+describe("a bulk Done asks ONCE for the batch (decision 2)", () => {
+  const OTHER = task({ id: "q", title: "Paint the rig", subtaskCount: 2, subtaskDone: 0 });
+
+  it("asks with the bulk line, and writes nothing yet", async () => {
+    useTaskStore.setState({ backend: "live", items: [PARENT, OTHER] });
+    useTaskStore.getState().bulkDispose(["p", "q"], "DONE");
+    await flush();
+    expect(useTaskStore.getState().subtaskPrompt).toEqual({
+      kind: "complete", ids: ["p", "q"], count: 4, bulk: true,
+      summary: "includes 2 parents with 4 open subtasks",
+    });
+    expect(apiBulkDispose).not.toHaveBeenCalled();
+  });
+
+  it("does not ask when no selected task has an open subtask", async () => {
+    useTaskStore.setState({
+      backend: "live", items: [task({ id: "a" }), task({ id: "b" })],
+    });
+    useTaskStore.getState().bulkDispose(["a", "b"], "DONE");
+    await flush();
+    expect(useTaskStore.getState().subtaskPrompt).toBeNull();
+    expect(apiBulkDispose).toHaveBeenCalledWith(["a", "b"], "DONE");
+  });
+
+  it("Only this task completes the selection alone", async () => {
+    useTaskStore.setState({ backend: "live", items: [PARENT, OTHER] });
+    useTaskStore.getState().bulkDispose(["p", "q"], "DONE");
+    useTaskStore.getState().answerSubtaskPrompt(false);
+    await flush();
+    expect(apiBulkDispose).toHaveBeenCalledWith(["p", "q"], "DONE");
+    expect(apiCompleteCascade).not.toHaveBeenCalled();
+  });
+
+  it("Complete all cascades each task, and Undo puts each subtask back", async () => {
+    useTaskStore.setState({ backend: "live", items: [PARENT] });
+    useTaskStore.getState().bulkDispose(["p"], "DONE");
+    useTaskStore.getState().answerSubtaskPrompt(true);
+    await flush();
+    expect(apiCompleteCascade).toHaveBeenCalledWith("p");
+    expect(apiBulkDispose).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().undoSnapshot?.label).toMatch(/· and 2 subtasks$/);
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(server.k1.statusId).toBe("review");
+    expect(server.k2.statusId).toBe("todo-b");
+  });
+});
+
 describe("Archive takes the subtasks along, box ticked (decision 4)", () => {
   it("asks for a task that has subtasks, and archives nothing yet", () => {
     useTaskStore.setState({ backend: "live", items: [PARENT] });

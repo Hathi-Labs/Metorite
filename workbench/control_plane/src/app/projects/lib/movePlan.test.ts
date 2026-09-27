@@ -61,7 +61,7 @@ describe("readPlan — the bulk shape, with no promote fields", () => {
       crossesRoot: false,
       clean: true,
       // D-PM-38 (S5) — an older gateway sends no subtask count: none.
-      subtasks: { count: 0, hidden: 0 },
+      subtasks: { count: 0, hidden: 0, refused: [] },
     });
   });
 

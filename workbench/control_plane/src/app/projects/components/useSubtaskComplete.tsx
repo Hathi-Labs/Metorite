@@ -31,7 +31,7 @@ import {
 } from "@/lib/subtaskCascade";
 
 import { type CascadeReport, type TaskRow, projectsApi } from "../lib/api";
-import { type CascadeLane, completionAsk } from "../lib/cascadeAsk";
+import { type CascadeLane, completionAsk, writeCompletion } from "../lib/cascadeAsk";
 
 export function useSubtaskComplete() {
   const { ask, dialog } = useCompleteSubtasksPrompt();
@@ -54,15 +54,15 @@ export function useSubtaskComplete() {
     const count = completionAsk(task, statusId, lanes, open);
     if (count === 0) return null;
     const include = await ask(count, task.title);
-    const fresh = await projectsApi.patchTask(
-      task.id,
-      { status_id: statusId },
-      { includeSubtasks: include },
-    );
-    let changes: CascadeChange[] = [
-      { task_id: task.id, from_status_id: task.status_id, to_status_id: statusId },
-      ...(fresh.subtask_changes ?? []),
-    ];
+    // The prior status from the SERVER, read just before the write (D79).
+    const io = {
+      read: (id: string) => projectsApi.task(id),
+      write: (id: string, sid: string, withSubtasks: boolean) =>
+        projectsApi.patchTask(id, { status_id: sid }, { includeSubtasks: withSubtasks }),
+    };
+    const first = await writeCompletion(io, task.id, statusId, include);
+    const fresh = first.fresh;
+    let changes: CascadeChange[] = first.changes;
 
     // One state for the toast's Undo and the page's Ctrl+Z, so pressing
     // both does not put anything back twice.
@@ -82,14 +82,9 @@ export function useSubtaskComplete() {
     const redo = async () => {
       if (applied) return;
       applied = true;
-      const again = await projectsApi.patchTask(
-        task.id,
-        { status_id: statusId },
-        { includeSubtasks: include },
-      );
-      // The redo may close children the first write did not, so the next
-      // Undo puts back what THIS write moved.
-      changes = [changes[0], ...(again.subtask_changes ?? [])];
+      // The redo reads the server again, and may close children the first
+      // write did not, so the next Undo puts back what THIS write moved.
+      changes = (await writeCompletion(io, task.id, statusId, include)).changes;
       await after();
     };
     undoApi.record({ label: `completed ${task.title}`, undo: revert, redo });

@@ -5,6 +5,8 @@ import { closesTask, landingLane, stageLanes } from "@/lib/statusCategory";
 import {
   type CascadeChange,
   archiveReceipt,
+  bulkSubtaskSummary,
+  bulkSummaryLine,
   completeReceipt,
   openSubtasks,
   revertCascade,
@@ -646,8 +648,10 @@ export interface SubtaskPrompt {
   /** A complete through a later Done status, picked by id (`setStatus`). */
   statusId?: string;
   lanes?: readonly LensLane[];
-  /** The archive came from the bulk bar. */
+  /** The archive, or the Done, came from the bulk bar. */
   bulk?: boolean;
+  /** The bulk bar's line: "includes 2 parents with 5 open subtasks". */
+  summary?: string;
 }
 
 /** An item's open subtasks, from its chip (D-PM-38). */
@@ -1091,7 +1095,13 @@ interface TaskState {
   /** The archive dialog was cancelled: nothing is archived. */
   cancelSubtaskPrompt: () => void;
   /** Apply the same disposition to many items at once (multi-select). */
-  bulkDispose: (ids: string[], disposition: Disposition) => void;
+  /** D-PM-38 (S5): a bulk DONE over parents with open subtasks ASKS once
+   *  for the batch, as the Projects bulk bar does. */
+  bulkDispose: (
+    ids: string[],
+    disposition: Disposition,
+    opts?: { includeSubtasks?: boolean },
+  ) => void;
   /** Archive (hide from active views) or un-archive a task — independent of
    *  DONE. Optimistic; the row moves to / from the Archive view.
    *  D-PM-38 (S5): a task with subtasks asks first, with the box ticked. */
@@ -1649,6 +1659,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const answer = { includeSubtasks };
     if (prompt.kind === "complete") {
       // "Only this task" still completes the parent: the member asked to.
+      if (prompt.bulk) {
+        get().bulkDispose(prompt.ids, "DONE", answer);
+        return;
+      }
       if (prompt.statusId) {
         void get().setStatus(prompt.ids[0], prompt.statusId, {
           lanes: prompt.lanes,
@@ -2471,9 +2485,51 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  bulkDispose: (ids, disposition) => {
+  bulkDispose: (ids, disposition, opts) => {
+    // D-PM-38 decision 2 (S5) — a bulk Done over parents with open subtasks
+    // asks ONCE for the batch. "Only this task" completes the selection.
+    if (disposition === "DONE" && opts?.includeSubtasks === undefined) {
+      const picked = new Set(ids);
+      const summary = bulkSubtaskSummary(
+        get()
+          .items.filter((i) => picked.has(i.id) && i.disposition !== "DONE")
+          .map((i) => ({
+            id: i.id,
+            subtasks: { done: i.subtaskDone ?? 0, total: i.subtaskCount ?? 0 },
+          })),
+        picked,
+      );
+      if (summary.open > 0) {
+        set({
+          subtaskPrompt: {
+            kind: "complete",
+            ids,
+            count: summary.open,
+            bulk: true,
+            summary: bulkSummaryLine(summary) ?? undefined,
+          },
+        });
+        return;
+      }
+    }
     get().cancelPromoteFor(ids);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
+    const cascade =
+      get().backend === "live" && disposition === "DONE" && opts?.includeSubtasks
+        ? Promise.allSettled(ids.map((id) => apiCompleteCascade(id))).then(async (settled) => {
+            const done = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+            const failed = settled.find((r) => r.status === "rejected") as
+              | PromiseRejectedResult
+              | undefined;
+            if (failed) {
+              await refetchAfterFailure(set);
+              get().reportSyncFailure(
+                `${settled.length - done.length} of ${settled.length} could not be completed: ${errText(failed.reason)}`,
+              );
+            }
+            return done;
+          })
+        : null;
     set((s) => {
       const set_ = new Set(ids);
       const affected = s.items.filter(
@@ -2492,12 +2548,32 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           selectedItemId: s.selectedItemId,
           label: `${DISPOSE_LABEL[disposition] ?? "Filed"} ${affected} item${affected === 1 ? "" : "s"}`,
           changedIds: ids,
+          cascadeRevert: cascade
+            ? cascade.then((done) => done.flatMap((d) => d.changes))
+            : undefined,
         },
       };
     });
-    if (get().backend === "live") {
-      get().markTriaged(ids, disposeLive(set, get, ids, disposition));
+    if (get().backend !== "live") return;
+    if (cascade) {
+      // "Complete all": each task through `/complete?include_subtasks=true`.
+      // Settled, not raced, as `lensBulkDispose` does: one refusal must not
+      // hide that the rest completed. Undo puts each subtask's exact prior
+      // status back (`cascadeRevert`).
+      const write = cascade.then((done) => {
+        const byId = new Map(done.map((d) => [d.item.id, d.item]));
+        set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+        const closed = done.reduce((sum, d) => sum + d.cascaded, 0);
+        const snap = get().undoSnapshot;
+        if (snap?.cascadeRevert && closed) {
+          set({ undoSnapshot: { ...snap, label: `${snap.label} · and ${closed} subtask${closed === 1 ? "" : "s"}` } });
+        }
+        return done.map((d) => d.item);
+      });
+      get().markTriaged(ids, write);
+      return;
     }
+    get().markTriaged(ids, disposeLive(set, get, ids, disposition));
   },
 
   archiveItem: (id, archived, opts) => {

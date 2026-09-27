@@ -40,6 +40,7 @@ export function SubtaskPromptHost() {
       <CompleteSubtasksDialog
         open={prompt?.kind === "complete" ? prompt.count : 0}
         subject={prompt?.title}
+        note={prompt?.kind === "complete" ? prompt.summary : undefined}
         onAnswer={answer}
       />
       <ArchiveWithSubtasks

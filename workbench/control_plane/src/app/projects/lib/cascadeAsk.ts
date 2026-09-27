@@ -12,7 +12,11 @@
  * nobody asked to cancel them.
  */
 
-import { openSubtasks, type SubtaskCounts } from "@/lib/subtaskCascade";
+import {
+  type CascadeChange,
+  openSubtasks,
+  type SubtaskCounts,
+} from "@/lib/subtaskCascade";
 
 import { isResolved } from "./relations";
 
@@ -40,4 +44,34 @@ export function completionAsk(
   const current = lanes.find((lane) => lane.id === task.status_id);
   if (isResolved(current?.category)) return 0;
   return open ?? openSubtasks(task.subtasks);
+}
+
+/**
+ * Write the completion, and answer the Undo record for it (D79).
+ *
+ * ⚠️ The parent's prior status comes from a SERVER read taken just before
+ * the write, never from the row on screen. The board's row is as old as its
+ * last load: a teammate may have moved the task since, and an Undo that put
+ * back the board's stale status would undo their move (review of #493). My
+ * Tasks reads the server first for the same reason (`taskStore.quickDispose`).
+ *
+ * A task the server already holds in `statusId` gets no parent entry: our
+ * write moved nothing, so Undo has nothing of ours to put back.
+ */
+export async function writeCompletion<T extends { subtask_changes?: CascadeChange[] }>(
+  io: {
+    read: (id: string) => Promise<{ status_id: string }>;
+    write: (id: string, statusId: string, includeSubtasks: boolean) => Promise<T>;
+  },
+  taskId: string,
+  statusId: string,
+  includeSubtasks: boolean,
+): Promise<{ fresh: T; changes: CascadeChange[] }> {
+  const before = await io.read(taskId);
+  const fresh = await io.write(taskId, statusId, includeSubtasks);
+  const parent: CascadeChange[] =
+    before.status_id === statusId
+      ? []
+      : [{ task_id: taskId, from_status_id: before.status_id, to_status_id: statusId }];
+  return { fresh, changes: [...parent, ...(fresh.subtask_changes ?? [])] };
 }

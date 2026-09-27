@@ -21,9 +21,11 @@
  * **A question is not always a warning** (D-PM-38, Subtasks S5). The subtask
  * prompt asks "Complete them too?", and its SAFE answer is the one the owner
  * made the default. So a caller can name the cancel button
- * (`cancelLabel`), draw the confirm button as a plain primary action
- * (`confirmVariant`), and open with focus on the cancel button
- * (`defaultFocus`). Escape and the close button always mean cancel.
+ * (`cancelLabel`), open with focus on the cancel button (`defaultFocus`),
+ * and put the EMPHASIS on the cancel button (`emphasis="cancel"`): it is then
+ * the solid primary button and the confirm button is the outline one. The
+ * visual weight follows the owner's default, not the act. Escape and the
+ * close button always mean cancel.
  *
  * Fence: `ConfirmDialog.test.ts`.
  */
@@ -51,6 +53,12 @@ export interface ConfirmDialogProps {
   /** Which button has focus when the dialog opens, so Enter means it. */
   defaultFocus?: "confirm" | "cancel";
   /**
+   * Which button is the solid one. `cancel` makes the cancel button the
+   * primary action and draws the confirm button as secondary, whatever
+   * `confirmVariant` says: for a question whose default is "no".
+   */
+  emphasis?: "confirm" | "cancel";
+  /**
    * One control that shapes the answer, drawn under the words: the archive
    * dialog's "Include N subtasks" box (D-PM-38, S5). Not a second form.
    */
@@ -72,6 +80,7 @@ export default function ConfirmDialog({
   cancelLabel = "Cancel",
   confirmVariant = "destructive",
   defaultFocus = "confirm",
+  emphasis = "confirm",
   children,
   icon = "Trash2",
   busy = false,
@@ -88,6 +97,8 @@ export default function ConfirmDialog({
   const [held, setHeld] = useState(live);
   if (open && JSON.stringify(held) !== JSON.stringify(live)) setHeld(live);
   const words = open ? live : held;
+  const cancelVariant = emphasis === "cancel" ? "primary" : "secondary";
+  const confirmAs = emphasis === "cancel" ? "secondary" : confirmVariant;
   return (
     <Modal
       open={open}
@@ -125,7 +136,7 @@ export default function ConfirmDialog({
         className="flex items-center justify-end gap-2 border-t border-border px-3 py-2"
       >
         <Button
-          variant="secondary"
+          variant={cancelVariant}
           size="sm"
           onClick={onCancel}
           disabled={busy}
@@ -134,7 +145,7 @@ export default function ConfirmDialog({
           {words.cancelLabel}
         </Button>
         <Button
-          variant={confirmVariant}
+          variant={confirmAs}
           size="sm"
           icon={words.icon}
           loading={busy}

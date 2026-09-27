@@ -123,7 +123,13 @@ export interface MovePlan {
    * cannot see: the move is refused (409) with the box ticked. Absent on an
    * older gateway, which the card reads as none.
    */
-  subtasks?: { count: number; hidden: number };
+  subtasks?: {
+    count: number;
+    /** Sent only with `include_subtasks` (review of #493). */
+    hidden: number;
+    /** D62: carried subtasks that cannot move there, each named. */
+    refused?: { task_id: string; ref: string; reason: string }[];
+  };
 }
 
 export interface MoveResult extends CascadeReport {

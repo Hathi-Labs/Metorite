@@ -413,10 +413,11 @@ export function PromoteFields({
   const rows = destinations(roots);
   const sourceName = nameOf(rows, plan?.source_project_id ?? null);
   const destName = nameOf(rows, destinationId) || nameOf(rows, plan?.destination_project_id ?? null);
-  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0 };
+  const subtasks = reading?.subtasks ?? { count: 0, hidden: 0, refused: [] };
   const carrying = withSubtasks && subtasks.count + subtasks.hidden > 0;
-  // A ticked box over a hidden subtask is a move the gateway refuses (409).
-  const splitRefused = carrying && subtasks.hidden > 0;
+  // A ticked box over a hidden subtask is a move the gateway refuses (409),
+  // and so is one over a subtask D62 refuses (422). The box says why.
+  const splitRefused = carrying && (subtasks.hidden > 0 || subtasks.refused.length > 0);
   const ready =
     !!plan && !planning && asked !== null && missing.length === 0 && !splitRefused;
 
@@ -430,7 +431,7 @@ export function PromoteFields({
       destinationProjectId: plan?.destination_project_id ?? null,
       answers: { fields: asked ?? [], draft, assignees, initialAssignees },
       drops: dropKeys ? dropKeys.split(",") : null,
-      blocked: blocked || null,
+      blocked: blocked || (splitRefused ? (subtasks.refused[0]?.reason ?? null) : null),
       includeSubtasks: carrying,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -520,6 +521,7 @@ export function PromoteFields({
           <IncludeSubtasksBox
             count={subtasks.count}
             hidden={subtasks.hidden}
+            refused={subtasks.refused.map((r) => r.reason)}
             checked={withSubtasks}
             onChange={setWithSubtasks}
             disabled={busy}

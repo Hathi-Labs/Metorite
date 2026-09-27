@@ -40,7 +40,12 @@ export interface PlanReading {
    * D-PM-38 (S5) — the descendants a move WITH its subtasks takes, and how
    * many of them the member cannot see. Zero when the gateway sent none.
    */
-  subtasks: { count: number; hidden: number };
+  subtasks: {
+    count: number;
+    hidden: number;
+    /** D62 refusals for carried subtasks, each naming the subtask and why. */
+    refused: { task_id: string; ref: string; reason: string }[];
+  };
 }
 
 export function readPlan(plan: LoosePlan | null): PlanReading | null {
@@ -72,6 +77,7 @@ export function readPlan(plan: LoosePlan | null): PlanReading | null {
     subtasks: {
       count: plan.subtasks?.count ?? 0,
       hidden: plan.subtasks?.hidden ?? 0,
+      refused: plan.subtasks?.refused ?? [],
     },
   };
 }

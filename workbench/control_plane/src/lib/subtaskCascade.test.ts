@@ -61,8 +61,12 @@ describe("the complete prompt (decision 2)", () => {
     // Escape and the close button call onCancel, which answers false.
     expect(dialog).toMatch(/onCancel=\{\(\) => onAnswer\(false\)\}/);
     expect(dialog).toMatch(/onConfirm=\{\(\) => onAnswer\(true\)\}/);
-    // A question, not a delete: no destructive red.
-    expect(dialog).toMatch(/confirmVariant="primary"/);
+    // The owner's default carries the weight: "Only this task" is the SOLID
+    // primary button, and "Complete all" is the outline one. No red.
+    expect(dialog).toMatch(/emphasis="cancel"/);
+    expect(dialog).not.toMatch(/confirmVariant="destructive"/);
+    const confirm = readFileSync(`${SRC}/components/ui/ConfirmDialog.tsx`, "utf8");
+    expect(confirm).toMatch(/const cancelVariant = emphasis === "cancel" \? "primary" : "secondary";/);
   });
 
   it("never draws a prompt for a task with no open subtasks", () => {
@@ -97,6 +101,31 @@ describe("the move and archive box (decision 4)", () => {
     );
     expect(html).toContain("Include 3 subtasks");
     expect(html).toContain("1 subtask is hidden from you");
+  });
+
+  it("says which subtask D62 refuses while ticked, and holds Move", () => {
+    const reason = "Subtask #21 is in a project that is not personal, so it cannot move.";
+    const on = renderToStaticMarkup(
+      createElement(IncludeSubtasksBox, {
+        count: 2, checked: true, onChange: () => {}, refused: [reason],
+      }),
+    );
+    expect(on).toContain(reason);
+    const off = renderToStaticMarkup(
+      createElement(IncludeSubtasksBox, {
+        count: 2, checked: false, onChange: () => {}, refused: [reason],
+      }),
+    );
+    expect(off).not.toContain(reason);
+    for (const file of [
+      "app/projects/components/MoveTasksDialog.tsx",
+      "app/projects/components/PromoteFields.tsx",
+    ]) {
+      expect(read(file), file).toMatch(
+        /const splitRefused = carrying && \(subtasks\.hidden > 0 \|\| subtasks\.refused\.length > 0\);/,
+      );
+      expect(read(file), file).toMatch(/refused=\{subtasks\.refused\.map\(\(r\) => r\.reason\)\}/);
+    }
   });
 
   it("the dialogs seed their box from the defaults", () => {
@@ -226,11 +255,9 @@ describe("Undo covers the cascade (D79)", () => {
     expect(got.restored).toEqual(["k1"]);
   });
 
-  it("the Projects complete records the cascade's Undo, parent first", () => {
+  it("the Projects complete records the cascade's Undo", () => {
     const hook = read("app/projects/components/useSubtaskComplete.tsx");
-    expect(hook).toMatch(
-      /\{ task_id: task\.id, from_status_id: task\.status_id, to_status_id: statusId \},\s*\.\.\.\(fresh\.subtask_changes \?\? \[\]\)/,
-    );
+    expect(hook).toMatch(/let changes: CascadeChange\[\] = first\.changes;/);
     expect(hook).toMatch(/undoApi\.record\(/);
     expect(hook).toMatch(/action: \{ label: "Undo"/);
   });

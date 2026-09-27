@@ -489,6 +489,7 @@ def mover(monkeypatch, subtree):
 
     monkeypatch.setattr(tasks, "load_visible_project", load_visible_project)
     monkeypatch.setattr(tasks, "assert_move_keeps_privacy", noop)
+    monkeypatch.setattr(cascade, "assert_move_keeps_privacy", noop)
     monkeypatch.setattr(tasks, "root_project_id", root_project_id)
     monkeypatch.setattr(tasks, "status_owner_id", status_owner_id)
     monkeypatch.setattr(tasks, "remap_one_status", remap_one_status)
@@ -549,6 +550,27 @@ async def test_a_hidden_descendant_refuses_the_whole_move(mover):
     assert mover == []
 
 
+async def test_the_single_move_names_a_d62_subtask_before_any_write(
+    mover, monkeypatch,
+):
+    _visible_tree(monkeypatch)
+
+    async def guard(db, task, dest_id):
+        if task.id == "grand-1":
+            raise HTTPException(status_code=422, detail="personal")
+
+    monkeypatch.setattr(cascade, "assert_move_keeps_privacy", guard)
+    with pytest.raises(HTTPException) as err:
+        await tasks.move_task_in(
+            None, VIS, PARENT,
+            tasks.MoveTask(project_id="proj-z", include_subtasks=True),
+            by="me@x.in")
+    assert err.value.status_code == 422
+    # The SUBTASK is named, not the parent.
+    assert err.value.detail.startswith("Subtask #21 ")
+    assert mover == []
+
+
 def test_the_refusal_names_the_count():
     assert cascade.hidden_refusal(3).startswith("3 subtasks of this task are")
     rows = [SimpleNamespace(visible=False), SimpleNamespace(visible=True)]
@@ -573,6 +595,7 @@ async def test_the_bulk_move_refuses_a_hidden_descendant_before_any_write(
             "types": [], "crosses_status_set": False, "crosses_root": False,
             "descendants": [_row("x", "a", depth=1, visible=False)],
             "subtree_maps": {},
+            "subtasks": {"count": 0, "hidden": 1, "refused": []},
         }
 
     async def move_task_in(*args, **kwargs):
@@ -609,6 +632,7 @@ async def test_the_bulk_move_carries_each_descendant_through_the_seam(
                             _row("c3", "z", depth=2)],
             # The map the card showed, per source root (review of #493).
             "subtree_maps": {"root-a": {"po": "customer_po"}},
+            "subtasks": {"count": 3, "hidden": 0, "refused": []},
         }
 
     async def move_task_in(db, vis, task, payload, *, by, field_map=None):
@@ -706,6 +730,7 @@ def planner(monkeypatch):
     monkeypatch.setattr(move, "_selection", selection)
     monkeypatch.setattr(move, "_destination", destination)
     monkeypatch.setattr(move, "assert_move_keeps_privacy", noop)
+    monkeypatch.setattr(cascade, "assert_move_keeps_privacy", noop)
     monkeypatch.setattr(move, "root_project_id", root_project_id)
     monkeypatch.setattr(move, "status_owner_id", status_owner_id)
     monkeypatch.setattr(move, "load_definitions", load_definitions)
@@ -725,7 +750,7 @@ async def test_the_plan_with_subtasks_shows_their_drops_and_required_fields(
     assert [d["task_id"] for d in plan["drops"]["sev"]] == ["k2"]
     # k2 carries no PO, which the destination requires.
     assert plan["required_missing"] == ["PO"]
-    assert plan["subtasks"] == {"count": 2, "hidden": 1}
+    assert plan["subtasks"] == {"count": 2, "hidden": 1, "refused": []}
     # The map the apply hands each subtask, by ITS root.
     assert set(plan["subtree_maps"]) == {"root-proj-a", "root-proj-b"}
 
@@ -735,8 +760,65 @@ async def test_the_plan_without_subtasks_shows_only_the_selection(planner):
         task_ids=["p"], destination_project_id="proj-z"))
     assert plan["drops"] == {}
     assert plan["required_missing"] == []
-    # The box still needs the count, ticked or not.
-    assert plan["subtasks"] == {"count": 2, "hidden": 1}
+    # The box still needs the count. The HIDDEN count appears only when the
+    # member asks to take the subtasks, because only then does it change
+    # the act (review of #493).
+    assert plan["subtasks"] == {"count": 2, "hidden": 0, "refused": []}
+
+
+async def test_the_plan_names_a_subtask_that_d62_refuses(planner, monkeypatch):
+    """A carried subtask in a team project cannot move into a personal one.
+    The preview names IT, so the card holds Move and says why."""
+    async def guard(db, task, dest_id):
+        if task.id == "k2":
+            raise HTTPException(status_code=422, detail="personal")
+
+    monkeypatch.setattr(cascade, "assert_move_keeps_privacy", guard)
+    plan = await move._plan(planner, VIS, move.MoveIn(
+        task_ids=["p"], destination_project_id="proj-z", include_subtasks=True))
+    refused = plan["subtasks"]["refused"]
+    assert [r["task_id"] for r in refused] == ["k2"]
+    assert refused[0]["reason"].startswith("Subtask ")
+    assert "Untick" in refused[0]["reason"]
+    # Without the box, nothing is carried and nothing is refused.
+    plan = await move._plan(planner, VIS, move.MoveIn(
+        task_ids=["p"], destination_project_id="proj-z"))
+    assert plan["subtasks"]["refused"] == []
+
+
+async def test_the_bulk_apply_refuses_a_d62_subtask_before_any_write(monkeypatch):
+    written: list = []
+
+    async def resolve_visibility(db, user):
+        return VIS
+
+    async def plan(db, vis, payload):
+        return {
+            "tasks": [], "source_project_id": "a",
+            "destination_project_id": "z", "required_missing": [],
+            "drops": {}, "destination_statuses": [], "statuses": [],
+            "types": [], "crosses_status_set": False, "crosses_root": False,
+            "descendants": [_row("c1", "a", depth=1, number=41)],
+            "subtree_maps": {},
+            "subtasks": {"count": 1, "hidden": 0, "refused": [
+                {"task_id": "c1", "ref": "#41", "reason": "Subtask #41 is …"}]},
+        }
+
+    async def move_task_in(*args, **kwargs):
+        written.append(args)
+
+    monkeypatch.setattr(move, "_tenant_session", _Session)
+    monkeypatch.setattr(move, "resolve_visibility", resolve_visibility)
+    monkeypatch.setattr(move, "_plan", plan)
+    monkeypatch.setattr(move, "move_task_in", move_task_in)
+    with pytest.raises(HTTPException) as err:
+        await move.move_tasks(
+            move.MoveIn(task_ids=["p"], destination_project_id="z",
+                        include_subtasks=True),
+            user=_user())
+    assert err.value.status_code == 422
+    assert err.value.detail.startswith("Subtask #41")
+    assert written == []
 
 
 # ── The bulk door: one choice for the whole batch ──────────────────────────

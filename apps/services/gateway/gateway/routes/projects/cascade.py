@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     MAX_DEPTH,
     apply_status_transition,
     archive_note,
+    assert_move_keeps_privacy,
     emit,
     load_default_status,
     now,
@@ -233,6 +234,43 @@ def movable_subtree(rows: list[Any]) -> list[Any]:
     return rows
 
 
+def privacy_refusal(row: Any) -> str:
+    """What D62 says when a SUBTASK, not the task, cannot make the move.
+
+    It names the subtask, because the parent is not the problem, and it names
+    the remedy the dialog offers: untick the box.
+    """
+    return (
+        f"Subtask {task_ref(row)} is in a project that is not personal, so it "
+        "cannot move into a personal project. Untick \"Include subtasks\" to "
+        "move the task without it."
+    )
+
+
+async def subtree_privacy_refusals(
+    db: Any, rows: list[Any], dest_id: str,
+) -> list[dict[str, str]]:
+    """D62 for each descendant a move would carry (`assert_move_keeps_privacy`).
+
+    One ``{task_id, ref, reason}`` per subtask the guard refuses. The preview
+    shows them, so the card can say why Move is held. The apply refuses the
+    first one, before any write. A row already in the destination moves
+    nowhere, so the guard has nothing to judge there.
+    """
+    out: list[dict[str, str]] = []
+    for row in rows:
+        if str(row.project_id) == str(dest_id):
+            continue
+        try:
+            await assert_move_keeps_privacy(db, row, dest_id)
+        except HTTPException:
+            out.append({
+                "task_id": str(row.id), "ref": task_ref(row),
+                "reason": privacy_refusal(row),
+            })
+    return out
+
+
 async def current_category(db: Any, task_id: str) -> str | None:
     """The category of the lane ``task_id`` sits in NOW, after a write."""
     row = (await db.execute(
@@ -261,5 +299,7 @@ __all__ = [
     "hidden_refusal",
     "load_subtree",
     "movable_subtree",
+    "privacy_refusal",
+    "subtree_privacy_refusals",
     "task_ref",
 ]

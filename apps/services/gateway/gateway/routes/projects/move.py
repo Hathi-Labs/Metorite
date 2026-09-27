@@ -45,7 +45,11 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
-from gateway.routes.projects.cascade import load_subtree, movable_subtree
+from gateway.routes.projects.cascade import (
+    load_subtree,
+    movable_subtree,
+    subtree_privacy_refusals,
+)
 from gateway.routes.projects.core import (
     _REMAP_TARGET_SQL,
     TRIAGE_CATEGORY,
@@ -353,6 +357,10 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         if payload.include_subtasks and row.visible
         and str(row.project_id) != dest_id
     ]
+    #: D62 for each carried subtask (review of #493). The apply refuses them
+    #: through `move_task_in`, so the preview names them first: the card
+    #: then holds Move and says which subtask, and why.
+    privacy_refused = await subtree_privacy_refusals(db, carried, dest_id)
 
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
@@ -529,7 +537,14 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         "descendants": list(descendants.values()),
         "subtasks": {
             "count": sum(1 for r in descendants.values() if r.visible),
-            "hidden": sum(1 for r in descendants.values() if not r.visible),
+            # ⚠️ Only when the member asked to take the subtasks. The count
+            # says hidden tasks EXIST, so it appears only where it changes
+            # what the act does: the move then refuses (review of #493).
+            "hidden": (
+                sum(1 for r in descendants.values() if not r.visible)
+                if payload.include_subtasks else 0
+            ),
+            "refused": privacy_refused,
         },
         "required_missing": required_missing,
         "destination_statuses": dest_lanes,
@@ -655,6 +670,11 @@ async def move_tasks(
             movable_subtree(plan["descendants"]) if payload.include_subtasks
             else []
         )
+        # D62 for a carried subtask, named, before any write.
+        if subtree and plan["subtasks"]["refused"]:
+            raise HTTPException(
+                status_code=422, detail=plan["subtasks"]["refused"][0]["reason"],
+            )
 
         # Every destination lane's category, so the completion correction
         # above has the one fact it needs without a second read.

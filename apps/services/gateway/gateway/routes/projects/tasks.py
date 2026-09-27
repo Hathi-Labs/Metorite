@@ -29,6 +29,7 @@ from gateway.routes.projects.cascade import (
     emit_all,
     load_subtree,
     movable_subtree,
+    subtree_privacy_refusals,
 )
 from gateway.routes.projects.core import (
     COMPLETED_CATEGORY,
@@ -697,6 +698,14 @@ async def move_task_in(
             # A 409 when any descendant is hidden, before anything is written:
             # moving only the visible ones would split the tree unseen.
             subtree = movable_subtree(await load_subtree(db, vis, task_id))
+            # D62 for each subtask, BEFORE any write, and naming the subtask:
+            # the recursive call below would refuse it too, but its message
+            # reads as if the parent were the problem (review of #493).
+            refused = await subtree_privacy_refusals(
+                db, subtree, str(payload.project_id),
+            )
+            if refused:
+                raise HTTPException(status_code=422, detail=refused[0]["reason"])
         new_root = await root_project_id(db, str(payload.project_id))
         # ⚠️ Tracked SEPARATELY from the root, because since migration 196
         # the set can change while the root does not: moving a task from a

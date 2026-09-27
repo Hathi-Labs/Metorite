@@ -2925,7 +2925,7 @@ function ProjectsWorkspace() {
       setTreeKey((k) => k + 1);
       // Undo restores EXACTLY what this archive shelved: the task and the
       // ids the gateway reported. Unarchive itself does not cascade.
-      const shelved = [taskId, ...(res.subtask_ids ?? [])];
+      let shelved = [taskId, ...(res.subtask_ids ?? [])];
       let applied = true;
       const restore = async () => {
         if (!applied) return;
@@ -2940,7 +2940,10 @@ function ProjectsWorkspace() {
         redo: async () => {
           if (applied) return;
           applied = true;
-          await projectsApi.archiveTask(taskId, { includeSubtasks: include });
+          // The redo may shelve other subtasks than the first archive did, so
+          // the next Undo restores what THIS archive reported.
+          const again = await projectsApi.archiveTask(taskId, { includeSubtasks: include });
+          shelved = [taskId, ...(again.subtask_ids ?? [])];
           await refreshRef.current();
           setTreeKey((k) => k + 1);
         },
