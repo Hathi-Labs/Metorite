@@ -499,3 +499,29 @@ class TestTheBuildTreeIsReclaimed:
         fn = body[body.index("reclaim_build_tree() {"):]
         fn = fn[: fn.index("\n}\n")]
         assert "H-89" in fn
+
+
+class TestTheBuildHeapCap:
+    """The V8 heap cap for `next build` must fit the app.
+
+    On 2026-09-27 the #493 deploy died in all three rounds with
+    "Ineffective mark-compacts near heap limit" at a 1024 MB cap, while the
+    box had about 6 GB free. A cap below the app's real need fails every
+    deploy and keeps the old build serving, so it looks like a slow deploy.
+    """
+
+    def test_the_build_heap_cap_fits_the_app(self):
+        import re
+
+        body = _APPLY.read_text(encoding="utf-8")
+        m = re.search(r'NEXT_BUILD_HEAP_MB="\$\{NEXT_BUILD_HEAP_MB:-(\d+)\}"', body)
+        assert m, "the heap cap default is gone from vps_apply.sh"
+        cap = int(m.group(1))
+        assert cap >= 3072, f"a {cap} MB build heap failed the #493 deploy; keep it at 3072 or more"
+        # The box has 8 GB and no swap, and the servers keep running beside
+        # the build. Leave them room.
+        assert cap <= 5120, f"a {cap} MB build heap leaves the running servers too little memory"
+
+    def test_the_cap_reaches_the_build(self):
+        body = _APPLY.read_text(encoding="utf-8")
+        assert 'NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB"' in body

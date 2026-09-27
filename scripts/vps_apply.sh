@@ -958,7 +958,14 @@ fi
 # Requires `distDir: process.env.NEXT_DIST_DIR || ".next"` in the app's
 # next.config — both apps carry it, and `test_deploy_next_build_swap.py`
 # fails if either loses it.
-NEXT_BUILD_HEAP_MB="${NEXT_BUILD_HEAP_MB:-1024}"
+# The V8 heap cap for `next build`. It was 1024 MB until 2026-09-27, when the
+# control-plane build outgrew it: all three rounds of the #493 deploy died with
+# "Ineffective mark-compacts near heap limit" and SIGABRT, while the box had
+# ~6 GB free and the kernel killed nothing. The box has 8 GB and no swap. The
+# running servers use under 1.5 GB, so 3072 MB leaves room for them. The two
+# builds never run at once, because the deploy lock serialises them.
+# Fence: test_deploy_next_build_swap.py::test_the_build_heap_cap_fits_the_app.
+NEXT_BUILD_HEAP_MB="${NEXT_BUILD_HEAP_MB:-3072}"
 # Remove a build-tree directory without ever aborting the deploy.
 #
 # 🔴 **A HOUSEKEEPING `rm` KILLED TWO PRODUCTION DEPLOYS ON 2026-09-20.**
