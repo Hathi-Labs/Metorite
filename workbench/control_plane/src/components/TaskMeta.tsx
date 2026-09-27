@@ -183,6 +183,31 @@ export function ParentCrumb({
 }
 
 /**
+ * THE nested-row mark (D-PM-38, decision 5): the CornerDownRight icon a
+ * subtask row carries under its parent, in a view that nests. The indent is
+ * the caller's, because a table cell and a list cell pad differently. The
+ * icon is this one, so a nested row reads the same on every canvas.
+ *
+ * Renders nothing at depth 0. Fence: `sharedTaskUi.test.ts`.
+ */
+export function NestedRowMark({
+  depth,
+  className = "",
+}: {
+  depth: number;
+  className?: string;
+}) {
+  if (depth <= 0) return null;
+  return (
+    <Icon
+      name="CornerDownRight"
+      className={`h-3 w-3 shrink-0 text-muted-foreground ${className}`}
+      aria-hidden
+    />
+  );
+}
+
+/**
  * Overlapping initials, with a "+N" for whoever did not fit.
  *
  * The full list rides in `title` rather than being dropped: a shared task is

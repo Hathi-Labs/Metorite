@@ -13,6 +13,7 @@ import {
   buildColumnDropUpdate,
   currentAxisKey,
   dropRefusal,
+  optimisticDrop,
   orderBearingView,
   planDrop,
   positionBetween,
@@ -366,5 +367,39 @@ describe("dropping on a STAGE column (§9.12.3)", () => {
   it("is not refused — a stage is a writable axis", () => {
     expect(dropRefusal("category")).toBeNull();
     expect(dropRefusal("status", "category")).toBeNull();
+  });
+});
+
+// ── D-PM-38 (S3): a drag changes only the dragged subtask ──────────────────
+
+describe("a drag changes only the dragged subtask", () => {
+  // Separate mode draws each subtask as its own card, so a subtask can be
+  // dragged on its own. The drop must move THAT card and nothing else.
+  const board = [
+    { id: "parent", status_id: "todo", parent_task_id: null },
+    { id: "sub-a", status_id: "todo", parent_task_id: "parent" },
+    { id: "sub-b", status_id: "todo", parent_task_id: "parent" },
+  ];
+
+  it("the patch names the status only, never the parent", () => {
+    const patch = buildCellDropPatch(board[1], "status", "done", null, null);
+    expect(patch).toEqual({ status_id: "done" });
+  });
+
+  it("the optimistic move changes the dragged subtask and no other row", () => {
+    const patch = buildCellDropPatch(board[1], "status", "done", null, null);
+    const after = optimisticDrop(board, "sub-a", patch);
+    expect(after.map((t) => [t.id, t.status_id])).toEqual([
+      ["parent", "todo"],
+      ["sub-a", "done"],
+      ["sub-b", "todo"],
+    ]);
+    // Same objects for the rows it did not touch, so nothing else re-renders.
+    expect(after[0]).toBe(board[0]);
+    expect(after[2]).toBe(board[2]);
+  });
+
+  it("a drop that changes nothing leaves every row as it was", () => {
+    expect(optimisticDrop(board, "sub-a", null)).toEqual(board);
   });
 });

@@ -404,6 +404,16 @@ SHOWN_FIELDS: tuple[str, ...] = (
 #: `test_projects_filters` fails if the two differ.
 SUBTASK_MODES: tuple[str, ...] = ("nested", "separate", "hidden")
 
+#: Every top-level key :func:`normalise_view_config` can keep. Mirrored by
+#: `VIEW_CONFIG_KEYS` in `app/projects/lib/grouping.ts`, whose `toConfig`
+#: writes them. `test_projects_filters` fails if the two sets differ: a key
+#: the client writes and this drops is a setting that a save loses (S3 found
+#: `subtasks` in that state on the client side).
+VIEW_CONFIG_KEYS: frozenset[str] = frozenset({
+    "filters", "group_by", "sub_group_by", "collapsed_lanes",
+    "show_empty_lanes", "shown_fields", "subtasks",
+})
+
 #: A project's custom fields ride the same list as ``custom.<field_key>`` —
 #: the spelling ``patch_task`` already files a custom edit under. Checked by
 #: SHAPE rather than against the registry: this function is pure, and a view
@@ -496,8 +506,9 @@ VIEW_USER_STATE_KEYS: frozenset[str] = frozenset({
     "group_by", "sub_group_by", "collapsed_lanes", "show_empty_lanes",
     "shown_fields",
     # D-PM-38 — the exception named above. `hidden` folds subtask rows for
-    # this member only. ⚠️ S3: the delta feed does not take `top_level` yet,
-    # and must before a board with Hidden syncs.
+    # this member only. The list, the calendar, the export and (since S3)
+    # the delta feed all take `top_level`, so a synced Hidden board stays
+    # folded. `test_every_list_surface_declares_it` is the fence.
     "subtasks",
 })
 

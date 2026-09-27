@@ -35,6 +35,7 @@
  */
 
 import Icon from "@/components/Icon";
+import { ParentCrumb } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import { useEffect, useRef, useState } from "react";
@@ -295,19 +296,24 @@ export function SearchPalette({
                   onClick={() => activate(pick)}
                   className={`flex w-full items-baseline gap-2 px-3 py-2 text-left ${selectedClass}`}
                 >
-                  <span
-                    className={`min-w-0 flex-1 truncate text-sm ${
-                      row.hit.completed_at ? "line-through opacity-60" : ""
-                    }`}
-                  >
-                    {highlight(row.hit.title, query).map((part, i) => (
-                      <span
-                        key={`${row.key}:${i}`}
-                        className={part.match ? "font-semibold text-primary" : ""}
-                      >
-                        {part.text}
-                      </span>
-                    ))}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span
+                      className={`truncate text-sm ${
+                        row.hit.completed_at ? "line-through opacity-60" : ""
+                      }`}
+                    >
+                      {highlight(row.hit.title, query).map((part, i) => (
+                        <span
+                          key={`${row.key}:${i}`}
+                          className={part.match ? "font-semibold text-primary" : ""}
+                        >
+                          {part.text}
+                        </span>
+                      ))}
+                    </span>
+                    {/* D-PM-38 — search always shows subtasks, so a subtask
+                        hit names its parent. Nothing for a top-level hit. */}
+                    <ParentCrumb parent={row.hit.parent} />
                   </span>
                   <span className="shrink-0 text-[11px] text-muted-foreground">
                     {hitContext(row.hit)}

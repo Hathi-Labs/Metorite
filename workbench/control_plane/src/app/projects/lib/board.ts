@@ -303,3 +303,25 @@ export function buildCellDropPatch(
   }
   return Object.keys(patch).length ? patch : null;
 }
+
+/**
+ * The optimistic half of a board drop: the DRAGGED task takes the patch, and
+ * no other row changes.
+ *
+ * ⚠️ **D-PM-38 (S3): dragging a subtask changes only that subtask.** In
+ * Separate mode a subtask is its own card, so a drop on it is a drop on it
+ * alone. A parent does not follow its subtask into a lane, and a sibling does
+ * not either. The server write is one `PATCH /tasks/{id}` for the same id, so
+ * the screen and the store agree. Fence: `board.test.ts`, "a drag changes
+ * only the dragged subtask".
+ */
+export function optimisticDrop<T extends { id: string }>(
+  tasks: readonly T[],
+  taskId: string,
+  patch: Record<string, string | number | null> | null
+): T[] {
+  if (!patch) return [...tasks];
+  return tasks.map((task) =>
+    task.id === taskId ? ({ ...task, ...patch } as T) : task
+  );
+}

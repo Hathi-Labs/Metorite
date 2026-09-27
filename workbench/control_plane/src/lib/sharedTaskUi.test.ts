@@ -280,10 +280,6 @@ const SEAM: {
       "app/projects/components/NodeDashboard.tsx":
         "the 'Direct work' row: tasks that sit on a project in no " +
         "subproject. A project fact, not a subtask",
-      "app/projects/components/TableView.tsx":
-        "S3. The table's NESTED row mark (an indent plus the icon, decision " +
-        "5), drawn by hand. S3 builds the list nesting and moves this onto " +
-        "the shared nested-row mark",
       "app/tasks/components/TaskListGrouped.tsx":
         "S4. My Tasks draws a subtask row under its expanded parent by hand. " +
         "S4 dedupes My Tasks (each subtask once, with its parent named) and " +
@@ -300,6 +296,16 @@ const SEAM: {
     what: "the parent crumb's words",
     home: "lib/taskCard.ts",
     declaration: /(?:^|\n)\s*(?:export\s+)?function\s+parentCrumb\b/,
+  },
+  {
+    /**
+     * D-PM-38 (S3). The nested-row mark: the icon a subtask row carries
+     * under its parent. The table drew it by hand until S3, and the list,
+     * the table and the timeline rail now all draw this one.
+     */
+    what: "the nested-row mark",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+NestedRowMark\b/,
   },
   {
     /**

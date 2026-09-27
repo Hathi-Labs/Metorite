@@ -15,7 +15,9 @@ import {
   EMPTY_FILTERS,
   GROUP_OPTIONS,
   NO_LANES,
+  SUBTASK_MODES,
   UNSET,
+  VIEW_CONFIG_KEYS,
   fromConfig,
   groupTasks,
   isFiltered,
@@ -202,6 +204,7 @@ describe("saved view config", () => {
       groupBy: "assignee",
       lanes: NO_LANES,
       shownFields: [...DEFAULT_SHOWN],
+      subtasks: null,
     });
   });
 
@@ -267,6 +270,7 @@ describe("swimlane state in a saved view (WS-27y)", () => {
       groupBy: "status",
       lanes,
       shownFields: [...DEFAULT_SHOWN],
+      subtasks: null,
     });
   });
 
@@ -334,6 +338,7 @@ describe("shown fields in a saved view (WS-27x)", () => {
       groupBy: "status",
       lanes: NO_LANES,
       shownFields: shown,
+      subtasks: null,
     });
   });
 
@@ -438,6 +443,7 @@ describe("tag filters in the query", () => {
       groupBy: "tag",
       lanes: NO_LANES,
       shownFields: [...DEFAULT_SHOWN],
+      subtasks: null,
     });
   });
 
@@ -924,5 +930,53 @@ describe("a person reads as a name, and as an address when a name will not do", 
     // and call them distinguished.
     const out = labelPeople(["sam@a.com", "sam@b.com"]);
     expect(out.get("sam@a.com")).not.toBe(out.get("sam@b.com"));
+  });
+});
+
+// ── D-PM-38 (S3) — the Subtasks mode in a saved view ─────────────────────────
+
+describe("the subtasks mode in a saved view", () => {
+  it("round-trips every mode through toConfig and fromConfig", () => {
+    // Before S3 `toConfig` had no slot for it, so a stale tab that saved
+    // the view wiped the mode.
+    for (const mode of SUBTASK_MODES) {
+      const config = toConfig(EMPTY_FILTERS, "status", NO_LANES, DEFAULT_SHOWN, mode);
+      expect(config.subtasks).toBe(mode);
+      expect(fromConfig(config).subtasks).toBe(mode);
+    }
+  });
+
+  it("stores nothing when the view has no mode, so the canvas default applies", () => {
+    expect(toConfig(EMPTY_FILTERS, "status")).not.toHaveProperty("subtasks");
+    expect(fromConfig({}).subtasks).toBeNull();
+  });
+
+  it("reads a bad stored value as no mode, never as a guess", () => {
+    for (const junk of ["flat", "", 3, true, ["nested"], null]) {
+      expect(fromConfig({ subtasks: junk }).subtasks).toBeNull();
+    }
+  });
+
+  it("writes exactly VIEW_CONFIG_KEYS when every setting is on", () => {
+    // `test_projects_filters.py` holds the server's half: the gateway keeps
+    // exactly this set. A key on one side only is a setting a save loses.
+    const config = toConfig(
+      { ...EMPTY_FILTERS, q: "x" },
+      "status",
+      { subGroupBy: "assignee", collapsedLanes: ["a"], showEmptyLanes: true },
+      ["status"],
+      "hidden",
+    );
+    expect(Object.keys(config).sort()).toEqual([...VIEW_CONFIG_KEYS].sort());
+  });
+
+  it("is not part of the view's divergence — it lives in the member's overlay", () => {
+    const state: ViewState = {
+      filters: EMPTY_FILTERS,
+      groupBy: "status",
+      lanes: NO_LANES,
+      shownFields: DEFAULT_SHOWN,
+    };
+    expect(viewDivergence(state, { subtasks: "hidden" }).dirty).toBe(false);
   });
 });

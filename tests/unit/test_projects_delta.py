@@ -291,6 +291,41 @@ async def test_an_archived_task_is_reported_as_removed_not_merely_absent(
 
 
 @pytest.mark.asyncio
+async def test_top_level_keeps_subtasks_out_of_the_feed(db: FakeProjectsDB) -> None:
+    """D-PM-38 (spec §12.9, the note for S3). Subtasks = Hidden sends
+    `top_level`, so the list holds no subtask. A board that then merged a
+    delta feed without it would bring the subtasks back. With `top_level` a
+    subtask that changed is a REMOVAL, and its parent stays a row."""
+    project = db.seed_project(name="Hidden subtasks")
+    status = db.seed_status(str(project.id))
+    stamp = _long_ago()
+    parent = db.seed_task(
+        str(project.id), str(status.id), title="Parent", updated_at=stamp,
+    )
+    child = db.seed_task(
+        str(project.id), str(status.id), title="Child",
+        parent_task_id=str(parent.id), updated_at=stamp + timedelta(seconds=1),
+    )
+    grandchild = db.seed_task(
+        str(project.id), str(status.id), title="Grandchild",
+        parent_task_id=str(child.id), updated_at=stamp + timedelta(seconds=2),
+    )
+    cursor = encode_cursor(stamp - timedelta(minutes=1),
+                           "00000000-0000-0000-0000-000000000000")
+
+    hidden = await pm_delta.delta_tasks(user=USER, since=cursor, top_level=True)
+    assert [r["id"] for r in hidden["rows"]] == [str(parent.id)]
+    assert set(hidden["removed"]) == {str(child.id), str(grandchild.id)}
+
+    # Without the flag the feed is unchanged: every level is a row.
+    every = await pm_delta.delta_tasks(user=USER, since=cursor)
+    assert {r["id"] for r in every["rows"]} == {
+        str(parent.id), str(child.id), str(grandchild.id),
+    }
+    assert every["removed"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_triaged_task_is_a_removal_not_a_leak(db: FakeProjectsDB) -> None:
     """WS-27u's queue must stay invisible here — a sync client caches what it
     receives, so this is the worst of the five surfaces to leak it from — and

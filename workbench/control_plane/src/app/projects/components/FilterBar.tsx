@@ -46,6 +46,7 @@ import {
   type Filters,
   GROUP_OPTIONS,
   type GroupBy,
+  type SubtaskMode,
   UNSET,
   describeDivergence,
   isFiltered,
@@ -62,6 +63,11 @@ import {
   sameFieldSet,
   toggleField,
 } from "../lib/shownFields";
+import {
+  SUBTASK_MODE_LABELS,
+  defaultSubtaskMode,
+  subtaskModesFor,
+} from "../lib/subtaskView";
 import { byUsage, chipClass } from "../lib/tags";
 import { CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/statusCategory";
 
@@ -168,6 +174,13 @@ interface Props {
    */
   lanes: BoardLanes;
   onSubGroupBy: (next: GroupBy) => void;
+  /**
+   * D-PM-38 — the canvas's EFFECTIVE Subtasks mode, and the member's change.
+   * The page resolves the mode (`subtaskView.effectiveSubtaskMode`) and saves
+   * a change to the member's overlay on the view. The bar only draws it.
+   */
+  subtasks: SubtaskMode;
+  onSubtasks: (next: SubtaskMode) => void;
   /** The signed-in member's address, for the "Me" option. Empty while loading. */
   me: string;
   /**
@@ -222,6 +235,8 @@ export function FilterBar({
   onGroupBy,
   lanes,
   onSubGroupBy,
+  subtasks,
+  onSubtasks,
   me,
   people,
   tags,
@@ -551,6 +566,27 @@ export function FilterBar({
             ).map((option) => ({
               value: option,
               label: LANE_OPTION_LABELS[option],
+            }))}
+          />
+        ) : null}
+
+        {/* D-PM-38 — how this canvas draws a subtask. A display setting like
+            the two axes, so it is the same `SelectButton`. Each canvas offers
+            only the modes it can draw (`subtaskModesFor`): the board and the
+            calendar have no Nested, and the timeline (Nested by D-PM-11)
+            shows no control at all. Off its canvas's default, the control
+            wears the same tint as the other changed controls. */}
+        {subtaskModesFor(mode).length > 0 ? (
+          <SelectButton
+            label="Subtasks"
+            widthClass="w-[11rem]"
+            className={subtasks === defaultSubtaskMode(mode) ? AT_DEFAULT : OFF_DEFAULT}
+            value={subtasks}
+            defaultValue={defaultSubtaskMode(mode)}
+            onChange={(next) => onSubtasks(next as SubtaskMode)}
+            options={subtaskModesFor(mode).map((option) => ({
+              value: option,
+              label: SUBTASK_MODE_LABELS[option],
             }))}
           />
         ) : null}

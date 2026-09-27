@@ -21,9 +21,13 @@
  * says when the window hit its cap, `undated` says how many tasks have no dates
  * at all and therefore cannot be here, and a full day cell says `+N more` with
  * the TRUE remainder rather than quietly drawing its first three.
+ *
+ * D-PM-38 (S3): the calendar offers Separate and Hidden, and defaults to
+ * Separate. A subtask chip names its parent with the shared `ParentCrumb`.
+ * Hidden sends `top_level` and drops the subtask chips here too.
  */
 
-import { TaskMeta } from "@/components/TaskMeta";
+import { ParentCrumb, TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useMemo, useState } from "react";
 
@@ -42,7 +46,9 @@ import {
   rescheduleTo,
 } from "../lib/calendar";
 import { tagColours, typeFacts, visibleChips } from "../lib/card";
+import type { SubtaskMode } from "../lib/grouping";
 import { quickAddPrefill } from "../lib/quickAdd";
+import { visibleTasks } from "../lib/subtaskView";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 
@@ -63,6 +69,8 @@ const LAYOUTS: CalendarLayout[] = ["month", "week"];
 interface Props {
   grid: CalendarGrid;
   tasks: TaskRow[];
+  /** D-PM-38 — Separate or Hidden. Resolved by the page. */
+  subtasks: SubtaskMode;
   /** How many matching tasks have no dates and so cannot be drawn. */
   undated: number;
   /** The window hit the server's cap; some tasks are missing. */
@@ -90,7 +98,8 @@ interface Props {
 
 export function CalendarView({
   grid,
-  tasks,
+  tasks: allTasks,
+  subtasks,
   undated,
   truncated,
   today,
@@ -106,6 +115,9 @@ export function CalendarView({
   onLayout,
   onRefuse,
 }: Props) {
+  // Hidden drops the subtask chips here as well as in SQL, so a window read
+  // before the switch cannot flash them back.
+  const tasks = useMemo(() => visibleTasks(allTasks, subtasks), [allTasks, subtasks]);
   const byDay = placeTasks(tasks, grid);
   const { flash, attach } = useFlash();
   // Once per registry, not once per card.
@@ -288,6 +300,8 @@ export function CalendarView({
                       >
                         {task.title}
                       </span>
+                      {/* D-PM-38 — a subtask chip names its parent. */}
+                      <ParentCrumb parent={task.parent} />
                       <TaskMeta
                         chips={visibleChips(
                           task,

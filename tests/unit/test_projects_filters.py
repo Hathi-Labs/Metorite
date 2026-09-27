@@ -39,6 +39,7 @@ from gateway.routes.projects.filters import (
     MIN_QUERY,
     STATUS_CATEGORIES,
     SUBTASK_MODES,
+    VIEW_CONFIG_KEYS,
     VIEW_FILTER_KEYS,
     VIEW_USER_STATE_KEYS,
     build_task_filters,
@@ -616,6 +617,9 @@ class TestTopLevel:
 
         for path in (
             "/projects/tasks", "/projects/calendar", "/projects/export/tasks.csv",
+            # S3 — the delta feed. A board synced after Hidden would bring
+            # the subtasks back without it (§12.9).
+            "/projects/delta/tasks",
         ):
             route = next(r for r in router.routes if r.path == path)
             names = {p.name for p in route.dependant.query_params}
@@ -653,3 +657,19 @@ class TestSubtasksSetting:
 
     def test_the_client_and_the_server_agree_on_the_overlay_keys(self):
         assert _ts_string_list("VIEW_USER_STATE_KEYS") == set(VIEW_USER_STATE_KEYS)
+
+    def test_the_client_and_the_server_agree_on_the_view_config_keys(self):
+        # S3. `toConfig` dropped `subtasks`, so a stale tab wiped a member's
+        # choice on the next save. The client's list is what `toConfig`
+        # writes (`grouping.test.ts` pins that), and this is what the server
+        # keeps. A key on one side only is a setting that a save loses.
+        assert _ts_string_list("VIEW_CONFIG_KEYS") == set(VIEW_CONFIG_KEYS)
+
+    def test_a_full_config_keeps_every_view_config_key(self):
+        full = {
+            "filters": {"q": "x"}, "group_by": "assignee",
+            "sub_group_by": "tag", "collapsed_lanes": ["a"],
+            "show_empty_lanes": True, "shown_fields": ["status"],
+            "subtasks": "hidden", "not_a_key": 1,
+        }
+        assert set(normalise_view_config(full)) == set(VIEW_CONFIG_KEYS)
