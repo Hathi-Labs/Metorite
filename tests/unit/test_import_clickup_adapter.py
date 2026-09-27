@@ -242,3 +242,158 @@ def test_the_fixture_holds_no_real_contact_data() -> None:
     emails = set(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text))
     assert emails and all(e.endswith("@example.com") for e in emails)
     assert "clickup-attachments.com" not in text
+
+
+# ── review fixes (I-1 adversarial review, 2026-09-27) ───────────────────────
+
+
+def _file(*rows: dict[str, str]) -> ImportBundle:
+    """A small export with any columns, written by the csv module."""
+    import csv
+    import io
+
+    base = {
+        "Task ID": "",
+        "Task Link": "",
+        "Task Name": "n",
+        "Status": "to do",
+        "Date Created": "1758612100413",
+        "Date Created Text": "9/23/2025, 12:51:40 PM GMT+5:30",
+        "Parent ID": "null",
+        "List Name": "L",
+        "Space Name": "S",
+        "Home Location ID": "111",
+    }
+    cols = list(base) + sorted({k for r in rows for k in r} - set(base))
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=cols, lineterminator="\n")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({**base, **r})
+    return clickup.parse([("t.csv", out.getvalue().encode())])
+
+
+def _ms(when: dt.datetime) -> str:
+    return str(int(when.timestamp() * 1000))
+
+
+def test_time_spent_is_milliseconds_like_its_text_twin(bundle: ImportBundle) -> None:
+    """The measured file: ``Time Spent`` 1569 reads ``0.03 m`` in its twin."""
+    spent = [t.time_spent_mins for t in bundle.tasks if t.time_spent_mins is not None]
+    assert spent == [0]
+    b = _file({"Task ID": "a", "Time Spent": ' "5400000"', "Time Spent Text": "1.5 h"})
+    assert b.tasks[0].time_spent_mins == 90
+
+
+def test_summer_time_is_decided_row_by_row() -> None:
+    """US Eastern: 04:00 EST in January and 04:00 EDT in July are both
+    date-only. One file-wide offset got January wrong."""
+    est, edt = dt.timezone(dt.timedelta(hours=-5)), dt.timezone(dt.timedelta(hours=-4))
+    jan = dt.datetime(2026, 1, 15, 4, 0, tzinfo=est)
+    jul = dt.datetime(2026, 7, 15, 4, 0, tzinfo=edt)
+    jul_real = dt.datetime(2026, 7, 16, 9, 30, tzinfo=edt)
+    b = _file(
+        {
+            "Task ID": "a",
+            "Due Date": _ms(jan),
+            "Due Date Text": "1/15/2026, 4:00:00 AM GMT-5",
+            "Date Created Text": "1/2/2026, 9:00:00 AM GMT-5",
+        },
+        {
+            "Task ID": "b",
+            "Due Date": _ms(jul),
+            "Due Date Text": "7/15/2026, 4:00:00 AM GMT-4",
+            "Date Created Text": "7/2/2026, 9:00:00 AM GMT-4",
+        },
+        {
+            "Task ID": "c",
+            "Due Date": _ms(jul_real),
+            "Due Date Text": "7/16/2026, 9:30:00 AM GMT-4",
+            "Date Created Text": "7/3/2026, 9:00:00 AM GMT-4",
+        },
+    )
+    by = {t.ref: t for t in b.tasks}
+    assert by["a"].due_date == dt.date(2026, 1, 15) and by["a"].due_at is None
+    assert by["b"].due_date == dt.date(2026, 7, 15) and by["b"].due_at is None
+    assert by["c"].due_at == jul_real and by["c"].due_date is None
+    assert "mixed_timezones" in {w.code for w in b.warnings}
+
+
+def test_a_bare_gmt_is_a_zero_offset() -> None:
+    """A London-winter or UTC exporter writes ``GMT`` with no sign."""
+    four_utc = dt.datetime(2026, 1, 15, 4, 0, tzinfo=dt.UTC)
+    b = _file(
+        {
+            "Task ID": "a",
+            "Date Created Text": "1/2/2026, 9:00:00 AM GMT",
+            "Due Date": _ms(four_utc),
+            "Due Date Text": "1/15/2026, 4:00:00 AM GMT",
+            "Comments": '[{"text":"hi","by":"a@example.com","date":"1/3/2026, 1:05:00 PM UTC"}]',
+        }
+    )
+    assert b.utc_offset == dt.timedelta(0)
+    assert b.tasks[0].due_date == dt.date(2026, 1, 15)
+    assert b.comments[0].created_at == dt.datetime(2026, 1, 3, 13, 5, tzinfo=dt.UTC)
+
+
+def test_twelve_oclock_am_and_pm() -> None:
+    b = _file(
+        {
+            "Task ID": "a",
+            "Comments": '[{"text":"x","by":"a@example.com","date":"1/3/2026, 12:05:00 AM GMT+5:30"},'
+            '{"text":"y","by":"a@example.com","date":"1/3/2026, 12:05:00 PM GMT+5:30"}]',
+        }
+    )
+    ist = dt.timezone(IST)
+    assert [c.created_at for c in b.comments] == [
+        dt.datetime(2026, 1, 3, 0, 5, tzinfo=ist),
+        dt.datetime(2026, 1, 3, 12, 5, tzinfo=ist),
+    ]
+
+
+def test_a_long_parent_chain_parses_in_linear_time() -> None:
+    """A 20,000-deep chain took 24 s with the old walk. It must not hold a
+    gateway worker."""
+    import time
+
+    rows = [{"Task ID": "t0"}] + [
+        {"Task ID": f"t{i}", "Parent ID": f"t{i - 1}"} for i in range(1, 20000)
+    ]
+    started = time.perf_counter()
+    b = _file(*rows)
+    assert time.perf_counter() - started < 10
+    assert sum(1 for t in b.tasks if t.parent_ref) == 19999
+
+
+def test_a_subtask_follows_its_parent_into_the_parents_list() -> None:
+    b = _file(
+        {"Task ID": "p", "Home Location ID": "111", "List Name": "One"},
+        {"Task ID": "c", "Parent ID": "p", "Home Location ID": "222", "List Name": "Two"},
+    )
+    by = {t.ref: t for t in b.tasks}
+    assert by["c"].container_ref == by["p"].container_ref == "list:111"
+    assert {s.container_ref for s in b.statuses} == {"list:111"}
+    assert "parent_other_list" in {w.code for w in b.warnings}
+
+
+@pytest.mark.parametrize("cell", ["null", "2024", '{"a": 1}'])
+def test_an_odd_folder_cell_never_crashes(cell: str) -> None:
+    b = _file({"Task ID": "a", "Folder Name/Path": cell})
+    assert len(b.tasks) == 1
+
+
+def test_a_deeply_nested_json_cell_is_a_warning_not_a_crash() -> None:
+    b = _file({"Task ID": "a", "Comments": "[" * 100000})
+    assert b.comments == []
+    assert "unreadable_comments" in {w.code for w in b.warnings}
+
+
+def test_a_wide_row_is_reported() -> None:
+    body = HEADER + "\n" + _row("a") + ",extra,cells\n"
+    b = clickup.parse([("t.csv", body.encode())])
+    assert "wide_rows" in {w.code for w in b.warnings}
+
+
+def test_a_negative_epoch_reads_on_every_platform() -> None:
+    b = _file({"Task ID": "a", "Date Created": "-86400000"})
+    assert b.tasks[0].created_at == dt.datetime(1969, 12, 31, tzinfo=dt.UTC)

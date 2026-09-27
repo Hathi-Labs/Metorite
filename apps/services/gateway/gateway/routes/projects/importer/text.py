@@ -17,6 +17,7 @@ import codecs
 import csv
 import io
 import sys
+from typing import NamedTuple
 
 # One ClickUp cell (a long description or a comment list) can pass the
 # default 128 KiB field limit.
@@ -33,17 +34,29 @@ def decode(raw: bytes) -> tuple[str, str]:
         return raw.decode("cp1252", errors="replace"), "cp1252"
 
 
-def read_csv(text: str) -> tuple[list[str], list[list[str]]]:
-    """Return ``(header, rows)``. Each row is padded or cut to the header."""
+class Table(NamedTuple):
+    header: list[str]
+    rows: list[list[str]]
+    #: Rows that held more cells than the header. The extra cells are cut,
+    #: and an adapter must report the count: an unquoted comma shifts every
+    #: later column of that row.
+    wide_rows: int = 0
+
+
+def read_csv(text: str) -> Table:
+    """Each row is padded or cut to the header width."""
     reader = csv.reader(io.StringIO(text, newline=""))
     try:
         header = [h.strip() for h in next(reader)]
     except StopIteration:
-        return [], []
+        return Table([], [])
     width = len(header)
     rows: list[list[str]] = []
+    wide = 0
     for row in reader:
         if not any(cell.strip() for cell in row):
             continue
+        if len(row) > width and any(cell.strip() for cell in row[width:]):
+            wide += 1
         rows.append((row + [""] * width)[:width])
-    return header, rows
+    return Table(header, rows, wide)

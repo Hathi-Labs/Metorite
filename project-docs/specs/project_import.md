@@ -177,7 +177,7 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
 | 23 | `Checklists` | JSON: `{"Checklist name": ["item", "item"]}` |
 | 24 | `Comments` | JSON: `[{"text", "by", "date", "assigned", "resolved"}]`. `by` is an **email** |
 | 25 | `Assigned Comments` | `0` in every row |
-| 26, 27 | `Time Spent`, `Time Spent Text` | ` "1569"` with a leading space and quotes, in seconds, and `0.44 h` |
+| 26, 27 | `Time Spent`, `Time Spent Text` | ` "1569"` with a leading space and quotes, in milliseconds, and `0.03 m` |
 | 28, 29 | `Rolled Up Time`, `Rolled Up Time Text` | `NaN`, `null` or a number |
 | 30 | `Home Location ID` | **The List id.** 48 distinct values, one per List |
 | 31 | `Home Location` | `Space > Folder > List`, or `Space > List` |
@@ -211,11 +211,15 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
 7. **Priority is a number.** 1 is Urgent and 4 is Low. §6.4 maps it.
 8. **The file names its own time zone.** Every `… Text` column ends with the
    exporter's offset, for example `GMT+5:30`. The parser reads the zone from
-   the file and does not ask the admin.
+   the file and does not ask the admin. **Each row carries its own offset.**
+   A zone with summer time writes two offsets in one file. So the parser
+   reads each date's offset from that date's own `… Text` twin. A zero
+   offset has no sign: the text ends in a bare `GMT`, which reads as +0.
 9. **A due date with no time sits at 04:00 local.** 1,075 of the 1,091 due
    dates fall at exactly 04:00 in the file's zone. ClickUp writes a date with
    no time that way. The parser lands 04:00 local as a date only (§4.3 item
-   1). Any other time lands as a real time.
+   1). Any other time lands as a real time. "Local" means the offset of that
+   row (fact 8), never one offset for the whole file.
 10. **Assignees are names. Comment authors are emails.** The people screen
     (§6.2) therefore has an email for everyone who wrote a comment, and a
     name for everyone else.
@@ -473,7 +477,7 @@ The importer never writes `leveraged`.
   would put 1,647 completions into one day of every report and chart.
 - `estimate_mins` takes `Time Estimated`, which is in milliseconds.
 - `Time Spent` has no home, because there is no time-entry table. The value
-  is in seconds, inside quotes and after a space. It goes into
+  is in milliseconds, inside quotes and after a space. It goes into
   `origin.time_spent_mins`, and the report says the total is kept but not
   shown.
 

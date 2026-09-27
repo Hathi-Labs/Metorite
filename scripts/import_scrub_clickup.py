@@ -50,6 +50,51 @@ tag = Names("tag {n}")
 space = Names("Space {n}")
 folder = Names("Folder {n}")
 list_name = Names("List {n}")
+status = Names("Status {n}")
+
+#: Columns copied unchanged: numbers, dates and ClickUp's own words only. An
+#: exact list, so a new column — a custom field in a view export, say — is
+#: refused rather than copied because its name happens to hold "Date".
+PASS_THROUGH = frozenset(
+    {
+        "Task Type",
+        "Priority",
+        "Assigned Comments",
+        "Date Created",
+        "Date Created Text",
+        "Due Date",
+        "Due Date Text",
+        "Start Date",
+        "Start Date Text",
+        "Time Estimated",
+        "Time Estimated Text",
+        "Time Spent",
+        "Time Spent Text",
+        "Rolled Up Time",
+        "Rolled Up Time Text",
+    }
+)
+GENERIC_STATUSES = frozenset(
+    {
+        "open",
+        "closed",
+        "done",
+        "complete",
+        "completed",
+        "to do",
+        "todo",
+        "in progress",
+        "in process",
+        "in review",
+        "review",
+        "backlog",
+        "on hold",
+        "blocked",
+        "cancelled",
+        "canceled",
+    }
+)
+
 counter = {"custom": 0, "task": 0, "desc": 0, "comment": 0, "check": 0, "item": 0, "file": 0}
 
 
@@ -149,12 +194,10 @@ def scrub(text: str) -> str:
         "Home Location": _home,
         "Other Location IDs": lambda v: v and _bracket(v, list_id),
         "Other Locations": lambda v: v and "[redacted]",
+        # A status name can name a client. Keep only the generic ones.
+        "Status": lambda v: v if v.strip().lower() in GENERIC_STATUSES else status(v),
     }
-    unknown = [
-        h
-        for h in header
-        if h not in rules and not re.search(r"(Date|Time|Status|Priority|Type|Comments)", h)
-    ]
+    unknown = [h for h in header if h not in rules and h not in PASS_THROUGH]
     if unknown:
         raise SystemExit(f"refusing to copy columns with no scrub rule: {unknown}")
     out = io.StringIO()

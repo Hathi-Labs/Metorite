@@ -26,15 +26,24 @@ def test_an_excel_resave_falls_back_to_cp1252() -> None:
 def test_a_repeated_header_keeps_every_column() -> None:
     """Jira writes one ``Comment`` column per comment. A DictReader would keep
     only the last one."""
-    header, rows = read_csv("Key,Comment,Comment\nA-1,first,second\n")
-    assert header == ["Key", "Comment", "Comment"]
-    assert rows == [["A-1", "first", "second"]]
+    table = read_csv("Key,Comment,Comment\nA-1,first,second\n")
+    assert table.header == ["Key", "Comment", "Comment"]
+    assert table.rows == [["A-1", "first", "second"]]
 
 
 def test_short_rows_pad_and_blank_rows_drop() -> None:
-    _header, rows = read_csv("a,b,c\n1\n\n,,\n1,2,3,4\n")
-    assert rows == [["1", "", ""], ["1", "2", "3"]]
+    table = read_csv("a,b,c\n1\n\n,,\n1,2,3\n")
+    assert table.rows == [["1", "", ""], ["1", "2", "3"]]
+    assert table.wide_rows == 0
+
+
+def test_a_wide_row_is_cut_and_counted() -> None:
+    """An unquoted comma shifts every later column. The cut is never silent."""
+    table = read_csv("a,b,c\n1,2,3,4\n1,2,3,\n")
+    assert table.rows == [["1", "2", "3"], ["1", "2", "3"]]
+    # A trailing empty cell is not a shifted row.
+    assert table.wide_rows == 1
 
 
 def test_an_empty_file_reads_as_nothing() -> None:
-    assert read_csv("") == ([], [])
+    assert read_csv("") == ([], [], 0)

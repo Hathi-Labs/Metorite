@@ -104,10 +104,13 @@ LOSSES = (
     Loss(what="watchers", why="the workspace export has no watcher column"),
 )
 
-_OFFSET = re.compile(r"(?:GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?\s*$")
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+
+#: ``GMT+5:30``, ``UTC-4`` or a bare ``GMT`` (a zero offset has no sign).
+_OFFSET = re.compile(r"\b(?:GMT|UTC)(?:([+-])(\d{1,2})(?::(\d{2}))?)?\s*$")
 _TEXT_DATE = re.compile(
     r"^\s*(\d{1,2})/(\d{1,2})/(\d{4}),\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]m)\s*"
-    r"(?:GMT|UTC)?([+-]\d{1,2}(?::\d{2})?)?\s*$",
+    r"((?:GMT|UTC)(?:[+-]\d{1,2}(?::\d{2})?)?)?\s*$",
     re.IGNORECASE,
 )
 
@@ -131,13 +134,32 @@ def parse(files: list[tuple[str, bytes]]) -> ImportBundle:
         text, encoding = decode(raw)
         if encoding != "utf-8":
             bundle.encoding = encoding
-        header, body = read_csv(text)
+        header, body, wide = read_csv(text)
         missing = [c for c in REQUIRED if c not in header]
         if missing:
             raise ValueError(
                 f"{name}: not a ClickUp workspace export — missing {', '.join(missing)}"
             )
         unknown.update(h for h in header if h not in KNOWN)
+        repeated = sorted(h for h, n in Counter(header).items() if n > 1)
+        if repeated:
+            # ClickUp never repeats a header, so a dict keeps the last copy.
+            # A Jira adapter must not copy this: Jira repeats on purpose.
+            _warn(
+                bundle,
+                "repeated_columns",
+                "columns named twice; the last one is read",
+                len(repeated),
+                repeated,
+            )
+        if wide:
+            _warn(
+                bundle,
+                "wide_rows",
+                "rows with more cells than the header; the extra cells are cut",
+                wide,
+                [name],
+            )
         for cells in body:
             rows.append(dict(zip(header, cells, strict=True)))
     bundle.rows_read = len(rows)
@@ -279,7 +301,7 @@ def _task(bundle: ImportBundle, row: dict[str, str], people: dict[str, Person]) 
         tags=_bracket_list(row.get("Tags", "")),
         created_at=_epoch(row.get("Date Created", "")),
         estimate_mins=_ms_to_mins(row.get("Time Estimated", "")),
-        time_spent_mins=_seconds_to_mins(row.get("Time Spent", "")),
+        time_spent_mins=_ms_to_mins(row.get("Time Spent", "")),
         checklists=_checklists(bundle, tid, row.get("Checklists", "")),
         attachment_names=_attachment_names(bundle, tid, row.get("Attachments", "")),
         custom_id=_nullable(row.get("Task Custom ID", "")),
@@ -287,12 +309,14 @@ def _task(bundle: ImportBundle, row: dict[str, str], people: dict[str, Person]) 
     )
     start = _epoch(row.get("Start Date", ""))
     if start is not None:
-        task.start_date = _local(bundle, start).date()
+        task.start_date = _row_local(bundle, start, row.get("Start Date Text", "")).date()
     due = _epoch(row.get("Due Date", ""))
     if due is not None:
-        local = _local(bundle, due)
-        # Fact 9 — ClickUp writes a due date with no time at 04:00 local.
-        if bundle.utc_offset is not None and (local.hour, local.minute, local.second) == (4, 0, 0):
+        local = _row_local(bundle, due, row.get("Due Date Text", ""))
+        # Fact 9 — ClickUp writes a due date with no time at 04:00 local. The
+        # row's own Text twin carries the offset in force on THAT date, so a
+        # zone with summer time decides each row correctly.
+        if local.tzinfo is not None and (local.hour, local.minute, local.second) == (4, 0, 0):
             task.due_date = local.date()
         else:
             task.due_at = due
@@ -321,32 +345,56 @@ def _parents(bundle: ImportBundle) -> None:
             len(orphans),
             orphans,
         )
-    moved = [
-        t.ref
-        for t in bundle.tasks
-        if t.parent_ref and by_ref[t.parent_ref].container_ref != t.container_ref
-    ]
+    # One pass, O(n): each task is walked once. ``state`` is 1 while a task is
+    # on the current chain and 2 once its chain is known to end.
+    cut: list[str] = []
+    state: dict[str, int] = {}
+    for task in bundle.tasks:
+        chain: list[Task] = []
+        node: Task | None = task
+        while node is not None and state.get(node.ref) is None:
+            state[node.ref] = 1
+            chain.append(node)
+            parent = by_ref[node.parent_ref] if node.parent_ref else None
+            if parent is not None and state.get(parent.ref) == 1:
+                node.parent_ref = None
+                cut.append(node.ref)
+                parent = None
+            node = parent
+        for done in chain:
+            state[done.ref] = 2
+    if cut:
+        _warn(bundle, "parent_cycle", "parent chains that loop; the loop is cut", len(cut), cut)
+    # A subtask lands in its parent's List, so the tree holds together. Walk
+    # from the top so a whole chain follows its root.
+    moved: list[str] = []
+    homes: dict[str, str] = {}
+
+    def home(t: Task) -> str:
+        chain: list[Task] = []
+        while t.ref not in homes and t.parent_ref:
+            chain.append(t)
+            t = by_ref[t.parent_ref]
+        found = homes.get(t.ref, t.container_ref)
+        for seen in chain:
+            homes[seen.ref] = found
+        homes[t.ref] = found
+        return found
+
+    for task in bundle.tasks:
+        if task.parent_ref:
+            root_home = home(task)
+            if root_home != task.container_ref:
+                task.container_ref = root_home
+                moved.append(task.ref)
     if moved:
         _warn(
             bundle,
             "parent_other_list",
-            "subtasks in a different List from their parent; they follow the parent",
+            "subtasks in a different List from their parent; they move to the parent's List",
             len(moved),
             moved,
         )
-    cut: list[str] = []
-    for task in bundle.tasks:
-        seen = {task.ref}
-        node = task
-        while node.parent_ref:
-            if node.parent_ref in seen:
-                node.parent_ref = None
-                cut.append(node.ref)
-                break
-            seen.add(node.parent_ref)
-            node = by_ref[node.parent_ref]
-    if cut:
-        _warn(bundle, "parent_cycle", "parent chains that loop; the loop is cut", len(cut), cut)
 
 
 def _statuses(bundle: ImportBundle) -> None:
@@ -415,15 +463,17 @@ def _unique(values: list[str]) -> list[str]:
 
 def _folder_path(value: str) -> str | None:
     """``["A"]`` → ``A``. ``["A/B"]`` → ``A / B``. Empty → no folder."""
-    value = value.strip()
+    value = _nullable(value) or ""
     if not value:
         return None
     try:
         parts = json.loads(value)
-    except ValueError:
+    except (ValueError, RecursionError):
         parts = [value]
     if isinstance(parts, str):
         parts = [parts]
+    if not isinstance(parts, list):
+        parts = [value]
     names = [
         seg.strip()
         for part in parts
@@ -455,36 +505,42 @@ def _epoch(value: str) -> dt.datetime | None:
     if not value or value in ("null", "NaN"):
         return None
     try:
-        return dt.datetime.fromtimestamp(int(value) / 1000, tz=dt.UTC)
-    except (ValueError, OverflowError, OSError):
+        # Arithmetic, not ``fromtimestamp``: Windows refuses a negative epoch.
+        return _EPOCH + dt.timedelta(milliseconds=int(value))
+    except (ValueError, OverflowError):
         return None
 
 
 def _ms_to_mins(value: str) -> int | None:
+    """``Time Estimated`` and ``Time Spent`` are both milliseconds. ``Time
+    Spent`` arrives as ``' "1569"'`` — a space, quotes, then the number — and
+    its twin ``Time Spent Text`` reads ``0.03 m``."""
     value = value.strip().strip('"').strip()
     if not value.isdigit():
         return None
     return round(int(value) / 60000)
 
 
-def _seconds_to_mins(value: str) -> int | None:
-    """``Time Spent`` is ``' "1569"'`` — a space, quotes, then seconds."""
-    value = value.strip().strip('"').strip()
-    if not value.isdigit():
-        return None
-    return round(int(value) / 60)
-
-
-def _local(bundle: ImportBundle, moment: dt.datetime) -> dt.datetime:
-    if bundle.utc_offset is None:
-        return moment
-    return moment.astimezone(dt.timezone(bundle.utc_offset))
+def _row_local(bundle: ImportBundle, moment: dt.datetime, text: str) -> dt.datetime:
+    """``moment`` in the offset its own ``… Text`` twin names, else in the
+    file's most common offset. With no offset at all it returns a moment with
+    no zone, which turns the 04:00 rule off: a date-only guess needs a zone."""
+    offset = _offset(text)
+    if offset is None:
+        offset = bundle.utc_offset
+    if offset is None:
+        return moment.replace(tzinfo=None)
+    return moment.astimezone(dt.timezone(offset))
 
 
 def _offset(text: str) -> dt.timedelta | None:
-    match = _OFFSET.search(text)
+    """``GMT+5:30`` → +5:30. A bare ``GMT`` or ``UTC`` is +0: the exporter's
+    browser writes a zero offset with no sign."""
+    match = _OFFSET.search(text or "")
     if not match:
         return None
+    if match.group(1) is None:
+        return dt.timedelta(0)
     sign, hours, minutes = match.group(1), int(match.group(2)), int(match.group(3) or 0)
     delta = dt.timedelta(hours=hours, minutes=minutes)
     return -delta if sign == "-" else delta
@@ -502,7 +558,8 @@ def _file_offset(bundle: ImportBundle, rows: list[dict[str, str]]) -> dt.timedel
         _warn(
             bundle,
             "mixed_timezones",
-            "rows carry more than one time zone; the most common one is used",
+            "rows carry more than one UTC offset (summer time, or files from two zones); "
+            "each date uses the offset of its own row",
             len(seen),
             [str(o) for o in seen],
         )
@@ -517,7 +574,7 @@ def _text_date(value: str, fallback: dt.timedelta | None) -> dt.datetime | None:
     month, day, year, hour, minute = (int(match.group(i)) for i in range(1, 6))
     second = int(match.group(6) or 0)
     hour = hour % 12 + (12 if match.group(7).lower() == "pm" else 0)
-    offset = _offset("GMT" + match.group(8)) if match.group(8) else fallback
+    offset = _offset(match.group(8).upper()) if match.group(8) else fallback
     try:
         local = dt.datetime(
             year, month, day, hour, minute, second, tzinfo=dt.timezone(offset or dt.timedelta(0))
@@ -533,7 +590,7 @@ def _json_cell(bundle: ImportBundle, tid: str, column: str, value: str, empty: o
         return empty
     try:
         return json.loads(value)
-    except ValueError:
+    except (ValueError, RecursionError):
         _warn(
             bundle,
             f"unreadable_{column}",
