@@ -1165,6 +1165,13 @@ export interface ViewRow {
    */
   config: Record<string, unknown>;
   position?: number | null;
+  /**
+   * WS-27ae — the CALLER's own overlay on this view (`pm_view_user_state`),
+   * attached by `GET /nodes/{id}/views`. Presentation keys only
+   * (`grouping.VIEW_USER_STATE_KEYS`). S3 reads and writes its `subtasks`.
+   * Absent on a view the caller has never arranged, and on a create's reply.
+   */
+  user_state?: Record<string, unknown>;
 }
 
 /** WS-27m — a registered tag. `task_count` is present on the list endpoint. */
@@ -2023,6 +2030,17 @@ export const projectsApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+
+  /**
+   * WS-27ae — replace the CALLER's overlay on a view. A PUT of the whole
+   * overlay, so send every key you hold, not only the one that changed. The
+   * server takes the member from the session, never from the body.
+   */
+  setViewState: (viewId: string, config: Record<string, unknown>) =>
+    call<{ view_id: string; member: string; config: Record<string, unknown> }>(
+      `views/${viewId}/state`,
+      { method: "PUT", body: JSON.stringify({ config }) }
+    ),
 
   deleteView: (viewId: string) =>
     call<{ deleted: string; cascaded: { positions: number } }>(`views/${viewId}`, {

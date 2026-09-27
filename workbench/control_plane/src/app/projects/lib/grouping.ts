@@ -127,6 +127,29 @@ export const NO_LANES: BoardLanes = {
 export const SUBTASK_MODES = ["nested", "separate", "hidden"] as const;
 export type SubtaskMode = (typeof SUBTASK_MODES)[number];
 
+/** A stored value → a mode, or `null` ("no opinion, use the canvas default"). */
+export function asSubtaskMode(value: unknown): SubtaskMode | null {
+  return (SUBTASK_MODES as readonly unknown[]).includes(value)
+    ? (value as SubtaskMode)
+    : null;
+}
+
+/**
+ * Every top-level key `toConfig` can write. Mirrors the gateway's
+ * `filters.VIEW_CONFIG_KEYS`, and `test_projects_filters.py` fails if the two
+ * sets differ. S3 found `subtasks` missing here: `toConfig` dropped it, so a
+ * stale tab wiped a member's choice on the next save.
+ */
+export const VIEW_CONFIG_KEYS = [
+  "filters",
+  "group_by",
+  "sub_group_by",
+  "collapsed_lanes",
+  "show_empty_lanes",
+  "shown_fields",
+  "subtasks",
+] as const;
+
 /**
  * The keys ONE member's private overlay on a shared view may carry. Mirrors
  * the gateway's `filters.VIEW_USER_STATE_KEYS`, and the same Python test fails
@@ -184,6 +207,13 @@ export function fromConfig(config: unknown): {
   lanes: BoardLanes;
   /** WS-27x — the fields this view shows. Defaulted when nothing was stored. */
   shownFields: string[];
+  /**
+   * D-PM-38 — the stored Subtasks mode, or `null` when the view has none.
+   * `null` is kept as `null`: each canvas owns its default
+   * (`subtaskView.effectiveSubtaskMode`), and filling one in here would freeze
+   * it into the view on the next save.
+   */
+  subtasks: SubtaskMode | null;
 } {
   const raw = (config ?? {}) as Record<string, unknown>;
   const stored = (raw.filters ?? {}) as Record<string, unknown>;
@@ -230,6 +260,7 @@ export function fromConfig(config: unknown): {
     // ABSENT means the default set; an explicitly stored `[]` means every
     // column hidden — collapsing the two would un-hide a deliberate choice.
     shownFields: sanitizeShownFields(raw.shown_fields) ?? [...DEFAULT_SHOWN],
+    subtasks: asSubtaskMode(raw.subtasks),
   };
 }
 
@@ -246,7 +277,8 @@ export function toConfig(
   filters: Filters,
   groupBy: GroupBy,
   lanes: BoardLanes = NO_LANES,
-  shownFields: readonly string[] = DEFAULT_SHOWN
+  shownFields: readonly string[] = DEFAULT_SHOWN,
+  subtasks: SubtaskMode | null = null
 ): Record<string, unknown> {
   const stored: Record<string, unknown> = {};
   if (filters.q.trim()) stored.q = filters.q.trim();
@@ -281,6 +313,9 @@ export function toConfig(
   if (!sameFieldSet(shownFields, DEFAULT_SHOWN)) {
     config.shown_fields = sanitizeShownFields([...shownFields]) ?? [];
   }
+  // D-PM-38 — stored only when the view HAS a mode. Absent means "the canvas
+  // default", so a view that never chose one stays byte-identical.
+  if (subtasks) config.subtasks = subtasks;
   return config;
 }
 

@@ -7946,6 +7946,63 @@ rows. §12.9 names it and says why.
 S3 and S4 draw the views: the list nesting, the board modes, the FilterBar
 control, the timeline and the My Tasks dedupe. S5 builds decisions 2 and 4.
 
+### 11.39 D-PM-38 — the build record for Subtasks S3 (2026-09-27)
+
+**The rule is in §12.9.** S3 draws the Projects views. My Tasks and the
+Calendar app are S4.
+
+No migration. One gateway change: the delta feed takes `top_level`.
+
+| Item | Where | Fence |
+|---|---|---|
+| The Subtasks control, per canvas, with its default | `FilterBar.tsx`, `lib/subtaskView.ts` | `subtaskView.test.ts` |
+| The member's overlay holds the mode, and the view is the fallback | `page.tsx` `changeSubtasks`, `subtaskView.storedSubtasks` | `subtaskView.test.ts` |
+| `toConfig` and `fromConfig` keep `subtasks` | `lib/grouping.ts` | `grouping.test.ts`, `test_projects_filters.py` |
+| Hidden sends `top_level`, and the delta feed takes it | `page.tsx`, `delta.py` | `test_projects_delta.py`, live check (d) |
+| The list nests at any depth, and a new filter opens every parent | `TaskList.tsx`, `subtaskView.subtaskSections` | `subtaskViews.test.ts` |
+| The list and the table draw one row set | `subtaskView.subtaskSections` | `subtaskViews.test.ts` |
+| The table group count does not change on collapse (B7) | `SubtaskSection.count` | `subtaskView.test.ts`, `subtaskViews.test.ts` |
+| The board draws each subtask card with its crumb | `TaskBoard.tsx` | `subtaskViews.test.ts` |
+| A drag changes only the dragged subtask | `board.optimisticDrop` | `board.test.ts` |
+| The calendar chip carries the crumb, and Hidden hides it | `CalendarView.tsx` | `subtaskViews.test.ts` |
+| The timeline draws every level (B3) | `timeline.timelineRows`, `openTimelineRows` | `timeline.test.ts` |
+| A promoted orphan on the timeline carries the crumb | `TimelineView.tsx` | `TimelineView.test.ts` |
+| A subtask hit in search carries the crumb | `SearchPalette.tsx` | none, advisory |
+| The nested-row mark is one component | `TaskMeta.NestedRowMark` | `sharedTaskUi.test.ts` |
+
+**Where the mode lives.** A member's choice goes to that member's overlay on
+the applied view. With no saved view applied, it goes to the project's board
+view. So the choice is kept for each member and each project. The shared view
+config keeps a mode only when somebody saves the view.
+
+**The defaults.** The list and the table default to Nested. The board and the
+calendar default to Separate and offer only Separate and Hidden. The timeline
+is always Nested and shows no control.
+
+**Hidden and the three list canvases.** The board, the list and the table share
+one task read. The page sends `top_level` when the stored mode says Hidden, so a
+switch between the three does not read again. On the board, a stored Nested
+falls back to Separate.
+
+**Each group finds its own orphans.** With the list grouped by status, a
+subtask in another status than its parent is an orphan in its own group. It
+shows alone with its crumb (decision 3).
+
+**The timeline fix (B3).** `timelineRows` now walks `taskTree`, so every level
+nests. Each row carries all of its descendants, so a parent bar folds in the
+dates of a grandchild. A task that names itself as its parent is now one row.
+Before S3 it was no row.
+
+**Known gaps, not fixed here.**
+
+- The Projects export and the analytics dataset take `top_level`, and no
+  surface sends it. An export from a Hidden board still holds the subtasks.
+- The search palette crumb has no rendered test. The palette mounts a
+  `Modal`, which does not render on the server.
+- The visual rig at 390px shows the space overview and not the canvas. The
+  mobile layout drops the selected project when the width changes, so the
+  mobile shots do not show the S3 rows.
+
 ---
 
 ## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)
@@ -8256,9 +8313,8 @@ of one shared view can see different rows. This is on purpose, because the
 design remembers the setting for each member. A hidden subtask still counts
 in its parent's chip, so the parent still says that it has children.
 
-⚠️ **For S3.** The delta feed does not take `top_level` yet. S3 must make the
-delta feed respect it, or a synced board shows the subtasks that Hidden
-folded away.
+⚠️ **The delta feed takes `top_level` too** (S3, §11.39). Without it, a
+synced board shows the subtasks that Hidden folded away.
 
 ---
 

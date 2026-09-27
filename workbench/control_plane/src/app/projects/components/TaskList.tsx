@@ -24,13 +24,25 @@
  * Which columns exist is `table.listColumns`, so the header, the group heading
  * and the quick-add row cannot disagree about the `colSpan`. No default moved:
  * both keys are in `DEFAULT_SHOWN`.
+ *
+ * D-PM-38 (S3): **subtasks follow the view's Subtasks setting.** Nested draws
+ * them under their parent at any depth, and a parent can collapse. A new
+ * filter opens every parent, so a matching subtask is never hidden under one.
+ * Separate draws flat rows, and each subtask names its parent. Hidden leaves
+ * them out. The rows come from `subtaskView.subtaskSections`, the same
+ * function the table calls, so the two canvases draw one row set.
  */
 import { ControlLink } from "@/components/ControlLink";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
-import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import {
+  AvatarStack,
+  NestedRowMark,
+  ParentCrumb,
+  TaskMeta,
+} from "@/components/TaskMeta";
 import { useMemo, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
@@ -44,12 +56,20 @@ import { emptyStateCopy } from "../lib/emptyState";
 import {
   type Filters,
   type GroupBy,
+  type SubtaskMode,
   type TaskGroup,
   isFiltered,
   labelWith,
   personLabel,
+  toQuery,
 } from "../lib/grouping";
 import { quickAddPrefill } from "../lib/quickAdd";
+import {
+  type Fold,
+  collapsedNow,
+  subtaskSections,
+  toggleFold as toggleParentFold,
+} from "../lib/subtaskView";
 import { listColumns } from "../lib/table";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
@@ -60,7 +80,13 @@ interface Props {
   groups: TaskGroup[];
   groupBy: GroupBy;
   /**
-   * S4 — the view's filters, for the empty state alone.
+   * D-PM-38 — how this list draws a subtask: the canvas's effective mode,
+   * resolved by the page (`subtaskView.effectiveSubtaskMode`).
+   */
+  subtasks: SubtaskMode;
+  /**
+   * S4 — the view's filters, for the empty state. S3 reads them for one more
+   * rule: a new filter opens every collapsed parent.
    *
    * Required rather than optional: an unwired call site would silently draw
    * "no tasks here yet" over a filtered-to-nothing list, which is the exact
@@ -99,6 +125,7 @@ interface Props {
 export function TaskList({
   groups,
   groupBy,
+  subtasks,
   filters,
   onClearFilters,
   statuses,
@@ -129,39 +156,48 @@ export function TaskList({
       return next;
     });
 
+  // D-PM-38 — the collapsed PARENTS (not the group sections above), stamped
+  // with the filter they were collapsed under (`subtaskView.collapsedNow`).
+  const [fold, setFold] = useState<Fold>({ key: "", ids: new Set() });
+  const filterKey = JSON.stringify(toQuery(filters));
+  const filtered = isFiltered(filters);
+  const collapsed = collapsedNow(fold, filterKey, filtered);
+  const toggleParent = (taskId: string) =>
+    setFold((current) => toggleParentFold(current, filterKey, filtered, taskId));
+
   const statusById = new Map(statuses.map((s) => [s.id, s]));
-  const total = groups.reduce((sum, group) => sum + group.tasks.length, 0);
   // Once per registry, not once per row.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
   const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
 
+  // ⚠️ `subtaskSections` is the table's function too, so one input gives one
+  // row set on both canvases (D-PM-38).
+  const sections = useMemo(
+    () => subtaskSections(groups, subtasks, collapsed, sortForView),
+    [groups, subtasks, collapsed]
+  );
+  const total = sections.reduce((sum, section) => sum + section.count, 0);
   // The cursor's world: rendered order, each id once (a two-owner task is
   // drawn in two sections but is one row to the keyboard, as to WS-27n).
-  const sections = useMemo(
-    () =>
-      groups
-        .filter((group) => group.tasks.length > 0)
-        .map((group) => ({ ...group, tasks: sortForView(group.tasks) })),
-    [groups]
-  );
   const rows = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const group of sections) {
+    for (const section of sections) {
       // A folded section's rows are off-screen, so the cursor skips them —
       // same rule the board applies to a collapsed lane.
-      if (folded.has(group.key)) continue;
-      for (const task of group.tasks)
-        if (!seen.has(task.id)) {
-          seen.add(task.id);
-          out.push(task.id);
+      if (folded.has(section.key)) continue;
+      for (const row of section.rows)
+        if (!seen.has(row.task.id)) {
+          seen.add(row.task.id);
+          out.push(row.task.id);
         }
     }
     return out;
   }, [sections, folded]);
   const taskById = useMemo(() => {
     const map = new Map<string, TaskRow>();
-    for (const group of sections) for (const task of group.tasks) map.set(task.id, task);
+    for (const section of sections)
+      for (const row of section.rows) map.set(row.task.id, row.task);
     return map;
   }, [sections]);
 
@@ -320,19 +356,22 @@ export function TaskList({
                     />
                     <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
                     <span className="truncate">{group.label}</span>
+                    {/* Every task in the group, whatever is collapsed — the
+                        table's B7 rule, from the same `count`. */}
                     <span
                       className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                      title={`${group.tasks.length} task${
-                        group.tasks.length === 1 ? "" : "s"
+                      title={`${group.count} task${
+                        group.count === 1 ? "" : "s"
                       } in ${group.label}`}
                     >
-                      {group.tasks.length}
+                      {group.count}
                     </span>
                   </button>
                 </th>
               </tr>
             )}
-            {isFolded ? null : group.tasks.map((task) => {
+            {isFolded ? null : group.rows.map((row) => {
+              const task = row.task;
               const status = statusById.get(task.status_id);
               const atCursor = cursorAt >= 0 && rows[cursorAt] === task.id;
               return (
@@ -363,6 +402,38 @@ export function TaskList({
                     {taskRef(task) ?? "—"}
                   </td>
                   <td className="px-3 py-2 text-foreground">
+                    {/* D-PM-38 — a nested row: the indent, then a caret on a
+                        parent or the nested-row mark on a leaf. The same
+                        grammar the table draws. */}
+                    <span
+                      className="flex min-w-0 flex-col"
+                      style={{ paddingLeft: `${row.depth * 1.25}rem` }}
+                    >
+                    <span className="flex min-w-0 items-center gap-1">
+                    {row.childCount > 0 ? (
+                      <button
+                        type="button"
+                        aria-label={
+                          collapsed.has(task.id)
+                            ? `Expand ${row.descendantCount} subtasks of ${task.title}`
+                            : `Collapse subtasks of ${task.title}`
+                        }
+                        aria-expanded={!collapsed.has(task.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleParent(task.id);
+                        }}
+                        className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <Icon
+                          name={collapsed.has(task.id) ? "ChevronRight" : "ChevronDown"}
+                          size={12}
+                          aria-hidden
+                        />
+                      </button>
+                    ) : (
+                      <NestedRowMark depth={row.depth} />
+                    )}
                     {/* WS-27al(1) — the title is a REAL link to the task's own
                         deep link, so cmd/ctrl/shift/middle-click open it in a
                         new tab the way they do everywhere else on the machine.
@@ -378,6 +449,10 @@ export function TaskList({
                     >
                       {task.title}
                     </ControlLink>
+                    </span>
+                    {/* An orphan, or a Separate subtask, names its parent. */}
+                    {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                    </span>
                   </td>
                   {showStatus ? (
                     <td className="px-3 py-2 text-muted-foreground">

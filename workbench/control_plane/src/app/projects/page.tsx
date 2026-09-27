@@ -88,7 +88,12 @@ import {
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
-import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
+import {
+  SAVED_VIEW_POSITION,
+  optimisticDrop,
+  orderBearingView,
+  type planDrop,
+} from "./lib/board";
 import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
 import {
   type CalendarLayout,
@@ -124,6 +129,7 @@ import {
   type Filters,
   type GroupBy,
   NO_LANES,
+  type SubtaskMode,
   assigneesIn,
   fromConfig,
   groupTasks,
@@ -133,6 +139,13 @@ import {
   toConfig,
   toQuery,
 } from "./lib/grouping";
+import {
+  effectiveSubtaskMode,
+  overlayWithSubtasks,
+  sendsTopLevel,
+  storedSubtasks,
+  visibleTasks,
+} from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
 import { peek, read } from "@/lib/dataCache";
@@ -727,6 +740,10 @@ function ProjectsWorkspace() {
   const [tableSort, setTableSort] = useState<TableSort | null>(null);
   const [views, setViews] = useState<ViewRow[]>([]);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  // D-PM-38 — the Subtasks mode, ONLY for the moment no view is loaded to
+  // hold it. Normally the mode is read from a view (`storedSubtasks`), so the
+  // member's overlay is the one place it lives. See `subtasksView` below.
+  const [localSubtasks, setLocalSubtasks] = useState<SubtaskMode | null>(null);
   const [me, setMe] = useState("");
 
   // WS-27l — the selected node's custom field definitions. Root-scoped, so the
@@ -1512,6 +1529,30 @@ function ProjectsWorkspace() {
   );
 
   /**
+   * D-PM-38 — the view that holds this member's Subtasks mode.
+   *
+   * The applied saved view, or else the project's own board view. Every
+   * project has one (`tree.py` seeds it), so a member who never saves a view
+   * still has the mode remembered per project, in their own overlay. `null`
+   * only while the views read is in flight, and then `localSubtasks` holds it.
+   */
+  const subtasksView = useMemo(
+    () =>
+      views.find((view) => view.id === activeViewId) ?? orderBearingView(views),
+    [views, activeViewId]
+  );
+  const storedMode = subtasksView ? storedSubtasks(subtasksView) : localSubtasks;
+  /** The mode THIS canvas draws in (`subtaskView.effectiveSubtaskMode`). */
+  const subtaskMode = effectiveSubtaskMode(storedMode, mode);
+  /**
+   * `top_level` for the board, the list and the table. They share one task
+   * read, and all three offer Hidden, so the flag depends on the stored mode
+   * and not on which of the three is on screen. Switching between them then
+   * re-reads nothing.
+   */
+  const listTopLevel = storedMode === "hidden";
+
+  /**
    * The question the board asks the server, as a parameter bag.
    *
    * ⚠️ **ONE definition, because two readers now ask it.** `loadProject` reads
@@ -1544,8 +1585,13 @@ function ProjectsWorkspace() {
       // same read a moment later, and the cached rows could never be
       // reused. It resolves on the next pass, when `views` arrives.
       ...(boardViewId ? { view_id: boardViewId } : {}),
+      // D-PM-38 — Subtasks = Hidden. Sent only when on, so the read key of
+      // every other board stays the one the cache already holds. A hidden
+      // subtask still counts in its parent's chip: the gateway counts the
+      // children in their own query, which this flag does not narrow.
+      ...(listTopLevel ? { top_level: true } : {}),
     }),
-    [filters, tableSort, boardViewId]
+    [filters, tableSort, boardViewId, listTopLevel]
   );
 
   const loadProject = useCallback(
@@ -1707,6 +1753,10 @@ function ProjectsWorkspace() {
     [mode, calLayout, monthAnchor]
   );
 
+  // D-PM-38 — `top_level` for the window read. The calendar may be Hidden;
+  // the timeline never is (`effectiveSubtaskMode` resolves it to Nested).
+  const monthTopLevel = sendsTopLevel(storedMode, mode);
+
   const loadMonth = useCallback(async () => {
     if (!selected) {
       setMonth(NO_MONTH);
@@ -1732,6 +1782,9 @@ function ProjectsWorkspace() {
         // row is what you drag across to schedule it.
         include_undated: mode === "timeline",
         ...toQuery(filters),
+        // D-PM-38 — Hidden on the calendar. Never on the timeline, which is
+        // Nested by D-PM-11 and so never resolves to Hidden.
+        ...(monthTopLevel ? { top_level: true } : {}),
       });
       // ⚠️ Normalised HERE, at the boundary, so nothing downstream has to
       // guard. `monthGroups` spreads `month.unscheduled`, and a spread of
@@ -1756,7 +1809,7 @@ function ProjectsWorkspace() {
       // heading is a calendar confidently showing the wrong dates.
       setMonth(NO_MONTH);
     }
-  }, [selected, grid, filters, mode, timeWindow]);
+  }, [selected, grid, filters, mode, timeWindow, monthTopLevel]);
 
   useEffect(() => {
     // Both date views read the same window endpoint — the WINDOW is the
@@ -1956,9 +2009,16 @@ function ProjectsWorkspace() {
     [roots]
   );
 
+  // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
+  // from the read before the switch are painted first, and the selection
+  // (`onScreen`) must not keep a row nobody can see.
   const groups = useMemo(
-    () => groupTasks(tasks, groupBy, { statuses, projectName }),
-    [tasks, groupBy, statuses, projectName]
+    () =>
+      groupTasks(visibleTasks(tasks, subtaskMode), groupBy, {
+        statuses,
+        projectName,
+      }),
+    [tasks, subtaskMode, groupBy, statuses, projectName]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -2104,7 +2164,8 @@ function ProjectsWorkspace() {
         // saved view stores FILTERS; the canvas it was saved from is not
         // part of what it restores, so 'list' is the honest fallback.
         view_type: mode === "board" ? "board" : "list",
-        config: toConfig(filters, groupBy, lanes, shownFields),
+        // D-PM-38 — the new view starts in the mode this member sees now.
+        config: toConfig(filters, groupBy, lanes, shownFields, storedMode),
         // Above the seeded pair, so the drag handler keeps writing its order
         // into the project's original board rather than into a saved filter.
         position: SAVED_VIEW_POSITION + views.length,
@@ -2129,9 +2190,17 @@ function ProjectsWorkspace() {
   async function updateView(view: ViewRow) {
     try {
       const saved = await projectsApi.patchView(view.id, {
-        config: toConfig(filters, groupBy, lanes, shownFields),
+        // ⚠️ `storedMode` rides along. Before S3 `toConfig` had no slot for
+        // it, so an update from a tab that held the view wiped its mode.
+        config: toConfig(filters, groupBy, lanes, shownFields, storedMode),
       });
-      setViews((current) => current.map((v) => (v.id === view.id ? saved : v)));
+      // The PATCH reply carries no `user_state` (it is the shared row), so
+      // the member's overlay is kept from the row it replaces.
+      setViews((current) =>
+        current.map((v) =>
+          v.id === view.id ? { ...saved, user_state: v.user_state } : v
+        )
+      );
       setActiveViewId(saved.id);
     } catch (err) {
       setError(String((err as Error).message));
@@ -2164,6 +2233,38 @@ function ProjectsWorkspace() {
   // WS-27x — same rule for the shown-fields set: it is part of a view.
   function changeShownFields(next: string[]) {
     setShownFields(next);
+  }
+
+  /**
+   * D-PM-38 — the member picks a Subtasks mode.
+   *
+   * It goes to the MEMBER's overlay on `subtasksView`, never to the shared
+   * view config: §12.9 says the member's overlay remembers it for that
+   * member. So a colleague on the same view keeps their own mode, and the
+   * saved view's chip does not turn "edited".
+   *
+   * Optimistic, then confirmed with what the server stored. A failed write
+   * says why and leaves the screen in the mode the member picked, which the
+   * next load corrects.
+   */
+  async function changeSubtasks(next: SubtaskMode) {
+    const view = subtasksView;
+    if (!view) {
+      setLocalSubtasks(next);
+      return;
+    }
+    const overlay = overlayWithSubtasks(view.user_state, next);
+    const withOverlay = (state: Record<string, unknown>) =>
+      setViews((current) =>
+        current.map((v) => (v.id === view.id ? { ...v, user_state: state } : v))
+      );
+    withOverlay(overlay);
+    try {
+      const saved = await projectsApi.setViewState(view.id, overlay);
+      withOverlay(saved.config);
+    } catch (err) {
+      setError(String((err as Error).message));
+    }
   }
 
   // Opening a task always resolves ITS project's statuses. From the board that
@@ -3071,12 +3172,10 @@ function ProjectsWorkspace() {
     // Optimistic: the card moves now and the truth arrives on reload. A drag
     // that waits for a round trip feels broken even when it is correct. The
     // WHOLE patch applies — a lane-cell drop moves two axes at once (WS-27y).
+    // D-PM-38 — `optimisticDrop` moves the DRAGGED task only. A subtask
+    // dropped in a lane does not take its parent or its siblings with it.
     if (patch) {
-      setTasks((current) =>
-        current.map((t) =>
-          t.id === task.id ? { ...t, ...(patch as Partial<TaskRow>) } : t
-        )
-      );
+      setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
       if (patch) await projectsApi.patchTask(task.id, patch);
@@ -3472,6 +3571,8 @@ function ProjectsWorkspace() {
               collapsedLanes: [],
             }));
           }}
+          subtasks={subtaskMode}
+          onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           people={people}
           tags={tags}
@@ -3662,6 +3763,7 @@ function ProjectsWorkspace() {
             <CalendarView
               grid={grid}
               tasks={month.rows}
+              subtasks={subtaskMode}
               undated={month.undated}
               truncated={month.truncated}
               today={dayKey(new Date())}
@@ -3682,6 +3784,8 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
+              filters={filters}
               statuses={statuses}
               fields={fields}
               taskTypes={taskTypes}
@@ -3702,6 +3806,7 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
               // S4 — the empty state has to know whether the filters emptied it.
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
@@ -3749,6 +3854,7 @@ function ProjectsWorkspace() {
           personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
+              subtasks={subtaskMode}
               filters={filters}
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               statuses={statuses}

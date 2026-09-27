@@ -51,7 +51,7 @@
  */
 
 import Icon from "@/components/Icon";
-import { TaskMeta } from "@/components/TaskMeta";
+import { NestedRowMark, ParentCrumb, TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -95,6 +95,7 @@ import {
   edgePoints,
   interval,
   monthCells,
+  openTimelineRows,
   resizeEnd,
   resizeStart,
   roundedPath,
@@ -160,9 +161,12 @@ type DrawnRow =
   | {
       kind: "task";
       task: TaskRow;
+      /** Every subtask under this row, at any depth — its bar folds them in. */
       children: TaskRow[];
       depth: number;
       hasKids: boolean;
+      /** A subtask whose parent is not in the window: it carries the crumb. */
+      orphan: boolean;
     };
 
 type DragMode = "move" | "start" | "end" | "create";
@@ -413,23 +417,24 @@ export function TimelineView({
 
   const drawn = useMemo(() => {
     const out: DrawnRow[] = [];
-    /** One band's task rows, honouring the subtask fold. */
+    /**
+     * One band's task rows, honouring the subtask fold, at EVERY depth.
+     *
+     * B3 (Subtasks S3): this pushed one level with `children: []`, so a
+     * grandchild was never drawn and a nested row lost the dates of the
+     * rows under it. `openTimelineRows` walks every level now, and each row
+     * carries its own descendants for its bar.
+     */
     const pushRows = (source: readonly TimelineRow[]) => {
-      for (const row of source) {
+      for (const row of openTimelineRows(source, expanded)) {
         out.push({
           kind: "task",
           task: row.task,
           children: row.children,
-          depth: 0,
-          hasKids: row.children.length > 0,
+          depth: row.depth,
+          hasKids: row.subrows.length > 0,
+          orphan: row.orphan,
         });
-        if (expanded.has(row.task.id)) {
-          for (const kid of row.children) {
-            out.push({
-              kind: "task", task: kid, children: [], depth: 1, hasKids: false,
-            });
-          }
-        }
       }
     };
 
@@ -1127,15 +1132,25 @@ export function TimelineView({
                     }
                   />
                 ) : (
-                  <span className="w-5 shrink-0" />
+                  // A nested leaf wears the shared nested-row mark in the
+                  // caret's slot, so the rail reads like the list and the
+                  // table (D-PM-38).
+                  <span className="flex w-5 shrink-0 justify-center">
+                    <NestedRowMark depth={row.depth} />
+                  </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => onSelect(row.task)}
-                  className="min-w-0 flex-1 truncate text-left text-xs text-foreground hover:underline"
-                >
-                  {row.task.title}
-                </button>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(row.task)}
+                    className="min-w-0 truncate text-left text-xs text-foreground hover:underline"
+                  >
+                    {row.task.title}
+                  </button>
+                  {/* A promoted orphan names its parent (D-PM-38 decision 3).
+                      ROW_H has room for the second line. */}
+                  {row.orphan ? <ParentCrumb parent={row.task.parent} /> : null}
+                </div>
                 {/* The meta column. `shrink-0` against the title's `flex-1`,
                     so the NAME gives way first — a truncated title is still
                     recognisable, a truncated date is a lie. */}

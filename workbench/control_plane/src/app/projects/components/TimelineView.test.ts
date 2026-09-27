@@ -235,4 +235,18 @@ describe("TimelineView", () => {
   it("falls back to a plain message with no tasks at all", () => {
     expect(draw({ tasks: [], links: [], undated: 0 })).toContain("No tasks to display");
   });
+
+  it("a promoted orphan names its parent, and a top-level row does not (D-PM-38)", () => {
+    const orphan = task({
+      id: "orphan",
+      title: "Write the release notes",
+      parent_task_id: "gone",
+      parent: { id: "gone", ref: "#12", title: "Ship v2" },
+      start_date: "2026-08-12",
+      due_at: at("2026-08-14"),
+    });
+    const html = draw({ tasks: [LONG, orphan], links: [], undated: 0 });
+    expect(html).toContain('title="Subtask of #12 Ship v2"');
+    expect(html.split("Subtask of").length - 1).toBe(1);
+  });
 });

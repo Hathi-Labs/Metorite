@@ -29,6 +29,13 @@
  * registry. Nothing new arrives from `page.tsx`: Open is `onSelect`,
  * Select is `onToggle`, and Change status is `onDrop` carrying an axis patch
  * and no reordering, which is exactly what dragging the card there would send.
+ *
+ * D-PM-38 (S3): **the board draws a subtask by the view's Subtasks setting.**
+ * Separate, the owner's default, draws each subtask as its own card, with its
+ * "↳ Parent" line through `TaskCardShell`'s `parent`. Hidden draws top-level
+ * cards only. A column counts the cards it draws, and its tooltip says how
+ * many are subtasks. A drag moves only the card dragged: a parent's status
+ * never follows its subtask (`board.optimisticDrop`, fenced).
  */
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
@@ -59,12 +66,14 @@ import {
   type BoardLanes,
   type Filters,
   type GroupBy,
+  type SubtaskMode,
   type TaskGroup,
   isFiltered,
   labelWith,
   personLabel,
 } from "../lib/grouping";
 import { mergePlans, quickAddPrefill } from "../lib/quickAdd";
+import { columnCountTitle, visibleTasks } from "../lib/subtaskView";
 import {
   type Swimlane,
   buildSwimlanes,
@@ -87,6 +96,11 @@ const NOBODY: ReadonlySet<string> = new Set();
 interface Props {
   groups: TaskGroup[];
   groupBy: GroupBy;
+  /**
+   * D-PM-38 — Separate or Hidden (the board offers no Nested). Resolved by
+   * the page (`subtaskView.effectiveSubtaskMode`).
+   */
+  subtasks: SubtaskMode;
   /**
    * S4 — the view's filters, for the empty state alone.
    *
@@ -174,6 +188,7 @@ interface Props {
 export function TaskBoard({
   groups,
   groupBy,
+  subtasks,
   filters,
   onClearFilters,
   lanes,
@@ -243,9 +258,15 @@ export function TaskBoard({
   const subBy = lanes.subGroupBy === groupBy ? "none" : lanes.subGroupBy;
   const laned = subBy !== "none";
 
+  // D-PM-38 — Hidden drops the subtask cards here as well as in SQL, so a
+  // held page painted before the new read lands cannot flash them back.
   const columns = useMemo(
-    () => groups.map((group) => ({ ...group, tasks: sortForView(group.tasks) })),
-    [groups]
+    () =>
+      groups.map((group) => ({
+        ...group,
+        tasks: sortForView(visibleTasks(group.tasks, subtasks)),
+      })),
+    [groups, subtasks]
   );
 
   const statusById = useMemo(
@@ -709,6 +730,10 @@ export function TaskBoard({
         // of those reach a screen reader, and the card is the thing being
         // announced — so it says so.
         ariaLabel={selected?.has(task.id) ? `${task.title}, selected` : task.title}
+        // D-PM-38 — the "↳ Parent" line. Every subtask card carries it, so a
+        // subtask never reads as a top-level task. A top-level card has
+        // `parent: null` and the shell draws nothing.
+        parent={task.parent}
         draggable={!editing}
         completed={Boolean(task.completed_at)}
         selected={selected?.has(task.id) ?? false}
@@ -933,11 +958,10 @@ export function TaskBoard({
                     {column.label}
                   </span>
                 </span>
+                {/* The cards drawn, and how many of them are subtasks. */}
                 <span
                   className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                  title={`${column.tasks.length} task${
-                    column.tasks.length === 1 ? "" : "s"
-                  } in ${column.label}`}
+                  title={columnCountTitle(column.tasks, column.label)}
                 >
                   {column.tasks.length}
                 </span>
@@ -988,9 +1012,7 @@ export function TaskBoard({
                     </span>
                     <span
                       className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                      title={`${column.tasks.length} task${
-                        column.tasks.length === 1 ? "" : "s"
-                      } in ${column.label}`}
+                      title={columnCountTitle(column.tasks, column.label)}
                     >
                       {column.tasks.length}
                     </span>

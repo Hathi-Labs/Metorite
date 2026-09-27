@@ -15,6 +15,9 @@ and a hermetic fake agrees with whatever SQL it is handed (R8):
 * **(c) A delete at depth 2 lifts the subtask to its GRANDPARENT**, through the
   single route and the bulk action. The bulk case also deletes a grandparent
   and its child in ONE selection, which only a real FK can judge.
+* **(d) S3: Subtasks = Hidden.** `top_level` on the list keeps the parent's
+  chip whole, and `top_level` on the delta feed turns a subtask into a
+  removal, so a synced board does not bring it back (§12.9).
 
 Running it, on a FRESH database (01_schema.sql, then apply_migrations.sh)::
 
@@ -42,6 +45,7 @@ from gateway.db import get_db  # noqa: E402
 from gateway.routes.projects import analytics as pm_analytics  # noqa: E402
 from gateway.routes.projects import bulk as pm_bulk  # noqa: E402
 from gateway.routes.projects import calendar as pm_calendar  # noqa: E402
+from gateway.routes.projects import delta as pm_delta  # noqa: E402
 from gateway.routes.projects import personal as pm_personal  # noqa: E402
 from gateway.routes.projects import relations as pm_relations  # noqa: E402
 from gateway.routes.projects import search as pm_search  # noqa: E402
@@ -359,6 +363,47 @@ async def main():  # noqa: C901
         check("owner: sees the secret child too", owner_chip,
               {"done": 1, "total": 3})
         check("owner: chip == panel progress", owner_chip, owner_panel)
+
+        # ── (d) S3: Subtasks = Hidden, on the list and on the delta feed ────
+        # `top_level` folds the subtasks away, and the parent's chip still
+        # counts them, because the count is its own query.
+        hidden = await pm_tasks.list_tasks(
+            user=member(), page=page, top_level=True,
+        )
+        hidden_rows = {r["id"]: r for r in hidden.rows}
+        check("hidden list: no row has a parent",
+              [r["id"] for r in hidden.rows if r.get("parent_task_id")], [])
+        check("hidden list: the parent is still listed",
+              t["mixed"] in hidden_rows, True)
+        check("hidden list: its chip still counts the hidden subtasks",
+              hidden_rows[t["mixed"]]["subtasks"], {"done": 1, "total": 2})
+        # The feed refuses the last few seconds (its horizon), so the rows are
+        # moved back an hour, as the delta live check does.
+        db = await get_db()
+        try:
+            await db.execute(text(
+                "UPDATE pm_tasks SET updated_at = now() - interval '1 hour' "
+                "WHERE title LIKE :m"), {"m": f"{MARK}%"})
+            await db.commit()
+        finally:
+            await db.close()
+        open_pid = made["projects"]["open"]["id"]
+        feed = await pm_delta.delta_tasks(
+            user=owner(), project_id=open_pid, include_subtree=False,
+            limit=500, top_level=True,
+        )
+        check("delta top_level: no row has a parent",
+              [r["id"] for r in feed["rows"] if r.get("parent_task_id")], [])
+        check("delta top_level: the parent is a row",
+              t["mixed"] in {r["id"] for r in feed["rows"]}, True)
+        check("delta top_level: a live subtask is a removal, not a row",
+              t["k_open"] in feed["removed"], True)
+        full = await pm_delta.delta_tasks(
+            user=owner(), project_id=open_pid, include_subtree=False,
+            limit=500,
+        )
+        check("delta without it: the subtask is a row (the control)",
+              t["k_open"] in {r["id"] for r in full["rows"]}, True)
 
         # ── (c) a delete at depth 2 lifts to the grandparent ────────────────
         result = await pm_tasks.delete_task(t["p_single"], user=owner())

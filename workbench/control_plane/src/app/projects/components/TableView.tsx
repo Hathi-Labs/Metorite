@@ -17,8 +17,12 @@
  * gateway's `TASK_SORTS` keys — status is the WS-27w semantic sort); the page
  * owns the fetch, so the sort state lives there and arrives as a prop.
  *
- * Sub-tasks nest indented under their parent when both are on the page
- * (`@/lib/taskTree` `treeRows`); collapse state is local. The keyboard walks a CELL
+ * Subtasks follow the view's Subtasks setting (D-PM-38, `lib/subtaskView`).
+ * Nested draws them under their parent through `@/lib/taskTree`, and the
+ * collapse state is local. Separate draws them flat. Hidden leaves them out.
+ * An orphan, and every Separate subtask, carries the "↳ Parent" crumb. The
+ * list draws its rows through the same `subtaskSections`, so the two canvases
+ * show the same row set for the same input. The keyboard walks a CELL
  * cursor (`lib/tableCursor`) — arrows move the ring, Enter edits (or opens
  * the panel where a cell has no editor), Esc cancels back to cursor mode.
  * Every group ends in the WS-27y quick-add, pre-filled with the group's value.
@@ -27,7 +31,12 @@
 import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
-import { AvatarStack, PriorityChip } from "@/components/TaskMeta";
+import {
+  AvatarStack,
+  NestedRowMark,
+  ParentCrumb,
+  PriorityChip,
+} from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
@@ -43,10 +52,15 @@ import { sortForView } from "../lib/board";
 import { taskDeepLink, taskRef } from "../lib/card";
 import { type FieldDef, displayValue, toInput, toWire } from "../lib/customFields";
 import {
+  EMPTY_FILTERS,
+  type Filters,
   type GroupBy,
+  type SubtaskMode,
   type TaskGroup,
   UNSET,
+  isFiltered,
   labelWith,
+  toQuery,
 } from "../lib/grouping";
 import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
@@ -63,8 +77,8 @@ import {
   nextSort,
   tableColumns,
 } from "../lib/table";
+import { type Fold, collapsedNow, subtaskSections, toggleFold } from "../lib/subtaskView";
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
-import { treeRows } from "@/lib/taskTree";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 
@@ -81,6 +95,16 @@ function isEditable(column: TableColumn): boolean {
 interface Props {
   groups: TaskGroup[];
   groupBy: GroupBy;
+  /**
+   * D-PM-38 — how this table draws a subtask: the canvas's effective mode,
+   * resolved by the page (`subtaskView.effectiveSubtaskMode`).
+   */
+  subtasks: SubtaskMode;
+  /**
+   * The view's filters, for one rule only: a NEW filter opens every
+   * collapsed parent, so a matching subtask is not hidden under one.
+   */
+  filters?: Filters;
   statuses: StatusRow[];
   /** WS-27l — the root's custom field definitions, for custom columns. */
   fields: FieldRow[];
@@ -119,6 +143,8 @@ export function TableView({
   groups,
   taskTypes,
   groupBy,
+  subtasks,
+  filters = EMPTY_FILTERS,
   statuses,
   fields,
   shownFields,
@@ -133,7 +159,12 @@ export function TableView({
   // WS-27ak(3) — a cell edit on a spreadsheet is the mutation furthest from
   // wherever the one inline error line is drawn; see `saveCell`.
   const toast = useToast();
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  // The collapse state, stamped with the filter it was made under
+  // (`subtaskView.collapsedNow`).
+  const [fold, setFold] = useState<Fold>({ key: "", ids: new Set() });
+  const filterKey = JSON.stringify(toQuery(filters));
+  const filtered = isFiltered(filters);
+  const collapsed = collapsedNow(fold, filterKey, filtered);
   const [cell, setCell] = useState(NO_CELL);
   const [error, setError] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -163,16 +194,16 @@ export function TableView({
   // Sections in render order. With a header sort active the server already
   // ordered the page and that order is kept; otherwise each group falls back
   // to the view's own hand-arranged order, exactly as the list does.
+  //
+  // ⚠️ `subtaskSections` is the list's function too. One input, one row set,
+  // on both canvases (D-PM-38). Its `count` is the group's size, not the rows
+  // drawn, so a collapsed parent does not shrink the heading (B7).
   const sections = useMemo(
     () =>
-      groups
-        .filter((group) => group.tasks.length > 0)
-        .map((group) => ({
-          key: group.key,
-          label: group.label,
-          rows: treeRows(sort ? group.tasks : sortForView(group.tasks), collapsed),
-        })),
-    [groups, sort, collapsed]
+      subtaskSections(groups, subtasks, collapsed, (tasks) =>
+        sort ? tasks : sortForView(tasks)
+      ),
+    [groups, subtasks, sort, collapsed]
   );
 
   // The cursor's world: every rendered row, in render order.
@@ -185,15 +216,10 @@ export function TableView({
   // columns both shrink under the cursor (reloads, a field hidden mid-flight).
   const at = clampCell(flatRows.length, colCount, cell);
 
-  const total = groups.reduce((sum, group) => sum + group.tasks.length, 0);
+  const total = sections.reduce((sum, section) => sum + section.count, 0);
 
   function toggleCollapse(taskId: string) {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      return next;
-    });
+    setFold((current) => toggleFold(current, filterKey, filtered, taskId));
   }
 
   function closeEditor() {
@@ -598,13 +624,16 @@ export function TableView({
                     className="px-3 py-1.5 text-left text-xs font-medium text-foreground"
                   >
                     {section.label}
+                    {/* B7 — every task in the group, whatever is collapsed.
+                        It used to be the rows drawn, so closing a parent
+                        made the group look smaller than it is. */}
                     <span
                       className="ml-2 font-normal text-muted-foreground"
-                      title={`${section.rows.length} task${
-                        section.rows.length === 1 ? "" : "s"
+                      title={`${section.count} task${
+                        section.count === 1 ? "" : "s"
                       } in ${section.label}`}
                     >
-                      {section.rows.length}
+                      {section.count}
                     </span>
                   </th>
                 </tr>
@@ -631,9 +660,10 @@ export function TableView({
                       }`}
                     >
                       <span
-                        className="flex items-center gap-1"
+                        className="flex min-w-0 flex-col"
                         style={{ paddingLeft: `${row.depth * 1.25}rem` }}
                       >
+                      <span className="flex items-center gap-1">
                         {row.childCount > 0 ? (
                           <button
                             type="button"
@@ -657,14 +687,9 @@ export function TableView({
                               aria-hidden
                             />
                           </button>
-                        ) : row.depth > 0 ? (
-                          <Icon
-                            name="CornerDownRight"
-                            size={12}
-                            className="shrink-0 text-muted-foreground"
-                            aria-hidden
-                          />
-                        ) : null}
+                        ) : (
+                          <NestedRowMark depth={row.depth} />
+                        )}
                         <span className="text-muted-foreground">
                           {taskRef(task) ?? ""}
                         </span>
@@ -685,6 +710,11 @@ export function TableView({
                         >
                           {task.title}
                         </ControlLink>
+                      </span>
+                      {/* D-PM-38 — an orphan, or a Separate subtask, names
+                          its parent. A nested row does not: the indent and
+                          the mark above already say where it sits. */}
+                      {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
                       </span>
                     </td>
                     {columns.map((column, columnIndex) => {
