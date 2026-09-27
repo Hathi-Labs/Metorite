@@ -1550,6 +1550,10 @@ line — never reclaim a number by deleting the other entry.
     - The install keeps `node_modules` when `package-lock.json` and node are
       unchanged. That was 323 of 324 merges in 30 days.
     - Each restart waits until its service answers HTTP, with a bound.
+    - The watchdog probes Caddy on `/internal/…`, which Caddy answers with
+      404 itself. A probe of `/health` would wait for a cold gateway, pass
+      its 15 s bound, and restart a healthy Caddy. `vps-health.yml` waits
+      40 s, which is longer than the 30 s retry.
   - **What stays.** The gateway is still cold for 15 to 23 s on every deploy.
     Workbench API routes fail for that time, because they do not go through
     Caddy. A deploy that changes `package-lock.json` still runs `npm ci`
