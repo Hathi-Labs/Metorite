@@ -471,8 +471,14 @@ The importer never writes `leveraged`.
 ### 6.5 Tags, types and custom fields
 
 - **Tags** go through `apply_task_tags`, scoped to the imported project.
+  The shared caps of `tags.py` bind: 64 characters a tag, 25 tags a task, 500
+  tags a space. A tag that does not fit is DROPPED and counted as
+  `tags_dropped` in the report. It never fails the run (built in I-3).
 - **Task Type** (ClickUp) maps by name to a `pm_task_types` row of the root,
-  and creates the type when it is missing.
+  and creates the type when it is missing. An Epic has no parent (§3.4 of
+  `project_management_app.md`). So a subtask whose source type is "Epic"
+  keeps its parent and takes the default type. The report counts it as
+  `epic_demoted`.
 - **Custom fields** come from the view export. Each field becomes a
   `pm_custom_fields` row on its project. The `field_key` is the slug of the
   name, which must match `^[a-z][a-z0-9_]{0,62}$`. The type guess:
@@ -557,6 +563,13 @@ themselves, uploaded as a ZIP.
   The unique index of migration 219 is the backstop: a write it refuses fails
   the batch, and the batch rolls back whole. There is no `ON CONFLICT` in the
   writer, so no conflict can drop a task in silence.
+- **Nodes are reused (built in I-3).** An earlier run of the same source
+  may have written a space, folder or project for the SAME target. Batch 0
+  reuses that node when it still exists and is not archived. A re-run therefore creates
+  nothing. A re-upload after a failure continues in the same tree, so its
+  subtasks keep their parents. A new-space run reuses only earlier new-space
+  runs. An existing-space run reuses only earlier runs into that same space.
+  The report counts reused nodes as `created.reused`.
 - **A parent in another tree.** A subtask whose parent the old importer wrote
   lands at the top of its project, and the report counts it as
   `subtasks_detached`. A parent link never crosses from one space to another.
@@ -627,17 +640,30 @@ and an in-memory `JobTracker` only). The apply therefore works like this:
 1. `POST …/apply` takes a transaction lock per organization
    (`pg_advisory_xact_lock`). It refuses (409) while another run of the
    organization is `applying` with a fresh heartbeat. Then it sets
-   `state = 'applying'` and starts an `asyncio` task.
+   `state = 'applying'`, writes a new LEASE id into `progress.lease`, and
+   starts an `asyncio` task that holds that lease.
 2. The task binds `tenant_session(run.organization_id)` itself, per batch.
    It never trusts a tenant from the request (R5(e)).
 3. The task re-checks the plan against the database as it is NOW. A member
    who left since the dry run fails the run with a named reason.
 4. Batch 0 writes every node and each project's status set, and stores the
-   node map in `progress`, in ONE transaction.
-5. Later batches write 200 tasks each, in one transaction per batch, parents
-   before children. Each batch saves `progress.cursor` and bumps
-   `heartbeat_at`.
-6. The end writes the report, sets `done`, and deletes the upload.
+   node map in `progress`, in ONE transaction. It reuses earlier nodes (§6.9)
+   and checks a `group:` grant again.
+5. Before each later batch, a short transaction reads which tasks exist. It
+   then reserves task numbers for the rest (`core.reserve_task_numbers`).
+   So the counter row of a live space is locked for milliseconds, not for a
+   whole batch. A skipped task takes no number.
+6. Each batch writes 200 tasks in one transaction, parents before children,
+   and saves `progress.cursor`.
+7. A ticker bumps `heartbeat_at` every 30 seconds, apart from the batches.
+8. The end writes the report, one activity per space with that space's own
+   count, sets `done`, and deletes the upload.
+
+**One writer (built in I-3).** Every write the job makes names its lease:
+the progress, the heartbeat, `done` and `failed`. A resume after a stale
+heartbeat takes a NEW lease. A writer that outlived its heartbeat then loses
+its next write and stops. It never marks the run failed, and it never deletes
+the upload. The live test proves each step.
 
 **Retry.** A deploy applies migrations while an import may run, and a
 migration's lock can deadlock a batch. A batch that fails with a deadlock, a
@@ -650,8 +676,10 @@ database, and the retry carried the run through each time.
 2 minutes, `POST …/apply` resumes the run from `progress.cursor`.
 
 **Failure.** Any other error sets `failed`, records the reason in `report`,
-and deletes the upload. The rows already written stay. A new upload of the
-same file skips them and writes the rest.
+and deletes the upload. The reason is the refusal text, or the detail of a
+refused helper, never only an exception name. The rows already written stay.
+A new upload of the same file reuses the tree, skips those rows and writes
+the rest.
 
 ### 7.4 Limits (phase 1)
 
@@ -711,7 +739,7 @@ look (`DESIGN_SYSTEM.md`):
 | Rule | Fence |
 |---|---|
 | The importer opens no network connection | `tests/unit/test_import_no_network.py` — no module under `projects/importer/` imports `httpx`, `requests`, `aiohttp`, `urllib.request` or `socket` |
-| One write path into `pm_tasks` | `tests/unit/test_pm_task_insert_sites.py` — the literal `INSERT INTO pm_tasks` appears only in the allow-listed helper files |
+| One write path into `pm_tasks` | `tests/unit/test_pm_task_insert_sites.py` — no module writes a raw `INSERT INTO pm_tasks`, and exactly five modules create tasks through `insert_row`, the writer among them |
 | No connector | `tests/unit/test_no_task_provider_connectors.py` stays green, unchanged |
 | The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/unit/import_fixtures/clickup_workspace.csv` (P-1). The fixture sits beside its test, because `tests/fixtures/` holds only fixtures that two languages read |
 | The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
@@ -721,7 +749,7 @@ look (`DESIGN_SYSTEM.md`):
 | Side effects stay off | `tests/unit/test_import_writer.py` (`test_the_writer_never_emits_or_notifies`) — the cause. `tests/live/live_ws41_writer.py` check 3.4 — the result, zero notification rows |
 | A retry is only for a transient lock error | `tests/unit/test_import_writer.py` — 40P01, 40001 and 55P03 retry. A constraint error does not |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
-| The SQL works (R8) | `tests/live/live_ws41_import.py` — a real Postgres: apply, re-run skips, resume after a kill, discard |
+| The SQL works (R8) | `tests/live/live_ws41_import.py` — the run table, the reads and RLS. `tests/live/live_ws41_writer.py` — apply, the takeover by lease, re-run with no new node, an existing-space target, the old importer's skip. Discard is I-6 |
 | The flag is dark by default | `tests/unit/test_projects_import_routes.py` (`test_the_flag_off_answers_404`, and the gate order on every route). `publicFlags.test.ts` holds the client flag from I-4 |
 
 ## 9. Slices
@@ -733,7 +761,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
-| **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 28 of 28 on a real Postgres. It stops the run after 3 batches and resumes it. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
+| **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 35 of 35 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |

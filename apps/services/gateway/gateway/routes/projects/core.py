@@ -2568,6 +2568,30 @@ async def next_task_number(db: Any, root_id: str) -> int:
     return int(getattr(row, "last_value", 1) or 1)
 
 
+async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
+    """:func:`next_task_number` for ``count`` tasks at once. Returns the FIRST
+    number of the block; the caller hands out ``first … first + count - 1``.
+
+    The same one statement, so a reservation and a single create can never be
+    given one number. The file importer (WS-41) calls it in a short
+    transaction of its own before each batch, so the counter row's lock is
+    not held for the whole batch while members create tasks in the space.
+    """
+    if count < 1:
+        raise ValueError("reserve at least one number")
+    row = (await db.execute(
+        text(
+            "INSERT INTO pm_task_counters (project_id, last_value) "
+            "VALUES (CAST(:root AS uuid), :n) "
+            "ON CONFLICT (project_id) DO UPDATE "
+            "SET last_value = pm_task_counters.last_value + :n "
+            "RETURNING last_value"
+        ),
+        {"root": root_id, "n": count},
+    )).fetchone()
+    return int(getattr(row, "last_value", count) or count) - count + 1
+
+
 # ── Statuses ────────────────────────────────────────────────────────────────
 
 async def load_default_status(

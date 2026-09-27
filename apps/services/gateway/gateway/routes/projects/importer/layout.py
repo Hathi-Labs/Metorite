@@ -140,7 +140,7 @@ def project_statuses(
         if not any(c == "done" for _, c in ordered):
             name = "Done" if "done" not in {n.lower() for n, _ in ordered} else "Done (imported)"
             ordered.append((name, "done"))
-            added += 1 if names else 0
+            added += 1
         out[ref] = ordered
     return out, added
 
@@ -186,7 +186,10 @@ def completed_estimate(
 ) -> dt.datetime:
     """§6.6 — the file holds no completion date, so estimate one: the latest
     date the task carries. A past due date, the last comment, or the creation.
-    Never the import time, which would put every closed task into today."""
+    Never the import time, which would put every closed task into today.
+    The one exception is a task that carries no date at all, which a ClickUp
+    export never holds: it takes ``now``, and ``origin.completed_at_estimated``
+    still marks it."""
     candidates = [c.created_at for c in comments if c.created_at is not None]
     due = due_instant(task, offset)
     if due is not None and due <= now:

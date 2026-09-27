@@ -125,9 +125,13 @@ BUSY_SQL = (
 )
 #: `planned` starts; `applying` with a stale heartbeat RESUMES (§7.3). A fresh
 #: heartbeat means a writer is alive, and the UPDATE matches nothing.
+#: It also writes a new LEASE into `progress.lease`. Every write the job makes
+#: names the lease, so a writer that outlived its heartbeat loses its next
+#: write and stops (``import_writer`` module docstring).
 START_SQL = (
     "UPDATE pm_import_runs "
-    "   SET state = 'applying', heartbeat_at = now(), updated_at = now() "
+    "   SET state = 'applying', heartbeat_at = now(), updated_at = now(), "
+    "       progress = jsonb_set(progress, '{lease}', to_jsonb(CAST(:lease AS text))) "
     " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     "   AND (state = 'planned' OR (state = 'applying' AND "
     "        (heartbeat_at IS NULL OR heartbeat_at < now() - interval '120 seconds'))) "
@@ -375,12 +379,15 @@ async def apply_import_run(
             raise HTTPException(
                 status_code=409, detail="Another import is running. Wait for it to finish."
             )
+        lease = str(uuid.uuid4())
         started = (
-            await db.execute(text(START_SQL), {"org": organization_id, "id": run_id})
+            await db.execute(
+                text(START_SQL), {"org": organization_id, "id": run_id, "lease": lease}
+            )
         ).fetchone()
         if started is None:
             raise HTTPException(status_code=409, detail="This import is already running.")
-    import_writer.start(organization_id, run_id)
+    import_writer.start(organization_id, run_id, lease)
     _log.info("projects.import.apply_started", run_id=run_id, resumed=row.state == "applying")
     return run_view(started)
 

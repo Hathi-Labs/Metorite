@@ -108,3 +108,47 @@ def test_the_writer_never_emits_or_notifies() -> None:
     }
     for name in ("emit", "notify", "emit_event", "fan_out"):
         assert name not in called and name not in imported, name
+
+
+class _TagDB:
+    """Answers the two statements `_fit_tags` sends: the registry rows and
+    the registry count."""
+
+    def __init__(self, registered: list[str], count: int) -> None:
+        self.registered = registered
+        self.count = count
+
+    async def execute(self, statement: Any, params: Any = None) -> Any:
+        from types import SimpleNamespace
+
+        sql = str(statement)
+        rows = [
+            SimpleNamespace(name=n, project_id="r", organization_id=None) for n in self.registered
+        ]
+
+        class _R:
+            def fetchall(_self) -> list[Any]:
+                return rows
+
+            def scalar(_self) -> int:
+                return self.count
+
+        _ = sql
+        return _R()
+
+
+async def test_tags_that_break_a_cap_are_dropped_not_fatal() -> None:
+    """The reviewer's P1: a tag cap failed a confirmed run mid-way. Now the
+    writer fits the tags and counts what it drops."""
+    from gateway.routes.projects.tags import MAX_TAG, MAX_TAGS_PER_PROJECT, MAX_TAGS_PER_TASK
+
+    long_tag = "x" * (MAX_TAG + 1)
+    many = [f"t{i}" for i in range(MAX_TAGS_PER_TASK + 5)]
+    fitted, dropped = await import_writer._fit_tags(_TagDB([], 0), "r", [long_tag, *many])
+    assert len(fitted) == MAX_TAGS_PER_TASK and long_tag not in fitted
+    assert dropped == 1 + 5
+
+    # A full registry keeps the tags it knows and drops the new ones.
+    full = _TagDB(["known"], MAX_TAGS_PER_PROJECT)
+    fitted, dropped = await import_writer._fit_tags(full, "r", ["Known", "fresh"])
+    assert fitted == ["Known"] and dropped == 1

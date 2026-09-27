@@ -463,7 +463,7 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     from gateway.routes.projects import import_writer
 
     calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(import_writer, "start", lambda org, run: calls.append((org, run)))
+    monkeypatch.setattr(import_writer, "start", lambda org, run, lease: calls.append((org, run)))
     return calls
 
 
