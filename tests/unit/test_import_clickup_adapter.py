@@ -446,3 +446,9 @@ def test_fact_2_subtasks_ids_disagrees_with_parent_id_on_182_tasks() -> None:
     disagree = [tid for tid in first if listed[tid] != kids.get(tid, set())]
     assert len(disagree) == 182
     assert sum(1 for tid in disagree if not listed[tid]) == 166
+
+
+@pytest.mark.parametrize("column", ["Time Spent", "Time Estimated"])
+def test_a_huge_duration_is_dropped_not_a_crash(column: str) -> None:
+    b = _file({"Task ID": "a", column: "9" * 25})
+    assert b.tasks[0].time_spent_mins is None and b.tasks[0].estimate_mins is None

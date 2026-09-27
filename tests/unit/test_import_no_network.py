@@ -92,15 +92,22 @@ def network_imports(source: str) -> list[str]:
     return found
 
 
-def repo_imports(source: str) -> list[str]:
-    """Modules from this repo, outside the importer package, that a file imports."""
+def repo_imports(source: str, package: str = OWN_PACKAGE) -> list[str]:
+    """Modules from this repo, outside the importer package, that a file imports.
+
+    A relative import resolves against ``package``, the package the file sits
+    in, so ``from ..core import x`` reads as ``gateway.routes.projects.core``."""
     found = []
     for node in ast.walk(ast.parse(source)):
         modules: list[str] = []
         if isinstance(node, ast.Import):
             modules = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             modules = [node.module]
+        elif isinstance(node, ast.ImportFrom) and node.level > 0:
+            parts = package.split(".")
+            base = ".".join(parts[: len(parts) - (node.level - 1)])
+            modules = [f"{base}.{node.module}" if node.module else base]
         for module in modules:
             if module.split(".")[0] in REPO_ROOTS and not module.startswith(OWN_PACKAGE):
                 found.append(module)
@@ -127,6 +134,16 @@ def test_the_repo_import_scanner_sees_a_reach_outside() -> None:
     assert repo_imports("import acb_common.db") == ["acb_common.db"]
     assert repo_imports("from gateway.routes.projects.importer.bundle import Task") == []
     assert repo_imports("from pydantic import BaseModel") == []
+    # Relative imports resolve against the file's own package.
+    assert repo_imports("from ..core import next_task_number") == ["gateway.routes.projects.core"]
+    assert repo_imports("from .. import core") == ["gateway.routes.projects"]
+    assert repo_imports("from .bundle import Task") == []
+    assert repo_imports("from . import text") == []
+
+
+def _package_of(path: pathlib.Path) -> str:
+    parts = path.relative_to(IMPORTER).parent.parts
+    return ".".join((OWN_PACKAGE, *parts))
 
 
 def test_every_repo_import_outside_the_package_is_reviewed() -> None:
@@ -135,7 +152,7 @@ def test_every_repo_import_outside_the_package_is_reviewed() -> None:
     reached = {
         module
         for path in sorted(IMPORTER.rglob("*.py"))
-        for module in repo_imports(path.read_text(encoding="utf-8"))
+        for module in repo_imports(path.read_text(encoding="utf-8"), _package_of(path))
     }
     assert reached <= ALLOWED_REPO_IMPORTS, (
         f"D80: review these for network reach, then add them to ALLOWED_REPO_IMPORTS — "

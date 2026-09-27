@@ -523,9 +523,11 @@ def _ms_to_mins(value: str) -> int | None:
     Spent`` arrives as ``' "1569"'`` — a space, quotes, then the number — and
     its twin ``Time Spent Text`` reads ``0.03 m``."""
     value = value.strip().strip('"').strip()
-    if not value.isdigit():
+    # 15 digits is about 31,000 years. A longer run is damage. Integer
+    # division keeps any value from overflowing a float.
+    if not value.isdigit() or len(value) > 15:
         return None
-    return round(int(value) / 60000)
+    return (int(value) + 30000) // 60000
 
 
 def _row_local(bundle: ImportBundle, moment: dt.datetime, text: str) -> dt.datetime:
