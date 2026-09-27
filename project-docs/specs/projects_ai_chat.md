@@ -2596,6 +2596,16 @@ The option text was:
   old copy of an agent reply can also overwrite the final text on a save of
   the whole array. A follow-up can scope an agent row to the member who
   started the run.
+- **Residual, accepted in fix round 2: the fold can still write a legacy
+  system row.** A legacy row with a NULL kind and the role `system` passes the
+  `WHERE`. So the fold replaces its `content` and fills `author_kind` with
+  `agent`. It keeps the stored `author_email`, and
+  `test_the_fold_keeps_the_author_of_a_legacy_system_row` fences that. S12
+  does not extend the `WHERE` to stop the fold on this row. If the `WHERE`
+  lets the fold write only agent rows, no row can reach the kind guard in the
+  author `CASE`. The guard then has no fence again, which is the R7 gap that
+  fix round 2 closed. The row id must also collide with the id of a system
+  row, and a system row carries no words from a member.
 - **A declined write reports success.** When the `WHERE` declines an update,
   `POST /chat/sessions/{id}/messages` still answers `{"ok": true}`. A
   follow-up can return the ids that did not change.

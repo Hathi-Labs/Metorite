@@ -689,6 +689,32 @@ def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
     assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
 
 
+@_needs_db
+def test_the_fold_keeps_the_author_of_a_legacy_system_row(clean) -> None:
+    """S12 fix round 2, the R7 fence for the kind guard in the author CASE.
+
+    The ``WHERE`` masks every human row, so this is the ONE row that reaches
+    the CASE with a NULL kind that is not an agent turn. A NULL kind is an
+    agent turn only when the role is ``assistant``. Revert the guard to
+    ``COALESCE(author_kind, 'agent')``, or drop it, and the fold renames
+    this row.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _legacy_row(sid, "old-s", "system", "joined")
+    _exec(
+        "UPDATE chat_message SET author_email = 'legacy@x.io' "
+        "WHERE session_id = :i AND id = 'old-s'", i=sid,
+    )
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _author(sid, "old-s").author_email == "legacy@x.io"
+
+
 def test_only_the_fold_passes_author_from_run() -> None:
     """§18.2 rule 7, by source. The fold passes True, and the route handler
     that saves the client's messages never names the keyword."""
