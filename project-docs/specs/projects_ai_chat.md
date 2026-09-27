@@ -2612,7 +2612,10 @@ The option text was:
 - `_attribute` still takes the claim of an agent turn from the body when it
   INSERTS a new row. So a member can make a new row that names any agent.
   That is not a change to an existing turn, and S12 does not change it.
-- It adds no guard in `day()` or `period()`.
+- **As built, it DOES guard `day()` and `period()`** (commit 2af0a8ce). In
+  the dev build, a throw in `FinishedPanel` froze the whole Analytics page
+  even inside its `LayoutBoundary`. So the helpers now take any input and
+  give `""` or "this period". `analyticsDates.test.ts` is the fence.
 - It does not measure tokens, and it adds no tool name in `agents.py`.
 - It does not rename the "coming" report templates.
 
