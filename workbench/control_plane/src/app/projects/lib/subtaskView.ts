@@ -235,6 +235,62 @@ export function subtaskSections<T extends Task>(
 }
 
 /**
+ * The task ids a list DRAWS, in order, each once.
+ *
+ * A folded group section draws nothing, and a collapsed parent hides its
+ * subtree (`subtaskSections` has already left those rows out). The keyboard
+ * cursor and the select-all box both read this, so select-all never takes a
+ * row the member cannot see.
+ */
+export function drawnIds(
+  sections: readonly SubtaskSection[],
+  foldedGroups: ReadonlySet<string> = new Set(),
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const section of sections) {
+    if (foldedGroups.has(section.key)) continue;
+    for (const row of section.rows) {
+      if (seen.has(row.task.id)) continue;
+      seen.add(row.task.id);
+      out.push(row.task.id);
+    }
+  }
+  return out;
+}
+
+/**
+ * The list's select-all box, as the next selection.
+ *
+ * ⚠️ Review of PR #491: select-all read every task in the groups, so a
+ * collapsed parent's subtasks were selected too. A bulk Done then completed
+ * tasks the member could not see. This takes the DRAWN rows only: when all
+ * of them are selected it clears, otherwise it selects exactly them.
+ */
+export function selectAllDrawn(
+  drawn: readonly string[],
+  selected: ReadonlySet<string>,
+): Set<string> {
+  const all = drawn.length > 0 && drawn.every((id) => selected.has(id));
+  return all ? new Set() : new Set(drawn);
+}
+
+/**
+ * The task-read parameters that the Subtasks mode adds, for the board, the
+ * list and the table (they share one read).
+ *
+ * Hidden adds `top_level: true`, so the server pages over top-level tasks
+ * only. Without it, "Load more" would fetch pages of subtasks that the client
+ * then drops. Every other mode adds nothing, so the read key of those boards
+ * stays the one the cache already holds.
+ */
+export function subtaskReadParams(
+  stored: SubtaskMode | null | undefined,
+): { top_level?: true } {
+  return stored === "hidden" ? { top_level: true } : {};
+}
+
+/**
  * The member's collapsed parents, with a filter's auto-open.
  *
  * **When a filter is active, a parent with matching children opens by

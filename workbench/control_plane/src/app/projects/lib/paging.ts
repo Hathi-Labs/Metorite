@@ -44,6 +44,10 @@
  * draws what these return.
  */
 
+import { type Filters, type SubtaskMode, toQuery } from "./grouping";
+import { subtaskReadParams } from "./subtaskView";
+import { type TableSort, sortQuery } from "./table";
+
 /**
  * Rows one read of `GET /projects/tasks` can return.
  *
@@ -55,6 +59,38 @@
  * visual rig stubs the API.
  */
 export const TASK_PAGE_SIZE = 100;
+
+/**
+ * The question the board, the list and the table ask `GET /projects/tasks`,
+ * as a parameter bag. `loadProject` reads page 1 and `loadMoreTasks` reads
+ * page N from this ONE builder, so the two cannot drift.
+ *
+ * ⚠️ D-PM-38: `subtasks` is the STORED Subtasks mode. Hidden adds
+ * `top_level: true` (`subtaskView.subtaskReadParams`), so the server pages
+ * over top-level tasks only. Fence: `paging.test.ts`.
+ */
+export function boardReadParams(input: {
+  projectId: string;
+  filters: Filters;
+  sort: TableSort | null;
+  /** The order-bearing view, or null while the views read is in flight. */
+  viewId: string | null;
+  subtasks: SubtaskMode | null;
+}): Record<string, string | number | boolean> {
+  return {
+    project_id: input.projectId,
+    include_subtree: true,
+    page_size: TASK_PAGE_SIZE,
+    ...toQuery(input.filters),
+    // WS-27x — the table's header sort; {} when none.
+    ...sortQuery(input.sort),
+    // H-64. The view whose hand-arranged order to read back. Omitted, never
+    // `undefined`, while views are loading: `cacheKey` sorts the params into
+    // the read key, and a present-but-undefined entry is a different key.
+    ...(input.viewId ? { view_id: input.viewId } : {}),
+    ...subtaskReadParams(input.subtasks),
+  };
+}
 
 /** Is the server holding rows this client has not asked for yet? */
 export function hasMoreTasks(loaded: number, total: number | null): boolean {

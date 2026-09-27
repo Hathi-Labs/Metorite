@@ -67,6 +67,8 @@ import { quickAddPrefill } from "../lib/quickAdd";
 import {
   type Fold,
   collapsedNow,
+  drawnIds,
+  selectAllDrawn,
   subtaskSections,
   toggleFold as toggleParentFold,
 } from "../lib/subtaskView";
@@ -107,8 +109,12 @@ interface Props {
   /** WS-27n — ids currently multi-selected. */
   selected?: ReadonlySet<string>;
   onToggle?: (id: string, shift: boolean) => void;
-  onToggleAll?: () => void;
-  allChecked?: boolean;
+  /**
+   * The select-all box. It hands over the NEXT selection, built from the
+   * rows this list draws (`subtaskView.selectAllDrawn`), so a collapsed
+   * parent's subtasks are never selected unseen. The page only stores it.
+   */
+  onToggleAll?: (next: Set<string>) => void;
   /** WS-27y — Shift+Arrow grew the selection to exactly these ids. */
   onExtendSelection?: (ids: string[]) => void;
   onSelect: (task: TaskRow) => void;
@@ -137,7 +143,6 @@ export function TaskList({
   selected,
   onToggle,
   onToggleAll,
-  allChecked = false,
   onExtendSelection,
   onSelect,
   personLabels,
@@ -179,21 +184,12 @@ export function TaskList({
   const total = sections.reduce((sum, section) => sum + section.count, 0);
   // The cursor's world: rendered order, each id once (a two-owner task is
   // drawn in two sections but is one row to the keyboard, as to WS-27n).
-  const rows = useMemo(() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const section of sections) {
-      // A folded section's rows are off-screen, so the cursor skips them —
-      // same rule the board applies to a collapsed lane.
-      if (folded.has(section.key)) continue;
-      for (const row of section.rows)
-        if (!seen.has(row.task.id)) {
-          seen.add(row.task.id);
-          out.push(row.task.id);
-        }
-    }
-    return out;
-  }, [sections, folded]);
+  // A folded section's rows are off-screen, so the cursor skips them — same
+  // rule the board applies to a collapsed lane. A collapsed parent's subtree
+  // is off-screen too. The select-all box reads the same list.
+  const rows = useMemo(() => drawnIds(sections, folded), [sections, folded]);
+  const allDrawnChecked =
+    rows.length > 0 && rows.every((id) => (selected ?? NOBODY).has(id));
   const taskById = useMemo(() => {
     const map = new Map<string, TaskRow>();
     for (const section of sections)
@@ -293,8 +289,8 @@ export function TaskList({
               <th className="px-3 py-2 font-medium">
                 <Checkbox
                   aria-label="Select every task on this page"
-                  checked={allChecked}
-                  onChange={() => onToggleAll?.()}
+                  checked={allDrawnChecked}
+                  onChange={() => onToggleAll?.(selectAllDrawn(rows, selected ?? NOBODY))}
                 />
               </th>
             ) : null}

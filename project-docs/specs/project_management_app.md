@@ -7993,10 +7993,28 @@ nests. Each row carries all of its descendants, so a parent bar folds in the
 dates of a grandchild. A task that names itself as its parent is now one row.
 Before S3 it was no row.
 
+**The review round (PR #491).**
+
+- **Select-all takes only the drawn rows.** It read every task in the groups,
+  so a collapsed parent's subtasks were selected too. A bulk Done then
+  completed tasks the member could not see. The list now builds the next
+  selection from `drawnIds` (`subtaskView.selectAllDrawn`), the same rows the
+  keyboard cursor walks. Fence: `subtaskView.test.ts`.
+- **The client half of Hidden has a fence.** `paging.boardReadParams` builds
+  the board read, and Hidden adds `top_level`. Without the flag, "Load more"
+  pages over the full set and brings pages of subtasks. Fence:
+  `paging.test.ts`.
+- **The export follows Hidden.** `export.exportQuery` sends `top_level` for a
+  Hidden board, so the file holds the rows on screen. Fence:
+  `export.test.ts`.
+
 **Known gaps, not fixed here.**
 
-- The Projects export and the analytics dataset take `top_level`, and no
-  surface sends it. An export from a Hidden board still holds the subtasks.
+- The analytics dataset takes `top_level`, and no surface sends it.
+- On a cold load, a member whose overlay says Hidden sees the subtasks for
+  one read. The views read has not landed, so the first task read goes out
+  without `top_level`. The page already reads the tasks again when the views
+  arrive, and that second read is folded.
 - The search palette crumb has no rendered test. The palette mounts a
   `Modal`, which does not render on the server.
 - The visual rig at 390px shows the space overview and not the canvas. The

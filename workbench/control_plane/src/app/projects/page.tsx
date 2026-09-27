@@ -94,7 +94,7 @@ import {
   orderBearingView,
   type planDrop,
 } from "./lib/board";
-import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
+import { appendTasks, boardReadParams, nextTaskPage } from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -156,9 +156,8 @@ import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
 import { DEFAULT_SHOWN } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
-import { type TableSort, sortQuery } from "./lib/table";
+import type { TableSort } from "./lib/table";
 import {
-  allSelected as everySelected,
   buildRequest,
   clickSelect,
   describeOutcome,
@@ -1544,13 +1543,6 @@ function ProjectsWorkspace() {
   const storedMode = subtasksView ? storedSubtasks(subtasksView) : localSubtasks;
   /** The mode THIS canvas draws in (`subtaskView.effectiveSubtaskMode`). */
   const subtaskMode = effectiveSubtaskMode(storedMode, mode);
-  /**
-   * `top_level` for the board, the list and the table. They share one task
-   * read, and all three offer Hidden, so the flag depends on the stored mode
-   * and not on which of the three is on screen. Switching between them then
-   * re-reads nothing.
-   */
-  const listTopLevel = storedMode === "hidden";
 
   /**
    * The question the board asks the server, as a parameter bag.
@@ -1563,35 +1555,24 @@ function ProjectsWorkspace() {
    * there" this code already warns about.
    */
   const taskParamsFor = useCallback(
-    (project: ProjectRow) => ({
-      project_id: project.id,
-      include_subtree: true,
-      page_size: TASK_PAGE_SIZE,
-      ...toQuery(filters),
-      // WS-27x — the table's header sort; {} when none, so every other
-      // surface keeps the endpoint's default ordering.
-      ...sortQuery(tableSort),
-      // H-64. The view whose hand-arranged order to read back.
+    (project: ProjectRow) =>
+      // `paging.boardReadParams` owns the bag and its fence.
       //
-      // ⚠️ **The drag handler has written this view's positions since
-      // WS-27 and nothing ever asked for them.** Without it every row
-      // arrives with `view_position` undefined, `sortForView` sends them
-      // all down its `created_at` branch, and a drag inside a column is a
-      // silent no-op.
+      // ⚠️ `view_id`: the drag handler has written this view's positions
+      // since WS-27, and without it a drag inside a column is a silent no-op.
       //
-      // ⚠️ Omitted rather than sent as `undefined` when views have not
-      // landed yet. `cacheKey` sorts the params into the read key, so a
-      // present-but-undefined entry would be a DIFFERENT question from the
-      // same read a moment later, and the cached rows could never be
-      // reused. It resolves on the next pass, when `views` arrives.
-      ...(boardViewId ? { view_id: boardViewId } : {}),
-      // D-PM-38 — Subtasks = Hidden. Sent only when on, so the read key of
-      // every other board stays the one the cache already holds. A hidden
-      // subtask still counts in its parent's chip: the gateway counts the
-      // children in their own query, which this flag does not narrow.
-      ...(listTopLevel ? { top_level: true } : {}),
-    }),
-    [filters, tableSort, boardViewId, listTopLevel]
+      // ⚠️ `subtasks`: the STORED mode, not this canvas's. The board, the list
+      // and the table share one read and all three offer Hidden, so a switch
+      // between them re-reads nothing. A hidden subtask still counts in its
+      // parent's chip: the gateway counts children in their own query.
+      boardReadParams({
+        projectId: project.id,
+        filters,
+        sort: tableSort,
+        viewId: boardViewId,
+        subtasks: storedMode,
+      }),
+    [filters, tableSort, boardViewId, storedMode]
   );
 
   const loadProject = useCallback(
@@ -1711,6 +1692,8 @@ function ProjectsWorkspace() {
           filters,
           shownFields,
           sort: tableSort,
+          // D-PM-38 — a Hidden board exports its top-level rows only.
+          subtasks: storedMode,
         })
       );
       if (!res.ok) {
@@ -1737,7 +1720,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort]);
+  }, [selected, filters, shownFields, tableSort, storedMode]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and
@@ -3865,12 +3848,10 @@ function ProjectsWorkspace() {
               onCreated={() => void loadProject(selected)}
               selected={picked}
               onToggle={toggleSelection}
-              allChecked={everySelected(picked, onScreen)}
-              onToggleAll={() =>
-                setPicked(
-                  everySelected(picked, onScreen) ? new Set() : new Set(onScreen)
-                )
-              }
+              // The list builds the next selection from the rows it DRAWS
+              // (`subtaskView.selectAllDrawn`), so a collapsed parent's
+              // subtasks are never selected unseen. Review of PR #491.
+              onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
             />

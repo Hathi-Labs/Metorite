@@ -9,6 +9,9 @@
  * `components/subtaskViews.test.ts`.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import type { TaskRow } from "./api";
@@ -16,8 +19,10 @@ import {
   collapsedNow,
   columnCountTitle,
   defaultSubtaskMode,
+  drawnIds,
   effectiveSubtaskMode,
   overlayWithSubtasks,
+  selectAllDrawn,
   sendsTopLevel,
   storedSubtasks,
   subtaskModesFor,
@@ -201,5 +206,42 @@ describe("the board column's count tooltip", () => {
 
   it("leaves the parenthesis out when there are none", () => {
     expect(columnCountTitle([task("a"), task("b")], "Done")).toBe("2 tasks in Done");
+  });
+});
+
+// ── Review of PR #491: select-all takes only what is drawn ──────────────────
+
+describe("select-all takes only the drawn rows", () => {
+  const groups = [{ key: "todo", label: "To do", tasks: FAMILY }];
+
+  it("a collapsed parent's subtasks are not selected", () => {
+    // Fold `parent` (3 tasks under it), then select all: 2 rows, not 5.
+    const sections = subtaskSections(groups, "nested", new Set(["parent"]));
+    const drawn = drawnIds(sections);
+    expect(drawn).toEqual(["parent", "solo"]);
+    expect([...selectAllDrawn(drawn, new Set())]).toEqual(["parent", "solo"]);
+  });
+
+  it("a folded group section draws nothing, so it selects nothing", () => {
+    const sections = subtaskSections(groups, "nested", new Set());
+    expect(drawnIds(sections, new Set(["todo"]))).toEqual([]);
+  });
+
+  it("with every drawn row selected, the box clears the selection", () => {
+    expect(selectAllDrawn(["a", "b"], new Set(["a", "b"])).size).toBe(0);
+    expect([...selectAllDrawn(["a", "b"], new Set(["a"]))]).toEqual(["a", "b"]);
+  });
+
+  it("the list reads the drawn rows, not the whole groups", () => {
+    // The wiring half: the page stores what the list hands it, and the list
+    // builds it from `rows`, which is `drawnIds`.
+    const list = readFileSync(
+      fileURLToPath(new URL("../components/TaskList.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(list).toMatch(/const rows = useMemo\(\(\) => drawnIds\(sections, folded\)/);
+    expect(list).toMatch(/onToggleAll\?\.\(selectAllDrawn\(rows,/);
+    const page = readFileSync(fileURLToPath(new URL("../page.tsx", import.meta.url)), "utf8");
+    expect(page).toMatch(/onToggleAll=\{setPicked\}/);
   });
 });

@@ -145,3 +145,25 @@ describe("canExport", () => {
     ).toBe(true);
   });
 });
+
+// ── D-PM-38 (S3): the file matches the screen ───────────────────────────────
+
+describe("exportQuery and the Subtasks mode", () => {
+  const request = {
+    projectId: "p1",
+    filters: EMPTY_FILTERS,
+    shownFields: ["status"],
+    sort: null,
+  };
+
+  it("a Hidden board exports its top-level tasks only", () => {
+    expect(exportQuery({ ...request, subtasks: "hidden" }).top_level).toBe("true");
+    expect(exportPath({ ...request, subtasks: "hidden" })).toContain("top_level=true");
+  });
+
+  it("every other mode sends no flag", () => {
+    for (const subtasks of ["nested", "separate", null, undefined] as const) {
+      expect(exportQuery({ ...request, subtasks })).not.toHaveProperty("top_level");
+    }
+  });
+});

@@ -506,8 +506,9 @@ VIEW_USER_STATE_KEYS: frozenset[str] = frozenset({
     "group_by", "sub_group_by", "collapsed_lanes", "show_empty_lanes",
     "shown_fields",
     # D-PM-38 — the exception named above. `hidden` folds subtask rows for
-    # this member only. ⚠️ S3: the delta feed does not take `top_level` yet,
-    # and must before a board with Hidden syncs.
+    # this member only. The list, the calendar, the export and (since S3)
+    # the delta feed all take `top_level`, so a synced Hidden board stays
+    # folded. `test_every_list_surface_declares_it` is the fence.
     "subtasks",
 })
 
