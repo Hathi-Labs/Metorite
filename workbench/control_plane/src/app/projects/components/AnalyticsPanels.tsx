@@ -47,6 +47,7 @@ import type {
   HygieneReport,
   LoadReport,
   OutlookReport,
+  PulseReport,
   RebalanceReport,
   StuckReport,
   ThroughputReport,
@@ -93,6 +94,17 @@ import {
   slipRange,
   velocityLine,
 } from "../lib/outlook";
+import {
+  focusMore,
+  focusShown,
+  focusWhy,
+  helpLine,
+  hiddenPeopleLine,
+  loadBar,
+  pulseName,
+  pulseRows,
+  statusMark,
+} from "../lib/pulse";
 import {
   REBALANCE_HR_HINT,
   helpersLine,
@@ -1023,6 +1035,167 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
             {OVERLAP_NOTE}
           </p>
         </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn R3d — one card for each person, read today.
+ *
+ * ⚠️ **Draws the server's card and decides nothing** (`projects_reports.md`
+ * §8 R3d). The status, the reasons and every count are `pulse_body`'s.
+ * `lib/pulse.ts` holds the words. The load bar uses the private `Bar`.
+ *
+ * ⚠️ **The HR half is decided per row, by key presence.** A card with no
+ * `status` draws no status and falls back to overdue of open tasks. A
+ * person on leave draws "On leave", never the pill, so "Idle" cannot say
+ * that somebody who is away has room.
+ *
+ * ⚠️ **The server removes the cards this reader may not see** (edit E5).
+ * The panel only prints the line that counts them.
+ *
+ * ⚠️ **A report panel only.** The Analytics app does not mount it: there is
+ * no `/analytics/pulse` route yet.
+ */
+export function PulsePanel({ data }: { data: PulseReport }) {
+  const rows = pulseRows(data);
+  const hidden = hiddenPeopleLine(data?.hidden_people);
+  const overdue = accentForHue("red");
+  const help = accentForHue("red");
+
+  return (
+    <Panel
+      title="Who needs help today"
+      hint="One card for each person who holds open work in this scope: the load, the status, the top focus tasks and the reasons to help. This is today, not the period."
+    >
+      {rows.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No card to show. Nobody you can see holds open work in this scope.
+        </p>
+      ) : (
+        // `@container`: the grid follows the panel's own width, not the
+        // window's. A report column can be narrow on a wide screen.
+        <div className="@container">
+          <ul className="grid gap-2 @md:grid-cols-2">
+            {rows.map((row) => {
+              const mark = statusMark(row);
+              const accent = mark ? accentForHue(mark.hue) : null;
+              const bar = loadBar(row);
+              const focus = focusShown(row);
+              const more = focusMore(row, focus.length);
+              const needs = helpLine(row);
+              const waiting = row.waiting_count;
+              return (
+                <li
+                  key={row.assignee}
+                  className="min-w-0 rounded-md border border-border p-2"
+                >
+                  <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                    <span
+                      className="min-w-0 truncate pr-px font-medium text-foreground"
+                      title={row.assignee}
+                    >
+                      {pulseName(row)}
+                    </span>
+                    {mark && accent && (
+                      <span
+                        className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground"
+                        title={mark.title}
+                      >
+                        <span
+                          className={`size-1.5 rounded-full ${accent.dot}`}
+                          aria-hidden
+                        />
+                        {mark.label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <Bar
+                        total={bar.of}
+                        emptyTitle={bar.emptyTitle}
+                        segments={[
+                          {
+                            key: bar.kind,
+                            value: bar.value,
+                            dot:
+                              bar.kind === "hours" && accent
+                                ? accent.dot
+                                : overdue.dot,
+                            label:
+                              bar.kind === "hours" ? "Committed hours" : "Overdue",
+                          },
+                        ]}
+                      />
+                    </div>
+                    <span
+                      className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
+                      title={bar.title}
+                    >
+                      {bar.text}
+                    </span>
+                  </div>
+                  {focus.length > 0 && (
+                    <ul className="mt-1.5 space-y-0.5">
+                      {focus.map((task) => (
+                        <li
+                          key={task.id}
+                          className="flex min-w-0 items-baseline gap-1 text-[10px] text-muted-foreground"
+                          title={`${task.title}${task.project_name ? ` · ${task.project_name}` : ""}: ${focusWhy(task)}`}
+                        >
+                          <span className="min-w-0 truncate pr-px text-foreground">
+                            {task.title}
+                          </span>
+                          <span className="shrink-0">· {focusWhy(task)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {more && (
+                    <p
+                      className="mt-0.5 text-[10px] text-muted-foreground"
+                      title={`${row.focus_total} focus tasks: in progress, or due today or tomorrow. The table under this panel names up to five.`}
+                    >
+                      {more}
+                    </p>
+                  )}
+                  {typeof waiting === "number" && waiting > 0 && (
+                    <p
+                      className="mt-0.5 text-[10px] text-muted-foreground"
+                      title="Only you see this. It comes from your own notes in My Tasks."
+                    >
+                      {waiting} waiting past the date
+                    </p>
+                  )}
+                  {needs && (
+                    <p
+                      className="mt-1 text-[10px] font-medium text-foreground"
+                      title={data?.help_note ?? needs}
+                    >
+                      <span
+                        className={`mr-1 inline-block size-1.5 rounded-full align-middle ${help.dot}`}
+                        aria-hidden
+                      />
+                      {needs}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {(hidden || data?.help_note) && (
+        <div className="mt-3 space-y-0.5 border-t border-border pt-2 text-[11px] text-muted-foreground">
+          {hidden && (
+            <p title="Before team reports, a reader who is not an admin sees only their own card.">
+              {hidden}
+            </p>
+          )}
+          {data?.help_note && <p>{data.help_note}</p>}
+        </div>
       )}
     </Panel>
   );

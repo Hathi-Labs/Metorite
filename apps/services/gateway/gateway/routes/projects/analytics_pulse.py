@@ -241,7 +241,9 @@ def pulse_row(
         row["pill"] = cap_row["pill"]
         row["pill_reason"] = cap_row.get("pill_reason")
         row["hours_basis"] = bool(cap_row.get("hours_basis"))
-        row["working_hours_this_week"] = cap_row.get("working_hours_this_week")
+        # Each hours key is ABSENT, never null, when the capacity row has none.
+        if cap_row.get("working_hours_this_week") is not None:
+            row["working_hours_this_week"] = cap_row["working_hours_this_week"]
         if "committed_hours_this_week" in cap_row:
             row["committed_hours_this_week"] = cap_row["committed_hours_this_week"]
         row["status"] = status

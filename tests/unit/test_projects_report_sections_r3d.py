@@ -139,7 +139,7 @@ def test_blocked_is_one_predicate_in_analytics() -> None:
 
 def test_stale_is_the_hygiene_predicate_and_pulse_names_no_day_number() -> None:
     """(h), the source half."""
-    assert pul._STALE == dict(ana.HYGIENE_KINDS)["stale_in_progress"]
+    assert dict(ana.HYGIENE_KINDS)["stale_in_progress"] == pul._STALE
     code = _code(inspect.getsource(pul))
     assert "STALE_DAYS" in code
     # No day count of its own: no 13, 14, 15, 30, and no interval literal.

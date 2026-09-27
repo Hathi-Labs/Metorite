@@ -475,6 +475,78 @@ describe("reportEmail · hygiene", () => {
   });
 });
 
+// WS-27bn R3d — the opt-in pulse section.
+describe("reportEmail · pulse", () => {
+  const card = {
+    assignee: "dee@example.test",
+    name: "Dee <ops>",
+    open_tasks: 9,
+    overdue: 1,
+    focus_total: 7,
+    help_reasons: ["blocked", "stale"],
+    status: "on_track",
+    hours_basis: true,
+    working_hours_this_week: 40,
+    committed_hours_this_week: 12.5,
+  };
+  const withPulse = (over: Partial<NonNullable<RenderedReport["sections"]["pulse"]>> = {}): RenderedReport => ({
+    ...rendered,
+    sections: {
+      pulse: {
+        people_total: 3,
+        hidden_people: 0,
+        help_note: 'The report does not check "behind two runs in a row" yet.',
+        rows: [
+          card,
+          { ...card, assignee: "fay@example.test", name: "Fay", status: "on_leave",
+            help_reasons: [], focus_total: 0 },
+          { assignee: "eli@example.test", name: null, open_tasks: 4, overdue: 1,
+            focus_total: 0, help_reasons: [] },
+        ],
+        ...over,
+      },
+    },
+  });
+
+  it("prints one line a card: status words, the text bar, focus and reasons", () => {
+    const { text } = reportEmail(withPulse());
+    expect(text).toContain("Team pulse: 3 people");
+    expect(text).toContain(
+      `Dee <ops> · On track: 9 open · ${textBar(12.5, 40)} 12.5 of 40 h this week` +
+        " · 7 focus · Needs help: Blocked, Stale",
+    );
+    expect(text).toContain("Fay · On leave: 9 open");
+    expect(text).not.toContain("Idle");
+    // No HR half: no status, and the bar is overdue of open tasks.
+    expect(text).toContain(
+      `eli@example.test: 4 open · ${textBar(1, 4)} 1 of 4 overdue · 0 focus`,
+    );
+    expect(text).toContain("two runs in a row");
+    expect(text).not.toContain("This report hides");
+  });
+
+  it("prints the hidden line and the reader's own waiting count", () => {
+    const { text } = reportEmail(
+      withPulse({
+        hidden_people: 2,
+        rows: [{ ...card, waiting_count: 1,
+                 help_reasons: ["blocked", "stale", "waiting_overdue"] }],
+      }),
+    );
+    expect(text).toContain("This report hides 2 other people");
+    expect(text).toContain("1 waiting past the date");
+    expect(text).toContain("Needs help: Blocked, Stale, Waiting past its date");
+    const one = reportEmail(withPulse({ hidden_people: 1, rows: [] })).text;
+    expect(one).toContain("This report hides 1 other person");
+  });
+
+  it("carries no colour, and escapes a name", () => {
+    const { html } = reportEmail(withPulse());
+    expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
+    expect(html).toContain("Dee &lt;ops&gt;");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // WS-27bm S8 — the same layout, as a FILE (spec projects_ai_chat.md §14)
 // ---------------------------------------------------------------------------

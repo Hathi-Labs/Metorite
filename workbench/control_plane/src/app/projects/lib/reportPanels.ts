@@ -26,6 +26,7 @@ import type {
   LoadReport,
   OutlookReport,
   PreviewReportBody,
+  PulseReport,
   RebalanceReport,
   RenderedReportBody,
   StuckReport,
@@ -206,6 +207,25 @@ export function hygienePanelData(
     ...section,
     by_kind: { ...(section.by_kind ?? {}) },
     rows: asList<HygieneReport["rows"][number]>(section.rows),
+  };
+}
+
+/**
+ * `pulse` as `PulsePanel` takes it (WS-27bn R3d).
+ *
+ * The section IS `pulse_body`, so this copies it. It takes no frame: the
+ * section reads one UTC day, today, and no report period reaches it.
+ *
+ * ⚠️ **Each row is copied as the server sent it.** An HR key that a row
+ * lacks stays absent, because the panel decides the HR half per row by
+ * key presence. A filled-in key would draw hours the server withheld.
+ */
+export function pulsePanelData(
+  section: NonNullable<Sections["pulse"]>
+): PulseReport {
+  return {
+    ...section,
+    rows: asList<PulseReport["rows"][number]>(section.rows).map((r) => ({ ...r })),
   };
 }
 

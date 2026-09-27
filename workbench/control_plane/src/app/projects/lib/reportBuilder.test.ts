@@ -165,6 +165,7 @@ describe("sections", () => {
       "outlook",
       "load",
       "capacity",
+      "pulse",
       "stuck",
       "hygiene",
       "conflicts",

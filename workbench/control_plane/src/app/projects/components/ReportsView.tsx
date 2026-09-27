@@ -61,6 +61,15 @@ import {
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import {
+  focusWhy,
+  helpLine,
+  hiddenPeopleLine,
+  pulseFocus,
+  pulseName,
+  pulseRows,
+  statusMark,
+} from "../lib/pulse";
+import {
   REBALANCE_HR_HINT,
   helpersLine,
   pickupLine,
@@ -74,6 +83,7 @@ import {
   hygienePanelData,
   loadPanelData,
   outlookPanelData,
+  pulsePanelData,
   rebalancePanelData,
   reportTiles,
   stuckPanelData,
@@ -107,6 +117,7 @@ import {
   HygienePanel,
   LoadPanel,
   OutlookPanel,
+  PulsePanel,
   RebalancePanel,
   Stat,
   StuckPanel,
@@ -442,6 +453,65 @@ export function RenderedBody({
                 />
               ))}
             </ul>
+          </Table>
+        </div>
+      )}
+
+      {/* WS-27bn R3d. Opt-in. `pulse_body`, read today and not over the
+          period. The server removed the cards this reader may not see, and
+          the table names each card and each focus task it sent. */}
+      {sections.pulse && (
+        <div className="space-y-1">
+          <PulsePanel data={pulsePanelData(sections.pulse)} />
+          <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              title="Every person who holds open work in this scope, before the report hides any card."
+            >
+              {sections.pulse.people_total} people
+            </p>
+            <div className="space-y-1.5">
+              {pulseRows(sections.pulse).map((r) => (
+                <div key={r.assignee} className="text-[11px]">
+                  <ul>
+                    <Row
+                      name={pulseName(r)}
+                      value={r.open_tasks}
+                      aside={statusMark(r)?.label}
+                      title={
+                        `${r.open_tasks} open, ${r.overdue} overdue,` +
+                        ` ${r.blocked_count} blocked, ${r.stale_count} stale,` +
+                        ` ${r.focus_total} focus tasks` +
+                        (typeof r.waiting_count === "number"
+                          ? `, ${r.waiting_count} waiting past the date`
+                          : "")
+                      }
+                    />
+                  </ul>
+                  <ul className="mt-0.5 space-y-0.5 pl-2">
+                    {pulseFocus(r).map((f) => (
+                      <li
+                        key={f.id}
+                        className="truncate pr-px text-muted-foreground"
+                        title={f.title}
+                      >
+                        <span className="text-foreground">{f.title}</span> ·{" "}
+                        {focusWhy(f)}
+                        {f.project_name ? ` · ${f.project_name}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                  {helpLine(r) && (
+                    <p className="pl-2 text-muted-foreground">{helpLine(r)}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {hiddenPeopleLine(sections.pulse.hidden_people) && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {hiddenPeopleLine(sections.pulse.hidden_people)}
+              </p>
+            )}
           </Table>
         </div>
       )}

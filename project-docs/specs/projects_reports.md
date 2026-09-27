@@ -9,7 +9,8 @@ section, the ageing bands in `stuck`, and T5 live).
 
 **R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
 only). **R3c BUILT 2026-09-26** (the `hygiene` section, `HygienePanel`, and
-T13 live). R3d is next. R3d, R4, R4b, R5 to R9 and Phases 2 and 3 are not
+T13 live). **R3d BUILT 2026-09-28** (the `pulse` section, `PulsePanel`,
+and T1 live). R5 is next. R4, R4b, R5 to R9 and Phases 2 and 3 are not
 built.
 
 Written
@@ -902,7 +903,7 @@ and `hygiene.test.ts` holds the email words equal to the panel words.
 The chat card and the chat text show five hygiene rows of each kind, then a count of the rest.
 The card cuts a timestamp to its date only in a date column, so a title prints whole.
 
-#### R3d — `pulse` and T1 · AGENT-SAFE
+#### R3d — `pulse` and T1 · AGENT-SAFE · BUILT 2026-09-28
 
 **What:** the `pulse` section. It draws one card for each person: a load
 bar, the status, the top focus tasks and a "Needs help" mark. T1
@@ -1041,6 +1042,17 @@ summary tile, T2 and T6. "Behind two runs in a row" waits for R4.
   and at 390 px.
 
 The `waiting` rows of `pulse` for one person serve T2 and T6. They are not a fifth section.
+
+**As built:** `test_projects_report_sections_r3d.py` seeds two projects and
+six people on a real database. It proves (a) to (j). A mutation of each of
+(a), (b), (c), (d) and (g) turns its test red.
+
+`lib/pulse.ts` holds the
+words, and `reportEmail.ts` holds the status words, the reason words and
+the hidden line. `pulse.test.ts` holds them equal to `PILL_LABEL` and to the
+chat card. `reportVisuals.test.ts` draws ten panels. The panel names three
+focus tasks, and the folded table names each focus task that the body
+carries.
 
 ### R4 — Stored runs and "what changed" · AGENT-SAFE
 
