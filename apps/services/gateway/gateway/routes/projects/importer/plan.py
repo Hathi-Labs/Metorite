@@ -271,3 +271,27 @@ def _tree(bundle: ImportBundle) -> list[dict[str, Any]]:
         }
         for c in bundle.containers
     ]
+
+
+# ── what the writer reads ───────────────────────────────────────────────────
+#
+# The writer (I-3) resolves people and statuses through THESE, so it writes
+# exactly what the dry run showed the admin. A second resolution in the writer
+# could disagree with the plan the admin confirmed.
+
+
+def resolve_people(
+    bundle: ImportBundle, mapping: ImportMapping, directory: dict[str, str]
+) -> dict[str, str | None]:
+    """Person ref → the member it lands on, or ``None`` for unassigned. A
+    choice outside the directory resolves to ``None``; the plan already
+    refused it, so the writer never sees one unless the directory changed."""
+    rows = _people(bundle, mapping, directory, [])
+    return {r["ref"]: (r["member"] if r["member"] in directory else None) for r in rows}
+
+
+def resolve_statuses(
+    bundle: ImportBundle, mapping: ImportMapping
+) -> dict[str, tuple[str, Category]]:
+    """Source status name → (Metorite status name, stage)."""
+    return _statuses(bundle, mapping, [])[1]

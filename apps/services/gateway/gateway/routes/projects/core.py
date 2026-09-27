@@ -2843,8 +2843,13 @@ async def record_activity(
     meta: dict[str, Any] | None = None,
     automation: bool = False,
     parent_id: str | None = None,
+    created_at: datetime | None = None,
 ) -> Any:
     """Write one timeline row.
+
+    ``created_at`` is for the file importer only (D80, WS-41): a comment
+    imported from another tool keeps the date it was written there. Every
+    other caller omits it, and the column default stamps ``now()``.
 
     The migration's CHECK requires a target, and this refuses first so the
     failure names the caller's mistake instead of surfacing as an
@@ -2884,7 +2889,7 @@ async def record_activity(
     # A project-level activity bumps nothing — there is no task to bump, and
     # `pm_projects.updated_at` is not what any feed reads.
     await touch_task(db, task_id)
-    return await insert_row(db, "pm_activities", {
+    values: dict[str, Any] = {
         "type": activity_type,
         "task_id": task_id,
         "project_id": project_id,
@@ -2895,7 +2900,33 @@ async def record_activity(
         # business — `add_comment` is the only caller that passes it, and it
         # checks the parent first. This function stays the one writer.
         "parent_id": parent_id,
-    })
+    }
+    if created_at is not None:
+        values["created_at"] = created_at
+    return await insert_row(db, "pm_activities", values)
+
+
+async def insert_assignees(
+    db: Any, task_id: str, assignees: Any, *, by: str,
+) -> None:
+    """Add people to a task's assignee set. Idempotent per (task, assignee).
+
+    The ONE insert into ``pm_task_assignees``: ``tasks.set_assignees`` and the
+    file importer (WS-41) both call it. It writes the rows and nothing else.
+    The notification, the watcher and the event are the caller's to decide,
+    because an import of two thousand tasks must not ping anybody
+    (``project_import.md`` §6.10).
+    """
+    for who in sorted({str(a).strip().lower() for a in assignees if str(a or "").strip()}):
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_assignees "
+                "(task_id, assignee, assigned_by) "
+                "VALUES (CAST(:tid AS uuid), :who, :by) "
+                "ON CONFLICT (task_id, assignee) DO NOTHING"
+            ),
+            {"tid": task_id, "who": who, "by": by},
+        )
 
 
 def diff_changes(before: Any, after: Any, fields: tuple[str, ...]) -> list[dict]:

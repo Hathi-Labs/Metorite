@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — I-1 and I-2 built 2026-09-27, the rest is spec.** Owner
+**Status: ACTIVE — I-1 and I-2 built 2026-09-27, I-3 built 2026-09-28, the rest is spec.** Owner
 directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
@@ -271,8 +271,10 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
    language (Todoist). When the file names no zone, the wizard asks for the
    exporter's zone. The ClickUp file names it (§4.1.1 fact 8). The parser
    never reads a text date when an epoch column exists. A date with no time
-   stays a date. It lands in `start_date`, or at the end of that day in
-   `due_at`.
+   stays a date. It lands in `start_date`, or at LOCAL NOON of that day in
+   `due_at`. The app writes a picked day at that instant
+   (`quickAdd.ts` `dueInstantForDay`). So an imported date and a typed date
+   read the same.
 2. **Rich text.** Markdown, plain text, HTML and Jira wiki text all occur.
    The target is Markdown, because `pm_tasks.description` is Markdown. HTML is
    stripped to text and never stored raw.
@@ -355,7 +357,13 @@ a `Loss` row for each whole field that its tool never exports. An example is
 
 - **A new space** (the default). The name defaults to the source space name.
 - **An existing space** that the admin can see. The imported tree lands under
-  it.
+  it. The grammar allows ONE folder between a space and a project, so a source
+  Space and its Folder flatten into one folder named "Space / Folder". A List
+  with no Folder lands in a folder named after its Space.
+
+With a new space, the admin's name replaces the source Space's name only when
+the file holds one Space. A file of five Spaces makes five spaces, each with
+its own name.
 
 **Hierarchy (ClickUp).** It fits the Projects tree grammar
 (`core.assert_node_grammar`, `core.py:465`). The depth cap is 3.
@@ -393,8 +401,9 @@ Every imported task carries this in `pm_tasks.origin`:
 - A new partial unique index holds one row per
   `(organization_id, origin->>'source', origin->>'external_id')` where
   `origin->>'kind' = 'import'`. This makes a re-run safe (§6.9).
-- `created_at` keeps the source date. `created_by` is the mapped member, or
-  `system:import:<source>` when the author has no member.
+- `created_at` keeps the source date. The ClickUp file names no creator, so
+  `created_by` is `system:import:clickup`. A comment's `created_by` is its
+  mapped author, else the same system actor.
 
 ### 6.2 People
 
@@ -542,6 +551,15 @@ themselves, uploaded as a ZIP.
 - **Re-run.** A task whose `(source, external_id)` exists in this organization
   is **skipped**, not updated. The report counts the skips. This keeps every
   edit made in Metorite since the first run.
+- **How the skip works (built in I-3).** Each batch first reads which of its
+  tasks exist (the import origin, and `clickup_id` for the old importer's
+  rows). It writes the rest through `insert_row`, the helper every route uses.
+  The unique index of migration 219 is the backstop: a write it refuses fails
+  the batch, and the batch rolls back whole. There is no `ON CONFLICT` in the
+  writer, so no conflict can drop a task in silence.
+- **A parent in another tree.** A subtask whose parent the old importer wrote
+  lands at the top of its project, and the report counts it as
+  `subtasks_detached`. A parent link never crosses from one space to another.
 - **Discard.** The run page offers "Discard this import" for 14 days. It
   deletes the space the run created, which cascades. For a run into an
   existing space, it deletes the rows that carry this `run_id` and the nodes
@@ -556,11 +574,14 @@ write must not fire for it:
 - No `pm_notifications` rows and no mail.
 - No `emit("pm.task.created")`, so no workflow and no automation runs.
 - No watcher rows except the mapped assignees, through `ensure_watchers`.
-- One `pm_activities` row of kind `import` per project, not one per task, as
-  the old importer did with `sync` activities.
+- One `system` activity per space when it is created, and one when the run
+  ends, not one per task. Each carries `meta.import.run_id`.
 
-The writer passes one `quiet=True` argument to the helpers that emit. A fence
-test proves the flag suppresses each one (§8).
+**No flag was necessary (built in I-3).** The routes call `emit` and `notify`
+AFTER the shared helpers return. The helpers themselves emit nothing. So the
+writer calls the helpers and nothing else. `test_import_writer.py` fails if the
+writer module ever calls `emit` or `notify`, and the live test counts zero
+notification rows after a full import.
 
 ## 7. The run — storage, jobs and limits
 
@@ -603,17 +624,34 @@ and the folder does not.
 There is no durable job runner (the research found APScheduler, `BackgroundTasks`
 and an in-memory `JobTracker` only). The apply therefore works like this:
 
-1. The confirm route sets `state = 'applying'` and starts an `asyncio` task.
+1. `POST …/apply` takes a transaction lock per organization
+   (`pg_advisory_xact_lock`). It refuses (409) while another run of the
+   organization is `applying` with a fresh heartbeat. Then it sets
+   `state = 'applying'` and starts an `asyncio` task.
 2. The task binds `tenant_session(run.organization_id)` itself, per batch.
    It never trusts a tenant from the request (R5(e)).
-3. Batch 0 writes every node, and stores `node_map` in `progress`.
-4. Later batches write 200 tasks each, in one transaction per batch, parents
-   before children. Each batch bumps `heartbeat_at`.
-5. The last batch writes the links and the per-project activity row.
+3. The task re-checks the plan against the database as it is NOW. A member
+   who left since the dry run fails the run with a named reason.
+4. Batch 0 writes every node and each project's status set, and stores the
+   node map in `progress`, in ONE transaction.
+5. Later batches write 200 tasks each, in one transaction per batch, parents
+   before children. Each batch saves `progress.cursor` and bumps
+   `heartbeat_at`.
+6. The end writes the report, sets `done`, and deletes the upload.
 
-If the gateway restarts mid-run, the heartbeat goes stale. After 2 minutes
-the run page shows "Interrupted" and offers **Resume**. A resume is safe,
-because §6.1's index skips every task already written.
+**Retry.** A deploy applies migrations while an import may run, and a
+migration's lock can deadlock a batch. A batch that fails with a deadlock, a
+serialization failure or a lock timeout (SQLSTATE 40P01, 40001, 55P03) runs
+again, up to 4 times. The batch is one transaction that skips what exists, so
+a retry is safe. The live test saw real deadlocks on the shared scratch
+database, and the retry carried the run through each time.
+
+**Resume.** If the gateway restarts mid-run, the heartbeat goes stale. After
+2 minutes, `POST …/apply` resumes the run from `progress.cursor`.
+
+**Failure.** Any other error sets `failed`, records the reason in `report`,
+and deletes the upload. The rows already written stay. A new upload of the
+same file skips them and writes the rest.
 
 ### 7.4 Limits (phase 1)
 
@@ -680,7 +718,8 @@ look (`DESIGN_SYSTEM.md`):
 | Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
 | The bundle holds `None`, never a guess | `tests/unit/test_import_clickup_adapter.py` — `test_every_whole_field_the_file_lacks_is_a_loss` (no guessed `completed_at`) and `test_every_column_of_the_real_file_has_a_stated_fate` |
 | The plan writes nothing | `tests/unit/test_import_plan.py` — the plan module imports no database client (`test_the_plan_module_cannot_reach_a_database`). `tests/unit/test_projects_import_routes.py` records every statement an upload sends, and finds no write but the run's own |
-| Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
+| Side effects stay off | `tests/unit/test_import_writer.py` (`test_the_writer_never_emits_or_notifies`) — the cause. `tests/live/live_ws41_writer.py` check 3.4 — the result, zero notification rows |
+| A retry is only for a transient lock error | `tests/unit/test_import_writer.py` — 40P01, 40001 and 55P03 retry. A constraint error does not |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
 | The SQL works (R8) | `tests/live/live_ws41_import.py` — a real Postgres: apply, re-run skips, resume after a kill, discard |
 | The flag is dark by default | `tests/unit/test_projects_import_routes.py` (`test_the_flag_off_answers_404`, and the gate order on every route). `publicFlags.test.ts` holds the client flag from I-4 |
@@ -694,7 +733,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
-| **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **From the I-2 review:** name the conflict target in full — `ON CONFLICT (organization_id, (origin->>'source'), (origin->>'external_id')) WHERE origin->>'kind' = 'import' DO NOTHING`. A bare `DO NOTHING` also swallows a `task_number` clash and drops a task in silence. Never write an import row with a NULL `external_id`, because NULLs never conflict. Skip the plan's `legacy_refs` too, which the index does not cover. Check that `group:<slug>` names a group of this organization. Delete the files on `done` and `failed` |
+| **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 28 of 28 on a real Postgres. It stops the run after 3 batches and resumes it. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |
@@ -754,10 +793,22 @@ the assistant's manifest. Each new route needs one, even an excluded one.
 `test_import_flag.py`. The live test is a script, as every file in
 `tests/live/` is, so run it with `python` and read its PASS lines.
 
-**I-3 and later (planned — these files do not exist yet):**
+**I-3 (built):**
 
 ```bash
-uv run pytest tests/unit/test_import_quiet.py tests/unit/test_pm_task_insert_sites.py
+uv run pytest tests/unit/test_import_layout.py tests/unit/test_import_writer.py \
+  tests/unit/test_pm_task_insert_sites.py tests/unit/test_projects_import_routes.py
+uv run python tests/live/live_ws41_writer.py
+```
+
+`live_ws41_writer.py` COMMITS: the writer opens its own sessions. It works in
+a fresh organization and deletes it at the end. The scratch database is shared
+between worktrees, so a neighbour's migration can deadlock a batch. The retry
+covers that, and a cleanup failure prints `WARN` instead of hiding the result.
+
+**I-4 and later (planned):**
+
+```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 

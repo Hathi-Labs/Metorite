@@ -53,6 +53,7 @@ from gateway.routes.projects.core import (
     diff_changes,
     emit,
     from_jsonb,
+    insert_assignees,
     insert_row,
     lift_subtasks_to_grandparent,
     load_default_status,
@@ -1152,16 +1153,7 @@ async def set_assignees(
                 ),
                 {"tid": task_id, "who": who},
             )
-        for who in sorted(added):
-            await db.execute(
-                text(
-                    "INSERT INTO pm_task_assignees "
-                    "(task_id, assignee, assigned_by) "
-                    "VALUES (CAST(:tid AS uuid), :who, :by) "
-                    "ON CONFLICT (task_id, assignee) DO NOTHING"
-                ),
-                {"tid": task_id, "who": who, "by": actor(user)},
-            )
+        await insert_assignees(db, task_id, added, by=actor(user))
         if added or removed:
             await record_activity(
                 db, activity_type="assignment", created_by=actor(user),
