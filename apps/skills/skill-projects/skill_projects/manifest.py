@@ -220,6 +220,16 @@ MANIFEST: tuple[Route, ...] = (
         "holds each half as its own tool: set_my_overlay, move_task, assign, "
         "complete, add_subtasks.",
     ),
+    Route(
+        "POST",
+        "/projects/my/tasks/{task_id}/subtasks",
+        "",
+        "X",
+        "My Tasks' checklist door for new steps (D-PM-38 S4): the organize "
+        "helper, so a step lands in the parent's open lane and states NEXT "
+        "under a NEXT parent. The chat adds steps through add_subtasks today. "
+        "Moving that tool onto this door is an open gap (spec 11.40).",
+    ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     # WS-39 S6e — `?untriaged=true` is a query flag on this same route, so
     # it needs no row: the manifest keys on the verb and the path, and
