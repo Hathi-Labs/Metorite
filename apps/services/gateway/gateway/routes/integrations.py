@@ -688,7 +688,7 @@ async def configure_integrations(
     ]
     if illegal:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Invalid env var key(s): {illegal}. "
                 "Keys must be SCREAMING_SNAKE_CASE (A-Z, 0-9, underscore)."
@@ -1795,7 +1795,7 @@ async def github_device_start(
     client_id: str = getattr(settings, "github_client_id", "")
     if not client_id.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured. Save it via /integrations/configure first.",
         )
 
@@ -1841,7 +1841,7 @@ async def github_device_poll(
     client_id: str = getattr(settings, "github_client_id", "")
     if not client_id.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured.",
         )
 

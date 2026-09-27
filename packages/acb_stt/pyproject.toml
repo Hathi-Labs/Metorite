@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "Speech-to-text via the platform LiteLLM plumbing (tier-stt model config)."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "litellm>=1.52",
+    "litellm>=1.103.0",
     "acb-common",
     "acb-llm",
 ]
@@ -16,7 +16,7 @@ dependencies = [
 # PCM stream. See acb_stt/local_diarization.py.
 local-diar = [
     "sherpa-onnx>=1.10",
-    "numpy>=1.24",
+    "numpy>=2.5",
 ]
 
 [build-system]

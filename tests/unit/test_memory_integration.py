@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.unit._routes import served_routes
+
 
 # ---------------------------------------------------------------------------
 # acb_memory — imports and public surface
@@ -242,7 +244,7 @@ def test_copilot_chat_endpoint_registered() -> None:
     # assuming every route is HTTP.
     routes = {
         r.path: r.methods
-        for r in app.routes
+        for r in served_routes(app.routes)
         if hasattr(r, "path") and hasattr(r, "methods")
     }
     assert "/copilot/chat" in routes, f"Expected /copilot/chat, found: {list(routes)}"
@@ -280,7 +282,7 @@ def test_memory_routes_registered() -> None:
     """The /memory/{user_id} GET endpoint must be registered."""
     from gateway.main import app
 
-    paths = {r.path for r in app.routes if hasattr(r, "path")}
+    paths = {r.path for r in served_routes(app.routes) if hasattr(r, "path")}
     # The memory router registers /memory/{user_id} and /memory/{user_id}/search etc.
     memory_paths = [p for p in paths if p.startswith("/memory")]
     assert memory_paths, f"No /memory/* routes found. Registered: {sorted(paths)}"

@@ -862,7 +862,8 @@ def duration_seconds(response: Any) -> Decimal | None:
     bills zero and says so out loud — a completion the customer already holds
     must never fail because the meter could not read it.
 
-    Two shapes, read in this order. litellm 1.86.0 gives
+    Two shapes, read in this order. litellm gives (measured in 1.86.0, and
+    unchanged in 1.103.0)
     ``usage.type == "duration"`` with ``usage.seconds`` on the providers that
     report a usage object. The older shape is a bare ``duration`` attribute
     that litellm copies across from the provider body. Reading the usage
@@ -920,7 +921,8 @@ def image_count(response: Any) -> Decimal | None:
 
     ⚠️ **THE ``None`` ARM IS STUB-ONLY TODAY, and nobody may read it as a
     live alarm.** ``ImageResponse.__init__``
-    (``litellm/types/utils.py:2336``, measured in litellm 1.86.0) turns a
+    (``litellm/types/utils.py:2566`` in litellm 1.103.0, re-measured on
+    2026-09-28, and line 2336 in 1.86.0) turns a
     falsy ``data`` into ``[]``, so a real litellm answer reaches this
     function with a list every time and takes the ``Decimal(0)`` arm. The arm
     is KEPT rather than deleted for ONE reason. H-47's native handler seam
@@ -1067,6 +1069,17 @@ def usage_from_response(response: Any) -> ExtractedUsage:
 #: ⚠️ **Read as ONE string in ONE place.** It is litellm's internal shape, not
 #: a public contract, so a second copy of this key somewhere else is a second
 #: thing to find the day litellm renames it.
+#:
+#: 🔴 **Fenced against the INSTALLED litellm** by
+#: ``test_router_reported_cost.py::test_litellms_own_openrouter_transform_writes_the_key_we_read``,
+#: which runs litellm's real OpenRouter transform (re-measured in 1.103.0).
+#:
+#: ⚠️ **A STREAMED call does not reach this key.** litellm writes it on the
+#: buffered response. On a stream, the final chunk carries ``usage.cost``
+#: instead, and litellm 1.103.0 copies it onto its own assembled response
+#: only (``CustomStreamWrapper._propagate_usage_cost_to_hidden_params``),
+#: which ``relay_stream`` never sees. So a streamed OpenRouter call records
+#: the computed cost, as it did on 1.86.0.
 _LITELLM_COST_KEY = "llm_provider-x-litellm-response-cost"
 
 

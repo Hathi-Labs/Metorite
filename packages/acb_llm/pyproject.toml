@@ -4,9 +4,14 @@ version = "0.0.1"
 description = "LiteLLM client + tiered routing helper + guardrails."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "litellm>=1.52",
+    "litellm>=1.103.0",
+    # attribution.py imports `openai` directly, so it is declared here.
+    # ⚠️ It stays on 2.x. Every litellm release up to 1.103.0 requires
+    # `openai<3.0.0`, and the Console Router is built on litellm. Add no cap
+    # of our own: litellm owns that ceiling, and a release of it lifts it.
+    "openai>=2.54.0",
     "tenacity>=9.0",
-    "cryptography>=42.0",
+    "cryptography>=50.0",
     "acb-common",
     # WS-31 CP-13c: `acb_llm.decide` reaches the Console through
     # `acb_auth.console_resolve`, the one Console HTTP client. Declared HERE,

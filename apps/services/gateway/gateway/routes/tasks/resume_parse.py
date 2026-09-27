@@ -60,10 +60,10 @@ def extract_text(content: bytes, filename: str, mime: str | None) -> str:
 
 
 def _pdf_text(content: bytes) -> str:
-    try:
-        import pymupdf
-    except Exception:
-        import fitz as pymupdf
+    # `pymupdf` alone. The `fitz` fallback that stood here is the deprecated
+    # name, and from 1.28.2 importing it prints a notice to stdout.
+    import pymupdf
+
     parts: list[str] = []
     with pymupdf.open(stream=content, filetype="pdf") as doc:
         for page in doc:

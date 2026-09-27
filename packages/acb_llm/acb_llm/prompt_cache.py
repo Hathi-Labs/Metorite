@@ -13,7 +13,9 @@ call right before ``acompletion()``:
 
 Because litellm accepts ``cache_control`` on OpenAI-format message content blocks
 and on tool definitions and translates them to Anthropic's cache_control
-(verified against litellm 1.86.0), the transform operates purely on the
+(verified against litellm 1.86.0, and again against 1.103.0 on 2026-09-28:
+``AnthropicConfig`` keeps ``cache_control`` on the system block and on the
+mapped tool), the transform operates purely on the
 OpenAI-shaped request and lets litellm do the provider translation.
 
 Provider behaviour:

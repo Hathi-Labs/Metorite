@@ -93,7 +93,7 @@ def photo(width: int, height: int) -> bytes:
     nothing to do with the code — the first run of this harness reported a
     failure that was entirely the fixture's.
     """
-    import fitz
+    import pymupdf as fitz
 
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height), False)
     for index, colour in enumerate(((40, 90, 160), (200, 60, 40), (30, 170, 90))):
@@ -147,7 +147,7 @@ async def main() -> None:
         check("what came back out of Postgres is still a JPEG",
               jpeg[:3], b"\xff\xd8\xff")
 
-        import fitz
+        import pymupdf as fitz
         stored = fitz.Pixmap(jpeg)
         check("…of exactly the fixed size",
               (stored.width, stored.height),

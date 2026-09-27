@@ -4,14 +4,14 @@ version = "0.0.1"
 description = "The platform Customer Console — organizations, seats, subscriptions and AI metering (WS-31)."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "fastapi>=0.115",
-    "sqlalchemy>=2.0",
+    "fastapi>=0.141",
+    "sqlalchemy>=2.1",
     "psycopg[binary]>=3.1",
     # The Router IS the provider gateway (CP-4), so litellm is a direct
     # dependency here rather than reached through acb_llm — that package's key
     # store reads the TENANT database, which is the wrong side of the boundary.
-    "litellm>=1.0",
-    "cryptography>=42",
+    "litellm>=1.103.0",
+    "cryptography>=50.0",
     # CP-9's payment seam talks to Razorpay over its HTTP API. Deliberately
     # NOT the `razorpay` SDK: the integration is two endpoints and one HMAC,
     # and adding a package to a CROSS-TENANT service is a supply-chain

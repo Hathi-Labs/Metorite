@@ -888,7 +888,7 @@ def _validate_agent_name(name: str) -> str:
 
     if safe not in all_allowed_lower and safe_no_prefix not in all_allowed_lower:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Unknown agent {name!r}. "
                 f"Registered: {sorted(all_allowed_lower)}"
@@ -1074,7 +1074,7 @@ def _resolve_agent_for_run(agent: str | None, thread_id: str | None) -> str:
             pass
 
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=(
             "This conversation isn't linked to an agent yet — please pick "
             "an agent to continue (the session's agent could not be resolved"
@@ -1457,7 +1457,7 @@ async def register_agent(
     # Validate name format
     if not re.match(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$", req.name):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Agent name must be 2-50 lowercase letters, digits, or hyphens (no leading/trailing hyphens).",
         )
 
@@ -1485,7 +1485,7 @@ async def register_agent(
         resolved = Path(raw_input).resolve()
         if not resolved.is_dir():
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Local path does not exist: {raw_input}",
             )
         local_path = str(resolved)

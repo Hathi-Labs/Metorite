@@ -5,18 +5,18 @@ description = "Shared settings, logging, OTel bootstrap."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "pydantic>=2.9",
-    "pydantic-settings>=2.6",
-    "structlog>=24.4",
+    "pydantic-settings>=2.15",
+    "structlog>=26.1",
     "python-dotenv>=1.0",
-    "opentelemetry-api>=1.28",
-    "opentelemetry-sdk>=1.28",
+    "opentelemetry-api>=1.45",
+    "opentelemetry-sdk>=1.45",
     "redis>=5.2",
     "psycopg[binary]>=3.2",
     # acb_common.db — the one shared async engine/pool per process (BO-10).
     # Imported lazily inside the functions so a process that never opens a
     # connection does not pay for SQLAlchemy's async stack, but it is a real
     # dependency of this package and is declared as one.
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.1",
     "asyncpg>=0.30",
 ]
 

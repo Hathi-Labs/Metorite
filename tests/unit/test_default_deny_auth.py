@@ -19,6 +19,8 @@ from acb_auth.roles import UserContext, UserRole
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.unit._routes import served_routes
+
 PUBLIC = frozenset({"/health", "/hooks/{source}"})
 
 
@@ -151,7 +153,7 @@ def test_every_gateway_route_is_behind_the_default_deny_guard() -> None:
     """
     main = _main()
     routes = [
-        r for r in main.app.routes
+        r for r in served_routes(main.app.routes)
         if getattr(r, "methods", None)
         and getattr(getattr(r, "endpoint", None), "__name__", "") not in _BUILTIN_DOCS
     ]
@@ -176,7 +178,7 @@ def test_docs_are_dev_only() -> None:
 def test_public_routes_all_exist_and_are_deliberate() -> None:
     """A typo'd public route is dead text; a stale one is a hole left open."""
     main = _main()
-    live = {getattr(r, "path", "") for r in main.app.routes}
+    live = {getattr(r, "path", "") for r in served_routes(main.app.routes)}
     missing = main.PUBLIC_ROUTES - live
     assert not missing, f"PUBLIC_ROUTES entries match no live route: {missing}"
 

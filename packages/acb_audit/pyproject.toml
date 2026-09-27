@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "Append-only audit log (input for the Annealer)."
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.1",
     "acb-common",
     "acb-graph",
 ]

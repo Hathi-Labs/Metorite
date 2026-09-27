@@ -46,6 +46,23 @@ would still fail on the second tool call.
 extra key, so both spellings travel together. Removing one would make this
 module decide which vendor is listening, and it does not have to.
 
+## Why litellm 1.103.0 does not replace this
+
+Re-read on 2026-09-28, at the litellm 1.103.0 upgrade. litellm now has
+``DeepSeekChatConfig._fill_reasoning_content``, and it is NOT this fix:
+
+* **It runs only when the CALLER turns thinking on.** ``_thinking_mode_active``
+  needs ``thinking={"type": "enabled"}`` in the request. The agents send no
+  such parameter, so for our traffic it never runs.
+* **When it runs, it sends a blank.** It reads
+  ``provider_specific_fields["reasoning_content"]``, a key the framework does
+  not write back. It then puts a single space in the field, and litellm's own
+  warning says that degrades the reasoning chain in silence.
+* **It does not rejoin the split turn.** See :func:`_rejoin_split_turns`.
+
+So this module keeps carrying the model's REAL reasoning. litellm fills only a
+turn that still has none, so the two do not collide.
+
 ⚠️ **Streaming is NOT covered, on purpose.** ``relay_stream`` promises
 byte-identity — *"a frame that arrives as bytes is yielded as it arrived"* —
 and a delta-level mirror would break that promise. H-180 carries it.
