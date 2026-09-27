@@ -504,7 +504,9 @@ The importer never writes `leveraged`.
   tasks are closed. The rule, pending §11 Q-6: take the latest date the task
   carries — a past due date, the last comment, or the creation date. Set
   `origin.completed_at_estimated = true`. **Never use the import time.** It
-  would put 1,647 completions into one day of every report and chart.
+  would put 1,647 completions into one day of every report and chart. The one
+  exception is a closed task that carries no date at all. A ClickUp export
+  never holds one, because every row has `Date Created`.
 - `estimate_mins` takes `Time Estimated`, which is in milliseconds.
 - `Time Spent` has no home, because there is no time-entry table. The value
   is in milliseconds, inside quotes and after a space. It goes into
@@ -578,10 +580,11 @@ themselves, uploaded as a ZIP.
   (`continued_from`).
 - **A reused status set.** A name the set already holds keeps ITS stage, and
   the task takes that stage, completion date included. A new name goes after
-  the last status of its own stage. A re-upload after a failure continues in the same tree, so its
-  subtasks keep their parents. A new-space run reuses only earlier new-space
-  runs. An existing-space run reuses only earlier runs into that same space.
-  The report counts reused nodes as `created.reused`.
+  the last status of its own stage.
+- **What reuse gives.** A re-upload after a failure continues in the same
+  tree, so its subtasks keep their parents. A new-space run reuses only
+  earlier new-space runs. An existing-space run reuses only earlier runs
+  into that same space. The report counts reused nodes as `created.reused`.
 - **A parent in another tree.** A subtask whose parent the old importer wrote
   lands at the top of its project, and the report counts it as
   `subtasks_detached`. A parent link never crosses from one space to another.
@@ -774,7 +777,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
 | **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 39 of 39 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. A list moved since is created again. A different workspace with the same Space names gets new spaces. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
-| **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
+| **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |
 | **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed |

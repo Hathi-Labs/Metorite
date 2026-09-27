@@ -2553,19 +2553,10 @@ async def next_task_number(db: Any, root_id: str) -> int:
 
     One statement, so two concurrent creates cannot be handed the same number:
     the ``ON CONFLICT DO UPDATE`` re-reads and increments the committed row
-    under the same lock that would have rejected the insert.
+    under the same lock that would have rejected the insert. That statement is
+    :func:`reserve_task_numbers`: one allocator owns the counter.
     """
-    row = (await db.execute(
-        text(
-            "INSERT INTO pm_task_counters (project_id, last_value) "
-            "VALUES (CAST(:root AS uuid), 1) "
-            "ON CONFLICT (project_id) DO UPDATE "
-            "SET last_value = pm_task_counters.last_value + 1 "
-            "RETURNING last_value"
-        ),
-        {"root": root_id},
-    )).fetchone()
-    return int(getattr(row, "last_value", 1) or 1)
+    return await reserve_task_numbers(db, root_id, 1)
 
 
 async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
