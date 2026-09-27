@@ -19,9 +19,12 @@
 # The request waits and then succeeds. It does not fail.
 #
 # ⚠️ What it retries, and what it does not:
-#   • A DIAL failure only (connection refused). The upstream never got the
-#     request, so a retry is safe for POST too. Caddy does not retry a request
-#     the upstream has already begun to answer.
+#   • Any method, on a DIAL failure (connection refused). The upstream never
+#     got the request, so a retry is safe for a POST too.
+#   • A GET only, on a round-trip error before any response header arrives.
+#     This is Caddy's default for idempotent requests. A POST, PUT, PATCH or
+#     DELETE is retried ONLY on a dial failure.
+#   • Never a request that the upstream has already begun to answer.
 #   • An open stream (chat, SSE, a websocket) that the restart cuts is NOT
 #     retried. The browser sees the stream end, as it did before this change.
 #   • A 500 that the upstream returns is an answer, not a dial failure, and it

@@ -1563,10 +1563,33 @@ line — never reclaim a number by deleting the other entry.
     retry in the workbench's gateway client, or two gateway units behind a
     swapped port. Skipping the gateway restart is NOT safe: `build_sha()` is
     cached per process, and `deploy.yml` verifies `/version`.
-  - ⚠️ **Owner: `work_plan.md` §6 gate (a) is now out of date.** It says the
-    pipeline installs the repo Caddyfile only when the live one fails
-    `caddy validate`. After this PR, every merged Caddyfile goes live on the
-    next deploy. Decide whether gate (a) needs new words.
+  - 🟢 **The owner decided gate (a) on 2026-09-28: "Auto, except sign-in
+    changes".** Every deploy installs the repo Caddyfile. A change to its
+    auth-relevant lines cannot merge without the owner.
+    - **The fence** is `tests/unit/test_caddy_auth_gate.py`. It hashes the
+      auth lines and compares the hash with `_BASELINE`
+      (`8188e88b…517ddc2f`). The owner approves a new hash with the line
+      `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md`. The test
+      failure prints the exact line.
+    - ⚠️ An agent that edits `_BASELINE` defeats the fence. Review must treat
+      that edit as gate (a).
+    - `work_plan.md` §6 gate (a) and `onboarding_preflight.py` now say this.
+  - **More fences from the review round:**
+    - After a Caddy restart, the apply asks every site host through Caddy.
+      No answer, or a 5xx other than 502/503/504, rolls the config back.
+    - No backup of the live file means no install. The apply keeps the last
+      five backups.
+    - CI runs `caddy validate` and `caddy fmt` (`caddy:2.11.4`), so a broken
+      Caddyfile cannot merge green.
+    - The apply removes the deps stamp before an install starts.
+    - `DEPLOY_FORCE=1` no longer runs `npm ci`. `DEPLOY_REINSTALL=1` does:
+      the `reinstall` dispatch input, or `vps_pull.sh --reinstall`.
+  - ⚠️ **The identity-header strip is NOT on the box.**
+    `colleague_onboarding.md` G1 says that the owner added
+    `header_up -X-User-Email` and `-X-User-Role` to the live file on
+    2026-08-04. The live file on 2026-09-28 has neither line. The repo file
+    matches the box, so this PR does not remove them. Adding them is an
+    auth change, so it needs the owner under gate (a).
   - **Measure it on the first two deploys after the merge.** The first one
     installs the new units and the Caddyfile. The second one is the real test.
     Run this from any machine while the deploy runs:

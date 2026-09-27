@@ -295,9 +295,35 @@ class TestReapplyTheSameSha:
 
     def test_a_CI_rerun_or_the_force_input_forces_the_apply(self) -> None:
         wf = self._WF.read_text(encoding="utf-8")
-        assert "DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force) && '1' || '0' }}" in wf
-        assert "\"DEPLOY_FORCE=${DEPLOY_FORCE:-0} bash -s\" < /tmp/deploy_remote.sh" in wf
+        assert (
+            "DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force || inputs.reinstall)"
+            " && '1' || '0' }}" in wf
+        )
+        assert (
+            '"DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
+            " < /tmp/deploy_remote.sh" in wf
+        )
         assert "      force:\n" in wf, "the workflow_dispatch input is missing"
+
+    def test_only_the_reinstall_input_reinstalls_the_dependencies(self) -> None:
+        """H-60: a rerun re-applies the sha but keeps node_modules. `npm ci`
+        under the running workbench is ~38 s of HTTP 500."""
+        wf = self._WF.read_text(encoding="utf-8")
+        assert "      reinstall:\n" in wf
+        assert "DEPLOY_REINSTALL: ${{ inputs.reinstall && '1' || '0' }}" in wf
+        assert "run_attempt" not in next(
+            ln for ln in wf.splitlines() if ln.strip().startswith("DEPLOY_REINSTALL:")
+        )
+
+    def test_the_pull_path_carries_reinstall_to_the_apply(self) -> None:
+        body = _PULL.read_text(encoding="utf-8")
+        assert '--reinstall) MODE="force"; DEPLOY_REINSTALL=1 ;;' in body
+        drop = body[body.index("exec runuser") :]
+        drop = drop[: drop.index('bash "$0" "$@"')]
+        assert 'DEPLOY_REINSTALL="$DEPLOY_REINSTALL"' in drop, "the root drop loses it"
+        call = body[body.index('DEPLOY_FORCE="$FORCE_FLAG"') :]
+        call = call[: call.index('bash "$TMP_APPLY"')]
+        assert 'DEPLOY_REINSTALL="$DEPLOY_REINSTALL"' in call, "the apply never sees it"
 
     def test_MODE_from_the_environment_is_honoured(self) -> None:
         """The give-up message said `sudo MODE=force bash vps_pull.sh`, and a
@@ -827,6 +853,28 @@ class TestCaddyHoldsTheRequest:
         restore = _first(lines, 'sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"')
         assert backup < restore
 
+    def test_no_backup_means_no_install(self) -> None:
+        lines = _executable_lines(_APPLY)
+        backup = _first(lines, 'sudo cp -a "$CADDY_LIVE" "$CADDY_BAK"')
+        install = _first(lines, 'sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"')
+        assert lines[backup].lstrip().startswith("if ! "), "a failed backup must stop it"
+        assert "exit 1" in "\n".join(lines[backup : backup + 4])
+        assert backup < install
+
+    def test_only_five_backups_are_kept(self) -> None:
+        lines = _executable_lines(_APPLY)
+        prune = _first(lines, 'ls -1t "$CADDY_LIVE".bak.[0-9]*')
+        assert "tail -n +6" in lines[prune]
+
+    def test_every_host_is_probed_before_caddy_counts_as_up(self) -> None:
+        lines = _executable_lines(_APPLY)
+        restart = _first(lines, "sudo systemctl restart caddy")
+        probe = _first(lines, 'caddy_probe_sites "$CADDY_LIVE"', restart)
+        rollback = _first(lines, 'sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"', probe)
+        up = _first(lines, 'echo "Caddy is active"', rollback)
+        assert restart < probe < rollback < up
+        assert "CADDY_RESTARTED" in lines[probe], "probe after a restart"
+
 
 class TestProbesOutwaitTheRetry:
     """`lb_try_duration` makes Caddy HOLD a request to a down upstream. A probe
@@ -938,10 +986,12 @@ class TestTheInstallKeepsAnUnchangedTree:
         for ln in installs:
             assert "record_deps_stamp" in ln, f"an install that leaves no stamp: {ln!r}"
 
-    def test_a_failed_install_removes_the_stamp(self) -> None:
+    def test_the_stamp_goes_before_the_first_install(self) -> None:
+        """An install killed half way must leave no stamp beside the damaged
+        tree, or the next apply keeps it."""
         fn = _apply_function("npm_install_here")
-        last = [ln for ln in fn.splitlines() if ln.strip().startswith("npm install")][-1]
-        assert "rm -f node_modules/.acb-deps-stamp" in fn[fn.index(last) :]
+        rm = fn.index("rm -f node_modules/.acb-deps-stamp")
+        assert fn.index("deps_unchanged") < rm < fn.index("npm ci")
 
 
 @linux_only
@@ -1050,13 +1100,126 @@ class TestTheDependencyStamp:
         (app / "package-lock.json").write_text('{"lockfileVersion": 3, "x": 1}\n')
         assert not self._kept(tmp_path, app)
 
-    def test_force_means_install(self, tmp_path: pathlib.Path) -> None:
+    def test_reinstall_means_install(self, tmp_path: pathlib.Path) -> None:
         app = self._app(tmp_path)
         self._run(tmp_path, app, "record_deps_stamp")
-        assert not self._kept(tmp_path, app, DEPLOY_FORCE="1")
+        assert not self._kept(tmp_path, app, DEPLOY_REINSTALL="1")
+
+    def test_force_alone_keeps_the_tree(self, tmp_path: pathlib.Path) -> None:
+        """A rerun sends DEPLOY_FORCE=1. It must not bring back the 38 s."""
+        app = self._app(tmp_path)
+        self._run(tmp_path, app, "record_deps_stamp")
+        assert self._kept(tmp_path, app, DEPLOY_FORCE="1")
 
     def test_a_tree_without_next_means_install(self, tmp_path: pathlib.Path) -> None:
         app = self._app(tmp_path)
         self._run(tmp_path, app, "record_deps_stamp")
         (app / "node_modules/.bin/next").unlink()
         assert not self._kept(tmp_path, app)
+
+
+@linux_only
+class TestEveryCaddyHostIsProved:
+    """After a Caddy restart the apply asks each site host through Caddy. Here
+    a plain HTTP server stands in for Caddy and answers by Host header."""
+
+    _CF = (
+        "{\n\tadmin off\n}\n"
+        "(snippet) {\n\tencode gzip\n}\n"
+        "api.example.com {\n\treverse_proxy 127.0.0.1:8080 {\n\t\tlb_try_duration 30s\n\t}\n}\n"
+        "a.example.com, b.example.com {\n\tfile_server\n}\n"
+    )
+
+    def _server(self, codes: dict[str, int]) -> tuple[subprocess.Popen, int]:
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        code = (
+            "import http.server\n"
+            f"CODES = {codes!r}\n"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        host = self.headers.get('Host', '').split(':')[0]\n"
+            "        self.send_response(CODES.get(host, 200)); self.end_headers()\n"
+            "    def log_message(self, *a): pass\n"
+            f"http.server.HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code])
+        time.sleep(0.5)
+        return proc, port
+
+    def _run(self, tmp_path: pathlib.Path, cmd: str, port: int) -> subprocess.CompletedProcess:
+        cf = tmp_path / "Caddyfile"
+        cf.write_text(self._CF, encoding="utf-8")
+        helpers = _helpers(tmp_path, tmp_path)
+        return subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; {cmd} "{cf}"; echo "rc=$?"'],
+            env=_env(
+                tmp_path, CADDY_PROBE_SCHEME="http", CADDY_PROBE_PORT=str(port),
+                CADDY_PROBE_MAX="5",
+            ),
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def test_the_site_list_is_every_host_and_nothing_else(self, tmp_path: pathlib.Path) -> None:
+        out = self._run(tmp_path, "caddy_sites", 1).stdout.split()
+        assert out[:-1] == ["api.example.com", "a.example.com", "b.example.com"], out
+
+    def test_the_real_caddyfile_names_every_box_host(self, tmp_path: pathlib.Path) -> None:
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; caddy_sites "{_CADDYFILE}"'],
+            env=_env(tmp_path), capture_output=True, text=True, timeout=30,
+        )
+        assert set(res.stdout.split()) == {
+            "api.metorite.com", "app.metorite.com", "metorite.com",
+            "www.metorite.com", "operator.metorite.com",
+        }, res.stdout
+
+    def test_every_host_answering_passes(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server({"a.example.com": 301, "b.example.com": 404})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+        assert res.stdout.count("answers HTTP") == 3
+
+    def test_a_cold_upstream_502_passes(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server({"api.example.com": 502})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=0" in res.stdout, res.stdout
+
+    def test_a_500_from_caddy_fails(self, tmp_path: pathlib.Path) -> None:
+        srv, port = self._server({"b.example.com": 500})
+        try:
+            res = self._run(tmp_path, "caddy_probe_sites", port)
+        finally:
+            _stop(srv)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "b.example.com FAILED (HTTP 500)" in res.stdout
+
+    def test_no_answer_fails(self, tmp_path: pathlib.Path) -> None:
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        res = self._run(tmp_path, "caddy_probe_sites", port)
+        assert "rc=1" in res.stdout, res.stdout
+        assert "FAILED (HTTP 000)" in res.stdout
+
+    def test_a_file_with_no_hosts_fails(self, tmp_path: pathlib.Path) -> None:
+        cf = tmp_path / "empty"
+        cf.write_text("{\n\tadmin off\n}\n", encoding="utf-8")
+        helpers = _helpers(tmp_path, tmp_path)
+        res = subprocess.run(
+            ["bash", "-c", f'. "{helpers}"; caddy_probe_sites "{cf}"; echo "rc=$?"'],
+            env=_env(tmp_path), capture_output=True, text=True, timeout=30,
+        )
+        assert "rc=1" in res.stdout, res.stdout

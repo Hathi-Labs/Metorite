@@ -283,22 +283,62 @@ wait_ready() {
 #
 # So the install records what it installed, INSIDE `node_modules`. The next
 # apply keeps the tree when the lock file and the node version are the same.
-# A deleted or half-installed tree has no stamp, so it always installs again.
-# DEPLOY_FORCE=1 always installs. These run in the app's directory.
+# The stamp is removed BEFORE an install starts and written only after one
+# succeeds, so an interrupted install never leaves a stamp beside a damaged
+# tree. These run in the app's directory.
+#
+# ⚠️ DEPLOY_REINSTALL=1 forces the install, NOT DEPLOY_FORCE. A rerun of the
+# deploy sends DEPLOY_FORCE=1 to re-apply a sha, usually after an .env edit.
+# If that also ran `npm ci`, every rerun would bring the 38 s of 500 back.
 deps_stamp() {
   printf '%s %s\n' "$(sha256sum package-lock.json 2>/dev/null | cut -d' ' -f1)" \
     "$(node --version 2>/dev/null)"
 }
 deps_unchanged() {
-  [ "${DEPLOY_FORCE:-0}" = "1" ] && return 1
+  [ "${DEPLOY_REINSTALL:-0}" = "1" ] && return 1
   [ -f package-lock.json ] || return 1
   [ -x node_modules/.bin/next ] || return 1
   [ -f node_modules/.acb-deps-stamp ] || return 1
   [ "$(cat node_modules/.acb-deps-stamp 2>/dev/null)" = "$(deps_stamp)" ]
 }
-# Only after an install that succeeded. A failed one removes the stamp.
+# Only after an install that succeeded.
 record_deps_stamp() {
   deps_stamp > node_modules/.acb-deps-stamp 2>/dev/null || true
+}
+
+# 🔴 **H-60: A CHANGED CADDY CONFIG IS PROVED ON EVERY HOST, NOT ONLY BY
+# `is-active`.** A config can start cleanly and still route a host to nothing,
+# or drop a host. So after a restart the apply asks each site host through the
+# local Caddy, with the real SNI and Host.
+#
+# The site hosts: top-level lines `host[, host] {` that name a dotted host.
+caddy_sites() {
+  awk '/^[^[:space:]#({][^{]*\{[[:space:]]*$/ {
+         for (i = 1; i < NF; i++) { h = $i; gsub(",", "", h); if (h ~ /\./) print h }
+       }' "$1"
+}
+# $1 = the Caddyfile. Returns 1 when any host fails. A failure is no HTTP
+# answer at all (000: refused, TLS, timeout), or a 5xx that Caddy made itself.
+# 502, 503 and 504 PASS: they mean the config routed the host to an upstream
+# that is cold or restarting, which is the case this PR teaches Caddy to wait
+# for. The bound is longer than lb_try_duration (30 s).
+caddy_probe_sites() {
+  cps_bad=0
+  cps_port="${CADDY_PROBE_PORT:-443}"
+  if [ -z "$(caddy_sites "$1")" ]; then
+    echo "    !! caddy: $1 names no site host — nothing to prove it on"
+    return 1
+  fi
+  for cps_host in $(caddy_sites "$1"); do
+    cps_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CADDY_PROBE_MAX:-40}" \
+      --resolve "$cps_host:$cps_port:127.0.0.1" \
+      "${CADDY_PROBE_SCHEME:-https}://$cps_host:$cps_port/" 2>/dev/null || true)"
+    case "$cps_code" in
+      [1-4][0-9][0-9]|502|503|504) echo "    caddy: $cps_host answers HTTP $cps_code" ;;
+      *) echo "    !! caddy: $cps_host FAILED (HTTP ${cps_code:-none})"; cps_bad=1 ;;
+    esac
+  done
+  return "$cps_bad"
 }
 # <<< deploy-serialize helpers
 
@@ -937,25 +977,50 @@ if ! sudo caddy validate --config "$CADDY_REPO" --adapter caddyfile >/dev/null 2
   echo "    was restarted. Fix the repo file and deploy again."
   exit 1
 fi
+CADDY_RESTARTED=0
 if sudo cmp -s "$CADDY_REPO" "$CADDY_LIVE"; then
   echo "    $CADDY_LIVE matches the repo — Caddy is NOT restarted"
 else
-  CADDY_BAK="$CADDY_LIVE.bak.$(date +%s)"
-  sudo cp -a "$CADDY_LIVE" "$CADDY_BAK" 2>/dev/null || CADDY_BAK=""
+  if sudo test -e "$CADDY_LIVE"; then
+    # 🔴 No backup, no install. A new config with nothing to roll back to is
+    # a bet the site cannot afford (H-60 review).
+    CADDY_BAK="$CADDY_LIVE.bak.$(date +%s)"
+    if ! sudo cp -a "$CADDY_LIVE" "$CADDY_BAK"; then
+      echo "CADDY CONFIG NOT INSTALLED: could not back up $CADDY_LIVE to $CADDY_BAK."
+      echo "    The live config is UNTOUCHED and no service was restarted."
+      exit 1
+    fi
+    # Keep the last 5 backups this step made, newest first.
+    # shellcheck disable=SC2012
+    ls -1t "$CADDY_LIVE".bak.[0-9]* 2>/dev/null | tail -n +6 | while read -r old; do
+      sudo rm -f -- "$old" || true
+    done
+  fi
   sudo install -m 0644 "$CADDY_REPO" "$CADDY_LIVE"
   CADDY_CHANGED=1
-  echo "    installed the repo Caddyfile (the previous one is ${CADDY_BAK:-not kept})"
+  echo "    installed the repo Caddyfile (the previous one is ${CADDY_BAK:-absent: there was none})"
 fi
 sudo systemctl enable caddy >/dev/null 2>&1 || true
 if [ "$CADDY_CHANGED" = "1" ] || ! systemctl is-active --quiet caddy; then
   echo "    restarting Caddy (the config changed, or Caddy was down)"
   sudo systemctl restart caddy || true
+  CADDY_RESTARTED=1
   sleep 2
 fi
+# `active` is not enough. After a restart, every site host must answer through
+# Caddy. A host that does not answer rolls the config back (see
+# caddy_probe_sites for what counts as an answer).
+CADDY_OK=1
 if ! systemctl is-active --quiet caddy; then
+  echo "    !! Caddy is not active"
+  CADDY_OK=0
+elif [ "$CADDY_RESTARTED" = "1" ] && ! caddy_probe_sites "$CADDY_LIVE"; then
+  CADDY_OK=0
+fi
+if [ "$CADDY_OK" != "1" ]; then
   sudo journalctl -u caddy --no-pager -n 40 || true
   if [ -n "$CADDY_BAK" ]; then
-    echo "    !! Caddy did not start on the new config — restoring $CADDY_BAK"
+    echo "    !! the new Caddy config does not serve every host — restoring $CADDY_BAK"
     sudo install -m 0644 "$CADDY_BAK" "$CADDY_LIVE"
     sudo systemctl restart caddy || true
     sleep 2
@@ -1149,9 +1214,12 @@ npm_install_here() {
   if deps_unchanged; then
     echo "    $name: package-lock.json and node are unchanged since the last"
     echo "      install — node_modules is KEPT, so the running server keeps"
-    echo "      serving (H-60). DEPLOY_FORCE=1 installs again."
+    echo "      serving (H-60). DEPLOY_REINSTALL=1 installs again."
     return 0
   fi
+  # BEFORE any install: an install that is killed half way must leave no
+  # stamp beside the tree it damaged (H-60 review).
+  rm -f node_modules/.acb-deps-stamp 2>/dev/null || true
   npm ci --prefer-offline 2>/dev/null && { record_deps_stamp; return 0; }
   echo "    ~ $name: npm ci failed — reclaiming the build tree and retrying"
   if ! sudo chown -R "$(id -un):$(id -gn)" node_modules 2>&1; then
@@ -1161,7 +1229,6 @@ npm_install_here() {
   npm ci --prefer-offline && { record_deps_stamp; return 0; }
   echo "    ~ $name: npm ci failed again — falling back to npm install"
   npm install && { record_deps_stamp; return 0; }
-  rm -f node_modules/.acb-deps-stamp 2>/dev/null || true
   echo "    ! $name: npm install failed — building against the node_modules"
   echo "      already here. ⚠️ If the build below fails, THIS is why."
   return 0

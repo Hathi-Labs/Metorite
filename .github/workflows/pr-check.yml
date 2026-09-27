@@ -728,6 +728,25 @@ jobs:
             workbench/control_plane/test-results/
           retention-days: 7
 
+  caddy:
+    name: "Caddy config (validate)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
+    # itself. The apply validates it there and refuses a bad file, but then the
+    # deploy is red AFTER the merge. This job refuses it BEFORE the merge.
+    # Same version as the box (Caddy v2.11.4). Keep the tag in step with it.
+    steps:
+      - uses: actions/checkout@v5
+      - name: caddy validate + caddy fmt (caddy:2.11.4)
+        run: |
+          docker run --rm -v "$PWD/deploy/hostinger/caddy:/cfg:ro" caddy:2.11.4 sh -ec '
+            caddy validate --config /cfg/Caddyfile --adapter caddyfile
+            caddy fmt --diff /cfg/Caddyfile > /tmp/fmt.diff || true
+            if grep -qE "^[-+]" /tmp/fmt.diff; then
+              echo "Caddyfile is not formatted. Run: caddy fmt --overwrite"; cat /tmp/fmt.diff; exit 1
+            fi'
+
   secret-scan:
     name: "Secret scan"
     runs-on: ubuntu-latest

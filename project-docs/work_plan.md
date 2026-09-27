@@ -4949,12 +4949,16 @@ behaviour (supervised window per `FOUNDATION_CONTINUATION.md`) ·
 **the four WS-24 colleague-onboarding gates** (`specs/colleague_onboarding.md`
 §1.1), registered 2026-08-04 because "invite a colleague" reads like a UI
 action and is not one:
-**(a) installing the Caddy identity-header strip** — writing
-`deploy/hostinger/caddy/Caddyfile` is AGENT-SAFE, `sudo install` +
-`systemctl reload caddy` on the box is not; it changes auth behaviour, and the
-pipeline only reinstalls the repo copy when the live one **fails**
-`caddy validate` (`.github/workflows/deploy.yml:496-501`), so the two can drift
-silently and an agent must not assume a merged repo file is live ·
+**(a) merging a Caddyfile change that alters the auth-relevant directives**
+*(amended by the owner on 2026-09-28: "Auto, except sign-in changes")*. Since
+PR #498 every deploy installs `deploy/hostinger/caddy/Caddyfile` on the box.
+So a merged Caddyfile is live on the next deploy. A routine edit merges as
+usual. An edit to the auth-relevant directives is the gated act: `header_up`,
+`header_down`, `request_header`, `header`, `basic_auth`, `forward_auth`, a
+named matcher, or `admin`. The fence `tests/unit/test_caddy_auth_gate.py`
+refuses such an edit. It passes only when the owner records
+`CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md`. ⚠️ A change to
+`_BASELINE` in that test defeats the fence, so treat that change as this gate ·
 **(b) provisioning `GATEWAY_INTERNAL_TOKEN`** — a credential, and it must land
 in **both** `/opt/acb/app/.env` and the workbench's `.env.local`, because the
 Next BFF mirrors the same `LITELLM_MASTER_KEY` fallback

@@ -431,6 +431,25 @@ the same sha again, for example after an `.env` edit, use one of these:
 
 A forced apply still takes the deploy lock, so it waits for a running deploy.
 
+**Update 2026-09-28 (PR #498, H-60) — a forced apply keeps `node_modules`.**
+Each Next app's install writes a stamp into its `node_modules`. The stamp holds
+the sha256 of `package-lock.json` and the node version. When the stamp
+matches, the apply does not run `npm ci`, because `npm ci` deletes the tree
+the running server loads from. That costs about 38 s of HTTP 500.
+
+`DEPLOY_FORCE=1` does NOT change this. It re-applies the sha, and it keeps an
+unchanged tree. To install the dependencies again, use one of these:
+
+- On the box: `bash scripts/vps_pull.sh --reinstall`. It also forces the
+  apply.
+- In GitHub: dispatch `deploy` with the `reinstall` input set. It also sends
+  `DEPLOY_FORCE=1`.
+
+| Switch | Re-applies a sha that is already applied | Runs `npm ci` on an unchanged lock file |
+|---|---|---|
+| a rerun, `force`, `--force` (`DEPLOY_FORCE=1`) | yes | no |
+| `reinstall`, `--reinstall` (`DEPLOY_REINSTALL=1`) | yes | yes |
+
 **Defect 4 (2026-08-06) — two `deploy.yml` failures, one green run.**
 (a) `publish-release` used the default depth-1 checkout; `git push` proves
 fast-forward client-side, so every publish after the ref-CREATING one was
