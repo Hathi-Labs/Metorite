@@ -452,33 +452,295 @@ def _addressed_turn(sid: str) -> None:
         actor_email=_ALICE, agent_name="orchestrator",
     )
     # chat_fold.persist_final_assistant_message, with `_address_agent`'s answer.
+    # The fold is the one writer that passes `author_from_run` (S12).
     _upsert_messages(
         sid,
         [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
-        actor_email=_ALICE, agent_name="sales-assistant",
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
     )
 
 
+def _author(sid: str, mid: str):
+    return _exec(
+        "SELECT author_email, author_kind FROM chat_message "
+        "WHERE session_id = :i AND id = :m", i=sid, m=mid,
+    )[0]
+
+
+def _content(sid: str, mid: str) -> str:
+    return _exec(
+        "SELECT content FROM chat_message WHERE session_id = :i AND id = :m",
+        i=sid, m=mid,
+    )[0].content
+
+
 @_needs_db
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open gap (projects_ai_chat.md §16.4): the first stamp wins, and the "
-        "checkpoint lands before the fold that knows the addressed agent. "
-        "Only a server change closes it. Remove this mark in that change."
-    ),
-)
 def test_an_addressed_turn_is_stamped_with_the_agent_that_ran(clean) -> None:
-    """The property an ``@name`` turn needs, and does not have yet. Today the
-    row keeps the room's agent, because the checkpoint writes first. The
+    """WS-27bm S12 (§18). The checkpoint writes first with the room's agent.
+    The fold knows which agent ran, and it may set the author again. The
     client-side half (no author on an ``@`` turn) is fenced in
     ``assistantCheckpoint.test.ts``."""
     sid = _seed_session(_ALICE)
     _addressed_turn(sid)
-    rows = _exec(
-        "SELECT author_email FROM chat_message WHERE session_id = :i AND id = 'c2'", i=sid,
+    row = _author(sid, "c2")
+    assert row.author_email == "sales-assistant"
+    assert row.author_kind == "agent"
+    # An agent row still takes the fold's content (fix round 1 keeps it).
+    assert _content(sid, "c2") == "final"
+
+
+@_needs_db
+def test_a_client_save_after_the_fold_keeps_the_agent_that_ran(clean) -> None:
+    """§18.2 rule 9. A client write keeps the COALESCE, so a later save that
+    names another agent cannot undo the fold."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _addressed_turn(sid)
+    # The browser re-POSTs its list, and claims a different agent.
+    _upsert_messages(
+        sid,
+        [MessageRecord(
+            id="c2", role="assistant", content="final", timestamp=1006,
+            author_kind="agent", author_email="projects-assistant",
+        )],
+        actor_email=_ALICE, agent_name="orchestrator",
     )
-    assert rows[0].author_email == "sales-assistant"
+    assert _author(sid, "c2").author_email == "sales-assistant"
+
+
+@_needs_db
+def test_the_fold_never_rewrites_a_human_turn(clean) -> None:
+    """§18.2 rule 8. ``_persist_message_id`` comes from the client, so the
+    fold can reach a human turn's id. The human keeps the turn."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="h1", role="user", content="hello", timestamp=1007)],
+        actor_email=_ALICE,
+    )
+    # The fold, aimed at that id.
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="h1", role="assistant", content="answer", timestamp=1008)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    row = _author(sid, "h1")
+    assert row.author_kind == "human"
+    assert row.author_email == _ALICE
+    # Fix round 1: the fold leaves the whole row alone, content included.
+    assert _content(sid, "h1") == "hello"
+
+
+# ---------------------------------------------------------------------------
+# 7b. One member cannot write in another member's turn (S12 fix round 1)
+# ---------------------------------------------------------------------------
+
+def _save_as(sid: str, email: str, messages: list) -> dict:
+    """The real route handler, with the caller already authenticated."""
+    import asyncio
+
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+    from gateway.routes.chat import save_messages
+
+    user = UserContext(email=email, role=UserRole.EMPLOYEE)
+    return asyncio.run(save_messages(sid, messages, user=user))
+
+
+def _alice_said_hello(sid: str) -> None:
+    from gateway.routes.chat import MessageRecord
+
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="u1", role="user", content="hello", timestamp=2000),
+    ])
+
+
+@_needs_db
+def test_a_member_cannot_overwrite_another_members_turn(clean) -> None:
+    """Bob reads the id of a turn by Alice from the history, and POSTs his own
+    words under it. The row keeps her words and her name."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _save_as(sid, _BOB, [
+        MessageRecord(id="u1", role="user", content="I approve the budget cut",
+                      timestamp=2001),
+    ])
+    assert _content(sid, "u1") == "hello"
+    row = _author(sid, "u1")
+    assert (row.author_kind, row.author_email) == ("human", _ALICE)
+
+
+@_needs_db
+def test_a_member_cannot_claim_an_agent_turn_to_pass_as_the_author(clean) -> None:
+    """A body that claims an agent turn names its own ``author_email``. It
+    must not pass the own-author check by naming Alice."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _save_as(sid, _BOB, [
+        MessageRecord(id="u1", role="assistant", content="forged", timestamp=2002,
+                      author_kind="agent", author_email=_ALICE),
+    ])
+    assert _content(sid, "u1") == "hello"
+    row = _author(sid, "u1")
+    assert (row.author_kind, row.author_email) == ("human", _ALICE)
+
+
+@_needs_db
+def test_the_fold_cannot_overwrite_a_members_turn(clean) -> None:
+    """The same attack through a client-chosen ``assistant_message_id``."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="u1", role="assistant", content="forged", timestamp=2003)],
+        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _content(sid, "u1") == "hello"
+    row = _author(sid, "u1")
+    assert (row.author_kind, row.author_email) == ("human", _ALICE)
+
+
+@_needs_db
+def test_a_member_can_still_update_their_own_turn(clean) -> None:
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="u1", role="user", content="hello, all", timestamp=2004),
+    ])
+    assert _content(sid, "u1") == "hello, all"
+    assert _author(sid, "u1").author_email == _ALICE
+
+
+@_needs_db
+def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="a9", role="assistant", content="part", timestamp=2005),
+    ])
+    # A checkpoint, from another sender in the room.
+    _save_as(sid, _BOB, [
+        MessageRecord(id="a9", role="assistant", content="more", timestamp=2006),
+    ])
+    assert _content(sid, "a9") == "more"
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="a9", role="assistant", content="done", timestamp=2007)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _content(sid, "a9") == "done"
+    assert _author(sid, "a9").author_email == "sales-assistant"
+
+
+def _legacy_row(sid: str, mid: str, role: str, content: str) -> None:
+    """A row from before authorship existed: no kind and no author."""
+    _exec(
+        "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms) "
+        "VALUES (:m, :i, :r, :c, 2100)",
+        m=mid, i=sid, r=role, c=content,
+    )
+
+
+@_needs_db
+def test_a_legacy_human_turn_with_no_kind_is_protected(clean) -> None:
+    """P2. A NULL kind on a ``user`` row is a human turn, not an agent turn."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _legacy_row(sid, "old-u", "user", "the old words")
+    _save_as(sid, _BOB, [
+        MessageRecord(id="old-u", role="user", content="forged", timestamp=2101),
+    ])
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="old-u", role="assistant", content="forged", timestamp=2102)],
+        actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _content(sid, "old-u") == "the old words"
+    row = _author(sid, "old-u")
+    assert (row.author_kind, row.author_email) == (None, None)
+
+
+@_needs_db
+def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _legacy_row(sid, "old-a", "assistant", "partial")
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="old-a", role="assistant", content="final", timestamp=2103)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _content(sid, "old-a") == "final"
+    row = _author(sid, "old-a")
+    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+
+
+@_needs_db
+def test_the_fold_keeps_the_author_of_a_legacy_system_row(clean) -> None:
+    """S12 fix round 2, the R7 fence for the kind guard in the author CASE.
+
+    The ``WHERE`` masks every human row, so this is the ONE row that reaches
+    the CASE with a NULL kind that is not an agent turn. A NULL kind is an
+    agent turn only when the role is ``assistant``. Revert the guard to
+    ``COALESCE(author_kind, 'agent')``, or drop it, and the fold renames
+    this row.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _legacy_row(sid, "old-s", "system", "joined")
+    _exec(
+        "UPDATE chat_message SET author_email = 'legacy@x.io' "
+        "WHERE session_id = :i AND id = 'old-s'", i=sid,
+    )
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
+        actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+    )
+    assert _author(sid, "old-s").author_email == "legacy@x.io"
+
+
+def test_only_the_fold_passes_author_from_run() -> None:
+    """§18.2 rule 7, by source. The fold passes True, and the route handler
+    that saves the client's messages never names the keyword."""
+    import inspect
+
+    from gateway import chat_fold
+    from gateway.routes import chat
+
+    fold = inspect.getsource(chat_fold.persist_final_assistant_message)
+    assert "author_from_run=True" in fold
+    route = inspect.getsource(chat.save_messages)
+    assert "_upsert_messages" in route
+    assert "author_from_run" not in route
+    # No other file in the gateway names the keyword.
+    import pathlib
+
+    root = pathlib.Path(chat.__file__).resolve().parents[1]
+    users = sorted(
+        str(f.relative_to(root)).replace("\\", "/")
+        for f in root.rglob("*.py")
+        if "author_from_run" in f.read_text(encoding="utf-8")
+    )
+    assert users == ["chat_fold.py", "routes/chat.py"], users
+    param = inspect.signature(chat._upsert_messages).parameters["author_from_run"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
 
 
 # ---------------------------------------------------------------------------

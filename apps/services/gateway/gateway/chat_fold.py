@@ -508,6 +508,9 @@ async def persist_final_assistant_message(
             _upsert_messages, thread_id, [record],
             actor_email=user_id, agent_name=agent_name,
             authority=await _run_authority(thread_id, user_id),
+            # WS-27bm S12. The fold knows which agent ran, so it may set the
+            # author of an agent turn again. It never changes a human turn.
+            author_from_run=True,
         )
         _log.info(
             "chat_fold.persisted",

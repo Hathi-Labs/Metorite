@@ -335,6 +335,8 @@ def test_the_outlook_section_equals_the_outlook_route(seeded, wired, scope, hr) 
     assert got == want
     assert got["hr_visible"] is hr
     assert got["people"]["absences_applied"] is hr
+    # WS-27bm S12 (H-188). The end-date count travels with the grant.
+    assert ("leaving_within_90d" in got["people"]) is hr
     if scope == "project":
         # S11. One holder on the default week, away for one week in twelve.
         # The reader's grant decides whether that week counts.

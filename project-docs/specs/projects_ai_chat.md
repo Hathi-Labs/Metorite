@@ -11,7 +11,8 @@ capacity, no phases) were built 2026-09-24. S8 (documents and downloads
 from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
 was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
 S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
-schedule, §17) was built 2026-09-26.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
+2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -700,7 +701,8 @@ Each slice is one pull request. Each one is useful alone.
 | **S7e · On-the-fly analysis** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/dataset` and the read tool `task_dataset`: a capped table, or the server's groups over the full set. The rule for numbers the chat computes itself (§13.7, §10.7) | AGENT-SAFE |
 | **S10 · Chat follow-ups** — ✅ **BUILT 2026-09-25** | The checkpoint names its agent · the plan card edits after · a lost project write gives a receipt · the Throughput pin, if S7e is on main (§16) | AGENT-SAFE |
 | **S11 · Outlook schedules** — ✅ **BUILT 2026-09-26** | The outlook's capacity reads each person's schedule. Absences apply only for an admin viewer. The report section passes the reader's grant. The panel says when it does not count leave (§17) | AGENT-SAFE |
-| **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
+| **S12 · Follow-ups** — ✅ **BUILT 2026-09-28** | The end-date count follows the grant (H-188) · one broken panel does not blank Analytics · an @name turn keeps the agent that ran (§18) | AGENT-SAFE |
+| **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
 ### 10.1 Acceptance — S1
@@ -2306,6 +2308,7 @@ each one has its own fence.
   Another way: the run stream names its agent, and the translator sends it.
   The strict xfail in `test_rooms.py` fails when either lands, so remove its
   mark in that change.
+  S12 (§18) built the first way and removed the mark.
 
 ---
 
@@ -2425,8 +2428,8 @@ reports and the chat manifest, and a member never sees a key.
 - It does not subtract hours that a holder gives to other projects.
 - It has no `end_date` cutoff. A holder whose engagement ends inside the
   window still adds the full window.
-- It does not change `leaving_within_90d`. HANDOFF H-188 asks the owner if
-  a member may see that count.
+- It does not change `leaving_within_90d`. S12 (§18) sends that count to
+  an admin only, and deleted HANDOFF H-188.
 - It does not change the velocity forecast or `capacity_forecast`.
 - It adds no migration.
 - It does not rename the three "coming" report templates in `reports.py`
@@ -2451,3 +2454,202 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 Five mutations each turn a test red: absences for every viewer, the typed
 figure as a fallback, an inclusive 85-day window, a changed holders CTE,
 and no leave sentence.
+
+---
+
+## 18. Follow-ups (S12)
+
+**Status: BUILT 2026-09-28.** The spec-auditor cleared the scope on
+2026-09-28 (GO-NARROWED, against origin/main `f62d5f70`). S12 closes
+HANDOFF H-188 and the open gap in §16.4.
+
+**The owner's answer, 2026-09-28.** The owner chose **"Admins only
+(Recommended)"** for this question:
+
+> "The Forecast panel shows every member how many people on the work leave
+> within 90 days… What should non-admins see?"
+
+The option text was:
+
+> "Only admins see the 'leaving within 90 days' count. Everyone else sees no
+> count. This matches how the Capacity panel treats end dates."
+
+### 18.1 What S12 builds
+
+1. **The end-date count follows the grant (H-188).** `outlook_body` in
+   `analytics.py` puts `people.leaving_within_90d` in the payload only when
+   `hr_visible` is true. Without the grant the key is absent. It is not
+   null and it is not 0. `OUTLOOK_HR_KEYS` names the key. In `api.ts` the
+   key is optional, and `outlook.ts` `peopleLine` reads a missing count as 0.
+2. **One broken panel does not blank Analytics.** The analytics branch of
+   `page.tsx` has no error boundary above it. So a panel that throws on a
+   missing date blanked the whole page. `AnalyticsView.tsx` now puts each of
+   its seven panels inside its own `LayoutBoundary`, with a `layout` prop that
+   names the panel. The fallback says "the {layout} view", so a label is a
+   plain name such as `forecast`, not `forecast panel`.
+3. **An @name turn keeps the agent that ran.** `_upsert_messages` in
+   `routes/chat.py` takes a keyword `author_from_run`, and its default is
+   False. Only `chat_fold.persist_final_assistant_message` passes True. With
+   it, the upsert sets `author_email` again when the stored row is an agent
+   turn. A stored NULL kind counts as an agent turn only when the `role` is
+   `assistant`. The checkpoint of an `@sales` turn writes the room's agent
+   first, and the fold then writes the agent that ran.
+4. **One member cannot write in the turn of another member (fix round 1).**
+   The review found a live forgery. The row id comes from the client, and the
+   upsert replaced `content` on any `(session_id, id)` that the caller named.
+   So member A could put A's words in a turn by B, and the turn kept the name
+   of B. The fold could do the same through a client-chosen
+   `assistant_message_id`. The `DO UPDATE` in `_MESSAGE_UPSERT_SQL` now has a
+   `WHERE`. A human row changes only when its own author sends a human write.
+   The fold never changes a human row. A conflict that fails the `WHERE`
+   leaves the row alone and raises no error.
+
+### 18.2 Rules
+
+1. `hr_visible` decides the count. When it is false, the key is absent.
+2. `OUTLOOK_HR_KEYS` is the one tuple of HR keys in the outlook payload.
+3. The holders CTE of `team_capacity_sql` does not change. The SQL still
+   counts `leaving_soon` for every reader, and only the payload drops it.
+4. The panel reads a missing count as no warning.
+5. The chat and the email follow the payload and do not change. The chat
+   prints the keys it gets, and the email does not print the count.
+6. Each panel has its own boundary. There is no second boundary class.
+7. Only the fold passes `author_from_run`. The route handler
+   `POST /sessions/{id}/messages` never passes it.
+8. The fold changes the author of an agent turn only. A stored NULL kind is
+   an agent turn only when the `role` is `assistant`. A human turn keeps its
+   author. `_persist_message_id` comes from the client, so the fold can reach
+   a row that the client chose.
+9. Every client write keeps the COALESCE. `authority` keeps its COALESCE for
+   every writer.
+10. S12 updates the rule in the two places that state it: the comment above
+    `_MESSAGE_UPSERT_SQL` and item 3 of `apps/services/gateway/AGENTS.md`.
+11. S12 adds no migration, no flag and no route.
+12. **A human row changes only by its own author.** The `WHERE` on the
+    `DO UPDATE` lets a write touch a human row only when three things are
+    true. The write is not the fold. The incoming kind is `human`. The stored
+    `author_email` equals the incoming one, with case ignored.
+13. **The incoming author of a human write is the authenticated caller.**
+    `_attribute` takes it from `actor_email`, never from the body. A body that
+    claims an agent turn can name any `author_email`. So the `WHERE` also
+    requires an incoming kind of `human`, and a claimed agent turn cannot pass
+    as the author of a human row.
+14. **A legacy row with a NULL kind is a human row unless its `role` is
+    `assistant` or `system`.** It gets the same protection as a human row.
+
+### 18.3 Acceptance — S12
+
+1. `test_projects_analytics_outlook.py`: the key-set test holds both sets. A
+   key walk finds no `OUTLOOK_HR_KEYS` key in the payload for a reader
+   without the grant.
+2. R8: `test_the_outlook_section_equals_the_outlook_route` passes for an
+   admin and for a member. It also checks that the count is present for the
+   admin only.
+3. `outlook.test.ts`: with the key absent, the line has no "engagement" text
+   and the tone is not warn. The test for a count of 1 still passes.
+4. `layoutBoundary.test.ts`: each `<…Panel` tag in `AnalyticsView.tsx`
+   opens straight after a `<LayoutBoundary` tag with a `layout` prop. Each
+   panel closes straight into `</LayoutBoundary>`. The "declared once" test
+   still passes.
+5. R8, in `test_rooms.py`: the strict xfail is gone, and
+   `test_an_addressed_turn_is_stamped_with_the_agent_that_ran` passes.
+6. R8: after the fold stamps `sales-assistant`, a client save that names
+   `projects-assistant` keeps `sales-assistant`.
+7. R8: a fold write on the id of a human turn keeps `author_kind` human and
+   keeps its `author_email`.
+8. A source test shows that `chat_fold` passes `author_from_run=True`, and
+   that the route handler does not name it.
+9. `test_a_checkpoint_author_wins_over_the_room_agent` passes with no change.
+10. **A person checks the fallback.** Make `FinishedPanel` get a report with
+    no `period_start`, and look. The Finished panel shows the fallback, and
+    the other six panels still show. No test in this tree can render a
+    throwing child, because vitest runs in node and does not collect `.tsx`
+    tests.
+11. The same change deletes the H-188 entry and updates the status (R4).
+12. R8, fix round 1, in `test_rooms.py`. Each test calls the real
+    `save_messages` handler or the fold call:
+    - member B saves a turn over the id of a turn by member A. The row keeps
+      the content and the author of A.
+    - B claims an agent turn with the `author_email` of A. The row does not
+      change.
+    - the fold writes on the id of a turn by A. The row does not change.
+    - A can still update the turn of A.
+    - an agent row still updates by a checkpoint from another sender and by
+      the fold.
+    - a legacy `user` row with a NULL kind does not change by a save from
+      another member or by the fold.
+    - a legacy `assistant` row with a NULL kind still takes the fold.
+13. `layoutBoundary.test.ts`: no `layout` label ends in "panel" or "view".
+
+### 18.4 What S12 does not do
+
+- **No `end_date` cap.** A cap changes `person_capacity` for five routes. It
+  would also show the end date through the rate. So it needs its own slice,
+  and that slice must gate it on `hr_visible`.
+- It adds no boundary in `ReportsView` or `NodeDashboard`.
+- It does not change the stream or the translator for the author.
+- **Residual: any room sender can still write an agent row or a system row.**
+  The translator checkpoints as the sending member, so the `WHERE` cannot tell
+  the sender of a run from another member. An overwrite keeps the stored
+  `author_email`, `author_kind` and `authority`, so a forged agent reply keeps
+  the agent's name and the first writer's clearance label. A tab that holds an
+  old copy of an agent reply can also overwrite the final text on a save of
+  the whole array. A follow-up can scope an agent row to the member who
+  started the run.
+- **Residual, accepted in fix round 2: the fold can still write a legacy
+  system row.** A legacy row with a NULL kind and the role `system` passes the
+  `WHERE`. So the fold replaces its `content` and fills `author_kind` with
+  `agent`. It keeps the stored `author_email`, and
+  `test_the_fold_keeps_the_author_of_a_legacy_system_row` fences that. S12
+  does not extend the `WHERE` to stop the fold on this row. If the `WHERE`
+  lets the fold write only agent rows, no row can reach the kind guard in the
+  author `CASE`. The guard then has no fence again, which is the R7 gap that
+  fix round 2 closed. The row id must also collide with the id of a system
+  row, and a system row carries no words from a member.
+- **A declined write reports success.** When the `WHERE` declines an update,
+  `POST /chat/sessions/{id}/messages` still answers `{"ok": true}`. A
+  follow-up can return the ids that did not change.
+- `_attribute` still takes the claim of an agent turn from the body when it
+  INSERTS a new row. So a member can make a new row that names any agent.
+  That is not a change to an existing turn, and S12 does not change it.
+- **As built, it DOES guard `day()` and `period()`** (commit 2af0a8ce). In
+  the dev build, a throw in `FinishedPanel` froze the whole Analytics page
+  even inside its `LayoutBoundary`. So the helpers now take any input and
+  give `""` or "this period". `analyticsDates.test.ts` is the fence.
+- It does not measure tokens, and it adds no tool name in `agents.py`.
+- It does not rename the "coming" report templates.
+
+### 18.5 Verification
+
+```bash
+# R8: a real Postgres, with the ladder applied. Set both variables.
+export DATABASE_URL=... TENANT_LADDER_DATABASE_URL=...
+uv run pytest tests/unit/test_projects_analytics_outlook.py \
+  tests/unit/test_projects_report_sections_r3.py \
+  tests/unit/test_projects_report_sections_lockstep.py \
+  tests/unit/test_projects_sql_asyncpg.py tests/unit/test_projects_agent.py \
+  tests/unit/test_rooms.py tests/unit/test_chat_hardening.py -q -rs
+G=apps/services/gateway/gateway
+uv run ruff check $G/routes/projects/analytics.py $G/routes/chat.py $G/chat_fold.py
+uv run mypy $G/routes/projects/analytics.py $G/routes/chat.py $G/chat_fold.py
+cd workbench/control_plane && npx tsc --noEmit
+npx vitest run src/app/projects/lib/outlook.test.ts \
+  src/lib/layoutBoundary.test.ts \
+  src/app/projects/components/reportVisuals.test.ts \
+  src/lib/assistantCheckpoint.test.ts
+npx vitest run
+```
+
+Four mutations each turn a test red:
+
+- the count sent to every reader
+- `author_from_run` passed on the route
+- a fold that changes a human turn
+- a panel moved outside its boundary.
+
+Fix round 1 adds four more, and each turns a test red:
+
+- the `WHERE` removed from the `DO UPDATE`
+- the check for an incoming kind of `human` removed
+- a legacy NULL-kind `user` row read as an agent row
+- a `layout` label that ends in "panel".

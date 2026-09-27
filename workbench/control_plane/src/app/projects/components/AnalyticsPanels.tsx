@@ -141,14 +141,22 @@ const BANDS: { key: string; short: string; full: string; hue: AccentHue }[] = [
  */
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
 
-function day(iso: string): string {
-  const [y, m, d] = iso.split("-");
-  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
+/**
+ * "2026-09-20" → "20 Sep 2026". Anything that is not a YYYY-MM-DD string
+ * gives "" and never throws: a payload with no `period_start` threw here and
+ * took the whole Analytics page down (S12 visual review, 2026-09-28).
+ */
+export function day(iso: unknown): string {
+  const m = typeof iso === "string" ? /^(\d{4})-(\d{2})-(\d{2})/.exec(iso) : null;
+  if (!m || !MONTHS[Number(m[2]) - 1]) return "";
+  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}`;
 }
 
-function period(from: string, to: string): string {
+/** "29 Jun – 20 Sep 2026", or "this period" when either end is missing. */
+export function period(from: unknown, to: unknown): string {
   const a = day(from);
   const b = day(to);
+  if (!a || !b) return "this period";
   // One year, said once: "29 Jun – 20 Sep 2026".
   const ya = a.slice(a.lastIndexOf(" "));
   return ya === b.slice(b.lastIndexOf(" "))
@@ -1269,7 +1277,7 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
   return (
     <Panel
       title="What we finished"
-      hint={`Completed by project, ${period(data.period_start, data.period_end)}.`}
+      hint={`Completed by project, ${period(data?.period_start, data?.period_end)}.`}
     >
       {projects.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
