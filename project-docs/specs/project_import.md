@@ -1,6 +1,7 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — spec only, nothing built.** Owner directive, 2026-09-26.
+**Status: ACTIVE — I-1 built 2026-09-27, the rest is spec.** Owner
+directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
 **WS-41**. This spec records **D80**, which amends **D52.2**.
@@ -176,7 +177,7 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
 | 23 | `Checklists` | JSON: `{"Checklist name": ["item", "item"]}` |
 | 24 | `Comments` | JSON: `[{"text", "by", "date", "assigned", "resolved"}]`. `by` is an **email** |
 | 25 | `Assigned Comments` | `0` in every row |
-| 26, 27 | `Time Spent`, `Time Spent Text` | ` "1569"` with a leading space and quotes, in seconds, and `0.44 h` |
+| 26, 27 | `Time Spent`, `Time Spent Text` | ` "1569"` with a leading space and quotes, in milliseconds, and `0.03 m` |
 | 28, 29 | `Rolled Up Time`, `Rolled Up Time Text` | `NaN`, `null` or a number |
 | 30 | `Home Location ID` | **The List id.** 48 distinct values, one per List |
 | 31 | `Home Location` | `Space > Folder > List`, or `Space > List` |
@@ -197,8 +198,9 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
    sits on three. The two rows differ only in `Assignees` (5 ids) or
    `Subtasks IDs` (3 ids). The parser merges them into one task and takes
    the union of both lists. The dry run reports the count.
-2. **`Parent ID` is the truth, not `Subtasks IDs`.** The two disagree on 18
-   rows. The parser builds the tree from `Parent ID` alone.
+2. **`Parent ID` is the truth, not `Subtasks IDs`.** The two disagree on
+   182 tasks. On 166 of them, `Subtasks IDs` is empty while the task has
+   children. The parser builds the tree from `Parent ID` alone.
 3. **Subtasks nest four deep.** Depth counts: 1,140 at the top, then 872,
    317, 81 and 13. `pm_tasks.parent_task_id` has no depth cap, so every
    level lands.
@@ -210,11 +212,15 @@ never enters the repo.** The committed fixture is a scrubbed copy (§9 P-1).
 7. **Priority is a number.** 1 is Urgent and 4 is Low. §6.4 maps it.
 8. **The file names its own time zone.** Every `… Text` column ends with the
    exporter's offset, for example `GMT+5:30`. The parser reads the zone from
-   the file and does not ask the admin.
+   the file and does not ask the admin. **Each row carries its own offset.**
+   A zone with summer time writes two offsets in one file. So the parser
+   reads each date's offset from that date's own `… Text` twin. A zero
+   offset has no sign: the text ends in a bare `GMT`, which reads as +0.
 9. **A due date with no time sits at 04:00 local.** 1,075 of the 1,091 due
    dates fall at exactly 04:00 in the file's zone. ClickUp writes a date with
    no time that way. The parser lands 04:00 local as a date only (§4.3 item
-   1). Any other time lands as a real time.
+   1). Any other time lands as a real time. "Local" means the offset of that
+   row (fact 8), never one offset for the whole file.
 10. **Assignees are names. Comment authors are emails.** The people screen
     (§6.2) therefore has an email for everyone who wrote a comment, and a
     name for everyone else.
@@ -315,15 +321,29 @@ report ◄── apply (one writer, batched, resumable) ◄───────
 
 One Pydantic model in `apps/services/gateway/gateway/routes/projects/importer/bundle.py`:
 
+The table is the model as built in I-1. `bundle.py` is the source of truth.
+
 | Entity | Fields |
 |---|---|
-| `Container` | `ref` (source id, or the name path when the file has no id), `kind` (space, folder or project), `name`, `parent_ref` |
+| `Container` | `ref` (source id, or the name path when the file has no id), `kind` (space, folder or project), `name`, `parent_ref`, `source_id` |
 | `Person` | `ref`, `display_name`, `email` (optional) |
-| `StatusSeen` | `container_ref`, `name`, `done_hint` (true, false or unknown) |
-| `FieldDef` | `container_ref`, `name`, `type_guess`, `options` |
-| `Task` | `ref`, `container_ref`, `parent_ref`, `title`, `description_md`, `status_name`, `priority_name`, `assignee_refs`, `tags`, `created_at`, `start_date`, `due_at`, `completed_at`, `estimate_mins`, `time_spent_mins`, `custom_values`, `checklist`, `attachment_names`, `blocks_refs`, `custom_id`, `url` |
+| `StatusSeen` | `container_ref`, `name`, `task_count`, `done_hint` (true, false or unknown) |
+| `FieldDef` | `container_ref`, `name`, `type_guess`, `options` — not built yet. I-5 adds it with the view export |
+| `Task` | `ref`, `container_ref`, `parent_ref`, `title`, `description_md`, `status_name`, `task_type`, `importance`, `assignee_refs`, `tags`, `created_at`, `start_date`, `due_at`, `due_date`, `completed_at`, `estimate_mins`, `time_spent_mins`, `custom_values`, `checklists`, `attachment_names`, `blocks_refs`, `custom_id`, `url` |
+| `Checklist` | `name`, `items` |
 | `Comment` | `task_ref`, `author_ref`, `created_at`, `body_md` |
 | `Loss` | `what`, `count`, `why` — one row per thing the file could not carry |
+| `BundleWarning` | `code`, `message`, `count`, `sample_refs` — one row per defect in this file |
+
+Three choices differ from the first draft of this table:
+
+- **`importance`, not `priority_name`.** The adapter maps priority by the
+  source tool's own meaning (§6.4), so the bundle holds Metorite's 0–3 value.
+- **`due_at` or `due_date`.** A due date with no time is a date (§4.3 item
+  1). At most one of the two is set.
+- **Every column has a stated fate.** `clickup.COLUMNS` marks each column
+  as read, or says why the adapter skips it. A test fails if a column of the
+  real file has no entry.
 
 A value the file does not carry is `None`, never a guess. The adapter writes
 a `Loss` row for each whole field that its tool never exports. An example is
@@ -472,7 +492,7 @@ The importer never writes `leveraged`.
   would put 1,647 completions into one day of every report and chart.
 - `estimate_mins` takes `Time Estimated`, which is in milliseconds.
 - `Time Spent` has no home, because there is no time-entry table. The value
-  is in seconds, inside quotes and after a space. It goes into
+  is in milliseconds, inside quotes and after a space. It goes into
   `origin.time_spent_mins`, and the report says the total is kept but not
   shown.
 
@@ -641,8 +661,10 @@ look (`DESIGN_SYSTEM.md`):
 | The importer opens no network connection | `tests/unit/test_import_no_network.py` — no module under `projects/importer/` imports `httpx`, `requests`, `aiohttp`, `urllib.request` or `socket` |
 | One write path into `pm_tasks` | `tests/unit/test_pm_task_insert_sites.py` — the literal `INSERT INTO pm_tasks` appears only in the allow-listed helper files |
 | No connector | `tests/unit/test_no_task_provider_connectors.py` stays green, unchanged |
-| The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/fixtures/import/clickup/` (P-1) |
-| The bundle holds `None`, never a guess | `tests/unit/test_import_bundle.py` |
+| The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/unit/import_fixtures/clickup_workspace.csv` (P-1). The fixture sits beside its test, because `tests/fixtures/` holds only fixtures that two languages read |
+| The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
+| Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
+| The bundle holds `None`, never a guess | `tests/unit/test_import_clickup_adapter.py` — `test_every_whole_field_the_file_lacks_is_a_loss` (no guessed `completed_at`) and `test_every_column_of_the_real_file_has_a_stated_fate` |
 | The plan writes nothing | `tests/unit/test_import_plan.py` — a plan run against a session that refuses every write |
 | Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
 | Tenant scope | `tests/unit/test_tenant_coverage.py` covers `pm_import_runs` |
@@ -656,7 +678,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | Slice | Delivers | Done when |
 |---|---|---|
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
-| **I-1** | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row |
+| **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** | Migration for `pm_import_runs` and the origin index. Upload, get and mapping routes. The plan. The D80 docstring and `CLAUDE.md` edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes |
 | **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
@@ -686,16 +708,29 @@ path before it extracts anything (zip-bomb and path-traversal checks).
 
 ## 10. Verification commands
 
+Each slice adds its files to this list. Run every line that exists at
+the slice you verify.
+
+**I-1 (built):**
+
+```bash
+uv run pytest tests/unit/test_import_clickup_adapter.py tests/unit/test_import_text.py \
+  tests/unit/test_import_no_network.py tests/unit/test_no_task_provider_connectors.py
+uv run ruff check apps/services/gateway/gateway/routes/projects/importer \
+  scripts/import_scrub_clickup.py tests/unit/test_import_*.py
+uv run mypy apps/services/gateway/gateway/routes/projects/importer
+node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
+```
+
+**I-2 and later (planned — these files do not exist yet):**
+
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_import_bundle.py tests/unit/test_import_clickup_adapter.py \
-  tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
-  tests/unit/test_import_no_network.py tests/unit/test_pm_task_insert_sites.py \
-  tests/unit/test_no_task_provider_connectors.py tests/unit/test_tenant_coverage.py \
+uv run pytest tests/unit/test_import_plan.py tests/unit/test_import_quiet.py \
+  tests/unit/test_pm_task_insert_sites.py tests/unit/test_tenant_coverage.py \
   tests/unit/test_import_flag.py
 uv run pytest tests/live/live_ws41_import.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
-node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
 ```
 
 Without the database, the live suite SKIPS and the run reads green. Check the
