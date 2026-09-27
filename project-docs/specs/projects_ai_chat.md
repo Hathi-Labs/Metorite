@@ -2588,10 +2588,17 @@ The option text was:
   and that slice must gate it on `hr_visible`.
 - It adds no boundary in `ReportsView` or `NodeDashboard`.
 - It does not change the stream or the translator for the author.
-- **Residual: any room sender can still write an agent row.** The translator
-  checkpoints as the sending member, so the `WHERE` cannot tell the sender of
-  a run from another member. A follow-up can scope an agent row to the member
-  who started the run.
+- **Residual: any room sender can still write an agent row or a system row.**
+  The translator checkpoints as the sending member, so the `WHERE` cannot tell
+  the sender of a run from another member. An overwrite keeps the stored
+  `author_email`, `author_kind` and `authority`, so a forged agent reply keeps
+  the agent's name and the first writer's clearance label. A tab that holds an
+  old copy of an agent reply can also overwrite the final text on a save of
+  the whole array. A follow-up can scope an agent row to the member who
+  started the run.
+- **A declined write reports success.** When the `WHERE` declines an update,
+  `POST /chat/sessions/{id}/messages` still answers `{"ok": true}`. A
+  follow-up can return the ids that did not change.
 - `_attribute` still takes the claim of an agent turn from the body when it
   INSERTS a new row. So a member can make a new row that names any agent.
   That is not a change to an existing turn, and S12 does not change it.
