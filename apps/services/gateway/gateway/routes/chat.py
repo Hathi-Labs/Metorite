@@ -426,10 +426,27 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: again** (WS-27bm S12, ``projects_ai_chat.md`` §18). An ``@name`` turn's
 #: checkpoint lands first, with the room's agent. Only the fold knows which
 #: agent ran, so ``:author_from_run`` lets it replace ``author_email`` when the
-#: stored ``author_kind`` is ``agent`` or NULL. A human turn keeps its author,
-#: because ``_persist_message_id`` comes from the client and the fold can
-#: reach a row the client chose. Only ``chat_fold`` passes True. Every client
-#: write keeps the COALESCE, and ``authority`` keeps it for every writer.
+#: stored row is an agent turn. A stored NULL kind counts as an agent turn
+#: only when its ``role`` is ``assistant``. Only ``chat_fold`` passes True.
+#: Every client write keeps the COALESCE, and ``authority`` keeps it for every
+#: writer.
+#:
+#: 🔴 **A human turn changes only when its own author writes it** (S12 fix
+#: round 1). The row id comes from the client — the browser names it, and the
+#: fold's ``_persist_message_id`` is the client's ``assistant_message_id`` —
+#: so without the ``WHERE`` below, any room sender could put their own words
+#: in another member's turn and keep that member's name on it. The ``WHERE``
+#: lets an update touch a human row only when the write is a HUMAN write by
+#: the SAME member. ``_attribute`` stamps a human write's ``author_email``
+#: from the authenticated caller, never from the body, and the check also
+#: requires ``EXCLUDED.author_kind = 'human'``: a body that claims an agent
+#: turn can name any ``author_email``, so it must not pass. The fold never
+#: writes a human row. A NULL-kind row whose ``role`` is not ``assistant`` or
+#: ``system`` is a legacy human turn and gets the same protection. A conflict
+#: that fails the ``WHERE`` leaves the row alone and raises nothing.
+#:
+#: ⚠️ **Residual, recorded in §18.4:** an agent row is still writable by any
+#: room sender, because the translator checkpoints as the sending member.
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
@@ -444,7 +461,10 @@ _MESSAGE_UPSERT_SQL = """
         content        = EXCLUDED.content,
         author_email   = CASE
             WHEN CAST(:author_from_run AS boolean)
-                 AND COALESCE(chat_message.author_kind, 'agent') = 'agent'
+                 AND COALESCE(
+                     chat_message.author_kind,
+                     CASE WHEN chat_message.role = 'assistant' THEN 'agent' END
+                 ) = 'agent'
                  AND EXCLUDED.author_email IS NOT NULL
             THEN EXCLUDED.author_email
             ELSE COALESCE(chat_message.author_email, EXCLUDED.author_email) END,
@@ -461,6 +481,14 @@ _MESSAGE_UPSERT_SQL = """
         custom_events  = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.custom_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.custom_events ELSE chat_message.custom_events END
+    WHERE COALESCE(
+            chat_message.author_kind,
+            CASE WHEN chat_message.role IN ('assistant', 'system')
+                 THEN chat_message.role ELSE 'human' END
+          ) IS DISTINCT FROM 'human'
+       OR (NOT CAST(:author_from_run AS boolean)
+           AND EXCLUDED.author_kind = 'human'
+           AND lower(chat_message.author_email) = lower(EXCLUDED.author_email))
 """
 
 

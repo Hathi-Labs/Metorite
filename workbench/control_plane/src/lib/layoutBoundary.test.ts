@@ -294,4 +294,14 @@ describe("every Analytics panel renders inside its own boundary (WS-27bm S12)", 
       ).toMatch(new RegExp(`^<${name}\\b[^<>]*/>\\s*</LayoutBoundary>`));
     },
   );
+
+  it("names each panel in words the fallback can use", () => {
+    // The fallback says "the {layout} view". A label that ends in "panel" or
+    // "view" reads "the forecast panel view" (S12 fix round 1).
+    const labels = [...view.matchAll(/<LayoutBoundary\b[^<>]*\blayout="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(labels).toHaveLength(panels.length);
+    for (const label of labels) expect(label).not.toMatch(/\b(panel|view)$/i);
+  });
 });

@@ -2485,13 +2485,24 @@ The option text was:
    `page.tsx` has no error boundary above it. So a panel that throws on a
    missing date blanked the whole page. `AnalyticsView.tsx` now puts each of
    its seven panels inside its own `LayoutBoundary`, with a `layout` prop that
-   names the panel.
+   names the panel. The fallback says "the {layout} view", so a label is a
+   plain name such as `forecast`, not `forecast panel`.
 3. **An @name turn keeps the agent that ran.** `_upsert_messages` in
    `routes/chat.py` takes a keyword `author_from_run`, and its default is
    False. Only `chat_fold.persist_final_assistant_message` passes True. With
-   it, the upsert sets `author_email` again when the stored `author_kind` is
-   `agent` or NULL. The checkpoint of an `@sales` turn writes the room's agent
+   it, the upsert sets `author_email` again when the stored row is an agent
+   turn. A stored NULL kind counts as an agent turn only when the `role` is
+   `assistant`. The checkpoint of an `@sales` turn writes the room's agent
    first, and the fold then writes the agent that ran.
+4. **One member cannot write in the turn of another member (fix round 1).**
+   The review found a live forgery. The row id comes from the client, and the
+   upsert replaced `content` on any `(session_id, id)` that the caller named.
+   So member A could put A's words in a turn by B, and the turn kept the name
+   of B. The fold could do the same through a client-chosen
+   `assistant_message_id`. The `DO UPDATE` in `_MESSAGE_UPSERT_SQL` now has a
+   `WHERE`. A human row changes only when its own author sends a human write.
+   The fold never changes a human row. A conflict that fails the `WHERE`
+   leaves the row alone and raises no error.
 
 ### 18.2 Rules
 
@@ -2505,14 +2516,26 @@ The option text was:
 6. Each panel has its own boundary. There is no second boundary class.
 7. Only the fold passes `author_from_run`. The route handler
    `POST /sessions/{id}/messages` never passes it.
-8. The fold changes the author of an agent turn or a NULL-kind turn only. A
-   human turn keeps its author. `_persist_message_id` comes from the client,
-   so the fold can reach a row that the client chose.
+8. The fold changes the author of an agent turn only. A stored NULL kind is
+   an agent turn only when the `role` is `assistant`. A human turn keeps its
+   author. `_persist_message_id` comes from the client, so the fold can reach
+   a row that the client chose.
 9. Every client write keeps the COALESCE. `authority` keeps its COALESCE for
    every writer.
 10. S12 updates the rule in the two places that state it: the comment above
     `_MESSAGE_UPSERT_SQL` and item 3 of `apps/services/gateway/AGENTS.md`.
 11. S12 adds no migration, no flag and no route.
+12. **A human row changes only by its own author.** The `WHERE` on the
+    `DO UPDATE` lets a write touch a human row only when three things are
+    true. The write is not the fold. The incoming kind is `human`. The stored
+    `author_email` equals the incoming one, with case ignored.
+13. **The incoming author of a human write is the authenticated caller.**
+    `_attribute` takes it from `actor_email`, never from the body. A body that
+    claims an agent turn can name any `author_email`. So the `WHERE` also
+    requires an incoming kind of `human`, and a claimed agent turn cannot pass
+    as the author of a human row.
+14. **A legacy row with a NULL kind is a human row unless its `role` is
+    `assistant` or `system`.** It gets the same protection as a human row.
 
 ### 18.3 Acceptance — S12
 
@@ -2543,6 +2566,20 @@ The option text was:
     throwing child, because vitest runs in node and does not collect `.tsx`
     tests.
 11. The same change deletes the H-188 entry and updates the status (R4).
+12. R8, fix round 1, in `test_rooms.py`. Each test calls the real
+    `save_messages` handler or the fold call:
+    - member B saves a turn over the id of a turn by member A. The row keeps
+      the content and the author of A.
+    - B claims an agent turn with the `author_email` of A. The row does not
+      change.
+    - the fold writes on the id of a turn by A. The row does not change.
+    - A can still update the turn of A.
+    - an agent row still updates by a checkpoint from another sender and by
+      the fold.
+    - a legacy `user` row with a NULL kind does not change by a save from
+      another member or by the fold.
+    - a legacy `assistant` row with a NULL kind still takes the fold.
+13. `layoutBoundary.test.ts`: no `layout` label ends in "panel" or "view".
 
 ### 18.4 What S12 does not do
 
@@ -2551,6 +2588,13 @@ The option text was:
   and that slice must gate it on `hr_visible`.
 - It adds no boundary in `ReportsView` or `NodeDashboard`.
 - It does not change the stream or the translator for the author.
+- **Residual: any room sender can still write an agent row.** The translator
+  checkpoints as the sending member, so the `WHERE` cannot tell the sender of
+  a run from another member. A follow-up can scope an agent row to the member
+  who started the run.
+- `_attribute` still takes the claim of an agent turn from the body when it
+  INSERTS a new row. So a member can make a new row that names any agent.
+  That is not a change to an existing turn, and S12 does not change it.
 - It adds no guard in `day()` or `period()`.
 - It does not measure tokens, and it adds no tool name in `agents.py`.
 - It does not rename the "coming" report templates.
@@ -2582,3 +2626,10 @@ Four mutations each turn a test red:
 - `author_from_run` passed on the route
 - a fold that changes a human turn
 - a panel moved outside its boundary.
+
+Fix round 1 adds four more, and each turns a test red:
+
+- the `WHERE` removed from the `DO UPDATE`
+- the check for an incoming kind of `human` removed
+- a legacy NULL-kind `user` row read as an agent row
+- a `layout` label that ends in "panel".

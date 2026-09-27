@@ -186,7 +186,7 @@ export default function AnalyticsView({
           page. `layoutBoundary.test.ts` holds each tag to this shape. */}
       {outlook && (
         <div className="mb-3">
-          <LayoutBoundary layout="forecast panel">
+          <LayoutBoundary layout="forecast">
             <OutlookPanel data={outlook} />
           </LayoutBoundary>
         </div>
@@ -197,34 +197,34 @@ export default function AnalyticsView({
               two read one set of open work, and a reader compares them row by
               row. The node dashboards already lead with Load. */}
           {load && (
-            <LayoutBoundary layout="load panel">
+            <LayoutBoundary layout="load">
               <LoadPanel data={load} />
             </LayoutBoundary>
           )}
           {capacity && (
-            <LayoutBoundary layout="capacity panel">
+            <LayoutBoundary layout="capacity">
               <CapacityPanel data={capacity} />
             </LayoutBoundary>
           )}
           {/* S7c. Beside Capacity: the hours say who is full, and this
               says where the plan for that work disagrees with itself. */}
           {conflicts && (
-            <LayoutBoundary layout="conflicts panel">
+            <LayoutBoundary layout="conflicts">
               <ConflictsPanel data={conflicts} />
             </LayoutBoundary>
           )}
           {stuck && (
-            <LayoutBoundary layout="stuck work panel">
+            <LayoutBoundary layout="stuck work">
               <StuckPanel data={stuck} />
             </LayoutBoundary>
           )}
           {throughput && (
-            <LayoutBoundary layout="throughput panel">
+            <LayoutBoundary layout="throughput">
               <ThroughputPanel data={throughput} />
             </LayoutBoundary>
           )}
           {finished && (
-            <LayoutBoundary layout="finished work panel">
+            <LayoutBoundary layout="finished work">
               <FinishedPanel data={finished} />
             </LayoutBoundary>
           )}
