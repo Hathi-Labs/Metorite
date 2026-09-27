@@ -314,9 +314,10 @@ async def _status_name(task: dict[str, Any]) -> str:
 async def archive_task(task_id: str) -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
-    claims no outcome. Subtasks stay where they are. The card carries the
-    title, the lane and how many open subtasks it leaves behind.
-    unarchive_task is the undo."""
+    claims no outcome. Subtasks stay where they are: the gateway also takes
+    include_subtasks, which shelves them too, and this tool does NOT send it.
+    The card carries the title, the lane and how many open subtasks it leaves
+    behind. unarchive_task is the undo."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
     tid, task = await _task(task_id)

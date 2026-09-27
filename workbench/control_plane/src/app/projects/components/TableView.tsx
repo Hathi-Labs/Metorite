@@ -81,6 +81,7 @@ import { type Fold, collapsedNow, subtaskSections, toggleFold } from "../lib/sub
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
+import { useSubtaskComplete } from "./useSubtaskComplete";
 
 /** The columns whose cells open an editor on Enter (or a click). */
 const EDITABLE = new Set(["status", "assignees", "due_at", "start_date", "importance"]);
@@ -128,6 +129,11 @@ interface Props {
   onCreated: (task: TaskRow) => void;
   /** A cell edit landed — merge the fresh row into the page's task list. */
   onSaved: (task: TaskRow) => void;
+  /**
+   * D-PM-38 (S5) — completing a parent with its subtasks changed OTHER rows
+   * too, so the page reads its list again. Absent, only the row merges.
+   */
+  onReload?: () => void;
   onSelect: (task: TaskRow) => void;
   /**
    * Assignee value → the name to draw, already disambiguated for the set.
@@ -153,12 +159,15 @@ export function TableView({
   projectId,
   onCreated,
   onSaved,
+  onReload,
   onSelect,
   personLabels,
 }: Props) {
   // WS-27ak(3) — a cell edit on a spreadsheet is the mutation furthest from
   // wherever the one inline error line is drawn; see `saveCell`.
   const toast = useToast();
+  // D-PM-38 decision 2 (S5) — a status cell into Done asks about subtasks.
+  const subtaskComplete = useSubtaskComplete();
   // The collapse state, stamped with the filter it was made under
   // (`subtaskView.collapsedNow`).
   const [fold, setFold] = useState<Fold>({ key: "", ids: new Set() });
@@ -244,6 +253,18 @@ export function TableView({
   async function saveCell(task: TaskRow, patch: Record<string, unknown>) {
     setError(null);
     try {
+      const keys = Object.keys(patch);
+      if (keys.length === 1 && typeof patch.status_id === "string") {
+        const asked = await subtaskComplete.changeStatus(
+          task, patch.status_id, statuses, () => onReload?.(),
+        );
+        if (asked) {
+          onSaved(asked);
+          flash(task.id);
+          closeEditor();
+          return;
+        }
+      }
       const fresh = await toast.promise(projectsApi.patchTask(task.id, patch), {
         key: `projects:task-edit:${task.id}`,
         loading: "Saving…",
@@ -758,6 +779,7 @@ export function TableView({
           );
         })}
       </table>
+      {subtaskComplete.dialog}
     </div>
   );
 }

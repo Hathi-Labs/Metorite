@@ -89,6 +89,7 @@ import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
+import { useSubtaskComplete } from "./useSubtaskComplete";
 import { durationLabel } from "@/lib/taskCard";
 import {
   ROLLUP_AT,
@@ -295,6 +296,8 @@ export function TaskBody({
   urgentWindowHours,
 }: TaskBodyProps) {
   const toast = useToast();
+  // D-PM-38 decision 2 (S5) — completing a parent with open subtasks asks.
+  const subtaskComplete = useSubtaskComplete();
 
   //: The attachment whose viewer is open. One at a time.
   const [viewing, setViewing] = useState<AttachmentRow | null>(null);
@@ -546,6 +549,19 @@ export function TaskBody({
     setBusy(true);
     setError(null);
     try {
+      // D-PM-38 decision 2 — a single task read carries no subtask chip, so
+      // the open count comes from the relations progress, the SAME count
+      // (S1 live check b). Read only for a move that could ask.
+      const target = statuses.find((s) => s.id === statusId);
+      const open =
+        target?.category === "done" && !task.subtasks
+          ? await projectsApi
+              .relations(task.id)
+              .then((r) => Math.max(0, (r.progress?.total ?? 0) - (r.progress?.done ?? 0)))
+              .catch(() => 0)
+          : undefined;
+      const asked = await subtaskComplete.changeStatus(task, statusId, statuses, reload, open);
+      if (asked) return;
       await toast.promise(projectsApi.patchTask(task.id, { status_id: statusId }), {
         key: `projects:task-status:${task.id}`,
         loading: "Changing status…",
@@ -1270,6 +1286,7 @@ export function TaskBody({
           void detach(id);
         }}
       />
+      {subtaskComplete.dialog}
     </>
   );
 }

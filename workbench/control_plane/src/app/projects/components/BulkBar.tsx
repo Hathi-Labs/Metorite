@@ -93,6 +93,12 @@ interface Props {
   personLabels?: ReadonlyMap<string, string>;
   /** The last outcome sentence, or null. */
   notice: string | null;
+  /**
+   * D-PM-38 (S5) — "includes 2 parents with 5 open subtasks", or null. The
+   * choice itself is asked ONCE for the batch, by the act: the complete
+   * prompt for a Done status, the ticked box for Archive and Move.
+   */
+  subtaskSummary?: string | null;
 }
 
 export function BulkBar({
@@ -107,6 +113,7 @@ export function BulkBar({
   personLabels,
   onMove,
   notice,
+  subtaskSummary,
 }: Props) {
   const [draft, setDraft] = useState<BulkDraft>(EMPTY_DRAFT);
   const request = buildRequest(Array.from({ length: count }, (_, i) => `#${i}`), draft);
@@ -118,6 +125,11 @@ export function BulkBar({
     <div className="border-b border-border bg-muted px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="primary">{count} selected</Badge>
+        {subtaskSummary ? (
+          <span className="text-xs text-muted-foreground" data-subtask-summary>
+            {subtaskSummary}
+          </span>
+        ) : null}
 
         {onMove ? (
           <Button

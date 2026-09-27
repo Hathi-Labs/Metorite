@@ -3,6 +3,16 @@ import { dropIndexFor } from "@/lib/boardDrop";
 import type { PanelAnchor } from "@/components/ui/AnchoredPanel";
 import { closesTask, landingLane, stageLanes } from "@/lib/statusCategory";
 import {
+  type CascadeChange,
+  archiveReceipt,
+  bulkSubtaskSummary,
+  bulkSummaryLine,
+  completeReceipt,
+  openSubtasks,
+  revertCascade,
+  revertSummary,
+} from "@/lib/subtaskCascade";
+import {
   LensPartialFailure,
   type LensLane,
   type LensLedProject,
@@ -76,6 +86,9 @@ import {
   apiBulkDispose,
   apiBulkArchive,
   apiArchiveItem,
+  apiArchiveCascade,
+  apiCompleteCascade,
+  apiSetStatusCascade,
   apiAddSubtasks,
   apiListSubtasks,
   apiCapture,
@@ -175,6 +188,49 @@ function disposeLive(
 }
 
 /**
+ * D-PM-38 decision 4 (S5) — archive `ids` WITH their subtasks, live.
+ *
+ * The gateway answers the ids of the subtasks it shelved. They join the
+ * snapshot's `archivedIds`, so Undo restores EXACTLY the tasks this archive
+ * shelved (unarchive does not cascade), and the ones on my lists leave them.
+ */
+function shelveWithSubtasks(
+  set: Setter,
+  get: Getter,
+  ids: string[],
+  snap: UndoSnapshot | null,
+): void {
+  sync(
+    apiArchiveCascade(ids).then(
+      (shelved) => {
+        const nowIso = new Date().toISOString();
+        const gone = new Set(shelved);
+        set((s) => ({
+          items: s.items.map((i) =>
+            gone.has(i.id) ? { ...i, archivedAt: nowIso, updatedAt: nowIso } : i,
+          ),
+        }));
+        if (snap && get().undoSnapshot === snap) {
+          set({
+            undoSnapshot: {
+              ...snap,
+              label: archiveReceipt(shelved.length),
+              archivedIds: [...(snap.archivedIds ?? []), ...shelved],
+            },
+          });
+        }
+      },
+      async (err: unknown) => {
+        await refetchAfterFailure(set);
+        get().reportSyncFailure(
+          err instanceof Error && err.message ? err.message : "Couldn't archive that.",
+        );
+      },
+    ),
+  );
+}
+
+/**
  * D79 rule 2 — Mark done never asks, and its receipt names the Done status
  * it chose when the set holds more than one. The dispose answers first, then
  * this reads the lanes and retitles the SAME undo snapshot. A newer change in
@@ -251,6 +307,8 @@ interface SyncFields {
   assignee?: Person;
   /** S6g — the destination's required fields, from `promotePlan`. */
   customFields?: Record<string, unknown>;
+  /** D-PM-38 decision 4 (S5) — the promote's ticked "Include N subtasks". */
+  includeSubtasks?: boolean;
 }
 
 /** The outcome of clarifying an inbox item — the GTD decision tree (F2). */
@@ -258,10 +316,13 @@ export type ClarifyDecision =
   | { kind: "trash" }
   | { kind: "reference" }
   | { kind: "do-now" } // 2-minute rule → done
-  | ({ kind: "someday" } & Pick<SyncFields, "dest" | "projectId" | "status" | "customFields">)
+  | ({ kind: "someday" } & Pick<
+      SyncFields,
+      "dest" | "projectId" | "status" | "customFields" | "includeSubtasks"
+    >)
   | ({ kind: "delegate"; person: Person; nextAction: string } & Pick<
       SyncFields,
-      "dest" | "projectId" | "status" | "dueAt" | "customFields"
+      "dest" | "projectId" | "status" | "dueAt" | "customFields" | "includeSubtasks"
     >)
   | ({
       kind: "next";
@@ -373,6 +434,7 @@ function decisionToOrganizeBody(d: ClarifyDecision): OrganizeBody {
   // S6g — the promote answers, built by `promotePlan` in Clarify.
   if ("customFields" in d && d.customFields && Object.keys(d.customFields).length)
     body.custom_fields = d.customFields;
+  if ("includeSubtasks" in d && d.includeSubtasks) body.include_subtasks = true;
   if (d.kind === "project") body.outcome = d.outcome;
   if (d.kind === "delegate")
     body.assignee = {
@@ -562,7 +624,39 @@ interface UndoSnapshot {
     plan: Promise<StatusRevert | null>;
     wasClosed?: Promise<boolean>;
   };
+  /** D-PM-38 decision 2 (S5) — the subtasks a complete closed with the
+   *  parent, each with its status before and after. Undo puts each back
+   *  AFTER the parent's own status, and only while it still holds the status
+   *  the cascade set (`revertCascade`, If-Match). */
+  cascadeRevert?: Promise<CascadeChange[]>;
 }
+
+/**
+ * D-PM-38 (S5) — the subtask question the store is waiting on.
+ *
+ * `complete`: "3 subtasks are still open. Complete them too?" Escape means
+ * "Only this task", and the parent still completes.
+ * `archive`: the archive dialog with the pre-ticked "Include N subtasks"
+ * box. Cancel archives nothing.
+ */
+export interface SubtaskPrompt {
+  kind: "complete" | "archive";
+  ids: string[];
+  /** Open subtasks (complete), or subtasks the tasks hold (archive). */
+  count: number;
+  title?: string;
+  /** A complete through a later Done status, picked by id (`setStatus`). */
+  statusId?: string;
+  lanes?: readonly LensLane[];
+  /** The archive, or the Done, came from the bulk bar. */
+  bulk?: boolean;
+  /** The bulk bar's line: "includes 2 parents with 5 open subtasks". */
+  summary?: string;
+}
+
+/** An item's open subtasks, from its chip (D-PM-38). */
+const openStepsOf = (item: MyTask | undefined): number =>
+  openSubtasks({ done: item?.subtaskDone ?? 0, total: item?.subtaskCount ?? 0 });
 
 /** D79 — one status write, as Undo needs it. */
 export interface StatusRevert {
@@ -986,16 +1080,43 @@ interface TaskState {
   closePromote: () => void;
   /** Skip the current item (leave it in the inbox to process later) and move on. */
   skipToNextInbox: () => void;
-  /** One-tap disposition (hover / keyboard triage) — no full decision tree. */
-  quickDispose: (id: string, disposition: Disposition) => void;
+  /** One-tap disposition (hover / keyboard triage) — no full decision tree.
+   *  D-PM-38 (S5): DONE on a parent with open subtasks ASKS first
+   *  (`subtaskPrompt`) unless `opts.includeSubtasks` already answers. */
+  quickDispose: (
+    id: string,
+    disposition: Disposition,
+    opts?: { includeSubtasks?: boolean },
+  ) => void;
+  /** D-PM-38 (S5) — the open subtask question, or null. */
+  subtaskPrompt: SubtaskPrompt | null;
+  /** The member answered: complete (or archive) with the subtasks, or not. */
+  answerSubtaskPrompt: (includeSubtasks: boolean) => void;
+  /** The archive dialog was cancelled: nothing is archived. */
+  cancelSubtaskPrompt: () => void;
   /** Apply the same disposition to many items at once (multi-select). */
-  bulkDispose: (ids: string[], disposition: Disposition) => void;
+  /** D-PM-38 (S5): a bulk DONE over parents with open subtasks ASKS once
+   *  for the batch, as the Projects bulk bar does. */
+  bulkDispose: (
+    ids: string[],
+    disposition: Disposition,
+    opts?: { includeSubtasks?: boolean },
+  ) => void;
   /** Archive (hide from active views) or un-archive a task — independent of
-   *  DONE. Optimistic; the row moves to / from the Archive view. */
-  archiveItem: (id: string, archived: boolean) => void;
+   *  DONE. Optimistic; the row moves to / from the Archive view.
+   *  D-PM-38 (S5): a task with subtasks asks first, with the box ticked. */
+  archiveItem: (
+    id: string,
+    archived: boolean,
+    opts?: { includeSubtasks?: boolean },
+  ) => void;
   /** Archive (or un-archive) many tasks at once (multi-select). Optimistic +
    *  undoable; local overlay only (never touches the connected tool). */
-  bulkArchive: (ids: string[], archived: boolean) => void;
+  bulkArchive: (
+    ids: string[],
+    archived: boolean,
+    opts?: { includeSubtasks?: boolean },
+  ) => void;
   /** Lazily pull archived tasks into the store (they're excluded from the
    *  normal hydrate) — called when the Archive view is opened. */
   loadArchive: () => Promise<void>;
@@ -1214,7 +1335,7 @@ interface TaskState {
   setStatus: (
     id: string,
     statusId: string,
-    opts?: { lanes?: readonly LensLane[] },
+    opts?: { lanes?: readonly LensLane[]; includeSubtasks?: boolean },
   ) => Promise<void>;
   /**
    * D79 — move a task into a STAGE (a status category) of Next Actions.
@@ -1529,6 +1650,33 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   promoteDialog: null,
   openPromote: (id, destination) => set({ promoteDialog: { id, destination } }),
   closePromote: () => set({ promoteDialog: null }),
+
+  subtaskPrompt: null,
+  answerSubtaskPrompt: (includeSubtasks) => {
+    const prompt = get().subtaskPrompt;
+    if (!prompt) return;
+    set({ subtaskPrompt: null });
+    const answer = { includeSubtasks };
+    if (prompt.kind === "complete") {
+      // "Only this task" still completes the parent: the member asked to.
+      if (prompt.bulk) {
+        get().bulkDispose(prompt.ids, "DONE", answer);
+        return;
+      }
+      if (prompt.statusId) {
+        void get().setStatus(prompt.ids[0], prompt.statusId, {
+          lanes: prompt.lanes,
+          ...answer,
+        });
+      } else {
+        get().quickDispose(prompt.ids[0], "DONE", answer);
+      }
+      return;
+    }
+    if (prompt.bulk) get().bulkArchive(prompt.ids, true, answer);
+    else get().archiveItem(prompt.ids[0], true, answer);
+  },
+  cancelSubtaskPrompt: () => set({ subtaskPrompt: null }),
 
   captureLine: (raw, { targets, dest, attachments, dates }) => {
     const line = raw.trim();
@@ -2212,7 +2360,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return { selectedItemId: next.id };
     }),
 
-  quickDispose: (id, disposition) => {
+  quickDispose: (id, disposition, opts) => {
+    // D-PM-38 decision 2 (S5) — DONE on a parent with open subtasks ASKS,
+    // and never blocks. The answer comes back through `answerSubtaskPrompt`.
+    const asking = get().items.find((i) => i.id === id);
+    if (
+      disposition === "DONE" &&
+      opts?.includeSubtasks === undefined &&
+      asking &&
+      asking.disposition !== "DONE" &&
+      openStepsOf(asking) > 0
+    ) {
+      set({
+        subtaskPrompt: {
+          kind: "complete",
+          ids: [id],
+          count: openStepsOf(asking),
+          title: asking.title,
+        },
+      });
+      return;
+    }
     get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     // D79 — only a gesture that can move the status reads the server's
@@ -2230,11 +2398,31 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const live = get().backend === "live";
     const priorRead =
       live && dispositionCanMoveStatus(disposition) ? lensGetItem(id).catch(() => null) : null;
-    const write = live
-      ? (priorRead ?? Promise.resolve(null)).then(() =>
-          disposeLive(set, get, [id], disposition),
+    // D-PM-38 (S5) — "Complete all": ONE request closes the parent and every
+    // open descendant, each in its own set. Its Undo record rides along.
+    const cascade =
+      live && disposition === "DONE" && opts?.includeSubtasks
+        ? (priorRead ?? Promise.resolve(null)).then(() => apiCompleteCascade(id))
+        : null;
+    const write = cascade
+      ? cascade.then(
+          (done) => {
+            set((s) => ({ items: s.items.map((i) => (i.id === id ? done.item : i)) }));
+            return [done.item];
+          },
+          async (err: unknown) => {
+            await refetchAfterFailure(set);
+            get().reportSyncFailure(
+              err instanceof Error && err.message ? err.message : "Couldn't complete the task.",
+            );
+            return [] as MyTask[];
+          },
         )
-      : null;
+      : live
+        ? (priorRead ?? Promise.resolve(null)).then(() =>
+            disposeLive(set, get, [id], disposition),
+          )
+        : null;
     const statusRevert =
       priorRead && write
         ? {
@@ -2266,21 +2454,82 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           // disposition and puts it back in the group, as Clarify's undo
           // does. Writing the displayed value back stated a triage.
           untriagedIds: s.fromProjectIds.has(id) ? [id] : undefined,
+          cascadeRevert: cascade
+            ? cascade.then((done) => done.changes, () => [])
+            : undefined,
         },
       };
     });
     if (write) {
       get().markTriaged([id], write);
-      if (disposition === "DONE") {
-        const snap = get().undoSnapshot;
+      const snap = get().undoSnapshot;
+      if (cascade) {
+        // The receipt counts what the SERVER closed ("Completed · and 3
+        // subtasks"), and the closed subtasks on my lists are read again.
+        void cascade.then(
+          (done) => {
+            const label = completeReceipt(done.cascaded);
+            if (get().undoSnapshot === snap && snap) set({ undoSnapshot: { ...snap, label } });
+            const mine = new Set(get().items.map((i) => i.id));
+            return Promise.all(
+              done.changes
+                .filter((c) => mine.has(c.task_id))
+                .map((c) => get().refreshItem(c.task_id)),
+            );
+          },
+          () => undefined,
+        );
+      } else if (disposition === "DONE") {
         void write.then(() => nameTheDoneStatus(set, get, id, snap));
       }
     }
   },
 
-  bulkDispose: (ids, disposition) => {
+  bulkDispose: (ids, disposition, opts) => {
+    // D-PM-38 decision 2 (S5) — a bulk Done over parents with open subtasks
+    // asks ONCE for the batch. "Only this task" completes the selection.
+    if (disposition === "DONE" && opts?.includeSubtasks === undefined) {
+      const picked = new Set(ids);
+      const summary = bulkSubtaskSummary(
+        get()
+          .items.filter((i) => picked.has(i.id) && i.disposition !== "DONE")
+          .map((i) => ({
+            id: i.id,
+            subtasks: { done: i.subtaskDone ?? 0, total: i.subtaskCount ?? 0 },
+          })),
+        picked,
+      );
+      if (summary.open > 0) {
+        set({
+          subtaskPrompt: {
+            kind: "complete",
+            ids,
+            count: summary.open,
+            bulk: true,
+            summary: bulkSummaryLine(summary) ?? undefined,
+          },
+        });
+        return;
+      }
+    }
     get().cancelPromoteFor(ids);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
+    const cascade =
+      get().backend === "live" && disposition === "DONE" && opts?.includeSubtasks
+        ? Promise.allSettled(ids.map((id) => apiCompleteCascade(id))).then(async (settled) => {
+            const done = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+            const failed = settled.find((r) => r.status === "rejected") as
+              | PromiseRejectedResult
+              | undefined;
+            if (failed) {
+              await refetchAfterFailure(set);
+              get().reportSyncFailure(
+                `${settled.length - done.length} of ${settled.length} could not be completed: ${errText(failed.reason)}`,
+              );
+            }
+            return done;
+          })
+        : null;
     set((s) => {
       const set_ = new Set(ids);
       const affected = s.items.filter(
@@ -2299,17 +2548,52 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           selectedItemId: s.selectedItemId,
           label: `${DISPOSE_LABEL[disposition] ?? "Filed"} ${affected} item${affected === 1 ? "" : "s"}`,
           changedIds: ids,
+          cascadeRevert: cascade
+            ? cascade.then((done) => done.flatMap((d) => d.changes))
+            : undefined,
         },
       };
     });
-    if (get().backend === "live") {
-      get().markTriaged(ids, disposeLive(set, get, ids, disposition));
+    if (get().backend !== "live") return;
+    if (cascade) {
+      // "Complete all": each task through `/complete?include_subtasks=true`.
+      // Settled, not raced, as `lensBulkDispose` does: one refusal must not
+      // hide that the rest completed. Undo puts each subtask's exact prior
+      // status back (`cascadeRevert`).
+      const write = cascade.then((done) => {
+        const byId = new Map(done.map((d) => [d.item.id, d.item]));
+        set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+        const closed = done.reduce((sum, d) => sum + d.cascaded, 0);
+        const snap = get().undoSnapshot;
+        if (snap?.cascadeRevert && closed) {
+          set({ undoSnapshot: { ...snap, label: `${snap.label} · and ${closed} subtask${closed === 1 ? "" : "s"}` } });
+        }
+        return done.map((d) => d.item);
+      });
+      get().markTriaged(ids, write);
+      return;
     }
+    get().markTriaged(ids, disposeLive(set, get, ids, disposition));
   },
 
-  archiveItem: (id, archived) => {
+  archiveItem: (id, archived, opts) => {
+    // D-PM-38 decision 4 (S5) — a task with subtasks asks first, in the
+    // archive dialog whose "Include N subtasks" box is ticked.
+    const held = get().items.find((i) => i.id === id);
+    if (archived && opts?.includeSubtasks === undefined && (held?.subtaskCount ?? 0) > 0) {
+      set({
+        subtaskPrompt: {
+          kind: "archive",
+          ids: [id],
+          count: held?.subtaskCount ?? 0,
+          title: held?.title,
+        },
+      });
+      return;
+    }
     get().cancelPromoteFor([id]);
     const nowIso = new Date().toISOString();
+    const withSteps = archived && Boolean(opts?.includeSubtasks);
     set((s) => ({
       items: s.items.map((i) =>
         i.id === id
@@ -2319,8 +2603,28 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Close the pop-up if we're archiving the focused task.
       focusedItemId:
         archived && s.focusedItemId === id ? null : s.focusedItemId,
+      // With its subtasks, the archive is one step Undo can take back: the
+      // task and EXACTLY the ids the gateway shelved (added when it answers).
+      ...(withSteps
+        ? {
+            undoSnapshot: {
+              items: s.items,
+              projects: s.projects,
+              processed: s.processedThisSession,
+              selectedItemId: s.selectedItemId,
+              label: archiveReceipt(0),
+              archivedIds: [id],
+              archivedTo: true,
+            },
+          }
+        : {}),
     }));
-    if (get().backend === "live") sync(apiArchiveItem(id, archived));
+    if (get().backend !== "live") return;
+    if (withSteps) {
+      shelveWithSubtasks(set, get, [id], get().undoSnapshot);
+      return;
+    }
+    sync(apiArchiveItem(id, archived));
   },
 
   loadArchive: async () => {
@@ -2355,7 +2659,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  bulkArchive: (ids, archived) => {
+  bulkArchive: (ids, archived, opts) => {
+    // D-PM-38 decision 4 (S5) — a selection that holds subtasks asks ONCE,
+    // in the archive dialog with the box ticked.
+    const held = get()
+      .items.filter((i) => ids.includes(i.id))
+      .reduce((sum, i) => sum + (i.subtaskCount ?? 0), 0);
+    if (archived && opts?.includeSubtasks === undefined && held > 0) {
+      set({ subtaskPrompt: { kind: "archive", ids, count: held, bulk: true } });
+      return;
+    }
     get().cancelPromoteFor(ids);
     const nowIso = new Date().toISOString();
     const set_ = new Set(ids);
@@ -2387,7 +2700,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         archivedTo: archived,
       },
     }));
-    if (get().backend === "live") sync(apiBulkArchive(ids, archived));
+    if (get().backend !== "live") return;
+    if (archived && opts?.includeSubtasks) {
+      shelveWithSubtasks(set, get, ids, get().undoSnapshot);
+      return;
+    }
+    sync(apiBulkArchive(ids, archived));
   },
 
   loadLocalHierarchy: async () => {
@@ -2599,11 +2917,35 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // The demo backend keys a status by its stage, and a demo task has no
     // status id. Compare the stage there instead.
     if (!live && nextCategoryOf(item) === lane.category) return;
+    // D-PM-38 decision 2 (S5) — a Done status on a parent with open
+    // subtasks asks first. Asked here for a LATER Done status; the first one
+    // is Mark done, and `quickDispose` asks for it.
+    const firstDone = lane.id === landingLane(lanes, "done")?.id;
+    if (
+      !firstDone &&
+      lane.category === "done" &&
+      opts?.includeSubtasks === undefined &&
+      item.disposition !== "DONE" &&
+      openStepsOf(item) > 0
+    ) {
+      set({
+        subtaskPrompt: {
+          kind: "complete",
+          ids: [id],
+          count: openStepsOf(item),
+          title: item.title,
+          statusId,
+          lanes,
+        },
+      });
+      return;
+    }
     // The FIRST Done status is Mark done (D79 rule 2): it goes through
     // `/complete`, so my list says DONE and a mail thread closes too, and
     // its receipt names the status only when there was a choice.
-    if (lane.id === landingLane(lanes, "done")?.id && item.disposition !== "DONE") {
-      get().quickDispose(id, "DONE");
+    if (firstDone && item.disposition !== "DONE") {
+      if (opts?.includeSubtasks === undefined) get().quickDispose(id, "DONE");
+      else get().quickDispose(id, "DONE", { includeSubtasks: opts.includeSubtasks });
       return;
     }
     get().cancelPromoteFor([id]);
@@ -2612,7 +2954,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // D79 — Undo needs the status the SERVER had, not the local row, which
     // is as old as the last hydrate. Read it, then write.
     const priorRead = live ? lensGetItem(id).catch(() => null) : null;
-    const write = priorRead ? priorRead.then(() => lensSetStatusId(id, lane.id)) : null;
+    // D-PM-38 (S5) — "Complete all" through a later Done status: the PATCH
+    // door takes the flag, and answers each child's Undo record.
+    const cascade =
+      priorRead && opts?.includeSubtasks && lane.category === "done"
+        ? priorRead.then(() => apiSetStatusCascade(id, lane.id))
+        : null;
+    const write = cascade
+      ? cascade.then(() => undefined)
+      : priorRead
+        ? priorRead.then(() => lensSetStatusId(id, lane.id))
+        : null;
     const plan =
       priorRead && write
         ? Promise.all([priorRead, write]).then(([before]) => statusRevertPlan(before, lane.id))
@@ -2645,6 +2997,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         selectedItemId: s.selectedItemId,
         label: moveReceipt(lane, receiptPlace(item, s)),
         statusRevert: plan ? { id, plan } : undefined,
+        cascadeRevert: cascade ? cascade.catch(() => []) : undefined,
       },
     }));
     if (!write) return;
@@ -2659,6 +3012,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return;
     }
     await get().refreshItem(id);
+    if (cascade) {
+      const changes = await cascade.catch(() => [] as CascadeChange[]);
+      const mine = new Set(get().items.map((i) => i.id));
+      await Promise.all(
+        changes.filter((c) => mine.has(c.task_id)).map((c) => get().refreshItem(c.task_id)),
+      );
+    }
   },
 
   setStage: async (id, stage, opts) => {
@@ -3264,6 +3624,37 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (result === "closed") closedAgain.add(statusRevert.id);
     });
     const after = (write: () => Promise<unknown>) => sync(statusFirst.then(write));
+    // D-PM-38 (S5) — the subtasks a complete closed with the parent go back
+    // too, each to its EXACT prior status, after the parent's own status and
+    // only while each still holds the status the cascade set (If-Match).
+    const cascadeRevert = snap.cascadeRevert;
+    if (cascadeRevert) {
+      after(() =>
+        cascadeRevert
+          .then((changes) =>
+            revertCascade(changes, {
+              // ⚠️ The PROJECT door (`load_visible_task`), not `lensGetItem`.
+              // The cascade closes subtasks that are not mine (unassigned, or
+              // a colleague's), and `/my/tasks/{id}` answers 404 for those.
+              read: async (taskId) => {
+                const now = await projectsApi.task(taskId);
+                return { status_id: now.status_id, updated_at: now.updated_at ?? null };
+              },
+              write: (taskId, prior, ifMatch) =>
+                lensSetStatusId(taskId, prior, ifMatch ? { ifMatch } : undefined),
+            }).then((outcome) => {
+              const note = revertSummary(outcome);
+              if (note) get().reportSyncFailure(note);
+              const mine = new Set(get().items.map((i) => i.id));
+              return Promise.all(
+                changes
+                  .filter((c) => mine.has(c.task_id))
+                  .map((c) => get().refreshItem(c.task_id)),
+              );
+            }),
+          ),
+      );
+    }
     if (removedIds?.length) {
       // S6g — a board task removed from my lists comes back as my overlay
       // said before. An unstated disposition (an untriaged row) is CLEARED,

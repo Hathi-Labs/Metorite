@@ -23,7 +23,16 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
+from gateway.routes.projects.cascade import (
+    archive_subtree,
+    complete_subtree,
+    emit_all,
+    load_subtree,
+    movable_subtree,
+    subtree_privacy_refusals,
+)
 from gateway.routes.projects.core import (
+    COMPLETED_CATEGORY,
     DIRECTIONS,
     TASK_SORTS,
     TASK_SOURCES,
@@ -124,6 +133,12 @@ class MoveTask(BaseModel):
     #: worse than either failure alone: a task promoted to a team project,
     #: visible to everyone, owned by nobody. `None` leaves assignees untouched.
     assignees: list[str] | None = None
+    #: D-PM-38 decision 4 (S5). Carry every descendant to the new project too,
+    #: each remapped into the destination's set by this same seam. FALSE by
+    #: default, so an old caller, the chat tools and the organize door move
+    #: one task. The move dialogs send true, because their box is ticked. It
+    #: means something only when ``project_id`` changes.
+    include_subtasks: bool = False
 
 
 class AssigneesIn(BaseModel):
@@ -442,6 +457,7 @@ async def patch_task(
     task_id: str, payload: TaskIn,
     user: UserContext = Depends(get_current_user),
     if_match: str | None = Header(None, alias="If-Match"),
+    include_subtasks: bool = False,
 ) -> dict:
     """Update a task. A body that moves ``status_id`` is a status TRANSITION.
 
@@ -450,6 +466,13 @@ async def patch_task(
     the transition owes ``completed_at`` and a timeline entry, and a PATCH that
     writes only the column would look correct in the UI while emptying the
     timeline (the CRM's finding, restated here because the shape is identical).
+
+    D-PM-38 decision 2 (S5). ``?include_subtasks=true`` on a move INTO a
+    ``done`` lane also completes every open descendant, each in its own set
+    (``cascade.complete_subtree``). The default is false, so an old caller
+    closes this task only. A move into ``cancelled`` never cascades: nobody
+    asked to cancel the children. The reply then carries
+    ``subtasks_completed`` and ``subtask_changes``, the Undo record.
     """
     values = clean_payload(payload)
     validate_choice(values.get("source"), TASK_SOURCES, "source")
@@ -517,11 +540,18 @@ async def patch_task(
                     db, created_by=actor(user), task_id=task_id, changes=changes,
                 )
         moved = None
+        cascade = None
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
             )
             after = moved["row"]
+            # In the SAME transaction as the parent's own move, so a refused
+            # cascade (a set with no Done status) leaves the parent open too.
+            if include_subtasks and moved["to"].category == COMPLETED_CATEGORY:
+                cascade = await complete_subtree(
+                    db, vis, task_id, by=actor(user),
+                )
 
         if values or moved is not None:
             # WS-27v — editing a task subscribes the editor (idempotent). Only
@@ -546,6 +576,9 @@ async def patch_task(
             )
 
         result = row_to_dict(after, TaskModel)
+        if include_subtasks:
+            result["subtasks_completed"] = len(cascade.ids) if cascade else 0
+            result["subtask_changes"] = cascade.changes if cascade else []
 
     await emit("pm.task.updated", {"task_id": task_id})
     if moved is not None:
@@ -554,11 +587,14 @@ async def patch_task(
             "from": moved["from"].name, "to": moved["to"].name,
             "to_category": moved["to"].category,
         })
+    if cascade is not None:
+        await emit_all(cascade.events)
     return result
 
 
 async def _cross_root_values(
     db: Any, task: Any, new_root: str, answers: dict[str, Any] | None,
+    field_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """What a task's row owes when its ROOT changes: ``(values, dropped)``.
 
@@ -576,9 +612,10 @@ async def _cross_root_values(
     refused on this path and accepted on the bulk one. Checked BEFORE any
     value is written, so a refusal leaves the task exactly where it was.
     """
-    source_defs = await load_definitions(db, str(task.root_project_id))
     dest_defs = await load_definitions(db, new_root)
-    field_map, _orphans = resolve_field_map(source_defs, dest_defs)
+    if field_map is None:
+        source_defs = await load_definitions(db, str(task.root_project_id))
+        field_map, _orphans = resolve_field_map(source_defs, dest_defs)
     landed, dropped = await land_custom_fields(
         db, task, dest_root=new_root, field_map=field_map,
         dest_defs=dest_defs, answers=answers,
@@ -606,6 +643,7 @@ async def _cross_root_values(
 
 async def move_task_in(
     db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
+    field_map: dict[str, str] | None = None,
 ) -> dict:
     """The body of ``POST /tasks/{id}/move``, inside a caller's transaction.
 
@@ -617,12 +655,19 @@ async def move_task_in(
 
     ``task`` is the row ``load_visible_task`` returned. ``by`` is the actor.
     Returns the wire task with ``notified`` and ``skipped`` attached.
+
+    ``field_map`` is the map the bulk move's card showed for this task's root
+    (D-PM-38, S5). Absent, the automatic map for the task's own root applies,
+    as it always did.
     """
     task_id = str(task.id)
     values: dict[str, Any] = {}
     #: Values that had no field in the destination (D-PM-29). Written to
     #: the timeline after the move, with their values, by `record_drops`.
     dropped: dict[str, Any] = {}
+    #: D-PM-38 decision 4 — the descendants this move takes along, read and
+    #: checked BEFORE any write. `None` when the caller did not ask.
+    subtree: list[Any] | None = None
 
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
@@ -649,6 +694,18 @@ async def move_task_in(
         # a caller who cannot see the destination still gets 404 and never
         # learns from a 422 that it exists (R5: 404, never 403).
         await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        if payload.include_subtasks:
+            # A 409 when any descendant is hidden, before anything is written:
+            # moving only the visible ones would split the tree unseen.
+            subtree = movable_subtree(await load_subtree(db, vis, task_id))
+            # D62 for each subtask, BEFORE any write, and naming the subtask:
+            # the recursive call below would refuse it too, but its message
+            # reads as if the parent were the problem (review of #493).
+            refused = await subtree_privacy_refusals(
+                db, subtree, str(payload.project_id),
+            )
+            if refused:
+                raise HTTPException(status_code=422, detail=refused[0]["reason"])
         new_root = await root_project_id(db, str(payload.project_id))
         # ⚠️ Tracked SEPARATELY from the root, because since migration 196
         # the set can change while the root does not: moving a task from a
@@ -670,7 +727,7 @@ async def move_task_in(
             ))
         if new_root != str(task.root_project_id):
             crossed, dropped = await _cross_root_values(
-                db, task, new_root, payload.custom_fields,
+                db, task, new_root, payload.custom_fields, field_map,
             )
             values.update(crossed)
 
@@ -687,7 +744,11 @@ async def move_task_in(
         )
 
     if not values and payload.assignees is None:
-        return row_to_dict(task, TaskModel)
+        unchanged = row_to_dict(task, TaskModel)
+        if payload.include_subtasks:
+            unchanged["subtasks_moved"] = 0
+            unchanged["subtask_ids"] = []
+        return unchanged
 
     row = await update_row(db, "pm_tasks", task_id, values) if values else task
     # WS-27ae / P-27 — SUBTASK MEMBERSHIP is a satellite of the PARENT, and
@@ -766,9 +827,36 @@ async def move_task_in(
                 task_id=task_id, actor_id=by,
             )
 
+    # ── The subtree, in the SAME transaction (D-PM-38 decision 4) ───────
+    #
+    # Each descendant goes through THIS seam, one at a time, so each one gets
+    # the D62 refusal, its own status remap (its set may differ from the
+    # parent's), the required-field check and the drop record. A refusal on
+    # any of them rolls the whole move back, parent included: no split tree.
+    # The member's answers for the destination's required fields apply to
+    # each, because the dialog asked once for the move. Assignees do not:
+    # "who owns it" was asked about the parent.
+    moved_ids: list[str] = []
+    if subtree is not None:
+        for child in subtree:
+            if str(child.project_id) == str(payload.project_id):
+                continue
+            await move_task_in(
+                db, vis, child,
+                MoveTask(
+                    project_id=str(payload.project_id),
+                    custom_fields=payload.custom_fields,
+                ),
+                by=by,
+            )
+            moved_ids.append(str(child.id))
+
     result = row_to_dict(row, TaskModel)
     result["notified"] = notified["notified"]
     result["skipped"] = notified["skipped"]
+    if payload.include_subtasks:
+        result["subtasks_moved"] = len(moved_ids)
+        result["subtask_ids"] = moved_ids
     return result
 
 
@@ -792,6 +880,9 @@ async def move_task(
         result = await move_task_in(db, vis, task, payload, by=actor(user))
 
     await emit("pm.task.moved", {"task_id": task_id})
+    # D-PM-38 — one event per task the move took along, like the bulk move.
+    for child_id in result.get("subtask_ids", []):
+        await emit("pm.task.moved", {"task_id": child_id})
     return result
 
 
@@ -884,6 +975,7 @@ async def delete_task(
 @router.post("/tasks/{task_id}/archive")
 async def archive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    include_subtasks: bool = False,
 ) -> dict:
     """Archive one task, from ANY status.
 
@@ -899,6 +991,12 @@ async def archive_task(
 
     The activity row names the lane the task sat in, because the status no
     longer implies the outcome.
+
+    D-PM-38 decision 4 (S5). ``?include_subtasks=true`` shelves every visible
+    descendant too (``cascade.archive_subtree``), and the reply carries
+    ``subtasks_archived`` and ``subtask_ids``. The default is false. Unarchive
+    does NOT cascade: the client's Undo restores ``subtask_ids``, which are
+    exactly the tasks this call shelved.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -906,23 +1004,38 @@ async def archive_task(
         status = await require_row(
             db, "pm_task_statuses", str(task.status_id), "Status",
         )
-        if getattr(task, "archived_at", None) is not None:
-            # Already archived — idempotent, the double-click answer.
-            return row_to_dict(task, TaskModel)
-        row = await update_row(db, "pm_tasks", task_id, {"archived_at": now()})
-        await record_activity(
-            db, activity_type="system", created_by=actor(user),
-            task_id=task_id,
-            # Names the lane, because the status no longer implies the
-            # outcome. See `archive_note`.
-            body=archive_note(
-                getattr(status, "name", None),
-                str(getattr(status, "category", "") or ""),
-            ),
+        was_archived = getattr(task, "archived_at", None) is not None
+        row = task
+        # Already archived — idempotent, the double-click answer. The
+        # subtasks are still asked about, so a second click with the box
+        # ticked shelves children the first click left out.
+        if not was_archived:
+            row = await update_row(
+                db, "pm_tasks", task_id, {"archived_at": now()},
+            )
+            await record_activity(
+                db, activity_type="system", created_by=actor(user),
+                task_id=task_id,
+                # Names the lane, because the status no longer implies the
+                # outcome. See `archive_note`.
+                body=archive_note(
+                    getattr(status, "name", None),
+                    str(getattr(status, "category", "") or ""),
+                ),
+            )
+        cascade = (
+            await archive_subtree(db, vis, task_id, by=actor(user))
+            if include_subtasks else None
         )
         result = row_to_dict(row, TaskModel)
+        if cascade is not None:
+            result["subtasks_archived"] = len(cascade.ids)
+            result["subtask_ids"] = cascade.ids
 
-    await emit("pm.task.archived", {"task_id": task_id})
+    if not was_archived:
+        await emit("pm.task.archived", {"task_id": task_id})
+    if cascade is not None:
+        await emit_all(cascade.events)
     return result
 
 
@@ -937,6 +1050,11 @@ async def unarchive_task(
     prevent. Without this endpoint an archive would be one-way: nothing else
     writes ``archived_at``, and the PATCH surface deliberately does not accept
     it.
+
+    ⚠️ **No subtask cascade in this direction** (D-PM-38, S5). A child can be
+    on the shelf for its own reason, and nothing on the row says whether its
+    parent took it there. The client restores the exact ids an archive
+    cascade reported, and nothing else.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)

@@ -85,7 +85,12 @@ export function PromoteDialog({
   // are the baseline "unchanged" is judged against.
   const [initialAssignees] = useState(() => ownerIds(item));
 
-  function confirm(destinationId: string, dropped: string[] | null, answers?: PromoteAnswers) {
+  function confirm(
+    destinationId: string,
+    dropped: string[] | null,
+    answers?: PromoteAnswers,
+    includeSubtasks?: boolean,
+  ) {
     // The ONE builder both doors use (`promote.test.ts` holds Clarify to it).
     const plan = promotePlan({
       destinationId,
@@ -93,6 +98,8 @@ export function PromoteDialog({
       draft: answers?.draft ?? {},
       assignees: answers?.assignees ?? [],
       initialAssignees: answers?.initialAssignees ?? [],
+      // D-PM-38 decision 4 — the dialog's box, ticked by default.
+      includeSubtasks: Boolean(includeSubtasks),
     });
     if (!plan.ok) {
       // The card holds the button while a field is blank, so this is the
@@ -126,8 +133,8 @@ export function PromoteDialog({
       initialDestination={initialDestination ?? null}
       promote={{ initialAssignees, due: item.dueAt ?? null }}
       onClose={onClose}
-      onConfirm={(destinationId, _statusMap, dropped, answers) =>
-        confirm(destinationId, dropped, answers)
+      onConfirm={(destinationId, _statusMap, dropped, answers, includeSubtasks) =>
+        confirm(destinationId, dropped, answers, includeSubtasks)
       }
     />
   );

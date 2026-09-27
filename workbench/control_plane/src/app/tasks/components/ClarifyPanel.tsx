@@ -610,6 +610,8 @@ export function ClarifyPanel({
         const promoted = {
           ...decision,
           customFields: plan.request.customFields,
+          // D-PM-38 decision 4 — PromoteFields' ticked "Include N subtasks".
+          ...(promoteState?.includeSubtasks ? { includeSubtasks: true } : {}),
         } as ClarifyDecision;
         deferClarify(
           item.id,

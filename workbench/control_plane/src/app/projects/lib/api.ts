@@ -57,6 +57,24 @@ export interface MoveRequest {
    * shown set lets the server answer 409 instead.
    */
   accepted_drops?: string[];
+  /**
+   * D-PM-38 decision 4 (S5). Take every descendant along. The gateway's
+   * default is false; the Move dialog sends true because its box is ticked.
+   */
+  include_subtasks?: boolean;
+}
+
+/**
+ * D-PM-38 (S5) — what a door that took `include_subtasks` reports. Present
+ * only when the caller sent the flag. `subtask_changes` is each child's
+ * status before and after, which is what Undo puts back (D79).
+ */
+export interface CascadeReport {
+  subtasks_completed?: number;
+  subtasks_archived?: number;
+  subtasks_moved?: number;
+  subtask_ids?: string[];
+  subtask_changes?: import("@/lib/subtaskCascade").CascadeChange[];
 }
 
 export interface MoveMapRow<T> {
@@ -99,9 +117,22 @@ export interface MovePlan {
   >;
   types: MoveMapRow<{ id: string; name?: string | null }>[];
   tags: { carried: string[]; unregistered: string[] };
+  /**
+   * D-PM-38 (S5) — the descendants a move WITH its subtasks would take, at
+   * every depth, not counting the selection. `hidden` is how many the member
+   * cannot see: the move is refused (409) with the box ticked. Absent on an
+   * older gateway, which the card reads as none.
+   */
+  subtasks?: {
+    count: number;
+    /** Sent only with `include_subtasks` (review of #493). */
+    hidden: number;
+    /** D62: carried subtasks that cannot move there, each named. */
+    refused?: { task_id: string; ref: string; reason: string }[];
+  };
 }
 
-export interface MoveResult {
+export interface MoveResult extends CascadeReport {
   moved: number;
   task_ids: string[];
   destination_project_id: string;
@@ -993,6 +1024,11 @@ export interface TaskRow {
   completed_at?: string | null;
   tags?: string[];
   created_at?: string | null;
+  /**
+   * The row version `TaskModel` sends. An If-Match write names it, so a
+   * write after somebody else's answers 412 (D-PM-20, D79 Undo).
+   */
+  updated_at?: string | null;
   assignees?: string[];
   view_position?: number | null;
   view_group_key?: string | null;
@@ -1799,11 +1835,25 @@ export const projectsApi = {
       `people/names?emails=${encodeURIComponent(emails.join(","))}`,
     ),
 
-  patchTask: (taskId: string, payload: Record<string, unknown>) =>
-    call<TaskRow>(`tasks/${taskId}`, {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }),
+  /**
+   * `opts.includeSubtasks` (D-PM-38 S5): a move INTO a done lane completes
+   * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
+   * read, so a write that lands after somebody else's answers 412 (D79,
+   * Undo). Both are optional and absent means the old request exactly.
+   */
+  patchTask: (
+    taskId: string,
+    payload: Record<string, unknown>,
+    opts?: { includeSubtasks?: boolean; ifMatch?: string | null },
+  ) =>
+    call<TaskRow & CascadeReport>(
+      `tasks/${taskId}${opts?.includeSubtasks ? "?include_subtasks=true" : ""}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+        ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
+      },
+    ),
 
   /**
    * File a task out of every default list, board, calendar and search.
@@ -1817,8 +1867,11 @@ export const projectsApi = {
    * overdue, the forecast) while staying in the historical ones. That is
    * correct for a shelf and is why the archive has a view of its own.
    */
-  archiveTask: (taskId: string) =>
-    call<TaskRow>(`tasks/${taskId}/archive`, { method: "POST" }),
+  archiveTask: (taskId: string, opts?: { includeSubtasks?: boolean }) =>
+    call<TaskRow & CascadeReport>(
+      `tasks/${taskId}/archive${opts?.includeSubtasks ? "?include_subtasks=true" : ""}`,
+      { method: "POST" },
+    ),
 
   /** Bring one back. No guard in this direction. */
   unarchiveTask: (taskId: string) =>
@@ -1930,13 +1983,15 @@ export const projectsApi = {
    * fact about that task, not a reason to fail the batch.
    */
   bulkEdit: (payload: Record<string, unknown>) =>
-    call<{
-      requested: number;
-      applied: number;
-      results: Array<{ task_id: string; changed: string[]; status?: string | null }>;
-      skipped: Array<{ task_id: string; reason: string }>;
-      failed: Array<{ task_id: string; reason: string }>;
-    }>("tasks/bulk", { method: "POST", body: JSON.stringify(payload) }),
+    call<
+      {
+        requested: number;
+        applied: number;
+        results: Array<{ task_id: string; changed: string[]; status?: string | null }>;
+        skipped: Array<{ task_id: string; reason: string }>;
+        failed: Array<{ task_id: string; reason: string }>;
+      } & CascadeReport
+    >("tasks/bulk", { method: "POST", body: JSON.stringify(payload) }),
 
   tags: (projectId: string) =>
     call<{ rows: TagRow[]; total: number }>(`nodes/${projectId}/tags`),

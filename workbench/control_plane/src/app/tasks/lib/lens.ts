@@ -60,6 +60,7 @@
 
 import { projectsCall } from "@/app/projects/lib/api";
 import type { ParentFact } from "@/lib/taskCard";
+import type { CascadeChange } from "@/lib/subtaskCascade";
 
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import { importanceFor, importantFromImportance } from "./priority";
@@ -747,6 +748,66 @@ export async function lensCompleteItem(id: string): Promise<MyTask> {
 }
 
 /**
+ * D-PM-38 decision 2 (S5) — tick a parent off WITH its open subtasks.
+ *
+ * `/complete?include_subtasks=true` closes each open descendant into the
+ * first Done status of its own set, in the same transaction. `changes` is
+ * each child's status before and after, which is what Undo puts back.
+ */
+export async function lensCompleteCascade(id: string): Promise<{
+  item: MyTask;
+  changes: CascadeChange[];
+  cascaded: number;
+}> {
+  const raw = await post(`tasks/${id}/complete?include_subtasks=true`);
+  return {
+    item: await lensGetItem(id),
+    changes: cascadeChanges(raw),
+    cascaded: Number(raw?.subtasks_completed ?? 0),
+  };
+}
+
+/**
+ * D-PM-38 decision 2 (S5) — a status pick into a Done status that is not
+ * the first one, WITH the open subtasks. The PATCH door takes the flag too.
+ */
+export async function lensSetStatusCascade(
+  taskId: string,
+  statusId: string,
+): Promise<CascadeChange[]> {
+  const raw = await projectsCall<Raw>(`tasks/${taskId}?include_subtasks=true`, {
+    method: "PATCH",
+    body: JSON.stringify({ status_id: statusId }),
+  });
+  return cascadeChanges(raw);
+}
+
+/**
+ * D-PM-38 decision 4 (S5) — archive WITH the subtasks. Answers the ids the
+ * gateway shelved, so Undo restores exactly those: unarchive does not
+ * cascade.
+ */
+export async function lensArchiveCascade(ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  const raw = await post("tasks/bulk", {
+    task_ids: ids,
+    action: "archive",
+    include_subtasks: true,
+  });
+  return Array.isArray(raw?.subtask_ids) ? raw.subtask_ids.map(String) : [];
+}
+
+/** The gateway's Undo record, read defensively: an older gateway sends none. */
+function cascadeChanges(raw: Raw | null | undefined): CascadeChange[] {
+  const rows = Array.isArray(raw?.subtask_changes) ? raw.subtask_changes : [];
+  return rows.map((row: Raw) => ({
+    task_id: String(row.task_id),
+    from_status_id: String(row.from_status_id),
+    to_status_id: String(row.to_status_id),
+  }));
+}
+
+/**
  * Soft-delete, with the undo intact.
  *
  * ⚠️ Deliberately NOT `DELETE /projects/tasks/{id}`, which is a HARD delete
@@ -979,6 +1040,11 @@ export interface LensMoveRequest {
   customFields?: Record<string, unknown>;
   /** Assignees to set atomically with the move. `undefined` leaves them alone. */
   assignees?: string[];
+  /**
+   * D-PM-38 decision 4 (S5) — take the subtasks along, in the same
+   * transaction. The Move dialog's box is ticked by default.
+   */
+  includeSubtasks?: boolean;
 }
 
 /**
@@ -1029,6 +1095,7 @@ export async function lensMoveTask(
     // untouched, an empty array clears them. Collapsing the two would make
     // "promote without touching who owns it" impossible to express.
     ...(req.assignees === undefined ? {} : { assignees: req.assignees }),
+    ...(req.includeSubtasks ? { include_subtasks: true } : {}),
   });
 }
 

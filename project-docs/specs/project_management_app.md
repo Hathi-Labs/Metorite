@@ -8115,6 +8115,151 @@ muted steps follow them at the same indent.
 - A drop between nested rows ranks against the drawn neighbours. A step's
   own rank then sits between two tasks that are not its siblings.
 
+### 11.41 D-PM-38 — the build record for Subtasks S5 (2026-09-27)
+
+**The rule is in §12.9.** S5 builds owner decisions 2 and 4: complete asks
+about open subtasks, and move and archive take the subtree along. It is the
+last slice of D-PM-38.
+
+No migration. The gateway change is additive: one option on seven doors.
+
+| Item | Where | Fence |
+|---|---|---|
+| The walk: every descendant, top down, with `visible` as a column | `cascade.load_subtree` | `test_subtasks_s5.py`, live checks (a) and (b) |
+| Complete: each open descendant into the first Done status of its own set | `cascade.complete_subtree` | `test_subtasks_s5.py`, live check (c) |
+| Archive: each visible descendant goes on the shelf | `cascade.archive_subtree` | `test_subtasks_s5.py`, live check (e) |
+| Move: each descendant through the one move seam, or a 409 | `tasks.move_task_in`, `cascade.movable_subtree` | `test_subtasks_s5.py`, live checks (a) and (b) |
+| `include_subtasks` on complete, PATCH, archive, the single move, the bulk move, bulk edit and organize | `personal.py`, `tasks.py`, `move.py`, `bulk.py` | `test_subtasks_s5.py` |
+| The move preview counts the descendants, and the hidden ones | `move._plan` `subtasks` | live check (a) |
+| The words, the defaults, the bulk line and the Undo rule | `lib/subtaskCascade.ts` | `subtaskCascade.test.ts` |
+| The complete prompt and the ticked box | `components/SubtaskCascade.tsx`, `ConfirmDialog` | `subtaskCascade.test.ts`, `ConfirmDialog.test.ts` |
+| Every Projects door asks: the tick, the status menus, a drag, the table cell | `projects/lib/cascadeAsk.ts`, `useSubtaskComplete.tsx` | `cascadeAsk.test.ts` |
+| My Tasks asks, and Undo reverses the cascade | `taskStore` `subtaskPrompt`, `cascadeRevert` | `tasks/lib/subtaskCascade.test.ts` |
+| The chat tools keep the default, and name the option | `skill_my_tasks.core`, `skill_projects.writes`, `guarded` | `test_subtasks_s5.py` |
+
+The live checks are `tests/live/live_subtask_lifecycle.py`, on a fresh
+database.
+
+**The review round (PR #493).**
+
+- **The My Tasks question has ONE host, in `AppShell`.** The store is global,
+  and Focus Mode and the Calendar complete tasks too. A host on the My Tasks
+  page alone left those gestures doing nothing. Fence: `subtaskCascade.test.ts`.
+- **My Tasks' Undo reads each subtask through the project door.** The cascade
+  closes subtasks that are not mine, and `/my/tasks/{id}` answers 404 for
+  them. Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A move WITH subtasks shows what they cost.** The preview takes
+  `include_subtasks`, and the carried subtasks join the drops, the required
+  fields, the types and the tags. So `accept_drops` gates a subtask's loss,
+  and a missing required field refuses the move before any write (D-PM-29).
+  Each subtask lands by the map of its own root, and the apply hands that map
+  to `move_task_in`. Fences: `test_subtasks_s5.py`, live check (g).
+- **Complete runs the cascade before the parent's completion.** The parent's
+  event goes out inside the transaction, so a refused cascade must come
+  first. Fence: `test_subtasks_s5.py`.
+- **A drop into Done writes the card's slot before the board reloads.**
+
+**Why the server default is false on every door.** The owner's defaults are
+the dialog's defaults. The prompt defaults to "Only this task", and the move
+and archive dialogs tick their box. A server default of true would change what the
+chat tools, the API and every old caller do, with no dialog to show it. So
+the gateway takes the flag and the UI sends it. The chat tools send nothing,
+and their descriptions now say that the option exists.
+
+**What each cascade touches.**
+
+- Complete closes each descendant that is open, visible to the actor and not
+  archived. A child in another set lands in that set's first Done status,
+  through `load_default_status`, the one resolver (D79). A recurring child
+  spawns its next instance, because the cascade uses
+  `apply_status_transition`.
+- A set with no Done status refuses the whole cascade with a 409. The parent
+  then stays open too. "Only this task" still works.
+- A move into `cancelled` never cascades. Nobody asked to cancel the children.
+- Archive shelves each visible descendant. The timeline row names the lane,
+  as a single archive does, and `meta.cascade_from` names the parent.
+- A move takes every descendant to the new project. Each one goes through
+  `move_task_in`, so each gets the D62 refusal, its own status remap, the
+  required-field check and its drop record. One refusal rolls the whole move
+  back.
+
+**A hidden descendant refuses the move (409).** The member asked to take the
+subtasks along. Moving only the visible ones would split the tree, and
+nothing on screen would say so. So the gateway refuses before any write, and
+the message names the count. The count tells the member that hidden subtasks
+exist, and nothing else about them. The dialog reads the same count from the
+preview, and it holds the Move button while the member keeps the box ticked.
+
+Complete and archive do not refuse. They skip a hidden child, because a
+closed or shelved parent with an open child is a legal state (WS-27p).
+
+**Unarchive does not cascade.** A child can be on the shelf for its own
+reason, and nothing on the row says whether its parent took it there. The
+archive door reports `subtask_ids`, and Undo restores exactly those.
+
+**What Undo covers.**
+
+- Complete: the parent and each subtask the cascade closed. Each goes back to
+  its exact prior status, and only while it still holds the status the
+  cascade set. The write carries If-Match, so a newer move answers 412 and
+  stays. The toast says how many stayed. This is the rule My Tasks' single
+  Undo already uses (D79), and `revertCascade` applies it per task.
+- Archive: the task and exactly the ids the gateway shelved.
+- Move: no Undo, as before S5. A move had none in Projects, and a promote
+  from My Tasks has none after it is sent (D62).
+- A recurring subtask's next instance stays after Undo. The single Mark done
+  has the same limit.
+- The Projects bulk bar has no Undo, as before S5. The My Tasks bulk Done
+  has its Undo, and with "Complete all" that Undo puts back each subtask too.
+
+**Where the prompt asks.** Projects asks on the board's tick, its status menu,
+a drag into a Done column, the panel's status menu and the table's status
+cell. My Tasks asks on every gesture that reaches Mark done, the bulk Done
+included, and on a status pick into a later Done status. The count is the
+chip: the open children the reader can see. The receipt counts what the
+server closed, at every depth.
+
+**"Only this task" carries the weight.** The owner made it the default, so it
+is the solid main button, it has focus, and Escape means it. "Complete
+all" is the outline button. `ConfirmDialog` takes `emphasis="cancel"` for a
+question whose default is no. The move and archive box is different: there
+the ticked box IS the owner's default.
+
+**The bulk bars** say "includes K parents with M open subtasks". The app asks
+the choice once for the batch: the complete prompt for a Done status, and the
+ticked box for Archive and Move.
+
+**The second review round (PR #493).**
+
+- **The preview runs D62 on each carried subtask.** A personal parent can
+  carry a subtask that lives in a team project. The preview names that
+  subtask in `subtasks.refused`, and the dialog holds Move and says why while
+  the member keeps the box ticked. Both moves refuse it before any write, and the message
+  names the subtask, not the parent. Fences: `test_subtasks_s5.py`, live
+  check (h).
+- **The preview sends `subtasks.hidden` only with `include_subtasks`.** The
+  count says that hidden tasks exist, so it appears only when it changes the
+  act. Fence: `test_subtasks_s5.py`.
+- **The Projects Undo reads the parent's prior status from the server**, just
+  before the write (`cascadeAsk.writeCompletion`), as My Tasks does (D79).
+  The row on the board can be older than a teammate's move. Fence:
+  `cascadeAsk.test.ts`.
+- **A My Tasks bulk Done asks once for the batch**, with the bulk line.
+  Fence: `tasks/lib/subtaskCascade.test.ts`.
+- **A redo of an archive restores what THAT archive shelved** on the next
+  Undo.
+
+**Known gaps, not fixed here.**
+
+- The prompt counts the direct children from the chip. A closed child with
+  an open grandchild does not make the parent ask.
+- A bulk move remaps each descendant's STATUS by the automatic rule. The
+  member's status overrides name the selection's lanes only.
+- The move preview reads the subtree once per selected task.
+- A board drop that moves two axes at once does not ask.
+- An organize that promotes WITH subtasks names only the parent in the card's
+  receipt.
+
 ---
 
 ## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)
@@ -8400,12 +8545,18 @@ them.**
 
 1. **The board defaults to Separate.**
 2. **A member completes a parent that has open subtasks: ask, and do not
-   block.** The default completes this task only. Slice S5 builds it.
+   block.** The default completes this task only. **BUILT in S5** (§11.41).
 3. **A filter matches a subtask but not its parent: show the subtask alone.**
    It carries its "↳ Parent" line. The view shows no greyed context rows.
 4. **A member moves or archives a parent: its subtasks go with it by
-   default.** A pre-ticked "Include N subtasks" box sets this. Slice S5 builds
-   it.
+   default.** A pre-ticked "Include N subtasks" box sets this. **BUILT in S5**
+   (§11.41).
+
+**How S5 builds decisions 2 and 4.** Every lifecycle door takes
+`include_subtasks`, and the gateway default is false on each one. The UI
+sends true for a ticked box or for "Complete all". The gateway refuses (409)
+a move with the box ticked when any descendant is hidden from the actor, so
+no tree splits. Unarchive does not cascade. §11.41 is the build record.
 
 **The other defaults are ENGINEERING defaults.** They come from the approved
 design, and a later decision may change them. They are not owner decisions.
