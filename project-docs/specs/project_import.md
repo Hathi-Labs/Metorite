@@ -1,6 +1,7 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — spec only, nothing built.** Owner directive, 2026-09-26.
+**Status: ACTIVE — I-1 built 2026-09-27, the rest is spec.** Owner
+directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
 **WS-41**. This spec records **D80**, which amends **D52.2**.
@@ -641,7 +642,9 @@ look (`DESIGN_SYSTEM.md`):
 | The importer opens no network connection | `tests/unit/test_import_no_network.py` — no module under `projects/importer/` imports `httpx`, `requests`, `aiohttp`, `urllib.request` or `socket` |
 | One write path into `pm_tasks` | `tests/unit/test_pm_task_insert_sites.py` — the literal `INSERT INTO pm_tasks` appears only in the allow-listed helper files |
 | No connector | `tests/unit/test_no_task_provider_connectors.py` stays green, unchanged |
-| The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/fixtures/import/clickup/` (P-1) |
+| The adapter reads real files | `tests/unit/test_import_clickup_adapter.py` over `tests/unit/import_fixtures/clickup_workspace.csv` (P-1). The fixture sits beside its test, because `tests/fixtures/` holds only fixtures that two languages read |
+| The fixture holds no real data | `test_the_fixture_holds_no_real_contact_data` in the same file. `scripts/import_scrub_clickup.py` refuses to copy a column it has no rule for |
+| Every adapter decodes and reads CSV the same way | `tests/unit/test_import_text.py` |
 | The bundle holds `None`, never a guess | `tests/unit/test_import_bundle.py` |
 | The plan writes nothing | `tests/unit/test_import_plan.py` — a plan run against a session that refuses every write |
 | Side effects stay off | `tests/unit/test_import_quiet.py` — no notification, no emit, one activity per project |
@@ -656,7 +659,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | Slice | Delivers | Done when |
 |---|---|---|
 | **P-1** 🔴 OWNER | One real ClickUp workspace export — ✅ **received 2026-09-27** (§4.1.1). One "All columns" view export — still owed, for I-5 | The real file stays outside the repo. I-1 commits a scrubbed fixture, which a script derives from the real file: every name, email, text, URL and id is replaced, and every shape and every count in §4.1.1 is kept |
-| **I-1** | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row |
+| **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** | Migration for `pm_import_runs` and the origin index. Upload, get and mapping routes. The plan. The D80 docstring and `CLAUDE.md` edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes |
 | **I-3** | The writer, the batches, resume, the quiet flag, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill) |
