@@ -13,6 +13,7 @@ import {
   DRAG_TYPE,
 } from "./shared";
 import { ContextMenu } from "@/components/ContextMenu";
+import { ParentCrumb } from "@/components/TaskMeta";
 
 
 // ── Unscheduled rail ─────────────────────────────────────────────────────────
@@ -161,6 +162,8 @@ export function UnscheduledRail({
                         : "border-border bg-background/60 hover:border-primary/40",
                 ].join(" ")}
               >
+                {/* D-PM-38 S4 — a step names its parent, the shared crumb. */}
+                <ParentCrumb parent={t.parent} className="mb-0.5" />
                 <div className="flex items-start gap-1">
                   <span className="min-w-0 flex-1 truncate text-left text-xs text-foreground">
                     {t.id === oneThingId && (

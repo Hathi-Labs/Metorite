@@ -2,6 +2,7 @@
 
 import { CATEGORY_LABEL } from "@/lib/statusCategory";
 import Icon from "@/components/Icon";
+import { NestedRowMark, ParentCrumb } from "@/components/TaskMeta";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { QuickAdd } from "@/components/QuickAdd";
 import { useFlash } from "@/components/useFlash";
@@ -18,7 +19,6 @@ import { useTaskStore } from "../lib/taskStore";
 import { TaskCard } from "./TaskCard";
 import {
   applySort,
-  byManualOrder,
   groupItems,
   type GroupBy,
   type TaskGroup,
@@ -39,6 +39,12 @@ import {
   type ColumnDef,
 } from "../lib/columns";
 import { quickAddPrefill } from "../lib/quickAdd";
+import {
+  myTaskRows,
+  otherSteps,
+  stepsNotShown,
+  type MyTaskRow,
+} from "../lib/subtaskRows";
 import { ColumnHeader, ColumnCell } from "./ListColumns";
 import { StatusPill } from "./StatusPill";
 
@@ -171,6 +177,19 @@ export function TaskListGrouped({
     return m;
   }, [items, groups, groupOf, sort, isLens, view, lensGroups]);
 
+  // D-PM-38 (Subtasks S4) — the rows each group DRAWS: every subtask once,
+  // indented under its parent when the parent is in the same group, and at
+  // the top level with its crumb when it is not (`lib/subtaskRows`). The
+  // cursor, the drop gaps and the render all walk this order.
+  const drawnByGroup = useMemo(() => {
+    const m = new Map<string, MyTaskRow[]>();
+    for (const [k, arr] of byGroup) m.set(k, myTaskRows(arr));
+    return m;
+  }, [byGroup]);
+  // Every task the list draws, in any group. A parent's expander lists only
+  // the steps that are NOT here.
+  const shownIds = useMemo(() => new Set(items.map((i) => i.id)), [items]);
+
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggle = (k: string) =>
     setCollapsed((c) => {
@@ -191,10 +210,10 @@ export function TaskListGrouped({
     const out: string[] = [];
     for (const g of groups) {
       if (collapsed.has(g.key)) continue;
-      for (const i of byGroup.get(g.key) ?? []) out.push(i.id);
+      for (const r of drawnByGroup.get(g.key) ?? []) out.push(r.item.id);
     }
     return out;
-  }, [groups, byGroup, collapsed]);
+  }, [groups, drawnByGroup, collapsed]);
 
   // Clamped at READ time rather than synced by an effect: the rows shrink
   // under the cursor on every reload, and a state write per reload is exactly
@@ -247,7 +266,9 @@ export function TaskListGrouped({
     const id = dragId;
     setDragId(null);
     if (!id || !manual) return;
-    const dest = byManualOrder(byGroup.get(groupKey) ?? []);
+    // The gap index counts DRAWN rows, so the neighbours are the drawn order
+    // (a nested step sits under its parent, not at its own rank).
+    const dest = (drawnByGroup.get(groupKey) ?? []).map((r) => r.item);
     // A drop across groups moves the task into that STAGE (`setStage`, D79):
     // one status there writes at once, two or more ask, anchored to the row.
     // The rank lands just before the status write, and not at all when the
@@ -297,6 +318,7 @@ export function TaskListGrouped({
         // whole-list world, and shadowing it here is how the cursor ring ends
         // up comparing against the wrong array.
         const groupRows = byGroup.get(g.key) ?? [];
+        const drawn = drawnByGroup.get(g.key) ?? [];
         const isCollapsed = collapsed.has(g.key);
         const showHeader = grouped;
         // Status groups take their category's accent; a lens grouping uses a
@@ -368,10 +390,14 @@ export function TaskListGrouped({
             )}
             {!isCollapsed && (
               <div>
-                {groupRows.map((item, idx) => (
+                {drawn.map(({ item, depth, crumb }, idx) => (
                   <DraggableRow
                     key={item.id}
                     item={item}
+                    depth={depth}
+                    crumb={crumb}
+                    stepsHidden={stepsNotShown(item, items)}
+                    shownIds={shownIds}
                     manual={manual}
                     selected={selectedIds.has(item.id)}
                     onToggleSelected={(shift) => toggleSelected(item.id, shift, rows)}
@@ -447,6 +473,10 @@ export function TaskListGrouped({
 
 function DraggableRow({
   item,
+  depth,
+  crumb,
+  stepsHidden,
+  shownIds,
   manual,
   selected,
   onToggleSelected,
@@ -462,6 +492,14 @@ function DraggableRow({
   onDropGap,
 }: {
   item: MyTask;
+  /** D-PM-38 S4 — 0 at the top level, +1 under each parent on the list. */
+  depth: number;
+  /** Draws "↳ Parent": a subtask whose parent is not in this group. */
+  crumb: boolean;
+  /** How many of this task's steps are NOT on the list (the expander's). */
+  stepsHidden: number;
+  /** Every task the list draws, so the expander leaves them out. */
+  shownIds: ReadonlySet<string>;
   manual: boolean;
   selected: boolean;
   /** `shift` extends the selection from the anchor (`@/lib/selection`). */
@@ -482,11 +520,12 @@ function DraggableRow({
   onDragOverGap: () => void;
   onDropGap: () => void;
 }) {
-  // Jira/ClickUp-style nesting: a task with subtasks shows ONE row with an
-  // expand chevron + a progress count; expanding lazily loads and reveals the
-  // child subtasks (the actual next actions) indented beneath it.
+  // D-PM-38 (Subtasks S4) — my own steps are rows of their own, drawn under
+  // this one by the list. The expander is for the REST: steps that are not on
+  // the list (other people's, or mine in another view). It is offered only
+  // when there is one, and lists only those, so no step draws twice.
   const [expanded, setExpanded] = useState(false);
-  const hasSubtasks = (item.subtaskCount ?? 0) > 0;
+  const hasSubtasks = stepsHidden > 0;
 
   return (
     <div
@@ -557,7 +596,11 @@ function DraggableRow({
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              aria-label={expanded ? "Collapse subtasks" : "Expand subtasks"}
+              aria-label={
+                expanded
+                  ? "Hide the other subtasks"
+                  : `Show ${stepsHidden} other subtask${stepsHidden === 1 ? "" : "s"}`
+              }
               aria-expanded={expanded}
               className="tech-transition rounded p-0.5 text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
             >
@@ -573,10 +616,19 @@ function DraggableRow({
         {/* The row content is the OPEN affordance, always — it no longer turns
             into a selection toggle behind a mode. Selecting is the checkbox. */}
         <div className="min-w-0 flex-1">
-          <RowContent item={item} columns={columns} grid={grid} showStage={showStage} />
+          <RowContent
+            item={item}
+            depth={depth}
+            crumb={crumb}
+            columns={columns}
+            grid={grid}
+            showStage={showStage}
+          />
         </div>
       </div>
-      {hasSubtasks && expanded && <SubtaskRows parent={item} />}
+      {hasSubtasks && expanded && (
+        <SubtaskRows parent={item} depth={depth} shownIds={shownIds} />
+      )}
     </div>
   );
 }
@@ -587,26 +639,39 @@ function DraggableRow({
  *  does the project view (no columns). */
 function RowContent({
   item,
+  depth,
+  crumb,
   columns,
   grid,
   showStage,
 }: {
   item: MyTask;
+  depth: number;
+  crumb: boolean;
   columns: ColumnDef[];
   grid: string;
   showStage: boolean;
 }) {
   const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   const openFocus = useTaskStore((s) => s.openFocus);
-  if (columns.length === 0) {
-    return <TaskCard item={item} variant="row" showStage={showStage} />;
-  }
+  // D-PM-38 S4 — a step under its parent: the indent and the shared mark,
+  // and no crumb (the indent already names the parent).
+  const stacked = (
+    <div
+      className="flex min-w-0 items-center"
+      style={depth > 0 ? { paddingLeft: `${depth * 1.25}rem` } : undefined}
+    >
+      <NestedRowMark depth={depth} />
+      <div className="min-w-0 flex-1">
+        <TaskCard item={item} variant="row" showStage={showStage} showParent={crumb} />
+      </div>
+    </div>
+  );
+  if (columns.length === 0) return stacked;
   return (
     <>
       {/* Mobile: the stacked card (title + wrapping pills) — clickable itself. */}
-      <div className="sm:hidden">
-        <TaskCard item={item} variant="row" showStage={showStage} />
-      </div>
+      <div className="sm:hidden">{stacked}</div>
       {/* Desktop: aligned columns matching the header grid. The row opens the
           focus modal on click (Enter/Space too) — same affordance as the card,
           so the columnar list is clickable. Column cells that carry their own
@@ -628,11 +693,19 @@ function RowContent({
             longer carries the stage, so the status pill rides in front of the
             title (right where the eye associates it with the task) instead of
             eating a fixed column and crushing the name. */}
-        <span className="flex min-w-0 items-center gap-2">
-          {showStage && <StatusPill item={item} />}
-          <span className="min-w-0 truncate text-sm text-foreground">
-            {item.title}
+        <span
+          className="flex min-w-0 flex-col gap-0.5"
+          style={depth > 0 ? { paddingLeft: `${depth * 1.25}rem` } : undefined}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <NestedRowMark depth={depth} />
+            {showStage && <StatusPill item={item} />}
+            <span className="min-w-0 truncate text-sm text-foreground">
+              {item.title}
+            </span>
           </span>
+          {/* D-PM-38 S4 — a subtask whose parent is not in this group. */}
+          {crumb ? <ParentCrumb parent={item.parent} /> : null}
         </span>
         {columns.map((c) => (
           <ColumnCell
@@ -647,19 +720,30 @@ function RowContent({
   );
 }
 
-// The lazily-loaded child subtasks of an expanded parent row. Each is the next
-// physical action for finishing the parent; clicking opens it, and the leading
-// dot toggles completion (a one-tap "did this step").
-function SubtaskRows({ parent }: { parent: MyTask }) {
+// The lazily-loaded steps of an expanded parent row that are NOT on the list
+// (D-PM-38 S4): other people's steps, and mine in another view. My steps on
+// the list already draw as their own rows, so they are left out here and no
+// step draws twice. These are context, so they draw muted. Clicking opens
+// one, and the leading dot toggles completion.
+function SubtaskRows({
+  parent,
+  depth,
+  shownIds,
+}: {
+  parent: MyTask;
+  depth: number;
+  shownIds: ReadonlySet<string>;
+}) {
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const openFocus = useTaskStore((s) => s.openFocus);
   const quickDispose = useTaskStore((s) => s.quickDispose);
-  const [children, setChildren] = useState<MyTask[] | null>(null);
+  const [loaded, setLoaded] = useState<MyTask[] | null>(null);
+  const children = loaded === null ? null : otherSteps(loaded, shownIds);
 
   useEffect(() => {
     let cancelled = false;
     void loadSubtasks(parent.id).then((rows) => {
-      if (!cancelled) setChildren(rows);
+      if (!cancelled) setLoaded(rows);
     });
     return () => {
       cancelled = true;
@@ -678,12 +762,15 @@ function SubtaskRows({ parent }: { parent: MyTask }) {
   if (children.length === 0) {
     return (
       <p className="py-1.5 pl-14 text-[11px] italic text-muted-foreground/50">
-        No subtasks.
+        No other subtasks.
       </p>
     );
   }
   return (
-    <div className="border-l border-border/60 ml-[26px]">
+    <div
+      className="border-l border-border/60 ml-[26px]"
+      style={depth > 0 ? { marginLeft: `calc(26px + ${depth * 1.25}rem)` } : undefined}
+    >
       {children.map((c) => {
         const done = c.disposition === "DONE";
         return (
@@ -704,15 +791,16 @@ function SubtaskRows({ parent }: { parent: MyTask }) {
                 <Icon name="Circle" className="h-4 w-4" />
               )}
             </button>
-            <Icon name="CornerDownRight" className="h-3 w-3 shrink-0 text-muted-foreground/30" />
+            <NestedRowMark depth={1} />
             <button
               type="button"
               onClick={() => openFocus(c.id)}
               className={[
                 "min-w-0 flex-1 truncate text-left text-sm",
+                // Muted: somebody else's step is context, not my work here.
                 done
                   ? "text-muted-foreground line-through"
-                  : "text-foreground hover:text-primary",
+                  : "text-muted-foreground hover:text-primary",
               ].join(" ")}
             >
               {c.nextAction || c.title}

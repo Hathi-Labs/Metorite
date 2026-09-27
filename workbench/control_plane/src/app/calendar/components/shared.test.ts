@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { MyTask } from "@/app/tasks/lib/types";
 import type { Block } from "@/app/tasks/lib/scheduling";
 import type { DayTemplate } from "@/app/tasks/lib/api";
-import { layoutBlocks, reservedWindowsForDay } from "./shared";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import {
+  layoutBlocks,
+  plannerCandidates,
+  reservedWindowsForDay,
+} from "./shared";
 
 const item = (id: string): MyTask =>
   ({ id, title: id, disposition: "NEXT" }) as MyTask;
@@ -110,5 +116,60 @@ describe("reservedWindowsForDay", () => {
     ]);
     expect(out[0].kind).toBe("focus");
     expect(out[0].label).toBe("deep");
+  });
+});
+
+/**
+ * D-PM-38 (Subtasks S4) — the rail's candidate rule against the gateway's,
+ * through ONE table. `tests/fixtures/subtask_planner_parity.json` is also read
+ * by `tests/live/live_ws39_subtask_planner.py`, which runs
+ * `planning._PM_CANDIDATE_WHERE` on Postgres.
+ */
+interface ParityTask {
+  key: string;
+  parent?: string;
+  mine?: boolean;
+  state?: "open" | "done" | "trash" | "archived";
+  scheduled?: boolean;
+}
+const PLANNER = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../../../../../../tests/fixtures/subtask_planner_parity.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+) as { cases: { name: string; tasks: ParityTask[]; candidates: string[] }[] };
+
+/** One fixture task as the store holds it. The disposition is the effective
+ *  one the gateway sends: DONE for a closed lane, TRASH for my trash, NEXT for
+ *  my open work and WAITING for somebody else's. */
+const storeTask = (t: ParityTask): MyTask => {
+  const mine = t.mine ?? true;
+  const state = t.state ?? "open";
+  return {
+    id: t.key,
+    title: t.key,
+    source: "LOCAL",
+    isMine: mine,
+    parentItemId: t.parent,
+    disposition:
+      state === "done" ? "DONE" : state === "trash" ? "TRASH" : mine ? "NEXT" : "WAITING",
+    archivedAt: state === "archived" ? "2026-09-20T09:00:00Z" : undefined,
+    scheduledStart: t.scheduled ? "2026-09-28T09:00:00Z" : undefined,
+    scheduledEnd: t.scheduled ? "2026-09-28T10:00:00Z" : undefined,
+    createdAt: "2026-09-20T09:00:00Z",
+    updatedAt: "2026-09-20T09:00:00Z",
+  } as MyTask;
+};
+
+describe("plannerCandidates — the rail and the planner pack the same tasks", () => {
+  it("reads a non-empty table", () => {
+    expect(PLANNER.cases.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(PLANNER.cases)("$name", ({ tasks, candidates }) => {
+    const got = plannerCandidates(tasks.map(storeTask)).map((t) => t.id);
+    expect([...got].sort()).toEqual([...candidates].sort());
   });
 });

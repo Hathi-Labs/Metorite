@@ -42,6 +42,7 @@ import {
   SNAP_MINS,
   HOUR_PX,
   addMonths,
+  plannerCandidates,
   startOfWeek,
   useNow,
   type Mode,
@@ -178,41 +179,25 @@ export function CalendarView() {
     void loadDone();
   }, [loadDone]);
 
+  // Unscheduled, schedulable next actions: mine, NEXT, no block yet, and not
+  // a parent with open steps of mine (D-PM-38 S4 — the steps are what I
+  // schedule). The gateway planner reads the same rule (`plannerCandidates`).
+  const unscheduled = useMemo(() => plannerCandidates(items), [items]);
+
   // Deadline radar: unscheduled next actions with a due date approaching (≤14d)
   // — the ones most likely to slip because they were never timeboxed.
   const dueSoon = useMemo(() => {
     // eslint-disable-next-line react-hooks/purity
     const nowMs = Date.now();
     const horizon = nowMs + 14 * 86400000;
-    return items
-      .filter(
-        (i) =>
-          i.isMine &&
-          i.disposition === "NEXT" &&
-          !i.scheduledStart &&
-          !i.archivedAt &&
-          i.dueAt &&
-          new Date(i.dueAt).getTime() <= horizon,
-      )
+    return unscheduled
+      .filter((i) => i.dueAt && new Date(i.dueAt).getTime() <= horizon)
       .map((i) => ({
         item: i,
         days: Math.ceil((new Date(i.dueAt as string).getTime() - nowMs) / 86400000),
       }))
       .sort((a, b) => a.days - b.days);
-  }, [items]);
-
-  // Unscheduled, schedulable next actions (mine, NEXT, no block yet).
-  const unscheduled = useMemo(
-    () =>
-      items.filter(
-        (i) =>
-          i.disposition === "NEXT" &&
-          i.isMine &&
-          !i.scheduledStart &&
-          !i.archivedAt,
-      ),
-    [items],
-  );
+  }, [unscheduled]);
 
   // Completed blocks on the focused day — the "done today" tally (progress).
   const doneStats = useMemo(() => {

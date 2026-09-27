@@ -388,6 +388,9 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   batch: "my/tasks/batch",
   task: "my/tasks/{task_id}",
   organize: "my/tasks/{task_id}/organize",
+  // D-PM-38 (Subtasks S4) — add steps under a task, the helper organize
+  // calls (`personal.add_my_steps`).
+  steps: "my/tasks/{task_id}/subtasks",
   project: "my/project",
   // S6b — a member's own categories (`routes/projects/personal.py`, PR #391).
   areas: "my/areas",
@@ -1258,49 +1261,21 @@ export async function lensListSubtasks(id: string): Promise<MyTask[]> {
   return rowsOf(res).map(mapSubtask);
 }
 
-let whoAmI: Promise<string> | undefined;
-
-/**
- * My own address, from the session — needed once, to self-assign a subtask
- * (`POST /projects/tasks` assigns nobody). Memoised: it cannot change within
- * a page, and it is the same door `resolveAccess` opens.
- */
-export function lensWhoAmI(): Promise<string> {
-  whoAmI ??= (async () => {
-    const res = await fetch("/api/auth/me", { cache: "no-store" });
-    if (!res.ok) throw new Error(`Tasks lens: who am I? (${res.status})`);
-    const email = text(((await res.json()) as Raw).email);
-    if (!email) throw new Error("Tasks lens: the session has no email.");
-    return email;
-  })();
-  // A failed lookup must not be cached as the answer.
-  whoAmI.catch(() => {
-    whoAmI = undefined;
-  });
-  return whoAmI;
-}
-
 /**
  * Add steps under a task: each an ordinary task in the parent's project,
  * assigned to me, created in the order given so the list reads as typed.
+ *
+ * D-PM-38 (Subtasks S4): ONE request to `my/tasks/{task_id}/subtasks`, the
+ * helper organize calls too. Each step lands in the parent's lane when that
+ * lane is open, and states NEXT when I stated NEXT on the parent. The old
+ * way wrote each step through `POST tasks` with no status, so it took the
+ * project's first lane and read SOMEDAY.
  */
 export async function lensAddSubtasks(
   id: string,
   titles: string[],
 ): Promise<MyTask[]> {
-  const parent = await projectsCall<Raw>(`tasks/${id}`);
-  const me = await lensWhoAmI();
-  for (const title of titles) {
-    const child = await post("tasks", {
-      project_id: parent.project_id,
-      parent_task_id: id,
-      title,
-    });
-    await projectsCall<Raw>(`tasks/${String(child.id)}/assignees`, {
-      method: "PUT",
-      body: JSON.stringify({ assignees: [me] }),
-    });
-  }
+  await post(at(MY_ROUTES.steps, id), { titles });
   return lensListSubtasks(id);
 }
 

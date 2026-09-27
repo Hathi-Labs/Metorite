@@ -1,0 +1,59 @@
+{
+  "_doc": "D-PM-38, Subtasks S4 — which of my tasks the day planner may pack. A task is a candidate when it is mine, NEXT, open, not archived and has no block, AND it is not a parent with an open step of mine: the steps are the units I schedule. Each case is a small tree of tasks. Defaults: mine true, state 'open', scheduled false, no parent. 'state' is one of open, done (the lane is closed), trash (my overlay says TRASH) or archived. 'candidates' lists the keys the planner may pack. Readers: workbench/control_plane/src/app/calendar/components/shared.test.ts (the rail's plannerCandidates) and tests/live/live_ws39_subtask_planner.py (planning._PM_CANDIDATE_WHERE on Postgres, through LENS_SOURCE.candidates).",
+  "cases": [
+    {
+      "name": "a task with no steps is a candidate",
+      "tasks": [{ "key": "a" }],
+      "candidates": ["a"]
+    },
+    {
+      "name": "a parent with an open step of mine is not, and the step is",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p" }],
+      "candidates": ["c"]
+    },
+    {
+      "name": "a done step leaves its parent a candidate",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p", "state": "done" }],
+      "candidates": ["p"]
+    },
+    {
+      "name": "a step of somebody else leaves its parent a candidate",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p", "mine": false }],
+      "candidates": ["p"]
+    },
+    {
+      "name": "an archived step leaves its parent a candidate",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p", "state": "archived" }],
+      "candidates": ["p"]
+    },
+    {
+      "name": "a step I put in the trash leaves its parent a candidate",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p", "state": "trash" }],
+      "candidates": ["p"]
+    },
+    {
+      "name": "a scheduled step is not a candidate, and still keeps its parent out",
+      "tasks": [{ "key": "p" }, { "key": "c", "parent": "p", "scheduled": true }],
+      "candidates": []
+    },
+    {
+      "name": "a scheduled parent is not a candidate, and its step is",
+      "tasks": [{ "key": "p", "scheduled": true }, { "key": "c", "parent": "p" }],
+      "candidates": ["c"]
+    },
+    {
+      "name": "at depth two only the leaf is a candidate",
+      "tasks": [
+        { "key": "g" },
+        { "key": "p", "parent": "g" },
+        { "key": "c", "parent": "p" }
+      ],
+      "candidates": ["c"]
+    },
+    {
+      "name": "my step under a parent of somebody else is a candidate",
+      "tasks": [{ "key": "p", "mine": false }, { "key": "c", "parent": "p" }],
+      "candidates": ["c"]
+    }
+  ]
+}

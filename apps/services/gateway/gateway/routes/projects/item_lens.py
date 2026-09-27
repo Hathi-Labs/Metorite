@@ -250,11 +250,16 @@ class _PmLens(ItemSource):
             raise HTTPException(status_code=404, detail="Item not found")
         return _pm_item(rows[0])
 
-    async def open_items(self, db, uid, limit, *, top_level=False):
-        narrow = " AND t.parent_task_id IS NULL" if top_level else ""
+    # ⚠️ D-PM-38 (Subtasks S4) — a subtask assigned to me is MY work. My Tasks
+    # shows it once, as its own row, and every read below reads it too: the
+    # open list, the siblings, the context backfill and the insight counts.
+    # Before S4 three of them dropped subtasks and `insight_counts` kept
+    # them, so the Inbox count and the lists the AI reasoned over disagreed.
+    # Fence: `test_item_lens_subtasks.py`.
+    async def open_items(self, db, uid, limit):
         return _alive(await self._items(
             db, uid,
-            _PM_ALIVE + narrow + " ORDER BY t.created_at DESC LIMIT :lim",
+            _PM_ALIVE + " ORDER BY t.created_at DESC LIMIT :lim",
             lim=limit))
 
     async def contexts_for(self, db, uid):
@@ -284,7 +289,6 @@ class _PmLens(ItemSource):
             db, uid,
             _PM_ALIVE
             + " AND t.project_id = CAST(:pid AS uuid)"
-            " AND t.parent_task_id IS NULL"
             " AND t.id <> CAST(:self_id AS uuid)"
             " ORDER BY t.updated_at DESC LIMIT :lim",
             pid=str(project_id), self_id=str(exclude_id), lim=limit))
@@ -320,7 +324,6 @@ class _PmLens(ItemSource):
             "      OR p.disposition IN ('NEXT', 'WAITING', 'DONE'))"
             + _CLOSED_LANE +
             " AND (p.context IS NULL OR p.context = '')"
-            " AND t.parent_task_id IS NULL"
             " ORDER BY t.updated_at DESC LIMIT :lim",
             lim=limit)
         return [i for i in items if i.disposition in ("NEXT", "WAITING")]

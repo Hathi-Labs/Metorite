@@ -84,6 +84,45 @@ export function fmtLeft(mins: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+// ── the unscheduled rail ─────────────────────────────────────────────────────
+
+/** A step of mine that is still open: not done, not in my trash, not filed. */
+const isOpenStepOfMine = (i: MyTask): boolean =>
+  Boolean(i.parentItemId) &&
+  Boolean(i.isMine) &&
+  !i.archivedAt &&
+  i.disposition !== "DONE" &&
+  i.disposition !== "TRASH";
+
+/**
+ * The tasks the unscheduled rail offers, and the planner may pack (D-PM-38,
+ * Subtasks S4): mine, NEXT, not archived, with no block yet, and NOT a parent
+ * that has an open step of mine.
+ *
+ * The Calendar app always shows subtasks. The steps are the units I schedule,
+ * so a parent whose steps are still open would book the same work twice. A
+ * parent whose steps are all done, archived, trashed or somebody else's is a
+ * task like any other.
+ *
+ * The gateway's copy is `planning._PM_CANDIDATE_WHERE`. Both read one table,
+ * `tests/fixtures/subtask_planner_parity.json`: `shared.test.ts` here, and
+ * `tests/live/live_ws39_subtask_planner.py` against Postgres.
+ */
+export function plannerCandidates(items: readonly MyTask[]): MyTask[] {
+  const withOpenSteps = new Set<string>();
+  for (const i of items) {
+    if (isOpenStepOfMine(i)) withOpenSteps.add(i.parentItemId!);
+  }
+  return items.filter(
+    (i) =>
+      i.disposition === "NEXT" &&
+      Boolean(i.isMine) &&
+      !i.scheduledStart &&
+      !i.archivedAt &&
+      !withOpenSteps.has(i.id),
+  );
+}
+
 // ── grid helpers ─────────────────────────────────────────────────────────────
 /** Deadline items (hard date, not timeboxed) due on `day` — the all-day lane. */
 export function deadlinesForDay(items: MyTask[], day: Date): MyTask[] {

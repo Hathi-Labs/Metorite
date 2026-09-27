@@ -125,30 +125,61 @@ _PM_MINE = (
     " AND EXISTS (SELECT 1 FROM pm_task_assignees a4"
     "             WHERE a4.task_id = t.id AND lower(a4.assignee) = :who)"
 )
+#: D-PM-38 (Subtasks S4) — the Calendar app always shows subtasks, so the
+#: planner reads them too. A scheduled subtask is a block on my grid, and a
+#: block is busy time. Until S4 every query below carried
+#: `t.parent_task_id IS NULL`, so the grid drew a scheduled step while the
+#: planner counted its slot as FREE and could book over it.
+#:
+#: What replaces that clause on CANDIDATE is narrower: a parent with an open
+#: step assigned to me is not a candidate. The steps are the units I
+#: schedule, and packing the parent too would book the same work twice.
+#: "Open" is the reading `effective_disposition` gives: the lane is not
+#: closed, the step is not archived, and my overlay does not say TRASH.
+#:
+#: The rail's copy of this rule is `plannerCandidates` in
+#: `app/calendar/components/shared.ts`. `tests/fixtures/subtask_planner_parity.json`
+#: holds both to one set of cases: `shared.test.ts` reads it, and so does
+#: `tests/live/live_ws39_subtask_planner.py` on a real Postgres.
+_HAS_OPEN_STEP_OF_MINE = (
+    " AND NOT EXISTS ("
+    "SELECT 1 FROM pm_tasks c"
+    "  JOIN pm_task_statuses cs ON cs.id = c.status_id"
+    " WHERE c.parent_task_id = t.id AND c.archived_at IS NULL"
+    "   AND cs.category NOT IN ("
+    + ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+    + ")"
+    "   AND EXISTS (SELECT 1 FROM pm_task_assignees ca"
+    "               WHERE ca.task_id = c.id AND lower(ca.assignee) = :who)"
+    "   AND NOT EXISTS (SELECT 1 FROM pm_task_personal cp"
+    "                   WHERE cp.task_id = c.id"
+    "                     AND lower(cp.member_email) = :who"
+    "                     AND cp.disposition = 'TRASH'))"
+)
 _PM_TODAY_WHERE = (
-    " AND t.parent_task_id IS NULL"
     " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')"
     " AND p.scheduled_start IS NOT NULL"
     " AND p.scheduled_start >= :day0 AND p.scheduled_start < :day1"
 )
 _PM_CARRY_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE + _PM_MINE
+    _PM_ALIVE + _PM_MINE
     + " AND coalesce(p.flexible, true) = true"
     " AND p.scheduled_start IS NOT NULL AND p.scheduled_start < :day0"
 )
 _PM_CANDIDATE_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_MINE
+    _PM_MINE
     + " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'DONE'))"
     + _CLOSED_LANE
     + " AND p.scheduled_start IS NULL"
+    + _HAS_OPEN_STEP_OF_MINE
 )
 _PM_OVERDUE_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE
+    _PM_ALIVE
     + " AND coalesce(p.flexible, true) = true"
     " AND p.scheduled_start IS NOT NULL AND p.scheduled_end < :now"
 )
 _PM_BUSY_WHERE = (
-    " AND t.parent_task_id IS NULL" + _PM_ALIVE
+    _PM_ALIVE
     + " AND p.scheduled_start IS NOT NULL"
     " AND p.scheduled_start < :win_end AND p.scheduled_end > :win_start"
 )

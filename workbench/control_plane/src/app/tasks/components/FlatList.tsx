@@ -22,7 +22,10 @@ import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { useMemo, useState } from "react";
 
+import { NestedRowMark } from "@/components/TaskMeta";
+
 import { viewQuickAdd } from "../lib/quickAdd";
+import { myTaskRows } from "../lib/subtaskRows";
 import { useTaskStore } from "../lib/taskStore";
 import { MyTask, ViewKey } from "../lib/types";
 import { TaskCard } from "./TaskCard";
@@ -46,7 +49,11 @@ export function FlatList({
   const [anchor, setAnchor] = useState<number | null>(null);
   const { flash, attach, scrollTo } = useFlash();
 
-  const rows = useMemo(() => items.map((item) => item.id), [items]);
+  // D-PM-38 (Subtasks S4) — each subtask once: under its parent when the
+  // parent is on this list, else at the top level with its crumb. The cursor
+  // walks the drawn order.
+  const drawn = useMemo(() => myTaskRows(items), [items]);
+  const rows = useMemo(() => drawn.map((r) => r.item.id), [drawn]);
   // Clamped at READ time rather than synced by an effect: the rows shrink under
   // the cursor on every reload, and a state write per reload is exactly the
   // cascading-render pattern the lint forbids.
@@ -93,7 +100,7 @@ export function FlatList({
       aria-label="Task list — arrow keys move, Enter opens"
       className="flex-1 overflow-y-auto outline-none"
     >
-      {items.map((item, index) => {
+      {drawn.map(({ item, depth, crumb }, index) => {
         const atCursor = cursorAt >= 0 && cursorAt === index;
         const selected = selectedIds.has(item.id);
         return (
@@ -127,8 +134,19 @@ export function FlatList({
                   aria-label={selected ? "Deselect task" : "Select task"}
                 />
               </label>
-              <div className="min-w-0 flex-1">
-                <TaskCard item={item} variant="row" showPriority={showPriority} />
+              <div
+                className="flex min-w-0 flex-1 items-center"
+                style={depth > 0 ? { paddingLeft: `${depth * 1.25}rem` } : undefined}
+              >
+                <NestedRowMark depth={depth} />
+                <div className="min-w-0 flex-1">
+                  <TaskCard
+                    item={item}
+                    variant="row"
+                    showPriority={showPriority}
+                    showParent={crumb}
+                  />
+                </div>
               </div>
             </div>
           </div>

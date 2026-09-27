@@ -1,6 +1,7 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
+import { ParentCrumb } from "@/components/TaskMeta";
 import { useRef, useState } from "react";
 import {
   type EnergyWindow,
@@ -598,6 +599,9 @@ export function TimeGrid({
                         {b.item.title}
                       </button>
                     </div>
+                    {/* D-PM-38 S4 — a scheduled step is a block like any
+                        other, and names its parent with the shared crumb. */}
+                    <ParentCrumb parent={b.item.parent} className="pl-[18px]" />
                     {/* outcome ribbon — why this block matters (tall blocks) */}
                     {outcome && mins >= 45 && (
                       <div className="truncate pr-3 text-[9px] font-medium text-amber-500/90">

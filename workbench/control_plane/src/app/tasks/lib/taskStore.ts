@@ -25,6 +25,7 @@ import {
   promoteToast,
 } from "./promote";
 import type { InboxSource } from "./inbox";
+import { parentFactOf } from "./subtaskRows";
 import { type RemovalScope, canPurge, purgeable } from "./removal";
 import { type CaptureDestination, parseProjectToken } from "./quickAdd";
 import {
@@ -2845,29 +2846,40 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   fileUnderParent: async (id, parentId) => {
-    // The capture becomes a nested child of the parent — subtasks aren't held
-    // in the flat list, so drop it from the inbox/next views immediately.
-    const removed = get().items.find((i) => i.id === id);
+    // D-PM-38 (Subtasks S4, B8) — the task STAYS on my lists as a subtask. It
+    // is still mine, and the gateway still serves it, so dropping it here
+    // only lasted until the next reload, when it came back flat and unmarked.
+    // It now carries its parent at once, and the list draws it under the
+    // parent or with the "↳ Parent" crumb (`lib/subtaskRows`), before the
+    // reload and after it alike.
+    //
+    // No undo is offered: the move is on the server, and a local restore
+    // would show a task that is not where the screen says. (The old undo
+    // re-created the "deleted" row, so it made a copy of the task.)
+    const parent = get().items.find((i) => i.id === parentId);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => ({
-      items: s.items.filter((i) => i.id !== id),
-      selectedItemId: s.selectedItemId === id ? null : s.selectedItemId,
-      undoSnapshot: removed
-        ? {
-            items: s.items,
-            projects: s.projects,
-            processed: s.processedThisSession,
-            selectedItemId: s.selectedItemId,
-            label: "Filed as a subtask",
-            deletedItems: [removed],
-          }
-        : s.undoSnapshot,
+      items: s.items.map((i) =>
+        i.id === id
+          ? {
+              ...i,
+              parentItemId: parentId,
+              parent: parent ? parentFactOf(parent) : { id: parentId },
+            }
+          : i.id === parentId
+            ? { ...i, subtaskCount: (i.subtaskCount ?? 0) + 1 }
+            : i,
+      ),
+      undoSnapshot: null,
     }));
     if (get().backend !== "live") return;
-    // Refresh the parent's row (subtaskCount) so the detail panel reflects it.
-    const parent = await apiFileUnder(id, parentId);
+    // The server answers with the parent (its count). The child is read
+    // again too, so it carries the gateway's own parent fact and project.
+    const fresh = await apiFileUnder(id, parentId);
     set((s) => ({
-      items: s.items.map((i) => (i.id === parent.id ? parent : i)),
+      items: s.items.map((i) => (i.id === fresh.id ? fresh : i)),
     }));
+    await get().refreshItem(id);
   },
 
   deleteItems: (ids) => {
@@ -3142,6 +3154,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         i.id === id ? { ...i, subtaskCount: children.length } : i,
       ),
     }));
+    // D-PM-38 (Subtasks S4) — a new step is mine, so it is a row on my lists,
+    // drawn under its parent. Read each new one through my own door, so it
+    // carries my overlay (the checklist rows are project-shaped).
+    const known = new Set(get().items.map((i) => i.id));
+    const added = await Promise.all(
+      children
+        .filter((c) => !known.has(c.id))
+        .map((c) => lensGetItem(c.id).catch(() => null)),
+    );
+    const mine = added.filter((c): c is MyTask => c !== null);
+    if (mine.length) {
+      set((s) => {
+        const have = new Set(s.items.map((i) => i.id));
+        return { items: [...s.items, ...mine.filter((c) => !have.has(c.id))] };
+      });
+    }
     return children;
   },
 
