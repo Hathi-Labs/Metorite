@@ -144,8 +144,12 @@ def test_t13_is_live_and_t7_waits_for_a_today_period() -> None:
     assert (t13["weeks"], t13["skip_current_week"]) == (1, False)
     assert t13["scope_kinds"] == ["project", "org"]
     live = [k for k, t in rep.TEMPLATES.items() if t["available"]]
-    # WS-27bn R3d added `team_pulse` at the head of the catalogue.
-    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    # WS-27bn R3d added `team_pulse` at the head of the catalogue, and
+    # R5b added `my_day` and `one_on_one`.
+    assert live == [
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
+    ]
     t7 = rep.TEMPLATES["exceptions"]
     assert t7["available"] is False
     assert t7["waits_for"] == (
