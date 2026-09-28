@@ -301,3 +301,96 @@ def test_the_subjects_answer_names_the_reader(seeded, wired) -> None:  # noqa: F
     got = asyncio.run(rep.list_report_subjects(user=_user(seeded["who"]["m"])))
     assert got["me"] == seeded["who"]["m"]
     assert [p["email"] for p in got["people"]] == [seeded["who"]["m"]]
+
+
+# ── R5b-1 repair: a T2 is always about its AUTHOR ──────────────────────────
+
+
+def test_the_patch_rule_compares_with_the_author_not_the_caller() -> None:
+    """Hermetic. On a PATCH the author decides, so an admin keeps a member's
+    T2 about the member, and cannot move it to the admin."""
+    boss = _user("boss@x.test", admin=True)
+    member_t2 = rep.normalise_report_config(
+        _t_config(_T2, {"kind": "person", "email": "a@x.test"}),
+    )
+    rep.require_template_subject(boss, member_t2, author="A@x.test")
+    moved = rep.normalise_report_config(
+        _t_config(_T2, {"kind": "person", "email": "boss@x.test"}),
+    )
+    with pytest.raises(HTTPException) as err:
+        rep.require_template_subject(boss, moved, author="a@x.test")
+    assert err.value.status_code == 422
+    assert rep.T2_AUTHOR_REASON in err.value.detail
+    patch = inspect.getsource(rep.update_report)
+    assert "stored.created_by" in patch and "author=author" in patch
+
+
+@_needs_db
+def test_an_admin_edits_a_members_t2_and_it_stays_theirs(seeded, wired) -> None:  # noqa: F811
+    """Owner Q13 and the R5b-1 author rule, on a real database."""
+    m = _user(seeded["who"]["m"])
+    boss = _user(seeded["who"]["boss"], admin=True)
+    saved = _create(seeded, "m", _t_config(_T2, _person(seeded, "m")),
+                    name="M day")
+    assert saved["can_edit"] is True
+
+    # The admin renames it and keeps its subject: 200, and it stays M's.
+    got = asyncio.run(rep.update_report(
+        saved["id"],
+        {"name": "M day renamed", "config": _t_config(_T2, _person(seeded, "m"))},
+        user=boss,
+    ))
+    assert got["name"] == "M day renamed"
+    assert got["config"]["subject"] == _person(seeded, "m")
+    listed = asyncio.run(rep.list_reports(user=m))["reports"]
+    assert saved["id"] in [r["id"] for r in listed]
+    body = asyncio.run(rep.render_report(saved["id"], user=m))
+    assert body["report"]["config"]["subject"] == _person(seeded, "m")
+
+    # The admin may not move it to the admin: 422 with the reason.
+    code, detail = _status(lambda: asyncio.run(rep.update_report(
+        saved["id"], {"config": _t_config(_T2, _person(seeded, "boss"))},
+        user=boss,
+    )))
+    assert code == 422 and rep.T2_AUTHOR_REASON in detail, detail
+    again = asyncio.run(rep.get_report(saved["id"], user=m))
+    assert again["config"]["subject"] == _person(seeded, "m")
+
+    # The author edits their own T2: 200.
+    own = asyncio.run(rep.update_report(
+        saved["id"],
+        {"name": "Mine", "config": _t_config(_T2, _person(seeded, "m"))},
+        user=m,
+    ))
+    assert own["name"] == "Mine"
+
+
+@_needs_db
+def test_one_bad_t2_row_never_422s_the_whole_list(seeded, wired) -> None:  # noqa: F811
+    """A stored T2 with no subject is left out of the list, and the list
+    answers 200. An admin may still delete it (Q12 and Q13)."""
+    import json
+
+    from sqlalchemy import create_engine, text
+
+    from tests.unit.test_projects_report_scope_r5 import _TENANT_URL
+
+    boss = _user(seeded["who"]["boss"], admin=True)
+    good = _create(seeded, "boss", {"sections": ["load"]}, admin=True)
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as c:
+        bad = str(c.execute(
+            text(
+                "INSERT INTO pm_reports (project_id, organization_id, name,"
+                " config, created_by) VALUES (NULL, CAST(:o AS uuid), 'bad t2',"
+                " CAST(:c AS jsonb), :by) RETURNING id"
+            ),
+            {"o": seeded["org"], "by": seeded["who"]["m"],
+             "c": json.dumps({"template": _T2})},
+        ).scalar_one())
+    eng.dispose()
+
+    ids = [r["id"] for r in asyncio.run(rep.list_reports(user=boss))["reports"]]
+    assert good["id"] in ids and bad not in ids
+    assert _status(lambda: asyncio.run(rep.delete_report(bad, user=boss))) == (200, "")
+    assert _status(lambda: asyncio.run(rep.get_report(bad, user=boss)))[0] == 404

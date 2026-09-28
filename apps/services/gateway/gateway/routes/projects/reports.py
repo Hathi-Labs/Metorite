@@ -206,8 +206,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         {
             # WS-27bn R5b. `pulse` on one person: the reader. Its waiting
             # items show on the reader's own row (Q6), so T2 needs no
-            # `waiting` section. The subject must be the reader, and
-            # `require_template_subject` says so on create, patch and
+            # `waiting` section. The subject is always the AUTHOR (R5b-1),
+            # and `require_template_subject` says so on create, patch and
             # preview.
             "key": "my_day", "name": "My day",
             "question": "What do I work on today, and what waits on me?",
@@ -441,19 +441,40 @@ def _config_template(
     return {"template": template}
 
 
-def require_template_subject(user: Any, config: dict[str, Any]) -> None:
-    """422 when a T2 config names a person who is not the reader (R5b).
+#: The 422 reason when a PATCH moves a T2 away from its author (R5b-1).
+T2_AUTHOR_REASON = "My day is always about its author."
 
-    ``My day`` is the reader's own day, so its subject is the reader and
-    nobody else, an admin included. Create, patch and preview call this
-    BEFORE the §7.1 check, so an admin gets this 422 and not a 200. A
-    render does not call it: a saved row renders for whoever may open it.
-    ``config`` is already normalised.
+
+def require_template_subject(
+    user: Any, config: dict[str, Any], *, author: str | None = None,
+) -> None:
+    """422 when a T2 config names the wrong person (R5b).
+
+    ``My day`` is ALWAYS about its author. On create and preview the author
+    is the caller, so the subject must be the caller, an admin included.
+    On a PATCH the caller passes ``author``, the stored row's
+    ``created_by``. So an admin may rename or re-period a member's T2 and it
+    stays about that member (§9 Q13), and a PATCH that moves the subject
+    away from the author gets 422.
+
+    Create, patch and preview call this BEFORE the §7.1 check, so an admin
+    gets this 422 and not a 200. A render does not call it: a saved row
+    renders for whoever may open it. ``config`` is already normalised.
     """
     template = config.get("template")
     if not template or TEMPLATES[template].get("requires_subject") != "self":
         return
     subject = config.get("subject") or {}
+    if author is not None:
+        if subject.get("email") != author.strip().lower():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{T2_AUTHOR_REASON} The subject of this"
+                    f" {template!r} report must stay {author.strip().lower()}."
+                ),
+            )
+        return
     me = str(getattr(user, "email", "") or "").strip().lower()
     if subject.get("email") != me:
         raise HTTPException(
@@ -670,12 +691,17 @@ async def list_reports(
         scope = await reader_scope(db, user, vis)
         listed = []
         for r in rows:
+            # ⚠️ The whole per-row normalise is inside the try (R5b-1). A
+            # stored T2 with no subject passes `_row_subject` and then gets
+            # 422 from `normalise_report_config` in `_report_dict`. Outside
+            # the try, that one row made the whole list answer 422.
             try:
                 subject = _row_subject(r.config)
+                if not scope.allows(subject)[0]:
+                    continue
+                listed.append(_report_dict(r, user))
             except HTTPException:
                 continue
-            if scope.allows(subject)[0]:
-                listed.append(_report_dict(r, user))
         return {"reports": listed}
 
 
@@ -782,15 +808,19 @@ async def update_report(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user, refusal=CHANGE_REFUSED)
+        stored = await _visible_report(
+            db, vis, report_id, user, refusal=CHANGE_REFUSED,
+        )
 
         values: dict[str, Any] = {}
         if "name" in payload:
             values["name"] = _clean_name(payload["name"])
         if "config" in payload:
             values["config"] = normalise_report_config(payload["config"])
-            # WS-27bn R5b. T2's subject is the reader, before §7.1.
-            require_template_subject(user, values["config"])
+            # WS-27bn R5b. T2's subject is its AUTHOR, before §7.1. An
+            # admin who edits a member's T2 keeps it about the member.
+            author = stored.created_by or ""
+            require_template_subject(user, values["config"], author=author)
             # WS-27bn R5a. The NEW subject passes the same two checks.
             await require_subject(
                 db, user, vis, values["config"].get("subject"),
