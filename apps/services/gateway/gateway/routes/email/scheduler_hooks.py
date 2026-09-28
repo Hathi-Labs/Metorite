@@ -21,6 +21,12 @@ async def mailbox_owner(account_id: str) -> str | None:
     The row's ``user_id`` is the owner's address. It is a stored fact, so a
     job may bind it VERIFIED (H-73). ``None`` when the row is gone or the read
     fails, and the job then runs memberless rather than as a bystander.
+
+    ⚠️ **A TENANT-DISCOVERY read, so it is unbound on purpose.** The owner
+    decides which organization pays, so this read cannot run inside that
+    organization's session. ``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``
+    names it. Once FORCE RLS covers ``email_accounts`` it returns zero rows,
+    like every H4 resolver, and the job then fails CLOSED to memberless.
     """
     from sqlalchemy import text
 

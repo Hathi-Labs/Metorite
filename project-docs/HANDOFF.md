@@ -3234,19 +3234,27 @@ line — never reclaim a number by deleting the other entry.
   member, so the job bills the organization it belongs to. The fence is
   `tests/unit/test_background_ai_member.py`, and it refuses a new
   `run_agent()` call with no `session_user` and no recorded reason.
+- ⚠️ **The owner reads stop working under FORCE RLS.** The reads of
+  `app_user`, `email_accounts` and `wa_accounts` decide which organization
+  pays, so they run on an unbound session. H4 resolvers such as
+  `_workflow_organization` have the same limit. Once FORCE RLS covers these
+  tables, each read returns zero rows. The job then fails CLOSED: it runs
+  memberless, and the deployment key refuses it with a 400. It never bills
+  a guessed member. `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names
+  the two new reads. Move them to an RLS-EXEMPT read before FORCE RLS
+  reaches these tables.
 - ⚠️ **Two paths still send no member. Close them before the flip.**
   1. The HMAC-signed `/agent/webhook` route (`routes/agent.py`). No owner row
      or organization exists for it. It runs memberless, or on a body claim.
   2. mem0 (`acb_memory/mem0_client.py`). mem0 builds its own OpenAI client
      and calls it on its own threads, so no run context reaches the call.
      `MEM0_ENABLED` is off by default.
-- ⚠️ **The deployment arm trusts an UNSIGNED `X-CC-Member`.**
-  `organization_from_key_or_deployment` picks the organization from the
-  member header, and does not read `X-CC-Member-Proven`. Gateway `/v1`
-  forwards an unsigned header. So any holder of the gateway LLM key can
-  name a member of another tenant and bill that tenant. This includes the
-  mutation sandbox, which runs model-written code. Decide whether the arm
-  must refuse an unproven member before the flip.
+- 📌 **The deployment arm serves only a PROVEN member (PR #511).** An
+  expired or missing proof is refused. The proof lives 3600 s. So every
+  background job above binds its owner VERIFIED, and a body claim, which
+  is never signed, is refused on that arm. The email specialist run keeps
+  its proof because `_run_member` keeps a claim verified when it names the
+  member the task already holds verified.
 - ⚠️ **The Notes pipeline bills the viewer, not the meeting owner.** A
   recording found by poll-on-read runs in the request of whoever opened the
   list. It names a member of the right organization, so the Console serves

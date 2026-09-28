@@ -202,7 +202,10 @@ async def summarize_stale_groups(account_id: str) -> int:
     try:
         # H-152: the summaries are model calls with no session behind them,
         # so they run AS the account's owner, read from `wa_accounts`. The
-        # Router derives the paying organization from that member.
+        # Router derives the paying organization from that member. This read
+        # rides the pass's EXISTING unbound session (no new H2 site). Once
+        # FORCE RLS covers `wa_accounts` it finds no row, and the pass fails
+        # CLOSED to memberless, like every H4 resolver.
         from acb_common import job_member_scope
 
         owner = (await db.execute(

@@ -75,9 +75,12 @@ def _router_headers() -> dict[str, str]:
     with its signed proof. A member a request body claimed travels unsigned,
     as it does on every other path (H-73).
 
-    ⚠️ **The proof lives 300 s** (``member_proof``), and a sandbox may run for
-    ten minutes. After that the member is still NAMED, so the Console still
-    resolves the organization, and only a cap stops applying.
+    ⚠️ **On the deployment key an expired or missing proof is REFUSED.** The
+    deployment arm serves only a proven member (PR #511), so a claimed
+    member, which crosses unsigned, gets no answer there. The proof lives
+    ``member_proof.PROOF_TTL_SECONDS`` (3600 s), which is longer than the
+    sandbox's ``mutation_timeout_seconds`` (600 s by default). A sandbox
+    that runs past the TTL is refused from that call on.
 
     Never raises. Headers that cannot be computed are an empty dict, which
     leaves the sandbox exactly as it was before this change.

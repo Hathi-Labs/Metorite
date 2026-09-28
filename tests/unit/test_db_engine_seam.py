@@ -631,11 +631,63 @@ def test_exempt_call_edge_allowlist_has_no_stale_entries() -> None:
         )
 
 
+#: TENANT-DISCOVERY reads: an unbound `get_db()` whose whole job is to decide
+#: WHICH member, and so which organization, a background job acts for. It
+#: cannot run inside `tenant_session(org)`, because the org is its answer.
+#: Keyed on (file, function), and each function must hold EXACTLY ONE site,
+#: so a second query cannot hide behind the entry. These sites are NOT
+#: counted against H2_BASELINE_ELSEWHERE.
+#:
+#: ⚠️ **Each read returns ZERO rows once FORCE RLS covers its table**, the
+#: same limit every H4 resolver has (`_workflow_organization`, auto_lead's
+#: `_owner_organization`). Each function fails CLOSED on that: it returns
+#: `None`, the job runs memberless, and the deployment key's Router refuses
+#: it with a 400. It never bills a guessed member. H-152 records the move to
+#: an RLS-EXEMPT read before FORCE RLS lands on these tables.
+H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
+    ("apps/services/gateway/gateway/routes/workflows/service.py",
+     "_workflow_billing_member"):
+        "H-152: who pays for a workflow's model calls — the workflow owner, "
+        "or a verified clicker in the owner's organization. The member picks "
+        "the organization the Router bills, so this read decides the tenant",
+    ("apps/services/gateway/gateway/routes/email/scheduler_hooks.py",
+     "mailbox_owner"):
+        "H-152: who pays for a mailbox job's model calls — the "
+        "email_accounts owner. The member picks the organization the Router "
+        "bills, so this read decides the tenant",
+}
+
+
+def _get_db_calls_in(rel: str, function: str) -> int:
+    """The number of `await get_db()` calls inside one named function."""
+    path = _REPO / rel
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name == function:
+            return len(_GET_DB_CALL.findall(ast.get_source_segment(
+                path.read_text(encoding="utf-8-sig"), node) or ""))
+    return 0
+
+
+def test_tenant_discovery_sites_hold_exactly_one_read() -> None:
+    """An entry holds ONE site: more is a second query hiding behind the
+    exemption, and none is a stale entry that must leave the list."""
+    wrong = {
+        key: n for key in H2_TENANT_DISCOVERY_SITES
+        if (n := _get_db_calls_in(*key)) != 1
+    }
+    assert wrong == {}, (
+        f"tenant-discovery entries that do not hold exactly one get_db(): "
+        f"{wrong}"
+    )
+
+
 def test_get_db_sites_elsewhere_only_ratchet_down() -> None:
     total = sum(
         n for f, n in _get_db_sites().items()
         if not f.startswith("apps/services/gateway/gateway/routes/projects/")
-    )
+    ) - len(H2_TENANT_DISCOVERY_SITES)
     assert total <= H2_BASELINE_ELSEWHERE, (
         f"{total} unbound get_db() sites outside routes/projects — above the "
         f"frozen H2 baseline of {H2_BASELINE_ELSEWHERE}. New code must use "

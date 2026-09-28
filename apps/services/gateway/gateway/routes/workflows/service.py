@@ -185,6 +185,12 @@ async def _workflow_billing_member(workflow_id: str) -> str | None:
     ⚠️ **``None`` when neither resolves, never a guess.** The node then runs
     as it did before this change. On the org-key arm that still bills the one
     organization, and on the deployment arm the Console refuses it loudly.
+
+    ⚠️ **A TENANT-DISCOVERY read, so it is unbound on purpose.** It decides
+    which organization pays, so it cannot run inside that organization's
+    session. ``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES`` names it. Once
+    FORCE RLS covers ``app_user`` it returns zero rows, like every H4
+    resolver, and this function then fails CLOSED to ``None`` (H-152).
     """
     ambient = ""
     try:
@@ -594,6 +600,20 @@ async def _execute_run(
             },
         )
 
+    # H-152: the WHOLE run acts for its billing member, not only the agent
+    # node. A tool node can emit an event whose sink starts an agent run
+    # (`projects/agent_dispatch.py`), and that run inherits this task's
+    # member. Closed as the last act of the `finally` below. An unresolved
+    # member binds nothing, so a manual run keeps its clicker as before.
+    from acb_common import job_member_scope
+
+    member_scope = contextlib.ExitStack()
+    billing_member = await _workflow_billing_member(workflow_id)
+    if billing_member:
+        member_scope.enter_context(
+            job_member_scope(billing_member, app="workflows")
+        )
+
     status = "failed"
     error: str | None = None
     try:
@@ -657,12 +677,15 @@ async def _execute_run(
             run_id=run_id,
             status=status,
         )
-        await evaluate_automation_health(
-            workflow_id,
-            workflow_name,
-            trigger_kind=trigger_kind,
-            status=status,
-        )
+        try:
+            await evaluate_automation_health(
+                workflow_id,
+                workflow_name,
+                trigger_kind=trigger_kind,
+                status=status,
+            )
+        finally:
+            member_scope.close()
 
 
 def _safe_detail(detail: dict[str, Any]) -> dict[str, Any]:

@@ -224,6 +224,66 @@ class TestTheWorkflowAgentNode:
         assert kw["session_user"] == "owner@acme.com"
 
 
+class TestTheWholeWorkflowRunActsForItsMember:
+    """A tool node can emit an event whose sink starts an agent run
+    (``projects/agent_dispatch.py``). That run inherits the workflow task's
+    member, so ``_execute_run`` binds it for the WHOLE run.
+
+    Mutation-checked 2026-09-28: delete the ``enter_context`` in
+    ``_execute_run`` and the first test fails.
+    """
+
+    @staticmethod
+    def _run(monkeypatch, row, bound=None):
+        from gateway.routes.workflows import service
+
+        seen: dict = {}
+
+        async def _db():
+            return _FakeDb(row)
+
+        async def _execute(*_a, **_kw):
+            seen.update(attribution_headers())
+            return SimpleNamespace(status="completed", error=None, state={},
+                                   node_results={}, outputs=[],
+                                   paused_nodes=[], wait_until={})
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(service, "_get_db", _db)
+        monkeypatch.setattr(service, "execute_workflow", _execute)
+        monkeypatch.setattr(service, "_finish_run", _noop)
+        monkeypatch.setattr(service, "evaluate_automation_health", _noop)
+        monkeypatch.setattr(service, "publish_workflow_activity",
+                            lambda *a, **k: None)
+
+        async def go():
+            if bound:
+                bind_run_context(**bound)
+            await service._execute_run(
+                run_id="r-1", workflow_id="wf", workflow_name="wf",
+                serialized={}, trigger_payload={}, variables={},
+                started_by="scheduler", trigger_kind="schedule")
+            return dict(get_run_context())
+
+        after = asyncio.run(go())
+        return seen, after
+
+    def test_a_scheduled_run_acts_as_the_OWNER_throughout(self, monkeypatch):
+        seen, after = self._run(
+            monkeypatch, _Row(owner_email="owner@acme.com", ambient_email=None))
+        assert seen.get("X-CC-Member") == "owner@acme.com"
+        assert seen.get("X-CC-Module") == "workflows"
+        assert "user" not in after, "the run's member outlived the run"
+
+    def test_an_unresolved_owner_keeps_the_CLICKER(self, monkeypatch):
+        seen, _after = self._run(
+            monkeypatch, None,
+            bound={"user": "dana@acme.com", "member_verified": True})
+        assert seen.get("X-CC-Member") == "dana@acme.com"
+
+
 # ── The self-mutation sandbox ───────────────────────────────────────────────
 
 
@@ -277,6 +337,8 @@ class TestTheMutationSandbox:
         assert (headers["X-CC-Module"], headers["X-CC-Run"]) == ("tasks", "run-7")
 
     def test_a_CLAIMED_member_crosses_unsigned(self, monkeypatch, secret):
+        """A claim is never signed here. On the deployment key the Router
+        then REFUSES it (PR #511), which is the fail-closed answer."""
         from orchestrator import mutation
 
         with run_context_scope():
@@ -694,7 +756,11 @@ def _py_files():
 
 
 def _calls_named(name: str):
-    """Every call to ``name``, bare or as an attribute, as (path, line, node)."""
+    """Every call to ``name``, bare or as an attribute.
+
+    Yields ``(path, enclosing_function, line, node)``. The enclosing function
+    is the innermost ``def`` around the call, or ``<module>``.
+    """
     import ast
 
     for py in _py_files():
@@ -704,68 +770,136 @@ def _calls_named(name: str):
             tree = ast.parse(py.read_text(encoding="utf-8-sig", errors="ignore"))
         except SyntaxError as exc:  # pragma: no cover - a fence must not go blind
             raise AssertionError(f"cannot parse {py}: {exc}") from exc
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            called = f.id if isinstance(f, ast.Name) else (
-                f.attr if isinstance(f, ast.Attribute) else "")
-            if called == name:
-                yield py.relative_to(ROOT).as_posix(), node.lineno, node
+        rel = py.relative_to(ROOT).as_posix()
+
+        def visit(node, fn, rel=rel):
+            for child in ast.iter_child_nodes(node):
+                inner = child.name if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
+                if isinstance(child, ast.Call):
+                    f = child.func
+                    called = f.id if isinstance(f, ast.Name) else (
+                        f.attr if isinstance(f, ast.Attribute) else "")
+                    if called == name:
+                        yield rel, fn, child.lineno, child
+                yield from visit(child, inner, rel)
+
+        yield from visit(tree, "<module>")
 
 
-#: ``run_agent(...)`` calls that pass NO ``session_user``, and why each is
-#: safe. A new call must pass ``session_user=`` (a SERVER-derived member) or
-#: be added here with its reason, in the PR that adds it.
-_RUN_AGENT_WITHOUT_SESSION_USER = {
-    "apps/services/orchestrator/orchestrator/agents.py":
-        "a sub-agent tool call; it runs on its parent's task and inherits "
-        "the parent run's member",
-    "packages/acb_skills/acb_skills/agent_tools.py":
-        "the call_agent tools: a delegated run on its parent's task, or a "
-        "create_task that copies the parent's context and so its member",
-    "apps/services/orchestrator/orchestrator/executor.py":
-        "a sub-task dispatch inside a run; it inherits the parent's member",
-    "apps/services/gateway/gateway/routes/email/automation/drafting.py":
-        "runs inside `as_mailbox_owner`; its `user_email` is that same owner, "
-        "which `_run_member` keeps verified",
-    "apps/services/gateway/gateway/routes/projects/agent_dispatch.py":
-        "an inline event sink of PUT /tasks/{id}/assignees; it inherits the "
-        "assigner's session member, or the workflow owner",
-    "apps/services/gateway/gateway/routes/agent.py":
-        "OPEN (H-152): the HMAC-signed /agent/webhook has no owning member "
-        "or organization; it runs memberless or on a signed body claim",
-    "apps/services/gateway/gateway/routes/workflows/engine/handlers.py":
-        "`services.run_agent` is the workflow seam, `_agent_runner`, which "
-        "binds the billing member itself",
+def _passes_a_member(node) -> bool:
+    """A ``session_user=`` keyword whose value is not a literal ``None``.
+
+    ⚠️ ``session_user=None`` is memberless, and counting the keyword's mere
+    presence would let it through.
+    """
+    import ast
+
+    for k in node.keywords:
+        if k.arg == "session_user":
+            return not (isinstance(k.value, ast.Constant) and k.value.value is None)
+    return False
+
+
+#: ``run_agent(...)`` calls that pass NO member, keyed on
+#: ``(file, enclosing function)`` with the EXACT number of such calls there,
+#: and why each is safe. A new call must pass ``session_user=`` with a
+#: SERVER-derived member, or be added here with its reason, in its own PR.
+#: A second memberless call in an already-listed function changes the count
+#: and fails too.
+_RUN_AGENT_WITHOUT_SESSION_USER: dict[tuple[str, str], tuple[int, str]] = {
+    ("apps/services/orchestrator/orchestrator/agents.py", "delegate_to_agent"): (
+        1, "a sub-agent tool call on its parent's task; it inherits the "
+           "parent run's member"),
+    ("packages/acb_skills/acb_skills/agent_tools.py", "call_agent"): (
+        1, "a delegated run on its parent's task; it inherits the parent's "
+           "member"),
+    ("packages/acb_skills/acb_skills/agent_tools.py", "_run_one"): (
+        1, "call_agents_parallel: one delegated run per task, each on a task "
+           "that copies the parent's context and so its member"),
+    ("packages/acb_skills/acb_skills/agent_tools.py", "call_agent_background"): (
+        1, "create_task copies the parent run's context, and so its member"),
+    ("apps/services/orchestrator/orchestrator/executor.py", "_run_sub_agent_streaming"): (
+        1, "the sub-agent fallback inside a run; it inherits the parent's "
+           "member"),
+    ("apps/services/gateway/gateway/routes/email/automation/drafting.py",
+     "_draft_via_maf_agent"): (
+        1, "dead code (drafting.py marks it so); its `user_email` claim "
+           "stays unverified"),
+    ("apps/services/gateway/gateway/routes/email/automation/drafting.py",
+     "_orchestrate_draft"): (
+        1, "runs inside `as_mailbox_owner`; its `user_email` is that same "
+           "owner, which `_run_member` keeps verified"),
+    ("apps/services/gateway/gateway/routes/projects/agent_dispatch.py",
+     "_run_and_record"): (
+        1, "an inline event sink. From PUT /tasks/{id}/assignees it inherits "
+           "the assigner's session member. From a workflow tool node it "
+           "inherits the member `_execute_run` binds for the whole run"),
+    ("apps/services/gateway/gateway/routes/agent.py", "_run"): (
+        1, "OPEN (H-152): the HMAC-signed /agent/webhook has no owning member "
+           "or organization; it runs memberless or on a signed body claim"),
+    ("apps/services/gateway/gateway/routes/workflows/engine/handlers.py",
+     "execute_node"): (
+        1, "`services.run_agent` is the workflow seam, `_agent_runner`, which "
+           "passes the billing member itself"),
 }
 
 
 class TestNoNewMemberlessCallSite:
     """R7 fence for H-152. Deliberately STATIC: a path that would run with no
-    member fails here, before anyone flips the deployment key."""
+    member fails here, before anyone flips the deployment key.
+
+    ⚠️ **Why ``acompletion_with_fallback`` and ``complete`` are NOT fenced the
+    same way.** They have about 80 call sites. Most run inside a signed-in
+    request, where ``get_current_user`` binds the member. No static reading
+    can tell a request handler from a loop body three calls away. The
+    background loops are instead covered at their ENTRY: the email hooks by
+    ``as_mailbox_owner``, the WhatsApp pass by ``job_member_scope``, and a
+    workflow run in ``_execute_run``. Each has a test in this file.
+
+    Mutation-checked 2026-09-28: add a second memberless ``run_agent`` in
+    ``_run_and_record`` and the count test fails. Change the workflow
+    node's keyword to ``session_user=None`` and the first test fails.
+    """
 
     @staticmethod
-    def _without_member():
-        return [
-            (path, line) for path, line, node in _calls_named("run_agent")
-            if not any(k.arg == "session_user" for k in node.keywords)
-        ]
+    def _memberless() -> dict[tuple[str, str], list[int]]:
+        out: dict[tuple[str, str], list[int]] = {}
+        for path, fn, line, node in _calls_named("run_agent"):
+            if not _passes_a_member(node):
+                out.setdefault((path, fn), []).append(line)
+        return out
 
     def test_every_run_agent_call_passes_a_member_or_is_JUSTIFIED(self):
-        offenders = [
-            f"{path}:{line}" for path, line in self._without_member()
-            if path not in _RUN_AGENT_WITHOUT_SESSION_USER
-        ]
+        offenders = {
+            f"{path}::{fn}": lines
+            for (path, fn), lines in self._memberless().items()
+            if (path, fn) not in _RUN_AGENT_WITHOUT_SESSION_USER
+        }
         assert not offenders, (
-            "run_agent() with no session_user and no recorded reason: "
-            f"{offenders}. Pass a SERVER-derived member, or justify it in "
-            "_RUN_AGENT_WITHOUT_SESSION_USER.")
+            "run_agent() with no member and no recorded reason: "
+            f"{offenders}. Pass a SERVER-derived `session_user=`, or justify "
+            "it in _RUN_AGENT_WITHOUT_SESSION_USER.")
 
-    def test_the_allowlist_holds_no_STALE_entry(self):
-        live = {path for path, _line in self._without_member()}
-        stale = set(_RUN_AGENT_WITHOUT_SESSION_USER) - live
-        assert not stale, f"no longer calls run_agent without a member: {stale}"
+    def test_each_justified_function_holds_its_EXACT_count(self):
+        live = self._memberless()
+        drift = {
+            f"{path}::{fn}": (len(live.get((path, fn), [])), n)
+            for (path, fn), (n, _why) in _RUN_AGENT_WITHOUT_SESSION_USER.items()
+            if len(live.get((path, fn), [])) != n
+        }
+        assert not drift, (
+            f"memberless run_agent() counts (measured, pinned): {drift}. A "
+            "higher count is a NEW memberless call; a lower one is progress "
+            "to bank by lowering or removing the entry.")
+
+    def test_a_literal_None_is_MEMBERLESS(self):
+        import ast
+
+        call = ast.parse("run_agent(a, b, session_user=None)").body[0].value
+        assert _passes_a_member(call) is False
+        call = ast.parse("run_agent(a, b, session_user=owner)").body[0].value
+        assert _passes_a_member(call) is True
 
     def test_no_OpenAI_client_is_built_outside_the_attribution_seam(self):
         """🔴 graphiti built a bare ``AsyncOpenAI`` against gateway ``/v1``,
@@ -783,7 +917,7 @@ class TestNoNewMemberlessCallSite:
         offenders = [
             f"{path}:{line}"
             for name in ("AsyncOpenAI", "OpenAI")
-            for path, line, _node in _calls_named(name)
+            for path, _fn, line, _node in _calls_named(name)
             if path not in allowed
         ]
         assert not offenders, f"OpenAI clients that cannot attribute: {offenders}"
