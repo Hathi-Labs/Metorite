@@ -2650,6 +2650,43 @@ async def load_default_status(
     )
 
 
+async def parent_lane_status(db: Any, parent: Any, status_home: str) -> Any:
+    """The status a new child of ``parent`` lands in (D-PM-38, D79).
+
+    ONE rule for every door that creates a step: the Projects panel and board
+    (``POST /tasks``), both chat tools, and My Tasks (``personal.step_status``).
+    A step of work that is in progress is in progress too, so the child takes
+    the parent's lane when ALL of these are true:
+
+    * the lane is open, so not ``done`` and not ``cancelled``;
+    * the lane is not triage, the intake holding pen;
+    * the lane is in the child's own status set, ``status_home``. A parent in a
+      subproject with its own set, or in another project, has a lane the child
+      cannot hold. The SQL checks the owner, so that lane is never returned.
+
+    Otherwise the answer is :func:`load_default_status`, the one resolver.
+    A caller that states a ``status_id`` does not come here: an explicit
+    status always wins.
+
+    Before this seam the rule lived in ``personal.step_status`` only. A step
+    added from the Projects panel or the chat took the FIRST lane, so a step
+    under an "In review" parent sat in "Backlog" (S4 build record §11.40).
+    """
+    sid = getattr(parent, "status_id", None)
+    lane = (await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses "
+            "WHERE id = CAST(:sid AS uuid) AND project_id = CAST(:home AS uuid)"
+        ),
+        {"sid": str(sid), "home": str(status_home)},
+    )).fetchone() if sid else None
+    category = getattr(lane, "category", None) if lane is not None else None
+    if lane is not None and category not in CLOSING_CATEGORIES \
+            and category != TRIAGE_CATEGORY:
+        return lane
+    return await load_default_status(db, status_home)
+
+
 #: What a member reads when a write would leave a status set with no Done
 #: status (D79). One sentence for every door, so the settings screen, the
 #: status-set switch and a tree move all say the same thing.
