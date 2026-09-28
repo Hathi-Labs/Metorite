@@ -100,10 +100,14 @@ def test_t1_is_live_with_pulse_conflicts_and_rebalance() -> None:
     assert t1["available"] is True
     assert t1["sections"] == ["pulse", "conflicts", "rebalance"]
     assert (t1["weeks"], t1["skip_current_week"]) == (1, False)
-    assert t1["scope_kinds"] == ["project", "org"]
+    # WS-27bn R5b adds the `team` scope.
+    assert t1["scope_kinds"] == ["team", "project", "org"]
     assert "waits_for" not in t1
     live = [k for k, t in rep.TEMPLATES.items() if t["available"]]
-    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    assert live == [
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
+    ]
     assert rep.normalise_report_config({"template": "team_pulse"})["template"] == (
         "team_pulse"
     )

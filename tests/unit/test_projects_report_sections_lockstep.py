@@ -261,10 +261,14 @@ def test_project_status_is_live_in_sections_order() -> None:
     assert t5["scope_kinds"] == ["project"]
 
 
-def test_the_live_templates_are_exactly_the_pinned_four() -> None:
-    """WS-27bn R3d makes T1 `team_pulse` live."""
+def test_the_live_templates_are_exactly_the_pinned_six() -> None:
+    """WS-27bn R3d makes T1 `team_pulse` live. R5b makes T2 `my_day` and
+    T6 `one_on_one` live."""
     live = [k for k, t in reports.TEMPLATES.items() if t["available"]]
-    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    assert live == [
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
+    ]
 
 
 def test_weekly_delivery_is_exactly_the_default_report() -> None:

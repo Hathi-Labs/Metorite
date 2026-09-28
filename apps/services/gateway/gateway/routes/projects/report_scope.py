@@ -334,6 +334,9 @@ async def subject_choices(db: Any, user: Any, vis: Any) -> dict[str, Any]:
 
     The builder's picker reads this, so it never shows a subject and then
     refuses it (§7.1 rule 1). Both lists name the organization in the SQL.
+
+    ``me`` (WS-27bn R5b) is the reader's own address, from the session. The
+    subject chip names that row "Me", and "My day" takes it as its subject.
     """
     scope = await reader_scope(db, user, vis)
     org = getattr(vis, "organization_id", None)
@@ -354,6 +357,7 @@ async def subject_choices(db: Any, user: Any, vis: Any) -> dict[str, Any]:
     )).fetchall()
     return {
         "everyone": scope.everyone,
+        "me": scope.me,
         "people": [
             {"email": str(r.email), "name": r.display_name or None}
             for r in people
