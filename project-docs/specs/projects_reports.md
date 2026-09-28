@@ -246,12 +246,12 @@ a ◐ template as "coming soon".
 
 | # | Key | Template | The question | Scope | Period | Sections | Status |
 |---|---|---|---|---|---|---|---|
-| T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ◐ |
-| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` for one person, `waiting` | ◐ |
+| T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ✅ (since R3d) |
+| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` (its waiting items show on the reader's own row, Q6) | ◐ |
 | T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
 | T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `finished`, `outlook`, `stuck`, `conflicts` | ✅ (since R3a) |
-| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` (waiting items show only when the reader is the subject, Q6) | ◐ (§7.1 limits who may open it) |
+| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse` (its waiting items show on the reader's own row, Q6) | ◐ (§7.1 limits who may open it) |
 | T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
 | T9 | `stakeholder_update` | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
@@ -1173,11 +1173,48 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - An admin or the creator can delete a report whose stored subject has a bad shape. Get and render still answer 422.
 
 ### R5b — The picker, the entry points, T2 and T6 · AGENT-SAFE
-The scope chip reads `GET /projects/reports/subjects`. "1:1 prep" opens T6 with the person filled in.
-"My day" opens T2 for the reader.
 
-T2 is `pulse` with `weeks` 1 and `skip_current_week` false. T6 is `finished`, `throughput` and `pulse` with `weeks` 4.
-A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
+**What:** the builder chooses a subject. T2 and T6 go live, and T1 takes a team. Four controls open the builder. R5b is two PRs, R5b-1 and R5b-2.
+
+**Rules, R5b-1 (the server and the builder):**
+- The builder has two chips: "about [subject]" and "in [scope]". R5a lets `config.subject` and `project_id` combine, and one picker cannot hold both. This replaces the one picker of §6.2.
+- The subject chip lists "Everyone", then the people, then the teams. It reads `GET /projects/reports/subjects` only. The reader's own row reads "Me".
+- The scope chip stays the project tree and "Whole organization". `scopeOptions` does not change.
+- `builderStateFrom`, `configFor`, `createPayload` and `patchPayload` carry `subject`. PATCH replaces the config, so an edit that drops the subject is a defect.
+- With a subject set, the builder removes `outlook` and `hygiene`. A template with no `person` or `team` in `scope_kinds` hides the subject chip.
+- `my_day` (T2) goes live: `pulse`, `weeks` 1, `skip_current_week` false, `scope_kinds` `["person"]`, `requires_subject` `"self"`.
+- `one_on_one` (T6) goes live: `finished`, `throughput`, `pulse`, `weeks` 4, `skip_current_week` true, `scope_kinds` `["person"]`, `requires_subject` `"person"`.
+- `team_pulse` (T1) takes `scope_kinds` `["team", "project", "org"]`.
+- `normalise_report_config` gives 422 to a T2 or T6 config with no person subject. This rule reads only the shape, so it needs no database.
+- Create, patch and preview give 422 to a T2 config whose subject is not the reader. This check runs before the §7.1 check. A render does not run it.
+- `pulse_body` does not change. The waiting items show only on the reader's own row (Q6).
+
+**The link contract:** `/projects?app=reports&template=<key>&subject=<kind>:<value>&report_node=<id>`. Each key after `app` is optional. The key is `report_node` and not `project`, because the page consumes `?project=` and closes the app pane. `reportLink` in `lib/reportBuilder.ts` builds each link. A second builder of this address is a defect. `ReportsView` reads the keys once and then removes them from the address.
+
+**Rules, R5b-2 (the entry points):**
+- `NodeDashboard` shows "Report on this". It opens the builder with the node as the scope.
+- `PersonPanel` in the People app shows "1:1 prep". It opens T6 with the person as the subject.
+- "1:1 prep" shows only when the subjects route lists that person. When the read fails, the control is absent. It is never disabled.
+- The top bar of My Tasks shows "My day". It opens T2 with the reader as the subject.
+
+**Non-goals:** the chat (R8), the member setting (R5c), a "today" period, a `waiting` section, and a control on a task's assignee. The assignee chip has no menu, and a new menu is a design choice for a later slice.
+
+**Done when, R5b-1:**
+- (a) Vitest: a row with a subject goes through `builderStateFrom` and then `patchPayload`, and the subject stays the same.
+- (b) Vitest: `subjectOptions` for a member lists "Everyone" and "Me" only. For a lead it lists the lead, the team members and the teams they lead. For an admin it lists every person and team in the answer.
+- (c) Vitest: `configFor` of a state with a subject holds no `outlook` and no `hygiene`.
+- (d) Vitest: `reportLink` and its parser keep the template, the subject and the node. An unknown template or a bad subject opens the home screen.
+- (e) Real database: create, patch and preview of T2 or T6 with no subject each get 422. A team subject also gets 422.
+- (f) Real database: a member creates T2 on themselves and gets 201. An admin creates T2 on another person and gets 422.
+- (g) Real database: lead L creates T6 on M and gets 201. L creates T6 on N and gets 403 with the §7.1 reason.
+- (h) Real database: T1 with the subject team A renders for L. A member gets 403 for team A.
+- (i) The live templates are exactly `team_pulse`, `my_day`, `weekly_delivery`, `project_status`, `one_on_one` and `data_hygiene`.
+- (j) Real database: the subject of a saved T2 renders it and sees their waiting items. An admin renders the same row and sees none.
+
+**Done when, R5b-2:**
+- (k) Vitest: the link of each control equals `reportLink` with the expected template, subject and node.
+- (l) Vitest: `PersonPanel` shows no "1:1 prep" when the subjects answer omits the person, or when the read fails.
+- (m) A review at 390 px shows that each link opens Reports with the builder filled in. If it does, the PR closes H-184 item 5.
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
@@ -1448,6 +1485,7 @@ hides the file that hung.
 
 ```bash
 uv run pytest tests/unit/test_projects_report_scope_r5.py \
+  tests/unit/test_projects_report_scope_r5b.py \
   tests/unit/test_projects_report_sections_r3d.py \
   tests/unit/test_projects_report_sections_r3.py \
   tests/unit/test_projects_report_sections_r3b.py \
@@ -1481,6 +1519,7 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_sections_r3d.py` is R3d's file.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
+- `test_projects_report_scope_r5b.py` is R5b's file.
 
 Client, in `workbench/control_plane`:
 
