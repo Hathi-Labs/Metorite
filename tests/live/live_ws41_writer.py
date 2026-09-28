@@ -406,6 +406,9 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
             )
         elif tid == b:
             row[col["Priority"]] = "1"
+            # A status its list does not hold yet: the writer adds a lane to a
+            # set an earlier run made, and the report must say so (I-4).
+            row[col["Status"]] = "waiting on vendor"
         elif tid == c:
             row[col["Task Name"]] = "Renamed in ClickUp too"
     out = io.StringIO()
@@ -439,7 +442,8 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         rep_.get("tasks_updated") == 2
         and rep_.get("conflicts_kept") == 1
         and rep_.get("tasks_written") == 0
-        and rep_.get("comments_written") == 1,
+        and rep_.get("comments_written") == 1
+        and rep_.get("lanes_added") == 1,
         json.dumps(
             {
                 k: rep_.get(k)
@@ -449,6 +453,7 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
                     "conflicts_kept",
                     "tasks_written",
                     "comments_written",
+                    "lanes_added",
                     "created",
                 )
             }
@@ -597,6 +602,14 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "4c.4 a member-renamed lane is followed: no duplicate lane, no task moves",
         lanes_now == lane.n and still_in == in_lane,
         f"lanes {lane.n}->{lanes_now}, tasks {in_lane}->{still_in}",
+    )
+    renamed_report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=renamed)
+    )
+    check(
+        "4c.4b the report counts no added lane when every name has one",
+        renamed_report.get("lanes_added") == 0,
+        str(renamed_report.get("lanes_added")),
     )
 
     async with tenant_session(org) as db:

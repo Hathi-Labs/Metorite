@@ -233,7 +233,7 @@ async def create_import_run(
             # not cause.
             mapping.people = usable_people(mapping.people, facts["directory"])
             plan = build_plan(bundle, mapping, **facts)
-            plan["inherited_from"] = inherited
+            _mark_continuation(plan, inherited, _choice(mapping) if inherited else None, mapping)
 
             stored = _store(organization_id, run_id, uploads)
             superseded = [
@@ -337,6 +337,10 @@ async def save_import_mapping(
     async with _tenant_session() as db:
         facts = await _facts(db, bundle, mapping, vis, organization_id)
         plan = build_plan(bundle, mapping, **facts)
+        earlier = _json(row.plan) or {}
+        _mark_continuation(
+            plan, earlier.get("inherited_from"), earlier.get("inherited_choice"), mapping
+        )
         saved = (
             await db.execute(
                 text(SAVE_MAPPING_SQL),
@@ -352,6 +356,30 @@ async def save_import_mapping(
         # The run moved on while the file was parsed.
         raise HTTPException(status_code=409, detail=_not_editable("no longer open"))
     return run_view(saved)
+
+
+def _choice(mapping: ImportMapping) -> dict[str, Any]:
+    """The two choices a continuation depends on (§6.9 node reuse)."""
+    return {"target": mapping.target.model_dump(), "grant": mapping.grant}
+
+
+def _mark_continuation(
+    plan: dict[str, Any],
+    inherited: str | None,
+    earlier_choice: dict[str, Any] | None,
+    mapping: ImportMapping,
+) -> None:
+    """Tell the review step whether this run goes into an earlier import's
+    spaces (I-4). The writer reuses a node only under the SAME target and
+    grant. So a run that inherited its mapping and still holds those two
+    choices continues, and one whose admin changed either starts a new tree.
+
+    The choice is kept in the plan at upload, so the mapping route can compare
+    against it with no second read. A space renamed in the tool since then is
+    still created again, one node at a time; the review step says so."""
+    plan["inherited_from"] = inherited
+    plan["inherited_choice"] = earlier_choice
+    plan["continues"] = bool(inherited) and earlier_choice == _choice(mapping)
 
 
 def _not_editable(state: str) -> str:

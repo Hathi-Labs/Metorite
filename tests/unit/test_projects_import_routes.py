@@ -534,3 +534,41 @@ def test_an_inherited_mapping_is_case_blind() -> None:
     directory = {"m4@acme.test": "Four"}
     people = {"name:a": "M4@Acme.TEST", "name:b": None, "name:c": "gone@acme.test"}
     assert imports.usable_people(people, directory) == {"name:a": "m4@acme.test", "name:b": None}
+
+
+def test_the_plan_says_whether_a_run_continues_an_earlier_import() -> None:
+    """I-4: the review step says when a run goes into an earlier import's
+    spaces, and when a changed destination starts a new tree. The writer
+    reuses a node only under the same target and grant (§6.9)."""
+    kept = ImportMapping(target=Target(kind="new_space", name="Ops"), grant="org")
+    choice = imports._choice(kept)
+
+    plan: dict[str, Any] = {}
+    imports._mark_continuation(plan, None, None, kept)
+    assert plan["continues"] is False and plan["inherited_from"] is None
+
+    imports._mark_continuation(plan, "r0", choice, kept)
+    assert plan["continues"] is True and plan["inherited_choice"] == choice
+
+    renamed = ImportMapping(target=Target(kind="new_space", name="Ops 2"), grant="org")
+    imports._mark_continuation(plan, "r0", choice, renamed)
+    assert plan["continues"] is False
+
+    regranted = ImportMapping(target=Target(kind="new_space", name="Ops"), grant="group:ops")
+    imports._mark_continuation(plan, "r0", choice, regranted)
+    assert plan["continues"] is False
+
+
+async def test_a_saved_mapping_keeps_what_the_upload_inherited(db: RecordingDB) -> None:
+    """The mapping route re-plans. It must carry the upload's inheritance, or
+    the Map step loses the note the moment the admin saves."""
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    run = db.runs[view["id"]]
+    choice = imports._choice(ImportMapping())
+    run["plan"] = json.dumps({"inherited_from": "r0", "inherited_choice": choice})
+    saved = await imports.save_import_mapping(view["id"], ImportMapping(), _user())
+    assert saved["plan"]["inherited_from"] == "r0" and saved["plan"]["continues"] is True
+    moved = await imports.save_import_mapping(
+        view["id"], ImportMapping(target=Target(kind="new_space", name="Elsewhere")), _user()
+    )
+    assert moved["plan"]["continues"] is False
