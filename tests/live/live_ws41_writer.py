@@ -30,6 +30,7 @@ COMMITS, so this script works in two fresh organizations and deletes both.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -359,7 +360,11 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         second.get("tasks_written") == 0
         and second.get("tasks_unchanged") == 2423
         and second.get("tasks_updated") == 0
-        and second.get("comments_written") == 0,
+        and second.get("comments_written") == 0
+        # The I-4 browser walk: a re-run said "Added a Done status to 7
+        # lists" and added nothing. A reused list already holds its Done.
+        and second.get("done_status_added") == 0
+        and second.get("lanes_added") == 0,
         json.dumps(second)[:300],
     )
     created = second.get("created", {})
@@ -406,6 +411,9 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
             )
         elif tid == b:
             row[col["Priority"]] = "1"
+            # A status its list does not hold yet: the writer adds a lane to a
+            # set an earlier run made, and the report must say so (I-4).
+            row[col["Status"]] = "waiting on vendor"
         elif tid == c:
             row[col["Task Name"]] = "Renamed in ClickUp too"
     out = io.StringIO()
@@ -439,7 +447,8 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         rep_.get("tasks_updated") == 2
         and rep_.get("conflicts_kept") == 1
         and rep_.get("tasks_written") == 0
-        and rep_.get("comments_written") == 1,
+        and rep_.get("comments_written") == 1
+        and rep_.get("lanes_added") == 1,
         json.dumps(
             {
                 k: rep_.get(k)
@@ -449,6 +458,7 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
                     "conflicts_kept",
                     "tasks_written",
                     "comments_written",
+                    "lanes_added",
                     "created",
                 )
             }
@@ -598,6 +608,14 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         lanes_now == lane.n and still_in == in_lane,
         f"lanes {lane.n}->{lanes_now}, tasks {in_lane}->{still_in}",
     )
+    renamed_report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=renamed)
+    )
+    check(
+        "4c.4b the report counts no added lane when every name has one",
+        renamed_report.get("lanes_added") == 0,
+        str(renamed_report.get("lanes_added")),
+    )
 
     async with tenant_session(org) as db:
         _inherited_mapping, inherited_run = await imports._inherited_mapping(db, org, edited_bundle)
@@ -605,6 +623,25 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "4c.5 a new upload of the same workspace starts from the NEWEST earlier run's mapping",
         inherited_run == renamed,
         str(inherited_run),
+    )
+    # I-4: the plan asks the writer's own rule before any write.
+    digest = [hashlib.sha256(edited).hexdigest()]
+    async with tenant_session(org) as db:
+        same = await import_writer.continues_earlier(
+            db, org, str(uuid.uuid4()), edited_bundle, ImportMapping(), digest
+        )
+        elsewhere = await import_writer.continues_earlier(
+            db,
+            org,
+            str(uuid.uuid4()),
+            edited_bundle,
+            ImportMapping(target=Target(kind="new_space", name="Elsewhere")),
+            digest,
+        )
+    check(
+        "4c.6 the plan says a re-run continues, and a new destination does not",
+        same is True and elsewhere is False,
+        f"same={same} elsewhere={elsewhere}",
     )
 
     # A list moved to another space since: the old map is stale, so the list

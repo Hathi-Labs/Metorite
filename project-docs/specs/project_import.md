@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — I-1 and I-2 built 2026-09-27, I-3 and I-3b built 2026-09-28, the rest is spec.** Owner
+**Status: ACTIVE — I-1 and I-2 built 2026-09-27, I-3, I-3b and I-4 built 2026-09-28, the rest is spec.** Owner
 directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
@@ -750,7 +750,7 @@ the rest.
 
 | Limit | Value | Why |
 |---|---|---|
-| Upload size | 50 MB per file, 5 files per run | The largest reasonable Space export |
+| Upload size | 50 MB per file, 5 files per run, on the gateway. **9.5 MB per run in the browser** (I-4) | The largest reasonable Space export. The Next proxy in front of the gateway buffers 10 MB of a request body and cuts the rest (`experimental.proxyClientMaxBodySize`). So the wizard refuses a larger upload with a reason, and the admin exports one Space at a time. The real P-1 file is 1.2 MB |
 | Tasks per run | 20,000 | Twice the Jira file cap. A larger workspace imports one Space per run |
 | Runs in flight | 1 per organization | One writer at a time in one tree |
 | Open runs | 1 per organization | A new upload discards the open run and deletes its files (built in I-2). This caps the disk an organization can hold |
@@ -777,7 +777,7 @@ All under `/projects/import`, all behind the flag and the permission:
 | Route | Does |
 |---|---|
 | `POST /projects/import/runs` | Uploads the files, detects the source, parses, returns the run and the bundle summary |
-| `GET /projects/import/runs/{id}` | The run, its plan, its progress and its report |
+| `GET /projects/import/runs/{id}` | The run, its plan, its progress cursor and its report |
 | `PUT /projects/import/runs/{id}/mapping` | Saves the mappings, re-plans, returns the plan |
 | `POST /projects/import/runs/{id}/apply` | Starts or resumes the apply |
 | `POST /projects/import/runs/{id}/discard` | §6.9 |
@@ -787,7 +787,10 @@ All under `/projects/import`, all behind the flag and the permission:
 
 The import lives **inside Projects**. It adds no pane and no nav entry, so
 the nine-pane allowlist does not change (`launch_surface.md` §2). The entry is
-"Import…" on the Projects sidebar menu, shown to an admin when the flag is on.
+an Upload icon, "Import from ClickUp", beside the + on the Spaces heading. It
+shows only to a member with `admin:access:manage`, only when the flag is on, and
+only after access has loaded. The dialog mounts in the page's `overlays`, so it
+opens on a phone too (the H-120 defect).
 
 A four-step wizard, built from `src/components/ui/` primitives and the one
 look (`DESIGN_SYSTEM.md`):
@@ -796,8 +799,27 @@ look (`DESIGN_SYSTEM.md`):
    the chosen tool, in plain words.
 2. **Review** — the counts per space and project, the warnings, and the
    losses, before any write.
-3. **Map** — people, statuses, custom field types and the target.
+3. **Map** — the target, the people and the statuses. Custom field types
+   join in I-5.
 4. **Import** — the progress, then the report with a link to the new space.
+
+**An earlier import of the same workspace (built in I-4).** The plan carries
+`inherited_from` and `continues`. The upload and the mapping route both ask
+`import_writer.continues_earlier`, which is the writer's own reuse rule, read
+only. A second copy of the rule would drift from what the writer does. The review and
+Map steps say either "goes into the same spaces" or "starts a new tree".
+
+When a
+saved mapping breaks a continuation, the first Import stops and shows why. The
+second Import goes ahead. The report counts `lanes_added`, the statuses the
+writer added to a list that was already in Metorite.
+
+**A run the admin does not watch.** The view sends the writer's cursor and the
+report, and never the lease or the node maps. The wizard polls with the dialog
+closed too, so the tree refreshes when the run ends. A reopen shows a run that
+still writes, or a report not yet seen. A failed poll backs off and goes on.
+After 150 s with no progress, the wizard offers Resume, and the server refuses
+it with 409 while the writer is alive.
 
 ## 8. Fences (R7)
 
@@ -828,7 +850,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
 | **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 39 of 39 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. A list moved since is created again. A different workspace with the same Space names gets new spaces. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
 | **I-3b** ✅ built 2026-09-28 | Update mode (§6.9, §11 Q-5) | A new export of the same workspace updates the tasks by the three-way rule, and adds new comments once. **Met:** `live_ws41_writer.py` passes 56 of 56. An edited export updates a title and a priority, keeps a member's conflicting title, keeps a member's description, and adds one new comment. The same export again changes nothing, and moves no `updated_at`. A changed people mapping unassigns nobody. A member-renamed lane is followed. The creating run stays on every task |
-| **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today |
+| **I-4** ✅ built 2026-09-28 | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today. **Met:** the visual-review rig walked all four steps against the scrubbed P-1 plan, in dark and light mode, at compact and comfortable density, under a violet accent, and at 1280, 1440, 1920 and 390 px, with no console error. The plan carries `continues` (`imports._continues`, which asks `import_writer.continues_earlier`), and `live_ws41_writer.py` passes 58 of 58, with `continues` and `lanes_added` checked both ways. The I-4 review found the view dropped `progress` and `report`, which a stubbed rig cannot see. `test_the_view_carries_progress_and_report_but_not_the_lease` fences it. **End to end, 2026-09-28:** a browser walk with no stubs drove a real gateway and a fresh Postgres. In light mode it imported the fixture: 2,423 tasks, 5 spaces, 93 comments, with live progress. At compact density the same file again showed the continuation note and found 2,423 unchanged. At 390 px a third run did the same. No console error. The walk found a re-run that reported a Done status added to 7 lists it only reused. `project_statuses` now returns the lists, and the writer counts only those it creates. `live_ws41_writer.py` check 4.2 fences it |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |
 | **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed |
@@ -900,10 +922,11 @@ a fresh organization and deletes it at the end. The scratch database is shared
 between worktrees, so a neighbour's migration can deadlock a batch. The retry
 covers that, and a cleanup failure prints `WARN` instead of hiding the result.
 
-**I-4 and later (planned):**
+**I-4:**
 
 ```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+uv run pytest tests/unit/test_projects_import_routes.py -q
 ```
 
 Without the database, the live suite SKIPS and the run reads green. Check the
