@@ -166,6 +166,94 @@ export interface ImportRun {
   plan: ImportPlan;
   progress?: { cursor?: number } | null;
   report?: ImportReport | null;
+  /** Until when "Discard this import" is offered (§6.9), or null. */
+  discard_until?: string | null;
+  /** The server's answer to "offer Discard now?". */
+  discardable?: boolean;
+}
+
+// ── discard (I-6) ────────────────────────────────────────────────────────────
+
+/** What a discard removed, from `import_discard.discard_written_run`. */
+export interface DiscardCounts {
+  nodes?: number;
+  spaces?: number;
+  tasks?: number;
+  comments_elsewhere?: number;
+  updates_kept?: number;
+}
+
+/** One row of `GET /projects/import/runs`. */
+export interface ImportRunSummary {
+  id: string;
+  source: string;
+  state: RunState;
+  created_by: string;
+  created_at: string | null;
+  finished_at: string | null;
+  summary: ImportPlan["summary"] | null;
+  tasks_written: number;
+  discarded: DiscardCounts | null;
+  discard_until: string | null;
+  discardable: boolean;
+}
+
+/** A 409 from the discard route: what stops it, by name. */
+export interface DiscardRefusal {
+  message: string;
+  blocking: { id: string; title: string }[];
+}
+
+/** Read the route's `{message, blocking}` detail, or null for any other shape. */
+export function discardRefusal(detail: unknown): DiscardRefusal | null {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const { message, blocking } = detail as { message?: unknown; blocking?: unknown };
+  if (typeof message !== "string") return null;
+  const rows = Array.isArray(blocking) ? blocking : [];
+  return {
+    message,
+    blocking: rows
+      .filter((b): b is { id: string; title?: string } => typeof (b as { id?: unknown })?.id === "string")
+      .map((b) => ({ id: b.id, title: String(b.title ?? "") })),
+  };
+}
+
+/** What the discard did, in the admin's words. */
+export function discardLines(counts: DiscardCounts | null | undefined): string[] {
+  const c = counts ?? {};
+  const out: string[] = [];
+  const removed = [plural(c.spaces, "space"), plural(c.tasks, "task")].filter(Boolean);
+  if (removed.length) out.push(`Removed ${removed.join(" and ")}.`);
+  const others = (c.nodes ?? 0) - (c.spaces ?? 0);
+  if (others > 0) out.push(`Removed ${plural(others, "folder or list", "folders and lists")} it created.`);
+  if (c.comments_elsewhere)
+    out.push(`Removed ${plural(c.comments_elsewhere, "comment")} it added to tasks an earlier import made.`);
+  if (c.updates_kept)
+    out.push(`${plural(c.updates_kept, "update")} to tasks an earlier import made stay. The earlier values are not kept.`);
+  if (!out.length) out.push("The import had written nothing, so nothing was removed.");
+  return out;
+}
+
+const STATE_LABEL: Record<RunState, string> = {
+  uploaded: "Not started",
+  planned: "Not started",
+  applying: "Running",
+  done: "Done",
+  failed: "Stopped",
+  discarded: "Discarded",
+};
+
+/** A run in the list: when, how much, and where it stands. */
+export function runLine(run: ImportRunSummary): { when: string; what: string; state: string } {
+  const at = run.finished_at ?? run.created_at;
+  const when = at ? new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+  if (run.state === "discarded") {
+    const removed = run.discarded?.tasks;
+    return { when, what: removed ? `Removed ${plural(removed, "task")}` : "Nothing was written", state: STATE_LABEL.discarded };
+  }
+  const tasks = run.state === "done" || run.state === "failed" ? run.tasks_written : run.summary?.tasks ?? 0;
+  const what = run.state === "done" || run.state === "failed" ? `${plural(tasks, "new task") || "No new tasks"}` : `${plural(tasks, "task")} in the file`;
+  return { when, what, state: STATE_LABEL[run.state] ?? run.state };
 }
 
 // ── the wizard ───────────────────────────────────────────────────────────────
@@ -309,11 +397,13 @@ export function reportLines(report: ImportReport | null | undefined): string[] {
   return out;
 }
 
-function plural(n: number | undefined, noun: string): string {
+function plural(n: number | undefined, noun: string, many?: string): string {
   if (!n) return "";
   const word =
     n === 1
       ? noun
+      : many
+        ? many
       : noun === "person"
         ? "people"
         : noun.endsWith("y")

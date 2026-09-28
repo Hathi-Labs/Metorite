@@ -108,6 +108,7 @@ def test_every_feature_module_is_actually_mounted() -> None:
         "/projects/import/runs/{run_id}",
         "/projects/import/runs/{run_id}/mapping",
         "/projects/import/runs/{run_id}/apply",
+        "/projects/import/runs/{run_id}/discard",
     ):
         assert expected in paths, f"{expected} is not mounted"
 
