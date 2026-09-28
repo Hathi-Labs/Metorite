@@ -3484,6 +3484,23 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
   that PR on purpose, because it changes what the pull path deploys.
 
+### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
+- **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
+  → no hit means the chat still reads the report through the read rule.
+- **Why:** R5d lets the author change or delete their report after they
+  lose access to its subject (spec §8 R5d, test (t) and (z)). The server
+  allows it. But `report_delete` (`guarded.py`) and the change path of
+  `report_save` (`writes.py`) first call `GET /projects/reports/{id}`. That
+  read applies the subject check and returns 403, so the chat stops before
+  it reads `can_delete` or `can_edit`. The UI has no delete control, and the
+  list hides the row. So no product surface reaches the author path today.
+  It fails closed and leaks nothing.
+- **Do:** let the two tools read the row through the change rule, for
+  example a read that passes `refusal`, so the author reaches the card.
+  Add a chat test for a lead who left team B.
+- **Authority:** `specs/projects_reports.md` §8 R5d · the R5d review, 2026-09-28
+- **Added:** 2026-09-28 · the WS-27bn R5d session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

@@ -138,12 +138,12 @@ defect.
 - `TEMPLATES` (`:184`) is the template catalogue of §4 (R2).
 - `SCHEDULES` (`:284`) holds only `"weekly"`.
 - `delivery_armed()` (`:287`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:552`, templates at `:600` and subjects at
-  `:617` (R5a). Create is at `:637`. Get, patch and delete are at `:674` to
-  `:722`. Render is at `:1077` and preview at `:1113`. Recipients are at
-  `:1199` to `:1280`, and schedule is at `:1298`. These anchors were
-  measured again on 2026-09-28, after R5d.
-- `render_body` (`:736`) holds the section loop. Render and preview both
+- The routes: list is at `:567`, templates at `:615` and subjects at
+  `:632` (R5a). Create is at `:652`. Get, patch and delete are at `:689` to
+  `:739`. Render is at `:1094` and preview at `:1130`. Recipients are at
+  `:1220` to `:1302`, and schedule is at `:1320`. These anchors were
+  measured again on 2026-09-28, after the R5d change rule.
+- `render_body` (`:753`) holds the section loop. Render and preview both
   call it.
 - **Since R5a:** `routes/projects/report_scope.py` holds the rule of §7.1,
   the subject clause and the row filter.
@@ -1187,7 +1187,7 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 **What:** two server changes and their words in the chat and the UI. The dataset read obeys §7.1 rule 3 (Q10). The delete route obeys Q12. A change to a report obeys the same rule (Q13).
 
 **Rules, the dataset** (`analytics_dataset.py`, the chat tool `task_dataset`):
-- The route reads `reportable_people` once, in its own session. An admin gets `None`, and the answer for an admin does not change.
+- The route calls `reader_scope` once, in the tenant session of the request. An admin gets `None`, and the answer for an admin does not change.
 - With `group_by=assignee`, the groups of people outside the allowed set go. The unassigned group and the `agent:` groups stay.
 - `filter_person_rows` with `key="key"` removes them. A second filter in another module is a defect.
 - The filter runs before the cap of `MAX_GROUPS`. The SQL limit must never remove an allowed person.
@@ -1206,7 +1206,7 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 - `_report_dict` carries `can_delete`, which the server computes, as it computes `mine`.
 - The chat tool `report_delete` reads `can_delete` before the card. When the value is false, the tool gives the reason and shows no card.
 
-**Rules, a change** (`reports.py`, §9 Q13, added 2026-09-29):
+**Rules, a change** (`reports.py`, §9 Q13, added 2026-09-28):
 - The rule of the delete also binds `PATCH /reports/{id}`, the recipient add and remove routes, and `PATCH /reports/{id}/schedule`.
 - The order is the same. A report on a node that the reader cannot see still gets 404. Then the author or an admin passes.
 - Every other reader gets 403 with the reason "Only the author of this report or an admin may change it."
@@ -1249,7 +1249,7 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 **As built (2026-09-28).** `analytics_dataset.py` reads `reader_scope` once in the route. `assignee_refusal` gives the 403, and `dataset_body` takes `allowed`.
 For a restricted reader grouped by assignee, the SQL takes no limit, and `filter_person_rows` runs before the cap.
 
-`reports.py` holds `DELETE_REFUSED`. The 2026-09-29 change below renamed `_may_delete` to `_may_change`.
+`reports.py` holds `DELETE_REFUSED`. The 2026-09-28 change below renamed `_may_delete` to `_may_change`.
 `_visible_report` with `refusal` runs the project 404 and then the author-or-admin rule. It skips the subject check.
 
 The delete rule also replaces the old 422 for a stored subject with a bad shape. Any other reader now gets the 403 of the delete rule.
@@ -1258,7 +1258,7 @@ Test (i) no longer expects 403 from the delete, because (t) replaces that half.
 `test_projects_report_scope_r5.py` proves (l) to (t) on a real database, and `test_projects_agent_writes.py` proves (u).
 Six mutations each turn a test red (v). They remove the filter, its 403, the author path, the delete check or the chat check, or they put back the SQL limit.
 
-**As built, the change rule (2026-09-29, §9 Q13).** `reports.py` holds `CHANGE_REFUSED` and one function, `_may_change`, for the delete and for a change.
+**As built, the change rule (2026-09-28, §9 Q13).** `reports.py` holds `CHANGE_REFUSED` and one function, `_may_change`, for the delete and for a change.
 `_visible_report` takes `refusal`. The delete passes `DELETE_REFUSED`. `update_report`, `add_recipient`, `remove_recipient` and `set_schedule` pass `CHANGE_REFUSED`.
 
 `_report_dict` sets `can_edit` and `can_delete` from one call to `_may_change`. The two flags keep the name of each act for the client that offers it.
@@ -1424,7 +1424,7 @@ that the render does not need a saved row.
 | Q10 (2026-09-28) | Does the chat's task data read obey the role rule? | The owner: "run role rule in chat". The dataset read obeys §7.1 rule 3. A reader cannot group or count tasks by a person outside the people they may report on. This amends O3 of `projects_ai_chat.md` §13.7 (R5d). |
 | Q11 (2026-09-28) | May a report show the address of its author? | The owner: "author email address is fine for people from the same org". Every reader is in the organization of the report. So `created_by` stays in the report, the list and the chat. Nothing changes. |
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
-| Q13 (2026-09-29) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
+| Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
