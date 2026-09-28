@@ -117,6 +117,9 @@ _TEST_MESSAGE = "pytest-msg-1"
 # row takes a client update only from the member who started its run, so the
 # second write must come from the same member as the first.
 _ACTOR = "pytest@local"
+#: The tenant the helpers bind (WS-27bm S15, ``projects_ai_chat.md`` §21).
+#: This suite runs on the ladder-only shape, so any id binds.
+_ORG = "5150aaaa-0000-4000-8000-000000000015"
 
 
 def _purge() -> None:
@@ -156,13 +159,14 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
         _upsert_messages,
     )
 
-    _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent")
+    _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent", organization_id=_ORG)
     # S14 (projects_ai_chat.md §20): only the server creates an agent row,
     # so the run's mint makes it before the first write below.
     from gateway.routes.agent import _mint_run_row
 
     _mint_run_row(
         _TEST_SESSION, _TEST_MESSAGE, member=_ACTOR, agent_name="pytest-agent",
+        organization_id=_ORG,
     )
 
     card = {"name": "generative_ui", "value": {"type": "table", "props": {}}}
@@ -177,7 +181,7 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
         agent_state={"segments": [{"id": "m1", "text": "hi"}]},
         custom_events=[card],
     )
-    _upsert_messages(_TEST_SESSION, [rich], actor_email=_ACTOR)
+    _upsert_messages(_TEST_SESSION, [rich], actor_email=_ACTOR, organization_id=_ORG)
 
     # The browser re-POSTs its whole list; its copy of this turn lost the
     # stream artifacts (dropped SSE), so everything but content is empty.
@@ -187,10 +191,10 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
         content="here is the pipeline",
         timestamp=1_700_000_000_000,
     )
-    _upsert_messages(_TEST_SESSION, [lean], actor_email=_ACTOR)
+    _upsert_messages(_TEST_SESSION, [lean], actor_email=_ACTOR, organization_id=_ORG)
 
     stored = [
-        m for m in _get_messages(_TEST_SESSION, "pytest@local")
+        m for m in _get_messages(_TEST_SESSION, "pytest@local", organization_id=_ORG)
         if m["id"] == _TEST_MESSAGE
     ]
     assert len(stored) == 1
@@ -216,13 +220,14 @@ def test_richer_write_still_wins() -> None:
         _upsert_messages,
     )
 
-    _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent")
+    _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent", organization_id=_ORG)
     # S14 (projects_ai_chat.md §20): only the server creates an agent row,
     # so the run's mint makes it before the first write below.
     from gateway.routes.agent import _mint_run_row
 
     _mint_run_row(
         _TEST_SESSION, _TEST_MESSAGE, member=_ACTOR, agent_name="pytest-agent",
+        organization_id=_ORG,
     )
 
     base = MessageRecord(
@@ -233,7 +238,7 @@ def test_richer_write_still_wins() -> None:
         tool_events=[{"name": "zoho_crm"}],
         custom_events=[{"name": "generative_ui", "value": {"v": 1}}],
     )
-    _upsert_messages(_TEST_SESSION, [base], actor_email=_ACTOR)
+    _upsert_messages(_TEST_SESSION, [base], actor_email=_ACTOR, organization_id=_ORG)
 
     grown = MessageRecord(
         id=_TEST_MESSAGE,
@@ -246,10 +251,10 @@ def test_richer_write_still_wins() -> None:
             {"name": "generative_ui", "value": {"v": 2}},
         ],
     )
-    _upsert_messages(_TEST_SESSION, [grown], actor_email=_ACTOR)
+    _upsert_messages(_TEST_SESSION, [grown], actor_email=_ACTOR, organization_id=_ORG)
 
     row = next(
-        m for m in _get_messages(_TEST_SESSION, "pytest@local")
+        m for m in _get_messages(_TEST_SESSION, "pytest@local", organization_id=_ORG)
         if m["id"] == _TEST_MESSAGE
     )
     assert row["content"] == "partial then some"

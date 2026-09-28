@@ -56,6 +56,10 @@ _ALICE = f"{_PREFIX}-alice@fracktal.in"
 _BOB = f"{_PREFIX}-bob@fracktal.in"
 _CAROL = f"{_PREFIX}-carol@fracktal.in"
 _GROUP = f"{_PREFIX}-squad"
+#: The tenant every helper binds (WS-27bm S15, ``projects_ai_chat.md`` §21).
+#: This suite runs on the ladder-only shape, which has no RLS on the chat
+#: tables, so any id binds. ``test_chat_write_under_rls.py`` is the RLS half.
+_ORG = "5150aaaa-0000-4000-8000-000000000015"
 
 
 def _exec(sql: str, **params):
@@ -133,12 +137,12 @@ def test_a_failed_lookup_grants_nothing(monkeypatch) -> None:
     """
     from gateway import rooms
 
-    def _boom(session_id: str, email: str):
+    def _boom(session_id: str, email: str, organization_id: str | None):
         raise RuntimeError("connection pool exhausted")
 
     monkeypatch.setattr(rooms, "_load_room", _boom)
 
-    access = rooms.resolve_room_access("some-real-session", _BOB)
+    access = rooms.resolve_room_access("some-real-session", _BOB, organization_id=_ORG)
     assert not access.can_read
     assert not access.can_send
     assert not access.can_cancel
@@ -153,12 +157,12 @@ def test_a_failed_lookup_says_retry_rather_than_not_a_participant(
     """The refusal must not blame the person for an outage."""
     from gateway import rooms
 
-    def _boom(session_id: str, email: str):
+    def _boom(session_id: str, email: str, organization_id: str | None):
         raise RuntimeError("connection pool exhausted")
 
     monkeypatch.setattr(rooms, "_load_room", _boom)
 
-    message = rooms.resolve_room_access("some-real-session", _BOB).denied("send")
+    message = rooms.resolve_room_access("some-real-session", _BOB, organization_id=_ORG).denied("send")
     assert "try again" in message.lower()
     assert "not a participant" not in message.lower()
 
@@ -172,9 +176,11 @@ def test_a_session_with_no_row_is_still_the_callers_own(monkeypatch) -> None:
     """
     from gateway import rooms
 
-    monkeypatch.setattr(rooms, "_load_room", lambda session_id, email: None)
+    monkeypatch.setattr(
+        rooms, "_load_room", lambda session_id, email, organization_id: None,
+    )
 
-    access = rooms.resolve_room_access("brand-new-thread", _ALICE)
+    access = rooms.resolve_room_access("brand-new-thread", _ALICE, organization_id=_ORG)
     assert access.can_read and access.can_send and access.can_cancel
     assert access.role == "owner"
     assert access.unknown_session
@@ -191,12 +197,12 @@ def test_a_solo_session_is_its_owners_alone(clean) -> None:
 
     sid = _seed_session(_ALICE)
 
-    mine = resolve_room_access(sid, _ALICE)
+    mine = resolve_room_access(sid, _ALICE, organization_id=_ORG)
     assert mine.role == "owner"
     assert mine.can_read and mine.can_send and mine.can_manage
     assert not mine.is_shared
 
-    theirs = resolve_room_access(sid, _BOB)
+    theirs = resolve_room_access(sid, _BOB, organization_id=_ORG)
     assert theirs.role is None
     assert not theirs.can_read
 
@@ -207,7 +213,7 @@ def test_a_session_that_does_not_exist_stays_permissive(clean) -> None:
     it would break every new conversation, so it resolves as a room of one."""
     from gateway.rooms import resolve_room_access
 
-    access = resolve_room_access("pytest-rooms-never-created", _ALICE)
+    access = resolve_room_access("pytest-rooms-never-created", _ALICE, organization_id=_ORG)
     assert access.can_read and access.can_send
     assert access.unknown_session
     assert not access.is_shared
@@ -223,7 +229,7 @@ def test_a_viewer_watches_but_cannot_send(clean) -> None:
 
     sid = _seed_session(_ALICE, (_BOB, "viewer"))
 
-    bob = resolve_room_access(sid, _BOB)
+    bob = resolve_room_access(sid, _BOB, organization_id=_ORG)
     assert bob.role == "viewer"
     assert bob.can_read
     assert not bob.can_send
@@ -238,7 +244,7 @@ def test_a_member_sends_but_does_not_administer(clean) -> None:
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
 
-    bob = resolve_room_access(sid, _BOB)
+    bob = resolve_room_access(sid, _BOB, organization_id=_ORG)
     assert bob.can_read and bob.can_send and bob.can_cancel
     assert not bob.can_invite
     assert not bob.can_manage
@@ -266,15 +272,15 @@ def test_a_group_subject_lets_its_members_in_and_out(clean) -> None:
     )
     sid = _seed_session(_ALICE, (f"group:{_GROUP}", "member"))
 
-    assert resolve_room_access(sid, _BOB).can_send
-    assert not resolve_room_access(sid, _CAROL).can_read
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).can_send
+    assert not resolve_room_access(sid, _CAROL, organization_id=_ORG).can_read
 
     _exec(
         "DELETE FROM org_group_member WHERE user_id = "
         "(SELECT id FROM app_user WHERE email = :e)", e=_BOB,
     )
     # No fan-out write; the very next resolution is the truth.
-    assert not resolve_room_access(sid, _BOB).can_read
+    assert not resolve_room_access(sid, _BOB, organization_id=_ORG).can_read
 
 
 @_needs_db
@@ -295,7 +301,7 @@ def test_the_most_capable_matching_subject_wins(clean) -> None:
     # Bob is named an owner AND swept in by a viewers group.
     sid = _seed_session(_ALICE, (_BOB, "owner"), (f"group:{_GROUP}", "viewer"))
 
-    assert resolve_room_access(sid, _BOB).role == "owner"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "owner"
 
 
 @_needs_db
@@ -305,7 +311,7 @@ def test_org_visibility_grants_read_but_never_send(clean) -> None:
     sid = _seed_session(_ALICE)
     _exec("UPDATE chat_session SET visibility = 'org' WHERE id = :i", i=sid)
 
-    carol = resolve_room_access(sid, _CAROL)
+    carol = resolve_room_access(sid, _CAROL, organization_id=_ORG)
     assert carol.can_read
     assert not carol.can_send
     # Looking is not joining: she holds no place in the room.
@@ -330,15 +336,15 @@ def test_a_late_joiner_reads_from_their_join_point(clean) -> None:
         "WHERE session_id = :i AND subject = :s", i=sid, s=_BOB,
     )
 
-    assert resolve_room_access(sid, _BOB).since_message_ts == 5000
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).since_message_ts == 5000
     # The owner's own history is never withheld from them.
-    assert resolve_room_access(sid, _ALICE).since_message_ts is None
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).since_message_ts is None
 
     # A room showing full history ignores the recorded waterline rather than
     # discarding it — switching back must not be a retroactive disclosure of
     # something we failed to write down.
     _exec("UPDATE chat_session SET history_visibility = 'full' WHERE id = :i", i=sid)
-    assert resolve_room_access(sid, _BOB).since_message_ts is None
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).since_message_ts is None
 
 
 # ---------------------------------------------------------------------------
@@ -353,15 +359,15 @@ def test_the_last_owner_cannot_leave_or_be_demoted(clean) -> None:
     sid = _seed_session(_ALICE, (_BOB, "member"))
 
     with pytest.raises(HTTPException) as exc:
-        _remove_participant(sid, _ALICE)
+        _remove_participant(sid, _ALICE, organization_id=_ORG)
     assert exc.value.status_code == 400
 
     with pytest.raises(HTTPException):
-        _update_participant_role(sid, _ALICE, "viewer")
+        _update_participant_role(sid, _ALICE, "viewer", organization_id=_ORG)
 
     # Promote Bob and Alice is free to go.
-    assert _update_participant_role(sid, _BOB, "owner")
-    assert _remove_participant(sid, _ALICE)
+    assert _update_participant_role(sid, _BOB, "owner", organization_id=_ORG)
+    assert _remove_participant(sid, _ALICE, organization_id=_ORG)
 
 
 # ---------------------------------------------------------------------------
@@ -375,9 +381,9 @@ def test_an_author_cannot_be_rewritten_by_a_later_writer(clean) -> None:
     sid = _seed_session(_ALICE, (_BOB, "member"))
     msg = MessageRecord(id="m1", role="user", content="hello", timestamp=1000)
 
-    _upsert_messages(sid, [msg], actor_email=_ALICE)
+    _upsert_messages(sid, [msg], actor_email=_ALICE, organization_id=_ORG)
     # Bob re-POSTs the same conversation — the browser does this constantly.
-    _upsert_messages(sid, [msg], actor_email=_BOB)
+    _upsert_messages(sid, [msg], actor_email=_BOB, organization_id=_ORG)
 
     rows = _exec(
         "SELECT author_email, author_kind FROM chat_message "
@@ -398,6 +404,7 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
         sid,
         [MessageRecord(id="a1", role="assistant", content="hi", timestamp=1001)],
         actor_email=_ALICE, agent_name="agent-sales-assistant",
+        organization_id=_ORG,
     )
 
     rows = _exec(
@@ -428,11 +435,13 @@ def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
             author_kind="agent", author_email="projects-assistant",
         )],
         actor_email=_ALICE, agent_name="orchestrator",
+        organization_id=_ORG,
     )
     _upsert_messages(
         sid,
         [MessageRecord(id="c1", role="assistant", content="final", timestamp=1003)],
         actor_email=_ALICE, agent_name="orchestrator",
+        organization_id=_ORG,
     )
 
     rows = _exec(
@@ -457,6 +466,7 @@ def _addressed_turn(sid: str) -> None:
         sid,
         [MessageRecord(id="c2", role="assistant", content="partial", timestamp=1004)],
         actor_email=_ALICE, agent_name="orchestrator",
+        organization_id=_ORG,
     )
     # chat_fold.persist_final_assistant_message, with `_address_agent`'s answer.
     # The fold is the one writer that passes `author_from_run` (S12).
@@ -464,6 +474,7 @@ def _addressed_turn(sid: str) -> None:
         sid,
         [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
 
 
@@ -492,7 +503,7 @@ def _mint(sid: str, mid: str, member: str, agent: str = "projects-assistant") ->
     """The real mint that ``/agent/run/stream`` calls (WS-27bm S14, §20)."""
     from gateway.routes.agent import _mint_run_row
 
-    _mint_run_row(sid, mid, member=member, agent_name=agent)
+    _mint_run_row(sid, mid, member=member, agent_name=agent, organization_id=_ORG)
 
 
 @_needs_db
@@ -526,6 +537,7 @@ def test_a_client_save_after_the_fold_keeps_the_agent_that_ran(clean) -> None:
             author_kind="agent", author_email="projects-assistant",
         )],
         actor_email=_ALICE, agent_name="orchestrator",
+        organization_id=_ORG,
     )
     assert _author(sid, "c2").author_email == "sales-assistant"
 
@@ -541,12 +553,14 @@ def test_the_fold_never_rewrites_a_human_turn(clean) -> None:
         sid,
         [MessageRecord(id="h1", role="user", content="hello", timestamp=1007)],
         actor_email=_ALICE,
+        organization_id=_ORG,
     )
     # The fold, aimed at that id.
     _upsert_messages(
         sid,
         [MessageRecord(id="h1", role="assistant", content="answer", timestamp=1008)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     row = _author(sid, "h1")
     assert row.author_kind == "human"
@@ -567,7 +581,7 @@ def _save_as(sid: str, email: str, messages: list) -> dict:
     from acb_auth.roles import UserRole
     from gateway.routes.chat import save_messages
 
-    user = UserContext(email=email, role=UserRole.EMPLOYEE)
+    user = UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=_ORG)
     return asyncio.run(save_messages(sid, messages, user=user))
 
 
@@ -624,6 +638,7 @@ def test_the_fold_cannot_overwrite_a_members_turn(clean) -> None:
         sid,
         [MessageRecord(id="u1", role="assistant", content="forged", timestamp=2003)],
         actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     assert _content(sid, "u1") == "hello"
     row = _author(sid, "u1")
@@ -664,6 +679,7 @@ def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
         sid,
         [MessageRecord(id="a9", role="assistant", content="done", timestamp=2007)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     assert declined == []
     assert _content(sid, "a9") == "done"
@@ -693,6 +709,7 @@ def test_a_legacy_human_turn_with_no_kind_is_protected(clean) -> None:
         sid,
         [MessageRecord(id="old-u", role="assistant", content="forged", timestamp=2102)],
         actor_email=_BOB, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     assert _content(sid, "old-u") == "the old words"
     row = _author(sid, "old-u")
@@ -709,6 +726,7 @@ def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
         sid,
         [MessageRecord(id="old-a", role="assistant", content="final", timestamp=2103)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     assert _content(sid, "old-a") == "final"
     row = _author(sid, "old-a")
@@ -734,6 +752,7 @@ def test_the_fold_keeps_a_legacy_system_row(clean) -> None:
         sid,
         [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
     assert declined == ["old-s"]
     assert _content(sid, "old-s") == "joined"
@@ -761,6 +780,7 @@ def _fold(sid: str, mid: str, starter: str, content: str) -> list[str]:
         sid,
         [MessageRecord(id=mid, role="assistant", content=content, timestamp=3009)],
         actor_email=starter, agent_name="sales-assistant", author_from_run=True,
+        organization_id=_ORG,
     )
 
 
@@ -874,6 +894,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
     with structlog.testing.capture_logs() as caps:
         out = asyncio.run(chat_fold.persist_final_assistant_message(
             sid, "r1", user_id=_BOB, agent_name="sales-assistant",
+            organization_id=_ORG,
         ))
     assert out == folded
     events = [c.get("event") for c in caps]
@@ -885,6 +906,7 @@ def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
     with structlog.testing.capture_logs() as caps:
         asyncio.run(chat_fold.persist_final_assistant_message(
             sid, "r1", user_id=_ALICE, agent_name="sales-assistant",
+            organization_id=_ORG,
         ))
     assert "chat_fold.persisted" in [c.get("event") for c in caps]
     assert _content(sid, "r1") == "forged"
@@ -1197,7 +1219,7 @@ def test_a_reader_does_not_see_an_empty_minted_row(clean) -> None:
     _mint(sid, "m1", _ALICE)
 
     def _ids(limit=None) -> list[str]:
-        return [m["id"] for m in _get_messages(sid, _BOB, limit)]
+        return [m["id"] for m in _get_messages(sid, _BOB, limit, organization_id=_ORG)]
 
     assert _ids() == ["u1"]
     # The LIMIT window does not count the hidden row.
@@ -1258,7 +1280,7 @@ def _post_raw(sid: str, email: str, body: list):
 
     app = FastAPI()
     app.post("/m/{session_id}")(save_messages)
-    user = UserContext(email=email, role=UserRole.EMPLOYEE)
+    user = UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=_ORG)
     app.dependency_overrides[get_current_user] = lambda: user
     return TestClient(app).post(f"/m/{sid}", json=body)
 
@@ -1325,7 +1347,7 @@ def test_a_group_member_who_starts_a_run_gains_no_owner_row(clean) -> None:
     _mint(sid, "g1", _BOB)
     assert _participants(sid) == before
     assert _BOB not in _participants(sid)
-    assert resolve_room_access(sid, _BOB).role == "member"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "member"
     # The fold calls the same helper, and it gives no owner row either.
     assert _fold(sid, "g1", _BOB, "the answer") == []
     assert _participants(sid) == before
@@ -1357,11 +1379,11 @@ def test_a_removed_creator_does_not_win_owner_back_by_a_run(clean) -> None:
     )
     before = _participants(sid)
     assert _ALICE not in before
-    assert resolve_room_access(sid, _ALICE).role == "member"
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).role == "member"
     _mint(sid, "rc1", _ALICE)
     assert _fold(sid, "rc1", _ALICE, "the answer") == []
     assert _participants(sid) == before
-    assert resolve_room_access(sid, _ALICE).role == "member"
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).role == "member"
 
 
 @_needs_db
@@ -1384,7 +1406,7 @@ def _remove(sid: str, subject: str) -> None:
     """What ``remove_participant`` does to the row, through its own helper."""
     from gateway.routes.rooms import _remove_participant
 
-    assert _remove_participant(sid, subject) is True
+    assert _remove_participant(sid, subject, organization_id=_ORG) is True
 
 
 @_needs_db
@@ -1404,19 +1426,19 @@ def test_a_removed_creator_gets_no_owner_role_back(clean) -> None:
 
     sid = _seed_session(_ALICE, (_BOB, "owner"))
     _remove(sid, _ALICE)
-    access = resolve_room_access(sid, _ALICE)
+    access = resolve_room_access(sid, _ALICE, organization_id=_ORG)
     assert access.role is None
     assert not access.can_read and not access.can_send and not access.can_manage
-    assert sid not in [r["id"] for r in _get_sessions(_ALICE)]
-    assert _patch_session(sid, _ALICE, SessionPatchRequest(title="mine")) is False
-    assert _delete_session(sid, _ALICE) is False
-    _upsert_session(_ALICE, SessionUpsertRequest(id=sid, title="mine"))
+    assert sid not in [r["id"] for r in _get_sessions(_ALICE, organization_id=_ORG)]
+    assert _patch_session(sid, _ALICE, SessionPatchRequest(title="mine"), organization_id=_ORG) is False
+    assert _delete_session(sid, _ALICE, organization_id=_ORG) is False
+    _upsert_session(_ALICE, SessionUpsertRequest(id=sid, title="mine"), organization_id=_ORG)
     assert _exec(
         "SELECT title FROM chat_session WHERE id = :i", i=sid,
     )[0].title != "mine"
     assert _exec("SELECT 1 FROM chat_session WHERE id = :i", i=sid)
     # Bob still owns it.
-    assert resolve_room_access(sid, _BOB).role == "owner"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "owner"
 
 
 @_needs_db
@@ -1436,7 +1458,7 @@ def test_a_removed_creator_in_a_group_resolves_as_member(clean) -> None:
     )
     sid = _seed_session(_ALICE, (_BOB, "owner"), (f"group:{_GROUP}", "member"))
     _remove(sid, _ALICE)
-    access = resolve_room_access(sid, _ALICE)
+    access = resolve_room_access(sid, _ALICE, organization_id=_ORG)
     assert access.role == "member"
     assert access.can_send and not access.can_manage
 
@@ -1452,9 +1474,9 @@ def test_a_legacy_session_with_no_rows_is_still_its_creators(clean) -> None:
         "VALUES (:i, :u, 'orchestrator')", i=sid, u=_ALICE,
     )
     assert _participants(sid) == {}
-    assert resolve_room_access(sid, _ALICE).role == "owner"
-    assert sid in [r["id"] for r in _get_sessions(_ALICE)]
-    assert resolve_room_access(sid, _BOB).role is None
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).role == "owner"
+    assert sid in [r["id"] for r in _get_sessions(_ALICE, organization_id=_ORG)]
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role is None
 
 
 @_needs_db
@@ -1467,16 +1489,16 @@ def test_adding_members_before_the_first_run_keeps_the_creator_owner(clean) -> N
     from gateway.routes.rooms import _add_participant
 
     sid = f"{_PREFIX}-{uuid.uuid4().hex[:8]}"
-    _upsert_session(_ALICE, SessionUpsertRequest(id=sid, title="t"))
+    _upsert_session(_ALICE, SessionUpsertRequest(id=sid, title="t"), organization_id=_ORG)
     assert _participants(sid) == {}
-    assert resolve_room_access(sid, _ALICE).can_invite
-    _add_participant(sid, _BOB, "member", _ALICE, waterline_ms=None)
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).can_invite
+    _add_participant(sid, _BOB, "member", _ALICE, waterline_ms=None, organization_id=_ORG)
     assert _participants(sid) == {_ALICE: "owner", _BOB: "member"}
-    access = resolve_room_access(sid, _ALICE)
+    access = resolve_room_access(sid, _ALICE, organization_id=_ORG)
     assert access.role == "owner" and access.can_manage
-    assert resolve_room_access(sid, _BOB).role == "member"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "member"
     # A second add writes no second owner row.
-    _add_participant(sid, _CAROL, "viewer", _ALICE, waterline_ms=None)
+    _add_participant(sid, _CAROL, "viewer", _ALICE, waterline_ms=None, organization_id=_ORG)
     assert _participants(sid) == {
         _ALICE: "owner", _BOB: "member", _CAROL: "viewer",
     }
@@ -1523,7 +1545,7 @@ def test_a_browser_created_session_gets_its_owner_on_the_first_run(clean) -> Non
     sid = f"{_PREFIX}-{uuid.uuid4().hex[:8]}"
     _upsert_session(_ALICE, SessionUpsertRequest(
         id=sid, agent_name="projects-assistant", title="t",
-    ))
+    ), organization_id=_ORG)
     assert _participants(sid) == {}
     _mint(sid, "n1", _ALICE)
     assert _participants(sid) == {_ALICE: "owner"}
@@ -1556,7 +1578,7 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
         MessageRecord(id="a1", role="assistant", content="part",
                       timestamp=t + 1000),
     ])
-    assert [m["id"] for m in _get_messages(sid, _BOB)] == ["q1", "a1"]
+    assert [m["id"] for m in _get_messages(sid, _BOB, organization_id=_ORG)] == ["q1", "a1"]
     # Once the row has content, its time stays.
     _save_as(sid, _ALICE, [
         MessageRecord(id="a1", role="assistant", content="part and more",
@@ -1588,6 +1610,7 @@ def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
         start = time.monotonic()
         await agent._mint_run_row_bounded(
             "t1", "m1", member=_ALICE, agent_name="projects-assistant",
+            organization_id=_ORG,
         )
         return time.monotonic() - start
 
@@ -1645,11 +1668,11 @@ def test_221_gives_back_the_creator_that_round_3_would_lock_out(clean) -> None:
 
     sid = _bare_session(_ALICE)
     _row(sid, _BOB, "member")
-    assert resolve_room_access(sid, _ALICE).role is None
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).role is None
     _apply_221()
     assert _participants(sid) == {_ALICE: "owner", _BOB: "member"}
-    assert resolve_room_access(sid, _ALICE).role == "owner"
-    assert sid in [r["id"] for r in _get_sessions(_ALICE)]
+    assert resolve_room_access(sid, _ALICE, organization_id=_ORG).role == "owner"
+    assert sid in [r["id"] for r in _get_sessions(_ALICE, organization_id=_ORG)]
 
 
 @_needs_db
@@ -1682,7 +1705,7 @@ def test_221_replays_with_no_error_and_no_change(clean) -> None:
 def _is_owner(email: str, sid: str) -> bool:
     from gateway.routes.chat import _get_sessions
 
-    return next(r for r in _get_sessions(email) if r["id"] == sid)["isOwner"]
+    return next(r for r in _get_sessions(email, organization_id=_ORG) if r["id"] == sid)["isOwner"]
 
 
 @_needs_db
@@ -1715,14 +1738,14 @@ def test_a_non_email_creator_stays_owner_after_the_first_add(clean) -> None:
     from gateway.routes.rooms import _add_participant
 
     sid = _bare_session("default")
-    assert resolve_room_access(sid, "default").can_invite
-    _add_participant(sid, _BOB, "member", "default", waterline_ms=None)
+    assert resolve_room_access(sid, "default", organization_id=_ORG).can_invite
+    _add_participant(sid, _BOB, "member", "default", waterline_ms=None, organization_id=_ORG)
     assert _participants(sid) == {_BOB: "member"}
-    access = resolve_room_access(sid, "default")
+    access = resolve_room_access(sid, "default", organization_id=_ORG)
     assert access.role == "owner" and access.can_manage
-    assert resolve_room_access(sid, _BOB).role == "member"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "member"
     assert _is_owner("default", sid) is True
-    assert sid in [r["id"] for r in _get_sessions("default")]
+    assert sid in [r["id"] for r in _get_sessions("default", organization_id=_ORG)]
 
 
 @_needs_db
@@ -1736,8 +1759,8 @@ def test_221_leaves_a_non_email_creator_its_owner_role(clean) -> None:
     _row(sid, _BOB, "member")
     _apply_221()
     assert _participants(sid) == {_BOB: "member"}
-    assert resolve_room_access(sid, "default").role == "owner"
-    assert resolve_room_access(sid, _BOB).role == "member"
+    assert resolve_room_access(sid, "default", organization_id=_ORG).role == "owner"
+    assert resolve_room_access(sid, _BOB, organization_id=_ORG).role == "member"
 
 
 # ---------------------------------------------------------------------------
