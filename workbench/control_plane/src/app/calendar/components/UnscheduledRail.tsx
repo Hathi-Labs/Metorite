@@ -100,14 +100,14 @@ export function UnscheduledRail({
         {/* leverage meter (80/20): how much of the booked day is the 20% */}
         {capacityMins > 0 && (
           <div
-            className="mt-0.5 text-[10px] text-amber-500"
+            className="mt-0.5 text-[10px] text-warning"
             title="Share of booked focus-time on leveraged/important work (the 80/20 scoreboard)"
           >
             ★ {Math.round((leveragedMins / 60) * 10) / 10}h leveraged ·{" "}
             {leveragePct}%
             <span className="mt-0.5 block h-1 overflow-hidden rounded-full bg-secondary">
               <span
-                className="block h-full rounded-full bg-amber-400/80"
+                className="block h-full rounded-full bg-warning/80"
                 style={{ width: `${Math.min(100, leveragePct)}%` }}
               />
             </span>
@@ -154,9 +154,9 @@ export function UnscheduledRail({
                 className={[
                   "group cursor-grab rounded-md border p-2 active:cursor-grabbing",
                   t.id === oneThingId
-                    ? "border-amber-400/70 bg-amber-500/10"
+                    ? "border-warning/70 bg-warning/10"
                     : t.leveraged
-                      ? "border-amber-500/40 bg-background/60 hover:border-amber-400/60"
+                      ? "border-warning/40 bg-background/60 hover:border-warning/60"
                       : dueDays.has(t.id)
                         ? "border-warning/40 bg-warning/5 hover:border-warning/70"
                         : "border-border bg-background/60 hover:border-primary/40",
@@ -167,7 +167,7 @@ export function UnscheduledRail({
                 <div className="flex items-start gap-1">
                   <span className="min-w-0 flex-1 truncate text-left text-xs text-foreground">
                     {t.id === oneThingId && (
-                      <span className="text-amber-400">★ </span>
+                      <span className="text-warning">★ </span>
                     )}
                     {t.title}
                   </span>
@@ -190,8 +190,8 @@ export function UnscheduledRail({
                     className={[
                       "tech-transition shrink-0 rounded p-0.5",
                       t.id === oneThingId
-                        ? "text-amber-400"
-                        : "text-muted-foreground/60 hover:text-amber-400 reveal-on-hover",
+                        ? "text-warning"
+                        : "text-muted-foreground/60 hover:text-warning reveal-on-hover",
                     ].join(" ")}
                   >
                     <Icon name="Star"

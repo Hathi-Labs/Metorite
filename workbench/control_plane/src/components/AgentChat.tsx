@@ -1386,7 +1386,7 @@ export default function AgentChat({
     return [{
       label: "MAF",
       title: "Microsoft Agent Framework agent",
-      cls: "border-amber-700/50 bg-amber-900/30 text-amber-300",
+      cls: "border-warning/30 bg-warning/10 text-warning",
     }];
   }
 
@@ -1781,8 +1781,8 @@ export default function AgentChat({
           return null;
         })()}
         {queuedCount > 0 && (
-          <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-amber-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-warning">
+            <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
             {queuedCount} message{queuedCount > 1 ? "s" : ""} queued
             <button type="button" onClick={() => { queueRef.current = []; setQueuedCount(0); saveQueue(sessionIdRef.current, queueRef.current); }}
               className="text-muted-foreground hover:text-foreground underline">clear</button>
@@ -1865,14 +1865,14 @@ export default function AgentChat({
                   {input.trim() && (
                     <div className="relative ml-1.5">
                       <div className={`flex items-stretch rounded-xl overflow-hidden border ${
-                        sendMode === "steer" ? "bg-amber-600 border-amber-500" :
+                        sendMode === "steer" ? "bg-cat-12 border-cat-12" :
                         sendMode === "queue" ? "bg-sky-600 border-sky-500" :
                         "bg-primary border-primary"
                       }`}>
                         {/* Main send action */}
                         <button type="submit"
                           className={`h-9 pl-3 pr-2 text-white font-semibold text-xs flex items-center gap-1.5 hover:brightness-110 tech-transition ${
-                            sendMode === "steer" ? "bg-amber-600" :
+                            sendMode === "steer" ? "bg-cat-12" :
                             sendMode === "queue" ? "bg-sky-600" :
                             "bg-primary"
                           }`}
@@ -1887,7 +1887,7 @@ export default function AgentChat({
                         <button type="button"
                           onClick={(e) => { e.preventDefault(); setShowSendMenu((v) => !v); }}
                           className={`h-9 w-7 flex items-center justify-center border-l hover:brightness-110 tech-transition ${
-                            sendMode === "steer" ? "bg-amber-600 border-amber-500" :
+                            sendMode === "steer" ? "bg-cat-12 border-cat-12" :
                             sendMode === "queue" ? "bg-sky-600 border-sky-500" :
                             "bg-primary border-primary-foreground/20"
                           }`}
@@ -1907,7 +1907,7 @@ export default function AgentChat({
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium flex items-center gap-2">
                                   <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${
-                                    m === "steer" ? "bg-amber-500/15 text-amber-400" :
+                                    m === "steer" ? "bg-cat-12/15 text-cat-12" :
                                     m === "queue" ? "bg-sky-500/15 text-sky-400" :
                                     "bg-primary/15 text-primary"
                                   }`}>
@@ -2123,7 +2123,7 @@ export default function AgentChat({
               />
 
               {isRunActive && sendMode !== "send" && (
-                <span className="text-amber-400 text-[10px] font-medium">
+                <span className="text-warning text-[10px] font-medium">
                   {sendMode === "queue" ? "⏱ Queued" : "⤳ Steering"}
                 </span>
               )}

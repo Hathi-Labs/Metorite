@@ -385,6 +385,8 @@ describe("no raw Tailwind palette colours", () => {
   /**
    * The tree as it stands. This baseline is large on purpose: it is the debt
    * that rules 1 and 3 could not see, written down where it can only shrink.
+   * H-193 took 272 classes out of it (every amber and yellow, and the status
+   * greens and blues on the same lines), and the Calendar left it entirely.
    *
    * Three of these are ramps in the same sense `contextColors.ts` was, and are
    * the natural next customers for `--cat-*`: `app/workflows/lib/types.ts`
@@ -392,78 +394,58 @@ describe("no raw Tailwind palette colours", () => {
    * accents), `app/tasks/components/PriorityControls.tsx` (matrix cells).
    */
   const PALETTE_DEBT: Record<string, number> = {
-    "app/agents/page.tsx": 17,
-    "app/artifacts/page.tsx": 18,
+    "app/agents/page.tsx": 6,
+    "app/artifacts/page.tsx": 13,
     "app/chat/page.tsx": 5,
-    "app/email/components/AccountSidebar.tsx": 3,
     "app/email/components/ComposePanel.tsx": 1,
     "app/email/components/EmailAssistantChat.tsx": 1,
-    "app/email/components/EmailDetail.tsx": 5,
-    "app/email/components/EmailList.tsx": 7,
+    "app/email/components/EmailDetail.tsx": 3,
+    "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
-    "app/email/components/TaskCaptureModal.tsx": 4,
     "app/email/components/automation/AISettingsView.tsx": 1,
-    "app/email/components/automation/AnalyticsView.tsx": 4,
-    "app/email/components/automation/BulkUnsubscribeView.tsx": 41,
-    "app/email/components/automation/DashboardView.tsx": 4,
-    "app/email/components/automation/ai-settings/HistoryTab.tsx": 2,
-    "app/email/components/automation/ai-settings/RulesTab.tsx": 25,
-    "app/email/components/automation/ai-settings/SettingsTab.tsx": 22,
+    "app/email/components/automation/BulkUnsubscribeView.tsx": 27,
+    "app/email/components/automation/DashboardView.tsx": 2,
+    "app/email/components/automation/ai-settings/RulesTab.tsx": 17,
+    "app/email/components/automation/ai-settings/SettingsTab.tsx": 14,
     "app/email/components/automation/ai-settings/TestTab.tsx": 4,
-    "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 6,
-    "app/email/components/automation/ai-settings/actionFormat.tsx": 56,
+    "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 2,
+    "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
     "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
     "app/email/oauth/callback/page.tsx": 2,
-    "app/email/page.tsx": 35,
-    "app/integrations/page.tsx": 108,
-    "app/notes/components/BotIdentitySection.tsx": 8,
+    "app/email/page.tsx": 12,
+    "app/integrations/page.tsx": 87,
+    "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
-    "app/notes/meeting/[id]/page.tsx": 3,
-    "app/observability/page.tsx": 29,
+    "app/observability/page.tsx": 26,
     "app/tasks/components/AssistantRail.tsx": 1,
-    "app/tasks/components/ClarifyPanel.tsx": 5,
-    "app/tasks/components/FocusMode.tsx": 2,
     // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
-    // PriorityChip. What is left is the Weight toggles and the nudge badge.
-    "app/tasks/components/PriorityControls.tsx": 24,
-    "app/calendar/components/StartupRitual.tsx": 6,
-    "app/calendar/components/EndOfDayReview.tsx": 6,
-    "app/calendar/components/ScheduleSheet.tsx": 1,
-    "app/calendar/components/TimeGrid.tsx": 8,
-    "app/calendar/components/UnscheduledRail.tsx": 9,
-    "app/whatsapp/connect/page.tsx": 19,
-    "app/whatsapp/insights/page.tsx": 2,
+    // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
+    // the schedule suggestion. What is left is the other toggles and delegate.
+    "app/tasks/components/PriorityControls.tsx": 16,
+    "app/whatsapp/connect/page.tsx": 10,
     "app/whatsapp/numbers/page.tsx": 4,
     "app/whatsapp/page.tsx": 4,
     "app/whatsapp/settings/categories/page.tsx": 2,
     "app/whatsapp/settings/replies/page.tsx": 3,
-    "app/whatsapp/settings/rules/page.tsx": 1,
-    "app/workflows/[id]/page.tsx": 4,
     "app/workflows/components/CopilotPanel.tsx": 3,
     "app/workflows/components/ModuleStudio.tsx": 1,
-    "app/workflows/components/NodePalette.tsx": 1,
-    "app/workflows/components/TriggerPanel.tsx": 1,
-    "app/workflows/lib/types.ts": 60,
-    "components/AddAgentWizard.tsx": 19,
-    "components/AgentChat.tsx": 33,
+    "app/workflows/lib/types.ts": 50,
+    "components/AddAgentWizard.tsx": 15,
+    "components/AgentChat.tsx": 20,
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/ChatErrorCard.tsx": 7,
-    "components/ConfirmationCard.tsx": 8,
-    "components/FileUploadButton.tsx": 10,
+    "components/ChatErrorCard.tsx": 5,
+    "components/ConfirmationCard.tsx": 1,
+    "components/FileUploadButton.tsx": 8,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/MarkdownMessage.tsx": 9, // S9: the link lost its palette blue
-    "components/MessageBubble.tsx": 4,
-    "components/Sidebar.tsx": 2,
-    "components/ThinkingContainer.tsx": 44,
+    "components/MarkdownMessage.tsx": 8, // S9: the link lost its palette blue
+    "components/ThinkingContainer.tsx": 40,
     "components/TodoPanel.tsx": 1,
-    "components/email/EmailToolCards.tsx": 20,
-    "components/tasks/TaskToolCards.tsx": 6,
-    "lib/providers.ts": 33,
+    "lib/providers.ts": 30,
   };
 
   const paletteExcepted = (rel: string) => matches(rel, Object.keys(PALETTE_EXCEPTIONS));
@@ -495,6 +477,31 @@ describe("no raw Tailwind palette colours", () => {
       .map(([f, budget]) => ({ file: f, budget, actual: count(read(f), PALETTE_CLASS) }))
       .filter((r) => r.actual < r.budget);
     expect(improved, "Thank you — now lower these numbers in PALETTE_DEBT.").toEqual([]);
+  });
+
+  it("no file draws raw amber or yellow, budget or not (H-193)", () => {
+    // `text-amber-500` is 2.1 : 1 on white, and no token change can reach it.
+    // The tree carried 250 of these, and each one is now `warning` (a state,
+    // a star, a caution) or `cat-12` (the amber slot of the ramp, for an
+    // identity). A PALETTE_DEBT budget does NOT cover this hue: a baselined
+    // file that swaps one of its old classes for an amber one still fails.
+    // `border-l-*` and the other side borders count too, because rule 5's
+    // regex does not see them.
+    const RAW_AMBER = new RegExp(
+      `\\b(?:${COLOR_UTILITY}|border-[xytrbl])-(?:amber|yellow)-` +
+        `(?:50|100|200|300|400|500|600|700|800|900|950)\\b`,
+      "g",
+    );
+    const offenders = sourceFiles()
+      .filter((f) => !paletteExcepted(f))
+      .map((f) => [f, count(read(f), RAW_AMBER)] as const)
+      .filter(([, n]) => n > 0);
+    expect(
+      offenders,
+      "Raw amber or yellow. For a state or a highlight use `text-warning` / " +
+        "`bg-warning/10` / `border-warning/40`. For an identity use the ramp's " +
+        "amber slot, `text-cat-12`.",
+    ).toEqual([]);
   });
 
   it("every exception names a file that still needs one", () => {

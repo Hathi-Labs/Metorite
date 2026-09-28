@@ -259,7 +259,7 @@ function TaskRowView({ row }: { row: TaskRow }) {
       </button>
       <div className="flex items-center flex-shrink-0 mr-0.5">
         {done ? (
-          <span className="flex items-center gap-0.5 text-[9px] text-emerald-500 px-1">
+          <span className="flex items-center gap-0.5 text-[9px] text-success px-1">
             <AppIcon name="CheckCircle2" size={10} /> Done
           </span>
         ) : state === "busy" ? (
@@ -362,7 +362,7 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
       {wasProposal && (
         <div className="mt-2 flex items-center gap-2">
           {state === "applied" ? (
-            <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+            <span className="flex items-center gap-1 text-[10px] text-success">
               <AppIcon name="CheckCircle2" size={11} /> Applied — calendar updated
             </span>
           ) : state === "failed" ? (
@@ -452,14 +452,14 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         failed
           ? "border-destructive/40 bg-destructive/5"
           : meta.danger
-            ? "border-amber-500/40 bg-amber-500/5"
+            ? "border-warning/40 bg-warning/5"
             : "border-sidebar-border bg-secondary/40"
       }`}
     >
       <div className="flex items-start gap-2">
         <span
           className={`mt-0.5 flex-shrink-0 ${
-            failed ? "text-destructive" : meta.danger ? "text-amber-500" : "text-emerald-500"
+            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
           }`}
         >
           <AppIcon name={iconName} size={13} />

@@ -73,7 +73,7 @@ type CatId = (typeof CATEGORIES)[number]["id"];
 const CAT_COLORS: Record<string, string> = {
   core:          "bg-violet-500/15 text-violet-400 border-violet-500/25",
   crm:           "bg-blue-500/15 text-blue-400 border-blue-500/25",
-  email:         "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  email:         "bg-cat-12/15 text-cat-12 border-cat-12/25",
   prospecting:   "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
   productivity:  "bg-cyan-500/15 text-cyan-400 border-cyan-500/25",
   search:        "bg-orange-500/15 text-orange-400 border-orange-500/25",
@@ -123,7 +123,7 @@ const DISCOVER_SUGGESTIONS = [
 const CATEGORY_FALLBACK: Record<string, { icon: string; color: string }> = {
   core:          { icon: "Settings2",     color: "text-violet-400" },
   crm:           { icon: "Users",         color: "text-blue-400" },
-  email:         { icon: "Mail",          color: "text-amber-400" },
+  email:         { icon: "Mail",          color: "text-cat-12" },
   prospecting:   { icon: "Target",        color: "text-emerald-400" },
   productivity:  { icon: "CheckSquare",   color: "text-cyan-400" },
   search:        { icon: "Globe",         color: "text-orange-400" },
@@ -1085,11 +1085,11 @@ function EmailTab() {
 
       {/* OAuth status banner — shows which providers are ready */}
       {(!oauthStatus.gmail || !oauthStatus.microsoft) && (
-        <div className="mx-4 mt-3 p-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
+        <div className="mx-4 mt-3 p-3 rounded-xl bg-warning/8 border border-warning/20">
           <div className="flex items-start gap-2.5">
-            <Icon name="AlertCircle" className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+            <Icon name="AlertCircle" className="w-4 h-4 text-warning mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-amber-300 mb-1">
+              <p className="text-xs font-medium text-warning mb-1">
                 OAuth sign-in not fully configured
               </p>
               <p className="text-[11px] text-muted-foreground leading-relaxed mb-2">
@@ -1291,9 +1291,9 @@ function AddEmailModal({
           </button>
           <button
             onClick={() => onConnect("imap")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-amber-400/40 hover:bg-amber-500/5 transition-colors text-left"
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-cat-12/40 hover:bg-cat-12/5 transition-colors text-left"
           >
-            <span className="w-8 h-8 rounded-full bg-amber-500/15 text-amber-400 flex items-center justify-center text-xs font-bold">IM</span>
+            <span className="w-8 h-8 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-xs font-bold">IM</span>
             <div>
               <div className="text-sm font-medium text-foreground">IMAP / SMTP</div>
               <div className="text-[11px] text-muted-foreground">Manual server configuration</div>
@@ -1817,7 +1817,7 @@ function PluginsTab() {
                       <span className="text-[10px] font-mono text-muted">{p.name}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">v{p.version}</span>
                       {p.auth_type !== "none" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
                           {p.auth_type}
                         </span>
                       )}
@@ -1871,8 +1871,8 @@ function PluginsTab() {
       </div>
 
       {/* Plugin vs MCP */}
-      <div className="p-5 rounded-2xl border border-amber-500/20 bg-amber-500/5 space-y-2">
-        <div className="text-[10px] text-amber-400 uppercase tracking-wider font-semibold">Plugins vs MCPs — when to use which</div>
+      <div className="p-5 rounded-2xl border border-warning/20 bg-warning/5 space-y-2">
+        <div className="text-[10px] text-warning uppercase tracking-wider font-semibold">Plugins vs MCPs — when to use which</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-muted-foreground">
           <div>
             <div className="text-foreground font-medium mb-1">Use a Plugin when…</div>
@@ -2011,7 +2011,7 @@ function SkillFamilyCard({ family }: { family: SkillFamily }) {
                 </span>
               )}
               {family.dynamic && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-500/15 text-amber-400 border-amber-500/25">
+                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-warning/15 text-warning border-warning/25">
                   Dynamic
                 </span>
               )}

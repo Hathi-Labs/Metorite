@@ -373,10 +373,10 @@ function MessageBubble({
         {editing ? (
           /* ═══ Edit mode ═══ */
           <div className="w-full max-w-full sm:max-w-[85%]">
-            <div className="rounded-2xl rounded-tr-sm border-2 border-amber-500/50 bg-secondary shadow-lg shadow-amber-500/5 overflow-hidden">
+            <div className="rounded-2xl rounded-tr-sm border-2 border-warning/50 bg-secondary shadow-lg shadow-warning/5 overflow-hidden">
               {/* Edit header */}
               <div className="flex items-center justify-between px-4 py-2 border-b border-border/60 bg-secondary/80">
-                <span className="text-[11px] text-amber-400/80 font-medium">
+                <span className="text-[11px] text-warning/80 font-medium">
                   ✏️ Editing message
                 </span>
                 <span className="text-[10px] text-muted-foreground hidden sm:block">
@@ -392,7 +392,7 @@ function MessageBubble({
                   onChange={handleEditInput}
                   onKeyDown={handleEditKeyDown}
                   rows={3}
-                  className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-amber-500/60 transition-colors"
+                  className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-warning/60 transition-colors"
                   style={{ minHeight: "60px", maxHeight: "300px" }}
                 />
               </div>

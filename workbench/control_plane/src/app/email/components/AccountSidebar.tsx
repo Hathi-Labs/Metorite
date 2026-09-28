@@ -113,7 +113,7 @@ export function AccountSidebar({
                       {account.isDefault && (
                         <AppIcon name="Star"
                           size={10}
-                          className="text-amber-400 fill-amber-400 flex-shrink-0"
+                          className="text-warning fill-warning flex-shrink-0"
                           aria-label="Default mailbox"
                         />
                       )}
@@ -131,7 +131,7 @@ export function AccountSidebar({
                       onSetDefault(account.id);
                     }}
                     title="Set as default mailbox"
-                    className="p-1 rounded reveal-on-hover text-muted-foreground hover:text-amber-400 transition-opacity flex-shrink-0"
+                    className="p-1 rounded reveal-on-hover text-muted-foreground hover:text-warning transition-opacity flex-shrink-0"
                   >
                     <AppIcon name="Star" size={11} />
                   </button>

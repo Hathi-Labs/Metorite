@@ -318,7 +318,7 @@ function ActivityRow({ e, onOpen, aliases }: { e: ActivityEvent; onOpen: (name: 
       ? isError
         ? "bg-destructive"
         : "bg-success/70"
-      : "bg-amber-500 obs-led"
+      : "bg-warning obs-led"
     : "bg-violet-500";
   const label = isRunLike
     ? aliases?.[e.agent ?? ""] || (isApp ? (e.agent ?? "").replace(/^app:/, "") : e.agent) || (isApp ? "app" : "agent")
@@ -581,7 +581,7 @@ function HistoryView({ onOpen, aliases }: { onOpen: (name: string) => void; alia
                     : r.status === "completed"
                       ? "bg-success/70"
                       : r.status === "running"
-                        ? "bg-amber-500 obs-led"
+                        ? "bg-warning obs-led"
                         : "bg-muted-foreground/50"
                 }`}
               />
@@ -729,7 +729,7 @@ function AgentDrawer({
                           : r.status === "completed"
                             ? "bg-success/70"
                             : r.status === "running"
-                              ? "bg-amber-500 obs-led"
+                              ? "bg-warning obs-led"
                               : "bg-muted-foreground/50"
                       }`}
                     />

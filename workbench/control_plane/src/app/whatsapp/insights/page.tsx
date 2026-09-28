@@ -115,7 +115,7 @@ export default function InsightsPage() {
           <ul className="divide-y divide-border">
             {pulse.waiting_longest.map((w) => (
               <li key={w.chat_id} className="flex items-center gap-3 px-3 py-2.5">
-                <Icon name="Clock" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <Icon name="Clock" className="h-3.5 w-3.5 shrink-0 text-warning" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[12.5px] font-semibold">
                     {w.name}
@@ -124,7 +124,7 @@ export default function InsightsPage() {
                     {w.snippet || "…"}
                   </div>
                 </div>
-                <span className="shrink-0 text-[11px] font-semibold tabular-nums text-amber-600">
+                <span className="shrink-0 text-[11px] font-semibold tabular-nums text-warning">
                   {fmtWaited(w.waited_hours)}
                 </span>
               </li>

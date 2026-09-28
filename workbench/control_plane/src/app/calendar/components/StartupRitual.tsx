@@ -307,15 +307,15 @@ export function StartupRitual({
                       className={[
                         "tech-transition flex items-center gap-2 rounded-lg border p-2.5 text-left",
                         picked
-                          ? "border-amber-500/60 bg-amber-500/10"
-                          : "border-border bg-background/60 hover:border-amber-500/40",
+                          ? "border-warning/60 bg-warning/10"
+                          : "border-border bg-background/60 hover:border-warning/40",
                       ].join(" ")}
                     >
                       <Icon name="Star"
                         className={[
                           "h-4 w-4 shrink-0",
                           picked
-                            ? "fill-amber-400 text-amber-400"
+                            ? "fill-warning text-warning"
                             : "text-muted-foreground/50",
                         ].join(" ")}
                       />
@@ -326,7 +326,7 @@ export function StartupRitual({
                         <span className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
                           {durationLabel(c.timeEstimateMins ?? DEFAULT_BLOCK_MINS)}
                           {c.leveraged && (
-                            <span className="font-medium text-amber-500">
+                            <span className="font-medium text-warning">
                               leveraged
                             </span>
                           )}

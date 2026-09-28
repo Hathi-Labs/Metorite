@@ -171,7 +171,7 @@ export function EndOfDayReview({
               </div>
             </div>
             <div className="flex-1 rounded-lg border border-border bg-background/60 p-2.5 text-center">
-              <div className="text-lg font-semibold tabular-nums text-amber-500">
+              <div className="text-lg font-semibold tabular-nums text-warning">
                 {leveragePct == null ? "—" : `${leveragePct}%`}
               </div>
               <div className="text-[10px] text-muted-foreground">leveraged</div>
@@ -192,7 +192,7 @@ export function EndOfDayReview({
               className={[
                 "mb-3 flex items-center gap-2 rounded-lg border p-2.5 text-xs",
                 oneThingDone
-                  ? "border-amber-500/40 bg-amber-500/10 text-foreground"
+                  ? "border-warning/40 bg-warning/10 text-foreground"
                   : "border-border bg-background/60 text-muted-foreground",
               ].join(" ")}
             >
@@ -200,8 +200,8 @@ export function EndOfDayReview({
                 className={[
                   "h-4 w-4 shrink-0",
                   oneThingDone
-                    ? "fill-amber-400 text-amber-400"
-                    : "text-amber-500/60",
+                    ? "fill-warning text-warning"
+                    : "text-warning/60",
                 ].join(" ")}
               />
               {oneThingDone ? (

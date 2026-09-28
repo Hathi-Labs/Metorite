@@ -62,7 +62,7 @@ function classifyTool(name: string): {
 } {
   const n = name.toLowerCase();
   if (/search|grep|find|list|semantic|codebase|query|retrieve|lookup/.test(n))
-    return { kind: "search", iconKey: "search", label: "Search", borderClass: "border-amber-700/50", iconClass: "text-amber-400" };
+    return { kind: "search", iconKey: "search", label: "Search", borderClass: "border-cat-12/30", iconClass: "text-cat-12" };
   if (/read|get_file|problems|fetch|load|open|view|analyzing|generating/.test(n))
     return { kind: "read", iconKey: "book", label: "Read", borderClass: "border-sky-700/50", iconClass: "text-sky-400" };
   if (/edit|create|write|replace|patch|insert|update|append|fix/.test(n))
@@ -279,9 +279,9 @@ function tokenizeSegment(segment: string, isFirst: boolean): React.ReactNode[] {
     if (/[\/\\]/.test(token) && !/^[0-9]+$/.test(token))
       return <span key={j} className="text-emerald-300">{token} </span>;
     if (/^[0-9]+(\.[0-9]+)?$/.test(token))
-      return <span key={j} className="text-yellow-200">{token} </span>;
+      return <span key={j} className="text-cat-8">{token} </span>;
     if (first)
-      return <span key={j} className="text-amber-300 font-medium">{token} </span>;
+      return <span key={j} className="text-cat-12 font-medium">{token} </span>;
     if (POWERSHELL_KEYWORDS.has(token))
       return <span key={j} className="text-sky-300">{token} </span>;
     return <span key={j} className="text-foreground">{token} </span>;

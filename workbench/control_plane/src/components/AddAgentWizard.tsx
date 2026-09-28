@@ -169,7 +169,7 @@ function IntegrationFormCard({
           className={`text-sm rounded-lg px-3 py-2 ${
             state.testResult.ok
               ? "text-emerald-400 bg-emerald-500/10"
-              : "text-amber-400 bg-amber-500/10"
+              : "text-warning bg-warning/10"
           }`}
         >
           {state.testResult.ok ? "✓" : "✗"} {state.testResult.detail}
@@ -500,7 +500,7 @@ export default function AddAgentWizard({
               </div>
 
               {fetchError && (
-                <p className="text-sm text-amber-400 bg-amber-500/10 rounded-lg px-3 py-2">
+                <p className="text-sm text-warning bg-warning/10 rounded-lg px-3 py-2">
                   Could not fetch integration status: {fetchError}. You can continue anyway.
                 </p>
               )}

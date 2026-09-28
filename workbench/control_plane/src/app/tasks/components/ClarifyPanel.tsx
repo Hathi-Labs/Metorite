@@ -1044,7 +1044,7 @@ export function ClarifyPanel({
             {proposal.deepWork && (
               <span
                 title="Needs an unbroken flow state — the planner will protect a long peak-energy block"
-                className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 font-medium text-sky-600 dark:text-sky-400"
+                className="inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/10 px-1.5 py-0.5 font-medium text-info"
               >
                 🌊 deep work
               </span>
@@ -1248,7 +1248,7 @@ export function ClarifyPanel({
                             proposal.suggestedAssignee.providerUserId
                           : assignee.name.toLowerCase() ===
                             proposal.suggestedAssignee.name.toLowerCase()) && (
-                          <p className="mt-1.5 flex items-start gap-1 text-[11px] text-amber-500">
+                          <p className="mt-1.5 flex items-start gap-1 text-[11px] text-warning">
                             <AppIcon name="AlertTriangle" className="mt-0.5 h-3 w-3 shrink-0" />
                             <span>
                               {assignee.name.split(/\s+/)[0]} is{" "}
