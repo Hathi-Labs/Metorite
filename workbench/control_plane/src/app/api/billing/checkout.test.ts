@@ -179,51 +179,37 @@ type Invoke = () => Promise<Response>;
  * sweep produces, so an exclusion that stops matching a real file shows up as a
  * red sweep rather than as silence.
  */
+/**
+ * The reason every billing READ shares (H-152): it is not an org-key route at
+ * all. It relays through `_gateway.ts` to the gateway's `/billing/*`, which
+ * presents the per-box deployment key; the Console derives the organization
+ * from the signed-in member. So `requirePurchaser` and `WHOAMI` are the wrong
+ * gate for it. Fenced by `reads.test.ts` and `test_billing_proxy_route.py`.
+ */
+const READ_HOP =
+  "NOT an org-key route (H-152): a gateway-tier READ with no Console key. ";
+
 const EXCLUDED: Record<string, string> = {
   "summary/route.ts":
-    "the known-open board finding (B7's foot): reachable by any signed-in " +
-    "member today. Fixing it is its own small ticket, and narrowing this " +
-    "sweep to hide it would be the CP-6 failure mode.",
+    READ_HOP + "The balance, burn and BYOK status of the member's OWN org.",
   "catalog/route.ts":
-    "session-gated on purpose: it returns the price list, identical for every " +
-    "customer, so requiring `billing:purchase` would stop a member seeing " +
-    "what things cost before being handed the right to buy them.",
+    READ_HOP + "The price list, identical for every customer, so requiring " +
+    "`billing:purchase` would stop a member seeing what things cost.",
   "seats/route.ts":
-    "session-gated on purpose (SC-1a's seats block): a READ of the caller's " +
-    "own seat counts (`GET /me/seats`) that mints nothing and moves no money, " +
-    "so requiring `billing:purchase` would stop a member seeing their seats " +
-    "before being handed the right to buy more — the catalog read's argument.",
+    READ_HOP + "The caller's own seat counts. It mints nothing and moves no money.",
   "members/route.ts":
-    "session-gated on purpose (SC-2b's manage-seats roster): a READ of the " +
-    "caller's own membership list (`GET /me/members`, {email, role, status}) " +
-    "that mints nothing and moves no money — the exact sibling of `seats/route.ts`. " +
-    "The per-member WRITE controls it feeds ARE `billing:purchase`-gated at the " +
-    "surface, but the roster read itself takes the seats read's session gate. " +
-    "Covered by `members/members.test.ts`.",
+    READ_HOP + "The caller's own roster, for the manage-seats panel. It mints " +
+    "nothing and moves no money.",
   "usage/activity/route.ts":
-    "NOT a money route (D66 (a), H-134): a READ of what this organization ran " +
-    "and what it cost, which mints nothing and moves nothing. It is gated, " +
-    "just not by `billing:purchase` — `requireSpendReader` resolves the " +
-    "session server-side and SCOPES a non-admin to their own member address, " +
-    "because the upstream takes a `member` parameter the workbench must fill " +
-    "'from the signed-in session, never from the browser'. Requiring the " +
-    "purchase capability would stop a member seeing their own usage, which is " +
-    "the catalog read's argument. Fenced by `usage/usage.test.ts`.",
+    READ_HOP + "D66 (a). The GATEWAY scopes a non-admin to their own spend, " +
+    "from the tenant plane's resolved access.",
   "usage/apps/route.ts":
-    "NOT a money route (usage slice 3): the activity read grouped by APP, " +
-    "with the agents inside each app. It mints nothing and moves nothing. " +
-    "Gated exactly as `usage/activity/route.ts` is: `requireSpendReader` " +
-    "resolves the session server-side and SCOPES a non-admin to their own " +
-    "member address, so a member sees their own apps and an admin sees the " +
-    "organization. Fenced by `usage/usage.test.ts`.",
+    READ_HOP + "Usage slice 3. Scoped at the gateway exactly as the activity " +
+    "read is.",
   "usage/members/route.ts":
-    "NOT a money route (D66 (b), H-134), and the one read here that is " +
-    "ADMIN-ONLY: the row names a colleague and what they cost. " +
-    "`requireSpendReader` refuses a non-admin with 403 BEFORE the Console is " +
-    "touched — `billing:purchase` would be the wrong gate, because reading " +
-    "what was spent and spending are two different acts and an organization " +
-    "may grant one without the other. Fenced by `usage/usage.test.ts`, which " +
-    "asserts the refusal AND that no Console call was made.",
+    READ_HOP + "D66 (b), ADMIN-ONLY: the gateway refuses a non-admin with 403 " +
+    "before the Console is asked. `billing:purchase` would be the wrong gate, " +
+    "because reading what was spent and spending are two different acts.",
   "seats/assign/route.ts":
     "NOT an org-key money route (SC-2a): a gateway-tier seat WRITE proxy that " +
     "presents NO `cc_live_` org key and never touches `_console.ts` — it " +
@@ -654,17 +640,19 @@ describe("a Console 401 does not become the browser's 401", () => {
     );
   });
 
-  it("agrees with the sibling read proxy's policy, which it mirrors", async () => {
-    // Two relays, ONE policy. `summary/route.ts` reached the same conclusion
-    // first and carries the argument; this asserts it has not since changed its
-    // mind, because a mirror that goes stale is how two hops start contradicting
-    // each other about the same upstream fact.
+  it("has no read sibling left to mirror — the reads never see a Console 401", async () => {
+    // `summary/route.ts` used to carry this policy first. Since H-152 the
+    // reads go through the gateway, which turns a Console 401 into a 503
+    // itself (`test_billing_proxy_route.py`). What is asserted here is that no
+    // read hop still reaches the Console, so no second relay policy can drift.
     const { readFileSync } = await import("node:fs");
     const summary = readFileSync(
       fileURLToPath(new URL("./summary/route.ts", import.meta.url)),
       "utf-8",
     );
-    expect(summary).toContain("401 || res.status === 403 ? 502");
+    expect(summary).not.toContain("consoleConfig");
+    expect(summary).not.toMatch(/\bfetch\(/);
+    expect(summary).toContain("billingRead(");
   });
 });
 
@@ -701,62 +689,48 @@ describe("the gated list is complete", () => {
   });
 });
 
-describe("the excluded routes", () => {
-  it("names the read proxy's board finding rather than sweeping it up", async () => {
-    // The summary read is reachable by any signed-in member. This test does not
-    // assert that is CORRECT — it asserts the exclusion is DELIBERATE and
-    // visible, so the day the finding is fixed this case goes red and the entry
-    // moves into GATED where it belongs.
-    stubFetch([]);
-    const { GET } = await import("@/app/api/billing/summary/route");
+describe("the excluded READ routes go to the gateway, never the Console (H-152)", () => {
+  /** A fetch that answers the gateway's billing reads and fails on anything else. */
+  function stubGateway() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        calls.push(url);
+        if (url.startsWith(`${GATEWAY_URL}/billing/`)) {
+          return new Response(JSON.stringify({ plans: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch to ${url}`);
+      }),
+    );
+  }
+
+  const READS: [string, () => Promise<{ GET: () => Promise<Response> }>][] = [
+    ["/billing/summary", () => import("@/app/api/billing/summary/route")],
+    ["/billing/catalog", () => import("@/app/api/billing/catalog/route")],
+    ["/billing/seats", () => import("@/app/api/billing/seats/route")],
+  ];
+
+  it.each(READS)("%s reaches the gateway alone, with no query string", async (path, load) => {
+    stubGateway();
+    const { GET } = await load();
     const res = await GET();
 
     expect(res.status).toBe(200);
-    expect(consoleCalls()).toHaveLength(1);
+    expect(calls).toEqual([`${GATEWAY_URL}${path}`]);
+    expect(consoleCalls()).toEqual([]);
   });
 
-  it("keeps the catalog read on the session gate", async () => {
-    stubFetch([], new Response(JSON.stringify({ plans: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-    const { GET } = await import("@/app/api/billing/catalog/route");
+  it.each(READS)("%s reaches nothing for a signed-out caller", async (_path, load) => {
+    session.email = null;
+    stubGateway();
+    const { GET } = await load();
     const res = await GET();
 
-    expect(res.status).toBe(200);
-
-    session.email = null;
-    calls = [];
-    stubFetch([]);
-    const signedOut = await GET();
-    expect(signedOut.status).toBe(401);
-    expect(calls).toEqual([]);
-  });
-
-  it("keeps the seats read on the session gate, and names no org on the wire", async () => {
-    // SC-1a's seats block: a signed-in member reads their own seats; a
-    // signed-out one reaches nothing. The organization is the deployment key's
-    // — never a query parameter the browser sent — so the whole read is a bare
-    // GET with no request input.
-    stubFetch([], new Response(JSON.stringify({ plans: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-    const { GET } = await import("@/app/api/billing/seats/route");
-    const res = await GET();
-
-    expect(res.status).toBe(200);
-    // It reached the Console's own seats read on the deployment's key, and no
-    // caller-named organization could have moved it elsewhere.
-    const seatsCall = consoleCalls().find((u) => u.endsWith("/me/seats"));
-    expect(seatsCall).toBeDefined();
-    expect(seatsCall).not.toMatch(/[?&]/); // no query string, no org param
-
-    session.email = null;
-    calls = [];
-    stubFetch([]);
-    const signedOut = await GET();
-    expect(signedOut.status).toBe(401);
+    expect(res.status).toBe(401);
     expect(calls).toEqual([]);
   });
 });

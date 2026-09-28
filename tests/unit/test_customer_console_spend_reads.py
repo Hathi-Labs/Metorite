@@ -115,6 +115,70 @@ class TestNoModelReachesTheCustomer:
         # nothing.
         assert re.search(r"\bmodel\b", dirty_sql)
 
+    def test_every_customer_spend_door_serves_a_customer_view(self):
+        """🔴 D66 on EVERY door onto the spend, not just the first two.
+
+        H-152 added the deployment-key twins (``/registry/usage/*``) beside the
+        organization-key reads (``/my/usage/*``). A new door is where a cost
+        column ships by accident: it returns ``OrgBreakdownView`` because that
+        shape "already has the rows", or its helper joins
+        ``store.usage_cost_by`` on.
+
+        So every route under either prefix must (1) be annotated with one of
+        the three customer views, and (2) reach no cost reader, following the
+        calls it makes to other functions in ``main.py``.
+        """
+        tree = ast.parse(MAIN.read_text(encoding="utf-8"))
+        functions = {
+            n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+        }
+        allowed_views = {"ActivitySpendView", "MemberSpendView", "AppSpendView"}
+        cost_readers = {"usage_cost_by", "realised_margin"}
+
+        def route_path(fn: ast.FunctionDef) -> str:
+            for deco in fn.decorator_list:
+                if (
+                    isinstance(deco, ast.Call)
+                    and deco.args
+                    and isinstance(deco.args[0], ast.Constant)
+                    and isinstance(deco.args[0].value, str)
+                ):
+                    return deco.args[0].value
+            return ""
+
+        doors = {
+            name: fn for name, fn in functions.items()
+            if route_path(fn).startswith(("/my/usage/", "/registry/usage/"))
+        }
+        # Non-vacuity: three org-key doors and three deployment-key twins.
+        assert len(doors) == 6, sorted(doors)
+
+        for name, fn in doors.items():
+            returns = ast.unparse(fn.returns) if fn.returns else ""
+            assert returns in allowed_views, (
+                f"{name} returns {returns!r}. A customer spend door serves one "
+                f"of {sorted(allowed_views)} — never an operator shape (D66)."
+            )
+            seen: set[str] = set()
+            stack = [fn]
+            while stack:
+                node = stack.pop()
+                for call in ast.walk(node):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    target = call.func
+                    called = (
+                        target.attr if isinstance(target, ast.Attribute)
+                        else target.id if isinstance(target, ast.Name) else ""
+                    )
+                    assert called not in cost_readers, (
+                        f"{name} reaches {called}, a COST reader. D66 keeps "
+                        "our cost off every customer screen."
+                    )
+                    if called in functions and called not in seen:
+                        seen.add(called)
+                        stack.append(functions[called])
+
     @pytest.mark.parametrize("view", ("ActivitySpendRow", "MemberSpendRow"))
     def test_the_wire_shape_has_no_model_field(self, view):
         """The other door. A field on the response model is how it ships even
