@@ -70,8 +70,10 @@ export default function ProviderHealthPanel({
           <p>
             Whether each vendor account we call on can still serve. The balance
             is what the vendor reported. A vendor that shows no balance is
-            watched by its refusals instead: a 402 means the account is empty,
-            and a 401 or 403 means the key is refused.
+            watched by its refusals instead. One 402 means the account is
+            empty, and one 401 means the key is rejected. A 403 or a 429 counts
+            only when it repeats and no call has been served since: one alone is
+            usually a single refused prompt or a busy minute.
           </p>
         </div>
         {origin === "live" && rows.length > 0 && (

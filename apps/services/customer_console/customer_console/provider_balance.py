@@ -88,11 +88,26 @@ REFUSAL_STATUSES = frozenset({401, 402, 403, 429})
 
 #: A healthy probe NEWER than one of these clears it. The probe used the same
 #: key and the vendor answered it, so the key works and the account has money.
-#: 403 and 429 can be per-model or per-minute, so they only age out.
 _SUPERSEDED_BY_PROBE = frozenset({401, 402})
 
-#: The seven statuses the rule can return, worst first.
-STATUSES = ("out", "refusing", "low", "probe_failed", "unknown", "ok")
+#: 🔴 **ONE 402 or ONE 401 is decisive; ONE 403 or ONE 429 is not** (review
+#: of PR #524). A 403 is often one moderated prompt, and a 429 one busy
+#: minute that failover then served. Either one alone drew a red "AI is
+#: failing" banner for an hour. So these two need a repeat, and a SERVED call
+#: on the same vendor after the latest one clears them.
+_NEEDS_REPEAT = frozenset({403, 429})
+REPEAT_VAR = "CUSTOMER_CONSOLE_PROVIDER_REFUSING_MIN"
+DEFAULT_REPEAT = 3
+
+#: The statuses the rule can return, worst first.
+#:
+#: ⚠️ ``rate_limited`` is its own status, AMBER. A 429 says we are calling too
+#: fast or past a quota. It does not say the account is empty, and a "top up"
+#: banner for it sends somebody to pay for the wrong thing.
+STATUSES = ("out", "refusing", "rate_limited", "low", "probe_failed", "unknown", "ok")
+
+#: Why a status is what it is, for the console's headline. None = nothing wrong.
+CAUSES = ("payment", "key", "rate_limit", "balance", "probe", "invisible")
 
 #: Our own words for every failure. Nothing else may reach `probe_error`.
 _ERRORS = {
@@ -116,6 +131,16 @@ def low_line_usd(env: Mapping[str, str] | None = None) -> Decimal:
     except InvalidOperation:
         return DEFAULT_LOW_USD
     return value if value >= 0 else DEFAULT_LOW_USD
+
+
+def repeat_threshold(env: Mapping[str, str] | None = None) -> int:
+    """How many 403s or 429s inside the window make an alarm. At least 1."""
+    raw = (env if env is not None else os.environ).get(REPEAT_VAR, "").strip()
+    try:
+        n = int(raw) if raw else DEFAULT_REPEAT
+    except ValueError:
+        n = DEFAULT_REPEAT
+    return n if n >= 1 else DEFAULT_REPEAT
 
 
 def _refusing_window(env: Mapping[str, str] | None = None) -> timedelta:
@@ -422,6 +447,44 @@ def note_refusal(provider: str, status: int | None, *, now: datetime | None = No
         return
 
 
+#: provider -> the latest call a PLATFORM key served. Same lock as the counts.
+_SUCCESS: dict[str, datetime] = {}
+
+
+def note_success(provider: str, *, now: datetime | None = None) -> None:
+    """Remember that a platform key just served. **Never raises.**
+
+    One dict write under the lock, on every served call: no I/O, and no
+    allocation past the first call per vendor.
+    """
+    try:
+        if not provider:
+            return
+        key = str(provider).strip().lower()[:_PROVIDER_MAX]
+        at = now or datetime.now(UTC)
+        with _BUFFER_LOCK:
+            if key in _SUCCESS or len(_SUCCESS) < _BUFFER_MAX_KEYS:
+                prev = _SUCCESS.get(key)
+                _SUCCESS[key] = at if prev is None or at > prev else prev
+    except Exception:  # pragma: no cover - the hook must never fail a call
+        return
+
+
+def drain_successes() -> dict[str, datetime]:
+    """Take the latest success per provider, and empty the map."""
+    with _BUFFER_LOCK:
+        out = dict(_SUCCESS)
+        _SUCCESS.clear()
+    return out
+
+
+def restore_successes(rows: dict[str, datetime]) -> None:
+    with _BUFFER_LOCK:
+        for p, at in rows.items():
+            prev = _SUCCESS.get(p)
+            _SUCCESS[p] = at if prev is None or at > prev else prev
+
+
 def drain_refusals() -> list[dict[str, Any]]:
     """Take everything buffered, and empty the buffer."""
     with _BUFFER_LOCK:
@@ -465,6 +528,10 @@ class HealthInput:
     low_threshold: Decimal | None = None
     #: Latest refusal per status, inside the 24-hour window.
     last_refusal_by_status: dict[int, datetime] = field(default_factory=dict)
+    #: How many of each status came inside the refusing window.
+    recent_count_by_status: dict[int, int] = field(default_factory=dict)
+    #: The last call a platform key served on this vendor.
+    last_success_at: datetime | None = None
     #: What this vendor cost US over the last seven days, in USD.
     cost_7d_usd: Decimal | None = None
 
@@ -475,6 +542,8 @@ class Assessment:
     reason: str
     days_left: Decimal | None
     threshold: Decimal | None
+    #: One of :data:`CAUSES`, or None when nothing is wrong.
+    cause: str | None = None
 
 
 def days_left(
@@ -493,9 +562,15 @@ def days_left(
     return (balance / per_day).quantize(Decimal("0.1"))
 
 
-def _live_refusals(h: HealthInput, *, now: datetime, window: timedelta) -> set[int]:
-    """The refusal statuses that still count: inside the window, and not
-    cleared by a healthy probe that came after them."""
+def _live_refusals(
+    h: HealthInput, *, now: datetime, window: timedelta, repeat: int = DEFAULT_REPEAT
+) -> set[int]:
+    """The refusal statuses that still count.
+
+    Every status: inside the window. 401 and 402: not cleared by a healthy
+    probe after them. 403 and 429: at least ``repeat`` of them inside the
+    window, and no SERVED call on this vendor since the latest one.
+    """
     healthy_probe_at = (
         h.balance_checked_at
         if h.probe_status == "ok"
@@ -514,24 +589,43 @@ def _live_refusals(h: HealthInput, *, now: datetime, window: timedelta) -> set[i
             and healthy_probe_at > at
         ):
             continue
+        if status in _NEEDS_REPEAT:
+            if h.recent_count_by_status.get(status, 0) < repeat:
+                continue
+            if h.last_success_at is not None and h.last_success_at > at:
+                continue
         live.add(status)
     return live
 
 
-def _refusal_verdict(h: HealthInput, live: set[int]) -> tuple[str, str] | None:
-    """``out`` or ``refusing``, with the reason, or None."""
+Verdict = tuple[str, str, str]
+
+
+def _refusal_verdict(h: HealthInput, live: set[int]) -> Verdict | None:
+    """``out``, ``refusing`` or ``rate_limited``, with the reason and the
+    cause, or None."""
     if h.available is False:
-        return "out", "The vendor reports that this account cannot serve calls."
+        return "out", "The vendor reports that this account cannot serve calls.", "payment"
     if h.balance is not None and h.balance <= 0 and h.probe_status in ("ok", "failed"):
-        return "out", "The balance is zero or less, so the vendor refuses every call."
+        return (
+            "out",
+            "The balance is zero or less, so the vendor refuses every call.",
+            "payment",
+        )
     if 402 in live:
-        return "out", "The vendor refused a call with 402 (payment required)."
-    refusing = sorted(live & {401, 403, 429})
-    if refusing:
-        names = ", ".join(str(s) for s in refusing)
-        return "refusing", f"The vendor refused recent calls on our key ({names})."
+        return "out", "The vendor refused a call with 402 (payment required).", "payment"
+    rejected = sorted(live & {401, 403})
+    if rejected:
+        names = ", ".join(str(s) for s in rejected)
+        return "refusing", f"The vendor rejected our key on recent calls ({names}).", "key"
     if h.probe_status == "failed" and h.probe_http == 401:
-        return "refusing", "The vendor refused our key on its balance endpoint (401)."
+        return "refusing", "The vendor rejected our key on its balance endpoint (401).", "key"
+    if 429 in live:
+        return (
+            "rate_limited",
+            "The vendor is rate-limiting our calls (429), and none has been served since.",
+            "rate_limit",
+        )
     return None
 
 
@@ -541,15 +635,20 @@ def assess(
     now: datetime,
     low_usd: Decimal = DEFAULT_LOW_USD,
     refusing_window: timedelta = timedelta(minutes=DEFAULT_REFUSING_MINUTES),
+    repeat: int = DEFAULT_REPEAT,
 ) -> Assessment:
     """🔴 **THE status rule.** One function, and every surface reads it.
 
     Worst first:
 
-      * ``out`` — the vendor says the account cannot serve, or the balance is
-        zero or less, or a 402 is recent and no healthy probe came after it.
-      * ``refusing`` — a recent 401, 403 or 429, or the balance probe itself
-        was refused with 401.
+      * ``out`` (cause ``payment``) — the vendor says the account cannot
+        serve, or the balance is zero or less, or ONE recent 402 with no
+        healthy probe after it.
+      * ``refusing`` (cause ``key``) — ONE recent 401, or ``repeat`` 403s in
+        the window with no served call since, or the balance probe itself was
+        refused with 401.
+      * ``rate_limited`` (cause ``rate_limit``, amber) — ``repeat`` 429s in
+        the window with no served call since.
       * ``low`` — the balance is under the threshold, or under three days of
         runway at the last seven days' pace.
       * ``probe_failed`` — the vendor has a balance endpoint and the read
@@ -566,30 +665,42 @@ def assess(
         threshold = low_usd
     runway = days_left(h.balance, h.currency, h.cost_7d_usd)
 
-    def result(status: str, reason: str) -> Assessment:
-        return Assessment(status=status, reason=reason, days_left=runway, threshold=threshold)
+    def result(status: str, reason: str, cause: str | None = None) -> Assessment:
+        return Assessment(
+            status=status, reason=reason, days_left=runway, threshold=threshold, cause=cause
+        )
 
-    refused = _refusal_verdict(h, _live_refusals(h, now=now, window=refusing_window))
+    live = _live_refusals(h, now=now, window=refusing_window, repeat=repeat)
+    refused = _refusal_verdict(h, live)
     if refused is not None:
         return result(*refused)
 
     if h.balance is not None and threshold is not None and h.balance < threshold:
         line = f"{format(threshold.normalize(), 'f')} {h.currency or ''}".strip()
-        return result("low", f"The balance is under the low line of {line}.")
+        return result("low", f"The balance is under the low line of {line}.", "balance")
     if runway is not None and runway < LOW_DAYS_LEFT:
-        return result("low", f"About {runway} days left at the last seven days' pace.")
+        return result("low", f"About {runway} days left at the last seven days' pace.", "balance")
 
     if h.probe_status == "failed":
         return result(
-            "probe_failed", "The balance read failed. Check the credential and the vendor."
+            "probe_failed",
+            "The balance read failed. Check the credential and the vendor.",
+            "probe",
         )
     if h.probe_status is None:
-        return result("unknown", "Not checked yet. Watch for refusals.")
+        return result("unknown", "Not checked yet. Watch for refusals.", "invisible")
     if h.probe_status == "not_exposed":
         return result(
             "unknown",
             "This vendor does not expose its balance. Watch for refusals.",
+            "invisible",
         )
+    if threshold is None:
+        # ⚠️ A CNY balance with no override has NO low line: the USD default
+        # does not apply to it. "Above the low line" would claim a check that
+        # never ran.
+        currency = h.currency or "this currency"
+        return result("ok", f"No low line is set for {currency}. Set one to be warned.")
     return result("ok", "The balance is above the low line.")
 
 
@@ -601,7 +712,7 @@ def assess(
 # connection from the pool for eight seconds.
 
 #: The states that alert. `unknown` and `probe_failed` do not.
-ALERTING = frozenset({"out", "refusing", "low"})
+ALERTING = frozenset({"out", "refusing", "rate_limited", "low"})
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -614,20 +725,26 @@ def _money(value: Decimal | None) -> str | None:
 
 
 def flush_refusals(engine: Any) -> int:
-    """Write the buffer to ``provider_refusal``. **Never raises.**
+    """Write the buffer: refusal counts to ``provider_refusal``, and the latest
+    success per provider to ``provider_health.last_success_at``. **Never
+    raises.** Returns how many rows it wrote.
 
-    A failed write puts the counts back, so the next flush retries them.
+    A failed write puts both back, so the next flush retries them.
     """
     from customer_console import store
 
     rows = drain_refusals()
-    if not rows:
+    served = drain_successes()
+    if not rows and not served:
         return 0
     try:
         with engine.begin() as conn:
-            return store.provider_refusal_insert(conn, rows)
+            return store.provider_refusal_insert(conn, rows) + store.provider_health_note_success(
+                conn, served
+            )
     except Exception as exc:
         restore_refusals(rows)
+        restore_successes(served)
         _log.warning("provider.refusal_flush_failed error=%s", type(exc).__name__)
         return 0
 
@@ -695,10 +812,13 @@ def health_report(
     now = now or datetime.now(UTC)
     names = store.provider_platform_names(conn)
     health = store.provider_health_rows(conn)
-    refusals = store.provider_refusal_summary(conn, hours=24)
-    spend = {r["provider"]: r["cost_usd"] for r in store.spend_by_provider(conn, days=7)}
     low_usd = low_line_usd(env)
     window = _refusing_window(env)
+    repeat = repeat_threshold(env)
+    refusals = store.provider_refusal_summary(
+        conn, hours=24, recent_minutes=window // timedelta(minutes=1)
+    )
+    spend = {r["provider"]: r["cost_usd"] for r in store.spend_by_provider(conn, days=7)}
 
     out: list[dict[str, Any]] = []
     for name in names:
@@ -715,17 +835,24 @@ def health_report(
                 probe_http=h.get("probe_http"),
                 low_threshold=h.get("low_threshold"),
                 last_refusal_by_status=seen.get("by_status", {}),
+                recent_count_by_status=seen.get("recent_by_status", {}),
+                last_success_at=h.get("last_success_at"),
                 cost_7d_usd=spend.get(name),
             ),
             now=now,
             low_usd=low_usd,
             refusing_window=window,
+            repeat=repeat,
         )
         out.append(
             {
                 "provider": name,
                 "status": verdict.status,
                 "reason": verdict.reason,
+                # Why, so the console's headline names the real cause:
+                # payment, key, rate_limit, balance, probe or invisible.
+                "cause": verdict.cause,
+                "last_success_at": _iso(h.get("last_success_at")),
                 "balance": _money(h.get("balance")),
                 "currency": h.get("currency"),
                 "available": h.get("available"),
@@ -749,7 +876,8 @@ def health_report(
 def refresh_alerts(conn: Any, report: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Log each provider's status once per TRANSITION. Returns what changed.
 
-    ``out`` and ``refusing`` log ``provider.refusing``, ``low`` logs
+    ``out`` and ``refusing`` log ``provider.refusing``, ``rate_limited``
+    logs ``provider.rate_limited``, ``low`` logs
     ``provider.balance_low``, and leaving a bad state logs
     ``provider.recovered``. A provider that stays bad logs nothing more.
     """
@@ -769,6 +897,13 @@ def refresh_alerts(conn: Any, report: list[dict[str, Any]]) -> list[tuple[str, s
                 row["provider"],
                 row["status"],
                 row["last_refusal_status"],
+                row["reason"],
+            )
+        elif row["status"] == "rate_limited":
+            _log.warning(
+                "provider.rate_limited provider=%s refusals_24h=%s reason=%s",
+                row["provider"],
+                row["refusals_24h"],
                 row["reason"],
             )
         elif row["status"] == "low":

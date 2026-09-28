@@ -22,8 +22,9 @@
 -- filters it before the row exists.
 --
 -- ⚠️ **No secret, and no fragment of one, in either table.** `probe_error`
--- holds a short sanitized reason ("http 401", "timeout"), never a vendor body.
--- `test_provider_balance.py` pins that.
+-- holds a short reason in our own words from `provider_balance._ERRORS`,
+-- such as "the vendor answered HTTP 401" or "the vendor did not answer in
+-- time". Never a vendor body. `test_provider_balance.py` pins that.
 --
 -- ⚠️ **R6 — expand only, and idempotent.** The ladder replays every file on
 -- every deploy, so every statement is IF NOT EXISTS.
@@ -56,7 +57,11 @@ CREATE TABLE IF NOT EXISTS provider_health (
     -- once across every worker and every restart.
     alert_state         text,
     alert_changed_at    timestamptz,
-    updated_at          timestamptz NOT NULL DEFAULT now(),
+    -- The last call a PLATFORM key served on this vendor (never BYOK). A
+    -- success after a 403 or a 429 clears the alarm: one moderated prompt or
+    -- one busy minute is not an account that has stopped serving.
+    last_success_at     timestamptz,
+    updated_at         timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT provider_health_probe_status_known
         CHECK (probe_status IS NULL
                OR probe_status = ANY (ARRAY['ok'::text, 'not_exposed'::text, 'failed'::text]))

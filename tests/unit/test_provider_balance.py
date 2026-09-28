@@ -268,14 +268,66 @@ class TestStatusRule:
         h = _ok_usd("50", last_refusal_by_status={402: NOW - timedelta(minutes=1)})
         assert pb.assess(h, now=NOW).status == "out"
 
-    @pytest.mark.parametrize("status", [401, 403, 429])
-    def test_recent_auth_or_rate_refusals_are_refusing(self, status):
-        h = _in(probe_status="not_exposed", last_refusal_by_status={status: NOW})
+    def test_ONE_401_is_decisive(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={401: NOW},
+                recent_count_by_status={401: 1})
+        v = pb.assess(h, now=NOW)
+        assert (v.status, v.cause) == ("refusing", "key")
+
+    def test_ONE_402_is_still_out_immediately(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW},
+                recent_count_by_status={402: 1})
+        v = pb.assess(h, now=NOW)
+        assert (v.status, v.cause) == ("out", "payment")
+
+    def test_a_402_is_not_cleared_by_a_later_success(self):
+        """The reviewer's rule: 401 and 402 stay as they were."""
+        h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW - timedelta(minutes=5)},
+                recent_count_by_status={402: 1}, last_success_at=NOW)
+        assert pb.assess(h, now=NOW).status == "out"
+
+    @pytest.mark.parametrize("status", [403, 429])
+    def test_ONE_403_or_429_is_NOT_an_alarm(self, status):
+        """🔴 PR #524 review P1. One moderated prompt, or one busy minute that
+        failover served, drew a red banner for an hour."""
+        h = _in(probe_status="not_exposed", last_refusal_by_status={status: NOW},
+                recent_count_by_status={status: 1})
+        assert pb.assess(h, now=NOW).status == "unknown"
+
+    def test_three_403s_and_no_success_is_refusing(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={403: NOW},
+                recent_count_by_status={403: 3})
+        v = pb.assess(h, now=NOW)
+        assert (v.status, v.cause) == ("refusing", "key")
+        assert "rejected our key" in v.reason
+
+    def test_three_429s_then_a_success_is_CLEARED(self):
+        h = _in(probe_status="not_exposed",
+                last_refusal_by_status={429: NOW - timedelta(minutes=2)},
+                recent_count_by_status={429: 3},
+                last_success_at=NOW - timedelta(minutes=1))
+        assert pb.assess(h, now=NOW).status == "unknown"
+
+    def test_a_success_BEFORE_the_latest_refusal_clears_nothing(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={403: NOW},
+                recent_count_by_status={403: 3}, last_success_at=NOW - timedelta(minutes=1))
         assert pb.assess(h, now=NOW).status == "refusing"
 
-    def test_a_429_is_not_cleared_by_a_probe(self):
-        h = _ok_usd("50", last_refusal_by_status={429: NOW - timedelta(minutes=30)})
-        assert pb.assess(h, now=NOW).status == "refusing"
+    def test_429s_alone_are_RATE_LIMITED_amber_and_never_top_up(self):
+        h = _ok_usd("50", last_refusal_by_status={429: NOW - timedelta(minutes=1)},
+                    recent_count_by_status={429: 4})
+        v = pb.assess(h, now=NOW)
+        assert (v.status, v.cause) == ("rate_limited", "rate_limit")
+        assert "rate-limiting" in v.reason
+        assert "top up" not in v.reason.lower() and "payment" not in v.reason.lower()
+
+    def test_the_repeat_threshold_is_configurable(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={403: NOW},
+                recent_count_by_status={403: 2})
+        assert pb.assess(h, now=NOW).status == "unknown"
+        assert pb.assess(h, now=NOW, repeat=2).status == "refusing"
+        assert pb.repeat_threshold({pb.REPEAT_VAR: "5"}) == 5
+        assert pb.repeat_threshold({pb.REPEAT_VAR: "0"}) == pb.DEFAULT_REPEAT
 
     def test_a_probe_refused_with_401_is_refusing(self):
         h = _in(probe_status="failed", probe_http=401)
@@ -297,7 +349,11 @@ class TestStatusRule:
     def test_the_usd_default_never_applies_to_another_currency(self):
         h = _in(balance=Decimal("4"), currency="CNY", available=True, probe_status="ok",
                 balance_checked_at=NOW)
-        assert pb.assess(h, now=NOW).status == "ok"
+        v = pb.assess(h, now=NOW)
+        assert v.status == "ok" and v.threshold is None
+        # ⚠️ It must not claim a check that never ran.
+        assert "above the low line" not in v.reason
+        assert "No low line is set for CNY" in v.reason
 
     def test_under_three_days_of_runway_is_low_whatever_the_balance(self):
         # $70 a week is $10 a day, so $25 is 2.5 days.
@@ -322,7 +378,8 @@ class TestStatusRule:
         assert pb.assess(h2, now=NOW).status == "low"
 
     def test_every_status_is_in_the_vocabulary(self):
-        assert set(pb.STATUSES) == {"out", "refusing", "low", "probe_failed", "unknown", "ok"}
+        assert set(pb.STATUSES) == {
+            "out", "refusing", "rate_limited", "low", "probe_failed", "unknown", "ok"}
 
 
 # ── The refusal buffer and the chain hook ───────────────────────────────────
@@ -331,8 +388,10 @@ class TestStatusRule:
 @pytest.fixture(autouse=True)
 def _empty_buffer():
     pb.drain_refusals()
+    pb.drain_successes()
     yield
     pb.drain_refusals()
+    pb.drain_successes()
 
 
 def test_the_buffer_counts_watched_statuses_only():
@@ -406,17 +465,54 @@ def test_a_broken_hook_never_changes_the_walk():
     assert info.value.status == 402
 
 
-def test_the_recorder_counts_platform_steps_and_skips_BYOK():
-    from customer_console.main import _refusal_recorder
+def test_the_watch_counts_platform_steps_and_skips_BYOK():
+    from customer_console.main import _chain_watch
 
-    note = _refusal_recorder({
+    refused, served = _chain_watch({
         "deepseek": Credential("k" * 20, None, False),
         "groq": Credential("k" * 20, None, True),
     })
-    note(ResolvedTier(tier="t", model="deepseek/chat"), 402)
-    note(ResolvedTier(tier="t", model="groq/llama"), 402)
-    note(ResolvedTier(tier="t", model="missing/x"), 402)
+    for model in ("deepseek/chat", "groq/llama", "missing/x"):
+        refused(ResolvedTier(tier="t", model=model), 402)
+        served(ResolvedTier(tier="t", model=model))
     assert [(r["provider"], r["status"]) for r in pb.drain_refusals()] == [("deepseek", 402)]
+    assert list(pb.drain_successes()) == ["deepseek"]
+
+
+def test_the_success_hook_sees_the_step_that_ANSWERED_and_only_it():
+    steps = [ResolvedTier(tier="t", model="deepseek/chat"),
+             ResolvedTier(tier="t", model="other/chat", rank=2)]
+    served: list[str] = []
+
+    async def attempt(step: ResolvedTier) -> Any:
+        if step.model.startswith("deepseek"):
+            raise _Upstream(429)
+        return "answer"
+
+    asyncio.run(walk_chain(steps, attempt, None, None, lambda s: served.append(s.model)))
+    assert served == ["other/chat"]
+
+
+def test_a_broken_success_hook_never_costs_the_answer():
+    steps = [ResolvedTier(tier="t", model="deepseek/chat")]
+
+    async def attempt(step: ResolvedTier) -> Any:
+        return "answer"
+
+    def boom(step):
+        raise RuntimeError("hook bug")
+
+    assert asyncio.run(walk_chain(steps, attempt, None, None, boom))[0] == "answer"
+
+
+def test_successes_keep_the_latest_and_survive_a_failed_write():
+    pb.note_success("deepseek", now=NOW - timedelta(minutes=5))
+    pb.note_success("deepseek", now=NOW)
+    pb.note_success("deepseek", now=NOW - timedelta(minutes=9))
+    got = pb.drain_successes()
+    assert got == {"deepseek": NOW}
+    pb.restore_successes(got)
+    assert pb.drain_successes() == {"deepseek": NOW}
 
 
 # ── The wiring fence ────────────────────────────────────────────────────────
@@ -425,10 +521,14 @@ MAIN = (pathlib.Path(__file__).resolve().parents[2]
         / "apps/services/customer_console/customer_console/main.py")
 
 
-def test_every_chain_walk_in_main_passes_the_refusal_recorder():
-    """🔴 A serving route that walks a chain without the hook is a vendor that
-    can run dry unseen. Every ``call_chain`` passes FOUR arguments, the fourth
-    being ``_refusal_recorder(...)``, and the stream opener takes it by name."""
+def _is_watch(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and ast.unparse(node.func) == "_chain_watch"
+
+
+def test_every_chain_walk_in_main_passes_the_watch():
+    """🔴 A serving route that walks a chain without the hooks is a vendor that
+    can run dry unseen. Every ``call_chain`` passes ``*_chain_watch(...)`` as
+    its fourth argument, and the stream opener takes ``watch=_chain_watch(...)``."""
     tree = ast.parse(MAIN.read_text(encoding="utf-8"))
     walks, streams = 0, 0
     for node in ast.walk(tree):
@@ -440,11 +540,9 @@ def test_every_chain_walk_in_main_passes_the_refusal_recorder():
             walks += 1
             assert len(node.args) == 4, ast.unparse(node)
             last = node.args[3]
-            assert isinstance(last, ast.Call) and ast.unparse(last.func) == "_refusal_recorder", (
-                ast.unparse(node))
+            assert isinstance(last, ast.Starred) and _is_watch(last.value), ast.unparse(node)
         if name == "_open_stream_or_release":
             streams += 1
             kw = {k.arg: k.value for k in node.keywords}
-            assert "on_refusal" in kw, ast.unparse(node)
-            assert ast.unparse(kw["on_refusal"].func) == "_refusal_recorder"
+            assert "watch" in kw and _is_watch(kw["watch"]), ast.unparse(node)
     assert walks >= 6 and streams >= 1, (walks, streams)

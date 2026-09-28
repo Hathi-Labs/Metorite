@@ -14,23 +14,39 @@
 // "the balance is fine". The chip says so, and the site banner stays quiet for
 // it, because an alert that is always on teaches people to ignore it.
 //
+// 🔴 **The headline names the CAUSE** (PR #524 review). A 402 means "top up",
+// a 401 or 403 means "fix the key", and a 429 means "we are calling too fast".
+// One red "top up" line for all three sends somebody to pay for the wrong fix.
+//
 // Pure and client-safe: the section's client component imports it.
 
-import type { VendorHealth, VendorHealthStatus } from "./contract";
+import type { VendorHealth, VendorHealthCause, VendorHealthStatus } from "./contract";
 import type { Tone } from "./tone";
 
 const STATUSES: readonly VendorHealthStatus[] = [
   "out",
   "refusing",
+  "rate_limited",
   "low",
   "probe_failed",
   "unknown",
   "ok",
 ];
 
+const CAUSES: readonly VendorHealthCause[] = [
+  "payment",
+  "key",
+  "rate_limit",
+  "balance",
+  "probe",
+  "invisible",
+];
+
 const TONE: Record<VendorHealthStatus, Tone> = {
   out: "danger",
   refusing: "danger",
+  // ⚠️ AMBER. A rate limit is not an empty account and not a dead key.
+  rate_limited: "warn",
   low: "warn",
   probe_failed: "warn",
   unknown: "neutral",
@@ -38,12 +54,21 @@ const TONE: Record<VendorHealthStatus, Tone> = {
 };
 
 const LABEL: Record<VendorHealthStatus, string> = {
-  out: "Out of funds",
-  refusing: "Refusing calls",
+  out: "Out of credit",
+  refusing: "Key rejected",
+  rate_limited: "Rate-limited",
   low: "Low balance",
   probe_failed: "Check failed",
   unknown: "Balance not visible",
   ok: "OK",
+};
+
+/** The cause a status implies, for a Console that sends none. */
+const DEFAULT_CAUSE: Partial<Record<VendorHealthStatus, VendorHealthCause>> = {
+  out: "payment",
+  refusing: "key",
+  rate_limited: "rate_limit",
+  low: "balance",
 };
 
 function asStatus(value: unknown): VendorHealthStatus {
@@ -52,6 +77,13 @@ function asStatus(value: unknown): VendorHealthStatus {
   return typeof value === "string" && (STATUSES as readonly string[]).includes(value)
     ? (value as VendorHealthStatus)
     : "unknown";
+}
+
+function asCause(value: unknown, status: VendorHealthStatus): VendorHealthCause | null {
+  if (typeof value === "string" && (CAUSES as readonly string[]).includes(value)) {
+    return value as VendorHealthCause;
+  }
+  return DEFAULT_CAUSE[status] ?? null;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
@@ -64,23 +96,29 @@ export function healthFromWire(body: unknown): VendorHealth[] {
   return rows
     .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
     .filter((r) => typeof r.provider === "string" && r.provider !== "")
-    .map((r) => ({
-      provider: r.provider as string,
-      status: asStatus(r.status),
-      reason: str(r.reason) ?? "",
-      balance: str(r.balance),
-      currency: str(r.currency),
-      available: typeof r.available === "boolean" ? r.available : null,
-      balanceCheckedAt: str(r.balance_checked_at),
-      probeError: str(r.probe_error),
-      balanceExposed: r.balance_exposed === true,
-      threshold: str(r.threshold),
-      daysLeft: str(r.days_left),
-      lastRefusalStatus: typeof r.last_refusal_status === "number" ? r.last_refusal_status : null,
-      lastRefusalAt: str(r.last_refusal_at),
-      refusals24h: num(r.refusals_24h),
-      serverErrors24h: num(r.server_errors_24h),
-    }));
+    .map((r) => {
+      const status = asStatus(r.status);
+      return {
+        provider: r.provider as string,
+        status,
+        cause: asCause(r.cause, status),
+        reason: str(r.reason) ?? "",
+        balance: str(r.balance),
+        currency: str(r.currency),
+        available: typeof r.available === "boolean" ? r.available : null,
+        balanceCheckedAt: str(r.balance_checked_at),
+        probeError: str(r.probe_error),
+        balanceExposed: r.balance_exposed === true,
+        threshold: str(r.threshold),
+        daysLeft: str(r.days_left),
+        lastRefusalStatus:
+          typeof r.last_refusal_status === "number" ? r.last_refusal_status : null,
+        lastRefusalAt: str(r.last_refusal_at),
+        lastSuccessAt: str(r.last_success_at),
+        refusals24h: num(r.refusals_24h),
+        serverErrors24h: num(r.server_errors_24h),
+      };
+    });
 }
 
 export function healthTone(status: VendorHealthStatus): Tone {
@@ -125,58 +163,105 @@ export function describeRefusals(row: VendorHealth): string {
 
 export type HealthAlert = {
   tone: "danger" | "warn";
+  /** Names the cause: top up, fix the key, or slow down. */
+  headline: string;
   text: string;
   providers: string[];
 };
 
+const causeOf = (r: VendorHealth): VendorHealthCause | null =>
+  r.cause ?? DEFAULT_CAUSE[r.status] ?? null;
+
+function names(rows: VendorHealth[]): { list: string; verb: string; it: string } {
+  const n = rows.map((r) => r.provider);
+  return {
+    list: joinNames(n),
+    verb: n.length === 1 ? "is" : "are",
+    it: n.length === 1 ? "it" : "them",
+  };
+}
+
 /** The site-wide banner, or null.
  *
  * 🔴 `out` and `refusing` are DANGER: AI through that vendor is failing now.
- * `low` is a WARNING: it will fail soon. `unknown` and `probe_failed` alone
- * draw nothing — the Providers page shows them, and a banner that never goes
- * away is a banner nobody reads. */
+ * `rate_limited` and `low` are WARNINGS, amber. `unknown` and `probe_failed`
+ * alone draw nothing — the Providers page shows them, and a banner that never
+ * goes away is a banner nobody reads.
+ *
+ * ⚠️ The Console already demands a REPEAT before a 403 or a 429 counts, and a
+ * served call clears it. So one moderated prompt never reaches this banner. */
 export function healthAlert(rows: VendorHealth[]): HealthAlert | null {
   const failing = rows.filter((r) => r.status === "out" || r.status === "refusing");
   if (failing.length > 0) {
-    const names = failing.map((r) => r.provider);
+    const payment = failing.filter((r) => causeOf(r) === "payment");
+    const key = failing.filter((r) => causeOf(r) !== "payment");
+    const sentences: string[] = [];
+    if (payment.length > 0) {
+      const w = names(payment);
+      sentences.push(
+        `${w.list} ${w.verb} out of credit. Every AI call through ${w.it} fails ` +
+          "until the account is topped up.",
+      );
+    }
+    if (key.length > 0) {
+      const w = names(key);
+      sentences.push(
+        `${w.list} ${w.verb} rejecting our key. Every AI call through ${w.it} fails ` +
+          "until the key is fixed.",
+      );
+    }
     return {
       tone: "danger",
-      providers: names,
-      text:
-        `${list(names)} ${names.length === 1 ? "is" : "are"} refusing our calls. ` +
-        "Every AI call that runs through " +
-        (names.length === 1 ? "it" : "them") +
-        " fails until the account is topped up or the key is fixed.",
+      headline:
+        key.length === 0
+          ? "Out of credit — top up."
+          : payment.length === 0
+            ? "Key rejected."
+            : "AI is failing.",
+      text: sentences.join(" "),
+      providers: failing.map((r) => r.provider),
     };
   }
+
+  const limited = rows.filter((r) => r.status === "rate_limited");
   const low = rows.filter((r) => r.status === "low");
-  if (low.length > 0) {
-    const names = low.map((r) => r.provider);
-    return {
-      tone: "warn",
-      providers: names,
-      text:
-        `${list(names)} ${names.length === 1 ? "is" : "are"} running low. ` +
-        "Top up before the balance reaches zero, or AI through " +
-        (names.length === 1 ? "it" : "them") +
-        " stops.",
-    };
+  if (limited.length === 0 && low.length === 0) return null;
+  const sentences: string[] = [];
+  if (limited.length > 0) {
+    const w = names(limited);
+    sentences.push(
+      `${w.list} ${w.verb} rate-limiting our calls. Some AI calls through ${w.it} ` +
+        "may fail or wait. The account is not empty.",
+    );
   }
-  return null;
+  if (low.length > 0) {
+    const w = names(low);
+    sentences.push(
+      `${w.list} ${w.verb} running low. Top up before the balance reaches zero, ` +
+        `or AI through ${w.it} stops.`,
+    );
+  }
+  return {
+    tone: "warn",
+    headline:
+      low.length === 0 ? "Rate-limited." : limited.length === 0 ? "Balance low." : "Vendor warning.",
+    text: sentences.join(" "),
+    providers: [...limited, ...low].map((r) => r.provider),
+  };
 }
 
-/** The banner's class. ⚠️ `.banner` alone IS the warning look and
- * `.banner.danger` the red one. There is no `.banner.warn` in globals.css, and
- * a class it does not define would fall back to the warning look silently. */
+/** The banner's class. `globals.css` defines `.banner.danger` and
+ * `.banner.warn`, and `.banner` alone already draws the warning look. The
+ * warning class is named anyway, so the tone is stated and never implied. */
 export function alertBannerClass(alert: HealthAlert): string {
-  return alert.tone === "danger" ? "banner danger" : "banner";
+  return alert.tone === "danger" ? "banner danger" : "banner warn";
 }
 
 export function alertHeadline(alert: HealthAlert): string {
-  return alert.tone === "danger" ? "AI is failing." : "A vendor balance is low.";
+  return alert.headline;
 }
 
-function list(names: string[]): string {
-  if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+function joinNames(n: string[]): string {
+  if (n.length <= 1) return n.join("");
+  return `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
 }

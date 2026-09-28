@@ -1317,6 +1317,7 @@ async def walk_chain(
     attempt: Callable[[ResolvedTier], Awaitable[Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
     on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
+    on_success: Callable[[ResolvedTier], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Try each step in order and return the first answer, and who gave it.
 
@@ -1344,6 +1345,10 @@ async def walk_chain(
     empty account left no trace but a log line. The hook is how
     ``provider_balance`` counts refusals per vendor. It runs inside a
     ``suppress``, so a broken hook can never change what the walk does.
+
+    ⚠️ **`on_success` sees the step that ANSWERED.** A single 403 or 429 is
+    often one moderated prompt or one busy minute. An answer from the same
+    vendor after it proves the account still serves, and clears the alarm.
     """
     dead_vendors: set[str] = set()
     for position, step in enumerate(attempts):
@@ -1351,7 +1356,7 @@ async def walk_chain(
         if vendor in dead_vendors:
             continue
         try:
-            return await attempt(step), step
+            answer = await attempt(step)
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             if on_refusal is not None:
@@ -1373,6 +1378,13 @@ async def walk_chain(
                 raise UpstreamFailed(status) from exc
             if on_failover is not None:
                 on_failover(step, remaining[0], status)
+        else:
+            if on_success is not None:
+                # Same discipline as `on_refusal`: a broken hook never
+                # costs the customer the answer we already hold.
+                with contextlib.suppress(Exception):
+                    on_success(step)
+            return answer, step
     # Unreachable while `attempts` is non-empty: the loop either returns or
     # raises. Kept so a future edit that empties it fails loudly.
     raise UpstreamFailed(None)
@@ -1383,6 +1395,7 @@ async def call_chain(
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
     on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
+    on_success: Callable[[ResolvedTier], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Walk the chain for a BUFFERED completion.
 
@@ -1398,7 +1411,7 @@ async def call_chain(
     async def _attempt(step: ResolvedTier) -> Any:
         return await call_provider(**kwargs_for(step))
 
-    return await walk_chain(attempts, _attempt, on_failover, on_refusal)
+    return await walk_chain(attempts, _attempt, on_failover, on_refusal, on_success)
 
 
 async def aclose_quietly(source: Any) -> None:
@@ -1431,6 +1444,7 @@ async def open_stream_chain(
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
     on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
+    on_success: Callable[[ResolvedTier], None] | None = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Open a provider STREAM, pull its first chunk, and walk while doing it.
 
@@ -1466,5 +1480,7 @@ async def open_stream_chain(
             await aclose_quietly(iterator)
             raise
 
-    (head, source), step = await walk_chain(attempts, _attempt, on_failover, on_refusal)
+    (head, source), step = await walk_chain(
+        attempts, _attempt, on_failover, on_refusal, on_success
+    )
     return head, source, step

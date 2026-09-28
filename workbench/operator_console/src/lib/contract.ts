@@ -445,14 +445,26 @@ export type ProviderSpend = {
 export type VendorHealthStatus =
   | "out"
   | "refusing"
+  | "rate_limited"
   | "low"
   | "probe_failed"
   | "unknown"
   | "ok";
 
+/** WHY a status is what it is: top up (payment), fix the key (key), slow
+ * down (rate_limit), and so on. The banner headline reads it. */
+export type VendorHealthCause =
+  | "payment"
+  | "key"
+  | "rate_limit"
+  | "balance"
+  | "probe"
+  | "invisible";
+
 export type VendorHealth = {
   provider: string;
   status: VendorHealthStatus;
+  cause: VendorHealthCause | null;
   /** The Console's own sentence for why. */
   reason: string;
   /** In the vendor's own currency, as a string. Null = not exposed or never read. */
@@ -467,6 +479,8 @@ export type VendorHealth = {
   daysLeft: string | null;
   lastRefusalStatus: number | null;
   lastRefusalAt: string | null;
+  /** The last call our platform key served on this vendor. */
+  lastSuccessAt: string | null;
   refusals24h: number;
   serverErrors24h: number;
 };

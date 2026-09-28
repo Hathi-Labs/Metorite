@@ -72,10 +72,12 @@ def client(monkeypatch):
     monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
     monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
     pb.drain_refusals()
+    pb.drain_successes()
     from customer_console.main import app
 
     yield TestClient(app)
     pb.drain_refusals()
+    pb.drain_successes()
 
 
 @pytest.fixture
@@ -136,7 +138,8 @@ def test_migration_035_replays_and_both_tables_exist(db):
         )
     assert tables == {"provider_health", "provider_refusal"}
     assert {"funds_left", "currency", "available", "funds_checked_at", "probe_status",
-            "probe_error", "probe_http", "low_threshold", "alert_state"} <= cols
+            "probe_error", "probe_http", "low_threshold", "alert_state",
+            "last_success_at"} <= cols
     # ⚠️ No column that could hold a key.
     assert not {c for c in cols if "secret" in c or "key" in c}
 
@@ -209,6 +212,79 @@ def test_a_402_from_OUR_account_turns_the_provider_OUT(client, db, vendor_down, 
     assert len(lines) == 1, lines
     assert _row(client, vendor)["refusals_24h"] == 2
     assert SECRET not in caplog.text
+
+
+class _Refused(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"upstream {status}")
+        self.status_code = status
+
+
+def _script(outcomes: list):
+    """A provider that answers from a script: an int is a refusal with that
+    status, anything else is a served completion."""
+    from tests.unit.test_customer_console_end_to_end import RESPONSE
+
+    queue = list(outcomes)
+
+    async def _call(**kwargs):
+        outcome = queue.pop(0) if queue else "ok"
+        if isinstance(outcome, int):
+            raise _Refused(outcome)
+        return dict(RESPONSE)
+
+    router_mod.set_provider_call(_call)
+
+
+def _staged(client, db):
+    run = uuid.uuid4().hex[:8]
+    tier, slug, _org, key = _stage_one_priced_tier(client, db, run)
+    client.post("/credits/grant", headers=OP, json={
+        "org_slug": slug, "credits": "40", "reason": "purchase", "ref": f"b-{run}"})
+    return tier, key, f"e2ez{run}"
+
+
+def test_ONE_403_through_the_route_is_not_an_alarm(client, db):
+    """🔴 PR #524 review P1: one moderated prompt must not paint every page red."""
+    tier, key, vendor = _staged(client, db)
+    try:
+        _script([403])
+        assert _ask(client, key, tier).status_code == 502
+    finally:
+        router_mod.set_provider_call(None)
+    row = _row(client, vendor)
+    assert row["refusals_24h"] == 1
+    assert row["status"] == "unknown", row
+
+
+def test_three_403s_through_the_route_are_refusing(client, db):
+    tier, key, vendor = _staged(client, db)
+    try:
+        _script([403, 403, 403])
+        for _ in range(3):
+            assert _ask(client, key, tier).status_code == 502
+    finally:
+        router_mod.set_provider_call(None)
+    row = _row(client, vendor)
+    assert (row["status"], row["cause"]) == ("refusing", "key"), row
+
+
+def test_three_429s_are_rate_limited_and_a_SERVED_call_clears_them(client, db):
+    tier, key, vendor = _staged(client, db)
+    try:
+        _script([429, 429, 429])
+        for _ in range(3):
+            assert _ask(client, key, tier).status_code == 429
+        row = _row(client, vendor)
+        assert (row["status"], row["cause"]) == ("rate_limited", "rate_limit"), row
+
+        _script(["ok"])
+        assert _ask(client, key, tier).status_code == 200
+    finally:
+        router_mod.set_provider_call(None)
+    row = _row(client, vendor)
+    assert row["status"] == "unknown", row
+    assert row["last_success_at"] is not None
 
 
 def test_a_402_on_a_customers_OWN_key_is_not_our_alert(client, db, vendor_down):

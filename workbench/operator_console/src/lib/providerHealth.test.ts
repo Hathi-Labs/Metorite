@@ -33,6 +33,8 @@ import { readProviderHealth } from "./read";
 const WIRE_ROW = {
   provider: "deepseek",
   status: "out",
+  cause: "payment",
+  last_success_at: null,
   reason: "The vendor reports that this account cannot serve calls.",
   balance: "-0.05",
   currency: "USD",
@@ -53,6 +55,9 @@ const WIRE_ROW = {
 
 const row = (over: Partial<VendorHealth> = {}): VendorHealth => ({
   ...healthFromWire({ providers: [WIRE_ROW] })[0],
+  // A test that overrides the status states its cause, or gets the status's
+  // own default. It must never inherit the base row's `payment`.
+  cause: null,
   ...over,
 });
 
@@ -89,40 +94,73 @@ describe("the chip", () => {
     expect(healthLabel("unknown")).toBe("Balance not visible");
   });
 
-  it("out and refusing are danger, low and a failed check are warnings", () => {
+  it("out and refusing are danger; rate-limited, low and a failed check are amber", () => {
     expect(healthTone("out")).toBe("danger");
     expect(healthTone("refusing")).toBe("danger");
+    expect(healthTone("rate_limited")).toBe("warn");
     expect(healthTone("low")).toBe("warn");
     expect(healthTone("probe_failed")).toBe("warn");
     expect(healthTone("ok")).toBe("ok");
   });
+
+  it("the labels name the cause", () => {
+    expect(healthLabel("out")).toBe("Out of credit");
+    expect(healthLabel("refusing")).toBe("Key rejected");
+    expect(healthLabel("rate_limited")).toBe("Rate-limited");
+  });
 });
 
 describe("the site-wide banner", () => {
-  it("🔴 an OUT vendor raises a DANGER banner that names it", () => {
+  it("🔴 a 402 (payment) raises a DANGER banner that says TOP UP", () => {
     const a = healthAlert([row(), row({ provider: "aimlapi", status: "ok" })]);
     expect(a?.tone).toBe("danger");
     expect(a?.providers).toEqual(["deepseek"]);
-    expect(a?.text).toContain("deepseek is refusing our calls");
+    expect(a?.text).toContain("deepseek is out of credit");
+    expect(a?.text).toContain("topped up");
     expect(alertBannerClass(a!)).toBe("banner danger");
+    expect(alertHeadline(a!)).toBe("Out of credit — top up.");
+  });
+
+  it("🔴 a rejected key says KEY, never top up", () => {
+    const a = healthAlert([row({ status: "refusing", cause: "key" })]);
+    expect(a?.tone).toBe("danger");
+    expect(alertHeadline(a!)).toBe("Key rejected.");
+    expect(a?.text).toContain("rejecting our key");
+    expect(a?.text).not.toMatch(/top(ped)? up/);
+  });
+
+  it("both causes at once name both, under one headline", () => {
+    const a = healthAlert([
+      row({ provider: "a", status: "low" }),
+      row({ provider: "b", status: "refusing", cause: "key" }),
+      row({ provider: "c", status: "out", cause: "payment" }),
+    ]);
+    expect(a?.tone).toBe("danger");
+    expect(a?.providers).toEqual(["b", "c"]);
+    expect(a?.text).toContain("c is out of credit");
+    expect(a?.text).toContain("b is rejecting our key");
     expect(alertHeadline(a!)).toBe("AI is failing.");
   });
 
-  it("danger outranks low, and names only the failing ones", () => {
-    const a = healthAlert([
-      row({ provider: "a", status: "low" }),
-      row({ provider: "b", status: "refusing" }),
-      row({ provider: "c", status: "out" }),
-    ]);
-    expect(a?.tone).toBe("danger");
-    expect(a?.text).toContain("b and c are refusing");
+  it("🔴 a RATE LIMIT is AMBER and says rate-limited, never 'AI is failing' or top up", () => {
+    const a = healthAlert([row({ status: "rate_limited", cause: "rate_limit" })]);
+    expect(a?.tone).toBe("warn");
+    expect(alertBannerClass(a!)).toBe("banner warn");
+    expect(alertHeadline(a!)).toBe("Rate-limited.");
+    expect(a?.text).toContain("rate-limiting our calls");
+    expect(a?.text).not.toMatch(/top(ped)? up|AI is failing/);
   });
 
-  it("a LOW vendor raises a warning", () => {
-    const a = healthAlert([row({ status: "low" })]);
+  it("a LOW vendor raises a warning that says top up", () => {
+    const a = healthAlert([row({ status: "low", cause: "balance" })]);
     expect(a?.tone).toBe("warn");
-    // ⚠️ `.banner` alone IS the warning look. There is no `.banner.warn`.
-    expect(alertBannerClass(a!)).toBe("banner");
+    expect(alertBannerClass(a!)).toBe("banner warn");
+    expect(alertHeadline(a!)).toBe("Balance low.");
+  });
+
+  it("a cause the wire omits falls back to the one the status implies", () => {
+    const r = healthFromWire({ providers: [{ ...WIRE_ROW, status: "refusing", cause: undefined }] })[0];
+    expect(r.cause).toBe("key");
   });
 
   it("🔴 'balance not visible' ALONE draws no banner, nor does a failed check", () => {
@@ -135,6 +173,7 @@ describe("the site-wide banner", () => {
     const css = readFileSync(join(__dirname, "..", "app", "globals.css"), "utf8");
     expect(css).toMatch(/\n\.banner \{/);
     expect(css).toMatch(/\n\.banner\.danger \{/);
+    expect(css).toMatch(/\n\.banner\.warn \{/);
     expect(css).toMatch(/\.wrap\.alertbar \{/);
   });
 

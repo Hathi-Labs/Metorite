@@ -272,28 +272,37 @@ async def _provider_watch(minutes: float) -> None:
         await asyncio.sleep(_PROVIDER_FLUSH_SECONDS)
 
 
-def _refusal_recorder(
+def _chain_watch(
     credentials: dict[str, router_mod.Credential | None],
-) -> Callable[[ResolvedTier, int | None], None]:
-    """The ``on_refusal`` hook every serving route hands the chain walk.
+) -> tuple[Callable[[ResolvedTier, int | None], None], Callable[[ResolvedTier], None]]:
+    """The ``(on_refusal, on_success)`` hooks every serving route hands the
+    chain walk. Spread into it: ``call_chain(..., *_chain_watch(credentials))``.
 
-    🔴 **A BYOK refusal is NOT ours.** A customer's own DeepSeek account
+    🔴 **A BYOK outcome is NOT ours.** A customer's own DeepSeek account
     running dry says nothing about the platform account, and an alert on it
     would send us to top up an account we do not hold. So only a step that
-    ran on a PLATFORM credential is counted.
+    ran on a PLATFORM credential is counted, for a refusal and a success alike.
 
     ⚠️ **Lock and counter only.** On a stream this runs on the serving event
     loop, so it must not touch the database. See `provider_balance`.
     """
 
-    def _note(step: ResolvedTier, status: int | None) -> None:
+    def _platform_vendor(step: ResolvedTier) -> str | None:
         vendor = step.model.split("/", 1)[0]
         cred = credentials.get(vendor)
-        if cred is None or cred.byok:
-            return
-        provider_balance.note_refusal(vendor, status)
+        return None if cred is None or cred.byok else vendor
 
-    return _note
+    def _refused(step: ResolvedTier, status: int | None) -> None:
+        vendor = _platform_vendor(step)
+        if vendor is not None:
+            provider_balance.note_refusal(vendor, status)
+
+    def _served(step: ResolvedTier) -> None:
+        vendor = _platform_vendor(step)
+        if vendor is not None:
+            provider_balance.note_success(vendor)
+
+    return _refused, _served
 
 
 @asynccontextmanager
@@ -7199,7 +7208,7 @@ def _open_stream_or_release(
     *,
     org_id: str,
     request_id: str,
-    on_refusal: Any = None,
+    watch: tuple[Any, Any] = (None, None),
 ) -> tuple[list[Any], Any, ResolvedTier] | None:
     """Open the stream, or give the call's hold back. ``None`` = every step failed.
 
@@ -7212,7 +7221,7 @@ def _open_stream_or_release(
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
     """
     try:
-        return _open_stream_chain(attempts, kwargs_for, on_failover, on_refusal)
+        return _open_stream_chain(attempts, kwargs_for, on_failover, *watch)
     except router_mod.UpstreamFailed as failed:
         _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
         _release_call_hold(org_id, request_id)
@@ -7227,6 +7236,7 @@ def _open_stream_chain(
     kwargs_for: Any,
     on_failover: Any,
     on_refusal: Any = None,
+    on_success: Any = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Walk the chain and open the winning stream ON THE SERVING LOOP.
 
@@ -7245,7 +7255,7 @@ def _open_stream_chain(
     is expressible any more.
     """
     return anyio.from_thread.run(
-        router_mod.open_stream_chain, attempts, kwargs_for, on_failover, on_refusal
+        router_mod.open_stream_chain, attempts, kwargs_for, on_failover, on_refusal, on_success
     )
 
 
@@ -7636,7 +7646,7 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         opened = _open_stream_or_release(
             attempts, _stream_kwargs_for, _note_failover,
             org_id=org_id, request_id=request_id,
-            on_refusal=_refusal_recorder(credentials),
+            watch=_chain_watch(credentials),
         )
         if opened is None:
             # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
@@ -7672,7 +7682,7 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except BaseException as exc:
@@ -8026,7 +8036,7 @@ def audio_transcriptions(
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except HTTPException:
@@ -8390,7 +8400,7 @@ def images_generations(req: ImageRequest, caller: ServingCaller) -> Any:
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except HTTPException:
@@ -8516,7 +8526,7 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except HTTPException:
@@ -8680,7 +8690,7 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except HTTPException:
@@ -8859,7 +8869,7 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
     try:
         response, resolved = asyncio.run(
             router_mod.call_chain(
-                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+                attempts, _kwargs_for, _note_failover, *_chain_watch(credentials)
             )
         )
     except router_mod.UpstreamFailed as failed:
