@@ -94,7 +94,7 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
   orchestrator: [
     "What can you help me with?",
     "Summarize recent activity across the company",
-    "Create a task in ClickUp",
+    "Create a task in Projects",
   ],
   "task-manager": [
     "Show my open tasks",
