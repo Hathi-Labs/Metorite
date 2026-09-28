@@ -583,8 +583,8 @@ function Running({ run, onOpenSpace }: { run: ImportRun; onOpenSpace: (id: strin
         </>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Writing in the background. Nobody is notified while it runs. You can close this dialog: the import goes
-          on, and Import from ClickUp shows it again.
+          Writing in the background. Nobody is notified while it runs. You can close this dialog, and the import
+          goes on.
         </p>
       )}
     </section>

@@ -252,8 +252,8 @@ export function continuationNote(plan: ImportPlan): string | null {
     );
   }
   return (
-    "This export continues an earlier import, but the destination or the access changed. " +
-    "It starts a new tree instead of going into the earlier spaces."
+    "This export continues an earlier import, but it cannot go into the earlier spaces. " +
+    "The destination or the access changed, or those spaces were moved or archived. It starts a new tree."
   );
 }
 
