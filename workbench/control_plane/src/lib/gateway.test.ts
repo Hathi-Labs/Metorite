@@ -420,6 +420,18 @@ describe("the route surface", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("retries only the FINAL chat checkpoint through a restart (H-194)", () => {
+    // All checkpoints of one reply share one id, and the gateway keeps the
+    // last write. A periodic checkpoint that retried could land after the
+    // final one and cut the stored reply short.
+    const chat = ROUTES.find((r) => r.rel.replace(/\\/g, "/") === "/agent/chat/route.ts");
+    expect(chat, "agent/chat/route.ts moved").toBeDefined();
+    expect(chat!.src).toMatch(/\{\s*retry:\s*final\s*\}/);
+    const calls = [...chat!.src.matchAll(/persistAssistantMessage\(([^;]*?)\)\.catch/g)].map((m) => m[1]);
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((args) => /,\s*true\s*$/.test(args))).toHaveLength(1);
+  });
+
   it("adds no second retry around gatewayFetch in a route (H-194)", () => {
     // Seven proxies had their own "retry a GET once" block. Around
     // gatewayFetch, such a block doubles the wait to about 50 s, and it also

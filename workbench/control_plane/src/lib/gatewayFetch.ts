@@ -32,7 +32,11 @@
 // 5. The retry window is bounded by GATEWAY_RETRY.deadlineMs, which must stay
 //    below Caddy's `lb_try_duration` (30 s). `gatewayFetch.test.ts` reads the
 //    Caddyfile and fails if it does not. Caddy sets no response timeout, so
-//    the gateway's own answer time comes on top, as it always did.
+//    the gateway's own answer time comes on top, as it always did. The env
+//    `GATEWAY_RETRY_DEADLINE_MS` can shorten the window, and `0` turns the
+//    retry off (see retryDeadlineMs). A call can pass `{ retry: false }`.
+//    ⚠️ The cost: while the gateway is DOWN, not restarting, each call waits
+//    the full window before it fails, where it used to fail at once.
 // 6. A streamed response is never retried. `fetch` resolves when the headers
 //    arrive, and this function returns at that moment. A failure while the
 //    caller reads the body happens after this function has returned, so it
@@ -70,7 +74,30 @@ export const GATEWAY_RETRY = Object.freeze({
   maxDelayMs: 1_000,
 });
 
+/**
+ * The retry window for this process, in ms.
+ *
+ * `GATEWAY_RETRY_DEADLINE_MS` can make it SHORTER, never longer: a value
+ * above GATEWAY_RETRY.deadlineMs is capped, so the env cannot push the window
+ * past Caddy's hold. `0` turns the retry off. Two uses: the browser suite runs
+ * with no gateway at all and sets `0` (playwright.config.ts), and an operator
+ * can set `0` on the box to turn the retry off without a code change.
+ */
+export function retryDeadlineMs(env: string | undefined = process.env.GATEWAY_RETRY_DEADLINE_MS): number {
+  const n = Number(env);
+  if (env === undefined || env.trim() === "" || !Number.isFinite(n) || n < 0) {
+    return GATEWAY_RETRY.deadlineMs;
+  }
+  return Math.min(n, GATEWAY_RETRY.deadlineMs);
+}
+
 export interface GatewayRetryOptions {
+  /**
+   * False turns the retry off for this call. For a write that a later call
+   * makes stale, such as a periodic chat checkpoint: a stale copy that
+   * lands after the restart can overwrite the newer one.
+   */
+  retry?: boolean;
   deadlineMs?: number;
   firstDelayMs?: number;
   maxDelayMs?: number;
@@ -161,7 +188,7 @@ export async function gatewayFetch(
   init: RequestInit = {},
   opts: GatewayRetryOptions = {}
 ): Promise<Response> {
-  const deadlineMs = opts.deadlineMs ?? GATEWAY_RETRY.deadlineMs;
+  const deadlineMs = opts.retry === false ? 0 : (opts.deadlineMs ?? retryDeadlineMs());
   const maxDelayMs = opts.maxDelayMs ?? GATEWAY_RETRY.maxDelayMs;
   let delay = opts.firstDelayMs ?? GATEWAY_RETRY.firstDelayMs;
   const doFetch = opts.fetchImpl ?? ((i: RequestInfo | URL, r?: RequestInit) => globalThis.fetch(i, r));
@@ -225,7 +252,7 @@ export async function gatewayFetch(
         takeBudget();
       }
       if (Date.now() - started + delay > deadlineMs) {
-        gaveUp(code ?? "no code");
+        gaveUp(code ?? errorName(err));
         throw err;
       }
       if (!retrying) {

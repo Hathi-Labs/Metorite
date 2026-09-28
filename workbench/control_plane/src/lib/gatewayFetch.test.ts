@@ -16,7 +16,13 @@ import net from "node:net";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { GATEWAY_RETRY, connectFailureCode, gatewayFetch, isReplayableBody } from "@/lib/gatewayFetch";
+import {
+  GATEWAY_RETRY,
+  connectFailureCode,
+  gatewayFetch,
+  isReplayableBody,
+  retryDeadlineMs,
+} from "@/lib/gatewayFetch";
 
 // Short delays keep the suite fast. The production values are pinned below.
 const FAST = { firstDelayMs: 40, maxDelayMs: 80, deadlineMs: 5_000 };
@@ -408,6 +414,53 @@ describe("gatewayFetch — the window is bounded", () => {
     expect(holds.length).toBeGreaterThan(0);
     expect(GATEWAY_RETRY.deadlineMs).toBeLessThan(Math.min(...holds));
     expect(GATEWAY_RETRY.firstDelayMs).toBeLessThanOrEqual(GATEWAY_RETRY.maxDelayMs);
+  });
+});
+
+describe("turning the retry off", () => {
+  const refusedFake = () => {
+    let calls = 0;
+    const fake = (async () => {
+      calls += 1;
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+      });
+    }) as unknown as typeof fetch;
+    return { fake, calls: () => calls };
+  };
+
+  it("`{ retry: false }` sends one try only", async () => {
+    const f = refusedFake();
+    await expect(
+      gatewayFetch("http://127.0.0.1:1/chat/sessions/s/messages", { method: "POST", body: "[]" }, {
+        ...FAST,
+        retry: false,
+        fetchImpl: f.fake,
+        log: () => {},
+      })
+    ).rejects.toThrow("fetch failed");
+    expect(f.calls()).toBe(1);
+  });
+
+  it("GATEWAY_RETRY_DEADLINE_MS can shorten the window or turn it off, never lengthen it", () => {
+    expect(retryDeadlineMs(undefined)).toBe(GATEWAY_RETRY.deadlineMs);
+    expect(retryDeadlineMs("")).toBe(GATEWAY_RETRY.deadlineMs);
+    expect(retryDeadlineMs("junk")).toBe(GATEWAY_RETRY.deadlineMs);
+    expect(retryDeadlineMs("-5")).toBe(GATEWAY_RETRY.deadlineMs);
+    expect(retryDeadlineMs("0")).toBe(0);
+    expect(retryDeadlineMs("4000")).toBe(4_000);
+    // Capped, so the env cannot push the window past Caddy's hold.
+    expect(retryDeadlineMs("99999")).toBe(GATEWAY_RETRY.deadlineMs);
+  });
+
+  it("the browser suite, which runs with no gateway, turns the retry off", () => {
+    // Without this every server call in e2e/ waits the full window, and a
+    // spec that reloads a page times out (measured on PR #520).
+    const config = readFileSync(
+      fileURLToPath(new URL("../../playwright.config.ts", import.meta.url)),
+      "utf8"
+    );
+    expect(config).toMatch(/GATEWAY_RETRY_DEADLINE_MS:\s*"0"/);
   });
 });
 

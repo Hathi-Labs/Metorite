@@ -102,6 +102,12 @@ async function persistAssistantMessage(
   customEvents: Array<{ name: string; value: unknown }> = [],
   segments: Array<{ id: string; text: string }> = [],
   agentName?: string,
+  // Only the FINAL persist retries through a gateway restart (H-194). All
+  // checkpoints of one reply share one id, and the gateway keeps the last
+  // write. A periodic checkpoint that retried could land after the final one
+  // and cut the stored reply short. A lost periodic checkpoint costs nothing,
+  // because the final one carries the whole reply.
+  final = false,
 ): Promise<void> {
   const checkpoint = {
     threadId, content, toolEvents, reasoningBlocks, progressLines,
@@ -121,7 +127,8 @@ async function persistAssistantMessage(
         headers: await gatewayHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(5000),
-      }
+      },
+      { retry: final }
     );
   } catch {
     // Best-effort: don't break the stream for persistence failures
@@ -465,7 +472,7 @@ async function translateAndPersistStream(
 
   // Final persist — ensure the complete message is saved with all stream metadata.
   if (assistantContent.trim() || toolEvents.length > 0 || reasoningBlocks.length > 0 || latestTodos.length > 0 || customEvents.length > 0) {
-    await persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments, agentName).catch(() => {});
+    await persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments, agentName, true).catch(() => {});
   }
 
   if (clientConnected) {
