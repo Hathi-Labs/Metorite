@@ -1128,8 +1128,9 @@ report, and it comes back when the facts change.
 - A team expands to its active members at render time. The expansion calls the one helper in `routes/admin/groups.py`.
 - `subject_clause` keeps the tasks that a subject person holds now. Each body ANDs it into its scope.
 - `outlook` and `hygiene` with a subject get 422 with the reason "not available for a person or team scope".
-- The row filter runs after each body, never inside `capacity_body`. It applies to `load`, `capacity`, `pulse`, `parallel_person` conflict rows and rebalance pickups. It replaces edit E5.
-- Totals count every person. `hidden_people` counts the rows that the filter removed.
+- The row filter runs after each body, never inside `capacity_body`. It applies to `load`, `capacity`, `pulse` and `parallel_person` conflict rows. It replaces edit E5.
+- `rebalance` gets no reader filter, because the HR grant gates it (§7.1 rule 7). A subject narrows its pickups.
+- Totals count every person. `hidden_people` counts the people whose rows the filter removed.
 - The unassigned row and `agent:` rows are not people, and they stay.
 - Dependency conflict rows keep their holders. The reader can open each task and see its assignees.
 - The list hides a report whose subject the reader may not report on. Get, patch, delete and render answer 403 with the reason.
@@ -1160,6 +1161,14 @@ Only a restricted reader receives `hidden_people` in `load`, `capacity` and `con
 `test_projects_report_scope_r5.py` proves (a) to (k) on a real database.
 A mutation of (b), (c), (d), (f), (g), (i) and (j) turns its test red.
 The chat's workload answers read the Load, Capacity and Conflicts routes, so a member's chat answers change in the same way.
+
+**As built, repair round 1 (2026-09-28).** The review found five faults, and each has a test in the same file.
+
+- The chat tools `status_report`, `analytics_load` and `team_capacity` print the hidden line. `status_report` prints no "most open work" when the view hides people.
+- The Load, Capacity and Conflicts panels print "You can see no rows here" when the server removed every row. They do not say that the scope is empty.
+- `hiddenPeopleLine` in `reportEmail.ts` is the one source of the words. A panel says "This view hides", and the email and the report table say "This report hides".
+- `hidden_people` counts people in `conflicts` too. Two rows of one person count as one person.
+- An admin or the creator can delete a report whose stored subject has a bad shape. Get and render still answer 422.
 
 ### R5b — The picker, the entry points, T2 and T6 · AGENT-SAFE
 The scope chip reads `GET /projects/reports/subjects`. "1:1 prep" opens T6 with the person filled in.
