@@ -237,8 +237,9 @@ MANIFEST: tuple[Route, ...] = (
         "X",
         "My Tasks' checklist door for new steps (D-PM-38 S4): the organize "
         "helper, so a step lands in the parent's open lane and states NEXT "
-        "under a NEXT parent. The chat adds steps through add_subtasks today. "
-        "Moving that tool onto this door is an open gap (spec 11.40).",
+        "under a NEXT parent. The chat adds steps through add_subtasks, on "
+        "POST /tasks. Both doors take the lane from core.parent_lane_status "
+        "(spec 11.42). Only the NEXT rule stays on this door.",
     ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     # WS-39 S6e — `?untriaged=true` is a query flag on this same route, so

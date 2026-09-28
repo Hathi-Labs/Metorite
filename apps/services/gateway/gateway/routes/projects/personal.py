@@ -46,7 +46,6 @@ from gateway.routes.projects.core import (
     _MY_GROUPS_SQL,
     _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
-    TRIAGE_CATEGORY,
     ListResponse,
     Page,
     TaskModel,
@@ -65,6 +64,7 @@ from gateway.routes.projects.core import (
     load_visible_task,
     next_task_number,
     now,
+    parent_lane_status,
     record_activity,
     record_field_change,
     require_organization_of,
@@ -2160,27 +2160,17 @@ def _is_delegated(payload: OrganizeIn) -> bool:
 async def step_status(db: Any, parent: Any) -> Any:
     """The status a new step of ``parent`` lands in (D-PM-38, Subtasks S4).
 
-    The parent's own status, when that lane is open: a step of work that is in
-    progress is in progress too. A step is in the parent's project, so the
-    parent's status is in the step's status set.
-
-    Otherwise, and for a triage lane, the answer is ``load_default_status``,
-    the one resolver (D79). This adds no second first-by-position rule.
+    A step is in the parent's project, so its status set is the one that
+    owns the parent's project. The rule itself is ``core.parent_lane_status``,
+    the ONE seam every creator of a step shares: the parent's lane when it is
+    open and not triage, else ``load_default_status`` (D79).
 
     Before S4 every step took the first lane. In a personal project that lane
     is Inbox, category ``backlog``, so ``derive_disposition`` read the step as
     SOMEDAY and it left the member's Next Actions the moment it was made.
     """
-    lane = (await db.execute(
-        text("SELECT * FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
-        {"sid": str(parent.status_id)},
-    )).fetchone() if getattr(parent, "status_id", None) else None
-    category = getattr(lane, "category", None) if lane is not None else None
-    if lane is not None and category not in CLOSING_CATEGORIES \
-            and category != TRIAGE_CATEGORY:
-        return lane
-    return await load_default_status(
-        db, await status_owner_id(db, str(parent.project_id)))
+    return await parent_lane_status(
+        db, parent, await status_owner_id(db, str(parent.project_id)))
 
 
 async def step_overlay(db: Any, email: str, parent: Any) -> dict[str, Any] | None:

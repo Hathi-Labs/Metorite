@@ -566,8 +566,9 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
 async def add_subtasks(task_id: str, titles: str) -> str:
     """Break a task into steps. titles is one subtask per line, or
     comma-separated. ONE card lists every subtask; the member approves the
-    batch once. Each subtask lands in the parent's project with the default
-    status. Archive undoes any of them."""
+    batch once. Each subtask lands in the parent's project, in the parent's
+    status when that status is open, else in the project's first status.
+    The receipt names the status. Archive undoes any of them."""
     tid, parent = await _task(task_id)
     pid = str(parent.get("project_id"))
     raw = str(titles or "")
@@ -582,15 +583,41 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         context=_fields_block({f"{i + 1}": t for i, t in enumerate(parts)}),
     ):
         return CANCELLED
-    # The parent's id FIRST: the receipt card opens the first `full_id`,
-    # and its heading names the parent (H-162).
-    out = [f"Added under {_ref(parent)}:", f"  full_id: {tid}"]
-    for title in parts:
-        row = await post(
+    # No status is sent: the gateway puts each step in the parent's lane
+    # when that lane is open (`core.parent_lane_status`, D-PM-38).
+    rows = [
+        await post(
             "/projects/tasks", {"project_id": pid, "title": title, "parent_task_id": tid}
         )
-        out.extend(_task_line(row))
+        for title in parts
+    ]
+    lane = await _lane_name(pid, rows[0].get("status_id"))
+    # The parent's id FIRST: the receipt card opens the first `full_id`,
+    # and its heading names the parent (H-162). The heading also names the
+    # lane the steps landed in, as every status receipt does (D79).
+    head = f"Added to {data(lane)} under {_ref(parent)}:" if lane else f"Added under {_ref(parent)}:"
+    out = [head, f"  full_id: {tid}"]
+    for row in rows:
+        out.extend(_task_line(row, lane))
     return "\n".join(out)
+
+
+async def _lane_name(project_id: str, status_id: Any) -> str:
+    """The name of the lane a new row landed in, or ``""``.
+
+    Read after the writes, so a failed read must not hide them: the rows
+    exist, and a raised error would tell the model that nothing was written.
+    """
+    if not status_id:
+        return ""
+    try:
+        rows = await _statuses_of(project_id)
+    except Exception:  # a receipt detail, never a write
+        return ""
+    return next(
+        (str(r.get("name") or "") for r in rows if str(r.get("id")) == str(status_id)),
+        "",
+    )
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)

@@ -22,7 +22,7 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
-from gateway.routes.projects import item_lens, personal, planning
+from gateway.routes.projects import core, item_lens, personal, planning
 
 # ── B9: the step's lane and the step's stated disposition ──────────────────
 
@@ -74,6 +74,10 @@ def first_lane(monkeypatch):
     async def status_owner_id(db, project_id):
         return f"owner-of-{project_id}"
 
+    # The rule lives in `core.parent_lane_status` (§11.42), and it calls the
+    # resolver by its `core` name. The `personal` name is faked too, so a
+    # `step_status` that skips the seam and asks the resolver is caught.
+    monkeypatch.setattr(core, "load_default_status", load_default_status)
     monkeypatch.setattr(personal, "load_default_status", load_default_status)
     monkeypatch.setattr(personal, "status_owner_id", status_owner_id)
     return calls
@@ -111,7 +115,7 @@ async def test_a_step_states_next_only_under_a_next_parent(stated, want):
 
 
 async def test_add_subtasks_hands_the_lane_and_the_overlay_to_the_capture(
-    monkeypatch,
+    monkeypatch, first_lane,
 ):
     """`_add_subtasks` is the one step door. It must pass the parent's lane
     and the inherited NEXT to `create_personal_task` for EVERY step."""

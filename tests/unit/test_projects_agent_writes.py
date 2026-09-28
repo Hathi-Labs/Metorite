@@ -1863,6 +1863,22 @@ async def test_the_subtasks_receipt_opens_the_parent_first(monkeypatch) -> None:
     assert out.split("\n")[1] == f"  full_id: {UUID}"
 
 
+async def test_the_subtasks_receipt_names_the_lane_and_sends_no_status(
+    monkeypatch,
+) -> None:
+    """§11.42: the gateway picks the lane (the parent's, when it is open), so
+    the tool sends no status. The receipt names the lane the steps landed
+    in, read off the created row, as every status receipt does (D79)."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.add_subtasks(UUID, "a\nb")
+    posted = [c for c in writes(calls) if c["path"] == "/projects/tasks"]
+    assert posted and all("status_id" not in c["json"] for c in posted)
+    # The fake's created row carries S1, which the statuses read calls "To do".
+    assert out.split("\n")[0] == "Added to «To do» under #7 «Fix the extruder»:"
+    assert out.count("status «To do»") == 2
+
+
 def test_the_cards_know_every_guarded_tool() -> None:
     """A class C receipt wears the warning tone (`ProjectToolCards.tsx`
     `GUARDED_TOOLS`). The set is a literal in TypeScript, so a guarded tool
