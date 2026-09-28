@@ -776,6 +776,13 @@ class TenantScopeMiddleware:
 
 app.add_middleware(TenantScopeMiddleware)
 
+# WS-41 I-7: cap an import upload BEFORE it is read. FastAPI spools a whole
+# multipart body to disk ahead of every dependency, sign-in included, so the
+# route's own checks come too late to protect the disk.
+from gateway.routes.projects.import_body_limit import ImportBodyLimit  # noqa: E402
+
+app.add_middleware(ImportBodyLimit)
+
 # ── CORS ── allow workbench dev server (port 3001) and production origin
 app.add_middleware(
     CORSMiddleware,
