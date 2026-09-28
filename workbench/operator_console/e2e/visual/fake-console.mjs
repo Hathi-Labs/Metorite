@@ -24,6 +24,43 @@ const byPath = new Map([
   ["/operators", { operators: [] }],
   ["/operators/elevate", { elevated: false, can_elevate: false, required: false }],
   ["/providers/spend", { rows: [] }],
+  // Provider balance & health (2026-09-28). Shaped on the production outage:
+  // DeepSeek out (vendor flag false, balance -0.05, twelve 402s), and the
+  // AI/ML API reseller low. Plus a vendor with no balance probe, which must
+  // draw a NEUTRAL chip. This state also raises the site-wide danger banner.
+  ["/providers/health", {
+    providers: [
+      { provider: "deepseek", status: "out",
+        reason: "The vendor reports that this account cannot serve calls.",
+        balance: "-0.05", currency: "USD", available: false,
+        balance_checked_at: "2026-09-28T10:00:00+00:00", probe_status: "ok",
+        probe_error: null, probe_attempted_at: "2026-09-28T10:00:00+00:00",
+        balance_exposed: true, threshold: "5", days_left: null,
+        cost_7d_usd: "1.2", last_refusal_status: 402,
+        last_refusal_at: "2026-09-28T10:01:00+00:00", refusals_24h: 12,
+        server_errors_24h: 0 },
+      { provider: "aimlapi", status: "low",
+        reason: "The balance is under the low line of 5 USD.",
+        balance: "3.2", currency: "USD", available: null,
+        balance_checked_at: "2026-09-28T10:00:00+00:00", probe_status: "ok",
+        probe_error: null, probe_attempted_at: "2026-09-28T10:00:00+00:00",
+        balance_exposed: true, threshold: "5", days_left: "2.5",
+        cost_7d_usd: "9", last_refusal_status: null, last_refusal_at: null,
+        refusals_24h: 0, server_errors_24h: 0 },
+      { provider: "groq", status: "unknown",
+        reason: "This vendor does not expose its balance. Watch for refusals.",
+        balance: null, currency: null, available: null,
+        balance_checked_at: "2026-09-28T10:00:00+00:00",
+        probe_status: "not_exposed",
+        probe_error: "this vendor exposes no balance we can read",
+        probe_attempted_at: "2026-09-28T10:00:00+00:00",
+        balance_exposed: false, threshold: null, days_left: null,
+        cost_7d_usd: null, last_refusal_status: null, last_refusal_at: null,
+        refusals_24h: 0, server_errors_24h: 0 },
+    ],
+    low_usd_default: "5",
+    probe_minutes: 30,
+  }],
   // Usage slice 3: one customer's breakdown. Shaped on production's first
   // five metered calls (2026-09-24), plus the cases the panel must draw: an
   // app with two agents, a gap named "unattributed", a LOSS, a margin with no

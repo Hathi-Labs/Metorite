@@ -3167,6 +3167,13 @@ line — never reclaim a number by deleting the other entry.
   would disagree with the board within a month.
 - ⚠️ **Where it SENDS is the owner's call**, which is why this is both. Mail
   to a real person is §3a rule 3. The computation and the digest are not.
+- ⚠️ **Vendor balance alerts exist now, and they still SEND nothing
+  (2026-09-28).** The DeepSeek account ran dry and all AI failed for two
+  days. The operator console now shows each vendor's balance and refusals on
+  Providers, with a banner on every page (migration 035,
+  `provider_balance.py`). The Console logs `provider.refusing` and
+  `provider.balance_low` once per change. Nobody receives either line. Mail or
+  push for them is the owner's call, for the same reason as the digest.
 - **Authority:** `specs/ai_metering_and_analytics.md` §6 · H-111 (the other report)
 - **Added:** 2026-09-20 · credit and usage review session
 
