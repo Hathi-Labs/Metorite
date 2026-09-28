@@ -176,6 +176,9 @@ describe("an export an earlier import already brought in", () => {
     expect(continuationNote(plan({ inherited_from: null }))).toBeNull();
     expect(mustConfirmNewTree(plan({ inherited_from: null }), false)).toBe(false);
   });
+  it("says it continues when the writer would, even with no inherited mapping", () => {
+    expect(continuationNote(plan({ inherited_from: null, continues: true }))).toMatch(/same spaces/);
+  });
   it("says it continues in the same spaces while the choices hold", () => {
     const p = plan({ inherited_from: "r0", continues: true });
     expect(continuationNote(p)).toMatch(/same spaces/);

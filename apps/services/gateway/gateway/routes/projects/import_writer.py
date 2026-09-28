@@ -410,7 +410,10 @@ async def _write_nodes(
     transaction with the progress row. A node an earlier run of THIS export
     wrote, for the same target and grant, is reused (§6.9)."""
     specs, home = build_nodes(bundle, mapping.target)
-    statuses, done_added = project_statuses(bundle, final)
+    statuses, done_refs = project_statuses(bundle, final)
+    # Only a project this run CREATES gains the Done. A reused one got it from
+    # the run that made it; a lane added there shows in `lanes_added`.
+    done_added = 0
     node_ids: dict[str, str] = {}
     root_of: dict[str, str] = {}
     status_ids: dict[str, list[list[str]]] = {}
@@ -491,6 +494,7 @@ async def _write_nodes(
                 counts["folders"] += 1
             else:
                 counts["projects"] += 1
+                done_added += spec.ref in done_refs
                 ids = []
                 for position, (name, category) in enumerate(statuses.get(spec.ref, []), start=1):
                     status = await insert_row(

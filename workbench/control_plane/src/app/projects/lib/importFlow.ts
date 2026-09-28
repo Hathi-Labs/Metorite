@@ -241,16 +241,19 @@ export function progressOf(run: ImportRun | null): { done: number; total: number
 
 /**
  * What the review step says about an earlier import of the same workspace,
- * or null when there is none. The server decides (`imports._mark_continuation`).
+ * or null when there is none. The server decides (`imports._continues`, the writer's own rule).
  */
 export function continuationNote(plan: ImportPlan): string | null {
-  if (!plan.inherited_from) return null;
+  // The writer can continue a run by the same file alone, with no task it
+  // wrote and so no inherited mapping. `continues` is the truth either way.
   if (plan.continues) {
+    const start = plan.inherited_from ? " It starts from that import's choices." : "";
     return (
-      "This export continues an earlier import. It starts from that import's choices and goes into the same " +
-      "spaces. A space or list renamed in ClickUp since then is created again."
+      `This export continues an earlier import.${start} It goes into the same spaces. ` +
+      "A space or list renamed in ClickUp since then is created again."
     );
   }
+  if (!plan.inherited_from) return null;
   return (
     "This export continues an earlier import, but it cannot go into the earlier spaces. " +
     "The destination or the access changed, or those spaces were moved or archived. It starts a new tree."

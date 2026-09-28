@@ -360,7 +360,11 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         second.get("tasks_written") == 0
         and second.get("tasks_unchanged") == 2423
         and second.get("tasks_updated") == 0
-        and second.get("comments_written") == 0,
+        and second.get("comments_written") == 0
+        # The I-4 browser walk: a re-run said "Added a Done status to 7
+        # lists" and added nothing. A reused list already holds its Done.
+        and second.get("done_status_added") == 0
+        and second.get("lanes_added") == 0,
         json.dumps(second)[:300],
     )
     created = second.get("created", {})
