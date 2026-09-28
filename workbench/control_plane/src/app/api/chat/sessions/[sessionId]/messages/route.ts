@@ -3,7 +3,7 @@
  * POST /api/chat/sessions/[sessionId]/messages   — upsert a batch of messages
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function GET(
     if (limit) qs.set("limit", limit);
     if (before) qs.set("before", before);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/messages${suffix}`,
       {
         headers: await gatewayHeaders(),
@@ -48,7 +48,7 @@ export async function POST(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/messages`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: await gatewayHeaders(),
       body: JSON.stringify(body),

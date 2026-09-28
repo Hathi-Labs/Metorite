@@ -3,7 +3,7 @@
  * PATCH /api/chat/sessions/[sessionId]/room   — change room settings
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/room`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/room`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
@@ -35,7 +35,7 @@ export async function PATCH(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/room`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/room`, {
       method: "PATCH",
       headers: await gatewayHeaders(),
       body: JSON.stringify(body),

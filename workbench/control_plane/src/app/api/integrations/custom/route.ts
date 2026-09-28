@@ -7,7 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET(_req: NextRequest): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   try {
-    const res = await fetch(`${GATEWAY_URL}/integrations/custom`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/integrations/custom`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(8_000),
     });
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/integrations/custom`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/integrations/custom`, {
       method: "POST",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),

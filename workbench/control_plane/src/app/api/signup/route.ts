@@ -29,7 +29,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 // Resolves the signed-in member, so it can never be statically evaluated:
 // without this, `next build` runs the handler during page-data collection with
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   };
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/signup/provision`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/signup/provision`, {
       method: "POST",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(forward),

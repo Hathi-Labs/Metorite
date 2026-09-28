@@ -52,6 +52,11 @@
 
 import { NextResponse } from "next/server";
 import { auth, isAuthEnabled } from "@/auth";
+import { gatewayFetch } from "@/lib/gatewayFetch";
+
+// The one fetch to the gateway (H-194). It lives in its own module so that it
+// imports nothing from `@/auth`, and its tests need no session.
+export { gatewayFetch } from "@/lib/gatewayFetch";
 
 export const GATEWAY_URL = process.env.GATEWAY_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -235,7 +240,7 @@ export async function proxyToGateway(
     throw err;
   }
   const upstream = `${GATEWAY_URL}${path.startsWith("/") ? path : `/${path}`}`;
-  const res = await fetch(upstream, { ...init, headers, cache: "no-store" });
+  const res = await gatewayFetch(upstream, { ...init, headers, cache: "no-store" });
   const body = await res.text();
   return new Response(body, {
     status: res.status,

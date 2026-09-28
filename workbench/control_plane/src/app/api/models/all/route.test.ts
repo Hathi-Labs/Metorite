@@ -11,6 +11,9 @@ vi.mock("@/lib/gateway", () => ({
   gatewayHeaders: async () => ({}),
   requireIdentity: async () => ({ email: "a@example.com" }),
   UNAUTHENTICATED: { error: "Sign in to continue" },
+  // The route reaches the gateway through gatewayFetch (H-194). Here it is the
+  // stubbed global fetch, read at call time.
+  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
 }));
 
 const ENABLED = [

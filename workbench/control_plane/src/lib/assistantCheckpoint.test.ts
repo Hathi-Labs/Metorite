@@ -86,7 +86,9 @@ describe("route.ts wires the agent into the live path only", () => {
   });
 
   it("passes the agent to both checkpoints", () => {
-    expect(src.match(/segments, agentName\)\.catch/g) ?? []).toHaveLength(2);
+    // The final checkpoint adds one argument after the agent: `true`, which
+    // lets it retry through a gateway restart (H-194).
+    expect(src.match(/segments, agentName(, true)?\)\.catch/g) ?? []).toHaveLength(2);
   });
 
   it("gives the live stream the resolved agent, and the reconnect stream none", () => {

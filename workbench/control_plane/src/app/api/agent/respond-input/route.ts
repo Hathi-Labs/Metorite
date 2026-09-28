@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/agent/respond-input`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/respond-input`, {
       method: "POST",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({

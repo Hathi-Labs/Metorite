@@ -6,7 +6,7 @@
  * upstream rather than interpolated raw.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,7 @@ export async function PATCH(
   try {
     const { sessionId, subject } = await params;
     const body = await req.json();
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants/${encodeURIComponent(subject)}`,
       {
         method: "PATCH",
@@ -43,7 +43,7 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId, subject } = await params;
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants/${encodeURIComponent(subject)}`,
       {
         method: "DELETE",

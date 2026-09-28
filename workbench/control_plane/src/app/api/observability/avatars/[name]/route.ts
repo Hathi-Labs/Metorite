@@ -6,7 +6,7 @@
  * on the gateway (see the generate route).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +23,7 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     /* empty body ok */
   }
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/observability/avatars/${encodeURIComponent(name)}`,
       {
         method: "PUT",
@@ -44,7 +44,7 @@ export async function DELETE(_req: NextRequest, ctx: Ctx): Promise<NextResponse>
   if (me instanceof NextResponse) return me;
   const { name } = await ctx.params;
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/observability/avatars/${encodeURIComponent(name)}`,
       {
         method: "DELETE",

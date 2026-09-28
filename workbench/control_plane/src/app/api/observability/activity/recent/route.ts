@@ -6,7 +6,7 @@
  * first load before the SSE stream takes over.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (me instanceof NextResponse) return me;
   const limit = req.nextUrl.searchParams.get("limit") ?? "100";
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/observability/activity/recent?limit=${encodeURIComponent(limit)}`,
       { headers: await gatewayHeaders(), signal: AbortSignal.timeout(5_000) },
     );

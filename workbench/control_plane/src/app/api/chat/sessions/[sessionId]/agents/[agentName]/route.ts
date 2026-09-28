@@ -2,7 +2,7 @@
  * DELETE /api/chat/sessions/[sessionId]/agents/[agentName] — remove an agent from a room
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,7 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId, agentName } = await params;
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/agents/${encodeURIComponent(agentName)}`,
       {
         method: "DELETE",

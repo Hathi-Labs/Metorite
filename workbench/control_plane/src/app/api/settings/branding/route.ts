@@ -26,6 +26,7 @@ import {
   gatewayHeaders,
   requireIdentity,
   unauthenticated,
+  gatewayFetch,
 } from "@/lib/gateway";
 
 // Resolves the signed-in member, so it can never be statically evaluated.
@@ -44,7 +45,7 @@ export async function GET(): Promise<NextResponse> {
   if (me instanceof NextResponse) return me;
 
   try {
-    const res = await fetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(8_000),
       cache: "no-store",
@@ -152,7 +153,7 @@ async function readBounded(req: NextRequest, limit: number): Promise<string | nu
 
 async function forward(method: "PUT" | "DELETE", body?: string): Promise<NextResponse> {
   try {
-    const res = await fetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
       method,
       headers: {
         ...(await gatewayHeaders()),

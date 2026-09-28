@@ -19,7 +19,7 @@
  * scope against.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -71,17 +71,11 @@ async function forward(
         (init.headers as Record<string, string>)["Content-Type"] = contentType;
       }
     }
-    // A pooled keep-alive socket can be closed by the gateway just as we reuse
-    // it, failing the fetch spuriously (undici vs uvicorn's short keep-alive).
-    // GETs are idempotent — retry once on network failure. A retried POST could
-    // create a second project, so only GETs get the second attempt.
-    let res: Response;
-    try {
-      res = await fetch(upstream, init);
-    } catch (err) {
-      if (method !== "GET") throw err;
-      res = await fetch(upstream, { ...init, signal: AbortSignal.timeout(30_000) });
-    }
+    // A refused connect (a gateway restart) and a pooled keep-alive socket
+    // that the gateway closed as we reused it are both retried inside
+    // `gatewayFetch`, by the rules in `lib/gatewayFetch.ts` (H-194). Do not
+    // add a second retry here: it would double the wait and could replay a write.
+    const res = await gatewayFetch(upstream, init);
 
     // ⚠️ **BYTES, not a string.** `Response.text()` is a UTF-8 *decode*, and a
     // UTF-8 decode strips a leading byte order mark; re-encoding the decoded

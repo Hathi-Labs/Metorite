@@ -38,7 +38,7 @@
  * would silently return the provider's login HTML through the proxy.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +109,7 @@ export async function GET(
 
   let res: Response;
   try {
-    res = await fetch(upstream, {
+    res = await gatewayFetch(upstream, {
       headers,
       redirect: "manual",
       cache: "no-store",

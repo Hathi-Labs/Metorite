@@ -5,7 +5,7 @@
  * rollup (per-day totals + by-model + by-source), in USD. Powers the cost view.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (me instanceof NextResponse) return me;
   const days = req.nextUrl.searchParams.get("days") ?? "7";
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/observability/cost?days=${encodeURIComponent(days)}`,
       { headers: await gatewayHeaders(), signal: AbortSignal.timeout(5_000) },
     );

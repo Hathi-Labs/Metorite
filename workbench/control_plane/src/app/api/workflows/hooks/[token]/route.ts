@@ -22,7 +22,7 @@
  * control plane's address bar instead.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -50,7 +50,7 @@ export async function POST(
   }
 
   try {
-    const upstream = await fetch(
+    const upstream = await gatewayFetch(
       `${GATEWAY_URL}/workflows/hooks/${encodeURIComponent(token)}`,
       {
         method: "POST",

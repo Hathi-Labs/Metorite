@@ -6,7 +6,7 @@
  * which forwards authenticated requests to the gateway.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -84,7 +84,7 @@ export async function GET(
   const { path } = await params;
   const upstream = buildUpstreamUrl(path, req);
   try {
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       headers: await gatewayHeaders(),
       // Attachments can be large; allow more time than JSON calls.
       signal: AbortSignal.timeout(120_000),
@@ -123,7 +123,7 @@ export async function POST(
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "POST",
       headers: {
         ...(await gatewayHeaders()),
@@ -149,7 +149,7 @@ export async function PATCH(
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "PATCH",
       headers: {
         ...(await gatewayHeaders()),
@@ -175,7 +175,7 @@ export async function PUT(
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "PUT",
       headers: {
         ...(await gatewayHeaders()),
@@ -200,7 +200,7 @@ export async function DELETE(
   const { path } = await params;
   const upstream = buildUpstreamUrl(path, req);
   try {
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "DELETE",
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(30_000),

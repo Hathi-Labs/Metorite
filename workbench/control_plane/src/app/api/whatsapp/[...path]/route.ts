@@ -7,7 +7,7 @@
  * path-traversal guard.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +64,7 @@ async function forward(
     }
   }
   try {
-    const res = await fetch(upstream, init);
+    const res = await gatewayFetch(upstream, init);
     const body = await res.json().catch(() => ({}));
     return NextResponse.json(body, { status: res.status });
   } catch {

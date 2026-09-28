@@ -45,6 +45,7 @@ import {
   headersActingAs,
   proxyToGateway,
   requireIdentity,
+  gatewayFetch,
 } from "@/lib/gateway";
 import { resendSender } from "@/lib/emailOtp";
 import {
@@ -84,7 +85,7 @@ function outboundBody(raw: Record<string, unknown>): Record<string, unknown> {
  */
 async function organizationName(email: string): Promise<string> {
   try {
-    const res = await fetch(`${GATEWAY_URL}/auth/me`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/auth/me`, {
       headers: headersActingAs(email),
       cache: "no-store",
       signal: AbortSignal.timeout(8000),

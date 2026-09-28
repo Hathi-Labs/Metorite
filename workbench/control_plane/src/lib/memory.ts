@@ -1,4 +1,4 @@
-import { headersActingAs } from "@/lib/gateway";
+import { gatewayFetch, headersActingAs } from "@/lib/gateway";
 
 /**
  * Mem0 REST client — server-side utility used by /api/chat/memories.
@@ -65,7 +65,7 @@ export async function fetchMemories(
 ): Promise<Mem0Memory[]> {
   // ── Gateway path (preferred) ──────────────────────────────────────────
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY()}/memory/${encodeURIComponent(userId)}`,
       { headers: gatewayHeaders(actingEmail), next: { revalidate: 0 } }
     );
@@ -104,7 +104,7 @@ export async function searchMemories(
 ): Promise<Mem0Memory[]> {
   // ── Gateway path ──────────────────────────────────────────────────────
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY()}/memory/${encodeURIComponent(userId)}/search`,
       {
         method: "POST",
@@ -150,7 +150,7 @@ export async function saveConversation(
 
   // ── Gateway path ──────────────────────────────────────────────────────
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY()}/memory/${encodeURIComponent(userId)}/add`,
       {
         method: "POST",
@@ -187,7 +187,7 @@ export async function deleteMemory(
 ): Promise<void> {
   // ── Gateway path ──────────────────────────────────────────────────────
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY()}/memory/${encodeURIComponent(userId)}/${encodeURIComponent(memoryId)}`,
       { method: "DELETE", headers: gatewayHeaders(actingEmail) }
     );
@@ -221,7 +221,7 @@ export async function fetchMemoryStatus(
   count?: number;
 }> {
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY()}/memory/${encodeURIComponent(userId)}/status`,
       { headers: gatewayHeaders(actingEmail), next: { revalidate: 30 } }
     );

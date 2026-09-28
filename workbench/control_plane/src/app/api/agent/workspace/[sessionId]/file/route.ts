@@ -4,7 +4,7 @@
  * The Content-Type and Content-Disposition headers from the gateway are passed through.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export async function GET(
     const format = req.nextUrl.searchParams.get("format");
     if (format) upstream.searchParams.set("format", format);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       headers: await gatewayHeaders(),
       // No timeout here — large files can take a moment to stream
     });
@@ -72,7 +72,7 @@ export async function PUT(
     const upstream = new URL(`${GATEWAY_URL}/agent/workspace/${sessionId}/file`);
     upstream.searchParams.set("path", filePath);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       method: "PUT",
       headers: {
         ...(await gatewayHeaders()),
@@ -110,7 +110,7 @@ export async function DELETE(
     const upstream = new URL(`${GATEWAY_URL}/agent/workspace/${sessionId}/file`);
     upstream.searchParams.set("path", filePath);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       method: "DELETE",
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(10_000),
