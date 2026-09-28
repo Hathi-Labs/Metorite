@@ -306,6 +306,16 @@ def _get_messages(
             "SELECT id, role, content, timestamp_ms, tool_events, progress_lines, "
             "reasoning, agent_state, custom_events, author_email, author_kind, "
             "authority FROM chat_message WHERE session_id = :sid"
+            # S14 (§20): the gateway mints the agent row of a run with no
+            # content before the first checkpoint. A reader does not see it
+            # until it holds content, a tool event, a custom event or
+            # reasoning. SQL, not Python, so a LIMIT does not count it.
+            " AND NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
+            "THEN 'agent' ELSE 'other' END) = 'agent' "
+            "AND content = '' "
+            "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
+            "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
+            "AND COALESCE(reasoning, '') = '')"
         )
         params: dict = {"sid": session_id}
         if before is not None:
@@ -464,13 +474,20 @@ _MESSAGE_UPSERT_SQL = """
          tool_events, progress_lines, reasoning, agent_state, custom_events,
          author_email, author_kind, authority,
          run_member_email, run_final_at)
-    VALUES
-        (:id, :sid, :role, :content, :ts,
-         CAST(:tool_events AS jsonb), CAST(:progress_lines AS jsonb),
-         :reasoning, CAST(:agent_state AS jsonb), CAST(:custom_events AS jsonb),
-         :author_email, :author_kind, CAST(:authority AS jsonb),
-         :run_member_email,
-         CASE WHEN CAST(:author_from_run AS boolean) THEN now() END)
+    SELECT
+        CAST(:id AS text), CAST(:sid AS text), CAST(:role AS text),
+        CAST(:content AS text), CAST(:ts AS bigint),
+        CAST(:tool_events AS jsonb), CAST(:progress_lines AS jsonb),
+        CAST(:reasoning AS text), CAST(:agent_state AS jsonb),
+        CAST(:custom_events AS jsonb),
+        CAST(:author_email AS text), CAST(:author_kind AS text),
+        CAST(:authority AS jsonb),
+        CAST(:run_member_email AS text),
+        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END
+    WHERE CAST(:may_insert AS boolean)
+       OR EXISTS (SELECT 1 FROM chat_message
+                  WHERE session_id = CAST(:sid AS text)
+                    AND id = CAST(:id AS text))
     ON CONFLICT (session_id, id) DO UPDATE SET
         content        = EXCLUDED.content,
         author_email   = CASE
@@ -494,7 +511,8 @@ _MESSAGE_UPSERT_SQL = """
         custom_events  = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.custom_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.custom_events ELSE chat_message.custom_events END
-    WHERE CASE COALESCE(
+    WHERE NOT CAST(:mint AS boolean)
+      AND CASE COALESCE(
             chat_message.author_kind,
             CASE chat_message.role
                 WHEN 'assistant' THEN 'agent'
@@ -529,6 +547,7 @@ def _upsert_messages(
     agent_name: str | None = None,
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
+    mint: bool = False,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
 
@@ -546,7 +565,16 @@ def _upsert_messages(
     ``actor_email`` is also the run member of an agent row (S13): the caller
     for a client write, and the member who started the run for the fold.
 
-    Returns the ids whose write the ``WHERE`` declined, in request order.
+    ``mint`` is for ``routes/agent.py`` ONLY (WS-27bm S14, §20). The gateway
+    creates the agent row of a run before it opens the stream. A mint only
+    inserts. When a row with that id exists, the mint changes nothing.
+
+    Only the server creates an agent row or a system row (S14). A client
+    write of a new agent row or a new system row inserts nothing, and its id
+    is in the return value. A client may still update an agent row that the
+    server created, under the S13 rules.
+
+    Returns the ids whose write the SQL declined, in request order.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -562,6 +590,9 @@ def _upsert_messages(
     with get_session() as s:
         for m in messages:
             kind, author = _attribute(m, actor_email, agent_name)
+            # S14: a client inserts a human row only. The fold and the mint
+            # are the server, and they may insert an agent row.
+            may_insert = kind == "human" or bool(author_from_run) or bool(mint)
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
@@ -581,11 +612,14 @@ def _upsert_messages(
                     # words are theirs regardless of what the run could reach.
                     "authority": authority_json if kind == "agent" else None,
                     "author_from_run": bool(author_from_run),
+                    "mint": bool(mint),
+                    "may_insert": may_insert,
                     # Only an agent row belongs to a run (S13).
                     "run_member_email": run_member if kind == "agent" else None,
                 },
             )
-            # RETURNING gives no row when the WHERE declined the update.
+            # RETURNING gives no row when the WHERE declined the update, or
+            # when the insert guard declined a new row (S14).
             if result.first() is None:
                 declined.append(m.id)
     return declined

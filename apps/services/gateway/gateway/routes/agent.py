@@ -1789,6 +1789,51 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
     return assistant_message_id or f"assistant-{thread_id}-{uuid.uuid4().hex}"
 
 
+def _mint_run_row(
+    thread_id: str, message_id: str, *, member: str, agent_name: str,
+) -> None:
+    """Create the agent row of a run before its stream opens (WS-27bm S14, §20).
+
+    Only the server creates an agent row. The browser and the translator may
+    update this row under the S13 rules, and may not insert one. The row
+    starts with no content, so ``_get_messages`` hides it until the first
+    checkpoint. Its author is the agent that runs, and its run member is the
+    member who started the run.
+
+    The mint only inserts. When a row with this id exists, the mint changes
+    nothing. It is best effort. On a failure it logs ``agent.mint_failed``
+    and the run goes on, because the fold still inserts the row at the end.
+    """
+    import time
+
+    from gateway.routes.chat import (
+        MessageRecord,
+        _ensure_session,
+        _upsert_messages,
+    )
+
+    run_member = (member or "").strip().lower()
+    try:
+        # The parent session must exist before the message FK insert.
+        _ensure_session(thread_id, run_member, agent_name)
+        _upsert_messages(
+            thread_id,
+            [MessageRecord(
+                id=message_id, role="assistant", content="",
+                timestamp=int(time.time() * 1000),
+                author_email=agent_name, author_kind="agent",
+            )],
+            actor_email=run_member, agent_name=agent_name,
+            mint=True,
+        )
+    except Exception as exc:  # The mint must never stop a run.
+        _log.warning(
+            "agent.mint_failed",
+            thread_id=thread_id[:12], message_id=message_id[:40],
+            error=str(exc)[:200],
+        )
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -2120,6 +2165,14 @@ async def run_agent_stream_endpoint(
 
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)
+
+    # WS-27bm S14 (§20): the server creates the agent row of this run, here
+    # and once. It runs after the steer decision and the refusal above, so a
+    # steered or refused turn mints nothing.
+    await asyncio.to_thread(
+        _mint_run_row, thread_id, _persist_message_id,
+        member=_mem_user, agent_name=agent_name,
+    )
 
     _think_mode = _resolve_think_mode(req)
 
