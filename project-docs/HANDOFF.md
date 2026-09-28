@@ -201,10 +201,10 @@ line — never reclaim a number by deleting the other entry.
   `python -m copilot download-runtime` as the service user after `uv sync`,
   and a failure fails the deploy. Measured 2026-09-26: the box reaches GitHub
   releases as `acb`.
-- ⚠️ **A signed member proof lives 300 s, and a Copilot session reuses it.**
-  After 300 s in one long turn, `_member_for` reads the member as unproven,
-  so the member's cap stops applying for the rest of that turn. Billing still
-  names the member. The per-request seam is `CopilotClient(request_handler=)`.
+- ⚠️ **A signed member proof lives 3600 s, and a Copilot session reuses it.**
+  After 3600 s in one long turn, `_member_for` reads the member as unproven.
+  On the deployment key the Router then REFUSES the rest of that turn
+  (PR #511). The per-request seam is `CopilotClient(request_handler=)`.
 - 📌 **Background runs now name a member (2026-09-28).** A workflow agent
   node runs as the member who pressed Run, or else as the workflow owner.
   The email loop, the WhatsApp summaries and graphiti run as the owner of the
