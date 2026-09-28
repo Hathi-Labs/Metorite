@@ -659,25 +659,36 @@ themselves, uploaded as a ZIP.
 
   **What a discard cannot undo.** A field this run changed on a task an
   earlier import created stays changed, because the earlier value is not
-  kept. The result counts these as `updates_kept`. A status lane this run
-  added to a reused set stays too.
+  kept. The result counts these as `updates_kept`. A status lane, a task type
+  or a tag that this run added to a space it did not create stays too.
 
   **When it refuses.** It deletes nothing, and it names up to 10 of the
   tasks or nodes that stop it:
 
   1. A later import built on this one: a run that is not discarded continued
-     this run's nodes, or updated a task this run created. Discard the later
-     run first.
-  2. A member edited a task this run created: its `updated_at` is later than
-     the run's end, or a comment or activity that no import wrote arrived
-     after the run.
+     this run's nodes, or updated or commented on a task this run created.
+     Discard the later run first.
+  2. A member worked on a task this run created. Its `updated_at` is later
+     than the end of the last import that wrote it, or it has a comment or
+     activity that no import wrote. A personal triage, an attachment or a
+     board position counts, and so does a watch or a link made after the
+     run.
   3. A member added work inside a node this run created: a task or a node
-     that no run created.
+     that no run created, a rename, or a row made after the run in a table
+     that cascades with a node. Those tables are views, reports, custom
+     fields, statuses, types, tags, recurrences, watchers, grants and
+     activity. `live_ws41_discard.py` reads the catalog and fails when a new
+     table cascades with a node.
   4. The run was written before I-6 and has no `progress.created_nodes`.
 
   All four checks and the deletes run in one transaction, under the same
-  advisory lock as the apply (§7.4). So no import can start between the check
-  and the delete.
+  advisory lock as the apply (§7.4). The transaction also locks the run's
+  tasks and nodes `FOR UPDATE` before it checks. So neither an import nor a
+  member's write can land between the check and the delete.
+
+  **The rule's one gap.** "After the run" means after the run ENDED. A
+  member's view or status made on a node while the run still wrote is not
+  seen. The window is the length of one import, a minute for P-1.
 
 ### 6.10 Side effects that stay off
 
@@ -887,7 +898,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-3b** ✅ built 2026-09-28 | Update mode (§6.9, §11 Q-5) | A new export of the same workspace updates the tasks by the three-way rule, and adds new comments once. **Met:** `live_ws41_writer.py` passes 56 of 56. An edited export updates a title and a priority, keeps a member's conflicting title, keeps a member's description, and adds one new comment. The same export again changes nothing, and moves no `updated_at`. A changed people mapping unassigns nobody. A member-renamed lane is followed. The creating run stays on every task |
 | **I-4** ✅ built 2026-09-28 | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today. **Met:** the visual-review rig walked all four steps against the scrubbed P-1 plan, in dark and light mode, at compact and comfortable density, under a violet accent, and at 1280, 1440, 1920 and 390 px, with no console error. The plan carries `continues` (`imports._continues`, which asks `import_writer.continues_earlier`), and `live_ws41_writer.py` passes 58 of 58, with `continues` and `lanes_added` checked both ways. The I-4 review found the view dropped `progress` and `report`, which a stubbed rig cannot see. `test_the_view_carries_progress_and_report_but_not_the_lease` fences it. **End to end, 2026-09-28:** a browser walk with no stubs drove a real gateway and a fresh Postgres. In light mode it imported the fixture: 2,423 tasks, 5 spaces, 93 comments, with live progress. At compact density the same file again showed the continuation note and found 2,423 unchanged. At 390 px a third run did the same. No console error. The walk found a re-run that reported a Done status added to 7 lists it only reused. `project_statuses` now returns the lists, and the writer counts only those it creates. `live_ws41_writer.py` check 4.2 fences it |
 | **I-5** ⏸ deferred 2026-09-28 | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning. **Deferred:** customer zero uses no custom fields (owner, 2026-09-28), so the workspace export already carries all its data. The review step now says the file lacks custom fields only as a condition. Build this when a customer who uses them asks |
-| **I-6** ✅ built 2026-09-28 | Discard (§6.9) | Discard removes exactly the run's rows, and refuses after a member edit, a member's new work in an imported node, or a later import built on the run. A reused node and an earlier run's task survive it. The tombstones reach the delta feed. The wizard lists recent imports, so a run can be opened or discarded after a page reload. **Met:** `live_ws41_discard.py` passes 24 of 24 on a real Postgres. A discard removes the run's 2,423 tasks and 62 nodes, and writes a tombstone per task. A member's edit, a member's comment and a member's node each refuse it and delete nothing. A later update run refuses the earlier run's discard. Its own discard removes its comment, keeps its update, and leaves the earlier tasks, and then the earlier run discards cleanly. A browser walk with no stubs, against a real gateway and database, imported and discarded in light mode, found the run again from the list after a reload at compact density, showed the member-edit refusal by task name, and drew the list at 390 px, with no console error |
+| **I-6** ✅ built 2026-09-28 | Discard (§6.9) | Discard removes exactly the run's rows, and refuses after a member edit, a member's new work in an imported node, or a later import built on the run. A reused node and an earlier run's task survive it. The tombstones reach the delta feed. The wizard lists recent imports, so a run can be opened or discarded after a page reload. **Met:** `live_ws41_discard.py` passes 28 of 28 on a real Postgres. A discard removes the run's 2,423 tasks and 62 nodes, and writes a tombstone per task. A member's edit, comment, personal triage, node and saved view each refuse it and delete nothing. With the member work gone, the same run discards. A later update run refuses the earlier run's discard. Its own discard removes its comment, keeps its update, and leaves the earlier tasks, and then the earlier run discards cleanly. A browser walk with no stubs, against a real gateway and database, imported and discarded in light mode, found the run again from the list after a reload at compact density, showed the member-edit refusal by task name, and drew the list at 390 px, with no console error |
 | **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed |
 
 **Then one adapter per slice, in this order.** Each needs its own real sample

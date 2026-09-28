@@ -46,25 +46,45 @@ LATER_RUNS_SQL = (
     "   AND progress->'continued_from' ? CAST(:run AS text) "
     " ORDER BY created_at DESC LIMIT :n"
 )
-#: Rule 1b — a later run that is not discarded updated a task this run made.
+#: Rule 1b — a later run that is not discarded updated or commented on a task
+#: this run made. `updated_by_run` names only the LAST such run, so the rows
+#: each run wrote on the task (`meta.import.run_id`) are read too: a later run
+#: that was discarded must not hide an earlier one that still stands.
 UPDATED_LATER_SQL = (
-    "SELECT t.id, t.title FROM pm_tasks t "
-    "  JOIN pm_import_runs r ON r.id::text = t.origin->>'updated_by_run' "
-    " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = CAST(:run AS text) "
+    "SELECT DISTINCT t.id, t.title FROM pm_tasks t "
+    "  JOIN pm_import_runs r ON r.organization_id = t.organization_id "
     "   AND r.id <> CAST(:run AS uuid) AND r.state <> 'discarded' "
+    "   AND (r.id::text = t.origin->>'updated_by_run' "
+    "        OR EXISTS (SELECT 1 FROM pm_activities a WHERE a.task_id = t.id "
+    "                    AND a.meta->'import'->>'run_id' = r.id::text)) "
+    " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = CAST(:run AS text) "
     " LIMIT :n"
 )
 #: Rule 2 — a member edited or commented on a task this run made. The edit is
 #: measured against the end of the LAST import that wrote the task, so an
 #: update by a later run that was itself discarded is not a member's edit.
+#:
+#: A member's work on a task is not always an edit of the task row. A personal
+#: triage (`pm_task_personal`) writes no activity and does not touch
+#: `updated_at`, and neither does a watch, an attachment, a link or a board
+#: position. Every one of those rows cascades with the task, so each is read.
+#: The import writes none of them after it ends, and no personal row at all.
 EDITED_SQL = (
     "SELECT t.id, t.title FROM pm_tasks t "
     " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = CAST(:run AS text) "
-    "   AND (t.updated_at > coalesce("
+    "   AND (t.updated_at > greatest(CAST(:finished AS timestamptz), "
     "          (SELECT r.finished_at FROM pm_import_runs r "
-    "            WHERE r.id::text = t.origin->>'updated_by_run'), CAST(:finished AS timestamptz)) "
+    "            WHERE r.id::text = t.origin->>'updated_by_run')) "
     "        OR EXISTS (SELECT 1 FROM pm_activities a "
-    "                    WHERE a.task_id = t.id AND a.meta->'import' IS NULL)) "
+    "                    WHERE a.task_id = t.id AND a.meta->'import' IS NULL) "
+    "        OR EXISTS (SELECT 1 FROM pm_task_personal x WHERE x.task_id = t.id) "
+    "        OR EXISTS (SELECT 1 FROM pm_task_watchers x WHERE x.task_id = t.id "
+    "                    AND x.created_at > CAST(:finished AS timestamptz)) "
+    "        OR EXISTS (SELECT 1 FROM pm_task_attachments x WHERE x.task_id = t.id) "
+    "        OR EXISTS (SELECT 1 FROM pm_task_links x "
+    "                    WHERE (x.source_task_id = t.id OR x.target_task_id = t.id) "
+    "                      AND x.created_at > CAST(:finished AS timestamptz)) "
+    "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id)) "
     " LIMIT :n"
 )
 #: Rule 3 — a member added a task or a node inside a node this run made.
@@ -81,6 +101,59 @@ FOREIGN_NODES_SQL = (
     "   AND parent_project_id = ANY(CAST(:nodes AS uuid[])) "
     "   AND NOT id = ANY(CAST(:nodes AS uuid[])) "
     " LIMIT :n"
+)
+#: The tables that CASCADE with a node, and what a member made in each. The
+#: import writes its rows in them before it ends, so a row made after the run
+#: ended is a member's. `pm_project_grants` is here too: a grant an admin added
+#: since would vanish with the space. The list is every `ON DELETE CASCADE`
+#: foreign key to `pm_projects` but the tasks and nodes, which have their own
+#: rules; `live_ws41_discard.py` reads the catalog and fails on a new one.
+NODE_TABLES: dict[str, str] = {
+    "pm_views": "a saved view",
+    "pm_reports": "a saved report",
+    "pm_custom_fields": "a custom field",
+    "pm_task_statuses": "a status",
+    "pm_task_types": "a task type",
+    "pm_tags": "a tag",
+    "pm_recurrences": "a recurring task",
+    "pm_project_watchers": "a watcher",
+    "pm_project_grants": "an access grant",
+    "pm_activities": "a comment or an edit",
+}
+#: `pm_task_counters` holds no member work: it is the task-number counter.
+NODE_TABLES_IGNORED = ("pm_task_counters",)
+
+
+def _node_work_sql() -> str:
+    parts = [
+        f"SELECT p.id, p.name || ': ' || '{label}' AS title FROM {table} x "
+        "  JOIN pm_projects p ON p.id = x.project_id "
+        " WHERE x.project_id = ANY(CAST(:nodes AS uuid[])) "
+        "   AND x.created_at > CAST(:finished AS timestamptz)"
+        + (" AND x.meta->'import' IS NULL" if table == "pm_activities" else "")
+        for table, label in NODE_TABLES.items()
+    ]
+    # A member renamed or moved a node the run made.
+    parts.append(
+        "SELECT id, name || ': renamed or changed' AS title FROM pm_projects "
+        " WHERE id = ANY(CAST(:nodes AS uuid[])) AND updated_at > CAST(:finished AS timestamptz)"
+    )
+    return "(" + ") UNION ALL (".join(parts) + ") LIMIT :n"
+
+
+NODE_WORK_SQL = _node_work_sql()
+#: Hold every row the discard reads, so no member write lands between the
+#: checks and the deletes: an edit or a comment on a task, and any row that
+#: hangs off a node, takes a lock these conflict with.
+LOCK_TASKS_SQL = (
+    "SELECT id FROM pm_tasks "
+    " WHERE organization_id = CAST(:org AS uuid) AND origin->>'run_id' = CAST(:run AS text) "
+    "FOR UPDATE"
+)
+LOCK_NODES_SQL = (
+    "SELECT id FROM pm_projects "
+    " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:nodes AS uuid[])) "
+    "FOR UPDATE"
 )
 
 COUNT_TASKS_SQL = (
@@ -173,6 +246,9 @@ async def discard_written_run(
     await db.execute(text(LOCK_ORG_SQL), {"org": organization_id})
     if (await db.execute(text(WRITING_SQL), {"org": organization_id})).fetchone() is not None:
         raise DiscardRefused("An import is running. Wait for it to end, then discard.")
+    await db.execute(text(LOCK_TASKS_SQL), params)
+    if nodes:
+        await db.execute(text(LOCK_NODES_SQL), params)
 
     later = (await db.execute(text(LATER_RUNS_SQL), params)).fetchall()
     if later:
@@ -198,6 +274,9 @@ async def discard_written_run(
     if nodes:
         foreign = (await db.execute(text(FOREIGN_TASKS_SQL), params)).fetchall()
         foreign += (await db.execute(text(FOREIGN_NODES_SQL), params)).fetchall()
+        foreign += (
+            await db.execute(text(NODE_WORK_SQL), {**params, "finished": row.finished_at})
+        ).fetchall()
         if foreign:
             raise DiscardRefused(
                 "Somebody added work inside the spaces this import created. A discard would "
@@ -211,13 +290,14 @@ async def discard_written_run(
     gone = (await db.execute(text(DELETE_NODES_SQL), params)).fetchall() if nodes else []
     report = _json(row.report) or {}
     counts = {
-        "nodes": len(nodes),
+        "nodes": len(gone),
         "spaces": sum(1 for r in gone if r.parent_project_id is None),
         "tasks": tasks,
         # Comments it added to tasks an EARLIER run created. Its own tasks'
         # comments went with them.
         "comments_elsewhere": sum(1 for r in activity if r.type == "comment"),
-        "updates_kept": int(report.get("tasks_updated") or 0),
+        # A failed run's report holds only its error; the count is in progress.
+        "updates_kept": int(report.get("tasks_updated") or progress.get("updated") or 0),
     }
     saved = (
         await db.execute(

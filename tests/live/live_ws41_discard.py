@@ -32,6 +32,7 @@ import csv
 import io
 import json
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -127,6 +128,7 @@ async def main() -> None:
     raw = w.FIXTURE.read_bytes()
     bundle = clickup.parse([(w.FIXTURE.name, raw)])
     orgs: list[str] = []
+    await catalog_fence()
     try:
         for i in range(3):
             admin = f"discard{i}.{w.TAG}@acme.test"
@@ -267,6 +269,76 @@ async def refusals(org: str, bundle: object, raw: bytes) -> None:
         refused.message if refused else "not refused",
     )
     check("3.2 the refusal deletes nothing", await run_tasks(org, run) == 2423)
+
+    # The review's P1: rows that CASCADE with a node, and the task's own
+    # member rows, refuse the discard too. Each is added alone, then removed.
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "DELETE FROM pm_projects WHERE name = 'A member made this' AND organization_id = CAST(:o AS uuid)"
+            ),
+            {"o": org},
+        )
+        lst = (
+            await db.execute(
+                text(
+                    "SELECT id FROM pm_projects WHERE organization_id = CAST(:o AS uuid) "
+                    " AND source = 'import' AND parent_project_id IS NOT NULL AND kind = 'project' LIMIT 1"
+                ),
+                {"o": org},
+            )
+        ).scalar()
+        await db.execute(
+            text(
+                "INSERT INTO pm_views (project_id, name, created_by) VALUES (:p, 'My board', :who)"
+            ),
+            {"p": lst, "who": ADMINS[org]},
+        )
+    _, refused = await discard(org, run)
+    check(
+        "3.3 a member's saved view on an imported list refuses the discard",
+        refused is not None and any("a saved view" in b["title"] for b in refused.blocking),
+        refused.message if refused else "not refused",
+    )
+    async with tenant_session(org) as db:
+        await db.execute(text("DELETE FROM pm_views WHERE project_id = :p"), {"p": lst})
+        await db.execute(
+            text("INSERT INTO pm_task_personal (task_id, member_email) VALUES (:t, :who)"),
+            {"t": task, "who": ADMINS[org]},
+        )
+    _, refused = await discard(org, run)
+    check(
+        "2.4 a member's personal triage of a task refuses the discard",
+        refused is not None and any(b["id"] == str(task) for b in refused.blocking),
+        refused.message if refused else "not refused",
+    )
+    async with tenant_session(org) as db:
+        await db.execute(text("DELETE FROM pm_task_personal WHERE task_id = :t"), {"t": task})
+    counts, refused = await discard(org, run)
+    check(
+        "3.4 with the member work gone, the same run discards",
+        refused is None and counts is not None and counts["tasks"] == 2423,
+        refused.message if refused else json.dumps(counts),
+    )
+
+
+async def catalog_fence() -> None:
+    """Every table that CASCADES with a node is read by rule 3, or named as
+    holding no member work. A new one fails here before it can be deleted in
+    silence."""
+    rows_ = await rows(
+        str(uuid.UUID(int=0)),
+        "SELECT DISTINCT cl.relname AS tbl FROM pg_constraint con "
+        "  JOIN pg_class cl ON cl.oid = con.conrelid JOIN pg_class rt ON rt.oid = con.confrelid "
+        " WHERE con.contype = 'f' AND rt.relname = 'pm_projects' AND con.confdeltype = 'c'",
+    )
+    found = {r.tbl for r in rows_} - {"pm_tasks", "pm_projects"}
+    known = set(import_discard.NODE_TABLES) | set(import_discard.NODE_TABLES_IGNORED)
+    check(
+        "0.1 every table that cascades with a node is checked",
+        found <= known,
+        str(sorted(found - known)),
+    )
 
 
 async def update_chain(org: str, bundle: object, raw: bytes) -> None:

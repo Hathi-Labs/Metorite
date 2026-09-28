@@ -486,8 +486,12 @@ async def discard_import_run(
                     detail={"message": refused.message, "blocking": refused.blocking},
                 ) from refused
         if saved is None:
-            # The run moved on between the load and the write.
-            raise HTTPException(status_code=409, detail=_not_editable("no longer open"))
+            # The run moved on between the load and the write: a newer upload
+            # closed the open run, or a second discard got there first.
+            raise HTTPException(
+                status_code=409,
+                detail="This import changed while it was being discarded. Open it again to see where it stands.",
+            )
     _discard_files(organization_id, run_id)
     _log.info("projects.import.discarded", run_id=run_id, **{k: v for k, v in counts.items()})
     return {**run_view(saved), "discarded": counts}
