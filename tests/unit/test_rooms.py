@@ -1219,6 +1219,10 @@ def test_only_the_run_route_mints_and_only_after_the_refusal() -> None:
 
     route = inspect.getsource(agent.run_agent_stream_endpoint)
     assert route.count("_mint_run_row") == 1
+    # Fix round 1: the route awaits the bounded helper, and only it.
+    assert route.count("await _mint_run_row_bounded(") == 1
+    bounded = inspect.getsource(agent._mint_run_row_bounded)
+    assert "asyncio.wait_for(" in bounded and "_MINT_TIMEOUT_S" in bounded
     mint_at = route.index("_mint_run_row")
     assert route.index("return _steered") < mint_at
     assert route.index("await _refuse_if_another_run_is_active(") < mint_at
@@ -1237,6 +1241,210 @@ def test_only_the_run_route_mints_and_only_after_the_refusal() -> None:
     param = inspect.signature(chat._upsert_messages).parameters["mint"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is False
+
+
+# ---------------------------------------------------------------------------
+# 7e. S14 fix round 1: roles, room roles, reply order, the mint timeout
+# ---------------------------------------------------------------------------
+
+def _post_raw(sid: str, email: str, body: list):
+    """The real ``save_messages`` handler behind FastAPI, so the body is
+    parsed and validated as a request is. Returns the response."""
+    from acb_auth import UserContext, get_current_user
+    from acb_auth.roles import UserRole
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.chat import save_messages
+
+    app = FastAPI()
+    app.post("/m/{session_id}")(save_messages)
+    user = UserContext(email=email, role=UserRole.EMPLOYEE)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app).post(f"/m/{sid}", json=body)
+
+
+@_needs_db
+@pytest.mark.parametrize("role", ["tool", "Assistant", "system ", "developer"])
+def test_a_free_form_role_gets_422_and_no_row(clean, role) -> None:
+    """Fix round 1, P1. The browser draws every role that is not ``user`` as
+    an agent reply. So a role outside the three is refused before any row is
+    written."""
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    res = _post_raw(sid, _BOB, [
+        {"id": "x1", "role": role, "content": "The budget is approved.",
+         "timestamp": 5000},
+    ])
+    assert res.status_code == 422
+    assert not _rows(sid, "x1")
+    # A normal human row through the same handler still inserts.
+    res = _post_raw(sid, _BOB, [
+        {"id": "x2", "role": "user", "content": "hello", "timestamp": 5001},
+    ])
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "saved": 1, "unchanged": []}
+    assert _author(sid, "x2").author_email == _BOB
+
+
+def _participants(sid: str) -> dict:
+    return {
+        r.subject: r.role for r in _exec(
+            "SELECT subject, role FROM chat_session_participant "
+            "WHERE session_id = :i", i=sid,
+        )
+    }
+
+
+def _agents(sid: str) -> dict:
+    return {
+        r.agent_name: r.role for r in _exec(
+            "SELECT agent_name, role FROM chat_session_agent "
+            "WHERE session_id = :i", i=sid,
+        )
+    }
+
+
+@_needs_db
+def test_a_group_member_who_starts_a_run_gains_no_owner_row(clean) -> None:
+    """Fix round 1, P1. Bob reaches the room only through a group. The mint
+    runs ``_ensure_session`` as Bob, and Bob must not become an owner."""
+    from gateway.rooms import resolve_room_access
+
+    _exec(
+        "INSERT INTO org_group (organization_id, slug, display_name) "
+        "SELECT id, :g, :g FROM organization LIMIT 1 ON CONFLICT DO NOTHING",
+        g=_GROUP,
+    )
+    _exec(
+        "INSERT INTO org_group_member (group_id, user_id) "
+        "SELECT g.id, u.id FROM org_group g, app_user u "
+        "WHERE g.slug = :g AND u.email = :e ON CONFLICT DO NOTHING",
+        g=_GROUP, e=_BOB,
+    )
+    sid = _seed_session(_ALICE, (f"group:{_GROUP}", "member"))
+    before = _participants(sid)
+    _mint(sid, "g1", _BOB)
+    assert _participants(sid) == before
+    assert _BOB not in _participants(sid)
+    assert resolve_room_access(sid, _BOB).role == "member"
+    # The fold calls the same helper, and it gives no owner row either.
+    assert _fold(sid, "g1", _BOB, "the answer") == []
+    assert _participants(sid) == before
+
+
+@_needs_db
+def test_a_run_of_another_agent_adds_no_second_primary(clean) -> None:
+    sid = _seed_session(_ALICE)
+    _exec(
+        "INSERT INTO chat_session_agent (session_id, agent_name, role) "
+        "VALUES (:i, 'orchestrator', 'primary')", i=sid,
+    )
+    _mint(sid, "p1", _ALICE, "sales-assistant")
+    assert _agents(sid) == {"orchestrator": "primary"}
+
+
+@_needs_db
+def test_the_mint_on_a_new_session_creates_the_room(clean) -> None:
+    """The mint runs on a session id that does not exist yet. Without its
+    ``_ensure_session`` call the insert fails on the foreign key, and every
+    checkpoint is declined until the fold. So the live reply of a new thread
+    is lost."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = f"{_PREFIX}-{uuid.uuid4().hex[:8]}"
+    _mint(sid, "n1", _ALICE)
+    assert _exec("SELECT user_id FROM chat_session WHERE id = :i", i=sid)[0] \
+        .user_id == _ALICE
+    assert _participants(sid) == {_ALICE: "owner"}
+    assert _agents(sid) == {"projects-assistant": "primary"}
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="n1", role="assistant", content="part", timestamp=5100),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": []}
+    assert _content(sid, "n1") == "part"
+
+
+@_needs_db
+def test_a_browser_created_session_gets_its_owner_on_the_first_run(clean) -> None:
+    """``_upsert_session`` writes no participant row and no agent row. The
+    first mint by the creator still makes both."""
+    from gateway.routes.chat import SessionUpsertRequest, _upsert_session
+
+    sid = f"{_PREFIX}-{uuid.uuid4().hex[:8]}"
+    _upsert_session(_ALICE, SessionUpsertRequest(
+        id=sid, agent_name="projects-assistant", title="t",
+    ))
+    assert _participants(sid) == {}
+    _mint(sid, "n1", _ALICE)
+    assert _participants(sid) == {_ALICE: "owner"}
+    assert _agents(sid) == {"projects-assistant": "primary"}
+
+
+@_needs_db
+def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
+    clean,
+) -> None:
+    """Fix round 1, P2. The prompt carries the browser clock T. The server
+    clock is two seconds behind, so the mint stamps less than T. The first
+    checkpoint arrives later and moves the time forward."""
+    import time
+
+    from gateway.routes.chat import MessageRecord, _get_messages
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    t = int(time.time() * 1000) + 2000
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="q1", role="user", content="the prompt", timestamp=t),
+    ])
+    _mint(sid, "a1", _ALICE)
+    minted = _exec(
+        "SELECT timestamp_ms FROM chat_message WHERE session_id = :i "
+        "AND id = 'a1'", i=sid,
+    )[0].timestamp_ms
+    assert minted < t
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="a1", role="assistant", content="part",
+                      timestamp=t + 1000),
+    ])
+    assert [m["id"] for m in _get_messages(sid, _BOB)] == ["q1", "a1"]
+    # Once the row has content, its time stays.
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="a1", role="assistant", content="part and more",
+                      timestamp=t + 9000),
+    ])
+    assert _exec(
+        "SELECT timestamp_ms FROM chat_message WHERE session_id = :i "
+        "AND id = 'a1'", i=sid,
+    )[0].timestamp_ms == t + 1000
+
+
+def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
+    """Fix round 1, P3. The run waits ``_MINT_TIMEOUT_S`` at most, then logs
+    ``agent.mint_failed`` with the reason ``timeout`` and goes on."""
+    import asyncio
+    import time
+
+    import structlog
+    from gateway.routes import agent
+
+    def _slow(*_a, **_k):
+        time.sleep(1.5)
+
+    monkeypatch.setattr(agent, "_mint_run_row", _slow)
+    monkeypatch.setattr(agent, "_MINT_TIMEOUT_S", 0.1)
+    async def _timed() -> float:
+        # Timed inside the loop: asyncio.run waits for the worker thread at
+        # shutdown, and a live server loop does not.
+        start = time.monotonic()
+        await agent._mint_run_row_bounded(
+            "t1", "m1", member=_ALICE, agent_name="projects-assistant",
+        )
+        return time.monotonic() - start
+
+    with structlog.testing.capture_logs() as caps:
+        elapsed = asyncio.run(_timed())
+    assert elapsed < 1.0
+    failed = [c for c in caps if c.get("event") == "agent.mint_failed"]
+    assert failed and failed[0].get("reason") == "timeout"
 
 
 # ---------------------------------------------------------------------------
