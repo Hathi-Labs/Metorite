@@ -68,6 +68,9 @@ class MessageRecord(BaseModel):
     #: when ``author_kind == 'agent'``. Clients MAY send it; the server
     #: overrides it for human turns with the authenticated caller, because a
     #: client-supplied author is a client-supplied identity.
+    #: A client write that names an agent can only UPDATE a row that the
+    #: server created (WS-27bm S14, ``projects_ai_chat.md`` §20). It never
+    #: inserts one.
     author_email: str | None = None
     author_kind: str | None = None      # human | agent | system
 
@@ -410,8 +413,9 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 
 #: Upsert for one chat_message row.
 #:
-#: THREE writers race on the same row: the Next translator's 3s checkpoints
-#: (app/api/agent/chat/route.ts), the gateway's run-boundary fold
+#: FOUR writers reach the same row: the gateway's mint when a run starts
+#: (routes/agent.py ``_mint_run_row``, S14), the Next translator's 3s
+#: checkpoints (app/api/agent/chat/route.ts), the gateway's run-boundary fold
 #: (chat_fold.persist_final_assistant_message), and the browser re-POSTing its
 #: whole message list whenever anything changes (lib/sessions.saveMessages).
 #: Blind ``= EXCLUDED.*`` made this last-writer-wins, so the LEANEST writer won:
@@ -462,7 +466,21 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #:   the run (``run_member_email``), and only before the seal. A NULL run
 #:   member means that only the fold may update the row. That covers legacy
 #:   rows and rows written by old code during the deploy.
-#: * **System row:** no write updates it. A client may still INSERT one.
+#: * **System row:** no write updates it.
+#:
+#: 🔴 **Only the server creates an agent row or a system row** (S14,
+#: ``projects_ai_chat.md`` §20). The ``INSERT`` is a ``SELECT`` with a guard.
+#: It gives a new row only when ``:may_insert`` is true, which
+#: ``_upsert_messages`` sets for a human write, the fold and the mint. For
+#: every other write the ``SELECT`` gives a row only when the id exists, so
+#: the conflict and the ``WHERE`` decide. A client insert of an agent row
+#: would reach the model context of every member, because the history keeps
+#: agent and system rows. ``VALUES`` coerced each parameter to its column
+#: type and a ``SELECT`` does not, so every parameter carries a ``CAST``.
+#:
+#: **The mint only inserts** (``:mint``). The gateway creates the agent row
+#: of a run before it opens the stream. On an existing id the ``WHERE`` is
+#: false, so a mint never changes a row, even the caller's own reply.
 #:
 #: ``run_member_email`` is set once, by the first writer of an agent row.
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
@@ -630,10 +648,15 @@ def _attribute(
 ) -> tuple[str | None, str | None]:
     """(author_kind, author_email) for one record.
 
-    A client may TELL us a turn is an agent's — that is information we don't
-    otherwise have when the browser saves a run it just watched. It may not
-    tell us which HUMAN authored a turn: that is an identity claim, and the
-    authenticated caller is the only answer we accept.
+    A client may TELL us a turn is an agent's. It may not tell us which HUMAN
+    authored a turn: that is an identity claim, and the authenticated caller
+    is the only answer we accept.
+
+    Since S14 (``projects_ai_chat.md`` §20) the agent claim of a client
+    decides only how the upsert treats the write. A client write with the
+    kind ``agent`` or ``system`` inserts no row. It may update an agent row
+    that the mint or the fold created, under the S13 rules, and the author
+    that the server stored first stays.
     """
     if m.role == "system":
         return "system", None

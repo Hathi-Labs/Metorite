@@ -12,7 +12,8 @@ from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
 was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
 S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
 schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
-2026-09-28. S13 (message integrity, §19) was built 2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-28. S13 (message integrity, §19) was built 2026-09-28. S14 (no
+forged agent rows, §20) was built 2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -673,8 +674,13 @@ sees no AI usage for it. This spec does not change that.
 - **D-PM-36** — a chat write carries `meta.via` on its activity row. §6.
 - **D-PM-37** — every Projects route is mapped or excluded in
   `manifest.py`, and `test_projects_chat_coverage.py` fails otherwise. §7.1.
+- **D-PM-39** — only the server creates an agent row or a system row. A
+  LiteLLM reply and a compaction summary stay in the browser until a later
+  slice gives them a server writer. §20.5.
 
-All three are agent-proposed. The owner may overrule any of them.
+D-PM-35, D-PM-36 and D-PM-37 are agent-proposed. The owner may overrule any
+of them. The owner decided D-PM-39 on 2026-09-28, with the option "Accept it
+now, fix later".
 
 ---
 
@@ -703,6 +709,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S11 · Outlook schedules** — ✅ **BUILT 2026-09-26** | The outlook's capacity reads each person's schedule. Absences apply only for an admin viewer. The report section passes the reader's grant. The panel says when it does not count leave (§17) | AGENT-SAFE |
 | **S12 · Follow-ups** — ✅ **BUILT 2026-09-28** | The end-date count follows the grant (H-188) · one broken panel does not blank Analytics · an @name turn keeps the agent that ran (§18) | AGENT-SAFE |
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
+| **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · no migration (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -2672,7 +2679,8 @@ server declined.
 2. The row id comes from the client. The translator (`route.ts`
    `persistAssistantMessage`) and the browser (`sessions.ts` `saveMessages`)
    both save through `POST /chat/sessions/{id}/messages`, as the member who
-   sent the turn.
+   sent the turn. On a reconnect the translator saves as the member who
+   reconnects, who may not be the member who sent the turn.
 3. The fold (`chat_fold.persist_final_assistant_message`) writes the same row
    with `author_from_run=True`. Its `user_id` is the email of the member who
    started `/agent/run/stream` (`_mem_user` in `routes/agent.py`).
@@ -2722,7 +2730,8 @@ server declined.
 2. The seal is final for clients.
 3. An agent row with a NULL run member takes the fold only. That covers
    legacy rows and rows that old code writes during the deploy.
-4. A client may INSERT a system row. No writer may update one.
+4. No writer may update a system row. S13 let a client INSERT one. S14
+   takes that away (§20.4 rule 8).
 5. A declined write is not an error. The status is 200, and `ok` is true.
 6. `authority` keeps its `COALESCE`.
 7. S13 adds no flag and no route, and one migration.
@@ -2783,7 +2792,8 @@ server declined.
 
 - `_attribute` still takes the claim of an agent turn from the body when it
   INSERTS a new row. So a member can make a new row that names an agent or a
-  system summary.
+  system summary. S14 closes this (§20): no client inserts an agent row or a
+  system row now.
 - The server mints no row id when the caller sends one. A member who knows
   that id before the first checkpoint of the run can insert first. The fold
   then declines, and the reply of the real run is not stored. The Next chat
@@ -2791,7 +2801,8 @@ server declined.
   member does not see it before the run. A caller that sends no id gets a
   server-only id (§19.4 rule 9).
 - Before the fold, a second tab of the same member can write older content.
-- The LiteLLM and batch paths have no fold, so their rows never seal.
+- The LiteLLM and batch paths have no fold, so their rows never seal. Since
+  S14 the browser save of a LiteLLM reply is declined (§20.5, D-PM-39).
 - S13 does not change the translator, the browser or the stream. Nothing in
   the browser reads `unchanged` yet.
 
@@ -2816,3 +2827,177 @@ npx vitest run
 The `-rs` output must show no R8 skip. With `DATABASE_URL` set,
 `test_tenant_coverage.py` has two tests that fail by construction on a fresh
 ladder. `.github/workflows/pr-check.yml` records why, and they are not S13's.
+
+---
+
+## 20. No forged agent rows (S14)
+
+**Status: BUILT 2026-09-28.** The spec-auditor cleared the scope on
+2026-09-28 (GO-NARROWED with option A, against origin/main `2020af8d`). S14
+closes the first residual in §19.6. `groups_sessions_authority.md` §4 links
+here.
+
+### 20.1 The answer
+
+Only the server creates an agent row or a system row. A client may update an
+agent row that the server created, under the S13 rules. A client may not
+insert one. The gateway creates the agent row of a run before it opens the
+stream.
+
+### 20.2 What exists
+
+1. **`_attribute` takes an agent author from the body on an insert.** Before
+   S14, a client write with the role `assistant` made a new agent row. The
+   kind `agent` did the same. That row named any agent (`_attribute`).
+2. **Any sender could insert an agent row or a system row.** Both reach the
+   model context of every other member. `acb_llm/context.py`
+   `assemble_run_context` keeps the roles `user`, `assistant` and `system`
+   in the history that it gives the model.
+3. **Three writers reached the row.** They were the translator checkpoints
+   (`route.ts` `persistAssistantMessage`), the fold
+   (`chat_fold.persist_final_assistant_message`) and the browser
+   (`sessions.ts` `saveMessages`).
+4. **The browser never saves a streaming agent row.** `saveMessages`
+   filters out an `assistant` row while `streaming` is true. So during a run
+   the translator and the fold are the only writers of the agent row.
+5. **No server writer of system rows exists.** The browser saves the
+   compaction summary (`compact/route.ts`, the id `compact-<ms>`) and other
+   system rows. The gateway writes none.
+
+### 20.3 What S14 builds
+
+1. **The mint.** `run_agent_stream_endpoint` in `routes/agent.py` calls
+   `_mint_run_row` once. The call comes after
+   `_refuse_if_another_run_is_active`, so a steered or refused turn mints
+   nothing. It comes before `StreamingResponse`. `_mint_run_row` calls
+   `_ensure_session`, then `_upsert_messages` with `mint=True`. The row id
+   is `_persist_message_id`, and the content is empty. The author is the
+   agent that runs. The run member is the starter, in lower case.
+2. **The mint never updates.** The `WHERE` of the update starts with
+   `NOT CAST(:mint AS boolean)`. When a row with that id exists, the mint
+   changes nothing, even the reply of the caller.
+3. **The mint is best effort.** On a failure it logs `agent.mint_failed`,
+   and the run goes on. The fold then inserts the row at the end.
+4. **The insert guard.** The `INSERT` is a `SELECT` with
+   `WHERE CAST(:may_insert AS boolean) OR EXISTS (...)`. `_upsert_messages`
+   sets `may_insert` for a human row, for the fold (`author_from_run`) and
+   for the mint. `unchanged` names a declined insert. `VALUES` coerced
+   each parameter to its column type and a `SELECT` does not, so each
+   parameter has a `CAST`. The R8 tests prove the types.
+5. **One new keyword, `mint`.** Only `routes/agent.py` passes it. The fold
+   keeps `author_from_run=True`, and it may still insert.
+6. **An empty row stays hidden.** `_get_messages` omits an agent row with no
+   content, no tool events, no custom events and no reasoning. The filter is
+   in the SQL, so a `LIMIT` does not count the hidden row.
+
+### 20.4 Rules
+
+1. **Only the server inserts an agent row or a system row.** The mint and
+   the fold are the server. A client inserts a human row only.
+2. **The mint names the agent.** Its author is the agent that runs, from
+   `_address_agent`. Its run member is the member who started the run.
+3. **Client updates keep S13.** A client may update an agent row only as the
+   run member and before the seal. §19.4 rules 1 to 3 are unchanged.
+4. **A decline is not an error.** The status is 200, and `ok` is true. The
+   id is in `unchanged`.
+5. **No migration, no flag and no route.** S14 changes one SQL statement and
+   adds one call on an existing route.
+6. **No change in Next.** The Next chat already sends the id that the
+   gateway mints, as `assistant_message_id`. The only Next edit is the
+   LiteLLM comment in `sessions.ts` `saveMessages`.
+7. **The fold id rule stays.** §19.4 rule 9 is unchanged.
+8. **§19.4 rule 4 changes.** A client may not insert a system row now. No
+   writer updates one.
+9. **The docs.** S14 updates §19.6, item 3 of
+   `apps/services/gateway/AGENTS.md`, `groups_sessions_authority.md` §4, the
+   comment above `_MESSAGE_UPSERT_SQL`, and the `MessageRecord` and
+   `_attribute` docstrings.
+
+### 20.5 What stops working (D-PM-39)
+
+The owner decided this on 2026-09-28: ship the security fix now, and let a
+later slice give these rows a server writer.
+
+1. **A LiteLLM reply stays in the browser.** A reply from a Tier model or a
+   Gemini model on the general chat has no server writer. The browser save
+   of it is now declined. The default model, `auto`, runs through
+   `/agent/run/stream`, so it is not affected.
+2. **A compaction summary stays in the browser.** It is a system row, and
+   the browser save of it is now declined.
+3. **A reconnect with no local row writes no duplicate.** `useAgentChat.ts`
+   makes a new placeholder id when no agent row survived a reload. Before
+   S14 the browser saved that row beside the row of the fold. Now the
+   server declines it.
+4. **The fallback id of the translator writes no duplicate.** When the
+   browser sends no id, `route.ts` makes `assistant-{thread}-{ms}` for its
+   checkpoints, and the gateway folds a different id. Before S14 the server
+   stored both rows. Now the server declines the checkpoint insert.
+5. **The batch path is not reachable from the chat.** The legacy batch path
+   in `route.ts` (`/agent/run`) has no fold and no mint. The chat does not
+   send a turn to it.
+
+### 20.6 Acceptance — S14
+
+1. R8 tests in `test_rooms.py`, through the real `_save_as`, the real mint
+   (`_mint_run_row`) and the upsert as the fold calls it:
+   - Bob saves a new `assistant` row that names `projects-assistant`. No
+     row exists, and `unchanged` holds its id.
+   - Bob saves a new row with the role `user` and the kind `agent`. No row
+     exists.
+   - Bob saves a new system row. No row exists, and `unchanged` holds its
+     id.
+   - Alice starts a run. The mint makes the row with empty content, the
+     agent as its author, and Alice as its run member.
+   - A checkpoint by Alice on the minted id changes the content. A
+     checkpoint by Bob does not.
+   - The fold on the minted row takes it and seals it.
+   - When the mint failed, the fold inserts the row.
+   - The mint on an existing id changes nothing, for a human row, a system
+     row, another member's agent row and Alice's own reply.
+   - A reader does not see an empty minted row. A reader sees it after a
+     checkpoint.
+   - A new human row still inserts, and Alice still updates her own human
+     row.
+2. The S13 tests pass, with the seeding moved to the mint.
+   `test_no_client_inserts_or_updates_a_system_row` replaces
+   `test_a_client_inserts_a_system_row_and_never_updates_one`.
+3. A source test: only `routes/agent.py` passes `mint=True`, and the route
+   mints once, after `_refuse_if_another_run_is_active`.
+   `test_only_the_run_route_mints_and_only_after_the_refusal` is the fence.
+4. `test_chat_message_upsert.py` seeds through the mint and passes.
+   `test_chat_fold_trajectory.py` passes, except
+   `test_detached_run_persists_final_message`, which also fails on main for
+   an environmental reason. `entityPillsAuthor.test.ts` passes.
+5. Five mutations each turn a test red:
+   - the guard lets a client insert an agent row
+   - the guard lets a client insert a system row
+   - a mint updates a row
+   - the mint comes before the steer or refusal check
+   - the reader sees an empty minted row
+
+### 20.7 What S14 does not do
+
+- The run member can still write any content in her own reply until the
+  seal. A per-run token for the translator is a later slice.
+- No server writer exists for a LiteLLM reply or a compaction summary yet.
+- The mint takes its timestamp from the server clock. The user turn takes
+  its timestamp from the browser clock, so a skewed browser clock can sort
+  the reply before its prompt.
+- A run that `SupersedeRefused` stops inside the stream leaves an empty
+  minted row. The reader does not see it.
+- There is no allowlist of roles.
+- Nothing in the browser reads `unchanged` yet.
+
+### 20.8 Verification
+
+The §19.7 set, with both database variables, plus these:
+
+```bash
+uv run pytest tests/unit/test_run_agent_stream_e2e.py \
+  tests/unit/test_agent_run_identity.py -q -rs
+G=apps/services/gateway/gateway
+uv run ruff check $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
+uv run mypy $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
+```
+
+The `-rs` output must show no R8 skip.
