@@ -22,6 +22,7 @@ import type {
   ModelKind,
   ModelRate,
   ProviderAccount,
+  VendorHealth,
   ProviderSpend,
   Task,
   Tier,
@@ -32,12 +33,14 @@ import { EMPTY_CATALOG, EMPTY_FEED } from "./contract";
 import {
   ConsoleUnconfigured,
   listProviderCreds,
+  providerHealth,
   providerSpend,
   readModelCatalog,
   type Deps,
 } from "./console";
+import { healthFromWire } from "./providerHealth";
 import { OWED, SAMPLE_CATALOG } from "./sample";
-import { type Sourced, resolve } from "./source";
+import { type Sourced, missing, resolve } from "./source";
 
 // ── The live wire shapes, named so the mapping below reads as a mapping ─────
 
@@ -521,6 +524,34 @@ export async function readAccounts(deps: Deps): Promise<Sourced<ProviderAccount[
  * and misleads nobody. A made-up BILL does mislead: an operator who reads an
  * invented total against a real invoice has been given a wrong answer with a
  * confident face. So a failure here draws nothing and says why. */
+/** Can each vendor account serve? `GET /providers/health` (2026-09-28).
+ *
+ * ⚠️ **A 404 is "the Console predates this", not a refusal.** The console and
+ * the Console deploy separately, so for a while this app can be newer. That
+ * gap reads as `missing` with a sentence, never as a red error, and never
+ * blanks the rest of the page.
+ *
+ * ⚠️ **No sample rows, ever.** A made-up "balance OK" is the exact lie this
+ * section exists to prevent. A failure draws nothing and says why. */
+export async function readProviderHealth(
+  deps: Deps,
+): Promise<Sourced<VendorHealth[]>> {
+  const owed =
+    "This Console does not serve GET /providers/health yet. It arrives with " +
+    "migration 035. Until then nothing here watches the vendor balances.";
+  let predates = false;
+  const r = await attempt(
+    async () => {
+      const res = await providerHealth(deps);
+      predates = res.status === 404;
+      return res;
+    },
+    (p) => healthFromWire(p),
+  );
+  if (predates) return missing([], owed);
+  return resolve(r, { sample: [], empty: [], owed });
+}
+
 export async function readProviderSpend(
   deps: Deps,
 ): Promise<Sourced<ProviderSpend[]>> {

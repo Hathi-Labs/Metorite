@@ -93,7 +93,7 @@ PRIORITY = {"1": 3, "2": 2, "3": 1, "4": 0}
 LOSSES = (
     Loss(
         what="custom fields",
-        why="the workspace export has no custom-field column; ClickUp puts them only in a per-view export",
+        why="if you use them in ClickUp, this file does not carry them; ClickUp puts them only in a per-view export",
     ),
     Loss(
         what="completion date",

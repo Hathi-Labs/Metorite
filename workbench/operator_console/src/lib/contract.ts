@@ -437,3 +437,50 @@ export type ProviderSpend = {
   costUsd: string;
   measuredUsd: string;
 };
+
+/** Can one vendor account we call on serve? `GET /providers/health`.
+ *
+ * The Console's `provider_balance.assess` decides `status`. This app draws
+ * it and never re-derives it. */
+export type VendorHealthStatus =
+  | "out"
+  | "refusing"
+  | "rate_limited"
+  | "low"
+  | "probe_failed"
+  | "unknown"
+  | "ok";
+
+/** WHY a status is what it is: top up (payment), fix the key (key), slow
+ * down (rate_limit), and so on. The banner headline reads it. */
+export type VendorHealthCause =
+  | "payment"
+  | "key"
+  | "rate_limit"
+  | "balance"
+  | "probe"
+  | "invisible";
+
+export type VendorHealth = {
+  provider: string;
+  status: VendorHealthStatus;
+  cause: VendorHealthCause | null;
+  /** The Console's own sentence for why. */
+  reason: string;
+  /** In the vendor's own currency, as a string. Null = not exposed or never read. */
+  balance: string | null;
+  currency: string | null;
+  available: boolean | null;
+  balanceCheckedAt: string | null;
+  probeError: string | null;
+  /** Does the Console hold a balance probe for this vendor at all? */
+  balanceExposed: boolean;
+  threshold: string | null;
+  daysLeft: string | null;
+  lastRefusalStatus: number | null;
+  lastRefusalAt: string | null;
+  /** The last call our platform key served on this vendor. */
+  lastSuccessAt: string | null;
+  refusals24h: number;
+  serverErrors24h: number;
+};

@@ -184,6 +184,15 @@ a:hover {
   padding: 20px 28px 64px;
   padding-left: calc(var(--side) + 28px);
 }
+/* The site-wide vendor alert (ProviderAlert.tsx). It borrows `.wrap`'s column
+   so it clears the fixed sidebar, and drops the bottom padding so the page's
+   own `main.wrap` follows it directly. */
+.wrap.alertbar {
+  padding-bottom: 0;
+}
+.wrap.alertbar .banner {
+  margin-bottom: 0;
+}
 
 /* ── Left sidebar ────────────────────────────────────────────────────────
    🔴 Replaced the top bar (2026-08-29). Five destinations, an elevation
