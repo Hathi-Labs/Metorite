@@ -384,10 +384,20 @@ _ALLOWED_CALLERS = (
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
 
 #: The ONLY names ``routes/billing.py`` may read from ``console_resolve``: the
-#: billing READ client, its outage type, the wiring question and the refusal
-#: prefix it reads a capability 403 by. No seat write, no resolve.
+#: billing READ client, the three CHECKOUT clients (H-152's second half), their
+#: outage type, the wiring question and the refusal prefix it reads a
+#: capability 403 by. No seat write, no resolve.
+#:
+#: ⚠️ The checkout clients allocate no seat through ``resolve_for_signin``. A
+#: redeemed code can grant seats through the Console's ``payments.fulfil``;
+#: that is the ONE edge the Console's own transitive fence permits
+#: (``test_the_checkout_doors_reach_no_grant_writer_but_redeem``), and the
+#: code is the operator's pre-authorization, not this box's.
 _BILLING_ALLOWED_NAMES = frozenset({
     "billing_read_on_console",
+    "create_order_on_console",
+    "read_order_on_console",
+    "redeem_code_on_console",
     "ConsoleBillingUnavailable",
     "CAPABILITY_REFUSAL_PREFIX",
     "is_wired",
@@ -471,7 +481,7 @@ def test_the_decide_facade_touches_only_the_decide_client() -> None:
 
 
 def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
-    """``routes/billing.py`` is on the list for FOUR names, and this pins them.
+    """``routes/billing.py`` is on the list for SEVEN names, and this pins them.
 
     The list admits the FILE. This admits only the read client and what it
     needs to relay an answer, so a later edit cannot call

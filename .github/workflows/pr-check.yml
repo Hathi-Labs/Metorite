@@ -315,6 +315,8 @@ jobs:
       # (`POST /registry/billing/*`, `/registry/usage/*`) that serve the
       # customer billing pages under the per-box deployment key. It reads this
       # file AND `customer_console.md` §7, like its siblings.
+      # `test_customer_console_billing_checkout.py` joins it for the checkout
+      # (`POST /registry/billing/orders*`, the `billing_purchase` doors).
       #
       # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
       # `test_customer_console_member_write.py` — the member-add door and
@@ -349,6 +351,7 @@ jobs:
             tests/unit/test_customer_console_member_write.py \
             tests/unit/test_customer_console_seat_overview.py \
             tests/unit/test_customer_console_billing_reads.py \
+            tests/unit/test_customer_console_billing_checkout.py \
             tests/unit/test_customer_console_tasks.py \
             tests/unit/test_customer_console_catalog.py \
             tests/unit/test_customer_console_decide.py \

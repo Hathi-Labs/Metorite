@@ -3234,12 +3234,14 @@ line — never reclaim a number by deleting the other entry.
   2026-09-28 by a hand edit to `deployment_key.capabilities` on the Console
   database, before the reads merged. Without them every billing door answers
   503 "not configured", and it never falls back to the org key.
-- ⚠️ **What is LEFT for the org key: the three checkout routes.**
-  `api/billing/orders`, `orders/[id]` and `orders/[id]/redeem` still use
-  `_console.ts` and `CUSTOMER_CONSOLE_ORG_KEY`. The second PR moves them onto
-  a `billing_purchase` capability. Until it merges, do NOT unset the org key
-  on a box that sells, or checkout goes dark. The seat writes and the invite
-  mirror already use the gateway and need nothing.
+- 📌 **The checkout left the org key too.** `api/billing/orders`,
+  `orders/[id]` and `orders/[id]/redeem` go through the gateway's
+  `/billing/orders*` to `POST /registry/billing/orders*`, on the
+  `billing_purchase` capability. The gateway checks the tenant's
+  `billing:purchase` before any hop. `_console.ts` is deleted, and no file in
+  `api/billing` reads `CUSTOMER_CONSOLE_*` (`checkout.test.ts`). Fence:
+  `test_customer_console_billing_checkout.py` (R8). The Next tier no longer
+  reads `CUSTOMER_CONSOLE_ORG_KEY`, so the three box acts above can run.
 - 📌 **Every background job now names a member (2026-09-28).** Agent
   completions stamp the run's member through `attributed_openai`. A job with
   no session binds the member who OWNS its row, through

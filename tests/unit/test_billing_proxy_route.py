@@ -408,3 +408,238 @@ def test_the_console_still_opens_its_capability_refusal_with_the_prefix():
         and isinstance(node.values[0], ast.Constant)
     ]
     assert CAPABILITY_REFUSAL_PREFIX in heads
+
+
+# ══ The checkout (H-152, the checkout half) ═══════════════════════════════════
+
+PURCHASER = UserContext(
+    email="buyer@customer.example",
+    role=UserRole.EMPLOYEE,
+    access=EffectiveAccess(role_granted=frozenset({"billing:purchase"})),
+)
+
+ORDER_ID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+CHECKOUT = [
+    ("post", "/billing/orders", {"lines": [{"plan_slug": "core", "quantity": 1}]}),
+    ("get", f"/billing/orders/{ORDER_ID}", None),
+    ("post", f"/billing/orders/{ORDER_ID}/redeem", {"code": "cc_disc_abc_secret"}),
+]
+
+
+def _call(client: TestClient, method: str, path: str, body):
+    if method == "get":
+        return client.get(path)
+    return client.post(path, json=body)
+
+
+class CheckoutSpy:
+    """Stands in for all three checkout clients and records every call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def install(self, monkeypatch) -> None:
+        for name in ("create_order_on_console", "read_order_on_console",
+                     "redeem_code_on_console"):
+            monkeypatch.setattr(route, name, self._fn(name))
+
+    def _fn(self, name):
+        async def _inner(**kwargs):
+            self.calls.append((name, kwargs))
+            return 200, {"id": ORDER_ID}
+        return _inner
+
+
+class TestTheCheckoutGate:
+    @pytest.mark.parametrize("method,path,body", CHECKOUT)
+    def test_an_anonymous_caller_reaches_nothing(
+        self, wired, monkeypatch, method, path, body
+    ):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        assert _call(_client(ANON), method, path, body).status_code == 401
+        assert spy.calls == []
+
+    @pytest.mark.parametrize("method,path,body", CHECKOUT)
+    def test_a_member_without_billing_purchase_is_403_before_the_hop(
+        self, wired, monkeypatch, method, path, body
+    ):
+        """The tenant plane's `billing:purchase`, kept exactly as the workbench
+        applied it. An ADMIN without it is refused too: reading the org and
+        spending its money are different grants.
+
+        Mutation: dropping the gate lets any member start a payment.
+        """
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        for user in (MEMBER, ADMIN):
+            r = _call(_client(user), method, path, body)
+            assert r.status_code == 403
+            assert "permission to make purchases" in r.json()["detail"]
+        assert spy.calls == []
+
+    @pytest.mark.parametrize("method,path,body", CHECKOUT)
+    def test_a_purchaser_reaches_the_console(
+        self, wired, monkeypatch, method, path, body
+    ):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        r = _call(_client(PURCHASER), method, path, body)
+        assert r.status_code == 200
+        assert len(spy.calls) == 1
+        assert spy.calls[0][1]["actor_email"] == "buyer@customer.example"
+
+    @pytest.mark.parametrize("method,path,body", CHECKOUT)
+    def test_an_unwired_box_refuses_503_before_the_hop(
+        self, unwired, monkeypatch, method, path, body
+    ):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        r = _call(_client(PURCHASER), method, path, body)
+        assert r.status_code == 503
+        assert spy.calls == []
+
+    def test_an_unwired_WRITE_logs_at_error(self, unwired, monkeypatch):
+        recorder = Recorder()
+        monkeypatch.setattr(route, "_log", recorder)
+        _client(PURCHASER).post(
+            "/billing/orders", json={"lines": [{"plan_slug": "core", "quantity": 1}]}
+        )
+        assert recorder.events[0][:2] == ("error", "billing.write_unwired")
+
+
+class TestTheCheckoutBody:
+    @pytest.mark.parametrize("key", ["org", "org_slug", "actor_email", "email"])
+    @pytest.mark.parametrize(
+        "path", ["/billing/orders", f"/billing/orders/{ORDER_ID}/redeem"]
+    )
+    def test_a_body_that_claims_a_tenant_or_actor_is_400(
+        self, wired, monkeypatch, key, path
+    ):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        body = {"lines": [{"plan_slug": "core", "quantity": 1}], "code": "c", key: "x"}
+        r = _client(PURCHASER).post(path, json=body)
+        assert r.status_code == 400
+        assert r.json()["code"] == "InvalidBody"
+        assert spy.calls == []
+
+    def test_the_basket_is_rebuilt_and_carries_no_price(self, wired, monkeypatch):
+        """The browser names a slug and a quantity. Everything else — a price
+        it happens to display, a total — is dropped before the hop."""
+        seen = _recording_console(monkeypatch, body={"id": ORDER_ID})
+        r = _client(PURCHASER).post("/billing/orders", json={
+            "lines": [{"plan_slug": "core", "quantity": 2, "price_paise": 1,
+                       "unit_price_paise": 1}],
+            "total_paise": 1,
+        })
+        assert r.status_code == 200
+        assert seen[0]["url"] == f"{CONSOLE_URL}/registry/billing/orders"
+        assert seen[0]["auth"] == f"Bearer {DEPLOYMENT_KEY}"
+        assert seen[0]["body"] == {
+            "actor_email": "buyer@customer.example",
+            "lines": [{"plan_slug": "core", "quantity": 2}],
+        }
+
+    def test_an_empty_basket_is_400_before_the_hop(self, wired, monkeypatch):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        r = _client(PURCHASER).post("/billing/orders", json={"lines": []})
+        assert r.status_code == 400
+        assert spy.calls == []
+
+    def test_an_empty_code_is_400_before_the_hop(self, wired, monkeypatch):
+        spy = CheckoutSpy()
+        spy.install(monkeypatch)
+        r = _client(PURCHASER).post(
+            f"/billing/orders/{ORDER_ID}/redeem", json={"code": "  "}
+        )
+        assert r.status_code == 400
+        assert spy.calls == []
+
+    def test_the_redeem_wire_carries_the_actor_and_the_code_only(
+        self, wired, monkeypatch
+    ):
+        seen = _recording_console(monkeypatch, body={"id": ORDER_ID})
+        _client(PURCHASER).post(
+            f"/billing/orders/{ORDER_ID}/redeem", json={"code": " cc_disc_abc_secret "}
+        )
+        assert seen[0]["url"] == (
+            f"{CONSOLE_URL}/registry/billing/orders/{ORDER_ID}/redeem"
+        )
+        assert seen[0]["body"] == {
+            "actor_email": "buyer@customer.example", "code": "cc_disc_abc_secret",
+        }
+
+    async def test_the_order_id_is_quoted_into_the_path(self, wired, monkeypatch):
+        """An order id is not a tenant, and it cannot walk to another door."""
+        from acb_auth.console_resolve import read_order_on_console
+
+        seen = _recording_console(
+            monkeypatch, status=404, body={"detail": "no such order"}
+        )
+        status, _ = await read_order_on_console(
+            actor_email="a@x.example", order_id="a/../b"
+        )
+        assert status == 404
+        assert seen[0]["url"] == f"{CONSOLE_URL}/registry/billing/orders/a%2F..%2Fb"
+
+    def test_the_code_is_never_logged_or_echoed(self, wired, monkeypatch):
+        recorder = Recorder()
+        monkeypatch.setattr(route, "_log", recorder)
+        _mock_console(monkeypatch, lambda _r: httpx.Response(422, json={
+            "detail": [{"input": "cc_disc_abc_secret"}]}))
+        r = _client(PURCHASER).post(
+            f"/billing/orders/{ORDER_ID}/redeem", json={"code": "cc_disc_abc_secret"}
+        )
+        assert r.status_code == 400
+        assert "cc_disc_abc_secret" not in json.dumps(recorder.events)
+        assert "cc_disc_abc_secret" not in r.text
+
+
+class TestTheCheckoutRelay:
+    def _console(self, monkeypatch, status, body):
+        _mock_console(monkeypatch, lambda _r: httpx.Response(status, json=body))
+
+    @pytest.mark.parametrize("status,body", [
+        (409, {"detail": {"reason": "expired"}}),
+        (404, {"detail": "no such discount code"}),
+        (404, {"detail": "no such order"}),
+    ])
+    def test_the_refusal_partition_is_relayed_verbatim(
+        self, wired, monkeypatch, status, body
+    ):
+        """SC-4g's reasons and the one collapsed 404 reach the page as the
+        Console wrote them."""
+        self._console(monkeypatch, status, body)
+        r = _client(PURCHASER).post(
+            f"/billing/orders/{ORDER_ID}/redeem", json={"code": "cc_disc_abc_secret"}
+        )
+        assert (r.status_code, r.json()) == (status, body)
+
+    def test_a_key_without_billing_purchase_is_not_configured(
+        self, wired, monkeypatch
+    ):
+        self._console(monkeypatch, 403, {
+            "detail": f"{CAPABILITY_REFUSAL_PREFIX}'billing_purchase' capability",
+        })
+        r = _client(PURCHASER).post(
+            "/billing/orders", json={"lines": [{"plan_slug": "core", "quantity": 1}]}
+        )
+        assert r.status_code == 503
+        assert "not configured" in r.json()["detail"]
+
+    def test_an_unconfigured_provider_503_names_nothing(self, wired, monkeypatch):
+        """The Console's 503 names the missing Razorpay variables: this
+        deployment's configuration, not the customer's business."""
+        self._console(monkeypatch, 503, {"detail": "RAZORPAY_KEY_ID is unset"})
+        r = _client(PURCHASER).post(
+            "/billing/orders", json={"lines": [{"plan_slug": "core", "quantity": 1}]}
+        )
+        assert r.status_code == 503
+        assert "RAZORPAY" not in r.text
+
+    def test_a_console_401_is_never_a_sign_in_prompt(self, wired, monkeypatch):
+        self._console(monkeypatch, 401, {"detail": "Invalid API key"})
+        r = _client(PURCHASER).get(f"/billing/orders/{ORDER_ID}")
+        assert r.status_code == 503

@@ -1099,7 +1099,8 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         found = _walk(edges, writers, _org_key_routes(), frozenset())
 
         assert ("redeem_discount_code",
-                ("main.redeem_discount_code", "main._apply_redemption",
+                ("main.redeem_discount_code", "main._redeem_for",
+                 "main._apply_redemption",
                  "payments.fulfil", "store.grant_seats")) in found, found
         # ⚠️ **The METERING helper is named by SHAPE, not by identity.**
         # `chat_completions` now has two of them: `_record_completion` writes
