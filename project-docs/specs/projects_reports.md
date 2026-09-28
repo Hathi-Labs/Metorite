@@ -13,10 +13,9 @@ T13 live). **R3d BUILT 2026-09-28** (the `pulse` section, `PulsePanel`,
 and T1 live).
 
 **R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
-server, in `report_scope.py`). R5b is next. R5c is blocked. R4, R4b, R5b,
-R6 to R9 and Phases 2 and 3 are not built.
-
-**R5d** is next: the role rule in the chat's dataset read, and the delete rule (§9, Q10 to Q12).
+server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
+chat's dataset read, and the delete rule, §9 Q10 to Q12). R5b is next. R5c is
+blocked. R4, R4b, R5b, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -139,11 +138,12 @@ defect.
 - `TEMPLATES` (`:184`) is the template catalogue of §4 (R2).
 - `SCHEDULES` (`:284`) holds only `"weekly"`.
 - `delivery_armed()` (`:287`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:528`, templates at `:576` and subjects at
-  `:593` (R5a). Create is at `:613`. Get, patch and delete are at `:650` to
-  `:698`. Render is at `:1053` and preview at `:1089`. Recipients are at
-  `:1175` to `:1256`, and schedule is at `:1274`.
-- `render_body` (`:712`) holds the section loop. Render and preview both
+- The routes: list is at `:552`, templates at `:600` and subjects at
+  `:617` (R5a). Create is at `:637`. Get, patch and delete are at `:674` to
+  `:722`. Render is at `:1077` and preview at `:1113`. Recipients are at
+  `:1199` to `:1280`, and schedule is at `:1298`. These anchors were
+  measured again on 2026-09-28, after R5d.
+- `render_body` (`:736`) holds the section loop. Render and preview both
   call it.
 - **Since R5a:** `routes/projects/report_scope.py` holds the rule of §7.1,
   the subject clause and the row filter.
@@ -1227,6 +1227,18 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 - (t) L saves a report on N and then leaves team B. L deletes it and gets 204.
 - (u) `report_delete` with `can_delete` false returns the reason. It never calls the card or DELETE. A fake gateway counts the calls.
 - (v) If the dataset filter is removed, (l) turns red. If the delete check is removed, (s) turns red.
+
+**As built (2026-09-28).** `analytics_dataset.py` reads `reader_scope` once in the route. `assignee_refusal` gives the 403, and `dataset_body` takes `allowed`.
+For a restricted reader grouped by assignee, the SQL takes no limit, and `filter_person_rows` runs before the cap.
+
+`reports.py` holds `DELETE_REFUSED` and `_may_delete`.
+`_visible_report` with `for_delete` runs the project 404 and then the delete rule. It skips the subject check.
+
+The delete rule also replaces the old 422 for a stored subject with a bad shape. Any other reader now gets the 403 of the delete rule.
+Test (i) no longer expects 403 from the delete, because (t) replaces that half.
+
+`test_projects_report_scope_r5.py` proves (l) to (t) on a real database, and `test_projects_agent_writes.py` proves (u).
+Six mutations each turn a test red (v). They remove the filter, its 403, the author path, the delete check or the chat check, or they put back the SQL limit.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
