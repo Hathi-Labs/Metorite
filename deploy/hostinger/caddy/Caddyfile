@@ -49,7 +49,9 @@ api.metorite.com {
 	respond @internal 404
 	# WS-41 I-7: FastAPI spools a whole multipart body to disk before any
 	# check runs, so the route's own 50 MB cap acts only after the upload has
-	# landed. Five files of 50 MB and the envelope fit under this.
+	# landed. Five files of 50 MB and the envelope fit under this. This guards
+	# a DIRECT call to this host; the browser goes through app.* and the Next
+	# proxy, which caps a body at 10 MiB (spec project_import.md section 7.4).
 	@project_import path /projects/import/*
 	request_body @project_import {
 		max_size 260MB

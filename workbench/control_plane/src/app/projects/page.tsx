@@ -361,7 +361,8 @@ function ProjectNav({
   /** The + on the Spaces heading. */
   onNewSpace: () => void;
   /**
-   * WS-41 — "Import from ClickUp" beside the +. Absent when the flag is off
+   * WS-41 — the "Import from ClickUp" row above Spaces, and the button under
+   * an empty tree. Absent when the flag is off
    * or the member may not import, and then nothing is drawn.
    */
   onImport?: () => void;

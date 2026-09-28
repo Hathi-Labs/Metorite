@@ -49,15 +49,20 @@ def sweep(root: Path, now: float | None = None) -> dict[str, int]:
     if not root.is_dir():
         return counts
     for org_dir in root.iterdir():
-        if not org_dir.is_dir() or org_dir.is_symlink():
-            continue
-        for run_dir in org_dir.iterdir():
-            if run_dir.is_dir() and not run_dir.is_symlink() and _newest(run_dir) < cutoff:
-                shutil.rmtree(run_dir, ignore_errors=True)
-                counts["runs"] += 1
-        if not any(org_dir.iterdir()):
-            org_dir.rmdir()
-            counts["organizations"] += 1
+        # One folder that vanishes or refuses mid-pass (a discard deleting it,
+        # an upload racing the rmdir) must not stop the rest of the pass.
+        try:
+            if not org_dir.is_dir() or org_dir.is_symlink():
+                continue
+            for run_dir in org_dir.iterdir():
+                if run_dir.is_dir() and not run_dir.is_symlink() and _newest(run_dir) < cutoff:
+                    shutil.rmtree(run_dir, ignore_errors=True)
+                    counts["runs"] += 1
+            if not any(org_dir.iterdir()):
+                org_dir.rmdir()
+                counts["organizations"] += 1
+        except OSError as exc:
+            _log.warning("projects.import.sweep_skipped", folder=org_dir.name, error=str(exc)[:160])
     return counts
 
 
