@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from gateway.build_info import build_sha
+from gateway.build_info import applied_marker, build_sha
 from pydantic import BaseModel
 
 _log = get_logger("gateway")
@@ -1538,6 +1538,13 @@ class Version(BaseModel):
     #: for ONE release, so the monitoring that reads it does not break. S9
     #: may drop it.
     tasks_lens: bool = True
+    #: H-142. The box's deploy marker: the last apply that reached its FINAL
+    #: line, after the workbench build and restart. `sha` above is only the
+    #: checkout the gateway started from, and the gateway restarts BEFORE the
+    #: workbench builds. So this, not `sha`, is what speaks for the web app.
+    #: Null when the box holds no readable marker.
+    applied_sha: str | None = None
+    applied_at: str | None = None
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -1611,11 +1618,14 @@ async def version() -> Version:
     called unknown" are different facts and a caller must be able to tell them
     apart — which a string like "unknown" quietly prevents.
 
-    Covers the frontend too: the deploy builds the gateway and the workbench
-    from one checkout, so this SHA speaks for both. That matters more than it
-    sounds — the bug that prompted this route was a frontend asset, and a
-    version endpoint speaking only for the API would have reported "current"
-    while stale icons were still being served.
+    ⚠️ **`sha` speaks for the GATEWAY only** (corrected for H-142). This
+    docstring used to say it covers the workbench too, because one checkout
+    builds both. It does not: the apply restarts the gateway BEFORE it builds
+    the workbench, and a failed build keeps the old web app serving. In that
+    state `sha` reports the new commit while stale pages are served.
+    `applied_sha` is the answer for the web app: the box's deploy marker,
+    which `vps_apply.sh` writes only at its last line. `deploy.yml` requires
+    both when it accepts a delivery by the pull path.
 
     ⚠️ **`tasks_lens` is a constant `true` since S8 PR 1.** It used to report
     the gateway's `TASKS_LENS` flag, so a mismatch with the browser's flag was
@@ -1623,10 +1633,13 @@ async def version() -> Version:
     only store. The key stays for one release so the monitoring that reads it
     does not break. S9 may drop it.
     """
+    applied_sha, applied_at = applied_marker()
     return Version(
         sha=build_sha(),
         env=get_settings().acb_env,
         tasks_lens=True,
+        applied_sha=applied_sha,
+        applied_at=applied_at,
     )
 
 
