@@ -968,6 +968,8 @@ if _HAS_MAF:
                         user_id=user_id, agent_name="orchestrator",
                         run_id=assistant_message_id,  # run-unique per turn
                         model=(_resolved_model or model),
+                        # S15 (§21): the fold binds the server-side tenant.
+                        organization_id=_organization_id,
                     )
                     # Memory extraction at the SAME run boundary (P1-9): fires on
                     # finish/error/cancel/reconnect via run_detached's finally,

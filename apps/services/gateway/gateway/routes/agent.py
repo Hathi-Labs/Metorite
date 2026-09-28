@@ -917,7 +917,7 @@ _UNRESOLVED_AGENT_SENTINELS = {"unknown", "", "undefined", "null", "none"}
 _MENTION_RE = re.compile(r"^\s*@([A-Za-z0-9][A-Za-z0-9._-]*)\s*")
 
 
-def _resolve_room(thread_id: str, email: str):
+def _resolve_room(thread_id: str, email: str, organization_id: str | None):
     """This person's place in the room, or ``None`` when rooms are unavailable.
 
     ``None`` — not a refusal — means the room layer is not there AT ALL: no
@@ -936,20 +936,29 @@ def _resolve_room(thread_id: str, email: str):
         return None
     try:
         from gateway.rooms import resolve_room_access
-        return resolve_room_access(thread_id, email)
+        # S15 (§21): bound to the caller's tenant. With no tenant the lookup
+        # fails closed and the answer refuses every capability.
+        return resolve_room_access(
+            thread_id, email, organization_id=organization_id,
+        )
     except Exception:
         _log.warning("agent.room_resolve_failed", thread_id=thread_id[:12], exc_info=True)
         return None
 
 
-def _room_agents(thread_id: str) -> list[tuple[str, str]]:
-    """[(agent_name, role)] for a room, primary first. Empty on any failure."""
+def _room_agents(
+    thread_id: str, organization_id: str | None,
+) -> list[tuple[str, str]]:
+    """[(agent_name, role)] for a room, primary first. Empty on any failure.
+
+    Bound to the caller's tenant (S15, §21). With no tenant it is empty.
+    """
     if not thread_id:
         return []
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 text(
                     "SELECT agent_name, role FROM chat_session_agent "
@@ -985,7 +994,9 @@ def _match_mention(mention: str, candidates: list[str]) -> str | None:
     return starts[0] if len(starts) == 1 else None
 
 
-def _address_agent(req: AgentRunRequest, room) -> str:
+def _address_agent(
+    req: AgentRunRequest, room, organization_id: str | None = None,
+) -> str:
     """Which agent answers this turn.
 
     A room can hold several agents (migration 139). An unaddressed turn goes to
@@ -993,7 +1004,9 @@ def _address_agent(req: AgentRunRequest, room) -> str:
     for any mention that names nobody present — this is exactly
     ``_resolve_agent_for_run``, so nothing about single-agent chat changes.
     """
-    requested = _resolve_agent_for_run(req.agent, req.thread_id)
+    requested = _resolve_agent_for_run(
+        req.agent, req.thread_id, organization_id=organization_id,
+    )
     if room is None or not req.thread_id:
         return requested
 
@@ -1002,7 +1015,9 @@ def _address_agent(req: AgentRunRequest, room) -> str:
     if not match:
         return requested
 
-    present = [name for name, _role in _room_agents(req.thread_id)]
+    present = [
+        name for name, _role in _room_agents(req.thread_id, organization_id)
+    ]
     if not present:
         return requested
     addressed = _match_mention(match.group(1), present)
@@ -1028,7 +1043,12 @@ def _room_preview(req: AgentRunRequest) -> str:
     return text_[:_ROOM_PREVIEW_CHARS] + "…"
 
 
-def _resolve_agent_for_run(agent: str | None, thread_id: str | None) -> str:
+def _resolve_agent_for_run(
+    agent: str | None,
+    thread_id: str | None,
+    *,
+    organization_id: str | None = None,
+) -> str:
     """Resolve the agent name for a run, recovering an unresolved sentinel.
 
     A chat session can carry ``agent_name='unknown'`` (the placeholder that
@@ -1047,13 +1067,15 @@ def _resolve_agent_for_run(agent: str | None, thread_id: str | None) -> str:
     if raw.lower() not in _UNRESOLVED_AGENT_SENTINELS:
         return _validate_agent_name(raw)
 
-    # Sentinel — try to recover the real agent from the run trace.
-    if thread_id:
+    # Sentinel — try to recover the real agent from the run trace. The read
+    # binds the caller's tenant (S15, §21). With no tenant it is skipped, and
+    # the caller gets the actionable error below.
+    if thread_id and organization_id:
         try:
-            from acb_graph import get_session  # noqa: PLC0415
+            from acb_graph import tenant_session  # noqa: PLC0415
             from sqlalchemy import text  # noqa: PLC0415
 
-            with get_session() as s:
+            with tenant_session(organization_id) as s:
                 rows = s.execute(
                     text(
                         "SELECT agent_name FROM agent_run "
@@ -1791,6 +1813,7 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
 
 def _mint_run_row(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
+    organization_id: str | None,
 ) -> None:
     """Create the agent row of a run before its stream opens (WS-27bm S14, §20).
 
@@ -1816,7 +1839,12 @@ def _mint_run_row(
     try:
         # The parent session must exist before the message FK insert. It
         # takes the email as the session stores it, the same as the fold.
-        _ensure_session(thread_id, (member or "").strip(), agent_name)
+        # S15 (§21): both writes bind the run's tenant, which the route
+        # resolved from the server-side identity. No tenant fails closed.
+        _ensure_session(
+            thread_id, (member or "").strip(), agent_name,
+            organization_id=organization_id,
+        )
         _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -1826,6 +1854,7 @@ def _mint_run_row(
             )],
             actor_email=run_member, agent_name=agent_name,
             mint=True,
+            organization_id=organization_id,
         )
     except Exception as exc:  # The mint must never stop a run.
         _log.warning(
@@ -1843,6 +1872,7 @@ _MINT_TIMEOUT_S = 2.0
 
 async def _mint_run_row_bounded(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
+    organization_id: str | None,
 ) -> None:
     """``_mint_run_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
 
@@ -1858,6 +1888,7 @@ async def _mint_run_row_bounded(
             asyncio.to_thread(
                 _mint_run_row, thread_id, message_id,
                 member=member, agent_name=agent_name,
+                organization_id=organization_id,
             ),
             _MINT_TIMEOUT_S,
         )
@@ -1897,13 +1928,15 @@ async def run_agent_stream_endpoint(
     # conversation must not be able to drive its agents — otherwise "add them
     # as a viewer" is a one-click way around the room's roles entirely.
     actor_email = getattr(user, "email", "") or ""
+    # S15 (§21): the tenant from the server-side identity, never the body.
+    _room_org = getattr(user, "organization_id", None)
     room = await asyncio.to_thread(
-        _resolve_room, req.thread_id or "", actor_email,
+        _resolve_room, req.thread_id or "", actor_email, _room_org,
     )
     if room is not None and not room.can_send:
         raise HTTPException(status_code=403, detail=room.denied("send messages"))
 
-    agent_name = _address_agent(req, room)
+    agent_name = _address_agent(req, room, _room_org)
     # Org access control, enforcement seam 2: the picker is filtered, but the
     # endpoint is the boundary of record — a hand-crafted request naming an
     # agent the member cannot run is refused here, not in the UI.
@@ -2135,7 +2168,9 @@ async def run_agent_stream_endpoint(
 
         def _load_history_from_store() -> list[dict[str, str]]:
             from gateway.routes.chat import _get_messages  # noqa: PLC0415
-            rows = _get_messages(thread_id, _hist_uid, limit=50)
+            rows = _get_messages(
+                thread_id, _hist_uid, limit=50, organization_id=_room_org,
+            )
             return [
                 {"role": str(r.get("role") or "user"),
                  "content": str(r.get("content") or "")}
@@ -2173,6 +2208,8 @@ async def run_agent_stream_endpoint(
             thread_id, _persist_message_id,
             user_id=_mem_user, agent_name=agent_name,
             run_id=run_id, model=req.model,
+            # S15 (§21): the fold binds the run's tenant.
+            organization_id=_room_org,
         )
         # Memory extraction at the SAME run boundary (review P1-9): the Next
         # translator only extracted while its reader was alive, so turns
@@ -2207,6 +2244,7 @@ async def run_agent_stream_endpoint(
     await _mint_run_row_bounded(
         thread_id, _persist_message_id,
         member=_mem_user, agent_name=agent_name,
+        organization_id=_room_org,
     )
 
     _think_mode = _resolve_think_mode(req)
@@ -2386,7 +2424,10 @@ async def reconnect_agent_stream(
     # a second person watches a run work; ephemeral threads (no session row)
     # stay reachable for the person who started them.
     actor = getattr(user, "email", None) or "default"
-    if not await _asyncio.to_thread(_thread_owner_ok, thread_id, actor):
+    if not await _asyncio.to_thread(
+        _thread_owner_ok, thread_id, actor,
+        getattr(user, "organization_id", None),
+    ):
         raise HTTPException(status_code=403, detail="Not your conversation")
 
     _log.info(
@@ -2457,7 +2498,9 @@ async def reconnect_agent_stream(
     )
 
 
-def _thread_owner_ok(thread_id: str, user_id: str) -> bool:
+def _thread_owner_ok(
+    thread_id: str, user_id: str, organization_id: str | None,
+) -> bool:
     """True if *user_id* may WATCH *thread_id*, or it is not a persisted session.
 
     Ownership became membership when sessions became rooms (migration 138): a
@@ -2482,12 +2525,16 @@ def _thread_owner_ok(thread_id: str, user_id: str) -> bool:
     """
     try:
         from gateway.rooms import resolve_room_access
-        return resolve_room_access(thread_id, user_id).can_read
+        return resolve_room_access(
+            thread_id, user_id, organization_id=organization_id,
+        ).can_read
     except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
         return True
 
 
-def _thread_control_ok(thread_id: str, user_id: str) -> bool:
+def _thread_control_ok(
+    thread_id: str, user_id: str, organization_id: str | None,
+) -> bool:
     """True if *user_id* may STOP a run in *thread_id*.
 
     Watching and stopping are different rights: a viewer sees the transcript
@@ -2498,7 +2545,9 @@ def _thread_control_ok(thread_id: str, user_id: str) -> bool:
     """
     try:
         from gateway.rooms import resolve_room_access
-        return resolve_room_access(thread_id, user_id).can_cancel
+        return resolve_room_access(
+            thread_id, user_id, organization_id=organization_id,
+        ).can_cancel
     except Exception:  # noqa: BLE001 — rooms layer absent (import), not a DB error
         return True
 
@@ -2535,7 +2584,10 @@ async def cancel_agent_run(
     # RoomAccess.resolve_failed, which carries the "try again" wording for the
     # paths that render a reason.
     actor = getattr(user, "email", None) or "default"
-    if not await asyncio.to_thread(_thread_control_ok, thread_id, actor):
+    if not await asyncio.to_thread(
+        _thread_control_ok, thread_id, actor,
+        getattr(user, "organization_id", None),
+    ):
         raise HTTPException(
             status_code=403,
             detail="You are watching this conversation and cannot stop its run.",
@@ -2574,7 +2626,10 @@ async def run_agent_sync(
     """
     from orchestrator.executor import AgentRunError, run_agent  # noqa: PLC0415
 
-    agent = _resolve_agent_for_run(req.agent, req.thread_id)
+    agent = _resolve_agent_for_run(
+        req.agent, req.thread_id,
+        organization_id=getattr(user, "organization_id", None),
+    )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
     run_id = req.run_id or str(uuid.uuid4())
 
@@ -2616,7 +2671,10 @@ async def run_agent_async(
     """
     from orchestrator.executor import run_agent  # noqa: PLC0415
 
-    agent = _resolve_agent_for_run(req.agent, req.thread_id)
+    agent = _resolve_agent_for_run(
+        req.agent, req.thread_id,
+        organization_id=getattr(user, "organization_id", None),
+    )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
     run_id = req.run_id or str(uuid.uuid4())
 
