@@ -156,6 +156,10 @@ not after:
   redaction stubs only ever appear for messages that predate a
   participant's joining — the "declare shared mid-conversation" flow
   (`README.md` §7.1) makes this the explicit moment the clearance drops.
+- Who may change a stored turn is in `projects_ai_chat.md` §18 and §19
+  (WS-27bm S12 and S13). A human turn changes only by its author. An agent
+  reply changes only by the run that wrote it, until the fold seals it. No
+  write changes a system row.
 
 ## 5. What this does NOT change
 

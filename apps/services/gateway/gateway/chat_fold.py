@@ -504,14 +504,26 @@ async def persist_final_assistant_message(
             role="assistant",
             **folded,
         )
-        await asyncio.to_thread(
+        declined = await asyncio.to_thread(
             _upsert_messages, thread_id, [record],
+            # The member who started the run. It is also the run member that
+            # the upsert checks and stamps on the agent row (S13).
             actor_email=user_id, agent_name=agent_name,
             authority=await _run_authority(thread_id, user_id),
             # WS-27bm S12. The fold knows which agent ran, so it may set the
             # author of an agent turn again. It never changes a human turn.
             author_from_run=True,
         )
+        if declined:
+            # S13: the row is a human or system turn, or another member's run.
+            # The row stays as it was. The run is still over, so the caller
+            # still gets the folded message.
+            _log.warning(
+                "chat_fold.persist_declined",
+                thread_id=thread_id[:12],
+                message_id=message_id[:40],
+            )
+            return folded
         _log.info(
             "chat_fold.persisted",
             thread_id=thread_id[:12],
