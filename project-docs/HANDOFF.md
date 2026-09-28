@@ -3221,8 +3221,23 @@ line — never reclaim a number by deleting the other entry.
   gate 7 because no route grants a capability. Unset
   `CUSTOMER_CONSOLE_ORG_KEY`. Set the new flag. The third alone changes
   nothing, by design.
-- ⚠️ **The per-org billing pages still read the org key**, so retiring that
-  variable entirely is a separate move. `seats.py` records which reads stay.
+- 📌 **The billing READS left the org key, 2026-09-28.** The summary, seats,
+  members, catalog and usage reads travel this path: browser → Next →
+  gateway `GET /billing/*` → the Console's `POST /registry/{billing,usage}/*`.
+  The gateway holds the deployment key, and the Console derives the org from
+  the session member. Fences: `test_customer_console_billing_reads.py` (R8),
+  `test_billing_proxy_route.py`, `billing/reads.test.ts`.
+- 🔴 **Before that PR merges, widen the box's key to hold `billing_read`.**
+  It is a hand edit to `deployment_key.capabilities` on the Console database,
+  because no route grants a capability. Without it every billing read answers
+  503 "Billing is not configured for this deployment". It never falls back to
+  the org key, so no tenant sees another tenant's figures.
+- ⚠️ **What is LEFT for the org key: the three checkout routes.**
+  `api/billing/orders`, `orders/[id]` and `orders/[id]/redeem` still use
+  `_console.ts` and `CUSTOMER_CONSOLE_ORG_KEY`. The second PR moves them onto
+  a `billing_purchase` capability. Until it merges, do NOT unset the org key
+  on a box that sells, or checkout goes dark. The seat writes and the invite
+  mirror already use the gateway and need nothing.
 - ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
   `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
   and nothing calls `member_proof.sign_member`. So on a box with

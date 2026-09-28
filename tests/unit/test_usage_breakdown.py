@@ -307,7 +307,10 @@ class TestNoCustomerRouteReachesOurCost:
                 if isinstance(d, ast.Call) and d.args
                 and isinstance(d.args[0], ast.Constant) and isinstance(d.args[0].value, str)
             ]
-            if not any(p.startswith("/my/") for p in paths):
+            # H-152 added the deployment-key twins of the customer reads. They
+            # are customer routes too, so the same rule binds them.
+            customer = ("/my/", "/registry/billing/", "/registry/usage/")
+            if not any(p.startswith(customer) for p in paths):
                 continue
             used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)} | {
                 n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}

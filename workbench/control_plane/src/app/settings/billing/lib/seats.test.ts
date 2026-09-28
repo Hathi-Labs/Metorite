@@ -159,13 +159,14 @@ describe("done-when — the block holds no seat arithmetic", () => {
 // ---------------------------------------------------------------------------
 
 describe("done-when — the seats hop takes no org from the caller", () => {
-  it("resolves identity server-side and pins the org to the deployment's key", () => {
-    // Identity is the session's, and the organization is a property of the
-    // credential `consoleHeaders`/`consoleConfig` present — never the browser's.
-    expect(ROUTE).toContain("currentIdentity");
-    expect(ROUTE).toContain("consoleConfig");
-    expect(ROUTE).toContain("consoleHeaders");
-    expect(ROUTE).toContain("/me/seats");
+  it("relays through the gateway, which derives the org from the session (H-152)", () => {
+    // The organization used to be the property of this deployment's org key.
+    // Since H-152 the hop goes to the gateway's `/billing/seats`, which holds
+    // the per-box deployment key; the Console derives the org from the
+    // signed-in member. `billing/reads.test.ts` runs the handler.
+    expect(ROUTE).toContain("billingRead");
+    expect(ROUTE).toContain("/billing/seats");
+    expect(ROUTE).not.toContain("consoleConfig");
   });
 
   it("reads no organization, and no request input at all, off the wire", () => {
