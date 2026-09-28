@@ -95,7 +95,8 @@ def _caller_tenant(organization_id: str | None) -> str | None:
         from acb_common.db import current_tenant
     except ImportError:
         return None
-    return current_tenant()
+    bound = current_tenant()
+    return str(bound) if bound else None
 
 
 # ---------------------------------------------------------------------------
