@@ -344,27 +344,27 @@ line — never reclaim a number by deleting the other entry.
   owner decision 2026-09-24
 - **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
-### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
-- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
-  Two lines with the same value, one in `:root` and one in `.light`, means
-  this is open.
-- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
-  or a border on a dark ground it reads well. As TEXT on white it measured
-  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
-  measured 11.28 : 1, so only light mode is broken.
-- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
-  hue's text slot with it, so an amber status reads pale yellow on white. The
-  D76 "suggested" chip met it first and moved its words to
-  `muted-foreground`.
-- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
-  and keep the bright value for dark mode. Then look at every amber status in
-  light mode, because this is the one look (`globals.css`). Mirror the value
-  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
-- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
-  text on `--background` in both modes.
-- Added: 2026-09-23, found while building D76. Minted as H-172 and
-  renumbered the same day: #431 took H-172 three minutes before #429
-  merged, and #429 merged second.
+### H-193 · Four status text tones are below AA as words, and the Calendar draws amber from the raw palette · [AGENT]
+- **Check:** `grep -cE '"rapidtool/(dark|light)/(destructive|success|info|violet)-on-' workbench/control_plane/src/lib/theme/contrast.test.ts`.
+  A count of 1 or more means `KNOWN_SHORTFALLS` still excuses a status text
+  tone, and this is open.
+- **What happens.** H-174 raised the gate for `text-destructive`,
+  `text-success`, `text-warning`, `text-info` and `text-violet` from 3.0 on
+  the card to 4.5 on the page, the card, `--muted` and the tone's own 10%
+  chip tint. Only `--warning` was fixed. The ratchet records the other
+  failures. The worst is light `--success`, at 1.99 : 1 on white. Light
+  `--destructive` is 3.76 and light `--info` is 4.23. Dark `--destructive`
+  is 4.06 on `--muted`, and dark `--violet` is 4.47.
+- **Do.** Give `.light` a darker value for each tone, as H-174 did for
+  `--warning`, and mirror it in `themes.ts`. Then delete each entry the gate
+  names. Look at every status chip in light mode after the change.
+- **Also.** The Calendar draws its star, its focus meter and some card
+  borders with `text-amber-*` and `border-amber-*`. The tree has 143 such
+  raw classes. `text-amber-500` on white is about 2.1 : 1, and no token
+  change reaches it. Move each one to `warning` or to a `--cat-*` slot.
+- **Authority:** `DESIGN_SYSTEM.md` §7 · H-174 (PR "Theme: a readable
+  warning text tone in light mode").
+- Added: 2026-09-28, found while fixing H-174.
 
 ### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
