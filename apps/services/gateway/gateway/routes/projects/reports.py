@@ -449,6 +449,17 @@ def _row_subject(config: Any) -> dict[str, str] | None:
     return normalise_subject(config.get("subject"))
 
 
+#: The 403 reason of the delete rule (WS-27bn R5d, §9 Q12). The chat tool
+#: ``report_delete`` prints the same words when ``can_delete`` is false.
+DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
+
+def _may_delete(row: Any, user: Any) -> bool:
+    """The author of the report, or an admin (§9 Q12). The server decides."""
+    author = (row.created_by or "").strip().lower()
+    return can_read_hr_fields(user) or (bool(author) and author == actor(user).lower())
+
+
 async def _visible_report(
     db: Any, vis: Any, report_id: str, user: Any, *, for_delete: bool = False,
 ) -> Any:
@@ -464,22 +475,21 @@ async def _visible_report(
     and this refusal cannot disagree. A lead who leaves a team loses the
     saved reports on its members on the next request.
 
-    ``for_delete``: a stored subject with a bad shape answers 422 to every
-    reader, so nobody could delete that row. The delete route lets an admin
-    (``admin:members:read``) or the report's creator past that 422 only.
+    ``for_delete`` (WS-27bn R5d, §9 Q12): **the delete rule replaces the
+    subject check.** The project 404 still comes first. Then the author or
+    an admin (``admin:members:read``) passes, and every other reader gets
+    403 with :data:`DELETE_REFUSED`. So the author deletes their report
+    when the subject check now refuses them, or when the stored subject has
+    a bad shape.
     """
     row = await require_row(db, "pm_reports", report_id, "Report")
     if row.project_id is not None:
         await load_visible_project(db, vis, str(row.project_id))
-    try:
-        subject = _row_subject(row.config)
-    except HTTPException as err:
-        if err.status_code != 422 or not for_delete:
-            raise
-        creator = (row.created_by or "").strip().lower()
-        if can_read_hr_fields(user) or creator == actor(user).lower():
+    if for_delete:
+        if _may_delete(row, user):
             return row
-        raise
+        raise HTTPException(status_code=403, detail=DELETE_REFUSED)
+    subject = _row_subject(row.config)
     ok, reason = (await reader_scope(db, user, vis)).allows(subject)
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
@@ -526,6 +536,9 @@ def _report_dict(row: Any, user: Any = None) -> dict[str, Any]:
         out["mine"] = (
             (row.created_by or "").strip().lower() == actor(user).lower()
         )
+        # WS-27bn R5d. The delete rule, computed here as `mine` is, so the
+        # chat asks before its card and never shows a card that gets 403.
+        out["can_delete"] = _may_delete(row, user)
     out["config"] = normalise_report_config(out.get("config"))
     out["project_id"] = (
         str(row.project_id) if row.project_id is not None else None

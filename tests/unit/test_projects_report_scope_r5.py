@@ -53,6 +53,7 @@ from fastapi import HTTPException
 from gateway.routes.projects import analytics as ana
 from gateway.routes.projects import analytics_capacity as cap_mod
 from gateway.routes.projects import analytics_conflicts as conf_mod
+from gateway.routes.projects import analytics_dataset as ds
 from gateway.routes.projects import analytics_pulse as pul
 from gateway.routes.projects import report_scope as scope
 from gateway.routes.projects import reports as rep
@@ -552,7 +553,7 @@ def wired(seeded, monkeypatch):
     async def _resolve(_db: Any, _user: Any) -> Any:
         return vis
 
-    for module in (rep, ana, cap_mod, conf_mod):
+    for module in (rep, ana, cap_mod, conf_mod, ds):
         monkeypatch.setattr(module, "_tenant_session", _session)
         monkeypatch.setattr(module, "resolve_visibility", _resolve)
     yield {"engine": eng, "vis": vis}
@@ -783,7 +784,10 @@ def test_h_a_team_lists_each_member_once_and_follows_the_team(seeded, wired) -> 
 
 @_needs_db
 def test_i_a_saved_report_leaves_when_the_lead_leaves_the_team(seeded, wired) -> None:
-    """(i) The list hides it, and the render, get and delete answer 403."""
+    """(i) The list hides it, and the render and get answer 403.
+
+    WS-27bn R5d (§9 Q12) changed the delete. The author may delete their
+    report after they leave the team, and test (t) holds that half."""
     who = seeded["who"]
     lead = _user(who["lead"])
     _sql(seeded, "INSERT INTO org_group_member (group_id, user_id, role)"
@@ -803,7 +807,7 @@ def test_i_a_saved_report_leaves_when_the_lead_leaves_the_team(seeded, wired) ->
          g=seeded["groups"]["b"], u=seeded["users"]["lead"])
     listed = asyncio.run(rep.list_reports(user=lead))["reports"]
     assert saved["id"] not in {r["id"] for r in listed}
-    for call in (rep.render_report, rep.get_report, rep.delete_report):
+    for call in (rep.render_report, rep.get_report):
         with pytest.raises(HTTPException) as err:
             asyncio.run(call(saved["id"], user=lead))
         assert err.value.status_code == 403, call.__name__
@@ -904,9 +908,12 @@ def test_a_report_with_a_bad_subject_can_still_be_deleted(seeded, wired) -> None
     first = bad_row(who["m"])
     assert _status(lambda: asyncio.run(rep.get_report(first, user=admin))) == 422
     assert _status(lambda: asyncio.run(rep.render_report(first, user=admin))) == 422
-    # Neither the admin grant nor authorship: still refused.
-    assert _status(lambda: asyncio.run(
-        rep.delete_report(first, user=_user(who["n"])))) == 422
+    # Neither the admin grant nor authorship: still refused. Since R5d the
+    # delete rule answers first, with 403 and its reason (§9 Q12).
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(rep.delete_report(first, user=_user(who["n"])))
+    assert err.value.status_code == 403
+    assert err.value.detail == rep.DELETE_REFUSED
     assert _status(lambda: asyncio.run(rep.delete_report(first, user=admin))) == 200
     assert _status(lambda: asyncio.run(rep.get_report(first, user=admin))) == 404
 
@@ -914,3 +921,281 @@ def test_a_report_with_a_bad_subject_can_still_be_deleted(seeded, wired) -> None
     assert _status(lambda: asyncio.run(
         rep.delete_report(second, user=_user(who["m"])))) == 200
     assert _status(lambda: asyncio.run(rep.get_report(second, user=admin))) == 404
+
+
+# ── WS-27bn R5d — the chat's dataset read, and the delete rule ─────────────
+#
+# Spec: `projects_reports.md` §8 R5d, done-when (l) to (v), and §9 Q10 and
+# Q12. (u) is the chat tool, in `test_projects_agent_writes.py`.
+
+
+def _scope_of(people: set[str], teams: set[str] = frozenset()) -> scope.ReaderScope:
+    return scope.ReaderScope(everyone=False, me=sorted(people)[0],
+                             people=frozenset(people), teams=frozenset(teams))
+
+
+def test_an_assignee_filter_outside_the_set_is_refused_before_the_body() -> None:
+    """(o), the pure half. Each part of `assignees` is checked, lower-cased.
+    An `agent:` value is not a person, and it passes."""
+    me = _scope_of({"m@x.test"})
+    ok = ds.parse_query([("assignee", "M@X.test")])
+    assert ds.assignee_refusal(ok, me) is None
+    ok = ds.parse_query([("assignees", "m@x.test, agent:bot")])
+    assert ds.assignee_refusal(ok, me) is None
+    bad = ds.parse_query([("assignees", "m@x.test,N@x.test")])
+    reason = ds.assignee_refusal(bad, me)
+    assert reason is not None and "n@x.test" in reason and "lead role" in reason
+    everyone = scope.ReaderScope(everyone=True, me="b@x.test",
+                                 people=frozenset(), teams=frozenset())
+    assert ds.assignee_refusal(bad, everyone) is None
+
+
+def test_the_chat_and_the_server_give_one_delete_reason() -> None:
+    """(u) The tool prints the words of the server's 403."""
+    pytest.importorskip("skill_projects")
+    from skill_projects.guarded import REPORT_DELETE_REFUSED
+
+    assert REPORT_DELETE_REFUSED == rep.DELETE_REFUSED
+
+
+def test_task_dataset_prints_the_hidden_line() -> None:
+    """The chat tool says that the groups are not every person."""
+    pytest.importorskip("skill_projects")
+    from skill_projects.reads import _dataset_groups
+
+    payload = {"group_by": "assignee", "measure": "count", "state": "open",
+               "total": 9, "groups": [{"key": "m@x.test", "label": "M", "n": 3}],
+               "groups_total": 1, "hidden_people": 2}
+    text_out = "\n".join(_dataset_groups(payload))
+    assert "This view hides 2 other people" in text_out
+    payload.pop("hidden_people")
+    assert "hides" not in "\n".join(_dataset_groups(payload))
+
+
+def _dataset(seeded: dict[str, Any], reader: str, *, admin: bool = False,
+             **query: Any) -> dict[str, Any]:
+    from starlette.datastructures import QueryParams
+
+    items = {"project_id": seeded["project"], **query}
+    request = type("R", (), {"query_params": QueryParams(items)})()
+    return asyncio.run(ds.dataset(
+        request=request, user=_user(seeded["who"][reader], admin=admin),
+    ))
+
+
+def _group_keys(body: dict[str, Any]) -> set[str | None]:
+    return {g["key"] for g in body["groups"]}
+
+
+def _add_task(seeded: dict[str, Any], holder: str) -> None:
+    """One more open task in the main project, held by ``holder``."""
+    from sqlalchemy import create_engine
+
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as c:
+        tid = str(c.execute(
+            text(
+                "INSERT INTO pm_tasks (title, project_id, root_project_id,"
+                " status_id, created_by, organization_id, task_number)"
+                " SELECT 'extra', t.project_id, t.root_project_id, t.status_id,"
+                " t.created_by, t.organization_id,"
+                " (SELECT max(task_number) + 1 FROM pm_tasks"
+                "   WHERE root_project_id = t.root_project_id)"
+                " FROM pm_tasks t WHERE t.id = CAST(:m AS uuid) RETURNING id"
+            ),
+            {"m": seeded["m1"]},
+        ).scalar_one())
+        c.execute(
+            text(
+                "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by)"
+                " VALUES (CAST(:t AS uuid), :a, :me)"
+            ),
+            {"t": tid, "a": holder, "me": seeded["who"]["boss"]},
+        )
+    eng.dispose()
+
+
+@_needs_db
+def test_l_a_member_groups_by_assignee_over_their_own_row_only(seeded, wired) -> None:
+    """(l) M, the unassigned group and the agent group. The total is the
+    admin's, and `hidden_people` counts the others."""
+    who = seeded["who"]
+    admin = _dataset(seeded, "boss", admin=True, group_by="assignee")
+    member = _dataset(seeded, "m", group_by="assignee")
+    assert _group_keys(member) == {who["m"], None, "agent:bot"}
+    assert member["hidden_people"] == 2
+    assert member["total"] == admin["total"] == 9
+    assert member["groups_total"] == 3
+    assert member["groups_truncated"] is False
+
+
+@_needs_db
+def test_m_an_admin_groups_every_person(seeded, wired) -> None:
+    """(m)"""
+    who = seeded["who"]
+    admin = _dataset(seeded, "boss", admin=True, group_by="assignee")
+    assert _group_keys(admin) == {who["m"], who["n"], who["lead"], None, "agent:bot"}
+    assert "hidden_people" not in admin
+
+
+@_needs_db
+def test_n_a_lead_groups_their_team_and_no_other(seeded, wired) -> None:
+    """(n)"""
+    who = seeded["who"]
+    lead = _dataset(seeded, "lead", group_by="assignee")
+    people = {k for k in _group_keys(lead) if k and not k.startswith("agent:")}
+    assert people == {who["lead"], who["m"]}
+    assert who["n"] not in _group_keys(lead)
+    assert lead["hidden_people"] == 1
+
+
+@_needs_db
+def test_o_a_filter_on_another_person_is_403(seeded, wired) -> None:
+    """(o) With `group_by` and without it. A lead may filter to a member."""
+    who = seeded["who"]
+    for extra in ({}, {"group_by": "assignee"}, {"group_by": "tag"}):
+        for key, value in (("assignee", who["n"].upper()),
+                           ("assignees", f"{who['m']},{who['n']}")):
+            with pytest.raises(HTTPException) as err:
+                _dataset(seeded, "m", **{key: value}, **extra)
+            assert err.value.status_code == 403, (key, extra)
+            assert "lead role" in err.value.detail
+            assert "admin:members:read" in err.value.detail
+    got = _dataset(seeded, "lead", assignee=who["m"])
+    assert got["total"] == 3
+    got = _dataset(seeded, "lead", assignee=who["m"], group_by="assignee")
+    assert who["m"] in _group_keys(got)
+    assert _status(lambda: _dataset(seeded, "boss", admin=True,
+                                    assignee=who["n"])) == 200
+
+
+@_needs_db
+def test_p_rows_keep_their_assignees(seeded, wired) -> None:
+    """(p) A row is a task the reader can open, so its assignees stay."""
+    who = seeded["who"]
+    admin = _dataset(seeded, "boss", admin=True, columns="full_id,assignees")
+    member = _dataset(seeded, "m", columns="full_id,assignees")
+    assert member["total"] == admin["total"]
+    assert len(member["rows"]) == len(admin["rows"])
+    assert member["rows"] == admin["rows"]
+    both = next(r for r in member["rows"] if r["full_id"] == seeded["mn"])
+    assert {a.lower() for a in both["assignees"]} == {who["m"], who["n"]}
+    assert "hidden_people" not in member
+
+
+@_needs_db
+def test_q_the_filter_runs_before_the_cap(seeded, wired, monkeypatch) -> None:
+    """(q) With MAX_GROUPS at 2, M still receives their group when others
+    rank above them: third, and then fourth, past the SQL limit."""
+    who = seeded["who"]
+    monkeypatch.setattr(ds, "MAX_GROUPS", 2)
+    for _ in range(3):
+        _add_task(seeded, who["lead"])
+    admin = _dataset(seeded, "boss", admin=True, group_by="assignee")
+    ranked = [g["key"] for g in admin["groups"]]
+    assert ranked == [who["lead"], who["n"]], ranked
+    assert admin["groups_truncated"] is True
+    member = _dataset(seeded, "m", group_by="assignee")
+    assert who["m"] in _group_keys(member)
+    assert member["groups_truncated"] is True
+
+    # Fourth: a SQL limit of MAX_GROUPS + 1 would cut M out.
+    for _ in range(4):
+        _add_task(seeded, f"stranger-{seeded['tag']}@example.test")
+    admin = _dataset(seeded, "boss", admin=True, group_by="assignee")
+    assert who["m"] not in [g["key"] for g in admin["groups"]]
+    member = _dataset(seeded, "m", group_by="assignee")
+    assert member["groups"][0]["key"] == who["m"]
+    assert member["hidden_people"] == 3
+
+
+def _save(seeded: dict[str, Any], reader: str, *, admin: bool = False,
+          subject: Any = None) -> str:
+    config: dict[str, Any] = {"sections": ["load"]}
+    if subject is not None:
+        config["subject"] = subject
+    saved = asyncio.run(rep.create_report(
+        {"name": "r5d", "config": config},
+        user=_user(seeded["who"][reader], admin=admin),
+    ))
+    return saved["id"]
+
+
+def _exists(seeded: dict[str, Any], rid: str) -> bool:
+    return _status(lambda: asyncio.run(rep.get_report(
+        rid, user=_user(seeded["who"]["boss"], admin=True)))) == 200
+
+
+@_needs_db
+def test_r_the_author_and_an_admin_may_delete(seeded, wired) -> None:
+    """(r) and `can_delete` for each reader."""
+    who = seeded["who"]
+    mine = _save(seeded, "m")
+    got = asyncio.run(rep.get_report(mine, user=_user(who["m"])))
+    assert got["can_delete"] is True
+    asyncio.run(rep.delete_report(mine, user=_user(who["m"])))
+    assert not _exists(seeded, mine)
+
+    other = _save(seeded, "m")
+    got = asyncio.run(rep.get_report(other, user=_user(who["boss"], admin=True)))
+    assert got["can_delete"] is True
+    asyncio.run(rep.delete_report(other, user=_user(who["boss"], admin=True)))
+    assert not _exists(seeded, other)
+
+
+@_needs_db
+def test_s_another_member_may_open_but_not_delete(seeded, wired) -> None:
+    """(s) N opens M's portfolio report, and the delete is 403 with the
+    reason. The row stays."""
+    who = seeded["who"]
+    rid = _save(seeded, "m")
+    got = asyncio.run(rep.get_report(rid, user=_user(who["n"])))
+    assert got["can_delete"] is False
+    listed = asyncio.run(rep.list_reports(user=_user(who["n"])))["reports"]
+    assert next(r for r in listed if r["id"] == rid)["can_delete"] is False
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(rep.delete_report(rid, user=_user(who["n"])))
+    assert err.value.status_code == 403
+    assert err.value.detail == "Only the author of this report or an admin may delete it."
+    assert _exists(seeded, rid)
+
+
+@_needs_db
+def test_t_a_lead_who_left_the_team_still_deletes_their_report(seeded, wired) -> None:
+    """(t)"""
+    who = seeded["who"]
+    lead = _user(who["lead"])
+    _sql(seeded, "INSERT INTO org_group_member (group_id, user_id, role)"
+                 " VALUES (CAST(:g AS uuid), CAST(:u AS uuid), 'lead')",
+         g=seeded["groups"]["b"], u=seeded["users"]["lead"])
+    rid = _save(seeded, "lead", subject=_person(seeded, "n"))
+    _sql(seeded, "DELETE FROM org_group_member WHERE group_id = CAST(:g AS uuid)"
+                 " AND user_id = CAST(:u AS uuid)",
+         g=seeded["groups"]["b"], u=seeded["users"]["lead"])
+    assert _status(lambda: asyncio.run(rep.get_report(rid, user=lead))) == 403
+    asyncio.run(rep.delete_report(rid, user=lead))
+    assert not _exists(seeded, rid)
+
+
+@_needs_db
+def test_the_project_404_comes_before_the_author_path(seeded, wired, monkeypatch) -> None:
+    """Hazard 3. The author path skips the subject check, never the 404."""
+    who = seeded["who"]
+    rid = _save(seeded, "m")
+    _sql(seeded, "UPDATE pm_reports SET project_id = CAST(:p AS uuid)"
+                 " WHERE id = CAST(:i AS uuid)", p=seeded["project"], i=rid)
+
+    async def _hidden(_db: Any, _vis: Any, _pid: str) -> Any:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    monkeypatch.setattr(rep, "load_visible_project", _hidden)
+    assert _status(lambda: asyncio.run(
+        rep.delete_report(rid, user=_user(who["m"])))) == 404
+    from sqlalchemy import create_engine
+
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as c:
+        left = c.execute(text("SELECT count(*) FROM pm_reports"
+                              " WHERE id = CAST(:i AS uuid)"), {"i": rid}).scalar()
+    eng.dispose()
+    assert left == 1

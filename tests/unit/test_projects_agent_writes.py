@@ -1664,6 +1664,42 @@ async def test_report_delete_names_the_scope_project(monkeypatch) -> None:
     assert "«Ops»" in asked[0]["detail"]
 
 
+async def test_u_report_delete_refuses_before_the_card_when_the_server_says_no(
+    monkeypatch,
+) -> None:
+    """WS-27bn R5d (u), `projects_reports.md` §9 Q12. The server computes
+    `can_delete`. When it is false, the tool gives the reason and never
+    calls the card or DELETE. The fake gateway counts the calls."""
+    from skill_projects.guarded import REPORT_DELETE_REFUSED
+
+    def refused(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "can_delete": False}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, refused)
+    out = await skill_projects.report_delete(UUID)
+    assert REPORT_DELETE_REFUSED in out
+    assert asked == []
+    assert writes(calls) == []
+    assert [c["method"] for c in calls] == ["GET"]
+
+    # `can_delete` true: the card, then the DELETE, as before.
+    def allowed(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "can_delete": True}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, allowed)
+    await skill_projects.report_delete(UUID)
+    assert len(asked) == 1
+    assert [c["method"] for c in writes(calls)] == ["DELETE"]
+
+
 # ── S4 — the forms: an editable card, the member's submit, then the class B card
 
 
