@@ -95,19 +95,6 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-183 · The report schedule PATCH fails on a real database · [AGENT]
-- **Check:** `grep -n '"updated_at": text("now()")' apps/services/gateway/gateway/routes/projects/reports.py`
-  → a hit means this is open.
-- **Why:** `PATCH /projects/reports/{id}/schedule` sends `updated_at` to
-  `update_row`, and `update_row` also adds `updated_at = now()`. Postgres
-  refuses two assignments to one column, so each call gets 500. The WS-27bn R1
-  real-DB test found the same defect in `PATCH /projects/reports/{id}`, and
-  R1 repaired that route only. The schedule is out of R1's scope.
-- **Do:** Remove the `updated_at` key from the schedule route's values. Add a
-  real-DB test that calls the route and reads the row back.
-- **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
-- **Added:** 2026-09-24 · the WS-27bn R1 build
-
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
