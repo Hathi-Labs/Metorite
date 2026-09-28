@@ -1617,15 +1617,19 @@ line — never reclaim a number by deleting the other entry.
   - A response of any status goes back to the caller. A 503 is an answer.
   - GET, HEAD and OPTIONS retry on `ECONNREFUSED`, `ECONNRESET` and
     `UND_ERR_SOCKET`.
-  - Other methods retry on `ECONNREFUSED` only, because only a refusal
-    proves that the gateway did not get the request.
+  - A write does not retry, unless its call site passes `{ retry: true }`.
+    Writes to one record can queue up during a restart and then land in any
+    order, so a draft auto-save would make duplicate drafts. A write that
+    opts in retries on `ECONNREFUSED` only, because only a refusal proves
+    that the gateway did not get the request.
   - A stream body is not retried. A streamed response is not retried after
     its headers arrive.
   - Each try sends the same headers, so the identity does not change (R5).
   - A caller's `AbortSignal.timeout` does not count the restart. Each try
     after the gateway comes back gets the same timeout again.
-  - Of the chat checkpoints, only the final one retries. A periodic one
-    that retried could land last and cut the stored reply short.
+  - The final chat checkpoint is the one write that opts in today. A
+    periodic checkpoint passes `{ retry: false }`, because a stale copy
+    could land last and cut the stored reply short.
   The seven catch-all proxies lost their own "retry once" code. Fences:
   `gatewayFetch.test.ts`, and three sweeps in `gateway.test.ts`.
   ⚠️ **The cost.** While the gateway is down and not restarting, each call

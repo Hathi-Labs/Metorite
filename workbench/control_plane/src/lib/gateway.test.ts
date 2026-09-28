@@ -430,6 +430,9 @@ describe("the route surface", () => {
     const calls = [...chat!.src.matchAll(/persistAssistantMessage\(([^;]*?)\)\.catch/g)].map((m) => m[1]);
     expect(calls).toHaveLength(2);
     expect(calls.filter((args) => /,\s*true\s*$/.test(args))).toHaveLength(1);
+    // And the periodic call passes nothing after the agent, so it cannot opt
+    // in through a variable either.
+    expect(calls.filter((args) => /agentName\s*$/.test(args))).toHaveLength(1);
   });
 
   it("adds no second retry around gatewayFetch in a route (H-194)", () => {

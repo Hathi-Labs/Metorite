@@ -137,7 +137,7 @@ describe("gatewayFetch — a refused connection is tried again", () => {
     expect(lines.join("\n")).not.toContain("who=x");
   });
 
-  it("a POST retries on ECONNREFUSED, and the body arrives intact", async () => {
+  it("a POST that opts in retries on ECONNREFUSED, and the body arrives intact", async () => {
     const port = await freePort();
     const seen = gatewayLater(port, 250, (_req, body, res) => {
       res.writeHead(201, { "content-type": "application/json" });
@@ -152,7 +152,7 @@ describe("gatewayFetch — a refused connection is tried again", () => {
         headers: { ...IDENTITY, "Content-Type": "application/json" },
         body: payload,
       },
-      { ...FAST, log: () => {} }
+      { ...FAST, retry: true, log: () => {} }
     );
 
     expect(res.status).toBe(201);
@@ -166,7 +166,30 @@ describe("gatewayFetch — a refused connection is tried again", () => {
 });
 
 describe("gatewayFetch — what is never retried", () => {
-  it("a POST after a partial response is NOT retried", async () => {
+  it.each(["POST", "PUT", "PATCH", "DELETE"])(
+    "a %s is NOT retried unless it opts in",
+    async (method) => {
+      // Writes to one record can queue up during a restart and then land in
+      // any order. A draft auto-save would make duplicate provider drafts.
+      let calls = 0;
+      const refused = (async () => {
+        calls += 1;
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+        });
+      }) as unknown as typeof fetch;
+      await expect(
+        gatewayFetch("http://127.0.0.1:1/email/drafts", { method, body: "{}" }, {
+          ...FAST,
+          fetchImpl: refused,
+          log: () => {},
+        })
+      ).rejects.toThrow("fetch failed");
+      expect(calls).toBe(1);
+    }
+  );
+
+  it("a POST after a partial response is NOT retried, even when it opts in", async () => {
     // The gateway read the request and began to answer, then the socket died.
     // It may have done the write, so a replay could do it twice.
     const gw = await rawServer((sock) => {
@@ -180,7 +203,7 @@ describe("gatewayFetch — what is never retried", () => {
       gatewayFetch(
         `http://127.0.0.1:${gw.port}/projects/tasks`,
         { method: "POST", headers: IDENTITY, body: '{"a":1}' },
-        { ...FAST, log: () => {} }
+        { ...FAST, retry: true, log: () => {} }
       )
     ).rejects.toSatisfy((e: unknown) => connectFailureCode(e) === "UND_ERR_SOCKET");
     expect(gw.connections()).toBe(1);
@@ -271,7 +294,7 @@ describe("gatewayFetch — what is never retried", () => {
       gatewayFetch(
         "http://127.0.0.1:1/upload",
         { method: "POST", body: stream, headers: IDENTITY },
-        { ...FAST, fetchImpl: refused as unknown as typeof fetch, log: () => {} }
+        { ...FAST, retry: true, fetchImpl: refused as unknown as typeof fetch, log: () => {} }
       )
     ).rejects.toThrow("fetch failed");
     expect(calls).toBe(1);
@@ -347,7 +370,7 @@ describe("gatewayFetch — the window is bounded", () => {
       const run = gatewayFetch(
         "http://127.0.0.1:1/auth/me",
         { method, body: method === "POST" ? "{}" : undefined, signal: AbortSignal.timeout(100) },
-        { ...FAST, fetchImpl: fake, log: () => {} }
+        { ...FAST, retry: true, fetchImpl: fake, log: () => {} }
       );
 
       if (status === null) {

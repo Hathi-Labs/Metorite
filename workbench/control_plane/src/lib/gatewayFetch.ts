@@ -21,10 +21,16 @@
 //    a 503 included, is the gateway's answer and goes back to the caller.
 // 2. GET, HEAD and OPTIONS retry on ECONNREFUSED, ECONNRESET and
 //    UND_ERR_SOCKET ("other side closed"). Replaying a read is harmless.
-// 3. Every other method retries ONLY on ECONNREFUSED. A refusal proves the
-//    gateway never received the request. A reset does not prove that: the
+// 3. A write (every other method) does NOT retry, unless the caller passes
+//    `{ retry: true }`. Then it retries ONLY on ECONNREFUSED. A refusal proves
+//    the gateway never received the request. A reset does not prove that: the
 //    gateway can have read the body and started the write, and a replayed
 //    POST is then a second write.
+//    Why writes must opt in: several writes to one record can queue up
+//    during a restart, and each one connects on its own backoff tick, in no
+//    fixed order. An older copy can then land last. A draft auto-save is the
+//    example: saves pile up with no draft id yet, and each one makes a new
+//    provider draft. A write that failed at once, as before, is safer.
 // 4. A body that cannot be replayed is never retried. A string, a Buffer, an
 //    ArrayBuffer, a Blob, URLSearchParams and FormData are rebuilt by `fetch`
 //    on each attempt. A ReadableStream is consumed by the first attempt, so a
@@ -93,9 +99,13 @@ export function retryDeadlineMs(env: string | undefined = process.env.GATEWAY_RE
 
 export interface GatewayRetryOptions {
   /**
-   * False turns the retry off for this call. For a write that a later call
-   * makes stale, such as a periodic chat checkpoint: a stale copy that
-   * lands after the restart can overwrite the newer one.
+   * Which requests retry (rule 3).
+   *
+   * - Not set: a read retries, and a write does not.
+   * - `true`: a write also retries, on ECONNREFUSED only. Pass it only where
+   *   no other write to the same record can be in flight, and where the
+   *   write is the newest copy. The final chat checkpoint is the example.
+   * - `false`: nothing retries.
    */
   retry?: boolean;
   deadlineMs?: number;
@@ -147,10 +157,15 @@ export function isReplayableBody(body: RequestInit["body"]): boolean {
   return false;
 }
 
-function mayRetry(method: string, code: string | null, replayable: boolean): boolean {
+function mayRetry(
+  method: string,
+  code: string | null,
+  replayable: boolean,
+  retryWrites: boolean
+): boolean {
   if (!code || !replayable) return false;
   if (IDEMPOTENT_METHODS.has(method)) return IDEMPOTENT_CODES.has(code);
-  return code === REFUSED;
+  return retryWrites && code === REFUSED;
 }
 
 function routeOf(input: string | URL): string {
@@ -237,7 +252,7 @@ export async function gatewayFetch(
         isTimeout(init.signal?.reason);
       if (lateTimeout) {
         takeBudget();
-      } else if (!mayRetry(method, code, replayable)) {
+      } else if (!mayRetry(method, code, replayable, opts.retry === true)) {
         const clientGone = init.signal?.aborted && !isTimeout(init.signal.reason);
         gaveUp(clientGone ? "aborted" : (code ?? errorName(err)));
         throw err;
