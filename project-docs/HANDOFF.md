@@ -1599,9 +1599,8 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the H-152 gateway slice.
 
 ### H-194 · Workbench API calls fail while the gateway restarts · [AGENT]
-- **Check:** during a deploy, time `GET https://app.metorite.com/api/auth/me`
-  with a signed-in cookie from the moment of `==> Restarting gateway`. A
-  5xx or a failed fetch for about 10 to 20 s means this is still real.
+- **Check:** do the two checks in "Verify after the merge" below, during a
+  deploy that restarts the gateway. A failed check means this is still real.
 - **What it is.** The workbench server calls the gateway directly on
   `127.0.0.1:8080`, not through Caddy. So the Caddy `lb_try_duration` hold
   (H-60, closed 2026-09-28) does not cover it. The gateway is cold for 10 to
@@ -1623,19 +1622,26 @@ line — never reclaim a number by deleting the other entry.
   - A stream body is not retried. A streamed response is not retried after
     its headers arrive.
   - Each try sends the same headers, so the identity does not change (R5).
-  The six catch-all proxies lost their own "retry once" code. Fences:
-  `gatewayFetch.test.ts`, and the bare-fetch sweep in `gateway.test.ts`.
+  - A caller's `AbortSignal.timeout` does not count the restart. Each try
+    after the gateway comes back gets the same timeout again.
+  The seven catch-all proxies lost their own "retry once" code. Fences:
+  `gatewayFetch.test.ts`, and two sweeps in `gateway.test.ts`.
 - **Verify after the merge, then delete this entry.** Do the two checks
   during the next deploy that restarts the gateway.
   1. Loop a signed-in GET from the moment of `==> Restarting gateway`:
-     `while :; do curl -s -o /dev/null -w '%{http_code} %{time_total}\n'
-     -b "$COOKIE" https://app.metorite.com/api/auth/me; sleep 1; done`.
-     Expect only 200. Expect some answers to take 1 to 12 s.
+     `while :; do curl -s -b "$COOKIE" -w ' %{time_total}\n'
+     https://app.metorite.com/api/auth/me | grep -o
+     '"authenticated":[a-z]*.* [0-9.]*$'; sleep 1; done`.
+     Expect `"authenticated":true` on each line. Expect some answers to take
+     1 to 12 s. ⚠️ Do not read the status code. This route answers 200 with
+     `NO_ACCESS` when the gateway call fails, so `false` is the failure.
   2. Read `journalctl -u acb-workbench --since <restart time> | grep
      '\[gateway\]'`. Expect `retry` lines, then `recovered` lines, and no
      `gave up` line.
-  If a `gave up` line shows, the gateway was cold for more than 25 s. Then
-  the second option applies: two gateway units behind a swapped port.
+  A `gave up` line names its cause. `ECONNREFUSED` means that the gateway
+  was cold for more than 25 s. Then the second option applies: two gateway
+  units behind a swapped port. `aborted` means that the browser left, and
+  is not a failure.
   Do NOT skip the gateway restart: `build_sha()` is cached per process, and
   `deploy.yml` verifies `/version`.
 - **Authority:** `deploy_delivery_path.md` · PR #498

@@ -10,7 +10,7 @@
  *
  * Rules: see the header of `gatewayFetch.ts`.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { readFileSync } from "node:fs";
@@ -26,6 +26,12 @@ const IDENTITY = {
   "X-User-Email": "alice@fracktal.in",
   "X-User-Role": "employee",
 };
+
+// The first `fetch` in a process loads undici and can take 150 ms or more.
+// Tests below time a 150 ms caller timeout, so pay that cost here first.
+beforeAll(async () => {
+  await fetch(`http://127.0.0.1:${await freePort()}/`).catch(() => {});
+});
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -286,17 +292,108 @@ describe("gatewayFetch — the window is bounded", () => {
     expect(lines.at(-1)).toMatch(/^\[gateway\] gave up: GET \/auth\/me after \d+ attempts/);
   });
 
-  it("stops when the caller's signal aborts", async () => {
+  it("a caller timeout does not cut the restart window short", async () => {
+    // Most routes pass `AbortSignal.timeout(5_000)` or so, and the gateway is
+    // cold for 10 s or more. The timeout is a budget for the ANSWER, so it
+    // must not end the retry while the gateway is still down.
     const port = await freePort();
+    const seen = gatewayLater(port, 400, (_req, _body, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"ok":true}');
+    });
+    const { lines, log } = recorder();
+
+    const res = await gatewayFetch(
+      `http://127.0.0.1:${port}/chat/active-sessions`,
+      { headers: IDENTITY, signal: AbortSignal.timeout(150) },
+      { ...FAST, log }
+    );
+
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers["x-user-email"]).toBe(IDENTITY["X-User-Email"]);
+    expect(lines.at(-1)).toMatch(/^\[gateway\] recovered:/);
+  });
+
+  it.each([
+    ["GET", 200, 3],
+    ["POST", null, 2],
+  ] as const)(
+    "a caller timeout during an in-flight try: %s",
+    async (method, status, expectedCalls) => {
+      // Try 1 is refused. The caller's timeout fires while try 2 is in flight.
+      // A read may go again. A write may not, because try 2 may have connected.
+      let calls = 0;
+      const fake = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new TypeError("fetch failed"), {
+            cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+          });
+        }
+        if (calls === 2) {
+          const signal = init!.signal!;
+          await new Promise((_r, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+        }
+        return new Response("ok", { status: 200 });
+      }) as typeof fetch;
+
+      const run = gatewayFetch(
+        "http://127.0.0.1:1/auth/me",
+        { method, body: method === "POST" ? "{}" : undefined, signal: AbortSignal.timeout(100) },
+        { ...FAST, fetchImpl: fake, log: () => {} }
+      );
+
+      if (status === null) {
+        await expect(run).rejects.toMatchObject({ name: "TimeoutError" });
+      } else {
+        expect((await run).status).toBe(status);
+      }
+      expect(calls).toBe(expectedCalls);
+    }
+  );
+
+  it("a deferred timeout still bounds a slow answer", async () => {
+    // Once the gateway accepts, the try gets the caller's budget again (at
+    // least 1 s). A gateway that then answers too slowly still times out.
+    const port = await freePort();
+    gatewayLater(port, 300, (_req, _body, res) => {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end("late");
+      }, 2_500);
+    });
+    const { lines, log } = recorder();
     const t0 = Date.now();
+
+    const err = await gatewayFetch(
+      `http://127.0.0.1:${port}/auth/me`,
+      { headers: IDENTITY, signal: AbortSignal.timeout(150) },
+      { ...FAST, log }
+    ).catch((e: unknown) => e);
+
+    expect((err as Error).name).toBe("TimeoutError");
+    expect(Date.now() - t0).toBeLessThan(2_300);
+    expect(lines.at(-1)).toMatch(/^\[gateway\] gave up: GET \/auth\/me .*\(TimeoutError\)$/);
+  });
+
+  it("a client abort ends the request at once, and says so in the log", async () => {
+    const port = await freePort();
+    const { lines, log } = recorder();
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 150);
+    const t0 = Date.now();
+
     await expect(
-      gatewayFetch(`http://127.0.0.1:${port}/auth/me`, { signal: AbortSignal.timeout(200) }, {
+      gatewayFetch(`http://127.0.0.1:${port}/auth/me`, { signal: ctrl.signal }, {
         ...FAST,
         deadlineMs: 20_000,
-        log: () => {},
+        log,
       })
     ).rejects.toThrow();
-    expect(Date.now() - t0).toBeLessThan(1_500);
+
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(lines.at(-1)).toMatch(/^\[gateway\] gave up: GET \/auth\/me .*\(aborted\)$/);
   });
 
   it("keeps the production window below Caddy's hold", () => {

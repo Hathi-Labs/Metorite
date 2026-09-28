@@ -31,8 +31,8 @@
 //    second attempt would send an empty or broken body.
 // 5. The retry window is bounded by GATEWAY_RETRY.deadlineMs, which must stay
 //    below Caddy's `lb_try_duration` (30 s). `gatewayFetch.test.ts` reads the
-//    Caddyfile and fails if it does not. The caller's `init.signal` also
-//    stops the retries.
+//    Caddyfile and fails if it does not. Caddy sets no response timeout, so
+//    the gateway's own answer time comes on top, as it always did.
 // 6. A streamed response is never retried. `fetch` resolves when the headers
 //    arrive, and this function returns at that moment. A failure while the
 //    caller reads the body happens after this function has returned, so it
@@ -40,12 +40,23 @@
 // 7. Every attempt sends the SAME `init`: the same headers, and so the same
 //    internal bearer and the same member identity (R5). Nothing here reads or
 //    re-derives an identity.
+// 8. The caller's `init.signal` is a budget for the gateway's ANSWER, not for
+//    the restart. Most calls carry `AbortSignal.timeout(4_000 to 10_000)`, and
+//    the gateway is cold for 10 to 23 s, so a timeout that counted the
+//    restart would end most retries early. So when the caller's signal fires
+//    with a `TimeoutError` inside the retry window, the retry goes on. Each
+//    later try then gets a new timeout of the same length (at least 1 s),
+//    which starts when that try starts. Any other abort, such as the member
+//    closing the page, ends the request at once. After a timeout is deferred,
+//    a later abort of the caller's signal is not seen, and the deadline of
+//    rule 5 is what ends the retry.
 //
 // THE LOG
 // -------
 // A request that needs a retry writes one `[gateway] retry` line when it
 // first fails, and one `[gateway] recovered` or `[gateway] gave up` line at
-// the end. So `journalctl -u acb-workbench | grep '\[gateway\]'` shows the
+// the end. `gave up` names why: the last error code, `aborted`, or the name
+// of the error that ended the last try, such as `TimeoutError`. So `journalctl -u acb-workbench | grep '\[gateway\]'` shows the
 // restart window of every deploy.
 //
 // Fence: `src/lib/gatewayFetch.test.ts` proves the rules against a real local
@@ -157,42 +168,93 @@ export async function gatewayFetch(
   const log = opts.log ?? ((line: string) => console.warn(line));
 
   const method = (init.method ?? "GET").toUpperCase();
+  const route = routeOf(input);
   const replayable = isReplayableBody(init.body);
   const started = Date.now();
   let attempt = 1;
+  let retrying = false;
+
+  // The caller's timeout (rule 8). Null until it fires inside the restart
+  // window. Then it holds the time the caller gave, and each later try gets
+  // a new timeout of that length, which starts when that try starts.
+  let budgetMs: number | null = null;
+  const takeBudget = () => {
+    budgetMs = Math.max(Date.now() - started, MIN_BUDGET_MS);
+  };
+  const tryInit = (): RequestInit =>
+    budgetMs === null ? init : { ...init, signal: AbortSignal.timeout(budgetMs) };
+
+  const gaveUp = (why: string) => {
+    if (retrying) {
+      log(`[gateway] gave up: ${method} ${route} after ${attempt} attempts, ${Date.now() - started} ms (${why})`);
+    }
+  };
 
   for (;;) {
     try {
-      const res = await doFetch(input, init);
-      if (attempt > 1) {
-        log(
-          `[gateway] recovered: ${method} ${routeOf(input)} after ${attempt} attempts, ${Date.now() - started} ms`
-        );
+      const res = await doFetch(input, tryInit());
+      if (retrying) {
+        log(`[gateway] recovered: ${method} ${route} after ${attempt} attempts, ${Date.now() - started} ms`);
       }
       return res;
     } catch (err) {
       const code = connectFailureCode(err);
-      const elapsed = Date.now() - started;
-      const retry =
-        mayRetry(method, code, replayable) &&
-        !init.signal?.aborted &&
-        elapsed + delay <= deadlineMs;
-      if (!retry) {
-        if (attempt > 1) {
-          log(
-            `[gateway] gave up: ${method} ${routeOf(input)} after ${attempt} attempts, ${elapsed} ms (${code ?? "no code"})`
-          );
-        }
+      // The caller's timeout fired while a try was in flight, after an earlier
+      // try failed to connect. A read is safe to send again, so the timeout
+      // is deferred. A write is not, because this try may have connected.
+      const lateTimeout =
+        retrying &&
+        budgetMs === null &&
+        IDEMPOTENT_METHODS.has(method) &&
+        isTimeout(err) &&
+        isTimeout(init.signal?.reason);
+      if (lateTimeout) {
+        takeBudget();
+      } else if (!mayRetry(method, code, replayable)) {
+        const clientGone = init.signal?.aborted && !isTimeout(init.signal.reason);
+        gaveUp(clientGone ? "aborted" : (code ?? errorName(err)));
         throw err;
       }
-      if (attempt === 1) {
-        log(
-          `[gateway] retry: ${method} ${routeOf(input)} failed with ${code}; retrying for up to ${deadlineMs} ms`
-        );
+      // The connect failed, and the caller's signal fired at about the same
+      // time. A timeout is deferred. Any other abort ends the request.
+      if (budgetMs === null && init.signal?.aborted) {
+        if (!isTimeout(init.signal.reason)) {
+          gaveUp("aborted");
+          throw err;
+        }
+        takeBudget();
       }
-      await sleep(delay, init.signal);
+      if (Date.now() - started + delay > deadlineMs) {
+        gaveUp(code ?? "no code");
+        throw err;
+      }
+      if (!retrying) {
+        retrying = true;
+        log(`[gateway] retry: ${method} ${route} failed with ${code}; retrying for up to ${deadlineMs} ms`);
+      }
+      try {
+        await sleep(delay, budgetMs === null ? init.signal : null);
+      } catch (reason) {
+        if (!isTimeout(reason)) {
+          gaveUp("aborted");
+          throw reason;
+        }
+        takeBudget();
+      }
       delay = Math.min(delay * 2, maxDelayMs);
       attempt += 1;
     }
   }
+}
+
+/** The shortest answer time a deferred caller timeout can give a try. */
+const MIN_BUDGET_MS = 1_000;
+
+function isTimeout(reason: unknown): boolean {
+  return (reason as { name?: unknown } | null)?.name === "TimeoutError";
+}
+
+function errorName(err: unknown): string {
+  const name = (err as { name?: unknown } | null)?.name;
+  return typeof name === "string" ? name : "error";
 }

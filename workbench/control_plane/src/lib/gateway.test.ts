@@ -378,7 +378,10 @@ describe("the route surface", () => {
     // `fetch` to the gateway fails for the 10 s or more of each deploy.
     //
     // A module "reaches the gateway" when it imports GATEWAY_URL from
-    // lib/gateway or reads GATEWAY_BASE_URL itself. Such a module may not
+    // lib/gateway, or reads GATEWAY_BASE_URL, LITELLM_BASE_URL or
+    // COPILOT_LLM_BASE_URL itself. The last two default to the gateway's
+    // `/v1` on 127.0.0.1:8080, and the box sets them there
+    // (deploy/hostinger/README.md). Such a module may not
     // call the bare `fetch` at all. The one exception is named with its
     // count, so a NEW bare fetch in that file also fails:
     //
@@ -400,7 +403,12 @@ describe("the route surface", () => {
         const rel = full.slice(SRC_DIR.length).replace(/\\/g, "/").replace(/^\//, "");
         if (rel === "lib/gateway.ts" || rel === "lib/gatewayFetch.ts") continue;
         const src = readFileSync(full, "utf8");
-        if (!IMPORTS_URL.test(src) && !/process\.env\.GATEWAY_BASE_URL/.test(src)) continue;
+        if (
+          !IMPORTS_URL.test(src) &&
+          !/process\.env\.(GATEWAY_BASE_URL|LITELLM_BASE_URL|COPILOT_LLM_BASE_URL)\b/.test(src)
+        ) {
+          continue;
+        }
         swept += 1;
         const bare = (src.match(/(?<![\w.$])fetch\(/g) ?? []).length;
         if (bare !== (ALLOWED[rel] ?? 0)) offenders.push(`${rel}: ${bare} bare fetch call(s)`);
@@ -410,6 +418,14 @@ describe("the route surface", () => {
     // Guards the sweep itself: a broken walk would pass with nothing checked.
     expect(swept).toBeGreaterThan(90);
     expect(offenders).toEqual([]);
+  });
+
+  it("adds no second retry around gatewayFetch in a route (H-194)", () => {
+    // Seven proxies had their own "retry a GET once" block. Around
+    // gatewayFetch, such a block doubles the wait to about 50 s, and it also
+    // replays a GET after a timeout or any other error.
+    const RETRY_ONCE = /catch\s*\(\w*\)\s*\{\s*if\s*\(method\s*!==\s*"GET"\)\s*throw/;
+    expect(ROUTES.filter((r) => RETRY_ONCE.test(r.src)).map((r) => r.rel)).toEqual([]);
   });
 
   it("keeps every identity-free call to a written reason", () => {
