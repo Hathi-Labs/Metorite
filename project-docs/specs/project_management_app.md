@@ -8264,8 +8264,10 @@ ticked box for Archive and Move.
 ### 11.42 D-PM-38 — a new step lands in its parent's lane from every door (2026-09-28)
 
 **The gap was in §11.40.** Only My Tasks put a new step in the parent's lane.
-The Projects panel, the board and both chat tools create a step through
-`POST /projects/tasks`. That route took the first lane.
+The Projects panel, the board and three chat doors create a step through
+`POST /projects/tasks`. The chat doors are `add_subtasks`,
+`my_tasks_add_subtasks` and `create_task` with a `parent_task_id`. That route
+took the first lane.
 
 **The rule, in one seam.** `core.parent_lane_status` decides the lane. A new
 task with a `parent_task_id` takes the parent's lane when all of these are
@@ -8285,6 +8287,13 @@ the My Tasks door only.
 the writes. The first line reads "Added to «In review» under #7 «…»:". When
 that read fails, the tool still reports the steps.
 
+**The chat `create_task` card and receipt tell the truth.** With a parent and
+no status, the card forecasts the lane from the same statuses read, for
+example "status «In review» (the parent's lane)". A closed or foreign parent
+lane reads "the default". The receipt names the lane off the created row, so
+the gateway's answer wins when the forecast is wrong. With no parent, the card
+keeps "the default".
+
 No migration. No frontend change: both panel doors already send a parent and
 no status.
 
@@ -8294,6 +8303,7 @@ no status.
 | `POST /tasks` uses it for a step with no stated status | `tasks.create_task` | `test_subtask_parent_lane.py`, live (a), (c) |
 | My Tasks uses the same seam | `personal.step_status` | `test_subtasks_s4.py`, live (g) |
 | The chat receipt names the lane and sends no status | `skill_projects.writes.add_subtasks` | `test_projects_agent_writes.py`, live (f) |
+| The chat `create_task` card forecasts the parent's lane, and its receipt reads the created row | `skill_projects.writes.create_task`, `_parent_lane_label` | `test_projects_agent_writes.py` |
 
 The live checks are `tests/live/live_subtask_parent_lane.py`, on a fresh
 database.

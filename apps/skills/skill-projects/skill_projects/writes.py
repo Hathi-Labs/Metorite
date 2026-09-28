@@ -357,7 +357,8 @@ async def create_task(
     assignees is comma-separated emails, agent:<name>, or people's names.
     due is YYYY-MM-DD. tags is comma-separated. Omit every priority argument
     to leave the task unjudged.
-    parent_task_id makes it a subtask. The member approves a card first;
+    parent_task_id makes it a subtask. A subtask with no status lands in the
+    parent's status when that status is open. The member approves a card first;
     nothing is created if they decline. Archive is the undo."""
     pid = uuid_of(project_id, "project_id")
     name = str(title or "").strip()
@@ -387,8 +388,13 @@ async def create_task(
     if tags.strip():
         payload["tags"] = _split(tags)
     if parent_task_id.strip():
-        parent_id, _parent = await _task(parent_task_id)
+        parent_id, parent = await _task(parent_task_id)
         payload["parent_task_id"] = parent_id
+        if "status_id" not in payload:
+            # The gateway puts a step with no stated status in the parent's
+            # lane (`core.parent_lane_status`, §11.42), so "the default" on
+            # the card would be false.
+            status_label = await _parent_lane_label(pid, parent)
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
     card = _priority_card(payload)
@@ -409,7 +415,36 @@ async def create_task(
     if who:
         await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
         task["assignees"] = who
+    if "status_id" not in payload:
+        # The receipt names the lane the row really landed in, read off the
+        # created row, as `add_subtasks` does. The card was a forecast.
+        status_label = await _lane_name(pid, task.get("status_id")) or status_label
     return "\n".join(["Created:", *_task_line(task, status_label), *notes])
+
+
+#: The card's words for a step whose lane the preview cannot name.
+PARENT_LANE_FALLBACK = "the parent's lane when it is open, else the default"
+
+
+async def _parent_lane_label(project_id: str, parent: dict[str, Any]) -> str:
+    """What the card says a new step's status will be.
+
+    A forecast of ``core.parent_lane_status`` from the same statuses read
+    ``_lane_name`` uses: the parent's lane when it is in this project's set,
+    open and not triage, else the first lane. The gateway decides, and the
+    receipt reads the real row, so a forecast that drifts cannot make the
+    receipt false. When the read fails, the card states the rule instead.
+    """
+    try:
+        rows = await _statuses_of(project_id)
+    except Exception:  # a card detail, never a write
+        return PARENT_LANE_FALLBACK
+    lane = next(
+        (r for r in rows if str(r.get("id")) == str(parent.get("status_id"))), None
+    )
+    if lane is not None and lane.get("category") not in ("done", "cancelled", "triage"):
+        return f"{data(lane.get('name'))} (the parent's lane)"
+    return "the default (the parent's lane is closed or in another set)"
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
