@@ -23,8 +23,10 @@
 -- creator whom an owner "removed", because main never enforced a removal.
 -- From this deploy on, a removal holds. `ON CONFLICT DO NOTHING` keeps the
 -- role of a creator who has a row, so a demoted creator stays demoted. A
--- `user_id` that is not an email (`'default'`, `'system'`) gets no row. 138
--- already gave those sessions an owner.
+-- `user_id` that is not an email (`'default'`, `'system'`) gets no row. It
+-- is outside the participant grammar, so no row can stand for it. Instead
+-- `resolve_room_access` keeps the creator fallback for it in every room
+-- (spec §20.3 rule 16), so it keeps the owner role that main gives it.
 --
 -- ── Tenancy ─────────────────────────────────────────────────────────────────
 --

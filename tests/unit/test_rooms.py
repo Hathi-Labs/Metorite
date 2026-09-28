@@ -1704,6 +1704,42 @@ def test_is_owner_follows_the_callers_role_not_the_creator(clean) -> None:
     assert _is_owner(_CAROL, member) is False
 
 
+@_needs_db
+def test_a_non_email_creator_stays_owner_after_the_first_add(clean) -> None:
+    """Round 5, the verifier's case C. A session whose ``user_id`` is
+    ``'default'`` (a caller with no email) has no row. The creator adds Bob.
+    ``'default'`` is outside the participant grammar, so no owner row can
+    stand for it. It keeps the fallback, as on main, and Bob is a member."""
+    from gateway.rooms import resolve_room_access
+    from gateway.routes.chat import _get_sessions
+    from gateway.routes.rooms import _add_participant
+
+    sid = _bare_session("default")
+    assert resolve_room_access(sid, "default").can_invite
+    _add_participant(sid, _BOB, "member", "default", waterline_ms=None)
+    assert _participants(sid) == {_BOB: "member"}
+    access = resolve_room_access(sid, "default")
+    assert access.role == "owner" and access.can_manage
+    assert resolve_room_access(sid, _BOB).role == "member"
+    assert _is_owner("default", sid) is True
+    assert sid in [r["id"] for r in _get_sessions("default")]
+
+
+@_needs_db
+def test_221_leaves_a_non_email_creator_its_owner_role(clean) -> None:
+    """Round 5. A session with rows [bob] and the ``user_id`` ``'default'``.
+    221 writes no row for ``'default'``, and ``'default'`` still resolves as
+    owner, so the deploy takes nothing from it."""
+    from gateway.rooms import resolve_room_access
+
+    sid = _bare_session("default")
+    _row(sid, _BOB, "member")
+    _apply_221()
+    assert _participants(sid) == {_BOB: "member"}
+    assert resolve_room_access(sid, "default").role == "owner"
+    assert resolve_room_access(sid, _BOB).role == "member"
+
+
 # ---------------------------------------------------------------------------
 # 8. The clearance filter
 # ---------------------------------------------------------------------------

@@ -126,7 +126,14 @@ def _get_sessions(user_id: str) -> list[dict]:
             # as resolve_room_access. A demoted creator is not an owner.
             "isOwner": (
                 r.my_role == "owner"
-                or (r.user_id == user_id and int(r.participant_count or 0) == 0)
+                or (
+                    r.user_id == user_id
+                    and (
+                        int(r.participant_count or 0) == 0
+                        # Round 5: a non-email creator keeps the fallback.
+                        or "@" not in (user_id or "")
+                    )
+                )
             ),
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
@@ -155,10 +162,14 @@ def _upsert_session(user_id: str, req: SessionUpsertRequest) -> None:
                 WHERE (
                        chat_session.user_id = :uid
                        -- S14 round 3: the creator only while the room has no
-                       -- membership. An owner may have removed her.
-                       AND NOT EXISTS (
-                           SELECT 1 FROM chat_session_participant p0
-                           WHERE p0.session_id = chat_session.id
+                       -- membership. An owner may have removed her. Round 5:
+                       -- a non-email creator has no row, so it keeps the arm.
+                       AND (
+                           chat_session.user_id NOT LIKE '%@%'
+                           OR NOT EXISTS (
+                               SELECT 1 FROM chat_session_participant p0
+                               WHERE p0.session_id = chat_session.id
+                           )
                        )
                    )
                    OR EXISTS (
@@ -293,9 +304,9 @@ def _delete_session(session_id: str, user_id: str) -> bool:
                 "WHERE s.id = :id AND ("
                 # S14 round 3: the creator only while the room has no
                 # membership, the same rule as resolve_room_access.
-                "    (s.user_id = :uid AND NOT EXISTS ("
+                "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
                 "        SELECT 1 FROM chat_session_participant p0"
-                "        WHERE p0.session_id = s.id))"
+                "        WHERE p0.session_id = s.id)))"
                 "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
                 "               WHERE p.session_id = s.id AND p.subject = :uid"
                 "                 AND p.role = 'owner')"

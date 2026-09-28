@@ -2979,6 +2979,16 @@ stream.
     created a session that has no participant row. One `LEFT JOIN` on the
     participant key gives the role, so the list makes no query for each
     row.
+16. **A creator whose `user_id` is not an email keeps the fallback in every
+    room** (round 5). Such an id is `'default'`, which the chat uses when a
+    caller has no email. It is outside the participant grammar:
+    `routes/rooms._valid_subject` takes an email, `group:<slug>` or `org`,
+    and the authority fold skips any other subject. So no owner row can
+    stand for it, and no owner can remove it. Rules 11, 13 and 15 apply the
+    "no participant row" test to an email creator only. Migration 221 and
+    the first-add owner row keep their filter on `@`, and `_ensure_session`
+    keeps its own. So a non-email creator keeps the owner role that main
+    gives it, before and after the deploy.
 
 ### 20.5 What stops working (D-PM-39)
 
@@ -3106,6 +3116,18 @@ later slice give these rows a server writer.
    - 221 inserts no creator row
    - 221 does not bind the tenant
    - `isOwner` goes back to `r.user_id == user_id`
+
+   Round 5 adds two R8 tests:
+   - The verifier's case C: `'default'` creates a session with no row and
+     adds Bob. `'default'` stays owner, and Bob is a member.
+   - 221 on a session with rows [bob] and the `user_id` `'default'`:
+     `'default'` still resolves as owner, and 221 writes no row for it.
+
+   Round 5 adds three mutations, and each turns a test red. Each one drops
+   the exemption for a non-email creator, which puts the `@` filter back:
+   - in `resolve_room_access`
+   - in `SESSION_VISIBLE_SQL`
+   - in `isOwner`
 
 ### 20.7 What S14 does not do
 

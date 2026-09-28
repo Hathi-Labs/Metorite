@@ -351,7 +351,16 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
     # and grants only (WS-27bm S14 round 3, projects_ai_chat.md §20). An owner
     # who removed the creator has removed her, and the creator gets no owner
     # role back from `chat_session.user_id`.
-    if role is None and email and not parts and row.user_id == email:
+    #
+    # Round 5: a creator whose user_id is not an email ('default', the id of
+    # a caller with no email) keeps the fallback in every room, as on main.
+    # That id is outside the participant grammar (`routes/rooms._valid_subject`
+    # takes an email, `group:<slug>` or `org`), so no owner row can stand for
+    # it, and no owner can remove it.
+    if (
+        role is None and email and row.user_id == email
+        and (not parts or "@" not in email)
+    ):
         role = "owner"
 
     read, send, cancel, invite, manage = _capabilities(role, visibility=visibility)
@@ -403,9 +412,12 @@ SESSION_VISIBLE_SQL = """
     (
         (
             s.user_id = :uid
-            AND NOT EXISTS (
-                SELECT 1 FROM chat_session_participant p0
-                WHERE p0.session_id = s.id
+            AND (
+                s.user_id NOT LIKE '%@%'
+                OR NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant p0
+                    WHERE p0.session_id = s.id
+                )
             )
         )
         OR EXISTS (
