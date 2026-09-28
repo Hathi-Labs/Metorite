@@ -1394,8 +1394,12 @@ def test_a_removed_creator_gets_no_owner_role_back(clean) -> None:
     nothing: not the room, not the list, not a rename and not a delete."""
     from gateway.rooms import resolve_room_access
     from gateway.routes.chat import (
-        SessionPatchRequest, SessionUpsertRequest, _delete_session,
-        _get_sessions, _patch_session, _upsert_session,
+        SessionPatchRequest,
+        SessionUpsertRequest,
+        _delete_session,
+        _get_sessions,
+        _patch_session,
+        _upsert_session,
     )
 
     sid = _seed_session(_ALICE, (_BOB, "owner"))

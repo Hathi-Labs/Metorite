@@ -55,9 +55,8 @@ _DB_GATE = pytest.mark.skipif(
 
 def _run_migration(engine) -> None:
     """Run the file verbatim through the DBAPI cursor, in one transaction."""
-    with engine.begin() as conn:
-        with conn.connection.dbapi_connection.cursor() as cur:
-            cur.execute(_MIGRATION.read_text(encoding="utf-8"))
+    with engine.begin() as conn, conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(_MIGRATION.read_text(encoding="utf-8"))
 
 
 def _seed(admin_engine, org: str, creator: str, guest: str) -> str:
