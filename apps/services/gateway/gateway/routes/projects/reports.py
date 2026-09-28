@@ -453,15 +453,24 @@ def _row_subject(config: Any) -> dict[str, str] | None:
 #: ``report_delete`` prints the same words when ``can_delete`` is false.
 DELETE_REFUSED = "Only the author of this report or an admin may delete it."
 
+#: The 403 reason of the change rule (WS-27bn R5d, §9 Q13): a PATCH, a
+#: recipient add or remove, and the schedule. The chat tool ``report_save``
+#: prints the same words when ``can_edit`` is false.
+CHANGE_REFUSED = "Only the author of this report or an admin may change it."
 
-def _may_delete(row: Any, user: Any) -> bool:
-    """The author of the report, or an admin (§9 Q12). The server decides."""
+
+def _may_change(row: Any, user: Any) -> bool:
+    """The author of the report, or an admin (§9 Q12 and Q13).
+
+    ONE rule for a delete and for a change. The server decides. ⚠️ Do not
+    copy it for a new act on a report. Call it.
+    """
     author = (row.created_by or "").strip().lower()
     return can_read_hr_fields(user) or (bool(author) and author == actor(user).lower())
 
 
 async def _visible_report(
-    db: Any, vis: Any, report_id: str, user: Any, *, for_delete: bool = False,
+    db: Any, vis: Any, report_id: str, user: Any, *, refusal: str | None = None,
 ) -> Any:
     """One report, or 404, or 403.
 
@@ -475,20 +484,22 @@ async def _visible_report(
     and this refusal cannot disagree. A lead who leaves a team loses the
     saved reports on its members on the next request.
 
-    ``for_delete`` (WS-27bn R5d, §9 Q12): **the delete rule replaces the
-    subject check.** The project 404 still comes first. Then the author or
-    an admin (``admin:members:read``) passes, and every other reader gets
-    403 with :data:`DELETE_REFUSED`. So the author deletes their report
-    when the subject check now refuses them, or when the stored subject has
-    a bad shape.
+    ``refusal`` (WS-27bn R5d, §9 Q12 and Q13): **the author-or-admin rule
+    replaces the subject check** for a delete or a change. The caller
+    passes :data:`DELETE_REFUSED` or :data:`CHANGE_REFUSED`. The project
+    404 still comes first. Then the author or an admin
+    (``admin:members:read``) passes, and every other reader gets 403 with
+    that reason. So the author changes or deletes their report when the
+    subject check now refuses them, or when the stored subject has a bad
+    shape.
     """
     row = await require_row(db, "pm_reports", report_id, "Report")
     if row.project_id is not None:
         await load_visible_project(db, vis, str(row.project_id))
-    if for_delete:
-        if _may_delete(row, user):
+    if refusal is not None:
+        if _may_change(row, user):
             return row
-        raise HTTPException(status_code=403, detail=DELETE_REFUSED)
+        raise HTTPException(status_code=403, detail=refusal)
     subject = _row_subject(row.config)
     ok, reason = (await reader_scope(db, user, vis)).allows(subject)
     if not ok:
@@ -536,9 +547,13 @@ def _report_dict(row: Any, user: Any = None) -> dict[str, Any]:
         out["mine"] = (
             (row.created_by or "").strip().lower() == actor(user).lower()
         )
-        # WS-27bn R5d. The delete rule, computed here as `mine` is, so the
-        # chat asks before its card and never shows a card that gets 403.
-        out["can_delete"] = _may_delete(row, user)
+        # WS-27bn R5d. The delete and change rule, computed here as `mine`
+        # is, so the chat asks before its card and never shows a card that
+        # gets 403, and the UI hides an Edit it would refuse. One rule, two
+        # names: each client reads the name of the act it offers.
+        may = _may_change(row, user)
+        out["can_delete"] = may
+        out["can_edit"] = may
     out["config"] = normalise_report_config(out.get("config"))
     out["project_id"] = (
         str(row.project_id) if row.project_id is not None else None
@@ -693,10 +708,12 @@ async def update_report(
     payload leave a definition in a state nobody chose — the sections from one
     edit and the period from another — and the author would not see it until
     the next render.
+
+    WS-27bn R5d (§9 Q13): only the author or an admin may change a report.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user)
+        await _visible_report(db, vis, report_id, user, refusal=CHANGE_REFUSED)
 
         values: dict[str, Any] = {}
         if "name" in payload:
@@ -726,7 +743,7 @@ async def delete_report(
 ) -> None:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user, for_delete=True)
+        await _visible_report(db, vis, report_id, user, refusal=DELETE_REFUSED)
         await db.execute(
             text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
             {"i": report_id},
@@ -1253,7 +1270,8 @@ async def add_recipient(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user)
+        # WS-27bn R5d (§9 Q13). The audience is part of the report.
+        await _visible_report(db, vis, report_id, user, refusal=CHANGE_REFUSED)
 
         if not await _known_member(db, email):
             raise HTTPException(
@@ -1285,7 +1303,7 @@ async def remove_recipient(
 ) -> None:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user)
+        await _visible_report(db, vis, report_id, user, refusal=CHANGE_REFUSED)
         await db.execute(
             text(
                 "DELETE FROM pm_report_recipients"
@@ -1326,7 +1344,7 @@ async def set_schedule(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user)
+        await _visible_report(db, vis, report_id, user, refusal=CHANGE_REFUSED)
 
         if enabled:
             count = int((await db.execute(

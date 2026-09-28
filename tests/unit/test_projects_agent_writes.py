@@ -1700,6 +1700,43 @@ async def test_u_report_delete_refuses_before_the_card_when_the_server_says_no(
     assert [c["method"] for c in writes(calls)] == ["DELETE"]
 
 
+async def test_w_report_save_refuses_a_change_before_the_card_when_the_server_says_no(
+    monkeypatch,
+) -> None:
+    """WS-27bn R5d (w), `projects_reports.md` §9 Q13. The server computes
+    `can_edit`. When it is false, the PATCH path of `report_save` gives the
+    reason and never calls the card or PATCH. The fake gateway counts the
+    calls."""
+    from skill_projects.writes import REPORT_CHANGE_REFUSED
+
+    def refused(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "config": {"sections": ["load"]}, "can_edit": False}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, refused)
+    out = await skill_projects.report_save("Renamed", report_id=UUID)
+    assert REPORT_CHANGE_REFUSED in out
+    assert asked == []
+    assert writes(calls) == []
+    assert [c["method"] for c in calls] == ["GET"]
+
+    # `can_edit` true: the card, then the PATCH, as before.
+    def allowed(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "config": {"sections": ["load"]}, "can_edit": True}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, allowed)
+    await skill_projects.report_save("Renamed", report_id=UUID)
+    assert len(asked) == 1
+    assert [c["method"] for c in writes(calls)] == ["PATCH"]
+
+
 # ── S4 — the forms: an editable card, the member's submit, then the class B card
 
 

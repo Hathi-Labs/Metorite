@@ -1199,3 +1199,155 @@ def test_the_project_404_comes_before_the_author_path(seeded, wired, monkeypatch
                               " WHERE id = CAST(:i AS uuid)"), {"i": rid}).scalar()
     eng.dispose()
     assert left == 1
+
+
+# ── WS-27bn R5d — the change rule (§9 Q13) ──────────────────────────────────
+#
+# Spec: `projects_reports.md` §8 R5d, done-when (w) to (ab). A PATCH, a
+# recipient add or remove, and the schedule obey the delete rule. (w) is the
+# chat tool, in `test_projects_agent_writes.py`.
+
+
+def test_the_chat_and_the_server_give_one_change_reason() -> None:
+    """(w) The tool prints the words of the server's 403."""
+    pytest.importorskip("skill_projects")
+    from skill_projects.writes import REPORT_CHANGE_REFUSED
+
+    assert REPORT_CHANGE_REFUSED == rep.CHANGE_REFUSED
+
+
+def test_one_rule_for_a_delete_and_a_change() -> None:
+    """Every change route and the delete call ONE author-or-admin check."""
+    src = inspect.getsource(rep)
+    assert src.count("def _may_change(") == 1
+    assert "_may_delete" not in src
+    for fn in (rep.update_report, rep.add_recipient, rep.remove_recipient,
+               rep.set_schedule):
+        assert "refusal=CHANGE_REFUSED" in inspect.getsource(fn), fn.__name__
+    assert "refusal=DELETE_REFUSED" in inspect.getsource(rep.delete_report)
+
+
+def _row(seeded: dict[str, Any], rid: str) -> dict[str, Any]:
+    from sqlalchemy import create_engine
+
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as c:
+        got = c.execute(
+            text("SELECT name, schedule, enabled FROM pm_reports"
+                 " WHERE id = CAST(:i AS uuid)"), {"i": rid},
+        ).mappings().one()
+        recipients = sorted(r[0] for r in c.execute(
+            text("SELECT recipient FROM pm_report_recipients"
+                 " WHERE report_id = CAST(:i AS uuid)"), {"i": rid},
+        ).fetchall())
+    eng.dispose()
+    return {**dict(got), "recipients": recipients}
+
+
+def _changes(seeded: dict[str, Any], rid: str, reader: Any) -> dict[str, int]:
+    """Each change route, once, as ``reader``. The status of each."""
+    to = seeded["who"]["lead"]
+    return {
+        "patch": _status(lambda: asyncio.run(
+            rep.update_report(rid, {"name": "changed"}, user=reader))),
+        "add": _status(lambda: asyncio.run(
+            rep.add_recipient(rid, {"recipient": to}, user=reader))),
+        "remove": _status(lambda: asyncio.run(
+            rep.remove_recipient(rid, to, user=reader))),
+        "schedule": _status(lambda: asyncio.run(
+            rep.set_schedule(rid, {"enabled": False}, user=reader))),
+    }
+
+
+@_needs_db
+def test_x_the_author_and_an_admin_may_change(seeded, wired) -> None:
+    """(x) The author and an admin get 200 from each change route, and
+    `can_edit` is true for each of them."""
+    who = seeded["who"]
+    for reader in (_user(who["m"]), _user(who["boss"], admin=True)):
+        rid = _save(seeded, "m")
+        got = asyncio.run(rep.get_report(rid, user=reader))
+        assert got["can_edit"] is True and got["can_delete"] is True
+        assert _changes(seeded, rid, reader) == {
+            "patch": 200, "add": 200, "remove": 200, "schedule": 200,
+        }, reader.email
+        assert _row(seeded, rid)["name"] == "changed"
+        # The admin arms the schedule of another person's report.
+        asyncio.run(rep.add_recipient(rid, {"recipient": who["n"]}, user=reader))
+        armed = asyncio.run(rep.set_schedule(rid, {"enabled": True}, user=reader))
+        assert armed["enabled"] is True and armed["can_edit"] is True
+
+
+@_needs_db
+def test_y_another_member_may_open_but_not_change(seeded, wired) -> None:
+    """(y) N opens M's portfolio report and renders it. Each change route
+    is 403 with the reason, and the row, its recipients and its schedule
+    stay as they were."""
+    who = seeded["who"]
+    rid = _save(seeded, "m")
+    asyncio.run(rep.add_recipient(rid, {"recipient": who["lead"]},
+                                  user=_user(who["m"])))
+    before = _row(seeded, rid)
+    n = _user(who["n"])
+    got = asyncio.run(rep.get_report(rid, user=n))
+    assert got["can_edit"] is False
+    listed = asyncio.run(rep.list_reports(user=n))["reports"]
+    assert next(r for r in listed if r["id"] == rid)["can_edit"] is False
+    # Reading and rendering stay as they are.
+    asyncio.run(rep.render_report(rid, user=n))
+    assert _status(lambda: asyncio.run(rep.list_recipients(rid, user=n))) == 200
+
+    calls = {
+        "patch": lambda: rep.update_report(rid, {"name": "changed"}, user=n),
+        "add": lambda: rep.add_recipient(rid, {"recipient": who["n"]}, user=n),
+        "remove": lambda: rep.remove_recipient(rid, who["lead"], user=n),
+        "schedule": lambda: rep.set_schedule(rid, {"enabled": True}, user=n),
+    }
+    for name, call in calls.items():
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(call())
+        assert err.value.status_code == 403, name
+        assert err.value.detail == (
+            "Only the author of this report or an admin may change it."
+        ), name
+    assert _row(seeded, rid) == before
+
+
+@_needs_db
+def test_z_a_lead_who_left_the_team_still_changes_their_report(seeded, wired) -> None:
+    """(z) The author path skips the subject check, as the delete does. The
+    read stays refused."""
+    who = seeded["who"]
+    lead = _user(who["lead"])
+    _sql(seeded, "INSERT INTO org_group_member (group_id, user_id, role)"
+                 " VALUES (CAST(:g AS uuid), CAST(:u AS uuid), 'lead')",
+         g=seeded["groups"]["b"], u=seeded["users"]["lead"])
+    rid = _save(seeded, "lead", subject=_person(seeded, "n"))
+    _sql(seeded, "DELETE FROM org_group_member WHERE group_id = CAST(:g AS uuid)"
+                 " AND user_id = CAST(:u AS uuid)",
+         g=seeded["groups"]["b"], u=seeded["users"]["lead"])
+    assert _status(lambda: asyncio.run(rep.render_report(rid, user=lead))) == 403
+    assert _changes(seeded, rid, lead) == {
+        "patch": 200, "add": 200, "remove": 200, "schedule": 200,
+    }
+    assert _row(seeded, rid)["name"] == "changed"
+    # A NEW subject still passes the subject check. N is outside the rule now.
+    assert _status(lambda: asyncio.run(rep.update_report(
+        rid, {"config": {"sections": ["load"],
+                         "subject": _person(seeded, "n")}}, user=lead))) == 403
+
+
+@_needs_db
+def test_aa_the_project_404_comes_before_the_change_rule(seeded, wired, monkeypatch) -> None:
+    """(aa) The author path skips the subject check, never the 404."""
+    who = seeded["who"]
+    rid = _save(seeded, "m")
+    _sql(seeded, "UPDATE pm_reports SET project_id = CAST(:p AS uuid)"
+                 " WHERE id = CAST(:i AS uuid)", p=seeded["project"], i=rid)
+
+    async def _hidden(_db: Any, _vis: Any, _pid: str) -> Any:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    monkeypatch.setattr(rep, "load_visible_project", _hidden)
+    assert set(_changes(seeded, rid, _user(who["m"])).values()) == {404}
+    assert _row(seeded, rid)["name"] == "r5d"

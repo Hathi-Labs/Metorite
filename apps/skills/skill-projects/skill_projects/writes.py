@@ -995,6 +995,10 @@ REPORT_SECTIONS = (
     "hygiene", "conflicts", "rebalance",
 )
 
+#: WS-27bn R5d (§9 Q13). The words of the server's 403, in
+#: ``reports.CHANGE_REFUSED``. A test pins the two as one sentence.
+REPORT_CHANGE_REFUSED = "Only the author of this report or an admin may change it."
+
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
 async def report_save(
@@ -1035,7 +1039,11 @@ async def report_save(
                 "A saved report keeps its scope. Save a new report for another "
                 "project, or leave project_id empty to change this one."
             )
-        existing = await get(f"/projects/reports/{rid}")
+        existing = await get(f"/projects/reports/{rid}") or {}
+        if existing.get("can_edit") is False:
+            # WS-27bn R5d (§9 Q13). The server computed the rule. Say it,
+            # and show no card that the PATCH would refuse.
+            return f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
         if config:
             merged = dict(existing.get("config") or {})
             merged.update(config)
