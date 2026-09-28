@@ -212,6 +212,11 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # granted, because the statement crosses every organization by
     # design and a bound GUC would be wrong for all but one.
     ("207_every_app_by_default.sql", "org_role_permission"): (1, "GUARDED"),
+    # 221 backfills each creator's owner row (S14, projects_ai_chat.md §20).
+    # It asks `information_schema.columns` once, the way 200 and 201 do. The
+    # no-column arm counted here runs only on a ladder with no tenancy layer;
+    # the tenancy arm names `organization_id` and binds each tenant.
+    ("221_chat_session_creator_owner_backfill.sql", "chat_session_participant"): (1, "GUARDED"),
 }
 
 
