@@ -188,9 +188,18 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
-    # A BACKSTOP, not a leash. The step's own loop is ~112 min worst case
-    # (3 rounds x (1800s ssh + 240s verify) + backoff, plus the H-142 connect
-    # budget of 300s shared by the whole job) and every one of those
+    # A BACKSTOP, not a leash. The step's worst case is ~117 min:
+    #   3 rounds x (1830 s ssh incl. the SIGKILL grace
+    #               + 240 s verify wall clock + one last poll of <= 70 s)  6420 s
+    #   + backoff 60 + 120                                                  180 s
+    #   + the H-142 connect budget, 300 s, which one probe (45 s) and one
+    #     refunded round (~45 s) can overrun                               ~400 s
+    #   = ~7000 s, about 117 min, under 120.
+    # ⚠️ Before H-142 `verify()` had no wall clock and a poll could take 50 s,
+    # so 24 polls came to 1200 s, and the true worst case was ~160 min. The
+    # 240 s deadline in verify() is what makes this sum hold. If the job
+    # timeout ever fires anyway, the run is RED: a timeout fails closed.
+    # Every one of those
     # numbers is deliberate — the 1800s in particular, because the pre-migration
     # backup alone takes ~11 min on the 4GB box. What this stops is the case
     # where the job hangs OUTSIDE that arithmetic and rides GitHub's 360-minute
@@ -445,7 +454,16 @@ jobs:
             # says something about it.
             echo "── Verifying: gateway health + public workbench + DEPLOYED SHA ──"
             echo "   want sha: $GITHUB_SHA"
+            # H-142: a WALL-CLOCK bound of 240 s. One poll is four curls of up
+            # to 10 s, a git fetch and a 10 s nap, so 24 polls could take
+            # 1200 s when packets drop. That broke the job's timeout
+            # arithmetic, which is sized from 240 s per round.
+            verify_deadline=$(( $(date +%s) + 240 ))
             for i in $(seq 1 24); do
+              if [ "$i" -gt 1 ] && [ "$(date +%s)" -ge "$verify_deadline" ]; then
+                echo "  ── the 240 s verify window closed at poll $i ──"
+                break
+              fi
               gw_ok=0
               if curl -fsS --max-time 10 "$GATEWAY_URL/health" >/dev/null 2>&1; then
                 gw_ok=1
@@ -459,7 +477,7 @@ jobs:
               if [ -n "$got_sha" ]; then
                 if [ "$got_sha" = "$GITHUB_SHA" ]; then
                   sha_ok=1
-                elif git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
+                elif timeout 20 git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
                   # ⚠️ SUPERSEDED, and that is a PASS. The box holds a
                   # LATER commit that CONTAINS this one, so every change
                   # this run merged is serving. See the note on verify().
@@ -475,7 +493,7 @@ jobs:
               echo "  not there yet (gateway_ok=$gw_ok workbench=$wb_code sha=${got_sha:-none}, poll $i/24) — 10s…"
               sleep 10
             done
-            echo "  ── verification failed after 24 polls ──"
+            echo "  ── verification failed ──"
             echo "     gateway_ok=$gw_ok  workbench=$wb_code"
             echo "     serving: ${got_sha:-<no /version response>}"
             echo "     wanted:  $GITHUB_SHA"
@@ -491,15 +509,30 @@ jobs:
           # only the served SHA and the box's deploy marker as evidence. This
           # job goes green with a warning so that the run's colour is decided
           # there. If that job cannot prove delivery, the run goes red.
+          #
+          # ⚠️ TWO DIFFERENT HAND-OFFS, and the text must say which. When an
+          # earlier round printed `==> Taking the deploy lock`, an apply RAN
+          # from this runner and then lost its session, maybe after the
+          # migrations. "Nothing was applied" is then false.
+          APPLY_EVER_STARTED=0
           hand_off_to_pull_path() {
-            echo "════════ ssh never connected from this runner ════════"
-            echo "   ${CONNECT_SPENT}s of connect trouble, and nothing was applied from here."
+            if [ "$APPLY_EVER_STARTED" = 1 ]; then
+              echo "════════ this runner lost the box after an apply started ════════"
+              echo "   An apply started from this runner and did not finish. The box may"
+              echo "   hold a half-done apply. The pull timer re-applies it, because the"
+              echo "   deploy marker was not written. ${CONNECT_SPENT}s of connect trouble since."
+              note="An apply started from this runner and did not finish. The box may hold a half-done apply. The pull timer re-applies it, because the deploy marker was not written."
+            else
+              echo "════════ ssh never connected from this runner ════════"
+              echo "   ${CONNECT_SPENT}s of connect trouble, and no apply started from here."
+              note="ssh did not connect in ${CONNECT_SPENT}s. No apply started from this runner."
+            fi
             echo "   Measured before H-142: 27 of 27 connects failed once a runner was"
             echo "   cut off, and a fresh runner connected seconds later."
             code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$GATEWAY_URL/version" 2>/dev/null) || true
             echo "   From this runner, HTTPS GET /version -> HTTP ${code:-000} (diagnostic only)."
             echo "reach=unreachable" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Deploy runner could not reach the box::ssh did not connect in ${CONNECT_SPENT}s. Nothing was applied from this runner. The job 'Confirm delivery by the pull path' decides the run from the served SHA."
+            echo "::warning title=Deploy runner could not reach the box::${note} The job 'Confirm delivery by the pull path' decides the run from the served SHA."
             exit 0
           }
 
@@ -540,6 +573,7 @@ jobs:
             applied=0
             t0=$(date +%s)
             if run_deploy; then applied=1; fi
+            if apply_started /tmp/apply.log; then APPLY_EVER_STARTED=1; fi
             if [ "$applied" = 1 ] && verify; then
               echo "✅ Deploy verified healthy on round $round."
               exit 0
@@ -602,8 +636,11 @@ jobs:
       ${{ always()
       && needs.deploy.result == 'success'
       && needs.deploy.outputs.reach == 'unreachable' }}
-    # PULL_WAIT (900 s, wall clock) plus one last read and the checkout.
-    timeout-minutes: 25
+    # PULL_WAIT (1500 s, wall clock) plus one last read (<= 40 s), the 10 s
+    # port probe and the checkout. 1500 s, not 900: the pull timer ticks
+    # every 5 min, and a pull apply that runs the pre-migration backup
+    # (~11 min) and a web build can finish more than 15 min after the tick.
+    timeout-minutes: 30
     env:
       GATEWAY_URL: https://api.metorite.com
       WORKBENCH_URL: https://app.metorite.com
@@ -637,9 +674,12 @@ jobs:
           await_pull_delivery "$GITHUB_SHA" || rc=$?
           case "$rc" in
             0)
-              echo "::warning title=Delivered by the pull path::The deploy runner could not reach the box over ssh. The box's own pull delivered ${GITHUB_SHA:0:12}, proved by /version sha and applied_sha. Push path broken on this run."
-              echo "### Delivered by the pull path (H-142)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-              echo "ssh never connected from the deploy runner. The box served \`${GITHUB_SHA:0:12}\` with a complete apply behind it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              # ⚠️ It names no path. A push apply from round 1 can finish
+              # before the runner loses the box, and the marker cannot tell
+              # which path wrote it. The served SHA is the evidence.
+              echo "::warning title=Delivered, confirmed by the served SHA::The deploy runner lost ssh to the box. The box serves ${GITHUB_SHA:0:12} with a complete apply behind it, proved by /version sha and applied_sha. The push path failed on this run."
+              echo "### Delivered, confirmed by the served SHA (H-142)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              echo "The deploy runner lost ssh to the box. The box serves \`${GITHUB_SHA:0:12}\` with a complete apply behind it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
               exit 0
               ;;
             3)

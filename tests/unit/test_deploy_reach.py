@@ -234,6 +234,11 @@ if [ "$last" = "true" ]; then
   p=$(cat "$FAKE/probe_n" 2>/dev/null || echo 0); p=$((p + 1)); echo "$p" > "$FAKE/probe_n"
   mode="${PROBE_MODE:-ok}"
   [ "$mode" = stall ] && exit 124   # what `timeout` returns when it kills a stalled probe
+  # first_ok: the first probe connects, and every later one times out.
+  if [ "$mode" = first_ok ] && [ "$p" -gt 1 ]; then
+    echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
+  fi
+  [ "$mode" = first_ok ] && exit 0
   if [ "$mode" = auth ]; then echo "acb@host: Permission denied (publickey)." >&2; exit 255; fi
   if [ "$mode" = down ] || [ "$p" -le "${PROBE_FAILS:-0}" ]; then
     echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
@@ -244,6 +249,12 @@ echo apply >> "$FAKE/calls"
 cat > /dev/null
 if [ "${APPLY_MODE:-ok}" = drop ]; then
   echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
+fi
+if [ "${APPLY_MODE:-ok}" = start_drop ]; then
+  # The apply STARTED, maybe ran the migrations, and then lost its session.
+  echo "==> Taking the deploy lock (/opt/acb/acb-deploy.lock)"
+  echo "==> Running migrations"
+  echo "Connection to 10.0.0.1 closed by remote host." >&2; exit 255
 fi
 echo "==> Taking the deploy lock (/opt/acb/acb-deploy.lock)"
 echo "==> Deployment complete"
@@ -409,6 +420,24 @@ class TestTheDeployStepBehaviour:
         assert "THE APPLY DID NOT REACH ITS FINAL LINE" not in r.stdout
         assert "reach=unreachable" in box.out.read_text(encoding="utf-8")
 
+    def test_a_hand_off_after_a_started_apply_says_so(self, box, jobs) -> None:
+        """Round 1 started an apply and lost ssh. The budget then ran out.
+        "No apply started from this runner" would be false: the box may hold a
+        half-done apply."""
+        r = _step(box, jobs, PROBE_MODE="first_ok", APPLY_MODE="start_drop")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "reach=unreachable" in box.out.read_text(encoding="utf-8")
+        assert _count(box, "calls").count("apply") == 1
+        assert "An apply started from this runner and did not finish" in r.stdout
+        assert "half-done apply" in r.stdout
+        assert "No apply started from this runner" not in r.stdout
+        assert "no apply started from here" not in r.stdout
+
+    def test_a_hand_off_with_no_apply_says_none_started(self, box, jobs) -> None:
+        r = _step(box, jobs, PROBE_MODE="down")
+        assert "No apply started from this runner" in r.stdout, r.stdout
+        assert "An apply started from this runner" not in r.stdout
+
     def test_a_forced_run_goes_red_instead_of_handing_off(self, box, jobs) -> None:
         r = _step(box, jobs, PROBE_MODE="down", DEPLOY_FORCE="1")
         assert r.returncode == 1, r.stdout + r.stderr
@@ -489,7 +518,12 @@ class TestThePullDeliveryJobBehaviour:
         box.version(1, box.shas["want"], box.shas["want"])
         r = _pull_step(box, jobs)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "::warning title=Delivered by the pull path::" in r.stdout
+        assert "::warning title=Delivered, confirmed by the served SHA::" in r.stdout
+        warning = next(ln for ln in r.stdout.splitlines() if ln.startswith("::warning"))
+        assert "pull" not in warning.lower(), (
+            "the message must name no delivery path: a push apply from round 1 "
+            "can write the same marker, and the job cannot tell which one did"
+        )
 
     def test_red_when_the_box_did_not_self_deliver(self, box, jobs) -> None:
         box.version(1, box.shas["old"], box.shas["old"])
@@ -514,3 +548,30 @@ def test_the_pull_wait_also_counts_wall_time() -> None:
     fn = fn[fn.index("await_pull_delivery() {"):]
     assert "t_start=$(_now)" in fn
     assert '[ $(( $(_now) - t_start )) -ge "$PULL_WAIT" ] && break' in fn
+
+
+def test_the_pull_wait_outlasts_a_slow_pull_apply(jobs: dict) -> None:
+    """A pull apply that runs the ~11 min backup and a web build can finish
+    more than 15 min after a 5 min tick. 900 s was too short."""
+    assert ': "${PULL_WAIT:=1500}"' in _read(LIB)
+    assert jobs["pull-delivery"]["timeout-minutes"] * 60 >= 1500 + 120, (
+        "the job timeout must leave room past PULL_WAIT, or it cuts off the red message"
+    )
+
+
+def test_verify_has_a_wall_clock_bound(jobs: dict) -> None:
+    """24 polls of four curls, a fetch and a nap could take 1200 s. The job
+    timeout is sized from 240 s per round."""
+    step = _deploy_step(jobs)
+    fn = step[step.index("verify() {"):step.index("hand_off_to_pull_path() {")]
+    assert "verify_deadline=$(( $(date +%s) + 240 ))" in fn
+    assert '[ "$(date +%s)" -ge "$verify_deadline" ]' in fn
+    assert "timeout 20 git fetch" in fn
+
+
+def test_the_job_timeout_covers_the_worst_case(jobs: dict) -> None:
+    rounds = 3 * (1830 + 240 + 70)
+    worst = rounds + 180 + 400
+    assert jobs["deploy"]["timeout-minutes"] * 60 >= worst, (
+        f"worst case {worst} s is past the job timeout"
+    )

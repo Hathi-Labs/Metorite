@@ -37,7 +37,7 @@
 : "${CONNECT_TIMEOUT:=30}"      # ssh ConnectTimeout, for the probe and the apply
 : "${CONNECT_BUDGET:=300}"      # seconds of connect trouble one job may spend
 : "${CONNECT_BACKOFF_MAX:=60}"  # the longest wait between two probes
-: "${PULL_WAIT:=900}"           # how long the fresh runner waits for the pull path
+: "${PULL_WAIT:=1500}"          # wall-clock seconds the fresh runner waits for delivery
 : "${PULL_POLL:=30}"            # seconds between two reads of /version
 : "${SSH_KEY_FILE:=$HOME/.ssh/deploy_key}"
 : "${SSH_PORT:=22}"
@@ -53,6 +53,9 @@ APPLY_LOCK_BUSY_LINE="and it is still busy. This round did NOTHING"
 
 # One set of ssh options for the probe AND the apply, so the two cannot drift.
 # ServerAlive keeps a held session alive through NAT and idle culling.
+# ⚠️ StrictHostKeyChecking=no with UserKnownHostsFile=/dev/null accepts ANY
+# host key, so a host-key mismatch never fails here. It predates H-142, and
+# its own HANDOFF entry tracks the fix ("The deploy trusts any ssh host key").
 CI_SSH_OPTS=(
   -i "$SSH_KEY_FILE" -p "$SSH_PORT"
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
@@ -63,8 +66,8 @@ CI_SSH_OPTS=(
 _now() { date +%s; }
 
 # True when ssh's own words (on stdin) name a NETWORK fault: the packets did
-# not get through. An auth failure or a bad host key is NOT one of these, and
-# no amount of waiting fixes it, so it must go red at once.
+# not get through. An auth failure is NOT one of these, and no amount of
+# waiting fixes it, so it must go red at once.
 ssh_network_fault() {
   grep -qiE 'connection timed out|operation timed out|connection refused|no route to host|network is unreachable|connection reset|connection closed by|kex_exchange_identification|could not resolve hostname|temporary failure in name resolution|broken pipe|timeout, server not responding'
 }
@@ -89,7 +92,7 @@ connect_budget_left() { [ "$CONNECT_SPENT" -lt "$CONNECT_BUDGET" ]; }
 # Probe until a no-op ssh succeeds.
 #   0  ssh works now
 #   1  the budget ran out, and every failure was a network fault
-#   2  ssh failed for a reason that is NOT the network (key, host key, shell)
+#   2  ssh failed for a reason that is NOT the network (the key, the shell)
 # The probe always runs once, even with no budget left, so a job that spent
 # its budget early can still connect for a later round.
 wait_for_ssh() {
@@ -155,7 +158,9 @@ except Exception:
 print(v if isinstance(v, str) else "")' "$1" 2>/dev/null
 }
 
-# The fresh runner's question: did the box deliver $1 by itself?
+# The fresh runner's question: does the box now serve a complete apply of $1?
+# It cannot know which path wrote the marker. A push apply from round 1 may
+# have finished before the runner lost the box, so the message names no path.
 #
 # ⚠️ RULE 8 — the served evidence, never a green tick. It passes only when ALL
 # of these hold on one read:
@@ -185,7 +190,7 @@ await_pull_delivery() {
   t_start=$(_now)
   echo "── Waiting up to ${PULL_WAIT}s for the box's own pull to deliver ${want:0:12} ──"
   while :; do
-    git fetch -q --no-tags origin main 2>/dev/null || true
+    timeout 20 git fetch -q --no-tags origin main 2>/dev/null || true
     body=$(curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null) || body=""
     sha=$(printf '%s' "$body" | json_field sha)
     applied=$(printf '%s' "$body" | json_field applied_sha)
@@ -194,7 +199,7 @@ await_pull_delivery() {
     if commit_contains "$sha" "$want" \
        && commit_contains "$applied" "$want" \
        && printf '%s' "$wb" | grep -qE '^[23][0-9][0-9]$'; then
-      echo "  ✅ delivered by the pull path: gateway on $sha, a complete apply of $applied, workbench / -> HTTP $wb"
+      echo "  ✅ delivered, confirmed by the served SHA: gateway on $sha, a complete apply of $applied, workbench / -> HTTP $wb"
       return 0
     fi
     echo "  not yet (gateway sha=${sha:-none} applied=${applied:-none} workbench=${wb:-000}, ${waited}s of ${PULL_WAIT}s)"
