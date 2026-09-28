@@ -923,6 +923,9 @@ Each item maps to the §13.7 rule with the same number.
     `test_projects_chat_coverage.py` and `test_projects_agent.py` pass.
 12. The status header, the §10 row, the board row and the INDEX line say that
     S7e is built (R4).
+13. Amended 2026-09-28 (`projects_reports.md` §9, Q10). The groups by
+    assignee follow §7.1 of `projects_reports.md`. R5d of that spec holds
+    the rules and the tests.
 
 ---
 
@@ -1562,6 +1565,8 @@ three product decisions were open. The owner answered all three on
   the two cycle measures, grouped by assignee, need `can_read_hr_fields`
   (`admin:members:read`). Without the grant, those keys are ABSENT, not null,
   and the response says `hr_visible: false`. This is §13.2 rule 3.
+  Amended 2026-09-28 (`projects_reports.md` §9, Q10). A member counts tasks
+  by assignee only for the people that §7.1 allows.
 - **O4 · Token cost** is advisory. A full table of 500 rows costs many tokens.
   The tool asks for a short default column set, and a grouped read costs one
   line for each group. H-42 prices the tiers. No slice measures this cost.
