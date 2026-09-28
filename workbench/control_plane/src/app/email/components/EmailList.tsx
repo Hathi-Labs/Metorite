@@ -468,10 +468,10 @@ export function EmailList({
                       <AppIcon name="Paperclip" size={10} className="text-muted-foreground" />
                     )}
                     {email.isFlagged && (
-                      <AppIcon name="Flag" size={10} className="text-amber-400 fill-amber-400" />
+                      <AppIcon name="Flag" size={10} className="text-warning fill-warning" />
                     )}
                     {email.isStarred && (
-                      <AppIcon name="Star" size={10} className="text-amber-400 fill-amber-400" />
+                      <AppIcon name="Star" size={10} className="text-warning fill-warning" />
                     )}
                     <span className="text-[10px] text-muted-foreground whitespace-nowrap">
                       {timeLabel(email.receivedAt)}

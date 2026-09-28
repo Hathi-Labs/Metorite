@@ -116,6 +116,21 @@ const rapidtool: Theme = {
     monaco: { dark: "vs-dark", light: "vs" },
     shiki: { dark: "github-dark", light: "github-light" },
   },
+  // One set for both modes — see `--term-*` in globals.css.
+  terminal: {
+    bg: "hsl(0 0% 5%)",
+    fg: "hsl(240 5% 96%)",
+    muted: "hsl(240 5% 65%)",
+    prompt: "hsl(158 64% 52%)",
+    running: "hsl(198 93% 60%)",
+    command: "hsl(46 97% 65%)",
+    number: "hsl(53 98% 77%)",
+    string: "hsl(31 97% 72%)",
+    flag: "hsl(187 92% 69%)",
+    path: "hsl(156 72% 67%)",
+    keyword: "hsl(199 95% 74%)",
+    output: "hsl(168 53% 55%)",
+  },
   colors: {
     dark: {
       background: "hsl(220 13% 8%)",
@@ -132,8 +147,9 @@ const rapidtool: Theme = {
       mutedForeground: "hsl(215 20% 65%)",
       accent: "hsl(27 96% 61%)",
       accentForeground: "hsl(220 13% 8%)",
-      destructive: "hsl(0 63% 60%)",
-      destructiveForeground: "hsl(210 40% 98%)",
+      // A lighter red with the dark ink on it — see globals.css (H-193).
+      destructive: "hsl(0 72% 66%)",
+      destructiveForeground: "hsl(220 13% 8%)",
       border: "hsl(220 13% 16%)",
       input: "hsl(220 13% 16%)",
       ring: "hsl(198 89% 50%)",
@@ -143,7 +159,7 @@ const rapidtool: Theme = {
       warningForeground: "hsl(220 13% 8%)",
       info: "hsl(198 89% 55%)",
       infoForeground: "hsl(220 13% 8%)",
-      violet: "hsl(268 80% 68%)",
+      violet: "hsl(268 80% 70%)",
       violetForeground: "hsl(220 13% 8%)",
       // Categorical ramp — vivid, matching RapidTool's saturated register.
       "cat-1": "hsl(215 85% 61%)",
@@ -182,17 +198,19 @@ const rapidtool: Theme = {
       mutedForeground: "hsl(215.4 16.3% 46.9%)",
       accent: "hsl(27 96% 61%)",
       accentForeground: "hsl(210 40% 98%)",
-      destructive: "hsl(0 84.2% 60.2%)",
+      // Deeper red, green and blue than dark mode, so each reads as words on
+      // white — see globals.css (H-193).
+      destructive: "hsl(0 72% 45%)",
       destructiveForeground: "hsl(210 40% 98%)",
       border: "hsl(214.3 31.8% 91.4%)",
       input: "hsl(214.3 31.8% 91.4%)",
       ring: "hsl(198 89% 50%)",
-      success: "hsl(142 76% 47%)",
+      success: "hsl(142 72% 28%)",
       successForeground: "hsl(210 40% 98%)",
       // A dark amber, not the dark-mode yellow — see globals.css (H-174).
       warning: "hsl(36 92% 29%)",
       warningForeground: "hsl(210 40% 98%)",
-      info: "hsl(198 89% 38%)",
+      info: "hsl(198 89% 32%)",
       infoForeground: "hsl(210 40% 98%)",
       violet: "hsl(268 70% 50%)",
       violetForeground: "hsl(210 40% 98%)",

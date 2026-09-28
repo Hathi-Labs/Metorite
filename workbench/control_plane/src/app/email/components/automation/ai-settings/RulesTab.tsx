@@ -550,7 +550,7 @@ export function RulesTab({
                     <summary
                       className={`cursor-pointer select-none text-[11px] flex items-center gap-1 transition-colors ${
                         pending > 0
-                          ? "text-amber-500 hover:text-amber-400"
+                          ? "text-warning hover:text-warning/80"
                           : "text-muted-foreground hover:text-foreground"
                       }`}
                     >
@@ -1704,7 +1704,7 @@ function ProcessPastEmailsDialog({
         <div
           className={`text-[11px] rounded-md px-2.5 py-2 space-y-1 ${
             estimate.will_process >= PAST_COSTLY_THRESHOLD
-              ? "text-amber-500 bg-amber-500/10"
+              ? "text-warning bg-warning/10"
               : "text-muted-foreground bg-secondary/50"
           }`}
         >
@@ -1781,7 +1781,7 @@ function ProcessPastEmailsDialog({
         actions stream into the History tab.
       </p>
       {!skipProcessed && (
-        <p className="text-[11px] text-amber-500 bg-amber-500/10 rounded-md px-2.5 py-2">
+        <p className="text-[11px] text-warning bg-warning/10 rounded-md px-2.5 py-2">
           Every email in the range will be classified again — one AI call each,
           mostly to reapply labels they already carry. Worth it after changing a
           rule; wasteful otherwise.
@@ -1793,7 +1793,7 @@ function ProcessPastEmailsDialog({
       <p
         className={`text-[11px] rounded-md px-2.5 py-2 ${
           draftReplies
-            ? "text-amber-500 bg-amber-500/10"
+            ? "text-warning bg-warning/10"
             : "text-muted-foreground bg-secondary/50"
         }`}
       >

@@ -1054,7 +1054,7 @@ function EditorInner({ id }: { id: string }) {
         <button
           onClick={() => setShowTriggers((s) => !s)}
           title="Configure triggers"
-          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-500 hover:bg-amber-500/15 tech-transition shrink-0 max-w-56"
+          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-cat-12/30 bg-cat-12/10 text-cat-12 hover:bg-cat-12/15 tech-transition shrink-0 max-w-56"
         >
           <Icon name="Zap" className="w-3 h-3 shrink-0" />
           <span className="truncate">

@@ -708,7 +708,7 @@ export default function WhatsAppCallsPage() {
                     <button
                       onClick={() => void joinAudio(c)}
                       disabled={audioState === "requesting-mic" || audioState === "connecting"}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 tech-transition disabled:opacity-50"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-success-foreground hover:opacity-90 tech-transition disabled:opacity-50"
                     >
                       {audioState === "requesting-mic" || audioState === "connecting" ? (
                         <Icon name="Loader2" className="h-3.5 w-3.5 animate-spin" />
@@ -743,7 +743,7 @@ export default function WhatsAppCallsPage() {
                   <div className="flex gap-1.5">
                     <button
                       onClick={() => void act("answer", c)}
-                      className="rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 tech-transition"
+                      className="rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-success-foreground hover:opacity-90 tech-transition"
                     >
                       Answer
                     </button>
@@ -757,7 +757,7 @@ export default function WhatsAppCallsPage() {
                 ) : (
                   <button
                     onClick={() => void act("hangup", c)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 tech-transition"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:opacity-90 tech-transition"
                   >
                     <Icon name="PhoneOff" className="h-3.5 w-3.5" />
                     Hang up

@@ -38,11 +38,11 @@ export default function ConfirmationCard({
   disabled = false,
 }: ConfirmationCardProps) {
   return (
-    <div className="my-3 rounded-xl border border-amber-700/40 bg-amber-950/20 overflow-hidden">
+    <div className="my-3 rounded-xl border border-warning/30 bg-warning/10 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-amber-800/30 bg-amber-900/20">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-warning/30 bg-warning/10">
         <span className="text-base">⚠️</span>
-        <span className="text-[12px] sm:text-[13px] font-medium text-amber-300">
+        <span className="text-[12px] sm:text-[13px] font-medium text-warning">
           {title}
         </span>
       </div>
@@ -64,7 +64,7 @@ export default function ConfirmationCard({
       )}
 
       {/* Actions */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-amber-800/30 bg-amber-900/10">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-warning/30 bg-warning/5">
         <button
           onClick={onApprove}
           disabled={disabled}

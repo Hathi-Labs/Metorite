@@ -548,11 +548,11 @@ function DraftResultCard({
       />
       <div className="flex items-center gap-2 mt-1.5">
         {state === "sent" ? (
-          <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+          <span className="flex items-center gap-1 text-[10px] text-success">
             <AppIcon name="Send" size={11} /> Sent
           </span>
         ) : state === "saved" ? (
-          <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+          <span className="flex items-center gap-1 text-[10px] text-success">
             <AppIcon name="CheckCircle2" size={11} /> Saved to Drafts
           </span>
         ) : (
@@ -725,7 +725,7 @@ function RuleResultCard({
             </div>
           )}
           {a.automated === false && (
-            <div className="text-[10px] text-amber-500">
+            <div className="text-[10px] text-warning">
               Proposes for approval (not auto-applied)
             </div>
           )}
@@ -1344,7 +1344,7 @@ function EmailRow({
                   </span>
                 ))}
               {labeled && (
-                <span className="flex-shrink-0 px-1 py-px rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[9px] leading-none">
+                <span className="flex-shrink-0 px-1 py-px rounded-full bg-success/15 text-success text-[9px] leading-none">
                   {labeled}
                 </span>
               )}
@@ -1353,7 +1353,7 @@ function EmailRow({
         </button>
         <div className="flex items-center flex-shrink-0 mr-0.5">
           {done ? (
-            <span className="flex items-center gap-0.5 text-[9px] text-emerald-500 px-1">
+            <span className="flex items-center gap-0.5 text-[9px] text-success px-1">
               <AppIcon name="CheckCircle2" size={10} /> {archived ? "Archived" : "Read"}
             </span>
           ) : status === "busy" ? (
@@ -1564,14 +1564,14 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
         failed
           ? "border-destructive/40 bg-destructive/5"
           : meta.danger
-            ? "border-amber-500/40 bg-amber-500/5"
+            ? "border-warning/40 bg-warning/5"
             : "border-sidebar-border bg-secondary/40"
       }`}
     >
       <div className="flex items-center gap-2">
         <span
           className={
-            failed ? "text-destructive" : meta.danger ? "text-amber-500" : "text-emerald-500"
+            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
           }
         >
           <AppIcon name={iconName} size={13} />
@@ -1845,7 +1845,7 @@ function RulesOverviewCard({
               </span>
               {!r.auto && (
                 <span
-                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 flex-shrink-0"
+                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-warning/15 text-warning flex-shrink-0"
                   title="Proposes for approval (not auto-applied)"
                 >
                   Approval
@@ -1870,7 +1870,7 @@ function RulesOverviewCard({
                     }
                     className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 transition-colors ${
                       r.enabled
-                        ? "bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/25"
+                        ? "bg-success/15 text-success hover:bg-success/25"
                         : "bg-secondary text-muted-foreground hover:text-foreground"
                     } ${acctId ? "" : "cursor-default"}`}
                   >
@@ -1998,14 +1998,14 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         failed
           ? "border-destructive/40 bg-destructive/5"
           : meta.danger
-            ? "border-amber-500/40 bg-amber-500/5"
+            ? "border-warning/40 bg-warning/5"
             : "border-sidebar-border bg-secondary/40"
       }`}
     >
       <div className="flex items-start gap-2">
         <span
           className={`mt-0.5 flex-shrink-0 ${
-            failed ? "text-destructive" : meta.danger ? "text-amber-500" : "text-emerald-500"
+            failed ? "text-destructive" : meta.danger ? "text-warning" : "text-success"
           }`}
         >
           <AppIcon name={iconName} size={13} />

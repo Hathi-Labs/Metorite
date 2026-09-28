@@ -145,7 +145,7 @@ export const PROVIDERS: readonly ProviderMeta[] = [
     id: "groq",
     label: "Groq",
     envVar: "GROQ_API_KEY",
-    colour: "bg-yellow-500/15 text-yellow-300 border-yellow-800/40",
+    colour: "bg-cat-12/15 text-cat-12 border-cat-12/30",
     icon: "⚡",
     guide: {
       description: "Ultra-fast inference for Llama, Mixtral, and Gemma models.",

@@ -17,7 +17,7 @@ import GenerativeUINode, { TONE_HUE } from "@/components/GenerativeUINode";
 import { displayableState } from "@/components/GenerativeUIPanel";
 import { barColor } from "@/components/genUITemplates";
 import { ACCENT_HUES } from "@/lib/statusAccent";
-import { AA_LARGE_TEXT, AA_NORMAL_TEXT, contrast } from "@/lib/theme/contrast";
+import { AA_NORMAL_TEXT, contrast } from "@/lib/theme/contrast";
 import { THEME } from "@/lib/theme/themes";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -191,14 +191,19 @@ describe("the generative-UI primitives", () => {
     expect(html).not.toContain("text-warning");
   });
 
-  it("does not draw badge words in a status colour a light card cannot carry", () => {
-    // Why: the manifest's own numbers. Success ink on a light card fails even
-    // the large-text threshold, so a status hue must not carry a badge's
-    // words. (Warning was the example until H-174 gave light mode a dark amber
-    // that passes. Success still fails, and H-193 carries it.)
+  it("draws badge words in the foreground ink, which beats every status hue", () => {
+    // Why: the words are the message and the hue is the tint and dot. When
+    // this was written, light success ink on a card failed even the
+    // large-text threshold (1.99 : 1). H-174 and H-193 fixed every status
+    // tone to clear AA, so each one COULD carry words now. The foreground ink
+    // still reads better than any of them, so the badge keeps it.
     const light = THEME.colors.light;
-    expect(contrast(light.success, light.card)!).toBeLessThan(AA_LARGE_TEXT);
     expect(contrast(light.foreground, light.card)!).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    for (const hue of ["success", "warning", "destructive", "info", "violet"] as const) {
+      expect(contrast(light.foreground, light.card)!, hue).toBeGreaterThan(
+        contrast(light[hue]!, light.card)!,
+      );
+    }
     for (const tone of Object.keys(TONE_HUE)) {
       const html = renderToStaticMarkup(
         createElement(GenerativeUINode, { spec: { type: "badge", props: { text: "x", tone } } }),

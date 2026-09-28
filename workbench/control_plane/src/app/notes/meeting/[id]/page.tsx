@@ -818,9 +818,9 @@ export default function MeetingPage({
             {tab === "transcript" && (
             <div>
               {showDiarizeHint && (
-                <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="mb-3 rounded-xl border border-warning/30 bg-warning/5 p-3">
                   <div className="flex items-start gap-2.5">
-                    <Icon name="Users" className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    <Icon name="Users" className="w-4 h-4 text-warning shrink-0 mt-0.5" />
                     <div className="min-w-0 space-y-2">
                       <p className="text-xs text-foreground">
                         <span className="font-semibold">

@@ -222,12 +222,12 @@ export const NODE_CATEGORY_STYLE: Record<
   }
 > = {
   trigger: {
-    chip: "bg-amber-500/10 text-amber-500 border-amber-500/20",
-    border: "border-amber-500/40",
-    dot: "bg-amber-500",
-    tile: "bg-amber-500/12 text-amber-500 border-amber-500/30",
-    text: "text-amber-500",
-    bar: "bg-amber-500",
+    chip: "bg-cat-12/10 text-cat-12 border-cat-12/20",
+    border: "border-cat-12/40",
+    dot: "bg-cat-12",
+    tile: "bg-cat-12/12 text-cat-12 border-cat-12/30",
+    text: "text-cat-12",
+    bar: "bg-cat-12",
   },
   agent: {
     chip: "bg-violet-500/10 text-violet-500 border-violet-500/20",

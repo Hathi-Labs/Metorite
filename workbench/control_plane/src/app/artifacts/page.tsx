@@ -42,7 +42,7 @@ const AGENT_COLORS = [
   "border-l-blue-500",
   "border-l-emerald-500",
   "border-l-purple-500",
-  "border-l-amber-500",
+  "border-l-cat-12",
   "border-l-rose-500",
   "border-l-cyan-500",
   "border-l-orange-500",
@@ -83,7 +83,7 @@ function formatRelative(iso: string): string {
 
 function fileIconEl(entry: ArtifactEntry | { name: string; mime_type: string; is_dir?: boolean }, size = 16) {
   if ((entry as ArtifactEntry).is_dir) {
-    return <Icon name="FolderClosed" size={size} className="shrink-0 text-amber-400" />;
+    return <Icon name="FolderClosed" size={size} className="shrink-0 text-cat-12" />;
   }
   const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
   const mime = entry.mime_type;
@@ -231,13 +231,13 @@ function FileCard({ artifact, onView, index }: { artifact: ArtifactEntry; onView
 function FolderCard({ item, onNavigate, index }: { item: ExplorerItem; onNavigate: () => void; index: number }) {
   return (
     <div
-      className="group relative rounded-xl border border-border bg-card hover:border-amber-500/30 hover:shadow-lg tech-transition overflow-hidden animate-fade-in cursor-pointer"
+      className="group relative rounded-xl border border-border bg-card hover:border-cat-12/30 hover:shadow-lg tech-transition overflow-hidden animate-fade-in cursor-pointer"
       style={{ animationDelay: `${Math.min(index * 40, 600)}ms` }}
       onClick={onNavigate}
       title={`${item.name}\nClick to open`}
     >
-      <div className="flex items-center justify-center h-28 bg-amber-500/5 border-b border-border/30">
-        <Icon name="FolderClosed" size={40} className="text-amber-400/70" />
+      <div className="flex items-center justify-center h-28 bg-cat-12/5 border-b border-border/30">
+        <Icon name="FolderClosed" size={40} className="text-cat-12/70" />
       </div>
       <div className="p-3">
         <p className="text-xs font-medium text-foreground truncate leading-tight mb-1">{item.name}</p>
@@ -260,7 +260,7 @@ function ListRow({ item, onNavigate, onView, index }: {
     >
       <div className="flex items-center gap-2.5 min-w-0">
         {item.isDir
-          ? <Icon name="FolderClosed" size={15} className="shrink-0 text-amber-400" />
+          ? <Icon name="FolderClosed" size={15} className="shrink-0 text-cat-12" />
           : fileIconEl(item.entry ?? { name: item.name, mime_type: "" }, 15)}
         <div className="min-w-0">
           <div className="truncate text-xs font-medium text-foreground">{item.name}</div>

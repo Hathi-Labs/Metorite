@@ -512,12 +512,12 @@ function FocusRoom({ itemId }: { itemId: string }) {
           <>
             {/* outcome first — why this block matters */}
             {outcome && (
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-500">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-warning">
                 → {outcome}
               </p>
             )}
             <h1 className="max-w-xl text-balance text-lg font-semibold text-foreground sm:text-xl">
-              {item.leveraged && <span className="text-amber-500">★ </span>}
+              {item.leveraged && <span className="text-warning">★ </span>}
               {item.title}
             </h1>
             {item.nextAction && item.nextAction !== item.title && (
@@ -599,7 +599,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
                       className={[
                         "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
                         st.disposition === "DONE"
-                          ? "border-success bg-success text-white"
+                          ? "border-success bg-success text-success-foreground"
                           : "border-muted-foreground/50 text-transparent",
                       ].join(" ")}
                     >

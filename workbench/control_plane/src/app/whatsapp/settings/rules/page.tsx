@@ -129,7 +129,7 @@ function RuleRow({ it }: { it: WaRulePreviewItem }) {
           {ACTION_LABEL[it.action] ?? it.action}
         </span>
         {it.via_template && (
-          <span className="ml-1 text-[10px] text-amber-500">· template</span>
+          <span className="ml-1 text-[10px] text-warning">· template</span>
         )}
         {it.requires_approval && (
           <span className="ml-1 text-[10px] text-muted-foreground">

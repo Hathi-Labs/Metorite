@@ -62,7 +62,7 @@ function classifyTool(name: string): {
 } {
   const n = name.toLowerCase();
   if (/search|grep|find|list|semantic|codebase|query|retrieve|lookup/.test(n))
-    return { kind: "search", iconKey: "search", label: "Search", borderClass: "border-amber-700/50", iconClass: "text-amber-400" };
+    return { kind: "search", iconKey: "search", label: "Search", borderClass: "border-cat-12/30", iconClass: "text-cat-12" };
   if (/read|get_file|problems|fetch|load|open|view|analyzing|generating/.test(n))
     return { kind: "read", iconKey: "book", label: "Read", borderClass: "border-sky-700/50", iconClass: "text-sky-400" };
   if (/edit|create|write|replace|patch|insert|update|append|fix/.test(n))
@@ -262,7 +262,7 @@ function highlightCommand(cmd: string): React.ReactNode[] {
   const parts = cmd.split(/(\||&&|\|\||;|>>|>|<|2>&1)/g);
   return parts.map((part, i) => {
     if (/^(\||&&|\|\||;|>>|>|<|2>&1)$/.test(part.trim())) {
-      return <span key={i} className="text-muted-foreground mx-0.5">{part}</span>;
+      return <span key={i} className="text-term-muted mx-0.5">{part}</span>;
     }
     return <span key={i}>{tokenizeSegment(part, i === 0)}</span>;
   });
@@ -273,18 +273,18 @@ function tokenizeSegment(segment: string, isFirst: boolean): React.ReactNode[] {
   return tokens.map((token, j) => {
     const first = isFirst && j === 0;
     if (/^["'].*["']$/.test(token))
-      return <span key={j} className="text-orange-300">{token} </span>;
+      return <span key={j} className="text-term-string">{token} </span>;
     if (/^--?[a-zA-Z]/.test(token))
-      return <span key={j} className="text-cyan-300">{token} </span>;
+      return <span key={j} className="text-term-flag">{token} </span>;
     if (/[\/\\]/.test(token) && !/^[0-9]+$/.test(token))
-      return <span key={j} className="text-emerald-300">{token} </span>;
+      return <span key={j} className="text-term-path">{token} </span>;
     if (/^[0-9]+(\.[0-9]+)?$/.test(token))
-      return <span key={j} className="text-yellow-200">{token} </span>;
+      return <span key={j} className="text-term-number">{token} </span>;
     if (first)
-      return <span key={j} className="text-amber-300 font-medium">{token} </span>;
+      return <span key={j} className="text-term-command font-medium">{token} </span>;
     if (POWERSHELL_KEYWORDS.has(token))
-      return <span key={j} className="text-sky-300">{token} </span>;
-    return <span key={j} className="text-foreground">{token} </span>;
+      return <span key={j} className="text-term-keyword">{token} </span>;
+    return <span key={j} className="text-term-fg">{token} </span>;
   });
 }
 
@@ -603,35 +603,35 @@ export default function ThinkingContainer({
                       {open && (
                         <div className="mt-1">
                           {style.kind === "run" && (event.args || event.result) ? (
-                            <div className="rounded-md bg-[#0c0c0c] border border-white/10 overflow-hidden">
+                            <div className="rounded-md bg-term-bg border border-term-fg/10 overflow-hidden">
                               {/* Terminal body — no title bar (no Mac circles), just the prompt */}
                               <div className="px-2.5 pt-1.5 pb-2.5 font-mono text-[11px] leading-relaxed">
                                 {event.args && (
                                   <div className="flex items-baseline gap-2 mb-1.5">
-                                    <span className="text-emerald-400 shrink-0 select-none font-medium">$</span>
-                                    <span className="flex-1 text-zinc-100 break-all font-mono text-[11px] leading-relaxed">
+                                    <span className="text-term-prompt shrink-0 select-none font-medium">$</span>
+                                    <span className="flex-1 text-term-fg break-all font-mono text-[11px] leading-relaxed">
                                       {highlightCommand(extractCommand(event.args, event.name))}
                                     </span>
                                     {isRunning && (
-                                      <span className="text-[9px] text-sky-400 animate-pulse font-mono shrink-0">running</span>
+                                      <span className="text-[9px] text-term-running animate-pulse font-mono shrink-0">running</span>
                                     )}
                                     {dur !== undefined && !isRunning && (
-                                      <span className="text-[9px] text-zinc-500 font-mono shrink-0">{dur}ms</span>
+                                      <span className="text-[9px] text-term-muted font-mono shrink-0">{dur}ms</span>
                                     )}
                                   </div>
                                 )}
                                 {event.result && (
-                                  <div className="text-[#4ec9b0] whitespace-pre-wrap break-all max-h-64 overflow-y-auto leading-snug">
+                                  <div className="text-term-output whitespace-pre-wrap break-all max-h-64 overflow-y-auto leading-snug">
                                     {String(event.result)}
                                     {isRunning && (
-                                      <span className="inline-block w-[6px] h-[14px] bg-[#4ec9b0] animate-pulse ml-0.5 align-middle" />
+                                      <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse ml-0.5 align-middle" />
                                     )}
                                   </div>
                                 )}
                                 {!event.result && isRunning && (
                                   <div className="flex gap-2">
-                                    <span className="text-emerald-400 shrink-0 select-none">$</span>
-                                    <span className="inline-block w-[6px] h-[14px] bg-[#4ec9b0] animate-pulse align-middle" />
+                                    <span className="text-term-prompt shrink-0 select-none">$</span>
+                                    <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse align-middle" />
                                   </div>
                                 )}
                               </div>

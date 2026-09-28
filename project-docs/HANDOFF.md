@@ -372,28 +372,6 @@ line — never reclaim a number by deleting the other entry.
   owner decision 2026-09-24
 - **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
-### H-193 · Four status text tones are below AA as words, and the Calendar draws amber from the raw palette · [AGENT]
-- **Check:** `grep -cE '"rapidtool/(dark|light)/(destructive|success|info|violet)-on-' workbench/control_plane/src/lib/theme/contrast.test.ts`.
-  A count of 1 or more means `KNOWN_SHORTFALLS` still excuses a status text
-  tone, and this is open.
-- **What happens.** H-174 raised the gate for `text-destructive`,
-  `text-success`, `text-warning`, `text-info` and `text-violet` from 3.0 on
-  the card to 4.5 on the page, the card, `--muted` and the tone's own 10%
-  chip tint. Only `--warning` was fixed. The ratchet records the other
-  failures. The worst is light `--success`, at 1.99 : 1 on white. Light
-  `--destructive` is 3.76 and light `--info` is 4.23. Dark `--destructive`
-  is 4.06 on `--muted`, and dark `--violet` is 4.47.
-- **Do.** Give `.light` a darker value for each tone, as H-174 did for
-  `--warning`, and mirror it in `themes.ts`. Then delete each entry the gate
-  names. Look at every status chip in light mode after the change.
-- **Also.** The Calendar draws its star, its focus meter and some card
-  borders with `text-amber-*` and `border-amber-*`. The tree has 143 such
-  raw classes. `text-amber-500` on white is about 2.1 : 1, and no token
-  change reaches it. Move each one to `warning` or to a `--cat-*` slot.
-- **Authority:** `DESIGN_SYSTEM.md` §7 · H-174 (PR "Theme: a readable
-  warning text tone in light mode").
-- Added: 2026-09-28, found while fixing H-174.
-
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
 - **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
   attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.

@@ -206,7 +206,7 @@ export function ScheduleSheet({
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-foreground">
                           {t.leveraged && (
-                            <span className="text-amber-500">★ </span>
+                            <span className="text-warning">★ </span>
                           )}
                           {t.title}
                         </span>
