@@ -41,6 +41,19 @@
 -- `chat_message` already carries `organization_id` and its RLS policy. This
 -- file adds columns to it, so it adds no table, no policy and no
 -- `gen_tenant_migration.EXEMPT` row.
+--
+-- ── Never wait for the lock ─────────────────────────────────────────────────
+--
+-- `ALTER TABLE` takes ACCESS EXCLUSIVE on `chat_message`, which every chat
+-- read and write touches. `scripts/apply_migrations.sh` runs each file in its
+-- own psql session in autocommit, and it already sends
+-- `SET lock_timeout = '5s'` first. This file sets the same value itself, so a
+-- hand replay through psql also fails fast instead of queueing every reader
+-- behind the ALTER. The SET is session-level, and the session is this file.
+-- On a lock timeout the runner retries the whole file, and the file is
+-- idempotent.
+
+SET lock_timeout = '5s';
 
 ALTER TABLE chat_message
     ADD COLUMN IF NOT EXISTS run_member_email TEXT,
