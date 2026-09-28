@@ -345,9 +345,22 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
             join_ts = p.join_message_ts
             join_sid = p.join_stream_id
 
-    # The creator always owns their session, even if the 134 backfill never ran
-    # (a database restored from before it, a session created by an older build).
-    if role is None and email and row.user_id == email:
+    # The creator owns a session that has NO participant row at all: a legacy
+    # session the 134 backfill never reached, or a browser-created session
+    # before its first run. A room with any membership resolves from its rows
+    # and grants only (WS-27bm S14 round 3, projects_ai_chat.md §20). An owner
+    # who removed the creator has removed her, and the creator gets no owner
+    # role back from `chat_session.user_id`.
+    #
+    # Round 5: a creator whose user_id is not an email ('default', the id of
+    # a caller with no email) keeps the fallback in every room, as on main.
+    # That id is outside the participant grammar (`routes/rooms._valid_subject`
+    # takes an email, `group:<slug>` or `org`), so no owner row can stand for
+    # it, and no owner can remove it.
+    if (
+        role is None and email and row.user_id == email
+        and (not parts or "@" not in email)
+    ):
         role = "owner"
 
     read, send, cancel, invite, manage = _capabilities(role, visibility=visibility)
@@ -382,9 +395,10 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
 
 #: Rooms this person may see in their session list.
 #:
-#: Three ways in, matching resolve_room_access: they created it, a participant
-#: row names them (directly, or through a group they belong to, or through
-#: `org`), or the room is org-visible and they are an active member. Written as
+#: Three ways in, matching resolve_room_access: they created it and it has no
+#: participant row yet (S14 round 3), a participant row names them (directly,
+#: or through a group they belong to, or through `org`), or the room is
+#: org-visible and they are an active member. Written as
 #: one EXISTS-per-way rather than a join so a session is never returned twice
 #: and the planner can use each subject index independently.
 #:
@@ -396,7 +410,16 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
 #: constant into larger statements (`routes/chat.py:98,230,296,735`).
 SESSION_VISIBLE_SQL = """
     (
-        s.user_id = :uid
+        (
+            s.user_id = :uid
+            AND (
+                s.user_id NOT LIKE '%@%'
+                OR NOT EXISTS (
+                    SELECT 1 FROM chat_session_participant p0
+                    WHERE p0.session_id = s.id
+                )
+            )
+        )
         OR EXISTS (
             SELECT 1 FROM chat_session_participant p
             WHERE p.session_id = s.id AND p.subject = :uid

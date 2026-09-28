@@ -399,10 +399,14 @@ export function saveMessages(sessionId: string, messages: PersistedMessage[]): v
   // idempotent with the server's final.  (localStorage above still keeps the
   // streaming rows for refresh-recovery detection.)
   // NOTE: litellm mode has NO server-side persister, so a litellm reply is
-  // durable only in localStorage until it settles (streaming=false), after which
-  // this path writes the final.  Don't "fix" that by re-adding streaming-row
-  // writes — it reintroduces the truncation race on the copilot/executor path
-  // (which IS persisted server-side during the stream).
+  // durable only in localStorage.  Since WS-27bm S14 (projects_ai_chat.md §20,
+  // D-PM-39) this path no longer writes a litellm reply to the server either:
+  // only the server creates an agent row, so the gateway declines the insert
+  // and names the id in `unchanged`.  A compaction summary (a system row) is
+  // declined the same way.  Both stay browser-only until a server writer
+  // exists.  Don't "fix" that by re-adding streaming-row writes — it
+  // reintroduces the truncation race on the copilot/executor path (which IS
+  // persisted server-side during the stream).
   const forDb = settled.filter((m) => !(m.role === "assistant" && m.streaming));
   if (forDb.length === 0) return;
   const payload = forDb.map((m) => ({

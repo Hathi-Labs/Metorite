@@ -5,7 +5,7 @@
  * Returns JSON array of FileEntry objects.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function POST(
     const upstreamHeaders = await gatewayHeaders();
     // Don't set Content-Type — fetch will set it with boundary for multipart
 
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "POST",
       headers: upstreamHeaders,
       body: formData,

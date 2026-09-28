@@ -11,7 +11,7 @@
  * disconnect tears down the gateway connection instead of leaking it.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ export async function GET(
   const since = req.nextUrl.searchParams.get("since") ?? "0";
   let upstream: Response;
   try {
-    upstream = await fetch(
+    upstream = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/room-stream?since=${encodeURIComponent(since)}`,
       {
         headers: await gatewayHeaders(),

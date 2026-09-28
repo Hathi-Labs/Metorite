@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireIdentity } from "@/lib/gateway";
+import { gatewayFetch, requireIdentity } from "@/lib/gateway";
 
 // Resolves the signed-in member, so it is never statically evaluated.
 export const dynamic = "force-dynamic";
@@ -85,7 +85,7 @@ export async function POST(
   }
 
   try {
-    const res = await fetch(`${v1Base()}/chat/completions`, {
+    const res = await gatewayFetch(`${v1Base()}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

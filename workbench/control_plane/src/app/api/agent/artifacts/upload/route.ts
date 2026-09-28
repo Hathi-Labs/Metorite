@@ -5,7 +5,7 @@
  * attach files to draft actions). Returns JSON array of FileEntry objects.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const formData = await req.formData();
     // Don't set Content-Type — fetch sets it with the multipart boundary.
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       method: "POST",
       headers: await gatewayHeaders(),
       body: formData,

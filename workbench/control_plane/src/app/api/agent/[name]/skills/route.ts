@@ -9,7 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export async function GET(
   if (me instanceof NextResponse) return me;
   const { name } = await params;
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/${encodeURIComponent(name)}/skills`,
       {
         headers: await gatewayHeaders(),
@@ -62,7 +62,7 @@ export async function PUT(
   const { name } = await params;
   try {
     const payload = await req.json().catch(() => ({}));
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/${encodeURIComponent(name)}/skills`,
       {
         method: "PUT",

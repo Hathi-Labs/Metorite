@@ -3833,3 +3833,236 @@ def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> lis
             {"days": days},
         )
     ]
+
+
+# ── Provider health (migration 035) ─────────────────────────────────────────
+#
+# 🔴 Owner request, 2026-09-28: DeepSeek ran dry and all AI failed for two
+# days with nobody told. `provider_balance.py` owns the rule and the probes.
+# These are its statements, and the only ones that touch the two tables.
+#
+# ⚠️ **Neither table holds a secret.** `probe_error` takes a string from
+# `provider_balance._ERRORS` and nothing else.
+
+
+def provider_platform_names(conn: Connection) -> list[str]:
+    """Every provider with a LIVE PLATFORM credential. Metadata only."""
+    return [
+        r[0]
+        for r in conn.execute(
+            text(
+                """
+                SELECT DISTINCT provider FROM provider_credential
+                 WHERE organization_id IS NULL AND revoked_at IS NULL
+                 ORDER BY provider
+                """
+            )
+        )
+    ]
+
+
+def provider_health_save_probe(
+    conn: Connection,
+    *,
+    provider: str,
+    status: str,
+    balance: Decimal | None,
+    currency: str | None,
+    available: bool | None,
+    error: str | None,
+    http_status: int | None,
+) -> None:
+    """Record one probe. A FAILED probe keeps the last good balance.
+
+    ⚠️ Keeping it is the point. A vendor whose balance endpoint times out at
+    03:00 still has the balance it had at 02:30, and blanking it would hide a
+    low account behind a network blip. `funds_checked_at` says how old it is.
+
+    ⚠️ The columns are `funds_left` / `funds_checked_at`, never `balance`.
+    Migration 035 says why: a stored "balance" column is refused by the
+    credit fence in `test_customer_console_credits.py`.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO provider_health AS h (
+                provider, funds_left, currency, available, funds_checked_at,
+                probe_status, probe_error, probe_http, updated_at)
+            VALUES (
+                :provider,
+                CASE WHEN :status = 'ok' THEN CAST(:funds AS numeric) END,
+                CASE WHEN :status = 'ok' THEN CAST(:currency AS text) END,
+                CASE WHEN :status = 'ok' THEN CAST(:available AS boolean) END,
+                CASE WHEN :status <> 'failed' THEN now() END,
+                :status, :error, :http, now())
+            ON CONFLICT (provider) DO UPDATE SET
+                funds_left = CASE WHEN EXCLUDED.probe_status = 'failed'
+                                  THEN h.funds_left ELSE EXCLUDED.funds_left END,
+                currency = CASE WHEN EXCLUDED.probe_status = 'failed'
+                                THEN h.currency ELSE EXCLUDED.currency END,
+                available = CASE WHEN EXCLUDED.probe_status = 'failed'
+                                 THEN h.available ELSE EXCLUDED.available END,
+                funds_checked_at = CASE WHEN EXCLUDED.probe_status = 'failed'
+                                        THEN h.funds_checked_at
+                                        ELSE EXCLUDED.funds_checked_at END,
+                probe_status = EXCLUDED.probe_status,
+                probe_error = EXCLUDED.probe_error,
+                probe_http = EXCLUDED.probe_http,
+                updated_at = now()
+            """
+        ),
+        {
+            "provider": provider,
+            "status": status,
+            "funds": str(balance) if balance is not None else None,
+            "currency": currency,
+            "available": available,
+            "error": error,
+            "http": http_status,
+        },
+    )
+
+
+def provider_health_rows(conn: Connection) -> dict[str, dict[str, Any]]:
+    """Every `provider_health` row, keyed by provider.
+
+    Read back under the names the rule uses: `balance` and
+    `balance_checked_at`. The alias is only a label on a read.
+    """
+    rows = (
+        conn.execute(
+            text(
+                """
+                SELECT provider, funds_left AS balance, currency, available,
+                       funds_checked_at AS balance_checked_at,
+                       probe_status, probe_error, probe_http, low_threshold,
+                       alert_state, alert_changed_at, last_success_at, updated_at
+                  FROM provider_health
+                """
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {r["provider"]: dict(r) for r in rows}
+
+
+def provider_health_note_success(conn: Connection, rows: dict[str, Any]) -> int:
+    """Record the latest SERVED call per provider. Never moves time backwards.
+
+    ``GREATEST`` because two workers flush in any order, and an older flush
+    landing second must not un-clear an alarm the newer one cleared.
+    """
+    for provider, at in rows.items():
+        conn.execute(
+            text(
+                """
+                INSERT INTO provider_health (provider, last_success_at)
+                VALUES (:p, :at)
+                ON CONFLICT (provider) DO UPDATE
+                   SET last_success_at = GREATEST(
+                           provider_health.last_success_at, EXCLUDED.last_success_at)
+                """
+            ),
+            {"p": provider, "at": at},
+        )
+    return len(rows)
+
+
+def provider_refusal_insert(conn: Connection, rows: list[dict[str, Any]]) -> int:
+    """Append drained refusal counts. Returns rows written."""
+    for r in rows:
+        conn.execute(
+            text(
+                """
+                INSERT INTO provider_refusal (provider, status, refusals, first_at, last_at)
+                VALUES (:provider, :status, :refusals, :first_at, :last_at)
+                """
+            ),
+            r,
+        )
+    return len(rows)
+
+
+def provider_refusal_summary(
+    conn: Connection, *, hours: int = 24, recent_minutes: int = 60
+) -> dict[str, dict[str, Any]]:
+    """Per provider: the latest refusal per status, and counts, in the window.
+
+    ``refusals`` counts 401/402/403/429 only. ``server_errors`` counts 5xx,
+    which say the vendor is down rather than that OUR account is refusing.
+    ``recent_by_status`` counts each status inside ``recent_minutes`` only,
+    which is what the rule's repeat threshold for 403 and 429 reads.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for r in conn.execute(
+        text(
+            """
+            SELECT provider, status, SUM(refusals) AS n, MAX(last_at) AS last_at,
+                   COALESCE(SUM(refusals) FILTER (
+                       WHERE last_at >= now() - make_interval(mins => :recent)
+                   ), 0) AS recent
+              FROM provider_refusal
+             WHERE last_at >= now() - make_interval(hours => :hours)
+             GROUP BY provider, status
+            """
+        ),
+        {"hours": hours, "recent": recent_minutes},
+    ):
+        slot = out.setdefault(
+            r.provider,
+            {"by_status": {}, "recent_by_status": {}, "refusals": 0, "server_errors": 0,
+             "last_status": None, "last_at": None},
+        )
+        status = int(r.status)
+        if status >= 500:
+            slot["server_errors"] += int(r.n)
+            continue
+        slot["by_status"][status] = r.last_at
+        slot["recent_by_status"][status] = int(r.recent)
+        slot["refusals"] += int(r.n)
+        if slot["last_at"] is None or r.last_at > slot["last_at"]:
+            slot["last_at"] = r.last_at
+            slot["last_status"] = status
+    return out
+
+
+def provider_refusal_prune(conn: Connection, *, days: int = 7) -> int:
+    """Drop refusal rows older than any reader looks. Returns rows removed."""
+    result = conn.execute(
+        text("DELETE FROM provider_refusal WHERE last_at < now() - make_interval(days => :d)"),
+        {"d": days},
+    )
+    return int(result.rowcount or 0)
+
+
+def provider_health_set_alert(
+    conn: Connection, *, provider: str, state: str
+) -> tuple[bool, str | None]:
+    """Compare-and-set the logged alert state. Returns ``(changed, previous)``.
+
+    🔴 **Once per transition, across every worker.** The row lock makes two
+    workers that reach the same new state agree: the first one changes it and
+    logs, and the second one finds it already set and logs nothing.
+    """
+    conn.execute(
+        text(
+            "INSERT INTO provider_health (provider) VALUES (:p) "
+            "ON CONFLICT (provider) DO NOTHING"
+        ),
+        {"p": provider},
+    )
+    prev = conn.execute(
+        text("SELECT alert_state FROM provider_health WHERE provider = :p FOR UPDATE"),
+        {"p": provider},
+    ).scalar_one()
+    if prev == state:
+        return False, prev
+    conn.execute(
+        text(
+            "UPDATE provider_health SET alert_state = :s, alert_changed_at = now() "
+            "WHERE provider = :p"
+        ),
+        {"p": provider, "s": state},
+    )
+    return True, prev

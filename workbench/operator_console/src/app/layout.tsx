@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 import { DEFAULT_THEME, bootScript } from "@/lib/theme";
+import ProviderAlert from "./ProviderAlert";
 
 export const metadata = {
   title: "Metorite Operator Console",
@@ -20,7 +21,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             renders dark and snaps to light, which reads as the app breaking. */}
         <script dangerouslySetInnerHTML={{ __html: bootScript() }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {/* 🔴 The vendor alert, on EVERY page (2026-09-28). Here and not in
+            `Shell`, because only four pages use `Shell` and the other five
+            draw `Header` themselves. It draws nothing without a session, so
+            `/login` stays bare. */}
+        <ProviderAlert />
+        {children}
+      </body>
     </html>
   );
 }

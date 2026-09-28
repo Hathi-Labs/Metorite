@@ -33,7 +33,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity, UNAUTHENTICATED } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, UNAUTHENTICATED, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -156,7 +156,7 @@ export async function GET(): Promise<
   // `openrouter/qwen/qwen3.7-max` was picked and refused `tier_unknown`.
   let routerServing = false;
   try {
-    const provRes = await fetch(`${GATEWAY_URL}/settings/llm`, {
+    const provRes = await gatewayFetch(`${GATEWAY_URL}/settings/llm`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(3_000),
     });
@@ -196,7 +196,7 @@ export async function GET(): Promise<
   let enabledModels: { id: string; label: string; provider: string; group: string }[] = [];
   const hiddenSet = new Set<string>();
   try {
-    const cr = await fetch(`${GATEWAY_URL}/settings/llm/enabled-models`, {
+    const cr = await gatewayFetch(`${GATEWAY_URL}/settings/llm/enabled-models`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(3_000),
     });
@@ -228,7 +228,7 @@ export async function GET(): Promise<
 
   if (configured.has("github")) {
     try {
-      const res = await fetch(`${GATEWAY_URL}/copilot/models`, {
+      const res = await gatewayFetch(`${GATEWAY_URL}/copilot/models`, {
         signal: AbortSignal.timeout(4000),
       });
       if (res.ok) {
@@ -357,7 +357,7 @@ export async function GET(): Promise<
   // actual model — critical when the user switches models mid-chat.
   let ctxMap: Record<string, number> = {};
   try {
-    const cwRes = await fetch(`${GATEWAY_URL}/settings/llm/context-windows`, {
+    const cwRes = await gatewayFetch(`${GATEWAY_URL}/settings/llm/context-windows`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(3_000),
     });

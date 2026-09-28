@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
 
-import { readAccounts, readProviderSpend } from "@/lib/read";
+import { readAccounts, readProviderHealth, readProviderSpend } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import SectionTabs from "../SectionTabs";
 import Shell, { Unconfigured } from "../Shell";
 import ProviderAdmin from "./ProviderAdmin";
+import ProviderHealthPanel from "./ProviderHealthPanel";
 import VendorSpend from "./VendorSpend";
 
 export const dynamic = "force-dynamic";
@@ -45,9 +46,10 @@ export default async function ProvidersPage() {
   // page render, and awaiting them one after the other doubles the wait for
   // no reason. A failure in either is carried by its own `Sourced` wrapper,
   // so one read failing never blanks the other half of the page.
-  const [accounts, spend] = await Promise.all([
+  const [accounts, spend, health] = await Promise.all([
     readAccounts({ authToken: session.authToken }),
     readProviderSpend({ authToken: session.authToken }),
+    readProviderHealth({ authToken: session.authToken }),
   ]);
 
   return (
@@ -58,6 +60,11 @@ export default async function ProvidersPage() {
       note={accounts.note}
     >
       <SectionTabs current="/providers" />
+      {/* 🔴 FIRST, above the accounts. Owner request 2026-09-28: an empty
+          vendor account stopped AI for two days while every card below read
+          "armed". Its own origin and note travel with it, so a Console that
+          predates the route says so here without blanking the rest. */}
+      <ProviderHealthPanel rows={health.data} origin={health.origin} note={health.note} />
       <ProviderAdmin creds={accounts.data} />
       {/* 🔴 BELOW the accounts, and that order is the argument of the page:
           first what we can call, then what calling it costs. */}

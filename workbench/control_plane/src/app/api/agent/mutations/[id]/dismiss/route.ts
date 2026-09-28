@@ -5,7 +5,7 @@
  * Removes failed/historical audit_event rows from the inbox.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   const { id } = await params;
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/mutations/audit/${encodeURIComponent(id)}`,
       {
         method: "DELETE",

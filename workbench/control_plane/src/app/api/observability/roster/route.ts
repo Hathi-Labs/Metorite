@@ -5,7 +5,7 @@
  * agent with its live status (working / idle). Powers the office view's cast.
  */
 import { NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +13,7 @@ export async function GET(): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   try {
-    const res = await fetch(`${GATEWAY_URL}/observability/roster`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/observability/roster`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
     });

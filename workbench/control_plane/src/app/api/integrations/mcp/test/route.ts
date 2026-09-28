@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (me instanceof NextResponse) return me;
   try {
     const body = await req.json().catch(() => ({}));
-    const res = await fetch(`${GATEWAY_URL}/integrations/mcp/test`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/integrations/mcp/test`, {
       method: "POST",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),

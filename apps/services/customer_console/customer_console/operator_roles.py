@@ -113,6 +113,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # The read groups by vendor, names no organization, and excludes BYOK —
     # those tokens ran on a customer's own account and are not our spend.
     ("GET", "/providers/spend"): _R(VIEWER),
+    # Can each vendor account serve (2026-09-28)? The balance each vendor
+    # reported, and the refusals the Router saw. VIEWER on the argument the two
+    # rows above make, and more so: an empty account stops AI for every
+    # customer, so every operator must be able to see that it is empty. No
+    # secret, and no customer's data — BYOK accounts are not in it.
+    ("GET", "/providers/health"): _R(VIEWER),
     ("POST", "/registry/seats/overview"): _R(VIEWER),
     # The audit trail (CP-12f). VIEWER on purpose, and it is the same
     # argument `GET /operators` makes: a record of who did what to our
@@ -169,6 +175,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # the BODY, which a dependency cannot see, so the route body raises the bar
     # to `admin` above `credit_elevation()`. Both halves are tested.
     ("POST", "/credits/grant"): _R(EDITOR),
+    # "Check now" on the provider balances. It changes nothing we sell and
+    # moves no money. It spends one read-only request per vendor, which is why
+    # it is not VIEWER: a viewer should not be able to drive our vendor quota.
+    ("POST", "/providers/health/check"): _R(EDITOR),
 
     # ── The sharp edges. Admin, and CP-12e adds a window ────────────────────
     ("POST", "/orgs/lifecycle"): _R(ADMIN, elevated=True),

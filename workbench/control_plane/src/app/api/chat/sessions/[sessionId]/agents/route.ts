@@ -2,7 +2,7 @@
  * POST /api/chat/sessions/[sessionId]/agents — add an agent to a room
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function POST(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/agents`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/agents`, {
       method: "POST",
       headers: await gatewayHeaders(),
       body: JSON.stringify(body),

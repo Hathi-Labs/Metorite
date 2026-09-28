@@ -3,7 +3,7 @@
  * POST /api/settings/llm/enabled-models   — enable a model
  */
 import { NextRequest, NextResponse } from "next/server";
-import { gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 // These handlers resolve the signed-in member, so they can never be
 // statically evaluated. Without this, `next build`'s page-data collection
@@ -21,7 +21,7 @@ export async function GET(): Promise<NextResponse> {
   // first and serve every later caller as them.
   const HEADERS = await gatewayHeaders({ "Content-Type": "application/json" });
   try {
-    const r = await fetch(`${GATEWAY}/settings/llm/enabled-models`, {
+    const r = await gatewayFetch(`${GATEWAY}/settings/llm/enabled-models`, {
       headers: HEADERS,
       signal: AbortSignal.timeout(4_000),
     });
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const HEADERS = await gatewayHeaders({ "Content-Type": "application/json" });
   const body = await req.json();
   try {
-    const r = await fetch(`${GATEWAY}/settings/llm/enabled-models`, {
+    const r = await gatewayFetch(`${GATEWAY}/settings/llm/enabled-models`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify(body),

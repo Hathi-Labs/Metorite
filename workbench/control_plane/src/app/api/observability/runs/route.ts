@@ -7,7 +7,7 @@
  * authenticated operator; returns lean metadata rows (no full trace content).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // Durable run history from the observability route (open to any authed
     // operator) — NOT /debug/runs, which is EXECUTIVE-gated and returns full
     // message-content traces. This endpoint returns lean metadata rows only.
-    const res = await fetch(`${GATEWAY_URL}/observability/runs?${qs.toString()}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/observability/runs?${qs.toString()}`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(6_000),
     });

@@ -10,7 +10,7 @@
  * disconnect tears down the gateway connection instead of leaking it.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (me instanceof NextResponse) return me;
   let upstream: Response;
   try {
-    upstream = await fetch(`${GATEWAY_URL}/observability/activity/stream`, {
+    upstream = await gatewayFetch(`${GATEWAY_URL}/observability/activity/stream`, {
       headers: await gatewayHeaders(),
       signal: req.signal, // client disconnect → cancel the gateway stream
     });

@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +46,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const params = agent ? `?agent=${encodeURIComponent(agent)}` : "";
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/integrations/status${params}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/integrations/status${params}`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
     });

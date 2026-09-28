@@ -6,7 +6,7 @@
  * data-URI. Generation can take tens of seconds, hence the long timeout.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
   try {
-    const res = await fetch(`${GATEWAY_URL}/observability/avatars/generate`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/observability/avatars/generate`, {
       method: "POST",
       headers: await gatewayHeaders(),
       body: JSON.stringify(body),

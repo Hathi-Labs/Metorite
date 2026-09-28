@@ -9,7 +9,7 @@
  * server-side.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const body = await req.text();
   let upstream: Response;
   try {
-    upstream = await fetch(`${GATEWAY_URL}/email/compose-assist/stream`, {
+    upstream = await gatewayFetch(`${GATEWAY_URL}/email/compose-assist/stream`, {
       method: "POST",
       headers: await gatewayHeaders(),
       body,

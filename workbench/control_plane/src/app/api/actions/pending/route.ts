@@ -7,7 +7,7 @@
  * gateway is unavailable so the inbox UI never breaks.
  */
 import { NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export async function GET(): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   try {
-    const res = await fetch(`${GATEWAY_URL}/actions/pending`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/actions/pending`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(4_000),
     });

@@ -8,7 +8,7 @@
  * All routes proxy to the FastAPI gateway /memory/* path.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export async function GET(
   const { path } = await params;
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
@@ -54,7 +54,7 @@ export async function POST(
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
     const body = await req.json().catch(() => ({}));
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "POST",
       headers: {
         ...(await gatewayHeaders()),
@@ -79,7 +79,7 @@ export async function DELETE(
   const { path } = await params;
   const upstream = `${GATEWAY_URL}/memory/${path.join("/")}`;
   try {
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       method: "DELETE",
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
