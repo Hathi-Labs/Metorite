@@ -2728,6 +2728,14 @@ server declined.
 7. S13 adds no flag and no route, and one migration.
 8. S13 updates the rule in the comment above `_MESSAGE_UPSERT_SQL`, in item
    3 of `apps/services/gateway/AGENTS.md` and in §18.4.
+9. **The fold id of a run with no `assistant_message_id` is server-only**
+   (fix round 1). `/agent/run/stream` gets it from `fold_message_id` in
+   `routes/agent.py`, once for each run, as `assistant-{thread}-{uuid4}`.
+   No event and no response carries it. The old fallback was
+   `assistant-{thread}-{run_id}`, and RUN_STARTED publishes `runId` to the
+   room. So a member could insert that id first, become its run member, and
+   make the `WHERE` decline the real fold for good. The Next chat always
+   sends its own id, so the fallback serves API and automation callers only.
 
 ### 19.5 Acceptance — S13
 
@@ -2763,15 +2771,25 @@ server declined.
 7. Five mutations each turn a test red: no run-member check, no seal check,
    the fold let through on a system row, the fold let through with another
    starter, and an `unchanged` that is always empty.
+8. Fix round 1, R8: a member inserts a reply under the old
+   `assistant-{thread}-{run_id}` id before the fold. The fold then writes
+   the id from `fold_message_id`, and the real reply is stored.
+   `test_a_run_with_no_message_id_cannot_be_preempted` is the fence. A
+   `fold_message_id` that returns a predictable id turns it red. A source
+   test checks that the route calls the helper once.
+9. The migration sets `lock_timeout` to `5s` before its `ALTER`.
 
 ### 19.6 What S13 does not do
 
 - `_attribute` still takes the claim of an agent turn from the body when it
   INSERTS a new row. So a member can make a new row that names an agent or a
   system summary.
-- The server mints no row id. A member who knows the id of another run before
-  its first checkpoint can insert first. The fold then declines, and the
-  reply of the real run is not stored.
+- The server mints no row id when the caller sends one. A member who knows
+  that id before the first checkpoint of the run can insert first. The fold
+  then declines, and the reply of the real run is not stored. The Next chat
+  mints its id with `nanoid()` in the browser of the sender, so another
+  member does not see it before the run. A caller that sends no id gets a
+  server-only id (§19.4 rule 9).
 - Before the fold, a second tab of the same member can write older content.
 - The LiteLLM and batch paths have no fold, so their rows never seal.
 - S13 does not change the translator, the browser or the stream. Nothing in

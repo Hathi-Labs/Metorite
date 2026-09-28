@@ -941,6 +941,58 @@ def test_unchanged_names_every_declined_id_in_request_order(clean) -> None:
     assert _content(sid, "b1") == "mine"
 
 
+@_needs_db
+def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
+    """S13 fix round 1 (§19.4 rule 8). A caller that sends no
+    ``assistant_message_id`` gets a fold id that the server mints.
+
+    The old fallback was ``assistant-{thread}-{run_id}``, and RUN_STARTED
+    publishes ``runId`` to the room. Bob inserts that id first and becomes
+    its run member. With the old shape, S13's WHERE then declined the real
+    fold, and Bob's forged reply stayed. Now the fold writes an id that Bob
+    cannot know, and the real reply is stored.
+    """
+    from gateway.routes.agent import fold_message_id
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    run_id = "run-published-in-run-started"
+    guessed = f"assistant-{sid}-{run_id}"
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id=guessed, role="assistant", content="forged",
+                      timestamp=3013, author_kind="agent",
+                      author_email="sales-assistant"),
+    ])
+    assert out["unchanged"] == []
+
+    mid = fold_message_id(None, sid)
+    assert mid != guessed and run_id not in mid
+    assert mid.startswith(f"assistant-{sid}-")
+    assert fold_message_id(None, sid) != mid  # fresh for each run
+    assert _fold(sid, mid, _ALICE, "the real reply") == []
+    assert _content(sid, mid) == "the real reply"
+    row = _author(sid, mid)
+    assert (row.author_kind, row.author_email) == ("agent", "sales-assistant")
+    assert _run_state(sid, mid).run_member_email == _ALICE.lower()
+
+
+def test_the_caller_id_wins_and_the_run_route_uses_the_helper() -> None:
+    """The source half of the test above. The route mints the fold id once,
+    through ``fold_message_id``, and the ``run_id`` shape is gone."""
+    import inspect
+
+    from gateway.routes import agent
+
+    assert agent.fold_message_id("client-nanoid", "t1") == "client-nanoid"
+    route = inspect.getsource(agent.run_agent_stream_endpoint)
+    assert (
+        "_persist_message_id = fold_message_id(req.assistant_message_id, thread_id)"
+        in route
+    )
+    assert route.count("fold_message_id(") == 1
+    assert 'f"assistant-{thread_id}-{run_id}"' not in inspect.getsource(agent)
+
+
 def test_only_the_fold_passes_author_from_run() -> None:
     """§18.2 rule 7, by source. The fold passes True, and the route handler
     that saves the client's messages never names the keyword."""
