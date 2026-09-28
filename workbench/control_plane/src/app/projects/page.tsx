@@ -436,6 +436,25 @@ function ProjectNav({
         </div>
       ))}
 
+      {/* WS-41 I-7 — the import, LABELLED where an admin looks for work to
+          do. An icon beside the + was all it had in I-4, and the owner read
+          that as "no import UI". */}
+      {onImport && (
+        <div className="mb-3 flex flex-col gap-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              onImport();
+              onPicked?.();
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-foreground tech-transition hover:bg-muted"
+          >
+            <Icon name="Upload" className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">Import from ClickUp</span>
+          </button>
+        </div>
+      )}
+
       {/* The Spaces section — its own heading, with the + that creates one. */}
       <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
         <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -453,19 +472,6 @@ function ProjectNav({
         >
           <Icon name="Plus" className="h-4 w-4" />
         </button>
-        {onImport && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon="Upload"
-            aria-label="Import from ClickUp"
-            title="Import from ClickUp"
-            onClick={() => {
-              onImport();
-              onPicked?.();
-            }}
-          />
-        )}
       </div>
 
       <ProjectTree
@@ -531,6 +537,23 @@ function ProjectNav({
           onPicked?.();
         }}
       />
+      {/* An organization with no spaces yet is the one most likely to be
+          moving in from another tool: offer the import beside the empty line. */}
+      {onImport && roots.length === 0 && (
+        <div className="px-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="Upload"
+            onClick={() => {
+              onImport();
+              onPicked?.();
+            }}
+          >
+            Import from ClickUp
+          </Button>
+        </div>
+      )}
     </>
   );
 }

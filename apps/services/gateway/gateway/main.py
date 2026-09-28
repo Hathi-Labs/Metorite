@@ -294,6 +294,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.tasks_rollover_skipped", error=str(exc))
 
+    # WS-41 I-7: delete import uploads nobody finished, after 14 days (§7.2).
+    try:
+        from gateway.routes.projects.import_sweep import start_sweep
+        await start_sweep()
+    except Exception as exc:
+        _log.warning("gateway.import_sweep_skipped", error=str(exc))
+
     # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
     # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
     # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
@@ -379,6 +386,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.tasks.calendar import stop_auto_rollover
         await stop_auto_rollover()
+    except Exception:
+        pass
+
+    try:
+        from gateway.routes.projects.import_sweep import stop_sweep
+        await stop_sweep()
     except Exception:
         pass
 
