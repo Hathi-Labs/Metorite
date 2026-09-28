@@ -140,7 +140,9 @@ BUSY_SQL = (
 START_SQL = (
     "UPDATE pm_import_runs "
     "   SET state = 'applying', heartbeat_at = now(), updated_at = now(), "
-    "       progress = jsonb_set(progress, '{lease}', to_jsonb(CAST(:lease AS text))) "
+    "       progress = jsonb_set(jsonb_set(progress, '{lease}', to_jsonb(CAST(:lease AS text))), "
+    # The FIRST apply, kept on a resume: a discard reads when this run wrote.
+    "                            '{started_at}', coalesce(progress->'started_at', to_jsonb(now()))) "
     " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     "   AND (state = 'planned' OR (state = 'applying' AND "
     "        (heartbeat_at IS NULL OR heartbeat_at < now() - interval '120 seconds'))) "

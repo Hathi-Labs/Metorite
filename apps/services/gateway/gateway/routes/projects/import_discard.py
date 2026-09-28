@@ -40,17 +40,42 @@ WRITING_SQL = (
 )
 
 
-def _outside_imports(column: str) -> str:
-    """True when ``column`` falls outside every OTHER import's run, discarded
-    ones included. A later import writes lanes, types, tags and watchers into
-    this run's nodes, and its discard leaves them (§6.9). Without this, those
-    rows would read as a member's work and refuse this run for ever. The window
-    runs from the other run's upload to its end, so member work made inside it
-    is not seen either; the spec says so."""
+#: When a related run WROTE: from its apply (``progress.started_at``, stamped
+#: by START_SQL) to its end. The upload is not the start: a run can sit in
+#: planning for days, and member work in that time must still count.
+_WROTE_WINDOW = (
+    "{col} BETWEEN coalesce(CAST(o.progress->>'started_at' AS timestamptz), o.created_at) "
+    "AND coalesce(o.finished_at, 'infinity'::timestamptz)"
+)
+
+
+def _not_by_related_import_on_nodes(column: str) -> str:
+    """True unless a RELATED import wrote this node-level row. Only three
+    tables can hold one: a later run that continued this run, or that targeted
+    one of its nodes, adds statuses, task types and tags there, and its own
+    discard leaves them (§6.9). Unrelated runs and every other table get no
+    exception, so an upload left open hides nothing."""
     return (
         "NOT EXISTS (SELECT 1 FROM pm_import_runs o "
         " WHERE o.organization_id = CAST(:org AS uuid) AND o.id <> CAST(:run AS uuid) "
-        f"   AND {column} BETWEEN o.created_at AND coalesce(o.finished_at, 'infinity'::timestamptz))"
+        "   AND o.progress ? 'node_ids' "
+        "   AND (o.progress->'continued_from' ? CAST(:run AS text) "
+        "        OR o.mapping->'target'->>'project_id' = ANY(CAST(:nodes AS text[]))) "
+        "   AND " + _WROTE_WINDOW.format(col=column) + ")"
+    )
+
+
+def _not_by_related_import_on_task(column: str) -> str:
+    """True unless a RELATED import wrote this watcher: a run that updated the
+    task and synced its assignees."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM pm_import_runs o "
+        " WHERE o.organization_id = CAST(:org AS uuid) AND o.id <> CAST(:run AS uuid) "
+        "   AND o.progress ? 'node_ids' "
+        "   AND (o.id::text = t.origin->>'updated_by_run' "
+        "        OR EXISTS (SELECT 1 FROM pm_activities a WHERE a.task_id = t.id "
+        "                    AND a.meta->'import'->>'run_id' = o.id::text)) "
+        "   AND " + _WROTE_WINDOW.format(col=column) + ")"
     )
 
 
@@ -96,14 +121,12 @@ EDITED_SQL = (
     "        OR EXISTS (SELECT 1 FROM pm_task_personal x WHERE x.task_id = t.id) "
     "        OR EXISTS (SELECT 1 FROM pm_task_watchers x WHERE x.task_id = t.id "
     "                    AND x.created_at > CAST(:finished AS timestamptz) AND "
-    + _outside_imports("x.created_at")
+    + _not_by_related_import_on_task("x.created_at")
     + ") "
     "        OR EXISTS (SELECT 1 FROM pm_task_attachments x WHERE x.task_id = t.id) "
     "        OR EXISTS (SELECT 1 FROM pm_task_links x "
     "                    WHERE (x.source_task_id = t.id OR x.target_task_id = t.id) "
-    "                      AND x.created_at > CAST(:finished AS timestamptz) AND "
-    + _outside_imports("x.created_at")
-    + ") "
+    "                      AND x.created_at > CAST(:finished AS timestamptz)) "
     "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id)) "
     " LIMIT :n"
 )
@@ -140,6 +163,8 @@ NODE_TABLES: dict[str, str] = {
     "pm_project_grants": "an access grant",
     "pm_activities": "a comment or an edit",
 }
+#: The node tables an import writes into a node it did not create (§6.9).
+IMPORT_WRITES = ("pm_task_statuses", "pm_task_types", "pm_tags")
 #: `pm_task_counters` holds no member work: it is the task-number counter.
 NODE_TABLES_IGNORED = ("pm_task_counters",)
 #: The tables that CASCADE with a task, and what rule 2 does with each. The
@@ -165,15 +190,14 @@ def _node_work_sql() -> str:
         "  JOIN pm_projects p ON p.id = x.project_id "
         " WHERE x.project_id = ANY(CAST(:nodes AS uuid[])) "
         "   AND x.created_at > CAST(:finished AS timestamptz) AND "
-        + _outside_imports("x.created_at")
+        + (_not_by_related_import_on_nodes("x.created_at") if table in IMPORT_WRITES else "TRUE")
         + (" AND x.meta->'import' IS NULL" if table == "pm_activities" else "")
         for table, label in NODE_TABLES.items()
     ]
     # A member renamed or moved a node the run made.
     parts.append(
         "SELECT id, name || ': renamed or changed' AS title FROM pm_projects "
-        " WHERE id = ANY(CAST(:nodes AS uuid[])) AND updated_at > CAST(:finished AS timestamptz) AND "
-        + _outside_imports("updated_at")
+        " WHERE id = ANY(CAST(:nodes AS uuid[])) AND updated_at > CAST(:finished AS timestamptz)"
     )
     return "(" + ") UNION ALL (".join(parts) + ") LIMIT :n"
 

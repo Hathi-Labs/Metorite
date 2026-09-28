@@ -305,6 +305,31 @@ async def refusals(org: str, bundle: object, raw: bytes) -> None:
         refused is not None and any("a saved view" in b["title"] for b in refused.blocking),
         refused.message if refused else "not refused",
     )
+    # The review's third P1: an upload left open must not hide member work.
+    # The run below is left `planned` with nothing written, and the view is
+    # made AFTER its upload.
+    open_run, _lease = await w.new_run(org, ADMINS[org], bundle, raw, ImportMapping())
+    async with tenant_session(org) as db:
+        await db.execute(text("DELETE FROM pm_views WHERE project_id = :p"), {"p": lst})
+        await db.execute(
+            text(
+                "UPDATE pm_import_runs SET state = 'planned', progress = '{}'::jsonb, "
+                " finished_at = NULL WHERE id = CAST(:r AS uuid)"
+            ),
+            {"r": open_run},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO pm_views (project_id, name, created_by) VALUES (:p, 'Made later', :who)"
+            ),
+            {"p": lst, "who": ADMINS[org]},
+        )
+    _, refused = await discard(org, run)
+    check(
+        "3.5 an upload left open hides no member work",
+        refused is not None and any("a saved view" in b["title"] for b in refused.blocking),
+        refused.message if refused else "not refused",
+    )
     async with tenant_session(org) as db:
         await db.execute(text("DELETE FROM pm_views WHERE project_id = :p"), {"p": lst})
         await db.execute(
