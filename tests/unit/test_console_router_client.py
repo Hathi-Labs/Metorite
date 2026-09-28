@@ -362,13 +362,35 @@ async def test_the_deployment_arm_presents_the_DEPLOYMENT_key(monkeypatch):
     monkeypatch.setattr(console_resolve, "_new_http_client", fake.client)
 
     await console_resolve.chat_completion_on_console(
-        PAYLOAD, member="someone@example.com"
+        PAYLOAD, member="someone@example.com", member_proven=True
     )
     assert fake.requests, "the deployment arm made no request"
     sent = fake.requests[0].headers["authorization"]
     assert sent == f"Bearer {DEPLOYMENT_KEY}"
     # The member is what the Console resolves the tenant FROM, so it must go.
     assert fake.requests[0].headers["x-cc-member"] == "someone@example.com"
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "call", ["chat_completion_on_console", "stream_completion_on_console", "decide_on_console"]
+)
+async def test_the_deployment_arm_never_SENDS_an_unproven_member(monkeypatch, call):
+    """🔴 2026-09-28. An unsigned member could name another tenant's person
+    and bill that tenant, so the gateway refuses before any request leaves.
+    Every Router call on this seam is checked, not only chat."""
+    fake = FakeRouter()
+    _shared_box(monkeypatch)
+    monkeypatch.setattr(console_resolve, "_new_http_client", fake.client)
+    fn = getattr(console_resolve, call)
+    with pytest.raises(console_resolve.ConsoleRouterUnavailable, match="not proven"):
+        result = fn(PAYLOAD, member="someone@example.com")
+        if hasattr(result, "__aiter__"):
+            async for _ in result:
+                pass
+        else:
+            await result
+    assert fake.requests == [], "an unproven member reached the Router"
     get_settings.cache_clear()
 
 
