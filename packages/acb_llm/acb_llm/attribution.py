@@ -58,7 +58,7 @@ def _proof_for(member: str) -> str | None:
         from acb_common.settings import get_settings
 
         secret = str(getattr(get_settings(), "gateway_session_secret", "") or "")
-        if not secret.strip():
+        if secret.strip() in member_proof.PUBLIC_DEFAULT_SECRETS or not secret.strip():
             return None
         return member_proof.sign_member(member, secret)
     except Exception:

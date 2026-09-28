@@ -345,6 +345,22 @@ async def test_absent_attribution_headers_become_none(monkeypatch, spy):
     assert set(kw.values()) == {None}
 
 
+async def test_an_INBOUND_proven_flag_is_never_forwarded(monkeypatch, spy):
+    """🔴 R7 fence (review of PR #511). A `/v1` caller sending
+    `X-CC-Member-Proven: 1` with no valid proof must reach the Router as
+    UNPROVEN. The flag is rebuilt from `_member_for`'s verdict, never copied,
+    because on the deployment key it decides which organization pays."""
+    _configure(monkeypatch, flag="1")
+    await v1_compat._handle_chat_completions(
+        FakeRequest(
+            TIER_BODY,
+            {"X-CC-Member": "victim@other.test", "X-CC-Member-Proven": "1"},
+        )
+    )
+    _payload, kw = spy.router_calls[0]
+    assert kw["member_proven"] is False
+
+
 async def test_a_SIGNED_proof_marks_the_member_proven(monkeypatch, spy):
     """🔴 The other half of H-73, end to end through the handler.
 
