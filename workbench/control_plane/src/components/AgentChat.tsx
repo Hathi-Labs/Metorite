@@ -1553,7 +1553,7 @@ export default function AgentChat({
         <AgentAvatar libraryId={agentAvatars[currentAgentName]} size={20} fallback={null} />
         <span className="text-xs font-medium text-foreground truncate">{currentAgentLabel}</span>
         {isLoading && (
-          <span className="hidden sm:inline text-[10px] text-warning/70 animate-pulse">thinking…</span>
+          <span className="hidden sm:inline text-[10px] text-warning animate-pulse">thinking…</span>
         )}
         {agentRuntime === "github-copilot" && currentAgentEntry?.repo_url && (
           <a href={currentAgentEntry.repo_url} target="_blank" rel="noopener noreferrer"
@@ -1584,7 +1584,7 @@ export default function AgentChat({
       {!bannerDismissed && missingMandatory.length > 0 && (
         <div className="shrink-0 border-b border-warning/20 bg-warning/5 px-4 py-2 flex items-center gap-2 text-[11px]">
           <span className="text-warning">⚡</span>
-          <span className="text-warning/80">{missingIntegrationsText(missingMandatory)}</span>
+          <span className="text-warning">{missingIntegrationsText(missingMandatory)}</span>
           <button onClick={() => setBannerDismissed(true)} aria-label="Dismiss" className="ml-auto w-5 h-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary tech-transition">✕</button>
         </div>
       )}
@@ -1625,7 +1625,7 @@ export default function AgentChat({
             const last = messages[messages.length - 1];
             const wasInterrupted = isInterruptedReply(last) && !!last?.content;
             return wasInterrupted ? (
-              <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning/80">
+              <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning">
                 ⚡ Stream was interrupted. Messages are saved — you can continue chatting below.
               </div>
             ) : null;

@@ -1182,6 +1182,10 @@ async def set_schedule(
                     ),
                 )
 
+        # ⚠️ No `updated_at` here, for the reason `update_report` gives.
+        # `update_row` already appends `updated_at = now()`, and a second
+        # assignment made Postgres refuse every call ("multiple assignments
+        # to same column"). H-183. Fence: test_projects_report_schedule.py.
         row = await update_row(
             db,
             "pm_reports",
@@ -1189,11 +1193,12 @@ async def set_schedule(
             {
                 "enabled": enabled,
                 "schedule": schedule if enabled else None,
-                "updated_at": text("now()"),
             },
         )
         return {
-            **_report_dict(row),
+            # The caller goes in, so this answer carries `mine` as
+            # `PATCH /reports/{id}` does. One report, one shape.
+            **_report_dict(row, user),
             # ⚠️ Read from the environment, never hardcoded. A member who
             # just turned this on would otherwise believe mail is going out.
             # A literal `False` here would become a lie the moment somebody

@@ -447,6 +447,12 @@ Every token pair is checked against WCAG 2.1 AA by
 regress, and **fixing one requires deleting its entry**, so the list can never
 quietly become fiction.
 
+A status tone is also TEXT. The gate measures `text-warning` and its four
+siblings at 4.5 : 1 on the page, the card, `--muted` and their own 10% chip
+tint, in both modes. So light mode needs a darker value than dark mode.
+`--warning` is a dark amber on white and a bright yellow on near-black
+(H-174). The other four still have ratchet entries (H-193).
+
 If you change a colour, run that test. Never signal state with colour alone —
 pair it with an icon or a label.
 
