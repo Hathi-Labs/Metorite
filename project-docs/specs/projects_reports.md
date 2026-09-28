@@ -14,8 +14,11 @@ and T1 live).
 
 **R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
 server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
-chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13). R5b is next. R5c is
-blocked. R4, R4b, R5b, R6 to R9 and Phases 2 and 3 are not built.
+chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13).
+
+**R5b-1 BUILT 2026-09-29** (the subject chip in the builder, T2 and T6 live,
+T1 takes a team, and the link contract). R5b-2 is next. R5c is blocked. R4,
+R4b, R5b-2, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -162,17 +165,19 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:201`). The create control is "New report" (`:946`).
+  `RenderedBody` (`:252`). The create control is "New report" (`:1359`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
-- `lib/api.ts:1275` to `:1313`. The client can list, create, patch, preview,
-  render and delete a report, and read the templates. It has no call for
-  recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:486`).
+- `lib/api.ts:1613` to `:1653`. The client can list, create, patch, preview,
+  render and delete a report, and read the templates and the subjects. It has
+  no call for recipients or schedule.
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:721`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
-- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:758`)
-  and the template card (`TemplateCard`, `:701`).
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1117`)
+  and the template card (`TemplateCard`, `:1060`).
+- **Since R5b-1:** the builder has the subject chip. `lib/reportBuilder.ts`
+  holds `subjectOptions`, `reportLink` and `parseReportLink`.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -240,18 +245,18 @@ the default period. A member picks a template, then changes any of it. The
 saved report keeps the template key in `config.template`, so the home screen
 can group reports and the chat can name them.
 
-**Status key:** ✅ live (T4 since R2, T5 since R3a, T13 since R3c). ◐ waits
+**Status key:** ✅ live (T4 since R2, T5 since R3a, T13 since R3c, T1 since R3d, T2 and T6 since R5b). ◐ waits
 for a section, a scope, a period or a filter that §8 adds. The gallery shows
 a ◐ template as "coming soon".
 
 | # | Key | Template | The question | Scope | Period | Sections | Status |
 |---|---|---|---|---|---|---|---|
 | T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ✅ (since R3d) |
-| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` (its waiting items show on the reader's own row, Q6) | ◐ |
+| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | person (the reader) | today | `pulse` (its waiting items show on the reader's own row, Q6) | ✅ (since R5b) |
 | T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
 | T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `finished`, `outlook`, `stuck`, `conflicts` | ✅ (since R3a) |
-| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse` (its waiting items show on the reader's own row, Q6) | ◐ (§7.1 limits who may open it) |
+| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse` (its waiting items show on the reader's own row, Q6) | ✅ (since R5b, §7.1 limits who may open it) |
 | T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
 | T9 | `stakeholder_update` | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
@@ -1210,11 +1215,29 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - (h) Real database: T1 with the subject team A renders for L. A member gets 403 for team A.
 - (i) The live templates are exactly `team_pulse`, `my_day`, `weekly_delivery`, `project_status`, `one_on_one` and `data_hygiene`.
 - (j) Real database: the subject of a saved T2 renders it and sees their waiting items. An admin renders the same row and sees none.
+- (n) The subject chip reads as words, for example "About: Me" or "About: Hardware team". The menu has the headings Everyone, People and Teams. A person shows the name, with the address muted beside it. A menu of more than 8 entries has a filter box. The chip is `SelectButton` from `src/components/ui`.
+- (o) Vitest: T2 locks the chip to the reader, with the note "My day is always about you." T6 shows "About: choose a person". Until a person is set, the preview shows one line that says what to do, and no error.
+- (p) Vitest: with a subject set, one muted line under the sections says why Forecast and Data hygiene are off. The two checkboxes stay in the list.
+- (q) The sentence reads "[Template] About: [subject] In: [scope] Over: [period]". At 390 px each chip has the full width.
+- (r) Vitest and review: the subject chip shows a skeleton while it loads. It shows a line when the list is empty, and a retry line when the read fails. A 403 or a 422 shows as one sentence under the chip that caused it.
+- (s) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect.
 
 **Done when, R5b-2:**
 - (k) Vitest: the link of each control equals `reportLink` with the expected template, subject and node.
 - (l) Vitest: `PersonPanel` shows no "1:1 prep" when the subjects answer omits the person, or when the read fails.
 - (m) A review at 390 px shows that each link opens Reports with the builder filled in. If it does, the PR closes H-184 item 5.
+
+**As built, R5b-1 (2026-09-29).** `test_projects_report_scope_r5b.py` proves (e) to (j) on a real database. `reportBuilderSubject.test.ts` proves (a) to (d), (o), (p) and (r).
+A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
+
+- `normalise_report_config` calls `_config_template`, which gives 422 to T2 or T6 with no person subject. `require_template_subject` gives 422 to a T2 whose subject is not the reader. Create, patch and preview call it before the §7.1 check.
+- The subjects answer carries `me`, the address of the reader. The chip names that row "Me", and T2 takes it as its subject.
+- The builder derives the T2 subject from `me` and never stores a typed value. A template about one person asks the server for no preview until a person is set.
+- `SelectButton` has four new optional props: `group` on an option, `prefix`, `prompt` and `filterAbove`. `filterOptions` is the filter, and `SelectButton.test.ts` holds it.
+- `ReportsView` reads the link keys once, after the catalogue loads, and removes them from the address.
+- `NO_SUBJECT_SECTIONS` in `reportBuilder.ts` mirrors `report_scope.py`. `test_projects_report_sections_lockstep.py` fails when the two differ.
+
+⚠️ **The hazard.** `_report_dict` runs `normalise_report_config` on each read, and the list reads every row. So a stricter shape rule added later can make a saved row answer 422, and the list with it. Put a rule that needs the reader or the database in `require_template_subject`, which a read never calls.
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
@@ -1524,7 +1547,7 @@ names a built tool which never calls the route fails there.
 Client, in `workbench/control_plane`:
 
 ```bash
-npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts src/components/genUITemplates.test.ts
+npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts src/components/genUITemplates.test.ts src/components/ui/SelectButton.test.ts
 ```
 
 Each slice adds its own test file and names it in its PR. A UI slice also runs

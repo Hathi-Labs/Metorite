@@ -1,6 +1,6 @@
 /**
  * WS-27bn R5b-1 — the subject chip and the link contract
- * (`projects_reports.md` §8 R5b, done-when (a) to (d), and (o) to (q)).
+ * (`projects_reports.md` §8 R5b, done-when (a) to (d), (o), (p) and (r)).
  *
  * The builder's claims are pure, so they are pinned here without a DOM. The
  * subjects answer below is shaped as `GET /projects/reports/subjects`
@@ -360,7 +360,7 @@ describe("(p) the sections line says why two options are off", () => {
   });
 });
 
-describe("(q) an error shows next to the chip that caused it", () => {
+describe("(r) an error shows next to the chip that caused it", () => {
   it.each([
     // The server's own words, from report_scope.py and reports.py.
     ["You may report on yourself only. A report on n@x needs the admin grant (admin:members:read), or the lead role in a team of that person.", "subject"],
