@@ -41,6 +41,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, UploadFile
+from gateway.routes.projects import import_discard
 from gateway.routes.projects.core import (
     _TRUTHY,
     _log,
@@ -94,10 +95,18 @@ INSERT_RUN_SQL = (
 )
 LIST_RUNS_SQL = (
     "SELECT id, source, state, created_by, created_at, updated_at, finished_at, "
-    "       plan->'summary' AS summary "
+    "       plan->'summary' AS summary, report "
     "  FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) "
     " ORDER BY created_at DESC LIMIT 50"
+)
+#: Discard an OPEN run (I-6): it wrote nothing, so nothing is undone.
+DISCARD_OPEN_SQL = (
+    "UPDATE pm_import_runs "
+    "   SET state = 'discarded', updated_at = now(), finished_at = now() "
+    " WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "   AND state IN ('uploaded', 'planned') "
+    "RETURNING *"
 )
 LOAD_RUN_SQL = (
     "SELECT * FROM pm_import_runs "
@@ -299,6 +308,11 @@ async def list_import_runs(
                 "updated_at": _iso(r.updated_at),
                 "finished_at": _iso(r.finished_at),
                 "summary": _json(r.summary),
+                # The written tasks, so the list can say what a run did.
+                "tasks_written": int((_json(r.report) or {}).get("tasks_written") or 0),
+                "discarded": (_json(r.report) or {}).get("discarded"),
+                "discard_until": _iso(import_discard.discard_until(r)),
+                "discardable": import_discard.discardable(r),
             }
             for r in rows
         ]
@@ -437,6 +451,46 @@ async def apply_import_run(
     import_writer.start(organization_id, run_id, lease)
     _log.info("projects.import.apply_started", run_id=run_id, resumed=row.state == "applying")
     return run_view(started)
+
+
+@router.post("/import/runs/{run_id}/discard", dependencies=_GATES)
+async def discard_import_run(
+    run_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Discard a run (§6.9). An open run is closed. A run that wrote removes
+    exactly its own rows, or refuses with 409 and names what stops it. The
+    409 carries ``{message, blocking}``."""
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        organization_id = require_organization(vis)
+        row = await _load_run(db, run_id, organization_id)
+        counts: dict[str, Any] = {}
+        if row.state in ("uploaded", "planned"):
+            saved = (
+                await db.execute(text(DISCARD_OPEN_SQL), {"id": run_id, "org": organization_id})
+            ).fetchone()
+        elif row.state == "applying":
+            raise HTTPException(
+                status_code=409,
+                detail="This import is running. Wait for it to end, or resume it, then discard.",
+            )
+        elif row.state == "discarded":
+            raise HTTPException(status_code=409, detail="This import is already discarded.")
+        else:
+            try:
+                saved, counts = await import_discard.discard_written_run(db, organization_id, row)
+            except import_discard.DiscardRefused as refused:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": refused.message, "blocking": refused.blocking},
+                ) from refused
+        if saved is None:
+            # The run moved on between the load and the write.
+            raise HTTPException(status_code=409, detail=_not_editable("no longer open"))
+    _discard_files(organization_id, run_id)
+    _log.info("projects.import.discarded", run_id=run_id, **{k: v for k, v in counts.items()})
+    return {**run_view(saved), "discarded": counts}
 
 
 # ── parse ───────────────────────────────────────────────────────────────────
@@ -706,6 +760,9 @@ def run_view(row: Any) -> dict[str, Any]:
             "cursor": int((_json(getattr(row, "progress", None)) or {}).get("cursor") or 0)
         },
         "report": _json(getattr(row, "report", None)),
+        # Until when the wizard may offer "Discard this import" (§6.9).
+        "discard_until": _iso(import_discard.discard_until(row)),
+        "discardable": import_discard.discardable(row),
     }
 
 

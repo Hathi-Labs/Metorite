@@ -11,7 +11,7 @@ import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { invalidate } from "@/lib/dataCache";
 
 import { PROJECTS_CACHE, ProjectsApiError, projectsCall } from "./api";
-import type { ImportMapping, ImportRun } from "./importFlow";
+import type { DiscardCounts, ImportMapping, ImportRun, ImportRunSummary } from "./importFlow";
 
 export const importApi = {
   async upload(files: readonly File[]): Promise<ImportRun> {
@@ -40,6 +40,21 @@ export const importApi = {
       method: "PUT",
       body: JSON.stringify(mapping),
     });
+  },
+
+  async list(): Promise<ImportRunSummary[]> {
+    const res = await projectsCall<{ runs?: ImportRunSummary[] }>("import/runs");
+    return Array.isArray(res?.runs) ? res.runs : [];
+  },
+
+  /** A 409 carries `{message, blocking}` on the error's `detail` (§6.9). */
+  async discard(runId: string): Promise<ImportRun & { discarded: DiscardCounts }> {
+    const out = await projectsCall<ImportRun & { discarded: DiscardCounts }>(
+      `import/runs/${encodeURIComponent(runId)}/discard`,
+      { method: "POST" },
+    );
+    invalidate(PROJECTS_CACHE);
+    return out;
   },
 
   async apply(runId: string): Promise<ImportRun> {

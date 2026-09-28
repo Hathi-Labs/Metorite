@@ -34,6 +34,7 @@ import { CATEGORY_HINT, CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/status
 
 import { type ProjectRow, projectsApi } from "../lib/api";
 import { importApi } from "../lib/importApi";
+import ImportHistory, { DiscardImportButton, type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import {
   type ImportMapping,
   type ImportRun,
@@ -89,6 +90,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   // Bumped on each fresh wizard, so a late answer to an old one is dropped.
   const generation = useRef(0);
   const [misses, setMisses] = useState(0);
+  // I-6: what the last discard said, and a key that makes the list read again.
+  const [outcome, setOutcome] = useState<DiscardOutcome | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
   // When the writer's cursor last moved. Set at the apply, so 0 never counts.
   const lastMove = useRef({ cursor: -1, at: 0 });
   const [stalled, setStalled] = useState(false);
@@ -104,6 +108,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     generation.current += 1;
     reportSeen.current = false;
     setMisses(0);
+    setOutcome(null);
+    setHistoryKey((k) => k + 1);
     setStep("upload");
     setFiles([]);
     setRun(null);
@@ -196,10 +202,47 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
 
   const problem = useMemo(() => uploadProblem(files), [files]);
 
+  // A discard from the list, or from the run it just showed. Either way the
+  // tree may have lost spaces, and the list has changed.
+  const onDiscardOutcome = useCallback(
+    (next: DiscardOutcome) => {
+      setOutcome(next);
+      if (!next.ok) return;
+      setHistoryKey((k) => k + 1);
+      // The file is cleared too, so one click cannot import it straight back.
+      setFiles([]);
+      setRun(null);
+      setStep("upload");
+      onDone([]);
+    },
+    [onDone],
+  );
+
+  // Open an earlier run from the list: a running one is followed again, and a
+  // finished one shows its report.
+  const openRun = useCallback(async (runId: string) => {
+    setBusy(true);
+    setError(null);
+    setOutcome(null);
+    try {
+      const found = await importApi.get(runId);
+      lastMove.current = { cursor: found.progress?.cursor ?? -1, at: Date.now() };
+      reported.current = isTerminal(found.state);
+      setStalled(false);
+      setRun(found);
+      setStep("run");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const upload = useCallback(async () => {
     const mine = generation.current;
     setBusy(true);
     setError(null);
+    setOutcome(null);
     try {
       const planned = await importApi.upload(files);
       // The admin closed the dialog and opened a new wizard meanwhile.
@@ -302,6 +345,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                 ))}
               </ul>
             )}
+            <ImportHistory refreshKey={historyKey} onOpen={(id) => void openRun(id)} onOutcome={onDiscardOutcome} />
           </section>
         )}
 
@@ -412,6 +456,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
 
         {step === "run" && run && <Running run={run} onOpenSpace={onOpenSpace} />}
 
+        {outcome && <DiscardNotice outcome={outcome} />}
+
         {(error || (step === "upload" && files.length > 0 && problem)) && (
           <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
             {error ?? problem}
@@ -443,6 +489,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
             <Button variant="primary" icon="Download" loading={busy} disabled={busy} onClick={() => void saveAndImport()}>
               Import
             </Button>
+          )}
+          {step === "run" && run?.discardable && (
+            <DiscardImportButton runId={run.id} onOutcome={onDiscardOutcome} />
           )}
           {step === "run" && stalled && run?.state === "applying" && (
             <Button variant="primary" icon="RefreshCw" loading={busy} disabled={busy} onClick={() => void resume()}>

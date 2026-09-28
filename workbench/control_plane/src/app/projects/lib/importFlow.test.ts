@@ -17,6 +17,9 @@ import {
   canImport,
   importEnabled,
   continuationNote,
+  discardLines,
+  discardRefusal,
+  runLine,
   isStalled,
   isTerminal,
   keepOnReopen,
@@ -225,5 +228,64 @@ describe("the dialog opens on a phone too", () => {
     const overlays = page.slice(page.indexOf("const overlays = ("), page.indexOf("if (isMobile) {"));
     expect(overlays).toContain("<ImportDialog");
     expect(page.split("<ImportDialog").length - 1).toBe(1);
+  });
+});
+
+describe("discard (I-6)", () => {
+  it("reads the route's refusal, and nothing else", () => {
+    expect(discardRefusal({ message: "A member edited it.", blocking: [{ id: "t1", title: "T" }, { x: 1 }] })).toEqual({
+      message: "A member edited it.",
+      blocking: [{ id: "t1", title: "T" }],
+    });
+    expect(discardRefusal("This import is running.")).toBeNull();
+    expect(discardRefusal(null)).toBeNull();
+  });
+  it("says what it removed, and what stays", () => {
+    expect(discardLines({ nodes: 62, spaces: 5, tasks: 2423, comments_elsewhere: 1, updates_kept: 2 })).toEqual([
+      "Removed 5 spaces and 2,423 tasks.",
+      "Removed 57 folders and lists it created.",
+      "Removed 1 comment it added to tasks an earlier import made.",
+      "2 updates to tasks an earlier import made stay. The earlier values are not kept.",
+    ]);
+    expect(discardLines({})).toEqual(["The import had written nothing, so nothing was removed."]);
+  });
+  it("describes a run in the list by what it wrote", () => {
+    const line = runLine({
+      id: "r",
+      source: "clickup",
+      state: "done",
+      created_by: "a@x.test",
+      created_at: "2026-09-28T10:00:00Z",
+      finished_at: "2026-09-28T10:01:00Z",
+      summary: null,
+      tasks_written: 2423,
+      discarded: null,
+      discard_until: null,
+      discardable: true,
+    });
+    expect(line.state).toBe("Done");
+    expect(line.what).toBe("2,423 new tasks");
+    const gone = runLine({
+      id: "r",
+      source: "clickup",
+      state: "discarded",
+      created_by: "a@x.test",
+      created_at: null,
+      finished_at: null,
+      summary: null,
+      tasks_written: 0,
+      discarded: { tasks: 2423 },
+      discard_until: null,
+      discardable: false,
+    });
+    expect(gone.what).toBe("Removed 2,423 tasks");
+  });
+});
+
+describe("the history list", () => {
+  it("is mounted in the upload step, so a reload can find a run again", () => {
+    const dialog = readFileSync(join(__dirname, "..", "components", "ImportDialog.tsx"), "utf-8");
+    expect(dialog).toContain("<ImportHistory");
+    expect(dialog).toContain("<DiscardImportButton");
   });
 });

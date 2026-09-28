@@ -332,6 +332,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/import/runs/{run_id}", "", "X", _IMPORT_REASON),
     Route("PUT", "/projects/import/runs/{run_id}/mapping", "", "X", _IMPORT_REASON),
     Route("POST", "/projects/import/runs/{run_id}/apply", "", "X", _IMPORT_REASON),
+    Route("POST", "/projects/import/runs/{run_id}/discard", "", "X", _IMPORT_REASON),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),
