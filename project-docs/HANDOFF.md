@@ -3495,9 +3495,9 @@ line — never reclaim a number by deleting the other entry.
   it reads `can_delete` or `can_edit`. The UI has no delete control, and the
   list hides the row. So no product surface reaches the author path today.
   It fails closed and leaks nothing.
-- **Do:** let the two tools read the row through the change rule, for
-  example a read that passes `refusal`, so the author reaches the card.
-  Add a chat test for a lead who left team B.
+- **Do:** let the two tools read the row through the change rule. A read
+  that passes `refusal` lets the author reach the card. Add a chat test
+  for a lead who left team B.
 - **Authority:** `specs/projects_reports.md` §8 R5d · the R5d review, 2026-09-28
 - **Added:** 2026-09-28 · the WS-27bn R5d session
 

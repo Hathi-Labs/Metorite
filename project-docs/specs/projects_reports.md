@@ -351,7 +351,7 @@ The builder is one sentence of chips, with a live preview beside it:
   Today, a custom range and the forward periods need new config fields. A
   later slice adds those fields and those periods.
 - **"More"** opens the section list, so a member can add or remove a section.
-  Order stays fixed by `SECTIONS` (`reports.py:80` to `:92` gives the reason).
+  Order stays fixed by `SECTIONS` (`reports.py:100` to `:123` gives the reason).
 - **The preview renders from the server** on each change, with a short delay.
   It uses `POST /projects/reports/preview` with an unsaved config. The
   browser computes no figure (§9.12.7).
@@ -730,7 +730,7 @@ spec-auditor split R3 into four slices on 2026-09-24. Each slice is one PR.
 **The lockstep list.** A section name lives in seven places, plus the chat
 card map. A slice adds its name to each of them in the same PR:
 
-1. `reports.py` `SECTIONS` (`:108`).
+1. `reports.py` `SECTIONS` (`:124`).
 2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1447`). This is the
    chat's list, not `views.py`.
 3. `skill_projects/writes.py` `REPORT_SECTIONS` (`:854`).
