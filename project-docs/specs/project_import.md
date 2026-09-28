@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — I-1 and I-2 built 2026-09-27, I-3 built 2026-09-28, the rest is spec.** Owner
+**Status: ACTIVE — I-1 and I-2 built 2026-09-27, I-3 and I-3b built 2026-09-28, the rest is spec.** Owner
 directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
@@ -61,6 +61,7 @@ D80 keeps both reasons and answers each one by construction:
 **What D80 does NOT change.**
 
 - D52.1 stands. There is no sync, in either direction. An import is one shot.
+  A newer export updates tasks only when an admin uploads it (§6.9).
 - D52.3 stands. The `clickup_*` columns stay unwritten. The importer records
   provenance in `pm_tasks.origin` (migration 211), not in `clickup_id`.
 - D52.4 stands. Metorite is the system of record for project work. An import
@@ -94,8 +95,10 @@ D80 keeps both reasons and answers each one by construction:
 
 - **Any live connection** to another tool. That includes attachment download
   from a URL in the file (§6.8).
-- **Sync or re-sync.** A second run of the same file skips what exists (§6.9).
-  It never updates a task that the first run wrote.
+- **Sync.** Nothing runs by itself, and nothing writes back to the source.
+  An admin may upload a NEWER export of the same workspace. It updates the
+  tasks an earlier import wrote, by the three-way rule of §6.9 (owner
+  decision, 2026-09-28). That is an import the admin starts, not a sync.
 - **Invitations.** An import never creates a member, never sends an invite and
   never sends mail. CLAUDE.md §3a rule 3 binds here.
 - **Export to another tool.** `projects/export.py` owns CSV export.
@@ -556,9 +559,27 @@ themselves, uploaded as a ZIP.
   default the apply skips them, and the report names the count. This is a
   read of a D52.3 column, which D52.3 retired from reading. §11 Q-7 asks the
   owner to allow this one read.
-- **Re-run.** A task whose `(source, external_id)` exists in this organization
-  is **skipped**, not updated. The report counts the skips. This keeps every
-  edit made in Metorite since the first run.
+- **Re-run: the tasks UPDATE (owner decision, 2026-09-28, §11 Q-5).** The
+  owner asked: "if I upload a new export, it can update the tasks as well".
+  A task an earlier import wrote is updated from the new export, field by
+  field, by one three-way rule (`layout.merge_fields`):
+
+  | The source changed the field? | A member changed it in Metorite? | Result |
+  |---|---|---|
+  | No | either | Nothing changes |
+  | Yes | No | The source's value is written |
+  | Yes | Yes | The member's value is KEPT, and the report counts a conflict |
+
+  The fields: title, description, status (the completion date follows it),
+  due date, start date, priority, estimate, tags and assignees. The import
+  stores what it last wrote in `origin.import_values`. That is how it tells
+  a member's edit from an unchanged field. A source comment not yet imported
+  is added once (`meta.import.comment_key`). A task new in the export is
+  created in the same tree. An update never moves a task: its parent and its
+  project stay. A task whose project differs keeps its status, and the report
+  counts it as `tasks_moved`. Each updated task gets one `system` activity
+  naming the fields, and nobody is notified. Only the pre-D52 importer's rows
+  are still skipped: they hold no snapshot to merge with.
 - **How the skip works (built in I-3).** Each batch first reads which of its
   tasks exist (the import origin, and `clickup_id` for the old importer's
   rows). It writes the rest through `insert_row`, the helper every route uses.
@@ -777,6 +798,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
 | **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 39 of 39 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. A list moved since is created again. A different workspace with the same Space names gets new spaces. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
+| **I-3b** ✅ built 2026-09-28 | Update mode (§6.9, §11 Q-5) | A new export of the same workspace updates the tasks by the three-way rule, and adds new comments once. **Met:** `live_ws41_writer.py` passes 48 of 48. An edited export updates a title and a priority, keeps a member's conflicting title, keeps a member's description, and adds one new comment. The same export again changes nothing |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |
@@ -869,7 +891,7 @@ owner says otherwise.
 | Q-2 | Who may import? | Organization admins only (`admin:access:manage`) |
 | Q-3 | A checklist becomes a Markdown list in the description, or subtasks? | A Markdown list. Subtasks would inflate the task count and the workload views |
 | Q-4 | Unmatched people: unassigned with the name kept, or a directory-only `people` row? | Unassigned with the name kept. No person row appears without an admin act |
-| Q-5 | A re-run skips existing tasks, or updates them? | Skip. An update would overwrite edits made in Metorite |
+| Q-5 | A re-run skips existing tasks, or updates them? | ✅ **Answered 2026-09-28: UPDATE.** Built as I-3b by the three-way rule of §6.9, so an update never overwrites a member's edit |
 | Q-6 | A closed task has no completion date in the file. What date does it get? | The latest date the task carries, marked as an estimate (§6.6). Never the import time |
 | Q-7 | May the dry run read `pm_tasks.clickup_id` to find work the old importer already wrote? | Yes, read only, for the dry run and the skip. Nothing writes the column |
 

@@ -192,14 +192,17 @@ def test_a_status_name_is_bounded() -> None:
 # ── §6.9 work that exists ───────────────────────────────────────────────────
 
 
-def test_tasks_that_exist_are_counted_and_skipped() -> None:
+def test_imported_tasks_are_updated_and_old_importer_tasks_are_skipped() -> None:
+    """Owner decision 2026-09-28 (§11 Q-5): a re-import UPDATES the tasks an
+    earlier import wrote. Only the pre-D52 importer's rows are skipped."""
     b = _small(
         _row("a"),
         _row("b"),
         _row("c", comments='[{""text"":""hi"",""by"":""x@y.test"",""date"":""""}]'),
     )
     p = build_plan(b, ImportMapping(), {}, existing_refs={"a"}, legacy_refs={"c", "zz"})
-    assert p["skip"] == {"already_imported": 1, "written_by_old_importer": 1, "total": 2}
+    assert p["skip"] == {"written_by_old_importer": 1, "total": 1}
+    assert p["to_update"] == 1
     assert p["to_write"] == {"tasks": 1, "comments": 0}
 
 

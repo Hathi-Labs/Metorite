@@ -354,9 +354,12 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again)
     )
     check(
-        "4.2 a re-run writes nothing and skips all 2,423",
-        second.get("tasks_written") == 0 and second.get("tasks_skipped") == 2423,
-        json.dumps(second)[:200],
+        "4.2 a re-run of the same file writes nothing and finds all 2,423 unchanged",
+        second.get("tasks_written") == 0
+        and second.get("tasks_unchanged") == 2423
+        and second.get("tasks_updated") == 0
+        and second.get("comments_written") == 0,
+        json.dumps(second)[:300],
     )
     created = second.get("created", {})
     check(
@@ -369,6 +372,141 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     )
     after = await tree_counts(org)
     check("4.4 the tree is still 5 / 9 / 48", after == kinds, str(after))
+
+    # ── 4b. a NEW export of the same workspace updates the tasks ────────
+    # Owner decision 2026-09-28 (§11 Q-5). Four tasks, four cases:
+    #   A — the title changed in ClickUp, untouched here      → updated
+    #   B — the priority changed in ClickUp                   → updated
+    #   C — the title changed in BOTH places                  → member wins, conflict
+    #   D — a member edited the description; ClickUp did not  → kept, no conflict
+    # and A gains a new ClickUp comment, which lands once.
+    import csv
+    import io
+
+    table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+    head = table[0]
+    col = {name: i for i, name in enumerate(head)}
+    roots = [r for r in table[1:] if r[col["Parent ID"]] == "null"]
+    a, b, c, d = (roots[i][col["Task ID"]] for i in (0, 1, 2, 3))
+    for row in table[1:]:
+        tid = row[col["Task ID"]]
+        if tid == a:
+            row[col["Task Name"]] = "Renamed in ClickUp"
+            row[col["Comments"]] = json.dumps(
+                [
+                    {
+                        "text": "A new comment\n",
+                        "by": "person1@example.com",
+                        "date": "9/27/2026, 10:00:00 AM GMT+5:30",
+                        "assigned": False,
+                        "resolved": "N/A",
+                    }
+                ]
+            )
+        elif tid == b:
+            row[col["Priority"]] = "1"
+        elif tid == c:
+            row[col["Task Name"]] = "Renamed in ClickUp too"
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows(table)
+    edited = out.getvalue().encode("utf-8")
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "UPDATE pm_tasks SET title = 'A member renamed it' "
+                " WHERE organization_id = CAST(:o AS uuid) AND origin->>'external_id' = :c"
+            ),
+            {"o": org, "c": c},
+        )
+        await db.execute(
+            text(
+                "UPDATE pm_tasks SET description = 'A member wrote this' "
+                " WHERE organization_id = CAST(:o AS uuid) AND origin->>'external_id' = :d"
+            ),
+            {"o": org, "d": d},
+        )
+    edited_bundle = clickup.parse([(FIXTURE.name, edited)])
+    update_run, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, update_run, lease)
+    rep_ = as_dict(
+        await one(
+            org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=update_run
+        )
+    )
+    check(
+        "4b.1 the new export updates two tasks and keeps one member edit",
+        rep_.get("tasks_updated") == 2
+        and rep_.get("conflicts_kept") == 1
+        and rep_.get("tasks_written") == 0
+        and rep_.get("comments_written") == 1,
+        json.dumps(
+            {
+                k: rep_.get(k)
+                for k in (
+                    "tasks_updated",
+                    "tasks_unchanged",
+                    "conflicts_kept",
+                    "tasks_written",
+                    "comments_written",
+                    "created",
+                )
+            }
+        ),
+    )
+    by_ref = {
+        r.ref: r
+        for r in await rows(
+            org,
+            "SELECT origin->>'external_id' AS ref, title, description, importance FROM pm_tasks "
+            " WHERE organization_id = CAST(:org AS uuid) AND origin->>'external_id' = ANY(:refs)",
+            refs=[a, b, c, d],
+        )
+    }
+    check(
+        "4b.2 A takes ClickUp's new title", by_ref[a].title == "Renamed in ClickUp", by_ref[a].title
+    )
+    check(
+        "4b.3 B takes ClickUp's new priority (1 = Urgent = 3)",
+        by_ref[b].importance == 3,
+        str(by_ref[b].importance),
+    )
+    check(
+        "4b.4 C keeps the member's title", by_ref[c].title == "A member renamed it", by_ref[c].title
+    )
+    check(
+        "4b.5 D keeps the member's description",
+        by_ref[d].description == "A member wrote this",
+        str(by_ref[d].description),
+    )
+    a_comments = await one(
+        org,
+        "SELECT count(*) FROM pm_activities x JOIN pm_tasks t ON t.id = x.task_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :a "
+        "   AND x.type = 'comment' AND x.body = 'A new comment'",
+        a=a,
+    )
+    check("4b.6 the new comment lands once", a_comments == 1, str(a_comments))
+    again_upd, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, again_upd, lease)
+    rep2 = as_dict(
+        await one(
+            org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again_upd
+        )
+    )
+    a_comments = await one(
+        org,
+        "SELECT count(*) FROM pm_activities x JOIN pm_tasks t ON t.id = x.task_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :a "
+        "   AND x.type = 'comment' AND x.body = 'A new comment'",
+        a=a,
+    )
+    check(
+        "4b.7 the same export again changes nothing and adds no comment twice",
+        rep2.get("tasks_updated") == 0 and rep2.get("comments_written") == 0 and a_comments == 1,
+        json.dumps(
+            {k: rep2.get(k) for k in ("tasks_updated", "conflicts_kept", "comments_written")}
+        ),
+    )
 
     # A list moved to another space since: the old map is stale, so the list
     # is created again rather than reused with a wrong root.

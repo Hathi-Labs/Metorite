@@ -236,3 +236,103 @@ def origin(task: Task, source: str, run_id: str, **extra: Any) -> dict[str, Any]
 
 def is_closed(task: Task, final: dict[str, tuple[str, Category]]) -> bool:
     return task.status_name is not None and final[task.status_name][1] in CLOSED
+
+
+# ── update mode (I-3b): a new export of the same workspace ──────────────────
+#
+# Owner decision, 2026-09-28 (§11 Q-5): a re-import UPDATES the tasks it wrote.
+# The rule is three-way, per field. The import stores what it last wrote in
+# `origin.import_values`. A field changed in the source updates in Metorite
+# only while Metorite still holds what the import last wrote. A member's edit
+# is never overwritten: the field is kept and counted as a conflict.
+
+#: The fields an update may change. The parent and the project are structure,
+#: and an update never moves a task.
+UPDATABLE = (
+    "title",
+    "description",
+    "status_id",
+    "due_at",
+    "start_date",
+    "importance",
+    "estimate_mins",
+    "tags",
+    "assignees",
+)
+
+
+def snapshot_value(value: Any) -> Any:
+    """One field in the form the snapshot stores and compares: JSON-safe and
+    order-free. An instant is compared in UTC to the second."""
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        moment = value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+        return moment.astimezone(dt.UTC).replace(microsecond=0).isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, list | tuple | set):
+        return sorted({str(v).strip().lower() for v in value if str(v).strip()})
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def snapshot(values: dict[str, Any]) -> dict[str, Any]:
+    return {field: snapshot_value(values.get(field)) for field in UPDATABLE}
+
+
+@dataclass(frozen=True)
+class Merge:
+    """What one existing task takes from a new export."""
+
+    #: field → the new value to write (the raw, un-snapshotted value).
+    changes: dict[str, Any]
+    #: fields a member edited in Metorite while the source changed them too.
+    conflicts: tuple[str, ...]
+    #: what to store as `origin.import_values` after this run.
+    new_snapshot: dict[str, Any]
+
+
+def merge_fields(
+    current: dict[str, Any],
+    last_written: dict[str, Any] | None,
+    incoming: dict[str, Any],
+    *,
+    frozen: tuple[str, ...] = (),
+) -> Merge:
+    """The three-way rule, field by field.
+
+    * The source did not change the field → nothing to do.
+    * The source changed it, and Metorite still holds what the import last
+      wrote → take the source's value.
+    * The source changed it, and a member changed it too → keep the member's
+      value, and count a conflict.
+
+    With no snapshot (a task written before update mode existed), every
+    difference is a conflict: nothing proves Metorite was not edited.
+    ``frozen`` fields are never changed, for example the status of a task a
+    member moved to another project, whose status set is not the one the
+    import resolved against."""
+    now_cur = snapshot(current)
+    now_new = snapshot(incoming)
+    changes: dict[str, Any] = {}
+    conflicts: list[str] = []
+    for field in UPDATABLE:
+        cur, new = now_cur[field], now_new[field]
+        if field in frozen or cur == new:
+            continue
+        if last_written is not None and field in last_written and last_written[field] == cur:
+            changes[field] = incoming.get(field)
+        elif last_written is None or field not in last_written or last_written[field] != new:
+            conflicts.append(field)
+    return Merge(changes=changes, conflicts=tuple(conflicts), new_snapshot=now_new)
+
+
+def comment_key(comment: Comment) -> str:
+    """A stable key for one source comment, so a re-import adds a comment once."""
+    import hashlib
+
+    stamp = comment.created_at.isoformat() if comment.created_at else ""
+    raw = f"{comment.author_ref or ''}|{stamp}|{comment.body_md.strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
