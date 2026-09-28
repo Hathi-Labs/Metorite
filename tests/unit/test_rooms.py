@@ -624,22 +624,26 @@ def test_a_member_can_still_update_their_own_turn(clean) -> None:
 
 @_needs_db
 def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
+    """S13 rewrite. Alice's run owns the reply. A checkpoint from Bob, another
+    sender in the room, is declined and named in ``unchanged``. Alice's fold
+    still takes."""
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
     _save_as(sid, _ALICE, [
         MessageRecord(id="a9", role="assistant", content="part", timestamp=2005),
     ])
-    # A checkpoint, from another sender in the room.
-    _save_as(sid, _BOB, [
+    out = _save_as(sid, _BOB, [
         MessageRecord(id="a9", role="assistant", content="more", timestamp=2006),
     ])
-    assert _content(sid, "a9") == "more"
-    _upsert_messages(
+    assert out == {"ok": True, "saved": 0, "unchanged": ["a9"]}
+    assert _content(sid, "a9") == "part"
+    declined = _upsert_messages(
         sid,
         [MessageRecord(id="a9", role="assistant", content="done", timestamp=2007)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
     )
+    assert declined == []
     assert _content(sid, "a9") == "done"
     assert _author(sid, "a9").author_email == "sales-assistant"
 
@@ -690,14 +694,11 @@ def test_a_legacy_agent_turn_with_no_kind_takes_the_fold(clean) -> None:
 
 
 @_needs_db
-def test_the_fold_keeps_the_author_of_a_legacy_system_row(clean) -> None:
-    """S12 fix round 2, the R7 fence for the kind guard in the author CASE.
+def test_the_fold_keeps_a_legacy_system_row(clean) -> None:
+    """S13. It replaces ``test_the_fold_keeps_the_author_of_a_legacy_system_row``.
 
-    The ``WHERE`` masks every human row, so this is the ONE row that reaches
-    the CASE with a NULL kind that is not an agent turn. A NULL kind is an
-    agent turn only when the role is ``assistant``. Revert the guard to
-    ``COALESCE(author_kind, 'agent')``, or drop it, and the fold renames
-    this row.
+    A NULL kind with the role ``system`` is a system row, and no write updates
+    a system row. So the fold keeps its content, its author and its NULL kind.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -707,12 +708,237 @@ def test_the_fold_keeps_the_author_of_a_legacy_system_row(clean) -> None:
         "UPDATE chat_message SET author_email = 'legacy@x.io' "
         "WHERE session_id = :i AND id = 'old-s'", i=sid,
     )
-    _upsert_messages(
+    declined = _upsert_messages(
         sid,
         [MessageRecord(id="old-s", role="assistant", content="final", timestamp=2104)],
         actor_email=_ALICE, agent_name="sales-assistant", author_from_run=True,
     )
-    assert _author(sid, "old-s").author_email == "legacy@x.io"
+    assert declined == ["old-s"]
+    assert _content(sid, "old-s") == "joined"
+    row = _author(sid, "old-s")
+    assert (row.author_kind, row.author_email) == (None, "legacy@x.io")
+
+
+# ---------------------------------------------------------------------------
+# 7c. Only the run changes an agent reply, and the fold seals it (S13, §19)
+# ---------------------------------------------------------------------------
+
+def _run_state(sid: str, mid: str):
+    return _exec(
+        "SELECT run_member_email, run_final_at FROM chat_message "
+        "WHERE session_id = :i AND id = :m", i=sid, m=mid,
+    )[0]
+
+
+def _fold(sid: str, mid: str, starter: str, content: str) -> list[str]:
+    """The upsert exactly as ``chat_fold`` calls it. The starter of the run is
+    the fold's ``user_id``."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    return _upsert_messages(
+        sid,
+        [MessageRecord(id=mid, role="assistant", content=content, timestamp=3009)],
+        actor_email=starter, agent_name="sales-assistant", author_from_run=True,
+    )
+
+
+def _alice_starts_a_run(sid: str) -> None:
+    """The translator's first checkpoint, as the member who sent the turn."""
+    from gateway.routes.chat import MessageRecord
+
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="r1", role="assistant", content="part", timestamp=3000),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": []}
+
+
+@_needs_db
+def test_a_room_owner_cannot_change_another_members_agent_reply(clean) -> None:
+    """§19.4 rule 1. Bob owns the room. Alice starts the run. Bob saves over
+    the reply, and nothing changes."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_BOB, (_ALICE, "member"))
+    _alice_starts_a_run(sid)
+    assert _run_state(sid, "r1").run_member_email == _ALICE.lower()
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="r1", role="assistant", content="forged", timestamp=3001),
+    ])
+    assert out == {"ok": True, "saved": 0, "unchanged": ["r1"]}
+    assert _content(sid, "r1") == "part"
+    # The first writer's run member stays.
+    assert _run_state(sid, "r1").run_member_email == _ALICE.lower()
+
+
+@_needs_db
+def test_the_run_member_updates_her_reply_before_the_fold(clean) -> None:
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_starts_a_run(sid)
+    # A second checkpoint, from the member who started the run.
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="r1", role="assistant", content="part and more",
+                      timestamp=3002),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": []}
+    assert _content(sid, "r1") == "part and more"
+    assert _run_state(sid, "r1").run_final_at is None
+
+
+@_needs_db
+def test_the_fold_seals_the_reply(clean) -> None:
+    """§19.4 rule 2. After the fold, a save of an old copy by the run member
+    leaves the fold's content."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_starts_a_run(sid)
+    assert _fold(sid, "r1", _ALICE, "the final answer") == []
+    assert _run_state(sid, "r1").run_final_at is not None
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="r1", role="assistant", content="part", timestamp=3003),
+    ])
+    assert out == {"ok": True, "saved": 0, "unchanged": ["r1"]}
+    assert _content(sid, "r1") == "the final answer"
+
+
+@_needs_db
+def test_a_fold_by_another_starter_does_not_change_the_reply(clean) -> None:
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_starts_a_run(sid)
+    assert _fold(sid, "r1", _BOB, "forged") == ["r1"]
+    assert _content(sid, "r1") == "part"
+    state = _run_state(sid, "r1")
+    assert state.run_member_email == _ALICE.lower()
+    assert state.run_final_at is None
+
+
+@_needs_db
+def test_the_real_fold_logs_a_declined_write_and_returns_the_message(
+    clean, monkeypatch,
+) -> None:
+    """``persist_final_assistant_message`` itself, with the Redis replay and
+    the fold stubbed. Bob's run aims at Alice's reply. The row stays, the
+    fold logs ``chat_fold.persist_declined``, and it still returns the
+    folded message."""
+    import asyncio
+
+    import structlog
+    from gateway import chat_fold, run_trace
+    from orchestrator import stream_relay
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_starts_a_run(sid)
+    folded = {
+        "content": "forged", "timestamp": 3004, "tool_events": [],
+        "progress_lines": [], "reasoning": None, "agent_state": None,
+        "custom_events": [],
+    }
+
+    async def _replay(*_a, **_k):
+        return [{"type": "RUN_STARTED"}]
+
+    async def _none(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(stream_relay, "replay_events", _replay)
+    monkeypatch.setattr(run_trace, "record_run_trace", _none)
+    monkeypatch.setattr(chat_fold, "_run_authority", _none)
+    monkeypatch.setattr(chat_fold, "fold_run_events", lambda _e: dict(folded))
+
+    with structlog.testing.capture_logs() as caps:
+        out = asyncio.run(chat_fold.persist_final_assistant_message(
+            sid, "r1", user_id=_BOB, agent_name="sales-assistant",
+        ))
+    assert out == folded
+    events = [c.get("event") for c in caps]
+    assert "chat_fold.persist_declined" in events
+    assert "chat_fold.persisted" not in events
+    assert _content(sid, "r1") == "part"
+
+    # Alice's own run folds through the same call.
+    with structlog.testing.capture_logs() as caps:
+        asyncio.run(chat_fold.persist_final_assistant_message(
+            sid, "r1", user_id=_ALICE, agent_name="sales-assistant",
+        ))
+    assert "chat_fold.persisted" in [c.get("event") for c in caps]
+    assert _content(sid, "r1") == "forged"
+
+
+@_needs_db
+def test_a_reply_with_no_run_member_takes_only_the_fold(clean) -> None:
+    """§19.4 rule 3. A legacy agent row, or one that old code wrote during the
+    deploy, has no run member. No client save changes it. The fold does, and
+    it stamps the run member."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _legacy_row(sid, "old-r", "assistant", "partial")
+    for who in (_ALICE, _BOB):
+        out = _save_as(sid, who, [
+            MessageRecord(id="old-r", role="assistant", content="forged",
+                          timestamp=3005),
+        ])
+        assert out["unchanged"] == ["old-r"]
+    assert _content(sid, "old-r") == "partial"
+    assert _fold(sid, "old-r", _ALICE, "final") == []
+    assert _content(sid, "old-r") == "final"
+    state = _run_state(sid, "old-r")
+    assert state.run_member_email == _ALICE.lower()
+    assert state.run_final_at is not None
+
+
+@_needs_db
+def test_a_human_save_on_an_agent_reply_does_not_change_it(clean) -> None:
+    """Alice started the run, and she still cannot turn the reply into a
+    human turn by sending a ``user`` row with its id."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE)
+    _alice_starts_a_run(sid)
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="r1", role="user", content="mine now", timestamp=3006),
+    ])
+    assert out["unchanged"] == ["r1"]
+    assert _content(sid, "r1") == "part"
+    assert _author(sid, "r1").author_kind == "agent"
+
+
+@_needs_db
+def test_a_client_inserts_a_system_row_and_never_updates_one(clean) -> None:
+    """§19.4 rule 4."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE)
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="s1", role="system", content="joined", timestamp=3007),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": []}
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="s1", role="system", content="changed", timestamp=3008),
+        MessageRecord(id="s2", role="system", content="left", timestamp=3008),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": ["s1"]}
+    assert _content(sid, "s1") == "joined"
+    assert _content(sid, "s2") == "left"
+
+
+@_needs_db
+def test_unchanged_names_every_declined_id_in_request_order(clean) -> None:
+    """§19.3 item 6. A batch mixes rows that change and rows that do not."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _alice_starts_a_run(sid)
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="r1", role="assistant", content="x", timestamp=3010),
+        MessageRecord(id="b1", role="user", content="mine", timestamp=3011),
+        MessageRecord(id="u1", role="user", content="x", timestamp=3012),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": ["r1", "u1"]}
+    assert _content(sid, "b1") == "mine"
 
 
 def test_only_the_fold_passes_author_from_run() -> None:

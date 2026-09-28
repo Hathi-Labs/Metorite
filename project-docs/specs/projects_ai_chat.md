@@ -12,7 +12,7 @@ from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
 was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
 S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
 schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
-2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-28. S13 (message integrity, §19) was built 2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -702,6 +702,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S10 · Chat follow-ups** — ✅ **BUILT 2026-09-25** | The checkpoint names its agent · the plan card edits after · a lost project write gives a receipt · the Throughput pin, if S7e is on main (§16) | AGENT-SAFE |
 | **S11 · Outlook schedules** — ✅ **BUILT 2026-09-26** | The outlook's capacity reads each person's schedule. Absences apply only for an admin viewer. The report section passes the reader's grant. The panel says when it does not count leave (§17) | AGENT-SAFE |
 | **S12 · Follow-ups** — ✅ **BUILT 2026-09-28** | The end-date count follows the grant (H-188) · one broken panel does not blank Analytics · an @name turn keeps the agent that ran (§18) | AGENT-SAFE |
+| **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -2588,27 +2589,24 @@ The option text was:
   and that slice must gate it on `hr_visible`.
 - It adds no boundary in `ReportsView` or `NodeDashboard`.
 - It does not change the stream or the translator for the author.
-- **Residual: any room sender can still write an agent row or a system row.**
-  The translator checkpoints as the sending member, so the `WHERE` cannot tell
-  the sender of a run from another member. An overwrite keeps the stored
-  `author_email`, `author_kind` and `authority`, so a forged agent reply keeps
-  the agent's name and the first writer's clearance label. A tab that holds an
-  old copy of an agent reply can also overwrite the final text on a save of
-  the whole array. A follow-up can scope an agent row to the member who
-  started the run.
-- **Residual, accepted in fix round 2: the fold can still write a legacy
-  system row.** A legacy row with a NULL kind and the role `system` passes the
-  `WHERE`. So the fold replaces its `content` and fills `author_kind` with
-  `agent`. It keeps the stored `author_email`, and
-  `test_the_fold_keeps_the_author_of_a_legacy_system_row` fences that. S12
-  does not extend the `WHERE` to stop the fold on this row. If the `WHERE`
-  lets the fold write only agent rows, no row can reach the kind guard in the
-  author `CASE`. The guard then has no fence again, which is the R7 gap that
-  fix round 2 closed. The row id must also collide with the id of a system
-  row, and a system row carries no words from a member.
-- **A declined write reports success.** When the `WHERE` declines an update,
-  `POST /chat/sessions/{id}/messages` still answers `{"ok": true}`. A
-  follow-up can return the ids that did not change.
+- **Residual, CLOSED by S13 (§19): any room sender could write an agent row
+  or a system row.** The translator checkpoints as the sending member, so the
+  S12 `WHERE` could not tell the sender of a run from another member. An
+  overwrite kept the stored `author_email` and `author_kind`, so a forged
+  agent reply kept the agent's name. A client write carries no `authority`,
+  so the clearance label that a forged overwrite kept was the run's label,
+  which the fold writes. A tab that held an old copy of an agent reply could
+  also overwrite the final text on a save of the whole array. S13 scopes an
+  agent row to the member who started the run, and the fold seals it.
+- **Residual, CLOSED by S13 (§19): the fold could write a legacy system
+  row.** A legacy row with a NULL kind and the role `system` passed the S12
+  `WHERE`, so the fold replaced its `content`. S13's `WHERE` lets no write
+  update a system row. So S13 removed the kind guard from the author `CASE`,
+  and `test_the_fold_keeps_a_legacy_system_row` replaces
+  `test_the_fold_keeps_the_author_of_a_legacy_system_row`.
+- **Residual, CLOSED by S13 (§19): a declined write reported success with no
+  detail.** `POST /chat/sessions/{id}/messages` now answers
+  `{"ok": true, "saved": n, "unchanged": [ids]}`.
 - `_attribute` still takes the claim of an agent turn from the body when it
   INSERTS a new row. So a member can make a new row that names any agent.
   That is not a change to an existing turn, and S12 does not change it.
@@ -2653,3 +2651,150 @@ Fix round 1 adds four more, and each turns a test red:
 - the check for an incoming kind of `human` removed
 - a legacy NULL-kind `user` row read as an agent row
 - a `layout` label that ends in "panel".
+
+## 19. Message integrity (S13)
+
+**Status: BUILT 2026-09-28.** The spec-auditor cleared the scope on
+2026-09-28 (GO-NARROWED, against origin/main `32063289`). S13 closes three
+residuals in §18.4. `groups_sessions_authority.md` §4 links here.
+
+### 19.1 The answer
+
+Only the run may change an agent reply. The run is the member who started it,
+until the fold seals the row. After the seal, only the fold may change it. No
+client may change a system row. The response names each write that the
+server declined.
+
+### 19.2 What exists
+
+1. `_upsert_messages` in `routes/chat.py` is the only runtime writer of
+   `chat_message`. It runs `_MESSAGE_UPSERT_SQL` once for each row.
+2. The row id comes from the client. The translator (`route.ts`
+   `persistAssistantMessage`) and the browser (`sessions.ts` `saveMessages`)
+   both save through `POST /chat/sessions/{id}/messages`, as the member who
+   sent the turn.
+3. The fold (`chat_fold.persist_final_assistant_message`) writes the same row
+   with `author_from_run=True`. Its `user_id` is the email of the member who
+   started `/agent/run/stream` (`_mem_user` in `routes/agent.py`).
+4. Before S13, the `WHERE` guarded human rows only. Any room sender could
+   change an agent row or a system row, and a declined write answered
+   `{"ok": true}` with no detail.
+
+### 19.3 What S13 builds
+
+1. **One migration**, `infra/postgres/220_chat_message_run_integrity.sql`. It
+   adds `chat_message.run_member_email TEXT` and
+   `chat_message.run_final_at TIMESTAMPTZ` with `ADD COLUMN IF NOT EXISTS`.
+   Both are nullable, with no default and no backfill.
+2. **The run member.** `_upsert_messages` sets `run_member_email` on an agent
+   row only. A client write gives the caller (`actor_email`). The fold gives
+   its `user_id`. The value is lower-cased, and an empty value is NULL. The
+   upsert keeps a stored value with `COALESCE`, so the first writer sets it.
+3. **The seal.** A fold write sets `run_final_at = now()` on an insert and on
+   an update. A client write never sets it.
+4. **The `WHERE`.** The stored kind is `author_kind`. When it is NULL, the
+   role `assistant` is an agent row, the role `system` is a system row, and
+   every other role is a human row.
+   - Human row: the S12 rule, unchanged.
+   - Agent row, a fold write: it passes when the stored `run_member_email` is
+     NULL or equals the incoming value, with case ignored.
+   - Agent row, a client write: it passes only when `EXCLUDED.author_kind` is
+     `agent`, `run_final_at` is NULL, and the stored `run_member_email` equals
+     the incoming value, with case ignored. A NULL run member lets only the
+     fold update the row.
+   - System row: no write passes.
+5. **The author `CASE`.** The fold arm has no kind test now, because the
+   `WHERE` lets the fold reach agent rows only. It keeps
+   `EXCLUDED.author_email IS NOT NULL`, and the `ELSE` arm is unchanged.
+6. **The declined ids.** The SQL ends in `RETURNING id`. `_upsert_messages`
+   returns the ids that got no row back, in request order.
+7. **The response.** `save_messages` answers
+   `{"ok": true, "saved": <rows written>, "unchanged": [<ids>]}` with status
+   200.
+8. **The fold.** When the server declines its write, the fold logs
+   `chat_fold.persist_declined`. It still returns the folded message, and it
+   never raises.
+
+### 19.4 Rules
+
+1. Only the run changes an agent row. A member who did not start the run
+   cannot change it. That includes a room owner.
+2. The seal is final for clients.
+3. An agent row with a NULL run member takes the fold only. That covers
+   legacy rows and rows that old code writes during the deploy.
+4. A client may INSERT a system row. No writer may update one.
+5. A declined write is not an error. The status is 200, and `ok` is true.
+6. `authority` keeps its `COALESCE`.
+7. S13 adds no flag and no route, and one migration.
+8. S13 updates the rule in the comment above `_MESSAGE_UPSERT_SQL`, in item
+   3 of `apps/services/gateway/AGENTS.md` and in §18.4.
+
+### 19.5 Acceptance — S13
+
+1. R8 tests in `test_rooms.py`, through the real `_save_as` handler, the
+   upsert as the fold calls it, or the real fold call:
+   - Alice starts a run, and Bob saves the agent row. The content does not
+     change, and `unchanged` holds its id. Bob owns the room.
+   - Alice saves her own agent row before the fold. The content changes.
+   - After the fold, a save by Alice with older content leaves the fold's
+     content.
+   - A fold with the starter Bob on a row whose run member is Alice does not
+     change it. The real fold call logs `chat_fold.persist_declined` and
+     returns the folded message.
+   - A client save does not change an agent row with a NULL run member. The
+     fold does, and it sets `run_member_email`.
+   - A human save by Alice on the id of her own agent row does not change it.
+   - A client save on a system row does not change it. A new system row
+     still inserts.
+   - The fold on a legacy system row keeps its content and its
+     `author_email`. `test_the_fold_keeps_a_legacy_system_row` replaces
+     `test_the_fold_keeps_the_author_of_a_legacy_system_row`.
+   - `test_an_agent_turn_still_updates_by_checkpoint_and_by_fold`: the server
+     declines the checkpoint from Bob, and the fold by Alice takes.
+2. The `_save_as` response holds `ok` true, `saved`, and `unchanged` with the
+   right ids in request order.
+3. `test_chat_message_upsert.py` passes, with `actor_email` on both writes.
+4. The other S12 tests pass unchanged, and
+   `test_only_the_fold_passes_author_from_run` still passes.
+5. `entityPillsAuthor.test.ts` and `assistantCheckpoint.test.ts` pass
+   unchanged.
+6. `test_migration_prefixes.py` passes. The ladder applies the migration,
+   and two more replays of the file give no error.
+7. Five mutations each turn a test red: no run-member check, no seal check,
+   the fold let through on a system row, the fold let through with another
+   starter, and an `unchanged` that is always empty.
+
+### 19.6 What S13 does not do
+
+- `_attribute` still takes the claim of an agent turn from the body when it
+  INSERTS a new row. So a member can make a new row that names an agent or a
+  system summary.
+- The server mints no row id. A member who knows the id of another run before
+  its first checkpoint can insert first. The fold then declines, and the
+  reply of the real run is not stored.
+- Before the fold, a second tab of the same member can write older content.
+- The LiteLLM and batch paths have no fold, so their rows never seal.
+- S13 does not change the translator, the browser or the stream. Nothing in
+  the browser reads `unchanged` yet.
+
+### 19.7 Verification
+
+```bash
+# R8: a real Postgres, with the ladder applied. Set both variables.
+export DATABASE_URL=... TENANT_LADDER_DATABASE_URL=...
+uv run pytest tests/unit/test_rooms.py tests/unit/test_chat_message_upsert.py \
+  tests/unit/test_chat_hardening.py tests/unit/test_migration_prefixes.py \
+  tests/unit/test_tenant_coverage.py -q -rs
+uv run pytest evals/trajectories/test_chat_fold_trajectory.py -q
+G=apps/services/gateway/gateway
+uv run ruff check $G/routes/chat.py $G/chat_fold.py
+uv run mypy $G/routes/chat.py $G/chat_fold.py
+cd workbench/control_plane && npx tsc --noEmit
+npx vitest run src/components/entityPillsAuthor.test.ts \
+  src/lib/assistantCheckpoint.test.ts
+npx vitest run
+```
+
+The `-rs` output must show no R8 skip. With `DATABASE_URL` set,
+`test_tenant_coverage.py` has two tests that fail by construction on a fresh
+ladder. `.github/workflows/pr-check.yml` records why, and they are not S13's.
