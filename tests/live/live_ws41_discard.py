@@ -422,6 +422,20 @@ async def update_chain(org: str, bundle: object, raw: bytes) -> None:
     check(
         "4.4 the kept update stays on the earlier task", title == "Renamed in ClickUp", str(title)
     )
+    touched = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        " AND origin ? 'discard_touched_at' AND updated_at >= "
+        " (SELECT updated_at FROM pm_import_runs WHERE id = CAST(:r AS uuid))",
+        r=later,
+    )
+    check(
+        # Task B lost the later run's comment, and task A its "updated from
+        # ClickUp" activity row: both changed, both are bumped.
+        "4.4b the two tasks that lost a row are bumped, so the delta feed sees it",
+        touched == 2,
+        str(touched),
+    )
     check("4.5 the earlier run's tasks survive", await run_tasks(org, first) == 2423)
     residue = await one(
         org,

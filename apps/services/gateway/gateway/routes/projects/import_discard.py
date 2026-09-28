@@ -26,6 +26,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from gateway.routes.projects.core import touch_task
 from sqlalchemy import text
 
 #: How long after it ends a run can be discarded (§6.9).
@@ -120,6 +121,9 @@ EDITED_SQL = (
     "SELECT t.id, t.title FROM pm_tasks t "
     " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = CAST(:run AS text) "
     "   AND (t.updated_at > greatest(CAST(:finished AS timestamptz), "
+    # A discard of a later run bumped the task when it took that run's
+    # comment away (the delta feed must see it). That bump is not a member's.
+    "          CAST(t.origin->>'discard_touched_at' AS timestamptz), "
     "          (SELECT r.finished_at FROM pm_import_runs r "
     "            WHERE r.id::text = t.origin->>'updated_by_run')) "
     "        OR EXISTS (SELECT 1 FROM pm_activities a "
@@ -234,7 +238,7 @@ DELETE_ACTIVITY_SQL = (
     " WHERE a.organization_id = CAST(:org AS uuid) AND a.meta->'import'->>'run_id' = CAST(:run AS text) "
     "   AND NOT EXISTS (SELECT 1 FROM pm_tasks t "
     "                    WHERE t.id = a.task_id AND t.origin->>'run_id' = CAST(:run AS text)) "
-    "RETURNING a.type"
+    "RETURNING a.type, a.task_id"
 )
 DELETE_TASKS_SQL = "DELETE FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) AND origin->>'run_id' = CAST(:run AS text)"
 #: The nodes, in one statement: the foreign keys cascade to their children in
@@ -243,6 +247,14 @@ DELETE_NODES_SQL = (
     "DELETE FROM pm_projects "
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:nodes AS uuid[])) "
     "RETURNING id, parent_project_id, kind"
+)
+#: Stamp the tasks a discard bumped, in the same transaction as the bump, so
+#: a later discard of the run that CREATED them does not read the bump as a
+#: member's edit (EDITED_SQL).
+STAMP_TOUCHED_SQL = (
+    "UPDATE pm_tasks SET origin = jsonb_set(coalesce(origin, '{}'::jsonb), "
+    "       '{discard_touched_at}', to_jsonb(now())) "
+    " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:ids AS uuid[]))"
 )
 MARK_DISCARDED_SQL = (
     "UPDATE pm_import_runs "
@@ -353,6 +365,12 @@ async def discard_written_run(
 
     tasks = int((await db.execute(text(COUNT_TASKS_SQL), params)).scalar() or 0)
     activity = (await db.execute(text(DELETE_ACTIVITY_SQL), params)).fetchall()
+    # A comment gone from a task that STAYS is a change to that task: bump it
+    # through the one seam, so every delta client sees the comment go.
+    touched = sorted({str(r.task_id) for r in activity if r.task_id})
+    if touched:
+        await touch_task(db, *touched)
+        await db.execute(text(STAMP_TOUCHED_SQL), {"org": organization_id, "ids": touched})
     await db.execute(text(DELETE_TASKS_SQL), params)
     gone = (await db.execute(text(DELETE_NODES_SQL), params)).fetchall() if nodes else []
     report = _json(row.report) or {}
