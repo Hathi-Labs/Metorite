@@ -752,9 +752,13 @@ task. The files are deleted when the run reaches `done`, `failed` or
 **Built in I-2:** the delete on `discarded`. A new upload discards the
 organization's open run (§7.4), so the disk holds one open upload per
 organization at most, which is 250 MB. **Owed by I-3:** the delete on `done`
-and `failed`. **Owed before I-7:** the nightly sweep. It also removes the
-folder of an organization that no longer exists, because the row CASCADEs
-and the folder does not.
+and `failed`.
+
+**Built in I-7:** the sweep (`import_sweep.py`), which the
+gateway starts at boot and runs twice a day. It deletes a run folder untouched
+for 14 days, and an organization folder left empty. So it also removes the
+folder of an organization that no longer exists, because the row CASCADEs and
+the folder does not. It reads the disk only. `test_import_sweep.py` fences it.
 
 ### 7.3 The apply job
 
@@ -809,7 +813,7 @@ the rest.
 
 | Limit | Value | Why |
 |---|---|---|
-| Upload size | 50 MB per file, 5 files per run, on the gateway. **9.5 MB per run in the browser** (I-4) | The largest reasonable Space export. The Next proxy in front of the gateway buffers 10 MB of a request body and cuts the rest (`experimental.proxyClientMaxBodySize`). So the wizard refuses a larger upload with a reason, and the admin exports one Space at a time. The real P-1 file is 1.2 MB |
+| Upload size | 50 MB per file, 5 files per run, on the gateway. **9.5 MB per run in the browser** (I-4) | The largest reasonable Space export. The Next proxy in front of the gateway buffers 10 MB of a request body and cuts the rest (`experimental.proxyClientMaxBodySize`). So the wizard refuses a larger upload with a reason, and the admin exports one Space at a time. The real P-1 file is 1.2 MB. **The gateway also refuses a body the proxy cut** (I-7): the wizard sends `expected_files` and `expected_bytes` AFTER the files, and a cut body loses them. Measured through the real proxy: a 12 MB single file, and a 5 MB file followed by a 12 MB file, each got the "arrived incomplete" reason and wrote no run. A 9.7 MB file parsed and was refused on its task count in 5.6 s, inside the proxy's 30 s timeout |
 | Tasks per run | 20,000 | Twice the Jira file cap. A larger workspace imports one Space per run |
 | Runs in flight | 1 per organization | One writer at a time in one tree |
 | Open runs | 1 per organization | A new upload discards the open run and deletes its files (built in I-2). This caps the disk an organization can hold |
@@ -846,9 +850,12 @@ All under `/projects/import`, all behind the flag and the permission:
 
 The import lives **inside Projects**. It adds no pane and no nav entry, so
 the nine-pane allowlist does not change (`launch_surface.md` §2). The entry is
-an Upload icon, "Import from ClickUp", beside the + on the Spaces heading. It
-shows only to a member with `admin:access:manage`, only when the flag is on, and
-only after access has loaded. The dialog mounts in the page's `overlays`, so it
+a labelled row, "Import from ClickUp", in the Projects sidebar above Spaces. An
+organization with no spaces also gets a button under the empty tree (I-7).
+
+An icon beside the + was the only entry in I-4, and the owner read it as "no
+import UI". The entry shows only to a member with `admin:access:manage`, only
+when the flag is on, and only after access has loaded. The dialog mounts in the page's `overlays`, so it
 opens on a phone too (the H-120 defect).
 
 A four-step wizard, built from `src/components/ui/` primitives and the one
@@ -912,7 +919,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-4** ✅ built 2026-09-28 | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today. **Met:** the visual-review rig walked all four steps against the scrubbed P-1 plan, in dark and light mode, at compact and comfortable density, under a violet accent, and at 1280, 1440, 1920 and 390 px, with no console error. The plan carries `continues` (`imports._continues`, which asks `import_writer.continues_earlier`), and `live_ws41_writer.py` passes 58 of 58, with `continues` and `lanes_added` checked both ways. The I-4 review found the view dropped `progress` and `report`, which a stubbed rig cannot see. `test_the_view_carries_progress_and_report_but_not_the_lease` fences it. **End to end, 2026-09-28:** a browser walk with no stubs drove a real gateway and a fresh Postgres. In light mode it imported the fixture: 2,423 tasks, 5 spaces, 93 comments, with live progress. At compact density the same file again showed the continuation note and found 2,423 unchanged. At 390 px a third run did the same. No console error. The walk found a re-run that reported a Done status added to 7 lists it only reused. `project_statuses` now returns the lists, and the writer counts only those it creates. `live_ws41_writer.py` check 4.2 fences it |
 | **I-5** ⏸ deferred 2026-09-28 | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning. **Deferred:** customer zero uses no custom fields (owner, 2026-09-28), so the workspace export already carries all its data. The review step now says the file lacks custom fields only as a condition. Build this when a customer who uses them asks |
 | **I-6** ✅ built 2026-09-28 | Discard (§6.9) | Discard removes exactly the run's rows, and refuses after a member edit, a member's new work in an imported node, or a later import built on the run. A reused node and an earlier run's task survive it. The tombstones reach the delta feed. The wizard lists recent imports, so a run can be opened or discarded after a page reload. **Met:** `live_ws41_discard.py` passes 32 of 32 on a real Postgres. A discard removes the run's 2,423 tasks and 62 nodes, and writes a tombstone per task. A member's edit, comment, personal triage, node and saved view each refuse it and delete nothing. With the member work gone, the same run discards. A later update run refuses the earlier run's discard. Its own discard removes its comment, keeps its update, and leaves the earlier tasks, and then the earlier run discards cleanly. A browser walk with no stubs, against a real gateway and database, imported and discarded in light mode, found the run again from the list after a reload at compact density, showed the member-edit refusal by task name, and drew the list at 390 px, with no console error |
-| **I-7** 🔴 OWNER | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed |
+| **I-7** | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production. The owner asked for it on 2026-09-29 ("there is no UI/UX currently deployed"), and the `enforcement-flip` grant runs to 2026-11-30 | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed. **Built:** the sweep (§7.2) and a labelled entry (§7.7). The browser path is app.metorite.com, then the Next proxy, then the gateway on loopback, so it never meets Caddy's api host. The Next proxy caps it at 10 MiB, and the trailing fields of §7.4 refuse a cut body. The gateway caps an import upload at 260 MB BEFORE it is read (`import_body_limit.py`, a pure-ASGI wrapper), because FastAPI spools a whole body ahead of every dependency, sign-in included. The cap is not in Caddy: a new matcher there changes the sign-in lines `test_caddy_auth_gate.py` holds for the owner, and the browser path never passes Caddy's api host. `test_import_body_limit.py` fences it. The flip follows the merge, and its evidence is recorded here |
 
 **Then one adapter per slice, in this order.** Each needs its own real sample
 file first, exactly like P-1:

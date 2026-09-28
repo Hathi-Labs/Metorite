@@ -17,6 +17,10 @@ export const importApi = {
   async upload(files: readonly File[]): Promise<ImportRun> {
     const body = new FormData();
     for (const file of files) body.append("files", file, file.name);
+    // AFTER the files, on purpose: a body the proxy cut short loses these, and
+    // the gateway then refuses the upload instead of reading part of it.
+    body.append("expected_files", String(files.length));
+    body.append("expected_bytes", String(files.reduce((sum, f) => sum + f.size, 0)));
     // No Content-Type: the browser writes the multipart boundary itself.
     const res = await fetch("/api/projects/import/runs", { method: "POST", body });
     const text = await res.text();
