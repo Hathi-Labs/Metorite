@@ -7176,9 +7176,12 @@ async def _streamed_completion(
         # died. `aclose_quietly` is the ONE close, shared with the walk's
         # loser path, and it is safe on a stream that already finished.
         await router_mod.aclose_quietly(source)
-        # 🔴 A stream that never STARTED records nothing, so nothing settles its
-        # hold. After a billed stream the settle already released it, and this
-        # is a no-op (`_release_call_hold`).
+        # 🔴 A stream that ends without settling gives its hold back here. On a
+        # clean end `relay_stream` has already settled, so this is a no-op. On
+        # a client disconnect the ORDER flips: this runs first, and the inner
+        # generator settles later through the loop's finalizer. The ledger is
+        # right either way, because a hold nets to zero against its one
+        # release and the usage row is separate (`store.record_usage`).
         if request_id:
             await asyncio.to_thread(_release_call_hold, org_id, request_id)
 
@@ -7476,6 +7479,12 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             return StreamingResponse(
                 _stream_closed(), media_type="text/event-stream", headers=headers
             )
+        except BaseException:
+            # Anything else that stops the stream opening (an anyio error, a
+            # bug building the call) also leaves no generator to settle, so
+            # the hold goes back here too, and the error propagates unchanged.
+            _release_call_hold(org_id, request_id)
+            raise
 
         return StreamingResponse(
             _streamed_completion(
