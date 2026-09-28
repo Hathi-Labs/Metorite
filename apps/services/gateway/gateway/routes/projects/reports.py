@@ -450,7 +450,7 @@ def _row_subject(config: Any) -> dict[str, str] | None:
 
 
 async def _visible_report(
-    db: Any, vis: Any, report_id: str, user: Any,
+    db: Any, vis: Any, report_id: str, user: Any, *, for_delete: bool = False,
 ) -> Any:
     """One report, or 404, or 403.
 
@@ -463,13 +463,24 @@ async def _visible_report(
     the reason** (§7.1 rule 2). The list hides the same row, so the list
     and this refusal cannot disagree. A lead who leaves a team loses the
     saved reports on its members on the next request.
+
+    ``for_delete``: a stored subject with a bad shape answers 422 to every
+    reader, so nobody could delete that row. The delete route lets an admin
+    (``admin:members:read``) or the report's creator past that 422 only.
     """
     row = await require_row(db, "pm_reports", report_id, "Report")
     if row.project_id is not None:
         await load_visible_project(db, vis, str(row.project_id))
-    ok, reason = (await reader_scope(db, user, vis)).allows(
-        _row_subject(row.config),
-    )
+    try:
+        subject = _row_subject(row.config)
+    except HTTPException as err:
+        if err.status_code != 422 or not for_delete:
+            raise
+        creator = (row.created_by or "").strip().lower()
+        if can_read_hr_fields(user) or creator == actor(user).lower():
+            return row
+        raise
+    ok, reason = (await reader_scope(db, user, vis)).allows(subject)
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
     return row
@@ -702,7 +713,7 @@ async def delete_report(
 ) -> None:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id, user)
+        await _visible_report(db, vis, report_id, user, for_delete=True)
         await db.execute(
             text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
             {"i": report_id},

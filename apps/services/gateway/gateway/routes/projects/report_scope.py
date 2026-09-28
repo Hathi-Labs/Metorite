@@ -307,22 +307,26 @@ def filter_conflict_rows(
     A row about one person (``parallel_person``, and the HR kinds that only
     an admin receives) goes when its person is not in ``allowed``. A
     dependency row keeps its holders (:data:`DEPENDENCY_KINDS`).
+
+    ⚠️ The count is of PEOPLE, not of rows. One person can hold three
+    conflict rows, and the shared line says "N other people".
     """
     if allowed is None:
         return list(rows), 0
     kept: list[dict[str, Any]] = []
-    hidden = 0
+    hidden: set[str] = set()
     for row in rows:
         if row.get("kind") not in DEPENDENCY_KINDS:
             people = [
                 str(p.get("email") or "").strip().lower()
                 for p in row.get("people") or []
             ]
-            if any(_is_person(p) and p not in allowed for p in people):
-                hidden += 1
+            others = {p for p in people if _is_person(p) and p not in allowed}
+            if others:
+                hidden |= others
                 continue
         kept.append(row)
-    return kept, hidden
+    return kept, len(hidden)
 
 
 async def subject_choices(db: Any, user: Any, vis: Any) -> dict[str, Any]:

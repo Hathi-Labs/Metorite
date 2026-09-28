@@ -729,6 +729,10 @@ async def analytics_load(project_id: str = "") -> str:
         legend(),
         f"Load in {_scope_title(payload)}: {payload.get('total_tasks', 0)} open tasks",
     ]
+    if line := hidden_people_line(payload, "view"):
+        # WS-27bn R5a. The rows below are not every person: say so, so the
+        # model never ranks people across rows it did not receive.
+        out.append(f"  {line}. Do not compare the rows below with them.")
     for p in payload.get("people") or []:
         who = data(p["assignee"]) if p.get("assignee") else "unassigned"
         out.append(
@@ -938,6 +942,10 @@ async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
         f"  horizon: {horizon.get('starts_on')} to {horizon.get('ends_on')}"
         f" ({horizon.get('days', days)} days, for spare hours and at-risk)",
     ]
+    if line := hidden_people_line(payload, "view"):
+        # WS-27bn R5a. "held by N assignees" counts every person, and the
+        # rows below are only the ones this reader may see.
+        out.append(f"  {line}. Do not compare the rows below with them.")
     if payload.get("hr_visible") is False:
         out.append(f"  {HR_HIDDEN}")
     elif payload.get("partial"):
@@ -1645,16 +1653,18 @@ _REPORT_ROW_WORDS: dict[str, Any] = {
 HIDDEN_LINE_SECTIONS: tuple[str, ...] = ("load", "capacity", "pulse", "conflicts")
 
 
-def hidden_people_line(section: dict[str, Any]) -> str | None:
+def hidden_people_line(section: dict[str, Any], noun: str = "report") -> str | None:
     """"This report hides N other people", or None when it hides nobody.
 
     WS-27bn R3d, edit E5. The chat text and the chat card print it, in
     the words of the Reports app (`hiddenPeopleLine` in reportEmail.ts).
+    ``noun`` fits the surface: "report" for a report section, and "view"
+    for an Analytics read (R5a repair). The rest of the words stay here.
     """
     n = section.get("hidden_people")
     if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
         return None
-    return f"This report hides {n} other {'person' if n == 1 else 'people'}"
+    return f"This {noun} hides {n} other {'person' if n == 1 else 'people'}"
 
 
 def _row_words(name: str, path: str, value: Any) -> Any:

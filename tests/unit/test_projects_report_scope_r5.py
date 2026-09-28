@@ -213,6 +213,113 @@ def test_the_chat_text_and_card_print_the_hidden_line(
     assert _report_card_notes(name, quiet) == []
 
 
+# ── Hermetic, repair round 1: the chat tools and the conflict count ─────────
+
+
+def test_the_conflict_count_is_people_not_rows() -> None:
+    """``hidden_people`` counts PEOPLE for conflicts too. Two rows of one
+    person are one hidden person, so the shared line stays true."""
+    rows = [
+        {"kind": "parallel_person", "people": [{"email": "n@x.test"}]},
+        {"kind": "parallel_person", "people": [{"email": "n@x.test"}]},
+        {"kind": "parallel_person", "people": [{"email": "o@x.test"}]},
+        {"kind": "parallel_person", "people": [{"email": "m@x.test"}]},
+    ]
+    kept, hidden = scope.filter_conflict_rows(rows, frozenset({"m@x.test"}))
+    assert [r["people"][0]["email"] for r in kept] == ["m@x.test"]
+    assert hidden == 2
+
+
+def _member_load() -> dict[str, Any]:
+    """A member's `/analytics/load`: their own row, with three people hidden."""
+    return {
+        "scope": "node", "total_tasks": 9, "people_total": 4, "hidden_people": 3,
+        "people": [{"assignee": "me@x.test", "open_tasks": 2, "overdue": 0,
+                    "due_next_7d": 1, "later": 1}],
+    }
+
+
+def _admin_load() -> dict[str, Any]:
+    return {
+        "scope": "node", "total_tasks": 9, "people_total": 2,
+        "people": [
+            {"assignee": "big@x.test", "open_tasks": 7, "overdue": 1,
+             "due_next_7d": 1, "later": 5},
+            {"assignee": "me@x.test", "open_tasks": 2, "overdue": 0,
+             "due_next_7d": 1, "later": 1},
+        ],
+    }
+
+
+def _responder(load: dict[str, Any]) -> Any:
+    def answer(call: dict[str, Any]) -> Any:
+        path = call["path"]
+        if path == "/projects/analytics/load":
+            return load
+        if path == "/projects/summary":
+            return {"name": "Portfolio", "tasks": 9, "overdue": 1, "children": []}
+        return {"rows": [], "total": 0, "people": [], "blocked": [], "overdue": []}
+    return answer
+
+
+async def test_status_report_claims_no_most_over_hidden_people(monkeypatch) -> None:
+    """A member with 2 tasks is never told they hold the most open work."""
+    pytest.importorskip("skill_projects")
+    import skill_projects
+
+    from tests.unit._projects_agent_fakes import fake_gateway
+
+    async def quiet(_ui: str) -> dict[str, Any]:
+        return {"ok": True}
+
+    import importlib
+
+    monkeypatch.setattr(importlib.import_module("acb_skills.write_artifact"),
+                        "emit_generative_ui", quiet)
+    fake_gateway(monkeypatch, _responder(_member_load()))
+    member = await skill_projects.status_report()
+    assert "Most open work" not in member, member
+    assert "This view hides 3 other people" in member
+    assert "me@x.test" in member
+
+    fake_gateway(monkeypatch, _responder(_admin_load()))
+    admin = await skill_projects.status_report()
+    assert "Most open work: big@x.test with 7 open, 1 overdue." in admin
+    assert "hides" not in admin
+
+
+async def test_analytics_load_names_the_hidden_people(monkeypatch) -> None:
+    pytest.importorskip("skill_projects")
+    import skill_projects
+
+    from tests.unit._projects_agent_fakes import fake_gateway
+
+    fake_gateway(monkeypatch, _responder(_member_load()))
+    member = await skill_projects.analytics_load()
+    assert "This view hides 3 other people" in member, member
+    fake_gateway(monkeypatch, _responder(_admin_load()))
+    assert "hides" not in await skill_projects.analytics_load()
+
+
+async def test_team_capacity_names_the_hidden_people(monkeypatch) -> None:
+    pytest.importorskip("skill_projects")
+    import skill_projects
+
+    from tests.unit._projects_agent_fakes import fake_gateway
+
+    body: dict[str, Any] = {
+        "scope": "node", "hr_visible": False, "total_tasks": 9,
+        "people_total": 4, "windows": {},
+        "rows": [{"assignee": "me@x.test", "name": "Me", "kind": "person",
+                  "open_tasks": 2, "overdue": 0, "due_next_7d": 1, "later": 1}],
+    }
+    fake_gateway(monkeypatch, lambda _c: {**body, "hidden_people": 3})
+    member = await skill_projects.team_capacity()
+    assert "This view hides 3 other people" in member, member
+    fake_gateway(monkeypatch, lambda _c: body)
+    assert "hides" not in await skill_projects.team_capacity()
+
+
 # ── R8: a real Postgres, through asyncpg ─────────────────────────────────────
 
 
@@ -767,3 +874,43 @@ def test_the_subjects_route_lists_what_the_rule_allows(seeded, wired) -> None:
     member = subjects("m")
     assert {p["email"] for p in member["people"]} == {who["m"]}
     assert member["teams"] == [] and member["everyone"] is False
+
+
+@_needs_db
+def test_a_report_with_a_bad_subject_can_still_be_deleted(seeded, wired) -> None:
+    """A stored subject with a bad shape answers 422 to get and render. The
+    admin and the creator may still delete it, and nobody else may."""
+    who = seeded["who"]
+
+    def bad_row(by: str) -> str:
+        from sqlalchemy import create_engine
+
+        eng = create_engine(_TENANT_URL, future=True)
+        with eng.begin() as c:
+            rid = str(c.execute(
+                text(
+                    "INSERT INTO pm_reports (project_id, organization_id, name,"
+                    " config, created_by) VALUES (NULL, CAST(:o AS uuid), 'bad',"
+                    " CAST(:c AS jsonb), :by) RETURNING id"
+                ),
+                {"o": seeded["org"], "by": by,
+                 "c": json.dumps({"sections": ["load"],
+                                  "subject": {"kind": "bogus"}})},
+            ).scalar_one())
+        eng.dispose()
+        return rid
+
+    admin = _user(who["boss"], admin=True)
+    first = bad_row(who["m"])
+    assert _status(lambda: asyncio.run(rep.get_report(first, user=admin))) == 422
+    assert _status(lambda: asyncio.run(rep.render_report(first, user=admin))) == 422
+    # Neither the admin grant nor authorship: still refused.
+    assert _status(lambda: asyncio.run(
+        rep.delete_report(first, user=_user(who["n"])))) == 422
+    assert _status(lambda: asyncio.run(rep.delete_report(first, user=admin))) == 200
+    assert _status(lambda: asyncio.run(rep.get_report(first, user=admin))) == 404
+
+    second = bad_row(who["m"])
+    assert _status(lambda: asyncio.run(
+        rep.delete_report(second, user=_user(who["m"])))) == 200
+    assert _status(lambda: asyncio.run(rep.get_report(second, user=admin))) == 404

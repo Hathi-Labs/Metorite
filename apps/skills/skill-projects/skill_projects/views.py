@@ -719,7 +719,20 @@ async def status_report(project_id: str = "") -> str:
             md.append(
                 f"- #{r.get('task_number')} {_plain(r.get('title'))} (due {_day(r.get('due_at'))})"
             )
-    if top and int(top.get("open_tasks") or 0):
+    hidden = hidden_people_line(load, "view")
+    if hidden:
+        # WS-27bn R5a. The load rows are only the people this reader may
+        # report on. "Most" over those rows is false, so list them and say
+        # how many people the view hides.
+        shown = [p for p in people if int(p.get("open_tasks") or 0)][:10]
+        md += ["", "## Load", ""]
+        md += [
+            f"- {_plain(p.get('assignee') or 'unassigned')}: "
+            f"{p.get('open_tasks')} open, {p.get('overdue', 0)} overdue."
+            for p in shown
+        ]
+        md.append(f"{hidden}.")
+    elif top and int(top.get("open_tasks") or 0):
         md += [
             "",
             "## Load",
