@@ -381,11 +381,17 @@ def merge_fields(
             conflicts.append(field)
             kept[field] = wrote if known else cur
     new_snapshot = {field: kept.get(field, now_new[field]) for field in UPDATABLE}
+    new_source = dict(src_new) if src_new is not None else dict(last_source or {})
+    for field in frozen:
+        # A frozen field did not take the source's value. Keep the LAST source
+        # value, so the change still counts once the task is unfrozen.
+        if last_source is not None and field in last_source:
+            new_source[field] = last_source[field]
     return Merge(
         changes=changes,
         conflicts=tuple(conflicts),
         new_snapshot=new_snapshot,
-        new_source=src_new if src_new is not None else (last_source or {}),
+        new_source=new_source,
     )
 
 

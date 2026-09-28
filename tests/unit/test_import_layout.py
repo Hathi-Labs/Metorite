@@ -321,3 +321,19 @@ def test_a_source_change_still_lands_through_the_mapping() -> None:
     )
     assert m.changes == {"status_id": "s-done"}
     assert m.new_source["status_id"] == "done"
+
+
+def test_a_frozen_field_keeps_the_last_source_value() -> None:
+    """The source changed the status of a task a member moved. The change is
+    not applied, and the snapshot keeps the OLD source value, so it still
+    lands once the task is moved back."""
+    m = merge_fields(
+        _state(status_id="s-open"),
+        snapshot(_state(status_id="s-open")),
+        _state(status_id="s-done"),
+        last_source=snapshot(_src(status_id="open")),
+        incoming_source=_src(status_id="done"),
+        frozen=("status_id",),
+    )
+    assert m.changes == {}
+    assert m.new_source["status_id"] == "open"

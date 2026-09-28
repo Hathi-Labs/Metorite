@@ -231,11 +231,7 @@ async def create_import_run(
             # A person mapped last time who has left since falls back to the
             # proposal; the plan must not open with an error the admin did
             # not cause.
-            mapping.people = {
-                ref: member
-                for ref, member in mapping.people.items()
-                if member is None or member in facts["directory"]
-            }
+            mapping.people = usable_people(mapping.people, facts["directory"])
             plan = build_plan(bundle, mapping, **facts)
             plan["inherited_from"] = inherited
 
@@ -451,6 +447,21 @@ async def _parse(source: str, uploads: list[tuple[str, bytes]]) -> ImportBundle:
             f"{MAX_TASKS}. Export one space at a time.",
         )
     return bundle
+
+
+def usable_people(
+    people: dict[str, str | None], directory: dict[str, str]
+) -> dict[str, str | None]:
+    """An inherited people mapping, case-blind and lowercased. A member who
+    left the organization is dropped, so the person falls back to the
+    proposal instead of opening the plan with an error."""
+    out: dict[str, str | None] = {}
+    for ref, member in people.items():
+        if member is None:
+            out[ref] = None
+        elif member.strip().lower() in directory:
+            out[ref] = member.strip().lower()
+    return out
 
 
 async def _inherited_mapping(

@@ -526,3 +526,11 @@ async def test_a_finished_run_cannot_apply_again(
     with pytest.raises(HTTPException) as err:
         await imports.apply_import_run(view["id"], _user())
     assert err.value.status_code == 409 and started == []
+
+
+def test_an_inherited_mapping_is_case_blind() -> None:
+    """The I-3b verifier's NF2: a mixed-case hand mapping was dropped on the
+    next upload, and the person then lost their tasks in silence."""
+    directory = {"m4@acme.test": "Four"}
+    people = {"name:a": "M4@Acme.TEST", "name:b": None, "name:c": "gone@acme.test"}
+    assert imports.usable_people(people, directory) == {"name:a": "m4@acme.test", "name:b": None}

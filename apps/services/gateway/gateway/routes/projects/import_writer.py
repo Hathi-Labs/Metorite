@@ -176,10 +176,11 @@ EXISTING_IN_BATCH_SQL = (
 )
 #: The state of the imported tasks a batch may update (I-3b, §6.9).
 EXISTING_ROWS_SQL = (
-    "SELECT id, project_id, title, description, status_id, due_at, start_date, importance, "
-    "       estimate_mins, tags, completed_at, origin "
-    "  FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
-    "   AND id = ANY(CAST(:ids AS uuid[]))"
+    "SELECT t.id, t.project_id, t.root_project_id, t.title, t.description, t.status_id, "
+    "       t.due_at, t.start_date, t.importance, t.estimate_mins, t.tags, t.completed_at, "
+    "       t.origin, (p.personal_owner IS NOT NULL) AS in_personal "
+    "  FROM pm_tasks t JOIN pm_projects p ON p.id = t.project_id "
+    " WHERE t.organization_id = CAST(:org AS uuid) AND t.id = ANY(CAST(:ids AS uuid[]))"
 )
 EXISTING_ASSIGNEES_SQL = (
     "SELECT task_id, assignee FROM pm_task_assignees WHERE task_id = ANY(CAST(:ids AS uuid[]))"
@@ -943,8 +944,14 @@ async def _existing_state(
         if str(r.task_id) in out:
             # A comment written before comment keys existed (I-3) is matched
             # on its date and text, so a re-run never writes it twice.
-            key = str(r.comment_key) if r.comment_key else _legacy_key(r.created_at, r.body)
-            out[str(r.task_id)]["comment_keys"].add(key)
+            keys = out[str(r.task_id)]["comment_keys"]
+            if r.comment_key:
+                keys.add(str(r.comment_key))
+            else:
+                keys.add(_legacy_key(r.created_at, r.body))
+                # An undated source comment was stamped with the import time,
+                # so its text is the only thing that can match it again.
+                keys.add(_legacy_key(None, r.body))
     return out
 
 
@@ -987,23 +994,30 @@ async def _update_task(
     # project, and adding a person there would widen who can read it
     # (`assert_assignable_here`, core.py). So a moved task keeps its status
     # and its people.
-    frozen: tuple[str, ...] = ()
+    frozen: list[str] = []
     if str(row.project_id) != extras["project_id"]:
-        frozen = ("status_id", "assignees")
+        # The status set it would take is not the set it lives in.
+        frozen.append("status_id")
         counts["moved"] += 1
+    if str(row.root_project_id) != extras["root"] or bool(row.in_personal):
+        # It left the imported space, or sits in a PERSONAL project: a new
+        # assignee there would widen who can read it (`assert_assignable_here`).
+        frozen.append("assignees")
     merge = merge_fields(
         current,
         state["origin"].get("import_values"),
         incoming,
         last_source=state["origin"].get("import_source"),
         incoming_source=extras["source"],
-        frozen=frozen,
+        frozen=tuple(frozen),
     )
 
     values: dict[str, Any] = {k: v for k, v in merge.changes.items() if k != "assignees"}
     if "tags" in values and extras["fitted_tags"]:
         # Registered only now that the merge writes them.
-        values["tags"] = await apply_task_tags(db, extras["root"], extras["fitted_tags"], by=admin)
+        values["tags"] = await apply_task_tags(
+            db, str(row.root_project_id), extras["fitted_tags"], by=admin
+        )
     if "status_id" in values:
         # The completion date follows the status, as a status move in the app does.
         if extras["closed"] and row.completed_at is None:
@@ -1026,7 +1040,7 @@ async def _update_task(
         values["origin"] = new_origin
         await update_row(db, "pm_tasks", task_id, values)
     elif new_origin != state["origin"]:
-        # Bookkeeping only. `touch=False`: `updated_at` is the If-Match token
+        # Bookkeeping only, so no touch: `updated_at` is the If-Match token
         # (D-PM-20) and the delta feed's cursor, so a task that did not change
         # must keep it.
         await update_row(db, "pm_tasks", task_id, {"origin": new_origin}, touch=False)
@@ -1106,7 +1120,8 @@ async def _add_comments(
     written = 0
     for comment in comments.get(task.ref, []):
         key = comment_key(comment)
-        if key in seen or _legacy_key(comment.created_at, comment.body_md) in seen:
+        legacy = _legacy_key(comment.created_at, comment.body_md)
+        if key in seen or legacy in seen:
             continue
         author = people.get(comment.author_ref or "") if comment.author_ref else None
         await record_activity(
