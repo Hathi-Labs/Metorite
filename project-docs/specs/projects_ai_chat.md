@@ -2940,6 +2940,21 @@ stream.
     a session gets an owner row from `_ensure_session`, and a room keeps one
     `primary` agent. A member who reaches the room through a group or an org
     grant stays at that role when she starts a run.
+11. **The creator owns only a room with no participant row** (round 3).
+    `resolve_room_access` gives the owner role to `chat_session.user_id`
+    only when the session has no participant row at all. That covers a
+    legacy session and a browser-created session before its first run. A
+    room with any membership resolves from its rows and grants only. So
+    when an owner removes the creator, the removal holds.
+12. **The first add keeps the creator.** In a session with no participant
+    row, the creator can invite only through the fallback in rule 11. So
+    `_add_participant` writes her owner row first, in the same transaction.
+13. **The other creator checks follow rule 11.** `SESSION_VISIBLE_SQL`
+    (the session list, a rename, the history read and the active list),
+    `_delete_session` and `_upsert_session` take the creator arm only while
+    the room has no participant row. `_thread_owner_ok` and the cancel
+    check go through `resolve_room_access`, so they follow it with no
+    change.
 
 ### 20.5 What stops working (D-PM-39)
 
@@ -3030,6 +3045,26 @@ later slice give these rows a server writer.
    test Bob removes Alice, the creator. Alice then runs through a group,
    and she gets no owner row.
 
+   Round 3 adds these R8 tests:
+   - Bob removes Alice, and she has no group grant. She resolves with no
+     role and no access. The session list, a rename, a session upsert and
+     a delete by her all do nothing.
+   - Bob removes Alice, and she is in a group of the room. She resolves as
+     `member`.
+   - A legacy session with no participant row is still its creator's.
+   - A browser-created session that Alice shares before her first run gets
+     her owner row first, and she keeps `owner`.
+   - The verifier's case: Bob saves a new `assistant` row with the kind
+     `human`. No row exists, and `unchanged` holds its id.
+
+   Round 3 adds six mutations, and each turns a test red:
+   - the unconditional creator fallback
+   - the creator arm of `SESSION_VISIBLE_SQL` with no `NOT EXISTS`
+   - the creator arm of `_delete_session` with no `NOT EXISTS`
+   - the creator arm of `_upsert_session` with no `NOT EXISTS`
+   - no creator owner row before the first add
+   - `_attribute` treats an `assistant` row with the kind `human` as human
+
 ### 20.7 What S14 does not do
 
 - The run member can still write any content in her own reply until the
@@ -3042,6 +3077,9 @@ later slice give these rows a server writer.
 - Two members can start their first runs at the same instant on a session
   with no `primary` agent. Each run can then insert a `primary` row. The
   reviewer accepted this (round 2, P3).
+- The session list still sets `isOwner` from `chat_session.user_id`. It
+  is a display flag only. Every act that it offers goes through
+  `resolve_room_access` or a creator arm from rule 13.
 - A mint that times out can still finish later in its thread. It only
   inserts, so it changes no row that the fold wrote first.
 - A run that `SupersedeRefused` stops inside the stream leaves an empty

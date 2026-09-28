@@ -164,6 +164,9 @@ not after:
   member creates a human turn only. The gateway creates the agent row of a
   run when the run starts. No client creates an agent row or a system row,
   so no member can put words in the model context of the room.
+- The creator of a session is its owner only while the session has no
+  participant row (`projects_ai_chat.md` §20.3, S14 round 3). After that,
+  the rows and grants decide. An owner who removes the creator removes her.
 
 ## 5. What this does NOT change
 
