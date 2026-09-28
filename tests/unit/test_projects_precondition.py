@@ -157,8 +157,9 @@ def test_touch_false_is_used_only_for_recurrence_bookkeeping() -> None:
     **The third site, argued (WS-41 I-3b, 2026-09-28): ``import_writer.py``.**
     A re-import of a task that did not change writes ONLY ``pm_tasks.origin``:
     the importer's own bookkeeping (``import_values``, ``import_source``,
-    ``updated_by_run``). No client renders those keys, and the keys a client
-    reads (``kind`` and the email fields) do not change. So for the delta
+    ``updated_by_run``, and a refresh of ``custom_id``, ``url``,
+    ``time_spent_mins`` and ``assignee_names``). No client renders those keys,
+    and the keys a client reads (``kind`` and the email fields) do not change. So for the delta
     cursor there is nothing new to send, and for this precondition a member's
     pending edit is of a row whose visible fields did not move. Touching would
     re-send 2,423 rows and fail every open editor's next save after a no-op
