@@ -33,6 +33,7 @@ import { describe, expect, it } from "vitest";
 import type {
   CapacityRow,
   HygieneKind,
+  LoadReport,
   PulseRow,
   RenderedReportBody,
 } from "../lib/api";
@@ -52,6 +53,7 @@ import {
 import { rebalancePickups, rebalanceTasks } from "../lib/rebalance";
 import {
   CapacityPanel,
+  LoadPanel,
   OutlookPanel,
   PulsePanel,
   StuckPanel,
@@ -510,7 +512,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(panel.match(/<li[^>]*rounded-md/g)?.length).toBe(1);
     expect(panel).toContain("1 waiting past the date");
     expect(panel).toContain("Needs help: Blocked, Stale, Waiting past its date");
-    expect(panel).toContain("This report hides 2 other people");
+    expect(panel).toContain("This view hides 2 other people");
     expect(table).toContain("This report hides 2 other people");
   });
 
@@ -708,7 +710,7 @@ describe("degrade: a report-shaped body prints no broken words", () => {
   it("pulse with no card says so, and still counts the hidden people", () => {
     const html = draw({ pulse: { ...PULSE_MEMBER, rows: [], hidden_people: 3 } });
     expect(html).toContain("No card to show.");
-    expect(html).toContain("This report hides 3 other people");
+    expect(html).toContain("This view hides 3 other people");
     const { panel } = panelAndTable(html);
     expect(panel).not.toContain('role="img"');
   });
@@ -773,6 +775,93 @@ describe("the summary tiles", () => {
     const html = draw({ throughput: { series: [], median_hours: null, measured: 0 } });
     const tile = html.slice(html.indexOf("Median cycle time"));
     expect(tile.slice(0, 300)).toContain("not measured");
+  });
+});
+
+// WS-27bn R5a, done-when (k). The server removes the rows of the people a
+// reader may not report on, and counts them in `hidden_people`. The Load,
+// Capacity and Conflicts panels print the count, in a report and in the
+// Analytics app, and print nothing for an admin, who gets no key.
+describe("the hidden line on Load, Capacity and Conflicts", () => {
+  const cases: [keyof Sections, Sections][] = [
+    ["load", { load: { ...SECTIONS.load, hidden_people: 2 } }],
+    ["capacity", { capacity: { ...SECTIONS.capacity, hidden_people: 2 } }],
+    ["conflicts", { conflicts: { ...SECTIONS.conflicts, hidden_people: 2 } }],
+  ];
+  it.each(cases)("%s prints the line in a report", (_name, sections) => {
+    const { panel } = panelAndTable(draw(sections));
+    expect(panel).toContain("This view hides 2 other people");
+  });
+
+  it.each(["load", "capacity", "conflicts"] as const)(
+    "%s prints no line for an admin",
+    (name) => {
+      const html = draw({ [name]: SECTIONS[name] } as Sections);
+      expect(html).not.toMatch(/This (report|view) hides/);
+    },
+  );
+
+  it("the Analytics app's Load panel prints the route's count", () => {
+    const html = renderToStaticMarkup(
+      createElement(LoadPanel, {
+        data: {
+          project_id: null,
+          scope: "portfolio",
+          total_tasks: 9,
+          people_total: 3,
+          people: [{ assignee: null, open_tasks: 4, overdue: 0 }],
+          hidden_people: 1,
+        } as LoadReport,
+      }),
+    );
+    expect(html).toContain("This view hides 1 other person");
+  });
+
+  it("the adapters copy the count and never invent one", () => {
+    expect(loadPanelData({ ...SECTIONS.load, hidden_people: 3 }, body({})).hidden_people).toBe(3);
+    expect("hidden_people" in loadPanelData(SECTIONS.load, body({}))).toBe(false);
+    expect(capacityPanelData({ ...SECTIONS.capacity, hidden_people: 3 }, body({})).hidden_people).toBe(3);
+    expect(conflictsPanelData({ ...SECTIONS.conflicts, hidden_people: 3 }, body({})).hidden_people).toBe(3);
+  });
+});
+
+// WS-27bn R5a, repair round 1. A member with no work of their own, and
+// every task assigned to others: the server removed every person row. The
+// scope is NOT empty, so no panel may say "No open work in this scope".
+describe("an empty panel for a member whose rows are all hidden", () => {
+  const MEMBER: Sections = {
+    load: { people: [], total_tasks: 5, hidden_people: 2 },
+    capacity: {
+      ...SECTIONS.capacity,
+      people: [], people_total: 2, total_tasks: 5, hr_visible: false,
+      hidden_people: 2,
+    },
+    conflicts: {
+      ...SECTIONS.conflicts,
+      rows: [], total: 2, by_kind: { parallel_person: 2 }, hr_visible: false,
+      hidden_people: 1,
+    },
+  };
+
+  it.each(["load", "capacity", "conflicts"] as const)(
+    "%s says the reader sees no rows, never that the scope is empty",
+    (name) => {
+      const html = draw({ [name]: MEMBER[name] } as Sections);
+      expect(html).not.toContain("No open work in this scope");
+      expect(html).not.toContain("No conflicts in this scope");
+      expect(html).toContain("You can see no rows here.");
+      expect(html).toMatch(/This view hides [12] other (person|people)/);
+    },
+  );
+
+  it("an admin's empty scope still says it is empty", () => {
+    const html = draw({
+      load: { people: [], total_tasks: 0 },
+      conflicts: { ...SECTIONS.conflicts, rows: [], total: 0, by_kind: {} },
+    });
+    expect(html).toContain("No open work in this scope.");
+    expect(html).toContain("No conflicts in this scope.");
+    expect(html).not.toContain("You can see no rows here.");
   });
 });
 

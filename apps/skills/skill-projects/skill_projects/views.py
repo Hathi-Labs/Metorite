@@ -34,6 +34,7 @@ from skill_projects.client import data, get, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
     _MISSING,
+    HIDDEN_LINE_SECTIONS,
     _day,
     _dig,
     _hygiene_groups,
@@ -491,6 +492,15 @@ def _pulse_cell(key: str, row: dict[str, Any]) -> str:
     return _card_cell(key, row)
 
 
+def _report_card_notes(name: str, section: dict[str, Any]) -> list[str]:
+    """The hidden line of a `load`, `capacity` or `conflicts` card (WS-27bn
+    R5a), or nothing. The pulse card prints its own line in its table."""
+    if name not in HIDDEN_LINE_SECTIONS or name == "pulse":
+        return []
+    line = hidden_people_line(section)
+    return [line] if line else []
+
+
 def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """The tiles and the table one section adds to the card."""
     spec = REPORT_CARD_SECTIONS.get(name)
@@ -563,6 +573,7 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             "columns": [label for _, label in columns],
             "rows": cells,
         }
+    notes = _report_card_notes(name, section)
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {
             "title": title,
@@ -571,7 +582,16 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
                 {"cells": [_card_cell(key, r) for key, _ in columns]}
                 for r in rows[:25]
                 if isinstance(r, dict)
+            ] + [
+                # WS-27bn R5a. The rows this reader cannot see.
+                {"cells": [note, *[""] * (len(columns) - 1)]} for note in notes
             ],
+        }
+    elif notes:
+        table = {
+            "title": title,
+            "columns": ["Note"],
+            "rows": [{"cells": [note]} for note in notes],
         }
     return stats, table
 
@@ -699,7 +719,20 @@ async def status_report(project_id: str = "") -> str:
             md.append(
                 f"- #{r.get('task_number')} {_plain(r.get('title'))} (due {_day(r.get('due_at'))})"
             )
-    if top and int(top.get("open_tasks") or 0):
+    hidden = hidden_people_line(load, "view")
+    if hidden:
+        # WS-27bn R5a. The load rows are only the people this reader may
+        # report on. "Most" over those rows is false, so list them and say
+        # how many people the view hides.
+        shown = [p for p in people if int(p.get("open_tasks") or 0)][:10]
+        md += ["", "## Load", ""]
+        md += [
+            f"- {_plain(p.get('assignee') or 'unassigned')}: "
+            f"{p.get('open_tasks')} open, {p.get('overdue', 0)} overdue."
+            for p in shown
+        ]
+        md.append(f"{hidden}.")
+    elif top and int(top.get("open_tasks") or 0):
         md += [
             "",
             "## Load",

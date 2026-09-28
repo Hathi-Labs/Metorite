@@ -4,6 +4,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §9.12.8.
 
     GET    /projects/reports              → every report the caller may open
     GET    /projects/reports/templates    → the template catalogue (R2)
+    GET    /projects/reports/subjects     → who the caller may report on (R5a)
     POST   /projects/reports              → save a definition
     GET    /projects/reports/{id}
     PATCH  /projects/reports/{id}
@@ -49,13 +50,12 @@ from gateway.routes.projects.analytics import (
     finished_period_sql,
     finished_sql,
     hygiene_body,
-    load_sql,
+    load_body,
     outlook_body,
     overdue_by_project_sql,
     scope_clause,
     scope_params,
     stale_bands_sql,
-    total_open_sql,
     weekly_sql,
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
@@ -79,6 +79,19 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
     update_row,
+)
+from gateway.routes.projects.report_scope import (
+    NO_SUBJECT_REASON,
+    NO_SUBJECT_SECTIONS,
+    filter_conflict_rows,
+    filter_person_rows,
+    normalise_subject,
+    reader_scope,
+    require_subject,
+    resolve_subject,
+    subject_choices,
+    subject_params,
+    with_subject,
 )
 from gateway.routes.tasks.core import can_read_hr_fields
 from pydantic import BaseModel
@@ -351,6 +364,13 @@ def normalise_report_config(raw: Any) -> dict[str, Any]:
                 )
             config[flag] = raw[flag]
 
+    # WS-27bn R5a. The SHAPE of the subject only. This runs on every read,
+    # so it never reads the database. The directory check and §7.1's rule
+    # run on create, patch, preview and render (`report_scope`). An absent
+    # or null subject adds NO key, so a config saved before R5a holds
+    # exactly what it held.
+    config.update(_config_subject(raw, config["sections"]))
+
     # WS-27bn R2. The template is an ORIGIN LABEL, and it presets nothing
     # here: a member may change the sections or the period and keep the
     # key. An absent or null template adds NO key, so a config saved with no
@@ -378,6 +398,38 @@ def normalise_report_config(raw: Any) -> dict[str, Any]:
     return config
 
 
+def _config_subject(
+    raw: dict[str, Any], sections: list[str],
+) -> dict[str, Any]:
+    """``{"subject": ...}``, or ``{}`` when the config names no subject.
+
+    The subject's shape, and 422 for a section that refuses a subject.
+    """
+    subject = normalise_subject(raw.get("subject"))
+    if subject is None:
+        return {}
+    refused = [s for s in sections if s in NO_SUBJECT_SECTIONS]
+    if refused:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The section {', '.join(refused)} is {NO_SUBJECT_REASON}.",
+        )
+    return {"subject": subject}
+
+
+def _with_hidden(
+    section: dict[str, Any], hidden: int, allowed: frozenset[str] | None,
+) -> dict[str, Any]:
+    """``section`` with ``hidden_people``, for a restricted reader only.
+
+    WS-27bn R5a. An admin's section carries no new key, so an admin's render
+    of a row with no subject is exactly what it was before R5a.
+    """
+    if allowed is not None:
+        section["hidden_people"] = hidden
+    return section
+
+
 def _clean_name(raw: Any) -> str:
     name = str(raw or "").strip()
     if not name:
@@ -390,17 +442,47 @@ def _clean_name(raw: Any) -> str:
     return name
 
 
-async def _visible_report(db: Any, vis: Any, report_id: str) -> Any:
-    """One report, or 404.
+def _row_subject(config: Any) -> dict[str, str] | None:
+    """The saved subject of a row, through the shape check. 422 when bad."""
+    if not isinstance(config, dict):
+        return None
+    return normalise_subject(config.get("subject"))
+
+
+async def _visible_report(
+    db: Any, vis: Any, report_id: str, user: Any, *, for_delete: bool = False,
+) -> Any:
+    """One report, or 404, or 403.
 
     The tenant is enforced by RLS on the row (migration 204), so a report from
     another organization is already invisible here. What this adds is the
     PROJECT check: a report scoped to a node the caller cannot see must not
     answer, because its name and its period describe that node.
+
+    WS-27bn R5a. **The subject check comes second, and it answers 403 with
+    the reason** (§7.1 rule 2). The list hides the same row, so the list
+    and this refusal cannot disagree. A lead who leaves a team loses the
+    saved reports on its members on the next request.
+
+    ``for_delete``: a stored subject with a bad shape answers 422 to every
+    reader, so nobody could delete that row. The delete route lets an admin
+    (``admin:members:read``) or the report's creator past that 422 only.
     """
     row = await require_row(db, "pm_reports", report_id, "Report")
     if row.project_id is not None:
         await load_visible_project(db, vis, str(row.project_id))
+    try:
+        subject = _row_subject(row.config)
+    except HTTPException as err:
+        if err.status_code != 422 or not for_delete:
+            raise
+        creator = (row.created_by or "").strip().lower()
+        if can_read_hr_fields(user) or creator == actor(user).lower():
+            return row
+        raise
+    ok, reason = (await reader_scope(db, user, vis)).allows(subject)
+    if not ok:
+        raise HTTPException(status_code=403, detail=reason)
     return row
 
 
@@ -471,6 +553,11 @@ async def list_reports(
     `load_visible_project` uses, so the list and the 404 cannot disagree.
 
     Each row carries ``mine`` (WS-27bn R2): true when the caller wrote it.
+
+    WS-27bn R5a. **A report whose subject the caller may not report on is
+    not listed** (§7.1). ⚠️ A row whose subject fails the shape check is
+    left out too, and never answers 422 for the whole list: one bad row
+    must not hide every good one.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -485,7 +572,16 @@ async def list_reports(
                 vis.params,
             )
         ).fetchall()
-        return {"reports": [_report_dict(r, user) for r in rows]}
+        scope = await reader_scope(db, user, vis)
+        listed = []
+        for r in rows:
+            try:
+                subject = _row_subject(r.config)
+            except HTTPException:
+                continue
+            if scope.allows(subject)[0]:
+                listed.append(_report_dict(r, user))
+        return {"reports": listed}
 
 
 @router.get("/reports/templates")
@@ -505,6 +601,26 @@ async def list_report_templates(
     return {"templates": copy.deepcopy(list(TEMPLATES.values()))}
 
 
+@router.get("/reports/subjects")
+async def list_report_subjects(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The people and the teams the caller may report on (WS-27bn R5a).
+
+    The builder's picker reads this, so it lists what `may_report_on`
+    allows and never shows a subject that the render then refuses (§7.1
+    rule 1). An admin gets every active person and every team. A lead gets
+    themselves, the teams they lead and the members of those teams. Any
+    other member gets themselves.
+
+    ⚠️ **Declared ABOVE ``GET /reports/{report_id}``**, as the templates
+    route is, or the id route would capture "subjects" as an id.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        return await subject_choices(db, user, vis)
+
+
 @router.post("/reports", status_code=201)
 async def create_report(
     payload: dict[str, Any],
@@ -521,6 +637,9 @@ async def create_report(
         if project_id is not None:
             # Seeing the node is required to report on it.
             await load_visible_project(db, vis, str(project_id))
+        config = normalise_report_config(payload.get("config"))
+        # WS-27bn R5a. The directory (422), then §7.1's rule (403).
+        await require_subject(db, user, vis, config.get("subject"))
 
         row = await insert_row(
             db,
@@ -532,7 +651,7 @@ async def create_report(
                 # parent — the same path a root project takes (migration 204).
                 "organization_id": vis.organization_id,
                 "name": _clean_name(payload.get("name")),
-                "config": normalise_report_config(payload.get("config")),
+                "config": config,
                 "created_by": actor(user),
             },
         )
@@ -546,7 +665,7 @@ async def get_report(
 ) -> dict[str, Any]:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        return _report_dict(await _visible_report(db, vis, report_id), user)
+        return _report_dict(await _visible_report(db, vis, report_id, user), user)
 
 
 @router.patch("/reports/{report_id}")
@@ -564,13 +683,17 @@ async def update_report(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user)
 
         values: dict[str, Any] = {}
         if "name" in payload:
             values["name"] = _clean_name(payload["name"])
         if "config" in payload:
             values["config"] = normalise_report_config(payload["config"])
+            # WS-27bn R5a. The NEW subject passes the same two checks.
+            await require_subject(
+                db, user, vis, values["config"].get("subject"),
+            )
         if not values:
             raise HTTPException(
                 status_code=422, detail="Nothing to change.",
@@ -590,7 +713,7 @@ async def delete_report(
 ) -> None:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user, for_delete=True)
         await db.execute(
             text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
             {"i": report_id},
@@ -615,10 +738,25 @@ async def render_body(
     ``config`` is already normalised by `normalise_report_config`. The
     caller has already checked that ``project_id`` is visible. ``user``
     decides the HR tier, so the reader's grant decides it, as before.
+
+    WS-27bn R5a. **The subject and the reader are decided HERE**, so every
+    path that renders passes §7.1. A subject is checked against the
+    directory (422) and the rule (403), and a team expands to its active
+    members now. Each section narrows its scope to the tasks that those
+    people hold. Then the row filter keeps the people the READER may
+    report on, in `load`, `capacity`, `pulse` and the rows about one
+    person in `conflicts`. ``hidden_people`` counts what it removed, and
+    only a restricted reader receives the key, so an admin's render of a
+    row with no subject is exactly what it was.
     """
+    subject_people = await resolve_subject(
+        db, user, vis, config.get("subject"),
+    )
+    allowed = (await reader_scope(db, user, vis)).people_filter
     scope_sql = await scope_clause(
         db, vis, project_id, bool(config["include_subtree"]),
     )
+    scope_sql = with_subject(scope_sql, subject_people)
     # The history predicate, matching `throughput` and `finished`:
     # deliberately WITHOUT `archived_at IS NULL`, because a report
     # describes the past and an archive sweep must not empty it.
@@ -651,6 +789,7 @@ async def render_body(
         "closed": sorted(CLOSING_CATEGORIES),
         "done_cat": COMPLETED_CATEGORY,
         "started_cat": STARTED_CATEGORY,
+        **subject_params(subject_people),
     }
     skip = bool(config["skip_current_week"])
 
@@ -728,31 +867,33 @@ async def render_body(
                 "cancelled": int(totals.cancelled or 0),
             }
         elif name == "load":
-            people = (
-                await db.execute(text(load_sql(open_where)), params)
-            ).fetchall()
-            total = int(
-                (
-                    await db.execute(text(total_open_sql(open_where)), params)
-                ).scalar()
-                or 0
+            # WS-27bn R5a. The Load route's OWN body, imported, as
+            # `capacity` does, and the route's own row filter. So the panel
+            # and the report are one computation for one reader.
+            found = await load_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+                subject_people=subject_people,
             )
-            sections[name] = {
+            people, hidden = filter_person_rows(found["people"], allowed)
+            section = {
                 "people": [
                     {
-                        "assignee": p.who or None,
-                        "open_tasks": int(p.open_tasks),
-                        "overdue": int(p.overdue),
+                        "assignee": p["assignee"],
+                        "open_tasks": p["open_tasks"],
+                        "overdue": p["overdue"],
                         # WS-27bn R2b. The other two buckets `load_sql`
                         # already selects, so the panel draws the stacked
                         # bar the Analytics app draws.
-                        "due_next_7d": int(p.due_next_7d),
-                        "later": int(p.later),
+                        "due_next_7d": p["due_next_7d"],
+                        "later": p["later"],
                     }
                     for p in people[:MAX_PEOPLE]
                 ],
-                "total_tasks": total,
+                "total_tasks": found["total_tasks"],
             }
+            sections[name] = _with_hidden(section, hidden, allowed)
         elif name == "outlook":
             # WS-27bn R3a. The outlook route's OWN body, imported, as
             # `capacity` does. The panel and the report are one computation.
@@ -782,10 +923,14 @@ async def render_body(
                 hr_visible=can_read_hr_fields(user),
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
+                subject_people=subject_people,
             )
-            named = [r for r in cap["rows"] if r["kind"] != "unassigned"]
-            nobody = [r for r in cap["rows"] if r["kind"] == "unassigned"]
-            sections[name] = {
+            # WS-27bn R5a. The row filter runs HERE, after the body, as in
+            # the route. `people_total` still counts every person.
+            rows, hidden = filter_person_rows(cap["rows"], allowed)
+            named = [r for r in rows if r["kind"] != "unassigned"]
+            nobody = [r for r in rows if r["kind"] == "unassigned"]
+            sections[name] = _with_hidden({
                 # Capped like `load`, and the unassigned row survives the
                 # cap: it is the one row a reader can act on today.
                 "people": named[:MAX_PEOPLE] + nobody,
@@ -794,7 +939,7 @@ async def render_body(
                 "hr_visible": cap["hr_visible"],
                 "horizon_days": cap["horizon_days"],
                 "windows": cap["windows"],
-            }
+            }, hidden, allowed)
         elif name == "conflicts":
             # WS-27bm S7c. The conflicts route's OWN body, imported, as
             # `capacity` does. The HR kinds follow the READER's grant.
@@ -803,17 +948,21 @@ async def render_body(
                 hr_visible=can_read_hr_fields(user),
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
+                subject_people=subject_people,
             )
-            sections[name] = {
+            # WS-27bn R5a. The rows about one person follow the reader.
+            # A dependency row keeps its holders.
+            rows, hidden = filter_conflict_rows(found["rows"], allowed)
+            sections[name] = _with_hidden({
                 # Capped like `load`. `total` and `by_kind` count every
                 # row, so a reader sees how many the cap left out.
-                "rows": found["rows"][:MAX_PEOPLE],
+                "rows": rows[:MAX_PEOPLE],
                 "total": found["total"],
                 "by_kind": found["by_kind"],
                 "hr_visible": found["hr_visible"],
                 "horizon_days": found["horizon_days"],
                 "window": found["window"],
-            }
+            }, hidden, allowed)
         elif name == "rebalance":
             # WS-27bn R3b. The rebalance route's OWN body, imported, as
             # `conflicts` does. The HR gate is the READER's grant: without
@@ -830,6 +979,7 @@ async def render_body(
                 hr_visible=can_read_hr_fields(user),
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
+                subject_people=subject_people,
             )
             # A copy of the body. `at_risk` stays as the route serves it,
             # because the join already caps it at eight tasks.
@@ -851,6 +1001,7 @@ async def render_body(
                 db, vis, user,
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
+                subject_people=subject_people,
             )
         elif name == "hygiene":
             # WS-27bn R3c. `hygiene_body`, imported, as `outlook` does. Its
@@ -932,7 +1083,7 @@ async def render_report(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        row = await _visible_report(db, vis, report_id)
+        row = await _visible_report(db, vis, report_id, user)
         config = normalise_report_config(row.config)
 
         project_id = str(row.project_id) if row.project_id is not None else None
@@ -1039,7 +1190,7 @@ async def list_recipients(
 ) -> dict[str, Any]:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user)
         rows = (await db.execute(
             text(
                 "SELECT recipient, created_by, created_at"
@@ -1089,7 +1240,7 @@ async def add_recipient(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user)
 
         if not await _known_member(db, email):
             raise HTTPException(
@@ -1121,7 +1272,7 @@ async def remove_recipient(
 ) -> None:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user)
         await db.execute(
             text(
                 "DELETE FROM pm_report_recipients"
@@ -1162,7 +1313,7 @@ async def set_schedule(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await _visible_report(db, vis, report_id)
+        await _visible_report(db, vis, report_id, user)
 
         if enabled:
             count = int((await db.execute(

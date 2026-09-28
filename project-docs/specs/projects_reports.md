@@ -10,8 +10,11 @@ section, the ageing bands in `stuck`, and T5 live).
 **R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
 only). **R3c BUILT 2026-09-26** (the `hygiene` section, `HygienePanel`, and
 T13 live). **R3d BUILT 2026-09-28** (the `pulse` section, `PulsePanel`,
-and T1 live). R5 is next. R4, R4b, R5 to R9 and Phases 2 and 3 are not
-built.
+and T1 live).
+
+**R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
+server, in `report_scope.py`). R5b is next. R5c is blocked. R4, R4b, R5b,
+R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -118,28 +121,30 @@ defect.
 |---|---|---|
 | What we finished | `GET /projects/analytics/finished` · `analytics.py` | `finished` |
 | Cycle time and weekly completions | `GET /projects/analytics/throughput` · `analytics.py` | `throughput` |
-| Open work for each person | `GET /projects/analytics/load` · `analytics.py:517` | `load` |
-| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:151` | `stuck` (the bands since R3a) |
-| Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:201` | `capacity` (opt-in) |
-| Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:173` | `conflicts` (opt-in) |
-| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:103`, body `rebalance_body` · `:127` | `rebalance` (opt-in, R3b) |
-| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1431`, body `outlook_body` · `:1474` | `outlook` (opt-in, R3a) |
+| Open work for each person | `GET /projects/analytics/load` · `analytics.py:600`, body `load_body` · `:646` | `load` |
+| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:235` | `stuck` (the bands since R3a) |
+| Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:207`, body `capacity_body` · `:241` | `capacity` (opt-in) |
+| Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:179`, body `conflicts_body` · `:381` | `conflicts` (opt-in) |
+| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:104`, body `rebalance_body` · `:128` | `rebalance` (opt-in, R3b) |
+| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1660`, body `outlook_body` · `:1710` | `outlook` (opt-in, R3a) |
 | Who fits one task | `GET /projects/tasks/{id}/candidates` · `candidates.py` | none |
 
 **The report routes** are in `routes/projects/reports.py`:
-- `SECTIONS` (`:103`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
-  (`:115`) is the four that a definition with no `sections` key renders.
-- `_DEFAULTS` (`:121`): one week, the current week skipped, the subtree
+- `SECTIONS` (`:124`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
+  (`:136`) is the four that a definition with no `sections` key renders.
+- `_DEFAULTS` (`:142`): one week, the current week skipped, the subtree
   included.
-- `TEMPLATES` (`:162`) is the template catalogue of §4 (R2).
-- `SCHEDULES` (`:254`) holds only `"weekly"`.
-- `delivery_armed()` (`:257`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:440` and templates at `:474`. Create is at
-  `:491`. Get, patch and delete are at `:525` to `:569`. Render is at `:840`
-  and preview at `:876`. Recipients are at `:962` to `:1043`, and schedule is
-  at `:1061`.
-- `render_body` (`:583`) holds the section loop. Render and preview both
+- `TEMPLATES` (`:184`) is the template catalogue of §4 (R2).
+- `SCHEDULES` (`:284`) holds only `"weekly"`.
+- `delivery_armed()` (`:287`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
+- The routes: list is at `:528`, templates at `:576` and subjects at
+  `:593` (R5a). Create is at `:613`. Get, patch and delete are at `:650` to
+  `:698`. Render is at `:1053` and preview at `:1089`. Recipients are at
+  `:1175` to `:1256`, and schedule is at `:1274`.
+- `render_body` (`:712`) holds the section loop. Render and preview both
   call it.
+- **Since R5a:** `routes/projects/report_scope.py` holds the rule of §7.1,
+  the subject clause and the row filter.
 - **A render resolves visibility from the caller.** A send renders once for
   each recipient, with that recipient's own visibility (H-111). So a report
   never shows a person more than they can open in the app.
@@ -244,7 +249,7 @@ a ◐ template as "coming soon".
 | T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
 | T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `finished`, `outlook`, `stuck`, `conflicts` | ✅ (since R3a) |
-| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ (§7.1 limits who may open it) |
+| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` (waiting items show only when the reader is the subject, Q6) | ◐ (§7.1 limits who may open it) |
 | T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
 | T9 | `stakeholder_update` | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
@@ -452,7 +457,9 @@ on their team.
 
 **Rules for the build.**
 1. **One check, on the server.** A function `may_report_on(user, subject)`
-   in `reports.py` answers for a person and for a team. Every path calls it:
+   in `report_scope.py` answers for a person and for a team. It is not in
+   `reports.py`, because `reports.py` imports `analytics.py` and the analytics
+   routes call the check too. Every path calls it:
    the builder's picker, the render, `send_report`, the chat and, later, the
    schedule and Workflows. The picker lists what the function allows. It
    never shows a subject and then refuses it.
@@ -465,6 +472,9 @@ on their team.
    person. One line says "This report hides N other people".
 4. **"The team" is an `org_group`.** It expands to its members at render
    time. A member who leaves the team leaves the report on the next render.
+   The Center groups (`sales`, `people`, `company` and the others in
+   `routes/admin/groups.py:41`) are `org_group` rows too. So a lead of a
+   company-wide group may report on everybody in it.
 5. **The member setting shows the team, and not each person.** With
    `reports.members_see_own_team` on, a member sees the team's totals and
    their own row. They cannot open a report on one teammate.
@@ -473,14 +483,16 @@ on their team.
    half of their team. The capacity section tells the lead that an admin can
    see the hours.
 7. **Rebalance rows need the HR grant, and only the admin row holds it.** So
-   rule 3 holds for `rebalance` with no row filter until R5. R5 must look at
-   it again when it gives a lead the rows of their team.
+   rule 3 holds for `rebalance` with no row filter. The rebalance lists need
+   the HR grant, and §7.1's admin row is the same grant. So R5 adds no reader
+   filter to rebalance.
 
 ⚠️ **The `load` section is older than this rule.** It lists open work for each
 person, and today any member who can see the tasks can read it. Slice R5
 applies rule 3 to `load` too, so the Analytics app and a report agree. The
 Load panel in the Analytics app then changes in the same way. The PR for R5
-must say this.
+must say this. The Capacity panel and the `parallel_person` rows of the
+Conflicts panel change in the same way.
 
 ---
 
@@ -1104,31 +1116,69 @@ to its task.
 member confirms. A dismissed suggestion stays hidden on the next run of the
 report, and it comes back when the facts change.
 
-### R5 — Person and team scope · AGENT-SAFE
+### R5a — The rule and the subject, on the server · AGENT-SAFE
 
-**What:** `config.subject` with `kind` `person` or `team`, and an address or
-an `org_group` slug. The sections filter their task half to that subject's
-assignments. `pm_reports.project_id` stays the node scope, so the two combine:
-"the Hardware team, in the Printer project".
+**What:** `config.subject` is `{kind: "person", email}` or `{kind: "team", slug}`. `pm_reports.project_id` stays the node scope, and the two combine.
 
 **Rules:**
-- The subject is validated against the directory, as recipients are. Free
-  text gets 422.
-- A team expands to its members at render time, not at save time. A new
-  member joins the report by joining the team.
-- `may_report_on` (§7.1) gates the save, the render and the picker. The
-  org setting `reports.members_see_own_team` lands in this slice, default off.
 
-**Done when:**
-- A report on one person shows only that person's rows. A report on a team
-  shows each member once. A person outside the directory gets 422.
-- A member without a grant gets 403 for a report on a colleague, and 200 for
-  a report on themselves.
-- A lead gets 200 for their own team and for each member of it, and 403 for
-  another team.
-- An admin gets 200 for every person and team.
-- On a report of the whole organization, a member sees their own row and the
-  line "This report hides N other people". One test per role pins this.
+- `normalise_report_config` checks the shape of the subject only. It runs on every read, so it must never need the database.
+- Create, patch, preview and render check the subject against the directory. A person must be an active `app_user` in the reader's organization. A team must be an `org_group` slug in that organization. Any other value gets 422.
+- `report_scope.py` holds `may_report_on`, `reportable_people`, `subject_clause` and the row filter. `reports.py` and the analytics routes import it. A copy in a second module is a defect.
+- A team expands to its active members at render time. The expansion calls the one helper in `routes/admin/groups.py`.
+- `subject_clause` keeps the tasks that a subject person holds now. Each body ANDs it into its scope.
+- `outlook` and `hygiene` with a subject get 422 with the reason "not available for a person or team scope".
+- The row filter runs after each body, never inside `capacity_body`. It applies to `load`, `capacity`, `pulse` and `parallel_person` conflict rows. It replaces edit E5.
+- `rebalance` gets no reader filter, because the HR grant gates it (§7.1 rule 7). A subject narrows its pickups.
+- Totals count every person. `hidden_people` counts the people whose rows the filter removed.
+- The unassigned row and `agent:` rows are not people, and they stay.
+- Dependency conflict rows keep their holders. The reader can open each task and see its assignees.
+- The list hides a report whose subject the reader may not report on. Get, patch, delete and render answer 403 with the reason.
+- `GET /projects/reports/subjects` returns the people and teams that `may_report_on` allows. The route goes above `/reports/{report_id}`. Its manifest row is class X.
+- The `/analytics/load`, `/analytics/capacity` and `/analytics/conflicts` routes call the same body and the same filter as the report. So the Analytics panels change too, and the PR says so.
+
+**Non-goals:** the picker, the entry points, T2, T6, and the org setting.
+
+**Done when** (each on a real database, in `test_projects_report_scope_r5.py`):
+
+- (a) An admin gets 200 for every person and team.
+- (b) Lead L of team A gets 200 for team A and for M, a member of that team. The lead gets 403 for team B and for N, a member of that team.
+- (c) A member gets 200 for themselves and 403 for a colleague. The 403 names the role that would allow it.
+- (d) A person outside the directory gets 422, and so does a slug from another organization.
+- (e) On an org report, a member sees their own row in `load`, `capacity` and `pulse`, and `hidden_people` counts the others. Lead L sees the rows of team A and their own row.
+- (f) For a restricted reader, the JSON body holds no address outside the allowed set. The one exception is the holders of dependency conflict rows.
+- (g) `/analytics/load` for a member returns their own row, the unassigned row and `hidden_people`. `total_tasks` is the same as for an admin.
+- (h) A team report lists each member once, and a member removed from the team is gone on the next render.
+- (i) A saved report on N is not in L's list after L leaves team B, and its render gets 403.
+- (j) A saved row with no `subject` renders exactly as before.
+- (k) The panels, the email and the chat card print the hidden line for `load`, `capacity` and `conflicts`.
+
+**As built (2026-09-28).** `report_scope.py` holds the rule, the subject clause and the row filter.
+`routes/admin/groups.py` `active_memberships` is the one reader of team membership, and its SQL names the organization.
+`load_body` is new in `analytics.py`, so the Load route and the `load` section share one body.
+Only a restricted reader receives `hidden_people` in `load`, `capacity` and `conflicts`, so an admin's render is unchanged.
+
+`test_projects_report_scope_r5.py` proves (a) to (k) on a real database.
+A mutation of (b), (c), (d), (f), (g), (i) and (j) turns its test red.
+The chat's workload answers read the Load, Capacity and Conflicts routes, so a member's chat answers change in the same way.
+
+**As built, repair round 1 (2026-09-28).** The review found five faults, and each has a test in the same file.
+
+- The chat tools `status_report`, `analytics_load` and `team_capacity` print the hidden line. `status_report` prints no "most open work" when the view hides people.
+- The Load, Capacity and Conflicts panels print "You can see no rows here" when the server removed every row. They do not say that the scope is empty.
+- `hiddenPeopleLine` in `reportEmail.ts` is the one source of the words. A panel says "This view hides", and the email and the report table say "This report hides".
+- `hidden_people` counts people in `conflicts` too. Two rows of one person count as one person.
+- An admin or the creator can delete a report whose stored subject has a bad shape. Get and render still answer 422.
+
+### R5b — The picker, the entry points, T2 and T6 · AGENT-SAFE
+The scope chip reads `GET /projects/reports/subjects`. "1:1 prep" opens T6 with the person filled in.
+"My day" opens T2 for the reader.
+
+T2 is `pulse` with `weeks` 1 and `skip_current_week` false. T6 is `finished`, `throughput` and `pulse` with `weeks` 4.
+A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
+
+### R5c — The member setting · BLOCKED
+`reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
@@ -1279,6 +1329,8 @@ that the render does not need a saved row.
 | Q5 | When does the morning report send? | Nothing sends by itself in Phase 1. Phase 2 uses 09:00 on weekdays, in the recipient's timezone, as its default. |
 | Q6 (2026-09-25) | May a report show one member's private notes (`waiting_on`, `expected_by`, `scheduled_start`) to another reader? | No. The notes show only on the reader's own row (R3d). |
 | Q7 (2026-09-25) | Before R5, who sees the cards for each person? | An admin sees every card. Any other reader sees only their own card, and a line counts the hidden people (R3d, edit E5). |
+| Q8 (2026-09-28) | Where does the member setting of R5c live? | R5c waits for the WS-29 fix that scopes `org_settings` to each organization. The setting stays off until then. |
+| Q9 (2026-09-28) | May a lead of a Center group report on its members? | Yes. A lead of any group reports on the members of that group, whatever its size. Admins control who holds the lead role. |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
@@ -1297,36 +1349,44 @@ bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 ```
 
-Server:
+Server, in two calls. One call with every file is slow, and a hang then
+hides the file that hung.
 
 ```bash
+uv run pytest tests/unit/test_projects_report_scope_r5.py \
+  tests/unit/test_projects_report_sections_r3d.py \
+  tests/unit/test_projects_report_sections_r3.py \
+  tests/unit/test_projects_report_sections_r3b.py \
+  tests/unit/test_projects_report_sections_r3c.py \
+  tests/unit/test_projects_analytics_load.py \
+  tests/unit/test_projects_analytics_capacity.py \
+  tests/unit/test_projects_analytics_rebalance.py \
+  tests/unit/test_projects_analytics_conflicts.py -q -rs
+
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
   tests/unit/test_projects_report_sections_lockstep.py \
   tests/unit/test_projects_reportable_reports.py \
-  tests/unit/test_projects_analytics_capacity.py \
-  tests/unit/test_projects_analytics_rebalance.py \
-  tests/unit/test_projects_analytics_conflicts.py \
   tests/unit/test_projects_chat_coverage.py \
   tests/unit/test_projects_agent.py \
   tests/unit/test_projects_report_builder.py \
   tests/unit/test_projects_report_templates.py \
   tests/unit/test_projects_report_visuals.py \
-  tests/unit/test_projects_report_sections_r3.py \
-  tests/unit/test_projects_report_sections_r3b.py \
-  tests/unit/test_projects_report_sections_r3c.py \
   tests/unit/test_projects_analytics_outlook.py \
-  tests/unit/test_tenant_coverage.py -q
+  tests/unit/test_tenant_coverage.py -q -rs
 ```
 
 `test_projects_agent.py` holds the class-A reach fence. A manifest row that
 names a built tool which never calls the route fails there.
 
-`test_projects_report_builder.py` is R1's file.
-`test_projects_report_templates.py` is R2's file.
-`test_projects_report_sections_r3.py` is R3a's file.
-`test_projects_report_sections_r3b.py` is R3b's file.
-`test_projects_report_sections_r3c.py` is R3c's file.
+- `test_projects_report_builder.py` is R1's file.
+- `test_projects_report_templates.py` is R2's file.
+- `test_projects_report_sections_r3.py` is R3a's file.
+- `test_projects_report_sections_r3b.py` is R3b's file.
+- `test_projects_report_sections_r3c.py` is R3c's file.
+- `test_projects_report_sections_r3d.py` is R3d's file.
+- `test_projects_analytics_load.py` holds the Load route and its body.
+- `test_projects_report_scope_r5.py` is R5a's file.
 
 Client, in `workbench/control_plane`:
 

@@ -79,11 +79,18 @@ class TestItReusesAnalyticsRatherThanRewritingIt:
             "finished_sql",
             "cycle_summary_sql",
             "weekly_sql",
-            "load_sql",
-            "total_open_sql",
+            # WS-27bn R5a. The `load` section calls the Load route's own
+            # body, and that body runs `load_sql` and `total_open_sql`.
+            "load_body",
             "finished_period_sql",
         ):
             assert fn in SOURCE, f"{fn} is no longer used — is there a copy?"
+        import inspect
+
+        from gateway.routes.projects import analytics
+
+        body = inspect.getsource(analytics.load_body)
+        assert "load_sql(" in body and "total_open_sql(" in body
 
     def test_it_reimplements_none_of_their_machinery(self):
         # Each of these appears in `analytics.py` and must appear in NO other

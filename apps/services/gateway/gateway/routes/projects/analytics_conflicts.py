@@ -90,6 +90,12 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.report_scope import (
+    filter_conflict_rows,
+    reportable_people,
+    subject_params,
+    with_subject,
+)
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.workload import HORIZON_DAYS
 from sqlalchemy import text
@@ -186,13 +192,22 @@ async def conflicts(
     days = check_horizon(horizon_days)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        return await conflicts_body(
+        body = await conflicts_body(
             db, vis,
             hr_visible=can_read_hr_fields(user),
             project_id=project_id,
             include_subtree=include_subtree,
             horizon_days=days,
         )
+        # WS-27bn R5a. The reader's rows, AFTER the body, with the filter
+        # the report's `conflicts` section runs too (§7.1 rule 3). A
+        # dependency row keeps its holders. `total` and `by_kind` still
+        # count every row.
+        allowed = await reportable_people(db, user, vis)
+        body["rows"], hidden = filter_conflict_rows(body["rows"], allowed)
+        if allowed is not None:
+            body["hidden_people"] = hidden
+        return body
 
 
 def _who(email: str, directory: dict[str, Any]) -> dict[str, Any]:
@@ -372,20 +387,28 @@ async def conflicts_body(
     include_subtree: bool,
     horizon_days: int = HORIZON_DAYS,
     today: date | None = None,
+    subject_people: list[str] | None = None,
 ) -> dict[str, Any]:
     """The conflicts answer, on a session and a visibility the caller resolved.
 
     Shared by the route and by the report section ``conflicts``.
     ``hr_visible`` is the CALLER's grant, taken as an argument because this
     function has no request to read it from.
+
+    ``subject_people`` (WS-27bn R5a) narrows the scope to the tasks that
+    those people hold now, and the rows about one person to those people.
+    ⚠️ This body never filters for the READER. The caller does that after
+    it returns.
     """
     days = check_horizon(horizon_days)
     today = today or date.today()
     _, horizon_end = horizon_window(today, days)
     # 404 for a node the caller cannot see, before anything else is read.
     scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+    scope_sql = with_subject(scope_sql, subject_people)
     scope_where = load_open_where(scope_sql, vis)
-    params = {**load_params(vis, project_id)}
+    params = {**load_params(vis, project_id), **subject_params(subject_people)}
+    subject = set(subject_people) if subject_people is not None else None
 
     # ── The dependency kinds ───────────────────────────────────────────────
     pairs = [
@@ -419,6 +442,8 @@ async def conflicts_body(
         text(parallel_sql(all_where, scope_sql)),
         {**params, "window_start": today, "window_end": horizon_end},
     )).fetchall():
+        if subject is not None and str(r.who) not in subject:
+            continue
         by_person.setdefault(str(r.who), []).append({
             "id": str(r.id), "title": r.title, "start_date": r.start_date,
             "due_at": r.due_at, "root_project_id": str(r.root_project_id),
@@ -431,6 +456,7 @@ async def conflicts_body(
         scoped = (await db.execute(text(scoped_tasks_sql(scope_where)), params)).fetchall()
     holders = sorted({
         str(r.who) for r in scoped if r.who and not str(r.who).startswith("agent:")
+        and (subject is None or str(r.who) in subject)
     })
 
     # ── The directory: names for every caller, the rest for the HR tier ────

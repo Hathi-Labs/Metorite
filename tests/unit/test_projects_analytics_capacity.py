@@ -652,12 +652,18 @@ async def test_a_report_that_asks_for_capacity_renders_the_routes_body(
     section = body["sections"]["capacity"]
     assert section["hr_visible"] is hr
     assert section["total_tasks"] == 4
-    ana = next(r for r in section["people"] if r["assignee"] == seeded["ana"])
-    assert ana["open_tasks"] == 3
     assert section["people"][-1]["kind"] == "unassigned"
     if hr:
+        ana = next(r for r in section["people"] if r["assignee"] == seeded["ana"])
+        assert ana["open_tasks"] == 3
         assert "all_work" in ana
+        assert "hidden_people" not in section
     else:
+        # WS-27bn R5a. A member reads no row of another person. The totals
+        # still count every person, and `hidden_people` says how many went.
+        assert all(r["assignee"] != seeded["ana"] for r in section["people"])
+        assert section["hidden_people"] >= 1
+        assert section["people_total"] >= section["hidden_people"]
         for row in section["people"]:
             assert not set(row) & set(route.HR_KEYS)
 

@@ -87,6 +87,8 @@ export interface RenderedReport {
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bm S7a. Opt-in, and the HR half is absent for a reader without
@@ -108,6 +110,8 @@ export interface RenderedReport {
       total_tasks: number;
       hr_visible: boolean;
       horizon_days: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3d. Opt-in. One card for each person, read today. A row
@@ -155,6 +159,8 @@ export interface RenderedReport {
       total: number;
       hr_visible: boolean;
       horizon_days: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3b. Opt-in. Without `admin:members:read` the two lists are
@@ -274,14 +280,39 @@ export const HELP_REASON_WORDS: Readonly<Record<string, string>> = {
   waiting_overdue: "Waiting past its date",
 };
 
+/** WS-27bn R5a. The hidden line as an email note, or no note. */
+function hiddenNotes(n: number | null | undefined): string[] {
+  const line = hiddenPeopleLine(n);
+  return line ? [line] : [];
+}
+
 /**
- * WS-27bn R3d, edit E5. "This report hides N other people", or null when
- * the report hides nobody. The panel, the email and the chat card
+ * WS-27bn R3d and R5a. "This report hides N other people", or null when
+ * the report hides nobody. The panels, the email and the chat card
  * (`reads.py` `hidden_people_line`) print these words.
+ *
+ * `noun` fits the surface. The email and the report table say "report".
+ * The panels say "view", because the Analytics app mounts them too. The
+ * rest of the words have this one source.
  */
-export function hiddenPeopleLine(n: number | null | undefined): string | null {
+export function hiddenPeopleLine(
+  n: number | null | undefined,
+  noun: "report" | "view" = "report",
+): string | null {
   if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) return null;
-  return `This report hides ${n} other ${n === 1 ? "person" : "people"}`;
+  return `This ${noun} hides ${n} other ${n === 1 ? "person" : "people"}`;
+}
+
+/**
+ * WS-27bn R5a repair. What an empty panel says. When the server removed
+ * every row that a reader may not see, the scope is NOT empty, so the panel
+ * says that the reader can see no rows, and the hidden line counts the rest.
+ */
+export function emptyPanelLine(
+  n: number | null | undefined,
+  empty: string,
+): string {
+  return hiddenPeopleLine(n) ? "You can see no rows here." : empty;
 }
 
 /** How many project lines a message carries before it stops being readable. */
@@ -488,7 +519,8 @@ export function reportLayout(
             ` · ${textBar(p.overdue, p.open_tasks)}` +
             ` ${p.overdue} of ${p.open_tasks} overdue`,
         ),
-      notes: [],
+      // WS-27bn R5a. The rows this reader may not see, counted.
+      notes: hiddenNotes(load.hidden_people),
     });
   }
 
@@ -523,7 +555,10 @@ export function reportLayout(
             : "";
         return `${who}: ${p.open_tasks} open${hoursPart}${barPart}`;
       }),
-      notes: cap.hr_visible ? [] : ["Hours need HR read access."],
+      notes: [
+        ...(cap.hr_visible ? [] : ["Hours need HR read access."]),
+        ...hiddenNotes(cap.hidden_people),
+      ],
     });
   }
 
@@ -622,7 +657,10 @@ export function reportLayout(
       items: conf.rows
         .slice(0, maxRows)
         .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
-      notes: conf.hr_visible ? [] : ["Four kinds need HR read access."],
+      notes: [
+        ...(conf.hr_visible ? [] : ["Four kinds need HR read access."]),
+        ...hiddenNotes(conf.hidden_people),
+      ],
     });
   }
 
