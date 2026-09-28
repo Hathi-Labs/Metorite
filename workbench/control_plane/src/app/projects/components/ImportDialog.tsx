@@ -47,12 +47,14 @@ import {
   megabytes,
   progressOf,
   continuationNote,
+  isStalled,
+  keepOnReopen,
+  pollDelay,
   mustConfirmNewTree,
   reportLines,
   uploadProblem,
 } from "../lib/importFlow";
 
-const POLL_MS = 1500;
 const UNASSIGNED = "__unassigned__";
 const NEW_SPACE = "__new_space__";
 
@@ -82,10 +84,26 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const [members, setMembers] = useState<SelectOption[]>([]);
   const picker = useRef<HTMLInputElement>(null);
   const reported = useRef(false);
+  // The admin saw the ended run's report while the dialog was open.
+  const reportSeen = useRef(false);
+  // Bumped on each fresh wizard, so a late answer to an old one is dropped.
+  const generation = useRef(0);
+  const [misses, setMisses] = useState(0);
+  // When the writer's cursor last moved. Set at the apply, so 0 never counts.
+  const lastMove = useRef({ cursor: -1, at: 0 });
+  const [stalled, setStalled] = useState(false);
 
-  // A fresh wizard each time it opens.
+  // A fresh wizard each time it opens, unless a run is still writing or its
+  // report is still unseen: the admin may close the dialog mid-run.
   useEffect(() => {
     if (!open) return;
+    if (keepOnReopen(run, reportSeen.current)) {
+      setStep("run");
+      return;
+    }
+    generation.current += 1;
+    reportSeen.current = false;
+    setMisses(0);
     setStep("upload");
     setFiles([]);
     setRun(null);
@@ -96,7 +114,15 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     setSpaceName("");
     setConfirmedNewTree(false);
     reported.current = false;
+    // Only `open` restarts the wizard; the run is read here, not followed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Once the admin has seen an ended run, the next open starts afresh.
+  useEffect(() => {
+    if (open && step === "run" && isTerminal(run?.state)) reportSeen.current = true;
+  }, [open, step, run]);
+
 
   // The organization's members, for the people step.
   useEffect(() => {
@@ -115,21 +141,51 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     };
   }, [open, step]);
 
-  // Follow the writer until the run ends. Stops on close and on a terminal state.
+  // Follow the writer until the run ends, with the dialog open or closed, so
+  // the tree refreshes when it finishes. A failed poll backs off and goes on.
   useEffect(() => {
-    if (!open || step !== "run" || !run || isTerminal(run.state)) return;
+    if (step !== "run" || !run || isTerminal(run.state)) return;
     let live = true;
     const timer = setTimeout(() => {
       importApi
         .get(run.id)
-        .then((next) => live && setRun(next))
-        .catch((err: Error) => live && setError(err.message));
-    }, POLL_MS);
+        .then((next) => {
+          if (!live) return;
+          const cursor = next.progress?.cursor ?? 0;
+          const at = Date.now();
+          if (cursor !== lastMove.current.cursor) lastMove.current = { cursor, at };
+          setStalled(isStalled(next, lastMove.current.at, at));
+          setMisses(0);
+          setError(null);
+          setRun(next);
+        })
+        .catch((err: Error) => {
+          if (!live) return;
+          setError(`Lost contact with the server (${err.message}). Trying again.`);
+          setMisses((n) => n + 1);
+        });
+    }, pollDelay(misses));
     return () => {
       live = false;
       clearTimeout(timer);
     };
-  }, [open, step, run]);
+  }, [step, run, misses]);
+
+  const resume = useCallback(async () => {
+    if (!run) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const started = await importApi.apply(run.id);
+      lastMove.current = { cursor: -1, at: Date.now() };
+      setStalled(false);
+      setRun(started);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [run]);
 
   useEffect(() => {
     if (run?.state === "done" && !reported.current) {
@@ -141,10 +197,13 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const problem = useMemo(() => uploadProblem(files), [files]);
 
   const upload = useCallback(async () => {
+    const mine = generation.current;
     setBusy(true);
     setError(null);
     try {
       const planned = await importApi.upload(files);
+      // The admin closed the dialog and opened a new wizard meanwhile.
+      if (mine !== generation.current) return;
       setRun(planned);
       const target = planned.mapping?.target;
       if (target?.kind === "existing" && target.project_id) setTargetId(target.project_id);
@@ -184,6 +243,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
         return;
       }
       const started = await importApi.apply(run.id);
+      lastMove.current = { cursor: -1, at: Date.now() };
       setRun(started);
       setStep("run");
     } catch (err) {
@@ -201,7 +261,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
       open={open}
       onClose={onClose}
       title="Import from ClickUp"
-      description="Bring a ClickUp workspace export into Projects. Nothing is written until the last step."
+      description="Bring a ClickUp workspace export into Projects. The import writes nothing until the last step."
       icon="Upload"
       size="3xl"
     >
@@ -255,7 +315,11 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                 <SelectButton
                   label="Import into"
                   value={targetId}
-                  onChange={setTargetId}
+                  onChange={(v) => {
+                    // A new destination needs its own confirmation.
+                    setTargetId(v);
+                    setConfirmedNewTree(false);
+                  }}
                   options={[
                     { value: NEW_SPACE, label: "New spaces, one per ClickUp space" },
                     ...spaces.map((s) => ({ value: s.id, label: `Into ${s.name}` })),
@@ -267,7 +331,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                     aria-label="Space name"
                     placeholder="Space name (optional)"
                     value={spaceName}
-                    onChange={(e) => setSpaceName(e.target.value)}
+                    onChange={(e) => {
+                      setSpaceName(e.target.value);
+                      setConfirmedNewTree(false);
+                    }}
                     className="max-w-xs"
                   />
                 )}
@@ -375,6 +442,11 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
           {step === "map" && (
             <Button variant="primary" icon="Download" loading={busy} disabled={busy} onClick={() => void saveAndImport()}>
               Import
+            </Button>
+          )}
+          {step === "run" && stalled && run?.state === "applying" && (
+            <Button variant="primary" icon="RefreshCw" loading={busy} disabled={busy} onClick={() => void resume()}>
+              Resume
             </Button>
           )}
           {step === "run" && (
@@ -511,7 +583,8 @@ function Running({ run, onOpenSpace }: { run: ImportRun; onOpenSpace: (id: strin
         </>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Writing in the background. Nobody is notified while it runs. You can close this dialog.
+          Writing in the background. Nobody is notified while it runs. You can close this dialog: the import goes
+          on, and Import from ClickUp shows it again.
         </p>
       )}
     </section>

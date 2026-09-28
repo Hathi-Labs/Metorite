@@ -182,6 +182,33 @@ export function isTerminal(state: RunState | undefined): boolean {
   return state === "done" || state === "failed" || state === "discarded";
 }
 
+/** The poll interval. It backs off after a failed poll, and never stops. */
+export const POLL_MS = 1500;
+export function pollDelay(misses: number): number {
+  return Math.min(POLL_MS * 2 ** Math.max(0, misses), 30_000);
+}
+
+/**
+ * The gateway treats a writer whose heartbeat is older than 120 s as dead,
+ * and `POST …/apply` then resumes it (§7.3). The wizard offers "Resume" a
+ * little after that. On a live writer the server refuses with 409.
+ */
+export const STALL_MS = 150_000;
+export function isStalled(run: ImportRun | null, lastMoveAt: number, now: number): boolean {
+  return run?.state === "applying" && now - lastMoveAt > STALL_MS;
+}
+
+/**
+ * Keep the run when the dialog opens again? Yes while it writes, and once
+ * more after it ends if the admin has not seen its report. Otherwise start
+ * a fresh wizard.
+ */
+export function keepOnReopen(run: ImportRun | null, reportSeen: boolean): boolean {
+  if (!run) return false;
+  if (run.state === "applying") return true;
+  return (run.state === "done" || run.state === "failed") && !reportSeen;
+}
+
 /** The mapping the admin's edits make, starting from what the plan shows. */
 export function mappingFrom(
   run: ImportRun,

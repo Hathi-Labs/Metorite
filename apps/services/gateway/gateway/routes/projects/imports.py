@@ -233,7 +233,10 @@ async def create_import_run(
             # not cause.
             mapping.people = usable_people(mapping.people, facts["directory"])
             plan = build_plan(bundle, mapping, **facts)
-            _mark_continuation(plan, inherited, _choice(mapping) if inherited else None, mapping)
+            plan["inherited_from"] = inherited
+            plan["continues"] = await _continues(
+                db, organization_id, run_id, bundle, mapping, [_sha256(raw) for _, raw in uploads]
+            )
 
             stored = _store(organization_id, run_id, uploads)
             superseded = [
@@ -337,9 +340,14 @@ async def save_import_mapping(
     async with _tenant_session() as db:
         facts = await _facts(db, bundle, mapping, vis, organization_id)
         plan = build_plan(bundle, mapping, **facts)
-        earlier = _json(row.plan) or {}
-        _mark_continuation(
-            plan, earlier.get("inherited_from"), earlier.get("inherited_choice"), mapping
+        plan["inherited_from"] = (_json(row.plan) or {}).get("inherited_from")
+        plan["continues"] = await _continues(
+            db,
+            organization_id,
+            run_id,
+            bundle,
+            mapping,
+            [str(f.get("sha256")) for f in (_json(row.files) or [])],
         )
         saved = (
             await db.execute(
@@ -358,28 +366,23 @@ async def save_import_mapping(
     return run_view(saved)
 
 
-def _choice(mapping: ImportMapping) -> dict[str, Any]:
-    """The two choices a continuation depends on (§6.9 node reuse)."""
-    return {"target": mapping.target.model_dump(), "grant": mapping.grant}
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
 
 
-def _mark_continuation(
-    plan: dict[str, Any],
-    inherited: str | None,
-    earlier_choice: dict[str, Any] | None,
+async def _continues(
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
     mapping: ImportMapping,
-) -> None:
-    """Tell the review step whether this run goes into an earlier import's
-    spaces (I-4). The writer reuses a node only under the SAME target and
-    grant. So a run that inherited its mapping and still holds those two
-    choices continues, and one whose admin changed either starts a new tree.
+    file_hashes: list[str],
+) -> bool:
+    """The writer's own reuse rule, asked before any write (I-4). Imported
+    late: the writer imports this module."""
+    from gateway.routes.projects.import_writer import continues_earlier
 
-    The choice is kept in the plan at upload, so the mapping route can compare
-    against it with no second read. A space renamed in the tool since then is
-    still created again, one node at a time; the review step says so."""
-    plan["inherited_from"] = inherited
-    plan["inherited_choice"] = earlier_choice
-    plan["continues"] = bool(inherited) and earlier_choice == _choice(mapping)
+    return await continues_earlier(db, organization_id, run_id, bundle, mapping, file_hashes)
 
 
 def _not_editable(state: str) -> str:
@@ -648,7 +651,7 @@ def _store(
                 "name": name,
                 "disk_name": disk_name,
                 "bytes": len(raw),
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sha256": _sha256(raw),
             }
         )
     return stored
@@ -698,6 +701,11 @@ def run_view(row: Any) -> dict[str, Any]:
         "files": files,
         "mapping": _json(row.mapping),
         "plan": _json(row.plan),
+        # The writer's cursor only. The lease and the node maps stay here.
+        "progress": {
+            "cursor": int((_json(getattr(row, "progress", None)) or {}).get("cursor") or 0)
+        },
+        "report": _json(getattr(row, "report", None)),
     }
 
 

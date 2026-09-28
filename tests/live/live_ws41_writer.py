@@ -30,6 +30,7 @@ COMMITS, so this script works in two fresh organizations and deletes both.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -618,6 +619,25 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "4c.5 a new upload of the same workspace starts from the NEWEST earlier run's mapping",
         inherited_run == renamed,
         str(inherited_run),
+    )
+    # I-4: the plan asks the writer's own rule before any write.
+    digest = [hashlib.sha256(edited).hexdigest()]
+    async with tenant_session(org) as db:
+        same = await import_writer.continues_earlier(
+            db, org, str(uuid.uuid4()), edited_bundle, ImportMapping(), digest
+        )
+        elsewhere = await import_writer.continues_earlier(
+            db,
+            org,
+            str(uuid.uuid4()),
+            edited_bundle,
+            ImportMapping(target=Target(kind="new_space", name="Elsewhere")),
+            digest,
+        )
+    check(
+        "4c.6 the plan says a re-run continues, and a new destination does not",
+        same is True and elsewhere is False,
+        f"same={same} elsewhere={elsewhere}",
     )
 
     # A list moved to another space since: the old map is stale, so the list

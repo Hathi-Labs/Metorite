@@ -523,6 +523,23 @@ async def _write_nodes(
     return progress
 
 
+async def continues_earlier(
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    file_hashes: list[str],
+) -> bool:
+    """Will this run go into an earlier import's tree? The plan asks, so the
+    wizard can say so before any write (I-4). It is the writer's OWN rule,
+    read-only: a second copy of the rule is how the note would start to lie."""
+    nodes, _continued, _statuses = await _earlier_nodes(
+        db, organization_id, run_id, bundle, mapping, file_hashes
+    )
+    return bool(nodes)
+
+
 async def _earlier_nodes(
     db: Any,
     organization_id: str,

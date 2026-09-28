@@ -17,7 +17,11 @@ import {
   canImport,
   importEnabled,
   continuationNote,
+  isStalled,
   isTerminal,
+  keepOnReopen,
+  pollDelay,
+  STALL_MS,
   mappingFrom,
   mustConfirmNewTree,
   progressOf,
@@ -186,6 +190,27 @@ describe("an export an earlier import already brought in", () => {
   it("reports statuses added to lists that were already there", () => {
     expect(reportLines({ lanes_added: 2 })).toEqual(["Added 2 statuses to lists that were already in Metorite."]);
     expect(reportLines({ lanes_added: 1 })).toEqual(["Added 1 status to lists that were already in Metorite."]);
+  });
+});
+
+describe("a run the admin cannot watch every second", () => {
+  it("keeps polling after a failed poll, more slowly", () => {
+    expect(pollDelay(0)).toBe(1500);
+    expect(pollDelay(2)).toBe(6000);
+    expect(pollDelay(20)).toBe(30_000);
+  });
+  it("offers Resume only after the server would call the writer dead", () => {
+    const applying = run({ state: "applying" });
+    expect(isStalled(applying, 0, 120_000)).toBe(false);
+    expect(isStalled(applying, 0, STALL_MS + 1)).toBe(true);
+    expect(isStalled(run({ state: "done" }), 0, STALL_MS + 1)).toBe(false);
+  });
+  it("shows a closed run again while it writes, and its unseen report once", () => {
+    expect(keepOnReopen(run({ state: "applying" }), false)).toBe(true);
+    expect(keepOnReopen(run({ state: "done" }), false)).toBe(true);
+    expect(keepOnReopen(run({ state: "done" }), true)).toBe(false);
+    expect(keepOnReopen(run({ state: "planned" }), false)).toBe(false);
+    expect(keepOnReopen(null, false)).toBe(false);
   });
 });
 

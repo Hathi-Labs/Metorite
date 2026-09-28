@@ -10,6 +10,7 @@ hides, and that no statement writes a ``pm_*`` table other than the run's own.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import pathlib
@@ -536,39 +537,53 @@ def test_an_inherited_mapping_is_case_blind() -> None:
     assert imports.usable_people(people, directory) == {"name:a": "m4@acme.test", "name:b": None}
 
 
-def test_the_plan_says_whether_a_run_continues_an_earlier_import() -> None:
+async def test_the_plan_asks_the_writer_whether_it_continues(
+    db: RecordingDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """I-4: the review step says when a run goes into an earlier import's
-    spaces, and when a changed destination starts a new tree. The writer
-    reuses a node only under the same target and grant (§6.9)."""
-    kept = ImportMapping(target=Target(kind="new_space", name="Ops"), grant="org")
-    choice = imports._choice(kept)
+    spaces. The plan asks the WRITER's own rule, with this file's hashes, on
+    the upload and again on every saved mapping, so a second copy of the rule
+    cannot drift from what the writer does."""
+    from gateway.routes.projects import import_writer
 
-    plan: dict[str, Any] = {}
-    imports._mark_continuation(plan, None, None, kept)
-    assert plan["continues"] is False and plan["inherited_from"] is None
+    asked: list[tuple[str, str, list[str]]] = []
 
-    imports._mark_continuation(plan, "r0", choice, kept)
-    assert plan["continues"] is True and plan["inherited_choice"] == choice
+    async def continues(_db, _org, run_id, _bundle, mapping, hashes):  # type: ignore[no-untyped-def]
+        asked.append((run_id, mapping.target.name or "", hashes))
+        return mapping.target.name != "Elsewhere"
 
-    renamed = ImportMapping(target=Target(kind="new_space", name="Ops 2"), grant="org")
-    imports._mark_continuation(plan, "r0", choice, renamed)
-    assert plan["continues"] is False
-
-    regranted = ImportMapping(target=Target(kind="new_space", name="Ops"), grant="group:ops")
-    imports._mark_continuation(plan, "r0", choice, regranted)
-    assert plan["continues"] is False
-
-
-async def test_a_saved_mapping_keeps_what_the_upload_inherited(db: RecordingDB) -> None:
-    """The mapping route re-plans. It must carry the upload's inheritance, or
-    the Map step loses the note the moment the admin saves."""
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
-    run = db.runs[view["id"]]
-    choice = imports._choice(ImportMapping())
-    run["plan"] = json.dumps({"inherited_from": "r0", "inherited_choice": choice})
-    saved = await imports.save_import_mapping(view["id"], ImportMapping(), _user())
-    assert saved["plan"]["inherited_from"] == "r0" and saved["plan"]["continues"] is True
+    monkeypatch.setattr(import_writer, "continues_earlier", continues)
+    raw = FIXTURE.read_bytes()
+    view = await imports.create_import_run([_upload(raw)], _user())
+    assert view["plan"]["continues"] is True
+    db.runs[view["id"]]["plan"] = json.dumps({**view["plan"], "inherited_from": "r0"})
     moved = await imports.save_import_mapping(
         view["id"], ImportMapping(target=Target(kind="new_space", name="Elsewhere")), _user()
     )
-    assert moved["plan"]["continues"] is False
+    assert moved["plan"]["continues"] is False and moved["plan"]["inherited_from"] == "r0"
+    digest = hashlib.sha256(raw).hexdigest()
+    assert [a[2] for a in asked] == [[digest], [digest]]
+    assert {a[0] for a in asked} == {view["id"]}
+
+
+def test_the_view_carries_progress_and_report_but_not_the_lease() -> None:
+    """The I-4 review's P0: the view dropped both, so the Import step showed
+    no progress, no report and no failure reason."""
+    row = SimpleNamespace(
+        id="r1",
+        source="clickup",
+        state="done",
+        created_by="a@acme.test",
+        created_at=None,
+        updated_at=None,
+        finished_at=None,
+        files="[]",
+        mapping="{}",
+        plan="{}",
+        progress=json.dumps({"cursor": 600, "lease": "secret", "node_ids": {"a": "b"}}),
+        report=json.dumps({"tasks_written": 2423, "space_ids": ["s1"]}),
+    )
+    view = imports.run_view(row)
+    assert view["progress"] == {"cursor": 600}
+    assert view["report"]["space_ids"] == ["s1"]
+    assert "secret" not in json.dumps(view)
