@@ -82,6 +82,15 @@ class RecordingDB:
                 return _Result([])
             row["state"] = "applying"
             return _Result([SimpleNamespace(**row)])
+        if (
+            sql.startswith("UPDATE pm_import_runs SET state = 'discarded'")
+            and "CAST(:id AS uuid) AND organization_id" in sql
+        ):
+            row = self.runs.get(params["id"])
+            if row is None or row["state"] not in ("uploaded", "planned"):
+                return _Result([])
+            row["state"] = "discarded"
+            return _Result([SimpleNamespace(**row)])
         if sql.startswith("UPDATE pm_import_runs SET state = 'discarded'"):
             gone = [
                 r
@@ -159,13 +168,14 @@ def _own_deps(route: Any) -> list[Any]:
     return [d.dependency for d in route.dependencies[len(router.dependencies) :]]
 
 
-def test_five_import_routes_are_mounted() -> None:
+def test_six_import_routes_are_mounted() -> None:
     assert {(r.path, tuple(sorted(r.methods))) for r in _import_routes()} == {
         ("/projects/import/runs", ("POST",)),
         ("/projects/import/runs", ("GET",)),
         ("/projects/import/runs/{run_id}", ("GET",)),
         ("/projects/import/runs/{run_id}/mapping", ("PUT",)),
         ("/projects/import/runs/{run_id}/apply", ("POST",)),
+        ("/projects/import/runs/{run_id}/discard", ("POST",)),
     }
 
 
@@ -587,3 +597,44 @@ def test_the_view_carries_progress_and_report_but_not_the_lease() -> None:
     assert view["progress"] == {"cursor": 600}
     assert view["report"]["space_ids"] == ["s1"]
     assert "secret" not in json.dumps(view)
+
+
+# ── discard (I-6) ───────────────────────────────────────────────────────────
+
+
+async def test_an_open_run_discards_with_nothing_to_undo(db: RecordingDB) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    out = await imports.discard_import_run(view["id"], _user())
+    assert out["discarded"] == {}
+    assert any(
+        sql.startswith("UPDATE pm_import_runs SET state = 'discarded'") for sql, _ in db.statements
+    )
+
+
+@pytest.mark.parametrize("state", ["applying", "discarded"])
+async def test_a_running_or_discarded_run_is_409(db: RecordingDB, state: str) -> None:
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[view["id"]]["state"] = state
+    with pytest.raises(HTTPException) as err:
+        await imports.discard_import_run(view["id"], _user())
+    assert err.value.status_code == 409
+
+
+async def test_a_refused_discard_is_409_and_names_what_stops_it(
+    db: RecordingDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gateway.routes.projects import import_discard
+
+    async def refuse(_db, _org, _row):  # type: ignore[no-untyped-def]
+        raise import_discard.DiscardRefused("A member edited it.", [{"id": "t1", "title": "T"}])
+
+    monkeypatch.setattr(import_discard, "discard_written_run", refuse)
+    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    db.runs[view["id"]]["state"] = "done"
+    with pytest.raises(HTTPException) as err:
+        await imports.discard_import_run(view["id"], _user())
+    assert err.value.status_code == 409
+    assert err.value.detail == {
+        "message": "A member edited it.",
+        "blocking": [{"id": "t1", "title": "T"}],
+    }

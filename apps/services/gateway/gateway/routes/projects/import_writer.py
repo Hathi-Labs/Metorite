@@ -419,6 +419,9 @@ async def _write_nodes(
     status_ids: dict[str, list[list[str]]] = {}
     counts = {"spaces": 0, "folders": 0, "projects": 0, "reused": 0}
     lanes_added: list[str] = []
+    # The nodes THIS run makes, parents first. Discard (I-6) deletes these and
+    # never a reused one, so the list is the whole of what it may remove.
+    created_nodes: list[str] = []
     label = SOURCE_LABEL.get(bundle.source, bundle.source)
 
     async with _tenant_session(organization_id) as db:
@@ -469,6 +472,7 @@ async def _write_nodes(
             )
             node_id = str(row.id)
             node_ids[spec.ref] = node_id
+            created_nodes.append(node_id)
             root_of[spec.ref] = root_of[spec.parent_ref] if spec.parent_ref else node_id
             if spec.kind == "space":
                 counts["spaces"] += 1
@@ -521,6 +525,7 @@ async def _write_nodes(
             "continued_from": sorted(continued),
             "done_status_added": done_added,
             "lanes_added": len(lanes_added),
+            "created_nodes": created_nodes,
             "cursor": 0,
         }
         await _save_progress(db, organization_id, run_id, lease, progress)
