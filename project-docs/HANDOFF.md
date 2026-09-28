@@ -201,15 +201,18 @@ line — never reclaim a number by deleting the other entry.
   `python -m copilot download-runtime` as the service user after `uv sync`,
   and a failure fails the deploy. Measured 2026-09-26: the box reaches GitHub
   releases as `acb`.
-- ⚠️ **A signed member proof lives 300 s, and a Copilot session reuses it.**
-  After 300 s in one long turn, `_member_for` reads the member as unproven,
-  so the member's cap stops applying for the rest of that turn. Billing still
-  names the member. The per-request seam is `CopilotClient(request_handler=)`.
-- ⚠️ **Memberless runs will be refused under the deployment key (H-152).**
-  The 2.0 wrapper now routes batch runs and sub-agents through gateway `/v1`.
-  A run with no member, such as the workflow node in `workflows/service.py`
-  or `mutation_runner.py`, gets a 400 once the box serves on the deployment
-  key. Give each one a member, or an org, before that flip.
+- ⚠️ **A signed member proof lives 3600 s, and a Copilot session reuses it.**
+  After 3600 s in one long turn, `_member_for` reads the member as unproven.
+  On the deployment key the Router then REFUSES the rest of that turn
+  (PR #511). The per-request seam is `CopilotClient(request_handler=)`.
+- 📌 **Background runs now name a member (2026-09-28).** A workflow agent
+  node runs as the member who pressed Run, or else as the workflow owner.
+  The email loop, the WhatsApp summaries and graphiti run as the owner of the
+  mailbox or account. The mutation sandbox gets the headers of the run that
+  failed, in `MUTATION_ROUTER_HEADERS`. The fence is
+  `tests/unit/test_background_ai_member.py`.
+- ⚠️ **Two paths still reach the Router with no member.** H-152 names them.
+  The deployment key refuses both with a 400.
 - ⚠️ **Rebuild two images.** `Dockerfile.copilot-sandbox` and
   `Dockerfile.mutation` now pin the SDK and download the CLI at build time.
 - ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
@@ -3227,28 +3230,55 @@ line — never reclaim a number by deleting the other entry.
   The gateway holds the deployment key, and the Console derives the org from
   the session member. Fences: `test_customer_console_billing_reads.py` (R8),
   `test_billing_proxy_route.py`, `billing/reads.test.ts`.
-- 🔴 **Before that PR merges, widen the box's key to hold `billing_read`.**
-  It is a hand edit to `deployment_key.capabilities` on the Console database,
-  because no route grants a capability. Without it every billing read answers
-  503 "Billing is not configured for this deployment". It never falls back to
-  the org key, so no tenant sees another tenant's figures.
+- 📌 **The box's key holds `billing_read` and `billing_purchase`.** Granted
+  2026-09-28 by a hand edit to `deployment_key.capabilities` on the Console
+  database, before the reads merged. Without them every billing door answers
+  503 "not configured", and it never falls back to the org key.
 - ⚠️ **What is LEFT for the org key: the three checkout routes.**
   `api/billing/orders`, `orders/[id]` and `orders/[id]/redeem` still use
   `_console.ts` and `CUSTOMER_CONSOLE_ORG_KEY`. The second PR moves them onto
   a `billing_purchase` capability. Until it merges, do NOT unset the org key
   on a box that sells, or checkout goes dark. The seat writes and the invite
   mirror already use the gateway and need nothing.
-- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
-  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
-  and nothing calls `member_proof.sign_member`. So on a box with
-  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
-  `chat_completion_on_console` refuses every agent completion. The CP-13c
-  audit found this on 2026-09-24.
+- 📌 **Every background job now names a member (2026-09-28).** Agent
+  completions stamp the run's member through `attributed_openai`. A job with
+  no session binds the member who OWNS its row, through
+  `acb_common.job_member_scope`: the workflow owner, the mailbox owner, the
+  WhatsApp account owner. The Console then derives the organization from that
+  member, so the job bills the organization it belongs to. The fence is
+  `tests/unit/test_background_ai_member.py`, and it refuses a new
+  `run_agent()` call with no `session_user` and no recorded reason.
+- ⚠️ **The owner reads stop working under FORCE RLS.** The reads of
+  `app_user`, `email_accounts` and `wa_accounts` decide which organization
+  pays, so they run on an unbound session. H4 resolvers such as
+  `_workflow_organization` have the same limit. Once FORCE RLS covers these
+  tables, each read returns zero rows. The job then fails CLOSED: it runs
+  memberless, and the deployment key refuses it with a 400. It never bills
+  a guessed member. `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names
+  the two new reads. Move them to an RLS-EXEMPT read before FORCE RLS
+  reaches these tables.
+- ⚠️ **Two paths still send no member. Close them before the flip.**
+  1. The HMAC-signed `/agent/webhook` route (`routes/agent.py`). No owner row
+     or organization exists for it. It runs memberless, or on a body claim.
+  2. mem0 (`acb_memory/mem0_client.py`). mem0 builds its own OpenAI client
+     and calls it on its own threads, so no run context reaches the call.
+     `MEM0_ENABLED` is off by default.
+- 📌 **The deployment arm serves only a PROVEN member (PR #511).** An
+  expired or missing proof is refused. The proof lives 3600 s. So every
+  background job above binds its owner VERIFIED, and a body claim, which
+  is never signed, is refused on that arm. The email specialist run keeps
+  its proof because `_run_member` keeps a claim verified when it names the
+  member the task already holds verified.
+- ⚠️ **The Notes pipeline bills the viewer, not the meeting owner.** A
+  recording found by poll-on-read runs in the request of whoever opened the
+  list. It names a member of the right organization, so the Console serves
+  it. The per-person report is wrong.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
-  `tests/unit/test_console_router_client.py` (5 new).
+  `tests/unit/test_console_router_client.py` (5 new) ·
+  `tests/unit/test_background_ai_member.py` (37).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
   creating the connections for when they sign up"*
-- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
+- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-28.
 
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
