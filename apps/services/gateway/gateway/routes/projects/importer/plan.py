@@ -160,6 +160,9 @@ def build_plan(
             "total": len(legacy),
         },
         "to_update": len(already),
+        # Comments on tasks to update are checked one by one; each one not
+        # imported yet is added (§6.9). An upper bound, not a promise.
+        "existing_comments_checked": sum(1 for c in bundle.comments if c.task_ref in already),
         "to_write": {
             "tasks": len(bundle.tasks) - len(already) - len(legacy),
             "comments": sum(1 for c in bundle.comments if c.task_ref not in skipped),

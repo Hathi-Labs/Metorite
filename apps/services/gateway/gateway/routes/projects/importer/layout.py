@@ -282,6 +282,25 @@ def snapshot(values: dict[str, Any]) -> dict[str, Any]:
     return {field: snapshot_value(values.get(field)) for field in UPDATABLE}
 
 
+def source_values(task: Task, source: str, offset: dt.timedelta | None) -> dict[str, Any]:
+    """What the SOURCE says, before any mapping: the fields of :data:`UPDATABLE`
+    keyed the same way, with ClickUp's own values. The status is its NAME, the
+    assignees are the source's person refs, and the description has no
+    "Assigned in ClickUp to" footer, because that footer depends on the
+    mapping and not on the source."""
+    return {
+        "title": task.title[:500],
+        "description": description(task, [], source),
+        "status_id": task.status_name,
+        "due_at": due_instant(task, offset),
+        "start_date": task.start_date,
+        "importance": task.importance,
+        "estimate_mins": task.estimate_mins,
+        "tags": list(task.tags),
+        "assignees": list(task.assignee_refs),
+    }
+
+
 @dataclass(frozen=True)
 class Merge:
     """What one existing task takes from a new export."""
@@ -290,8 +309,11 @@ class Merge:
     changes: dict[str, Any]
     #: fields a member edited in Metorite while the source changed them too.
     conflicts: tuple[str, ...]
-    #: what to store as `origin.import_values` after this run.
+    #: what to store as `origin.import_values`: what Metorite holds FROM the
+    #: import after this run.
     new_snapshot: dict[str, Any]
+    #: what to store as `origin.import_source`: the source's own values.
+    new_source: dict[str, Any]
 
 
 def merge_fields(
@@ -299,34 +321,72 @@ def merge_fields(
     last_written: dict[str, Any] | None,
     incoming: dict[str, Any],
     *,
+    last_source: dict[str, Any] | None = None,
+    incoming_source: dict[str, Any] | None = None,
     frozen: tuple[str, ...] = (),
 ) -> Merge:
     """The three-way rule, field by field.
 
-    * The source did not change the field → nothing to do.
-    * The source changed it, and Metorite still holds what the import last
-      wrote → take the source's value.
-    * The source changed it, and a member changed it too → keep the member's
-      value, and count a conflict.
+    Two questions, answered on two different snapshots:
 
-    With no snapshot (a task written before update mode existed), every
-    difference is a conflict: nothing proves Metorite was not edited.
-    ``frozen`` fields are never changed, for example the status of a task a
-    member moved to another project, whose status set is not the one the
-    import resolved against."""
+    1. **Did the SOURCE change the field?** Compared on the source's own
+       values (``last_source`` against ``incoming_source``). A change of the
+       admin's MAPPING is not a change of the source, so a different person
+       or status mapping on a later run moves nothing by itself.
+    2. **Did a MEMBER change it?** Compared on what Metorite holds
+       (``current`` against ``last_written``, what the import last wrote).
+
+    * The source did not change it → nothing to do.
+    * The source changed it, and no member did → take the source's value.
+    * Both changed it → keep the member's value, and count a conflict.
+
+    A task with no source snapshot falls back to comparing mapped values.
+    With no snapshot at all, every difference is a conflict: nothing proves
+    Metorite was not edited. ``frozen`` fields never change, for example the
+    status and assignees of a task a member moved to another project."""
     now_cur = snapshot(current)
     now_new = snapshot(incoming)
+    src_new = snapshot(incoming_source) if incoming_source is not None else None
     changes: dict[str, Any] = {}
     conflicts: list[str] = []
+    kept: dict[str, Any] = {}
     for field in UPDATABLE:
         cur, new = now_cur[field], now_new[field]
-        if field in frozen or cur == new:
+        wrote = (
+            last_written.get(field) if last_written is not None and field in last_written else None
+        )
+        known = last_written is not None and field in last_written
+        if field in frozen:
+            kept[field] = wrote if known else cur
             continue
-        if last_written is not None and field in last_written and last_written[field] == cur:
+        source_unchanged = (
+            src_new is not None
+            and last_source is not None
+            and field in last_source
+            and src_new[field] == last_source[field]
+        )
+        if source_unchanged:
+            kept[field] = wrote if known else cur
+            continue
+        if cur == new:
+            continue
+        if known and wrote == new:
+            # No source snapshot, but the source still says what the import
+            # last wrote: the difference is a member's edit. Keep it quietly.
+            kept[field] = wrote
+            continue
+        if known and wrote == cur:
             changes[field] = incoming.get(field)
-        elif last_written is None or field not in last_written or last_written[field] != new:
+        else:
             conflicts.append(field)
-    return Merge(changes=changes, conflicts=tuple(conflicts), new_snapshot=now_new)
+            kept[field] = wrote if known else cur
+    new_snapshot = {field: kept.get(field, now_new[field]) for field in UPDATABLE}
+    return Merge(
+        changes=changes,
+        conflicts=tuple(conflicts),
+        new_snapshot=new_snapshot,
+        new_source=src_new if src_new is not None else (last_source or {}),
+    )
 
 
 def comment_key(comment: Comment) -> str:

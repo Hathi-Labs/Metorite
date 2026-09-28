@@ -262,3 +262,62 @@ def test_a_comment_key_is_stable_and_distinct() -> None:
     assert comment_key(one) != comment_key(
         Comment(task_ref="t", author_ref="a@x.test", created_at=at, body_md="Ho")
     )
+
+
+# ── I-3b review: a mapping change is not a source change ────────────────────
+
+
+def _src(**over: object) -> dict:
+    base = {
+        "title": "Ship it",
+        "description": None,
+        "status_id": "in review",
+        "due_at": dt.datetime(2026, 9, 24, 6, 30, tzinfo=dt.UTC),
+        "start_date": None,
+        "importance": 1,
+        "estimate_mins": None,
+        "tags": ["a"],
+        "assignees": ["name:vijay r"],
+    }
+    base.update(over)
+    return base
+
+
+def test_a_changed_people_mapping_unassigns_nobody() -> None:
+    """Run 1 mapped "Vijay R" to a member; run 2 maps him to nobody. The
+    source did not change, so nothing moves."""
+    written = snapshot(_state(assignees=["vijay@x.test"]))
+    m = merge_fields(
+        _state(assignees=["vijay@x.test"]),
+        written,
+        _state(assignees=[]),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {} and m.conflicts == ()
+    assert m.new_snapshot["assignees"] == ["vijay@x.test"]
+
+
+def test_a_changed_status_mapping_moves_no_task() -> None:
+    written = snapshot(_state(status_id="s-review"))
+    m = merge_fields(
+        _state(status_id="s-review"),
+        written,
+        _state(status_id="s-new-lane"),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+
+
+def test_a_source_change_still_lands_through_the_mapping() -> None:
+    written = snapshot(_state(status_id="s-review"))
+    m = merge_fields(
+        _state(status_id="s-review"),
+        written,
+        _state(status_id="s-done"),
+        last_source=snapshot(_src()),
+        incoming_source=_src(status_id="done"),
+    )
+    assert m.changes == {"status_id": "s-done"}
+    assert m.new_source["status_id"] == "done"

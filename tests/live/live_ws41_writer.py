@@ -346,6 +346,7 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     check("3.7 the upload is deleted when the run is done", files == [], str(files))
 
     # ── 4. a second run of the same file writes and creates nothing ─────
+    before_rerun = await one(org, "SELECT now()")
     again, lease = await new_run(org, ADMIN, bundle, raw, ImportMapping())
     busy = await one(org, imports.BUSY_SQL, id=str(uuid.uuid4()))
     check("4.1 while one run writes, a second start sees it", str(busy) == again, str(busy))
@@ -500,12 +501,110 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "   AND x.type = 'comment' AND x.body = 'A new comment'",
         a=a,
     )
+    touched = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'kind' = 'import' AND updated_at > :t",
+        t=before_rerun,
+    )
+    # The 4b member edits and updates happen after this point, so compare the
+    # rerun window only: `again` ran between `before_rerun` and 4b.
+    check_rerun_quiet = touched  # read again below, once 4b has run
     check(
         "4b.7 the same export again changes nothing and adds no comment twice",
         rep2.get("tasks_updated") == 0 and rep2.get("comments_written") == 0 and a_comments == 1,
         json.dumps(
             {k: rep2.get(k) for k in ("tasks_updated", "conflicts_kept", "comments_written")}
         ),
+    )
+
+    # ── 4c. what the I-3b review found ──────────────────────────────────
+    created_by_first = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'run_id' = :id",
+        id=run_id,
+    )
+    check(
+        "4c.1 origin.run_id still names the run that CREATED each task",
+        created_by_first == 2423,
+        str(created_by_first),
+    )
+    quiet_before = await one(org, "SELECT now()")
+    idle, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, idle, lease)
+    moved_at = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'kind' = 'import' AND updated_at > :t",
+        t=quiet_before,
+    )
+    check(
+        "4c.2 a no-op re-run moves no task's updated_at (the If-Match token)",
+        moved_at == 0,
+        f"{moved_at} moved; the earlier window saw {check_rerun_quiet}",
+    )
+
+    # The admin now maps "Person 1" to nobody. The SOURCE did not change, so
+    # nobody is unassigned.
+    assigned_before = await one(
+        org, "SELECT count(*) FROM pm_task_assignees WHERE assignee = :m", m=MEMBER
+    )
+    remap, lease = await new_run(
+        org, ADMIN, edited_bundle, edited, ImportMapping(people={"name:person 1": None})
+    )
+    await import_writer.apply_run(org, remap, lease)
+    assigned_after = await one(
+        org, "SELECT count(*) FROM pm_task_assignees WHERE assignee = :m", m=MEMBER
+    )
+    check(
+        "4c.3 a changed people mapping unassigns nobody",
+        assigned_after == assigned_before,
+        f"{assigned_before} -> {assigned_after}",
+    )
+
+    # A member renames a status lane. The same export again must not bring the
+    # old name back as a new lane, nor move a task.
+    lane = (
+        await rows(
+            org,
+            "SELECT s.id, s.project_id, (SELECT count(*) FROM pm_task_statuses x "
+            "        WHERE x.project_id = s.project_id) AS n "
+            "  FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+            " WHERE p.organization_id = CAST(:org AS uuid) AND p.source = 'import' "
+            "   AND p.parent_project_id IS NOT NULL AND s.name = 'backlog' LIMIT 1",
+        )
+    )[0]
+    async with tenant_session(org) as db:
+        await db.execute(
+            text("UPDATE pm_task_statuses SET name = 'Someday' WHERE id = CAST(:s AS uuid)"),
+            {"s": str(lane.id)},
+        )
+    in_lane = await one(
+        org, "SELECT count(*) FROM pm_tasks WHERE status_id = CAST(:s AS uuid)", s=str(lane.id)
+    )
+    renamed, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, renamed, lease)
+    lanes_now = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)",
+        p=str(lane.project_id),
+    )
+    still_in = await one(
+        org, "SELECT count(*) FROM pm_tasks WHERE status_id = CAST(:s AS uuid)", s=str(lane.id)
+    )
+    check(
+        "4c.4 a member-renamed lane is followed: no duplicate lane, no task moves",
+        lanes_now == lane.n and still_in == in_lane,
+        f"lanes {lane.n}->{lanes_now}, tasks {in_lane}->{still_in}",
+    )
+
+    async with tenant_session(org) as db:
+        _inherited_mapping, inherited_run = await imports._inherited_mapping(db, org, edited_bundle)
+    check(
+        "4c.5 a new upload of the same workspace starts from the NEWEST earlier run's mapping",
+        inherited_run == renamed,
+        str(inherited_run),
     )
 
     # A list moved to another space since: the old map is stale, so the list

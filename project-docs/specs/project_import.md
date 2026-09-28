@@ -571,18 +571,47 @@ themselves, uploaded as a ZIP.
   | Yes | Yes | The member's value is KEPT, and the report counts a conflict |
 
   The fields: title, description, status (the completion date follows it),
-  due date, start date, priority, estimate, tags and assignees. The import
-  stores what it last wrote in `origin.import_values`. That is how it tells
-  a member's edit from an unchanged field. A source comment not yet imported
-  is added once (`meta.import.comment_key`). A task new in the export is
-  created in the same tree. An update never moves a task: its parent and its
-  project stay. A task whose project differs keeps its status, and the report
-  counts it as `tasks_moved`. Each updated task gets one `system` activity
-  naming the fields, and nobody is notified. Only the pre-D52 importer's rows
-  are still skipped: they hold no snapshot to merge with.
+  due date, start date, priority, estimate, tags and assignees.
+
+  **Two snapshots, two questions (built after the I-3b review).**
+
+  - `origin.import_source` holds the SOURCE's own values: the status NAME,
+    the person refs, and the description without the "Assigned in ClickUp
+    to" footer. "Did the source change this field?" is answered here. So a
+    different people or status mapping on a later run changes nothing by
+    itself: it is not a change in ClickUp.
+  - `origin.import_values` holds what Metorite got from the import. "Did a
+    member change this field?" is answered here.
+
+  **The rest of the rule.**
+
+  - A new upload of a workspace an earlier import wrote STARTS from that
+    import's mapping, so the admin's hand-made choices carry over. A person
+    who has left the organization falls back to the proposal.
+  - A status lane a member renamed is followed through the status ids the
+    earlier run recorded. The old name does not come back as a new lane.
+  - A task whose project differs from its List keeps its status and its
+    assignees. A member may have moved it into a personal project, and a new
+    assignee there would widen who can read it. The report counts it as
+    `tasks_moved`.
+  - A task that did not change keeps its `updated_at`. That value is the
+    If-Match token (D-PM-20) and the cursor of the delta feed. Only the
+    bookkeeping in `origin` is written, with `touch=False`.
+  - `origin.run_id` stays the run that CREATED the task. The last run that
+    looked at it is `origin.updated_by_run`.
+  - A tag enters the registry only when the merge writes it. A task type, a
+    detach and a dropped tag are counted for new tasks only.
+  - A source comment not yet imported is added once (`meta.import.comment_key`).
+    A comment written before keys existed is matched on its date and text.
+  - A task new in the export is created in the same tree. An update never
+    moves a task: its parent and its project stay.
+  - Each updated task gets one `system` activity naming the fields, and
+    nobody is notified. The pre-D52 importer's rows are still skipped: they
+    hold no snapshot to merge with.
 - **How the skip works (built in I-3).** Each batch first reads which of its
   tasks exist (the import origin, and `clickup_id` for the old importer's
-  rows). It writes the rest through `insert_row`, the helper every route uses.
+  rows). It writes a NEW task through `insert_row`, the helper every route
+  uses, and updates an earlier import's task through `update_row` (§6.9).
   The unique index of migration 219 is the backstop: a write it refuses fails
   the batch, and the batch rolls back whole. There is no `ON CONFLICT` in the
   writer, so no conflict can drop a task in silence.
@@ -798,7 +827,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-1** ✅ built 2026-09-27 | `ImportBundle`, the ClickUp workspace-CSV adapter, the encoding sniff, the scrub script, the no-network fence | The adapter parses P-1 into a bundle whose counts match the file. Every field in §4.1 lands, or has a `Loss` row. **Met:** the scrubbed fixture and the real file give the same summary, and each §4.1.1 count has a test |
 | **I-2** ✅ built 2026-09-27 | Migration 219 for `pm_import_runs` and the origin index. Upload, list, get and mapping routes (`routes/projects/imports.py`). The plan (`importer/plan.py`). The D80 docstring edits (§2) | A dry run of P-1 returns counts, warnings and losses, and writes no `pm_*` row. `live_ws41_import.py` plan half passes. **Met:** the route test records every statement and finds no write but the run's own. The live test passes 21 of 21, with RLS checked under a role that does not bypass it |
 | **I-3** ✅ built 2026-09-28 | The writer (`import_writer.py`), the layout (`importer/layout.py`), `POST …/apply`, batches, resume, retry, the report | P-1 applies into a new space. Counts in the report match the file. A second run skips all. A killed run resumes to the same counts. **Met:** `live_ws41_writer.py` passes 39 of 39 on a real Postgres. It stops the run after 3 batches, takes it over with a new lease, and finishes. It then finds 2,423 tasks, 1,270 subtasks, 5 spaces, 9 folders, 48 projects, 1,647 closed, 93 comments with their ClickUp dates and zero notifications. A second run skips all 2,423 and creates no node. A list moved since is created again. A different workspace with the same Space names gets new spaces. An existing-space import follows the grammar and skips the old importer's task. The I-2 review advice is met without `ON CONFLICT` (§6.9): a pre-check per batch, the index as the backstop, `legacy_refs` skipped, the group checked, the files deleted |
-| **I-3b** ✅ built 2026-09-28 | Update mode (§6.9, §11 Q-5) | A new export of the same workspace updates the tasks by the three-way rule, and adds new comments once. **Met:** `live_ws41_writer.py` passes 48 of 48. An edited export updates a title and a priority, keeps a member's conflicting title, keeps a member's description, and adds one new comment. The same export again changes nothing |
+| **I-3b** ✅ built 2026-09-28 | Update mode (§6.9, §11 Q-5) | A new export of the same workspace updates the tasks by the three-way rule, and adds new comments once. **Met:** `live_ws41_writer.py` passes 56 of 56. An edited export updates a title and a priority, keeps a member's conflicting title, keeps a member's description, and adds one new comment. The same export again changes nothing, and moves no `updated_at`. A changed people mapping unassigns nobody. A member-renamed lane is followed. The creating run stays on every task |
 | **I-4** | The wizard (§7.7) | An admin imports P-1 end to end in the browser, in light mode, at compact density, and at phone width (the `visual-review` skill). **From the I-3 review:** the review step says when a run will CONTINUE an earlier import's spaces, and when a changed name or grant will start a new tree instead. The report names any status lane the writer added to a set it did not create. The server needs a read for the first: `continued_from` is known only at batch 0 today |
 | **I-5** | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning |
 | **I-6** | Discard | Discard removes exactly the run's rows, and refuses after a member edit |

@@ -142,6 +142,17 @@ GROUP_EXISTS_SQL = (
     "SELECT 1 FROM org_group WHERE organization_id = CAST(:org AS uuid) AND slug = :slug"
 )
 
+#: A new upload of a workspace an earlier import already wrote starts from
+#: THAT import's choices: people, statuses, target, grant (§6.9). Without it,
+#: an update would start from the proposals, and a person the admin mapped by
+#: hand last time would read as "unmapped".
+INHERIT_MAPPING_SQL = (
+    "SELECT id, mapping FROM pm_import_runs "
+    " WHERE organization_id = CAST(:org AS uuid) AND source = :source "
+    "   AND state IN ('done', 'failed', 'applying') AND id::text = ANY(:runs) "
+    " ORDER BY created_at DESC LIMIT 1"
+)
+
 #: §7.4 — one open run per organization. A new upload discards the open one,
 #: and its files go with it. Without this, an admin could fill the shared disk
 #: one 250 MB upload at a time, and every tenant would go down with it.
@@ -215,9 +226,18 @@ async def create_import_run(
         async with _tenant_session() as db:
             vis = await resolve_visibility(db, user)
             organization_id = require_organization(vis)
-            mapping = ImportMapping()
+            mapping, inherited = await _inherited_mapping(db, organization_id, bundle)
             facts = await _facts(db, bundle, mapping, vis, organization_id)
+            # A person mapped last time who has left since falls back to the
+            # proposal; the plan must not open with an error the admin did
+            # not cause.
+            mapping.people = {
+                ref: member
+                for ref, member in mapping.people.items()
+                if member is None or member in facts["directory"]
+            }
             plan = build_plan(bundle, mapping, **facts)
+            plan["inherited_from"] = inherited
 
             stored = _store(organization_id, run_id, uploads)
             superseded = [
@@ -431,6 +451,42 @@ async def _parse(source: str, uploads: list[tuple[str, bytes]]) -> ImportBundle:
             f"{MAX_TASKS}. Export one space at a time.",
         )
     return bundle
+
+
+async def _inherited_mapping(
+    db: Any, organization_id: str, bundle: ImportBundle
+) -> tuple[ImportMapping, str | None]:
+    """The mapping of the newest earlier run that wrote a task of this file,
+    or the proposals when there is none."""
+    from gateway.routes.projects.import_writer import CONTINUED_RUNS_SQL
+
+    runs = [
+        str(r.run_id)
+        for r in (
+            await db.execute(
+                text(CONTINUED_RUNS_SQL),
+                {
+                    "org": organization_id,
+                    "source": bundle.source,
+                    "refs": [t.ref for t in bundle.tasks],
+                },
+            )
+        ).fetchall()
+    ]
+    if not runs:
+        return ImportMapping(), None
+    row = (
+        await db.execute(
+            text(INHERIT_MAPPING_SQL),
+            {"org": organization_id, "source": bundle.source, "runs": runs},
+        )
+    ).fetchone()
+    if row is None:
+        return ImportMapping(), None
+    try:
+        return ImportMapping.model_validate(_json(row.mapping) or {}), str(row.id)
+    except ValueError:
+        return ImportMapping(), None
 
 
 # ── the four reads the plan needs ───────────────────────────────────────────
