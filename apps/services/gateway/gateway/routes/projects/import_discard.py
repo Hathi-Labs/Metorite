@@ -60,7 +60,13 @@ def _not_by_related_import_on_nodes(column: str) -> str:
         " WHERE o.organization_id = CAST(:org AS uuid) AND o.id <> CAST(:run AS uuid) "
         "   AND o.progress ? 'node_ids' "
         "   AND (o.progress->'continued_from' ? CAST(:run AS text) "
-        "        OR o.mapping->'target'->>'project_id' = ANY(CAST(:nodes AS text[]))) "
+        "        OR o.mapping->'target'->>'project_id' = ANY(CAST(:nodes AS text[])) "
+        # An update run that did not continue this run still registers a
+        # changed tag in the task's root, which may be one of these nodes.
+        "        OR EXISTS (SELECT 1 FROM pm_tasks u "
+        "                    WHERE u.organization_id = CAST(:org AS uuid) "
+        "                      AND u.origin->>'run_id' = CAST(:run AS text) "
+        "                      AND u.origin->>'updated_by_run' = o.id::text)) "
         "   AND " + _WROTE_WINDOW.format(col=column) + ")"
     )
 
