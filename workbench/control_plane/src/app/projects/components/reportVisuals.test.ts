@@ -33,6 +33,7 @@ import { describe, expect, it } from "vitest";
 import type {
   CapacityRow,
   HygieneKind,
+  LoadReport,
   PulseRow,
   RenderedReportBody,
 } from "../lib/api";
@@ -52,6 +53,7 @@ import {
 import { rebalancePickups, rebalanceTasks } from "../lib/rebalance";
 import {
   CapacityPanel,
+  LoadPanel,
   OutlookPanel,
   PulsePanel,
   StuckPanel,
@@ -773,6 +775,53 @@ describe("the summary tiles", () => {
     const html = draw({ throughput: { series: [], median_hours: null, measured: 0 } });
     const tile = html.slice(html.indexOf("Median cycle time"));
     expect(tile.slice(0, 300)).toContain("not measured");
+  });
+});
+
+// WS-27bn R5a, done-when (k). The server removes the rows of the people a
+// reader may not report on, and counts them in `hidden_people`. The Load,
+// Capacity and Conflicts panels print the count, in a report and in the
+// Analytics app, and print nothing for an admin, who gets no key.
+describe("the hidden line on Load, Capacity and Conflicts", () => {
+  const cases: [keyof Sections, Sections][] = [
+    ["load", { load: { ...SECTIONS.load, hidden_people: 2 } }],
+    ["capacity", { capacity: { ...SECTIONS.capacity, hidden_people: 2 } }],
+    ["conflicts", { conflicts: { ...SECTIONS.conflicts, hidden_people: 2 } }],
+  ];
+  it.each(cases)("%s prints the line in a report", (_name, sections) => {
+    const { panel } = panelAndTable(draw(sections));
+    expect(panel).toContain("This report hides 2 other people");
+  });
+
+  it.each(["load", "capacity", "conflicts"] as const)(
+    "%s prints no line for an admin",
+    (name) => {
+      const html = draw({ [name]: SECTIONS[name] } as Sections);
+      expect(html).not.toContain("This report hides");
+    },
+  );
+
+  it("the Analytics app's Load panel prints the route's count", () => {
+    const html = renderToStaticMarkup(
+      createElement(LoadPanel, {
+        data: {
+          project_id: null,
+          scope: "portfolio",
+          total_tasks: 9,
+          people_total: 3,
+          people: [{ assignee: null, open_tasks: 4, overdue: 0 }],
+          hidden_people: 1,
+        } as LoadReport,
+      }),
+    );
+    expect(html).toContain("This report hides 1 other person");
+  });
+
+  it("the adapters copy the count and never invent one", () => {
+    expect(loadPanelData({ ...SECTIONS.load, hidden_people: 3 }, body({})).hidden_people).toBe(3);
+    expect("hidden_people" in loadPanelData(SECTIONS.load, body({}))).toBe(false);
+    expect(capacityPanelData({ ...SECTIONS.capacity, hidden_people: 3 }, body({})).hidden_people).toBe(3);
+    expect(conflictsPanelData({ ...SECTIONS.conflicts, hidden_people: 3 }, body({})).hidden_people).toBe(3);
   });
 });
 

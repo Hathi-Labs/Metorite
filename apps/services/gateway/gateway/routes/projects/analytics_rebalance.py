@@ -61,6 +61,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
 )
+from gateway.routes.projects.report_scope import subject_params, with_subject
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.workload import HORIZON_DAYS
 from sqlalchemy import text
@@ -133,8 +134,16 @@ async def rebalance_body(
     include_subtree: bool,
     horizon_days: int = HORIZON_DAYS,
     today: date | None = None,
+    subject_people: list[str] | None = None,
 ) -> dict[str, Any]:
-    """The rebalance answer, on a session and a visibility the caller resolved."""
+    """The rebalance answer, on a session and a visibility the caller resolved.
+
+    ``subject_people`` (WS-27bn R5a) keeps the at-risk tasks that those
+    people hold, and the pickups of those people. The unassigned work that
+    a pickup offers stays the whole scope, because nobody holds it. The
+    lists need the HR grant, which is §7.1's admin row, so this body adds
+    no reader filter.
+    """
     from gateway.routes.people.suggestions import (
         MAX_AT_RISK_TASKS,
         MAX_PICKUPS_PER_PERSON,
@@ -189,13 +198,22 @@ async def rebalance_body(
             })
     scope_where = load_open_where(scope_sql, vis)
     scope_params = load_params(vis, project_id)
+    subject = set(subject_people) if subject_people is not None else None
+    if subject is not None:
+        risky = [
+            t for t in risky
+            if str(t["holder"].get("email") or "").lower() in subject
+        ]
     in_scope: dict[str, Any] = {}
     if risky:
         in_scope = {
             str(r.id): r
             for r in (await db.execute(
-                text(scoped_tasks_sql(scope_where)),
-                {**scope_params, "ids": sorted({t["task_id"] for t in risky})},
+                text(scoped_tasks_sql(
+                    load_open_where(with_subject(scope_sql, subject_people), vis)
+                )),
+                {**scope_params, **subject_params(subject_people),
+                 "ids": sorted({t["task_id"] for t in risky})},
             )).fetchall()
         }
     at_risk = [t for t in risky if t["task_id"] in in_scope]
@@ -220,6 +238,10 @@ async def rebalance_body(
     ]
 
     idle = [p for p in pool if p["capacity"]["pill"] == "idle"]
+    if subject is not None:
+        # A pickup is for an idle person of the subject. The helpers of an
+        # at-risk task stay the whole pool, because anybody may help.
+        idle = [p for p in idle if str(p.get("email") or "").lower() in subject]
 
     def _rank(text_: str, helpers: list[dict[str, Any]], holder: str):
         return rank_for_text(text_, helpers, this_year=today.year, exclude_email=holder)

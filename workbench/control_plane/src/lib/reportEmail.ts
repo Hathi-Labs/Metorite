@@ -87,6 +87,8 @@ export interface RenderedReport {
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bm S7a. Opt-in, and the HR half is absent for a reader without
@@ -108,6 +110,8 @@ export interface RenderedReport {
       total_tasks: number;
       hr_visible: boolean;
       horizon_days: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3d. Opt-in. One card for each person, read today. A row
@@ -155,6 +159,8 @@ export interface RenderedReport {
       total: number;
       hr_visible: boolean;
       horizon_days: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3b. Opt-in. Without `admin:members:read` the two lists are
@@ -274,9 +280,15 @@ export const HELP_REASON_WORDS: Readonly<Record<string, string>> = {
   waiting_overdue: "Waiting past its date",
 };
 
+/** WS-27bn R5a. The hidden line as an email note, or no note. */
+function hiddenNotes(n: number | null | undefined): string[] {
+  const line = hiddenPeopleLine(n);
+  return line ? [line] : [];
+}
+
 /**
- * WS-27bn R3d, edit E5. "This report hides N other people", or null when
- * the report hides nobody. The panel, the email and the chat card
+ * WS-27bn R3d and R5a. "This report hides N other people", or null when
+ * the report hides nobody. The panels, the email and the chat card
  * (`reads.py` `hidden_people_line`) print these words.
  */
 export function hiddenPeopleLine(n: number | null | undefined): string | null {
@@ -488,7 +500,8 @@ export function reportLayout(
             ` · ${textBar(p.overdue, p.open_tasks)}` +
             ` ${p.overdue} of ${p.open_tasks} overdue`,
         ),
-      notes: [],
+      // WS-27bn R5a. The rows this reader may not see, counted.
+      notes: hiddenNotes(load.hidden_people),
     });
   }
 
@@ -523,7 +536,10 @@ export function reportLayout(
             : "";
         return `${who}: ${p.open_tasks} open${hoursPart}${barPart}`;
       }),
-      notes: cap.hr_visible ? [] : ["Hours need HR read access."],
+      notes: [
+        ...(cap.hr_visible ? [] : ["Hours need HR read access."]),
+        ...hiddenNotes(cap.hidden_people),
+      ],
     });
   }
 
@@ -622,7 +638,10 @@ export function reportLayout(
       items: conf.rows
         .slice(0, maxRows)
         .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
-      notes: conf.hr_visible ? [] : ["Four kinds need HR read access."],
+      notes: [
+        ...(conf.hr_visible ? [] : ["Four kinds need HR read access."]),
+        ...hiddenNotes(conf.hidden_people),
+      ],
     });
   }
 

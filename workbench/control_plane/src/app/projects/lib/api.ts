@@ -413,6 +413,11 @@ export interface CapacityWindow {
 export interface CapacityReport {
   project_id: string | null;
   scope: "portfolio" | "node";
+  /**
+   * WS-27bn R5a. The rows the server removed for a reader who is not an
+   * admin. Absent for an admin, and the panel then prints no line.
+   */
+  hidden_people?: number;
   horizon_days: number;
   hr_visible: boolean;
   /** The pill's Monday-to-Sunday week, and the spare-hours horizon. */
@@ -473,6 +478,11 @@ export interface ConflictRow {
 export interface ConflictsReport {
   project_id: string | null;
   scope: "portfolio" | "node";
+  /**
+   * WS-27bn R5a. The rows the server removed for a reader who is not an
+   * admin. Absent for an admin, and the panel then prints no line.
+   */
+  hidden_people?: number;
   /** WS-27bn R2b: optional, with `partial`, `kinds` and `truncated` below.
    *  A REPORT's conflicts section carries none of the four. */
   include_subtree?: boolean;
@@ -790,6 +800,11 @@ export interface LoadReport {
   project_id: string | null;
   scope: "portfolio" | "node";
   /**
+   * WS-27bn R5a. The rows the server removed for a reader who is not an
+   * admin. Absent for an admin, and the panel then prints no line.
+   */
+  hidden_people?: number;
+  /**
    * ⚠️ Counted over TASKS, so it is SMALLER than the sum of `open_tasks`. A
    * task with two assignees is on both plates and counts for both. Never
    * derive this by adding the rows.
@@ -1001,6 +1016,8 @@ export interface RenderedReportBody {
         later?: number;
       }[];
       total_tasks: number;
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /** WS-27bm S7a. Opt-in: present only when the report asked for it. */
     capacity?: {
@@ -1010,11 +1027,13 @@ export interface RenderedReportBody {
       hr_visible: boolean;
       horizon_days: number;
       windows: CapacityReport["windows"];
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3d. Opt-in. One card for each person who holds open work in
      * the scope, read today. The server removes the cards this reader may
-     * not see (edit E5).
+     * not see (§7.1, WS-27bn R5a).
      */
     pulse?: PulseReport;
     stuck?: {
@@ -1039,6 +1058,8 @@ export interface RenderedReportBody {
       hr_visible: boolean;
       horizon_days: number;
       window: ConflictsReport["window"];
+      /** WS-27bn R5a. Sent for a reader who is not an admin only. */
+      hidden_people?: number;
     };
     /**
      * WS-27bn R3b. Opt-in. The rebalance route's own body, with `pickups`

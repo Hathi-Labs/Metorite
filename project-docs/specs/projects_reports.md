@@ -10,8 +10,11 @@ section, the ageing bands in `stuck`, and T5 live).
 **R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
 only). **R3c BUILT 2026-09-26** (the `hygiene` section, `HygienePanel`, and
 T13 live). **R3d BUILT 2026-09-28** (the `pulse` section, `PulsePanel`,
-and T1 live). R5 is next. R4, R4b, R5 to R9 and Phases 2 and 3 are not
-built.
+and T1 live).
+
+**R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
+server, in `report_scope.py`). R5b is next. R5c is blocked. R4, R4b, R5b,
+R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -118,28 +121,30 @@ defect.
 |---|---|---|
 | What we finished | `GET /projects/analytics/finished` · `analytics.py` | `finished` |
 | Cycle time and weekly completions | `GET /projects/analytics/throughput` · `analytics.py` | `throughput` |
-| Open work for each person | `GET /projects/analytics/load` · `analytics.py:517` | `load` |
-| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:151` | `stuck` (the bands since R3a) |
-| Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:201` | `capacity` (opt-in) |
-| Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:173` | `conflicts` (opt-in) |
-| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:103`, body `rebalance_body` · `:127` | `rebalance` (opt-in, R3b) |
-| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1431`, body `outlook_body` · `:1474` | `outlook` (opt-in, R3a) |
+| Open work for each person | `GET /projects/analytics/load` · `analytics.py:600`, body `load_body` · `:646` | `load` |
+| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:235` | `stuck` (the bands since R3a) |
+| Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:207`, body `capacity_body` · `:241` | `capacity` (opt-in) |
+| Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:179`, body `conflicts_body` · `:381` | `conflicts` (opt-in) |
+| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:104`, body `rebalance_body` · `:128` | `rebalance` (opt-in, R3b) |
+| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1660`, body `outlook_body` · `:1710` | `outlook` (opt-in, R3a) |
 | Who fits one task | `GET /projects/tasks/{id}/candidates` · `candidates.py` | none |
 
 **The report routes** are in `routes/projects/reports.py`:
-- `SECTIONS` (`:103`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
-  (`:115`) is the four that a definition with no `sections` key renders.
-- `_DEFAULTS` (`:121`): one week, the current week skipped, the subtree
+- `SECTIONS` (`:124`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
+  (`:136`) is the four that a definition with no `sections` key renders.
+- `_DEFAULTS` (`:142`): one week, the current week skipped, the subtree
   included.
-- `TEMPLATES` (`:162`) is the template catalogue of §4 (R2).
-- `SCHEDULES` (`:254`) holds only `"weekly"`.
-- `delivery_armed()` (`:257`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:440` and templates at `:474`. Create is at
-  `:491`. Get, patch and delete are at `:525` to `:569`. Render is at `:840`
-  and preview at `:876`. Recipients are at `:962` to `:1043`, and schedule is
-  at `:1061`.
-- `render_body` (`:583`) holds the section loop. Render and preview both
+- `TEMPLATES` (`:184`) is the template catalogue of §4 (R2).
+- `SCHEDULES` (`:284`) holds only `"weekly"`.
+- `delivery_armed()` (`:287`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
+- The routes: list is at `:528`, templates at `:576` and subjects at
+  `:593` (R5a). Create is at `:613`. Get, patch and delete are at `:650` to
+  `:698`. Render is at `:1053` and preview at `:1089`. Recipients are at
+  `:1175` to `:1256`, and schedule is at `:1274`.
+- `render_body` (`:712`) holds the section loop. Render and preview both
   call it.
+- **Since R5a:** `routes/projects/report_scope.py` holds the rule of §7.1,
+  the subject clause and the row filter.
 - **A render resolves visibility from the caller.** A send renders once for
   each recipient, with that recipient's own visibility (H-111). So a report
   never shows a person more than they can open in the app.
@@ -1146,6 +1151,15 @@ report, and it comes back when the facts change.
 - (i) A saved report on N is not in L's list after L leaves team B, and its render gets 403.
 - (j) A saved row with no `subject` renders exactly as before.
 - (k) The panels, the email and the chat card print the hidden line for `load`, `capacity` and `conflicts`.
+
+**As built (2026-09-28).** `report_scope.py` holds the rule, the subject clause and the row filter.
+`routes/admin/groups.py` `active_memberships` is the one reader of team membership, and its SQL names the organization.
+`load_body` is new in `analytics.py`, so the Load route and the `load` section share one body.
+Only a restricted reader receives `hidden_people` in `load`, `capacity` and `conflicts`, so an admin's render is unchanged.
+
+`test_projects_report_scope_r5.py` proves (a) to (k) on a real database.
+A mutation of (b), (c), (d), (f), (g), (i) and (j) turns its test red.
+The chat's workload answers read the Load, Capacity and Conflicts routes, so a member's chat answers change in the same way.
 
 ### R5b — The picker, the entry points, T2 and T6 · AGENT-SAFE
 The scope chip reads `GET /projects/reports/subjects`. "1:1 prep" opens T6 with the person filled in.

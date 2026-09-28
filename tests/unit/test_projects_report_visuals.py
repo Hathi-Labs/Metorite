@@ -52,8 +52,9 @@ def test_the_render_copies_the_three_figures_from_the_analytics_sql() -> None:
     """The keys are in the render, and each reads a column the SQL selects."""
     body = inspect.getsource(rep.render_body)
     for key, column in (
-        ('"due_next_7d"', "p.due_next_7d"),
-        ('"later"', "p.later"),
+        # WS-27bn R5a. The `load` rows come from `load_body`, as dicts.
+        ('"due_next_7d"', 'p["due_next_7d"]'),
+        ('"later"', 'p["later"]'),
         ('"p90_hours"', "totals.p90_hours"),
         ('"no_start"', "totals.no_start"),
         ('"cancelled"', "totals.cancelled"),
@@ -62,6 +63,9 @@ def test_the_render_copies_the_three_figures_from_the_analytics_sql() -> None:
         assert key in body, key
         assert column in body, column
     # The SQL the render calls selects each column already.
+    load_body = inspect.getsource(ana.load_body)
+    assert '"due_next_7d": int(row.due_next_7d)' in load_body
+    assert '"later": int(row.later)' in load_body
     assert "AS due_next_7d" in ana.load_sql("TRUE")
     assert "AS later" in ana.load_sql("TRUE")
     for column in ("p90_hours", "no_start", "cancelled"):
@@ -231,10 +235,17 @@ def seeded(_ladder):
 
 
 def _user() -> Any:
+    """An ADMIN reader. These tests compare figures, not the reader rule.
+
+    Since WS-27bn R5a a member reads only their own row in `load`, and this
+    reader holds no work. `test_projects_report_scope_r5.py` owns the rule.
+    """
     from acb_auth import UserContext, UserRole, build_access
 
-    return UserContext(email="rv@example.test", role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:projects"]))
+    return UserContext(
+        email="rv@example.test", role=UserRole.EMPLOYEE,
+        access=build_access(["feature:projects", "admin:members:read"]),
+    )
 
 
 @pytest.fixture

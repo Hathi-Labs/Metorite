@@ -1636,6 +1636,12 @@ _REPORT_ROW_WORDS: dict[str, Any] = {
 }
 
 
+#: WS-27bn R5a. The sections that print the hidden line. The row filter of
+#: `report_scope.py` removes the rows of the people a reader may not report
+#: on from each of them, and `hidden_people` counts what it removed.
+HIDDEN_LINE_SECTIONS: tuple[str, ...] = ("load", "capacity", "pulse", "conflicts")
+
+
 def hidden_people_line(section: dict[str, Any]) -> str | None:
     """"This report hides N other people", or None when it hides nobody.
 
@@ -1691,8 +1697,8 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     out = [f"{name}:" + (f" {totals}" if totals else "")]
     if section.get("hr_visible") is False and name in _REPORT_HINTS:
         out.append(f"  {_REPORT_HINTS[name]}")
-    if name == "pulse" and (line := hidden_people_line(section)):
-        # WS-27bn R3d, edit E5. The cards this reader cannot see.
+    if name in HIDDEN_LINE_SECTIONS and (line := hidden_people_line(section)):
+        # WS-27bn R3d and R5a. The rows this reader cannot see.
         out.append(f"  {line}")
     rows = section.get(list_key) if list_key else None
     rows = rows or []

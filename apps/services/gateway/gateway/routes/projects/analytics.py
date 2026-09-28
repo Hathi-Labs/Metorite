@@ -57,6 +57,12 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
 )
 from gateway.routes.projects.filters import attach_parent_context
+from gateway.routes.projects.report_scope import (
+    filter_person_rows,
+    reportable_people,
+    subject_params,
+    with_subject,
+)
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.work_schedule import (
     load_policy,
@@ -624,105 +630,144 @@ async def load(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
-
-        # The same predicate `stuck` uses, for the same reason: two panels on
-        # one dashboard must not disagree about what "open" means. Named, so
-        # the Capacity panel beside this one reads the SAME predicate.
-        open_where = load_open_where(scope_sql, vis)
-        params = load_params(vis, project_id)
-
-        # ── Per person, bucketed by when it is due — see `load_sql`. ──────
-        rows = (
-            await db.execute(text(load_sql(open_where)), params)
-        ).fetchall()
-
-        # ⚠️ Counted over TASKS, not summed from the rows above. A task with
-        # two assignees appears twice up there, so adding `open_tasks` would
-        # report more open work than exists.
-        total_tasks = int(
-            (
-                await db.execute(text(total_open_sql(open_where)), params)
-            ).scalar()
-            or 0
+        body = await load_body(
+            db, vis, project_id=project_id, include_subtree=include_subtree,
         )
+        # WS-27bn R5a. The reader's rows, AFTER the body, with the filter
+        # the report's `load` section runs too (§7.1 rule 3).
+        allowed = await reportable_people(db, user, vis)
+        people, hidden = filter_person_rows(body["people"], allowed)
+        body["people"] = people[:MAX_PEOPLE]
+        if allowed is not None:
+            body["hidden_people"] = hidden
+        return body
 
-        # ── Effort, in both directions — see `effort_sql`. ───────────────
-        #
-        # ⚠️ Two reads rather than one grouped by open/closed. The `left` half
-        # must use the SAME `open_where` the rows above used, or the panel
-        # would state a remaining figure for a different set of tasks than the
-        # bars beside it. Sharing the fragment is what keeps them the same
-        # question.
-        left = (
-            await db.execute(text(effort_sql(open_where)), params)
-        ).one()
 
-        # "Spent" is DONE work only. Cancelled work consumed effort too, and
-        # counting it here would say the team delivered it — the same
-        # exclusion the Progress card already footnotes.
-        done_where = (
-            f"{scope_sql}"
-            f" AND t.archived_at IS NULL"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND s.category = :done_cat"
+async def load_body(
+    db: Any,
+    vis: Any,
+    *,
+    project_id: str | None,
+    include_subtree: bool,
+    subject_people: list[str] | None = None,
+) -> dict[str, Any]:
+    """The Load answer, on a session and a visibility the caller resolved.
+
+    WS-27bn R5a. The route and the report section ``load`` both call it, so
+    the panel and the report are one computation. ``people`` is every row,
+    uncapped. The caller filters the rows for the reader, then caps them.
+
+    ``subject_people`` narrows the scope to the tasks that those people
+    hold now (`report_scope.subject_clause`). ``None`` is no subject.
+    """
+    scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+    # WS-27bn R5a. A subject narrows the scope to the tasks that its people
+    # hold now. `done_where` below reads `scope_sql` too, so both halves of
+    # the effort block answer about the subject.
+    scope_sql = with_subject(scope_sql, subject_people)
+
+    # The same predicate `stuck` uses, for the same reason: two panels on
+    # one dashboard must not disagree about what "open" means. Named, so
+    # the Capacity panel beside this one reads the SAME predicate.
+    open_where = load_open_where(scope_sql, vis)
+    params = {**load_params(vis, project_id), **subject_params(subject_people)}
+
+    # ── Per person, bucketed by when it is due — see `load_sql`. ──────
+    rows = (
+        await db.execute(text(load_sql(open_where)), params)
+    ).fetchall()
+
+    # ⚠️ Counted over TASKS, not summed from the rows above. A task with
+    # two assignees appears twice up there, so adding `open_tasks` would
+    # report more open work than exists.
+    total_tasks = int(
+        (
+            await db.execute(text(total_open_sql(open_where)), params)
+        ).scalar()
+        or 0
+    )
+
+    # ── Effort, in both directions — see `effort_sql`. ───────────────
+    #
+    # ⚠️ Two reads rather than one grouped by open/closed. The `left` half
+    # must use the SAME `open_where` the rows above used, or the panel
+    # would state a remaining figure for a different set of tasks than the
+    # bars beside it. Sharing the fragment is what keeps them the same
+    # question.
+    left = (
+        await db.execute(text(effort_sql(open_where)), params)
+    ).one()
+
+    # "Spent" is DONE work only. Cancelled work consumed effort too, and
+    # counting it here would say the team delivered it — the same
+    # exclusion the Progress card already footnotes.
+    done_where = (
+        f"{scope_sql}"
+        f" AND t.archived_at IS NULL"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND s.category = :done_cat"
+    )
+    spent = (
+        await db.execute(
+            text(effort_sql(done_where)),
+            {**params, "done_cat": COMPLETED_CATEGORY},
         )
-        spent = (
-            await db.execute(
-                text(effort_sql(done_where)),
-                {**params, "done_cat": COMPLETED_CATEGORY},
-            )
-        ).one()
+    ).one()
 
-        people = [
-            {
-                # "" is the unassigned bucket. Named explicitly rather than
-                # left as an empty string the client has to recognise.
-                "assignee": row.who or None,
-                "open_tasks": int(row.open_tasks),
-                "overdue": int(row.overdue),
-                "due_next_7d": int(row.due_next_7d),
-                "later": int(row.later),
-                # ⚠️ Estimated, never logged. `est_mins` is what somebody
-                # GUESSED this plate weighs, and `estimated` of `open_tasks`
-                # says how much of the plate was guessed at all.
-                "est_mins": int(row.est_mins or 0),
-                "estimated": int(row.estimated or 0),
-            }
-            for row in rows
-        ]
-        return {
-            "project_id": project_id,
-            "scope": "portfolio" if project_id is None else "node",
-            "include_subtree": include_subtree,
-            "total_tasks": total_tasks,
-            "people_total": len(people),
-            "people": people[:MAX_PEOPLE],
-            # ⚠️ **Counted over TASKS, so it does not add up from `people`.**
-            # A two-assignee task sits on two plates above and is one task
-            # here. Reported as its own block for that reason.
-            #
-            # ⚠️ **`estimated` and `tasks` are not decoration.** They are the
-            # coverage, and the sum means nothing without them. 40h over 3 of
-            # 30 tasks is not 40h of remaining work.
-            "effort": {
-                "left_mins": int(left.mins or 0),
-                "left_estimated": int(left.estimated or 0),
-                "left_tasks": int(left.tasks or 0),
-                "spent_mins": int(spent.mins or 0),
-                "spent_estimated": int(spent.estimated or 0),
-                "spent_tasks": int(spent.tasks or 0),
-                # Said in the payload so no client has to know it, and no
-                # client can label these "logged" without contradicting the
-                # response it is drawing.
-                "basis": "estimate",
-            },
-            # Headcount, and it excludes the unassigned bucket — "nobody" is
-            # not a person, and counting it would report one extra worker on
-            # every project that has a backlog.
-            "people_named": sum(1 for p in people if p["assignee"]),
+    people = [
+        {
+            # "" is the unassigned bucket. Named explicitly rather than
+            # left as an empty string the client has to recognise.
+            "assignee": row.who or None,
+            "open_tasks": int(row.open_tasks),
+            "overdue": int(row.overdue),
+            "due_next_7d": int(row.due_next_7d),
+            "later": int(row.later),
+            # ⚠️ Estimated, never logged. `est_mins` is what somebody
+            # GUESSED this plate weighs, and `estimated` of `open_tasks`
+            # says how much of the plate was guessed at all.
+            "est_mins": int(row.est_mins or 0),
+            "estimated": int(row.estimated or 0),
         }
+        for row in rows
+    ]
+    # A co-holder of a subject's task is not the subject. The rows keep the
+    # subject's people, the unassigned row and the agent rows.
+    if subject_people is not None:
+        people, _ = filter_person_rows(people, set(subject_people))
+    return {
+        "project_id": project_id,
+        "scope": "portfolio" if project_id is None else "node",
+        "include_subtree": include_subtree,
+        "total_tasks": total_tasks,
+        "people_total": len(people),
+        # ⚠️ NOT capped here. The caller filters the rows for the reader
+        # first and caps second, or the cap could cut the reader's own row.
+        "people": people,
+        # ⚠️ **Counted over TASKS, so it does not add up from `people`.**
+        # A two-assignee task sits on two plates above and is one task
+        # here. Reported as its own block for that reason.
+        #
+        # ⚠️ **`estimated` and `tasks` are not decoration.** They are the
+        # coverage, and the sum means nothing without them. 40h over 3 of
+        # 30 tasks is not 40h of remaining work.
+        "effort": {
+            "left_mins": int(left.mins or 0),
+            "left_estimated": int(left.estimated or 0),
+            "left_tasks": int(left.tasks or 0),
+            "spent_mins": int(spent.mins or 0),
+            "spent_estimated": int(spent.estimated or 0),
+            "spent_tasks": int(spent.tasks or 0),
+            # Said in the payload so no client has to know it, and no
+            # client can label these "logged" without contradicting the
+            # response it is drawing.
+            "basis": "estimate",
+        },
+        # Headcount, and it excludes the unassigned bucket — "nobody" is
+        # not a person, and counting it would report one extra worker on
+        # every project that has a backlog.
+        "people_named": sum(1 for p in people if p["assignee"]),
+    }
 
 
 # ── (c) Are we getting faster? — §9.12.7(c) ─────────────────────────────────
