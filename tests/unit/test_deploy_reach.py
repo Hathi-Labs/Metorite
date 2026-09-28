@@ -169,7 +169,13 @@ class TestThePullPathFallback:
     def test_the_fallback_runs_on_a_fresh_runner(self, jobs: dict) -> None:
         job = jobs["pull-delivery"]
         assert job["needs"] == "deploy"
-        assert job["if"] == "needs.deploy.outputs.reach == 'unreachable'"
+        cond = " ".join(job["if"].split())
+        assert "needs.deploy.outputs.reach == 'unreachable'" in cond
+        assert "needs.deploy.result == 'success'" in cond
+        assert cond.startswith("${{ always()"), (
+            "without always(), a skipped `test` job (the skip_tests dispatch) "
+            "skips this job too, and a hand-off ends the run GREEN unproved"
+        )
         assert job["steps"][0]["with"]["fetch-depth"] == 0, (
             "the ancestry test needs full history"
         )
@@ -227,6 +233,7 @@ if [ "$last" = "true" ]; then
   echo probe >> "$FAKE/calls"
   p=$(cat "$FAKE/probe_n" 2>/dev/null || echo 0); p=$((p + 1)); echo "$p" > "$FAKE/probe_n"
   mode="${PROBE_MODE:-ok}"
+  [ "$mode" = stall ] && exit 124   # what `timeout` returns when it kills a stalled probe
   if [ "$mode" = auth ]; then echo "acb@host: Permission denied (publickey)." >&2; exit 255; fi
   if [ "$mode" = down ] || [ "$p" -le "${PROBE_FAILS:-0}" ]; then
     echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
@@ -363,6 +370,13 @@ class TestWaitForSshBehaviour:
         assert sum(slept) <= 400, f"slept {slept} past a 400 s budget"
         assert max(slept) <= 60, "the backoff must be capped"
 
+    def test_a_stalled_probe_is_a_network_fault(self, box) -> None:
+        """`timeout` kills a probe stuck in the key exchange, and ssh prints
+        nothing. That is the network, so it must retry, not go red at once."""
+        r = _lib(box, 'wait_for_ssh; echo "rc=$?"', PROBE_MODE="stall")
+        assert "rc=1" in r.stdout, r.stdout + r.stderr
+        assert len(_count(box, "calls")) > 1
+
     def test_an_auth_failure_is_not_retried(self, box) -> None:
         r = _lib(box, 'wait_for_ssh; echo "rc=$?"', PROBE_MODE="auth")
         assert "rc=2" in r.stdout, r.stdout + r.stderr
@@ -491,3 +505,12 @@ class TestThePullDeliveryJobBehaviour:
         r = _pull_step(box, jobs, CURL_MODE="down")
         assert r.returncode == 1, r.stdout + r.stderr
         assert "::error title=Box unreachable from GitHub::" in r.stdout
+
+
+def test_the_pull_wait_also_counts_wall_time() -> None:
+    """Each curl can take 10 s when packets drop. Counting naps alone let the
+    wait run past the job's timeout-minutes, which kills the red message."""
+    fn = _read(LIB)
+    fn = fn[fn.index("await_pull_delivery() {"):]
+    assert "t_start=$(_now)" in fn
+    assert '[ $(( $(_now) - t_start )) -ge "$PULL_WAIT" ] && break' in fn

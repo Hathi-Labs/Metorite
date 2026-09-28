@@ -66,7 +66,7 @@ _now() { date +%s; }
 # not get through. An auth failure or a bad host key is NOT one of these, and
 # no amount of waiting fixes it, so it must go red at once.
 ssh_network_fault() {
-  grep -qiE 'connection timed out|operation timed out|connection refused|no route to host|network is unreachable|connection reset|connection closed by|kex_exchange_identification|could not resolve hostname|temporary failure in name resolution'
+  grep -qiE 'connection timed out|operation timed out|connection refused|no route to host|network is unreachable|connection reset|connection closed by|kex_exchange_identification|could not resolve hostname|temporary failure in name resolution|broken pipe|timeout, server not responding'
 }
 
 # True when the apply log ($1) shows that `vps_apply.sh` started.
@@ -107,6 +107,12 @@ wait_for_ssh() {
     if [ "$rc" = 0 ]; then
       echo "  ssh connects (probe $attempt, ${CONNECT_SPENT}s of ${CONNECT_BUDGET}s connect budget spent)"
       return 0
+    fi
+    # 124 and 137: `timeout` killed a probe that stalled AFTER the TCP
+    # connect, in the key exchange, where ConnectTimeout does not reach. ssh
+    # prints nothing then. It is still the network, not the key.
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      err="probe stalled and was killed after $((CONNECT_TIMEOUT + 15))s: operation timed out"
     fi
     err=$(printf '%s' "$err" | tail -n 3)
     if ! printf '%s' "$err" | ssh_network_fault; then
@@ -162,16 +168,21 @@ print(v if isinstance(v, str) else "")' "$1" 2>/dev/null
 #      stays true when the build fails and the old web app keeps serving.
 #   3. The public workbench answers 2xx or 3xx, through Caddy.
 #
-# What it does NOT prove: that migrations ran (the apply stops red before its
-# last line if they fail, so the marker would not move), that the Operator
-# Console rebuilt, or anything about a later apply that failed. It proves "a
-# complete apply of this commit, or of one that contains it, finished".
+# What it proves: "a complete apply of this commit, or of one that contains
+# it, finished". The marker comes after every step of the apply: the
+# migrations, both restarts, the Operator Console and the unit sync. A step
+# that fails stops the apply under `set -e` before the marker moves.
+# What it does NOT prove: that the box still serves that apply later, or
+# anything about a later apply of a newer commit that failed. It also cannot
+# tell a web build that finished from one that was skipped because the same
+# sha was already applied, because that skip needs a complete apply first.
 #
 #   0  delivered, with the evidence above
 #   1  not delivered within PULL_WAIT
 #   3  the box never answered /version from this runner either
 await_pull_delivery() {
-  local want="$1" waited=0 body sha applied wb answered=0
+  local want="$1" waited=0 body sha applied wb answered=0 t_start
+  t_start=$(_now)
   echo "── Waiting up to ${PULL_WAIT}s for the box's own pull to deliver ${want:0:12} ──"
   while :; do
     git fetch -q --no-tags origin main 2>/dev/null || true
@@ -187,7 +198,11 @@ await_pull_delivery() {
       return 0
     fi
     echo "  not yet (gateway sha=${sha:-none} applied=${applied:-none} workbench=${wb:-000}, ${waited}s of ${PULL_WAIT}s)"
+    # Two clocks. `waited` counts the naps. The wall clock also counts the
+    # curls, which each take up to 10 s when packets are dropped, so the
+    # job's timeout-minutes can never cut off the red message below.
     [ "$waited" -ge "$PULL_WAIT" ] && break
+    [ $(( $(_now) - t_start )) -ge "$PULL_WAIT" ] && break
     sleep "$PULL_POLL"
     waited=$((waited + PULL_POLL))
   done
