@@ -38,7 +38,10 @@ export interface PlanRow {
   start: string;
   due: string;
   after: string[];
-  importance: number | null;
+  /** The priority level's two stated inputs (D78). `null` means the row
+   *  does not state it. The card keeps both and sends both back (H-173). */
+  important: boolean | null;
+  leveraged: boolean | null;
   impact: number;
   urgency: number;
   effort: number;
@@ -68,6 +71,8 @@ const whole = (v: unknown, f: number): number => {
   const n = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(n) ? Math.round(n) : f;
 };
+const bool = (v: unknown): boolean | null =>
+  v === true || v === "true" ? true : v === false || v === "false" ? false : null;
 const score = (v: unknown): number => Math.max(1, Math.min(5, whole(v, 3)));
 const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.map((x) => text(x).trim()).filter(Boolean) : [];
@@ -75,7 +80,6 @@ const strings = (v: unknown): string[] =>
 /** One row from the skill's `tasks` array, with every field defined. */
 export function planRowFrom(raw: unknown, index: number): PlanRow {
   const r = (raw ?? {}) as Record<string, unknown>;
-  const imp = r.importance;
   const row: PlanRow = {
     key: text(r.key).trim() || `t${index + 1}`,
     title: text(r.title),
@@ -84,7 +88,8 @@ export function planRowFrom(raw: unknown, index: number): PlanRow {
     start: text(r.start).slice(0, 10),
     due: text(r.due).slice(0, 10),
     after: strings(r.after),
-    importance: imp == null || imp === "" ? null : whole(imp, 0),
+    important: bool(r.important),
+    leveraged: bool(r.leveraged),
     impact: score(r.impact),
     urgency: score(r.urgency),
     effort: score(r.effort),
@@ -155,7 +160,8 @@ export function planSubmit(
       start: r.start ? r.start.slice(0, 10) : null,
       due: r.due.slice(0, 10),
       after: r.after.filter((k) => kept.has(k)),
-      importance: r.importance,
+      important: r.important,
+      leveraged: r.leveraged,
       impact: r.impact,
       urgency: r.urgency,
       effort: r.effort,

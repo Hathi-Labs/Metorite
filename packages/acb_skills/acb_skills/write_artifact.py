@@ -592,7 +592,7 @@ async def emit_generative_ui(ui: str) -> dict:
              body?, field?, before?, after?, via?}]} — an activity feed.
          • taskBoard — {title?, total?, columns:[{id?, name, category?,
              tasks:[{id, number?, title, assignees?:[string], due?,
-             importance?, done?:bool}]}]} — a kanban board.
+             importance?, leveraged?, done?:bool}]}]} — a kanban.
          • dataGrid — {title?, columns:[string], rows:[{id?,
              cells:[string|number]}], openBase?} — a sortable table.
          • reportCard — {title, period?, reportId?, stats?:[{label, value,
@@ -600,8 +600,8 @@ async def emit_generative_ui(ui: str) -> dict:
              rows:[{cells:[...]}]}]} — tiles plus tables.
          • planCard — {title?, description?, submitLabel?, project:{name,
              parent?, description?}, tasks:[{key, title, owner, effort_mins,
-             start?, due, after?:[key], importance?, impact?, urgency?,
-             effort?, priority?, fit?, hours?, marks?, warnings?}],
+             start?, due, after?:[key], important?, leveraged?, impact?,
+             urgency?, effort?, priority?, fit?, hours?, marks?, warnings?}],
              capacity?, warnings?, risks?:[string]} — an editable plan; PAIR
              WITH ``"hitl":true``.
 

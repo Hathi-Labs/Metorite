@@ -107,6 +107,7 @@ from gateway.routes.projects.filters import (
     normalise_view_config,
     split_csv,
 )
+from gateway.routes.tasks.priority import task_level_label
 from sqlalchemy import text
 
 #: The most rows one export may contain.
@@ -192,19 +193,24 @@ def _render(
 ) -> Any:
     """One task's value for one column key, before :func:`csv_cell`.
 
-    Two columns deliberately carry the STORED value rather than the label the
-    table draws, and both are the same judgement: ``importance`` and
-    ``estimate``'s formatting vocabularies (``lib/table.IMPORTANCE_OPTIONS``,
-    ``durationLabel``) live in the browser, and copying either here would be a
-    second vocabulary that drifts — the one thing this package refuses to grow.
-    A spreadsheet wants the number anyway: ``2`` sorts and sums, ``High`` does
-    not.
+    ``estimate`` deliberately carries the STORED value rather than the label
+    the table draws: ``durationLabel`` lives in the browser, and copying it
+    here would be a second vocabulary that drifts. A spreadsheet wants the
+    number anyway: ``90`` sums, ``1h 30m`` does not.
+
+    ``importance`` (the "Priority" column) carries the matrix LEVEL the table
+    draws (D78, H-173). The stored number is only one of the level's three
+    inputs, so printing it would be a misread. The label comes from
+    ``acb_common.priority``, the one server-side source, which
+    ``test_priority_shared.py`` holds equal to the client's.
     """
+    if key == "importance":
+        return task_level_label(task)
     if key == "status":
         return statuses.get(str(task.get("status_id") or ""), "")
     if key == "source":
         # The stored word, not the chip's label. Same judgement as
-        # `importance` above: the display vocabulary lives in the browser,
+        # `estimate` above: the display vocabulary lives in the browser,
         # and a spreadsheet wants the value it can filter on.
         return task.get("source") or ""
     if key == "type":

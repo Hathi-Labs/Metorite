@@ -30,13 +30,14 @@ from datetime import date
 from typing import Any
 
 import httpx
+from acb_common.priority import importance_for, important_from_importance
 
 from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
+from skill_projects.priority import card_view, flag, level_label, priority_fields
 from skill_projects.reads import _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     CANCELLED,
-    IMPORTANCE,
     MAX_BATCH,
     _confirm,
     _fields_block,
@@ -100,7 +101,8 @@ def _clean(value: Any) -> str:
 @_annotate(read_only=False, destructive=False, idempotent=False)
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
-    status (by name), due, start, importance, estimate, tags. The member
+    status (by name), due, start, the Important and Leveraged flags,
+    estimate, tags. The member
     edits and submits; the changed fields then go through update_task's
     confirmation card, before → after. Nothing is written until that card
     is approved. Assignees are changed with assign."""
@@ -133,14 +135,19 @@ async def edit_task(task_id: str) -> str:
             "type": "date",
             "value": (task.get("start_date") or "")[:10],
         },
+        # D78 (H-173): the two stated inputs of the priority level. The due
+        # date sets Urgent, so the form has no control for it.
         {
-            "name": "importance",
-            "label": "Importance (0 to 4)",
-            "type": "slider",
-            "min": 0,
-            "max": 4,
-            "step": 1,
-            "value": task.get("importance") or 0,
+            "name": "important",
+            "label": "Important",
+            "type": "toggle",
+            "value": bool(important_from_importance(task.get("importance"))),
+        },
+        {
+            "name": "leveraged",
+            "label": "Leveraged",
+            "type": "toggle",
+            "value": bool(task.get("leveraged")),
         },
         {
             "name": "estimate_mins",
@@ -183,20 +190,25 @@ async def edit_task(task_id: str) -> str:
 def _numeric_changes(
     task: dict[str, Any], values: dict[str, Any], changes: dict[str, Any], clear: list[str]
 ) -> str:
-    """Importance and estimate: a zero clears, a change sets. Returns the
-    refusal, or an empty string."""
+    """The priority flags and the estimate. A flag that differs from the task
+    is sent as "true" or "false". An estimate of zero clears, a change sets.
+    Returns the refusal, or an empty string."""
     try:
-        imp = int(values.get("importance") or 0)
         est = int(values.get("estimate_mins") or 0)
     except (TypeError, ValueError):
-        return "importance is 0 to 4, and estimate_mins is a number of minutes."
-    if imp not in IMPORTANCE:
-        return "importance is 0 to 4."
-    if imp != int(task.get("importance") or 0):
-        if imp == 0:
-            clear.append("importance")
-        else:
-            changes["importance"] = imp
+        return "estimate_mins is a number of minutes."
+    current = {
+        "important": bool(important_from_importance(task.get("importance"))),
+        "leveraged": bool(task.get("leveraged")),
+    }
+    for name, was in current.items():
+        if name not in values:
+            continue
+        now = flag(values.get(name))
+        if isinstance(now, str):
+            return f"{name}: {now}"
+        if bool(now) != was:
+            changes[name] = "true" if now else "false"
     if est != int(task.get("estimate_mins") or 0):
         if est:
             changes["estimate_mins"] = est
@@ -211,8 +223,8 @@ def _task_changes(
     """The `update_task` arguments a submitted form implies, or a refusal.
 
     Only what differs from the row is sent, so the card shows the member's
-    changes and nothing else. An emptied date, estimate, importance or
-    description becomes a `clear`.
+    changes and nothing else. An emptied date, estimate or description
+    becomes a `clear`. A flag the member turns off is sent as "false".
     """
     changes: dict[str, Any] = {}
     clear: list[str] = []
@@ -415,15 +427,22 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
                 "Nothing was created."
             )
         row["start"] = start
-    imp = item.get("importance")
-    if imp not in (None, ""):
-        try:
-            imp = int(imp)
-        except (TypeError, ValueError):
-            return f"Task {i}: importance is 0 to 4."
-        if imp not in IMPORTANCE:
-            return f"Task {i}: importance is 0 to 4."
-        row["importance"] = imp
+    # D78 (H-173): the row's priority is the level's two stated flags. The
+    # level name rides in `level`, because `priority` is this row's score
+    # below, and the card sends the score back on submit.
+    judged = priority_fields(
+        priority=str(item.get("level") or ""),
+        important=item.get("important", ""),
+        leveraged=item.get("leveraged", ""),
+        importance=item.get("importance", -1),
+    )
+    if isinstance(judged, str):
+        return f"Task {i}: {judged}"
+    flags = judged[0]
+    if "importance" in flags:
+        row["important"] = bool(important_from_importance(flags["importance"]))
+    if "leveraged" in flags:
+        row["leveraged"] = flags["leveraged"]
     score = 1
     for name in SCORE_KEYS:
         try:
@@ -471,7 +490,7 @@ def _plan_rows(raw: Any, *, dropped: frozenset[str] = frozenset()) -> list[dict[
         except (TypeError, ValueError):
             return (
                 "tasks is a JSON list of {key, title, owner, effort_mins, start?, due, "
-                "after?, importance?}."
+                "after?, level?, important?, leveraged?}."
             )
     if not isinstance(raw, list) or not raw:
         return "tasks is a JSON list with at least one task."
@@ -630,13 +649,28 @@ def _card_rows(rows: list[dict[str, Any]], checks: dict[str, dict[str, Any]]) ->
     return out
 
 
+def _row_flags(row: dict[str, Any]) -> dict[str, Any]:
+    """The priority fields a plan row POSTs: ``importance`` and ``leveraged``,
+    each only when the row states it."""
+    out: dict[str, Any] = {}
+    if row.get("important") is not None:
+        out["importance"] = importance_for(bool(row["important"]))
+    if row.get("leveraged") is not None:
+        out["leveraged"] = bool(row["leveraged"])
+    return out
+
+
 def _task_card_line(row: dict[str, Any], owner: str) -> str:
-    # Every field the POST carries is on this line (spec §5.3).
+    # Every field the POST carries is on this line (spec §5.3). The priority
+    # shows as the flags and the level the app will draw (H-173).
+    flags = _row_flags(row)
+    shown = card_view(flags)
     return (
         f"{data(row['title'])} · {data(owner)} · {row['effort_mins']} min · "
         + (f"start {row['start']} · " if row.get("start") else "")
         + f"due {row['due']}"
-        + (f" · importance {row['importance']}" if row.get("importance") is not None else "")
+        + "".join(f" · {k} {v}" for k, v in shown.items())
+        + (f" · priority {level_label({**flags, 'due_at': row['due']})}" if flags else "")
     )
 
 
@@ -770,7 +804,10 @@ async def propose_plan(
     """W1: propose a project plan as an editable card, then create it as
     ONE batch under one confirmation card. name is the project's name.
     tasks is a JSON list of {key, title, owner, effort_mins, start?, due,
-    after?, importance?, impact?, urgency?, effort?}. key is a short label
+    after?, level?, important?, leveraged?, impact?, urgency?, effort?}.
+    level is a priority level name, and sets that level's Important and
+    Leveraged flags. important and leveraged are true or false. A number in
+    importance is deprecated: 2 or more reads as Important. key is a short label
     such as t1. start and due are YYYY-MM-DD. after lists the keys of the
     tasks that must finish first, and becomes blocks links. Every task needs
     a verb-plus-object title, an owner (email or name), an effort and a due
@@ -899,8 +936,7 @@ async def _write_plan(
         }
         if row.get("start"):
             body["start_date"] = row["start"]
-        if row.get("importance") is not None:
-            body["importance"] = row["importance"]
+        body.update(_row_flags(row))
         try:
             task = await post("/projects/tasks", body)
         except _WRITE_FAILED as exc:
