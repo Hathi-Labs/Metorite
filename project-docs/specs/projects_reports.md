@@ -14,7 +14,7 @@ and T1 live).
 
 **R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
 server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
-chat's dataset read, and the delete rule, §9 Q10 to Q12). R5b is next. R5c is
+chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13). R5b is next. R5c is
 blocked. R4, R4b, R5b, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
@@ -1182,9 +1182,9 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
 
-### R5d — The role rule in the chat, and report deletion · AGENT-SAFE
+### R5d — The role rule in the chat, and who may change a report · AGENT-SAFE
 
-**What:** two server changes and their words in the chat. The dataset read obeys §7.1 rule 3 (Q10). The delete route obeys Q12.
+**What:** two server changes and their words in the chat and the UI. The dataset read obeys §7.1 rule 3 (Q10). The delete route obeys Q12. A change to a report obeys the same rule (Q13).
 
 **Rules, the dataset** (`analytics_dataset.py`, the chat tool `task_dataset`):
 - The route reads `reportable_people` once, in its own session. An admin gets `None`, and the answer for an admin does not change.
@@ -1206,6 +1206,17 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 - `_report_dict` carries `can_delete`, which the server computes, as it computes `mine`.
 - The chat tool `report_delete` reads `can_delete` before the card. When the value is false, the tool gives the reason and shows no card.
 
+**Rules, a change** (`reports.py`, §9 Q13, added 2026-09-29):
+- The rule of the delete also binds `PATCH /reports/{id}`, the recipient add and remove routes, and `PATCH /reports/{id}/schedule`.
+- The order is the same. A report on a node that the reader cannot see still gets 404. Then the author or an admin passes.
+- Every other reader gets 403 with the reason "Only the author of this report or an admin may change it."
+- The author path skips the subject check of the report, as the delete does. A new subject in a PATCH still passes `require_subject`.
+- One function, `_may_change`, holds the rule for a delete and a change. A second copy of the rule is a defect.
+- `_report_dict` carries `can_edit` beside `can_delete`. Both come from `_may_change`, so the two values are always equal.
+- The chat tool `report_save` reads `can_edit` before the card of a change. When the value is false, the tool gives the reason and shows no card.
+- The Reports app shows Edit only when `can_edit` is true. The control is absent, never disabled, as in `people_center_app.md` §3.2.
+- A read does not change. Any reader who may open the report can still get it, render it and list its recipients.
+
 **Out of R5d, with the reason:**
 - `rebalance`, `fit_for_task` and `propose_plan`. The HR grant gates their per-person figures, and only the admin row holds it.
 - `analytics_load`, `team_capacity`, `find_conflicts`, `status_report` and `render_report`. R5a filters them.
@@ -1213,7 +1224,7 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 - `list_tasks` and `find_tasks`. They list tasks that the reader can open.
 - A count that the model makes over the rows. This limit is advisory, as O1 of `projects_ai_chat.md` §13.7 says.
 
-**Non-goals:** patch, the recipient list and the schedule (Q13). `created_by` (Q11). Any UI change.
+**Non-goals:** `created_by` (Q11). Any UI change other than Edit.
 
 **Done when** (each on a real database, in `test_projects_report_scope_r5.py`, which reuses the `seeded` fixture):
 - (l) Member M reads the dataset with `group_by=assignee`. The groups hold M, the unassigned group and the `agent:` groups only. `hidden_people` counts the others. `total` equals the total for an admin.
@@ -1227,18 +1238,37 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 - (t) L saves a report on N and then leaves team B. L deletes it and gets 204.
 - (u) `report_delete` with `can_delete` false returns the reason. It never calls the card or DELETE. A fake gateway counts the calls.
 - (v) If the dataset filter is removed, (l) turns red. If the delete check is removed, (s) turns red.
+- (w) `report_save` with `report_id` and `can_edit` false returns the reason. It never calls the card or PATCH. A fake gateway counts the calls.
+- (x) The author and an admin each get 200 from the PATCH, the recipient add and remove, and the schedule. `can_edit` is true for each.
+- (y) A member who can open the report of another person gets 403 with the reason from each change route. The row, its recipients and its schedule do not change. The member can still render the report.
+- (z) L saves a report on N and then leaves team B. L changes it, its recipients and its schedule, and gets 200 each time. The render still gets 403.
+- (aa) A report on a node that the reader cannot see gets 404 from each change route, before the author path.
+- (ab) The Reports app shows Edit to the author and to an admin, and shows no Edit to any other member. A vitest proves it.
+- (ac) A mutation that removes the change check from the PATCH turns (y) red.
 
 **As built (2026-09-28).** `analytics_dataset.py` reads `reader_scope` once in the route. `assignee_refusal` gives the 403, and `dataset_body` takes `allowed`.
 For a restricted reader grouped by assignee, the SQL takes no limit, and `filter_person_rows` runs before the cap.
 
-`reports.py` holds `DELETE_REFUSED` and `_may_delete`.
-`_visible_report` with `for_delete` runs the project 404 and then the delete rule. It skips the subject check.
+`reports.py` holds `DELETE_REFUSED`. The 2026-09-29 change below renamed `_may_delete` to `_may_change`.
+`_visible_report` with `refusal` runs the project 404 and then the author-or-admin rule. It skips the subject check.
 
 The delete rule also replaces the old 422 for a stored subject with a bad shape. Any other reader now gets the 403 of the delete rule.
 Test (i) no longer expects 403 from the delete, because (t) replaces that half.
 
 `test_projects_report_scope_r5.py` proves (l) to (t) on a real database, and `test_projects_agent_writes.py` proves (u).
 Six mutations each turn a test red (v). They remove the filter, its 403, the author path, the delete check or the chat check, or they put back the SQL limit.
+
+**As built, the change rule (2026-09-29, §9 Q13).** `reports.py` holds `CHANGE_REFUSED` and one function, `_may_change`, for the delete and for a change.
+`_visible_report` takes `refusal`. The delete passes `DELETE_REFUSED`. `update_report`, `add_recipient`, `remove_recipient` and `set_schedule` pass `CHANGE_REFUSED`.
+
+`_report_dict` sets `can_edit` and `can_delete` from one call to `_may_change`. The two flags keep the name of each act for the client that offers it.
+
+`writes.py` holds `REPORT_CHANGE_REFUSED`, and `_report_change` is the update path of `report_save`. It reads `can_edit` before the card.
+`ReportsView.tsx` exports `ReportActions`, which renders Edit only when `can_edit` is true. `reportActions.test.ts` proves (ab).
+
+`test_projects_report_scope_r5.py` proves (w) to (aa) on a real database, and `test_projects_agent_writes.py` proves (w) for the chat.
+Six mutations each turn a test red (ac). Three change the server: no PATCH check, a pass for every change, or no author path for a change.
+Three change a client: `can_edit` always true, no chat check, or Edit always.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
@@ -1394,7 +1424,7 @@ that the render does not need a saved row.
 | Q10 (2026-09-28) | Does the chat's task data read obey the role rule? | The owner: "run role rule in chat". The dataset read obeys §7.1 rule 3. A reader cannot group or count tasks by a person outside the people they may report on. This amends O3 of `projects_ai_chat.md` §13.7 (R5d). |
 | Q11 (2026-09-28) | May a report show the address of its author? | The owner: "author email address is fine for people from the same org". Every reader is in the organization of the report. So `created_by` stays in the report, the list and the chat. Nothing changes. |
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
-| Q13 (open) | Does the delete rule also bind a change to a report? | Open. The auditor recommends the same rule for patch, the recipient list and the schedule. R5d does not change them. The owner decides. |
+| Q13 (2026-09-29) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).

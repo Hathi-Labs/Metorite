@@ -1192,6 +1192,10 @@ async def preview_report(
 # once. So adding somebody to a report can never show them more than they could
 # already see by opening the app. A permission check on "may I add you" would
 # guard a door onto the room the person is already standing in.
+#
+# ⚠️ That is about WHO may be added. WHO may change the list is narrower since
+# WS-27bn R5d (§9 Q13): the author of the report or an admin, as for a PATCH
+# and the schedule. `_may_change` holds that rule.
 
 
 async def _known_member(db: Any, email: str) -> bool:
