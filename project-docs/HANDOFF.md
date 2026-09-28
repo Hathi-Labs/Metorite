@@ -116,6 +116,47 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 D78.
 - **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
 
+### H-198 · 🟡 DEFERRED — agent webhooks need an owner before they can use AI · [OWNER+AGENT]
+- **Check:** `rg -n "^AGENT_WEBHOOK_SECRET" /opt/acb/app/.env` on the box. No
+  hit means the door is still closed, and this stays deferred.
+- **Status: do NOT build yet.** Owner direction, 2026-09-28: record it, and
+  build it only when a customer needs an outside system to start an agent.
+- **What the door is.** `POST /agent/webhook/{source}` (`routes/agent.py`,
+  `receive_webhook`) lets an outside system start an agent run. Examples are
+  Zapier or a customer's own server. An HMAC over the body, signed with
+  `AGENT_WEBHOOK_SECRET` or `AGENT_WEBHOOK_SECRET_<SOURCE>`, authenticates
+  the call. No signed-in person makes it.
+- **Why it cannot use AI today.** The box serves AI on the deployment key
+  (H-152), and the Router bills the organization of the PROVEN member who
+  made the call. A webhook run has no member, so the Router refuses its model
+  calls. This refusal is correct. It never bills a guessed organization.
+- **Measured 2026-09-28, so nothing is broken.** The box sets no webhook
+  secret, so the door answers 503 to every caller. `_WEBHOOK_ROUTES` is
+  empty, and no dynamic agent declares a `webhook_routes` entry. The gateway
+  log holds no call to it this month. Workflows that an event starts already
+  bill the workflow owner (PR #507), so only the direct agent run is open.
+- **The owner decision: who pays for a run that no person started?**
+  1. **Recommended: the webhook belongs to ONE organization.** An admin
+     creates it in Settings, and the product issues a secret bound to that
+     organization. Its runs bill that organization.
+  2. **A named member.** Setup names an owner, such as the admin who made the
+     webhook. Runs bill as that person and appear in that person's usage.
+- **What to build, once decided.**
+  1. A tenant-scoped `agent_webhook` table (R5): organization, source,
+     owner member, secret hash, created by, revoked at. Expand only (R6).
+  2. A secret per webhook instead of one global env secret. Look it up by
+     `source` and verify the HMAC against that row.
+  3. Bind the run like every background job. Call
+     `job_member_scope(owner, app=...)` and pass `session_user=owner` to
+     `run_agent`. The owner comes from the row, never from the payload.
+  4. A settings surface to create, show once, rotate and revoke a webhook,
+     and a record of each delivery.
+  5. Fences: a delivery bills the webhook's organization (R8). A payload that
+     names another member changes nothing. A revoked webhook is refused.
+     Update the allowlist entry in `tests/unit/test_background_ai_member.py`.
+- **Authority:** H-152 · `specs/customer_console.md` §6A · PR #507 · PR #511
+- **Added:** 2026-09-28 · the deployment-key switch session
+
 ### H-197 · Decide whether the dataset read must apply the report rule · [AGENT+OWNER]
 - **Check:** `grep -n "reportable_people" apps/services/gateway/gateway/routes/projects/analytics_dataset.py`.
   No hit, and no owner answer below, means this is open.
@@ -3254,12 +3295,20 @@ line — never reclaim a number by deleting the other entry.
   a guessed member. `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names
   the two new reads. Move them to an RLS-EXEMPT read before FORCE RLS
   reaches these tables.
-- ⚠️ **Two paths still send no member. Close them before the flip.**
-  1. The HMAC-signed `/agent/webhook` route (`routes/agent.py`). No owner row
-     or organization exists for it. It runs memberless, or on a body claim.
+- 📌 **FLIPPED on the box, 2026-09-28.** The deployment key holds `serve`,
+  `billing_read` and `billing_purchase`. `CUSTOMER_CONSOLE_ORG_KEY` is
+  commented out in `/opt/acb/app/.env`, and the backup is
+  `.env.bak-20260928-deployment-key`.
+  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Proof: one call as
+  `vjvarada@hathilabs.com` billed `hathi-labs-llp`, and one call as
+  `vjvarada@fracktal.in` billed `fracktalworks`, on one box credential.
+  Rollback: restore the backup and restart `acb-gateway`.
+- ⚠️ **Two paths still send no member, and the Router refuses them.**
+  1. `/agent/webhook/{source}`. It is dormant and deferred. H-198 holds the
+     design and the owner decision it needs.
   2. mem0 (`acb_memory/mem0_client.py`). mem0 builds its own OpenAI client
      and calls it on its own threads, so no run context reaches the call.
-     `MEM0_ENABLED` is off by default.
+     `MEM0_ENABLED` is off by default. Attribute it before you turn it on.
 - 📌 **The deployment arm serves only a PROVEN member (PR #511).** An
   expired or missing proof is refused. The proof lives 3600 s. So every
   background job above binds its owner VERIFIED, and a body claim, which
