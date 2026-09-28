@@ -758,8 +758,64 @@ line — never reclaim a number by deleting the other entry.
   H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
   `test_handoff_ids_are_unique` caught the collision.
 
+### H-200 · The deploy trusts any ssh host key · [AGENT]
+
+- **What is wrong.** The deploy connects with `StrictHostKeyChecking=no`
+  and `UserKnownHostsFile=/dev/null`. So ssh accepts ANY host key. A host
+  that pretends to be the box at its address gets the deploy session, and
+  the apply script runs there. The setting is older than H-142. The
+  deploy-ssh-resilience PR moved it into `scripts/ci_deploy_reach.sh`, and
+  did not change it.
+- **What it costs.** The deploy cannot fail on a changed host key. The
+  H-142 red path for ssh that is not a network fault covers an auth failure
+  only.
+- **What to do.** Record the box's host key. Put a `known_hosts` line in a
+  repo secret, or put the key fingerprint in the workflow. Then set
+  `StrictHostKeyChecking=yes` and point `UserKnownHostsFile` at that line.
+  Read the key from the box with `ssh-keyscan`, and compare its fingerprint
+  with `ssh-keygen -lf` on the box before you trust it. The same options
+  serve the probe and the apply, so change `CI_SSH_OPTS` in one place.
+  Check `vps-health.yml` and `vps-forensics.yml` for the same options.
+- **Check:** `grep StrictHostKeyChecking=no .github/workflows/deploy.yml
+  scripts/ci_deploy_reach.sh`. Any line means the deploy still trusts any
+  host key.
+
 ### H-142 · The deploy goes red on a 30-second ssh blip, and the retry cannot outlast it · [AGENT]
 
+- 🟢 **2026-09-29 — the deploy-ssh-resilience PR changes the deploy. Keep
+  this entry until a real blip proves the change.**
+  - **What we measured.** 200 deploy runs from 2026-09-20 to 2026-09-28.
+    9 runs went red on `ssh exited 255`. Each one lost all three rounds,
+    so 27 of 27 connects failed. The 163 green runs hold no 255 round. A
+    different runner connected 10 s after the last failed round, twice.
+    The box served the commit in all 9 cases. The pull timer applied it 7
+    times, and an apply of a later commit carried the other 2.
+  - **What the PR changes.** A cheap `ssh … true` probe runs before each
+    round, with backoff, inside one connect budget of 300 s for the job. A
+    connect failure does not spend a round. When the budget runs out, the
+    `deploy` job hands off. It says whether an apply started from its runner
+    and then lost ssh. In that case the box can hold a half-done apply, and
+    the pull timer applies it again because the marker was not written. A
+    new job, `Confirm delivery by the pull path`, then runs on a fresh
+    runner. It reads `/version` over HTTPS for up to 1500 s. An auth failure
+    goes red at once and does not hand off.
+  - **The evidence it accepts.** `/version` now also reports `applied_sha`,
+    the box's deploy marker. `vps_apply.sh` writes that marker only at its
+    last line, after the web build. The job is green only when `sha` and
+    `applied_sha` both contain this commit and the web app answers. `sha`
+    alone speaks for the gateway only, because the gateway restarts before
+    the web build.
+  - **How the next blip reads in CI.** The `deploy` job is green with the
+    warning "Deploy runner could not reach the box". Then the confirm job
+    is green with the warning "Delivered, confirmed by the served SHA", or red with
+    "Not delivered" or "Box unreachable from GitHub". A forced rerun never
+    hands off, and it goes red.
+- **Check:** find the next deploy run that shows the warning "Deploy
+  runner could not reach the box". Use `gh run list --workflow deploy`,
+  then `gh run view <id> --log | grep -F "could not reach the box"`. If the
+  confirm job in that run shows the served SHA and no false red, delete
+  this entry. Also delete it if no such run occurs by 2026-11-30, because
+  the tests in `tests/unit/test_deploy_reach.py` then carry the fence.
 - **What happened, 2026-09-21.** The deploy for #344 failed. All three
   rounds ended `ssh: connect to host *** port ***: Connection timed out`,
   30 seconds each. A plain re-run minutes later succeeded with no change,
@@ -781,10 +837,9 @@ line — never reclaim a number by deleting the other entry.
   separate from an apply that started and stopped. Then widen the backoff,
   or raise `ConnectTimeout`, so a minutes-long blip does not read as a
   broken deploy.
-- **Check:** read the deploy step for a distinct message when ssh never
-  connects. If every failure still prints "THE APPLY DID NOT REACH ITS
-  FINAL LINE", this is open — that sentence is false when the apply never
-  started.
+- **The old Check, now passed:** the deploy step prints "THE APPLY NEVER
+  STARTED" when ssh never connects. It prints "NOTHING WAS APPLIED" when the
+  round waited for the lock and gave up.
 - 📌 **2026-09-26 — a third shape of the same sentence.** After the
   deploy-serialize PR, a CI round can connect, wait 900s for the box's
   deploy lock, and stop with nothing applied. The apply log then says

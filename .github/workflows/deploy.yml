@@ -188,8 +188,18 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
-    # A BACKSTOP, not a leash. The step's own loop is ~105 min worst case
-    # (3 rounds x (1800s ssh + 240s verify) + backoff) and every one of those
+    # A BACKSTOP, not a leash. The step's worst case is ~117 min:
+    #   3 rounds x (1830 s ssh incl. the SIGKILL grace
+    #               + 240 s verify wall clock + one last poll of <= 70 s)  6420 s
+    #   + backoff 60 + 120                                                  180 s
+    #   + the H-142 connect budget, 300 s, which one probe (45 s) and one
+    #     refunded round (~45 s) can overrun                               ~400 s
+    #   = ~7000 s, about 117 min, under 120.
+    # ⚠️ Before H-142 `verify()` had no wall clock and a poll could take 50 s,
+    # so 24 polls came to 1200 s, and the true worst case was ~160 min. The
+    # 240 s deadline in verify() is what makes this sum hold. If the job
+    # timeout ever fires anyway, the run is RED: a timeout fails closed.
+    # Every one of those
     # numbers is deliberate — the 1800s in particular, because the pre-migration
     # backup alone takes ~11 min on the 4GB box. What this stops is the case
     # where the job hangs OUTSIDE that arithmetic and rides GitHub's 360-minute
@@ -211,6 +221,10 @@ jobs:
       # (see the deploy step's rationale).
       GATEWAY_URL: https://api.metorite.com
       WORKBENCH_URL: https://app.metorite.com
+    # `reach=unreachable` when ssh never connected from this runner (H-142).
+    # The `pull-delivery` job reads it. Empty on every other path.
+    outputs:
+      reach: ${{ steps.deploy.outputs.reach }}
     steps:
       # ── OUTCOME-VERIFIED DEPLOY ──────────────────────────────────────────
       # Why this shape: the remote deploy script runs to "Deployment complete"
@@ -235,6 +249,7 @@ jobs:
           fetch-depth: 0
 
       - name: Deploy + verify (up to 3 rounds)
+        id: deploy
         shell: bash
         env:
           SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
@@ -267,6 +282,12 @@ jobs:
           # so the pushed and pulled delivery paths cannot drift apart.
           cp scripts/vps_apply.sh /tmp/deploy_remote.sh
 
+          # H-142: the connect probe, the ssh options, the round refund and
+          # the pull-path check live in this file. It sets CI_SSH_OPTS, so the
+          # probe and the apply use one set of options.
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+
           ssh_deploy() {
             # 1800s, matched to the pull unit's TimeoutStartSec. 900 was fatal
             # in a way verify() cannot see: the pre-migration backup alone
@@ -290,11 +311,10 @@ jobs:
             # DIFFERENT runner — passed at 07:11. That is an IP-level block, and
             # the most likely cause is fail2ban reacting to the SSH storm that
             # two CONCURRENT deploys produced. See H-50.
-            timeout -k 30 1800 ssh \
-              -i ~/.ssh/deploy_key -p "$SSH_PORT" \
-              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=30 -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=8 -o BatchMode=yes \
+            #
+            # CI_SSH_OPTS comes from ci_deploy_reach.sh: the key, the port,
+            # ConnectTimeout, the ServerAlive keepalive and BatchMode.
+            timeout -k 30 1800 ssh "${CI_SSH_OPTS[@]}" \
               "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
           }
 
@@ -345,6 +365,21 @@ jobs:
               fi
               return 0
             fi
+            # H-142: three failures, three messages. They are not the same
+            # failure and must not read the same. Only the third one means
+            # "go and look at the box".
+            if ! apply_started /tmp/apply.log; then
+              echo "  ❌ THE APPLY NEVER STARTED. ssh did not get a session, so"
+              echo "     nothing ran on the box and nothing is half done. Last lines:"
+              tail -n 5 /tmp/apply.log | sed "s/^/       /"
+              return 1
+            fi
+            if apply_lock_busy /tmp/apply.log; then
+              echo "  ⏸  NOTHING WAS APPLIED. Another deploy held the box's deploy"
+              echo "     lock for the whole wait. That is usually the box's own pull"
+              echo "     delivering this release. The next round checks again."
+              return 1
+            fi
             echo "  ❌ THE APPLY DID NOT REACH ITS FINAL LINE."
             echo "     Everything after the failure did not run. The app may"
             echo "     still be healthy on the PREVIOUS build — that is what a"
@@ -365,7 +400,12 @@ jobs:
             # HTML error body instead of silently matching nothing, which on
             # a verification step is the difference between 'wrong commit'
             # and 'no answer' — two states that must not look alike.
-            curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null \n              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' \n              2>/dev/null
+            #
+            # 🔴 Until H-142 this line held a LITERAL backslash-n twice, from
+            # the same quoting trap. Bash read each as an extra argument "n",
+            # so curl also tried to fetch a host called "n". It worked by
+            # accident. `json_field` in ci_deploy_reach.sh is the one parser.
+            curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null | json_field sha
           }
 
           verify() {
@@ -414,7 +454,16 @@ jobs:
             # says something about it.
             echo "── Verifying: gateway health + public workbench + DEPLOYED SHA ──"
             echo "   want sha: $GITHUB_SHA"
+            # H-142: a WALL-CLOCK bound of 240 s. One poll is four curls of up
+            # to 10 s, a git fetch and a 10 s nap, so 24 polls could take
+            # 1200 s when packets drop. That broke the job's timeout
+            # arithmetic, which is sized from 240 s per round.
+            verify_deadline=$(( $(date +%s) + 240 ))
             for i in $(seq 1 24); do
+              if [ "$i" -gt 1 ] && [ "$(date +%s)" -ge "$verify_deadline" ]; then
+                echo "  ── the 240 s verify window closed at poll $i ──"
+                break
+              fi
               gw_ok=0
               if curl -fsS --max-time 10 "$GATEWAY_URL/health" >/dev/null 2>&1; then
                 gw_ok=1
@@ -428,7 +477,7 @@ jobs:
               if [ -n "$got_sha" ]; then
                 if [ "$got_sha" = "$GITHUB_SHA" ]; then
                   sha_ok=1
-                elif git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
+                elif timeout 20 git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
                   # ⚠️ SUPERSEDED, and that is a PASS. The box holds a
                   # LATER commit that CONTAINS this one, so every change
                   # this run merged is serving. See the note on verify().
@@ -444,7 +493,7 @@ jobs:
               echo "  not there yet (gateway_ok=$gw_ok workbench=$wb_code sha=${got_sha:-none}, poll $i/24) — 10s…"
               sleep 10
             done
-            echo "  ── verification failed after 24 polls ──"
+            echo "  ── verification failed ──"
             echo "     gateway_ok=$gw_ok  workbench=$wb_code"
             echo "     serving: ${got_sha:-<no /version response>}"
             echo "     wanted:  $GITHUB_SHA"
@@ -455,17 +504,87 @@ jobs:
             return 1
           }
 
-          for round in 1 2 3; do
+          # H-142: this runner could not reach the box. Hand the verdict to
+          # the `pull-delivery` job, which runs on a FRESH runner and accepts
+          # only the served SHA and the box's deploy marker as evidence. This
+          # job goes green with a warning so that the run's colour is decided
+          # there. If that job cannot prove delivery, the run goes red.
+          #
+          # ⚠️ TWO DIFFERENT HAND-OFFS, and the text must say which. When an
+          # earlier round printed `==> Taking the deploy lock`, an apply RAN
+          # from this runner and then lost its session, maybe after the
+          # migrations. "Nothing was applied" is then false.
+          APPLY_EVER_STARTED=0
+          hand_off_to_pull_path() {
+            if [ "$APPLY_EVER_STARTED" = 1 ]; then
+              echo "════════ this runner lost the box after an apply started ════════"
+              echo "   An apply started from this runner and did not finish. The box may"
+              echo "   hold a half-done apply. The pull timer re-applies it, because the"
+              echo "   deploy marker was not written. ${CONNECT_SPENT}s of connect trouble since."
+              note="An apply started from this runner and did not finish. The box may hold a half-done apply. The pull timer re-applies it, because the deploy marker was not written."
+            else
+              echo "════════ ssh never connected from this runner ════════"
+              echo "   ${CONNECT_SPENT}s of connect trouble, and no apply started from here."
+              note="ssh did not connect in ${CONNECT_SPENT}s. No apply started from this runner."
+            fi
+            echo "   Measured before H-142: 27 of 27 connects failed once a runner was"
+            echo "   cut off, and a fresh runner connected seconds later."
+            code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$GATEWAY_URL/version" 2>/dev/null) || true
+            echo "   From this runner, HTTPS GET /version -> HTTP ${code:-000} (diagnostic only)."
+            echo "reach=unreachable" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deploy runner could not reach the box::${note} The job 'Confirm delivery by the pull path' decides the run from the served SHA."
+            exit 0
+          }
+
+          # ⚠️ A FORCED apply cannot be handed to the pull path. The pull
+          # timer skips a sha it already applied, so the served SHA would
+          # prove a delivery that happened BEFORE the .env edit this rerun
+          # exists for. That would be a false green.
+          no_connect() {
+            if [ "${DEPLOY_FORCE:-0}" = "1" ]; then
+              echo "❌ Deploy FAILED: ssh never connected, and this run asked for a FORCED apply"
+              echo "   (a rerun, or the force or reinstall input). The pull path does not"
+              echo "   re-apply a sha it already has, so it cannot stand in. Re-run this job."
+              exit 1
+            fi
+            hand_off_to_pull_path
+          }
+
+          # ⚠️ A CONNECT FAILURE NEVER SPENDS A ROUND (H-142). `wait_for_ssh`
+          # probes with backoff before every round, and the probes share ONE
+          # budget, CONNECT_BUDGET, for the whole job. A round whose ssh then
+          # dropped before the apply printed its first line is refunded, and
+          # charged to that budget instead, so this loop always ends.
+          round=0
+          while [ "$round" -lt 3 ]; do
+            wrc=0
+            wait_for_ssh || wrc=$?
+            if [ "$wrc" = 2 ]; then
+              echo "❌ Deploy FAILED: ssh fails for a reason that is not the network."
+              exit 1
+            fi
+            [ "$wrc" = 1 ] && no_connect
+            round=$((round + 1))
             echo "════════ Deploy round $round/3 ════════"
             # ⚠️ BOTH, and in this order. The apply must have finished AND the
             # right commit must be serving. Either alone has shipped a green
             # run that delivered nothing — `verify()` alone is H-137, and a
             # finished apply alone was the hole `verify()` was added to close.
             applied=0
+            t0=$(date +%s)
             if run_deploy; then applied=1; fi
+            if apply_started /tmp/apply.log; then APPLY_EVER_STARTED=1; fi
             if [ "$applied" = 1 ] && verify; then
               echo "✅ Deploy verified healthy on round $round."
               exit 0
+            fi
+            if [ "$applied" != 1 ] && ! apply_started /tmp/apply.log \
+               && ssh_network_fault < /tmp/apply.log; then
+              charge_connect $(( $(date +%s) - t0 ))
+              round=$((round - 1))
+              echo "↩  Not counted as a round: the connection dropped before the apply started."
+              connect_budget_left || no_connect
+              continue
             fi
             if [ "$applied" != 1 ]; then
               echo "⚠️  The apply script did not finish on round $round."
@@ -474,7 +593,7 @@ jobs:
             fi
             if [ "$round" -lt 3 ]; then
               backoff=$((round * 60))
-              echo "Backing off ${backoff}s to outlast any network blip…"
+              echo "Backing off ${backoff}s before the next round…"
               sleep "$backoff"
             fi
           done
@@ -484,6 +603,102 @@ jobs:
           echo "   Diagnose: SSH to the box and check 'systemctl status acb-gateway acb-workbench'"
           echo "   and 'docker compose -f infra/docker-compose.yml logs --tail=100'."
           exit 1
+
+  # ── H-142: the runner could not reach the box. Did the box deliver? ─────
+  #
+  # Runs ONLY when `deploy` handed off (`reach=unreachable`), and on a FRESH
+  # runner on purpose. Measured before this job existed: once a runner was
+  # cut off, 27 of 27 of its connects failed, and a different runner connected
+  # 10 s after the last one. So a new runner has the best chance to reach the
+  # box over HTTPS, and the old one has the worst.
+  #
+  # ⚠️ RULE 8. This job is green ONLY on served evidence, read over HTTPS:
+  # `/version` `sha` (the gateway's checkout) AND `applied_sha` (the box's
+  # deploy marker, written at the apply's last line, after the web build)
+  # both equal or contain this commit, and the public workbench answers.
+  # `await_pull_delivery` in scripts/ci_deploy_reach.sh says what that proves
+  # and what it does not.
+  #
+  # Green WITH a warning annotation, not a plain green. The release is live,
+  # and that is what this workflow asserts. The warning keeps the broken push
+  # path visible on the run page, because a push path that stays broken for
+  # days looked exactly like this before (WS-25, 2026-08-05).
+  pull-delivery:
+    name: "Confirm delivery by the pull path"
+    runs-on: ubuntu-latest
+    needs: deploy
+    # ⚠️ `always()` is load-bearing. Without it GitHub adds `success()`, and
+    # `success()` is FALSE when any ancestor was SKIPPED. A `skip_tests`
+    # dispatch skips `test`, so this job would be skipped too, and a deploy
+    # that handed off would end the run GREEN with no evidence. The `deploy`
+    # job's own `if:` records the same trap.
+    if: >-
+      ${{ always()
+      && needs.deploy.result == 'success'
+      && needs.deploy.outputs.reach == 'unreachable' }}
+    # PULL_WAIT (1500 s, wall clock) plus one last read (<= 40 s), the 10 s
+    # port probe and the checkout. 1500 s, not 900: the pull timer ticks
+    # every 5 min, and a pull apply that runs the pre-migration backup
+    # (~11 min) and a web build can finish more than 15 min after the tick.
+    timeout-minutes: 30
+    env:
+      GATEWAY_URL: https://api.metorite.com
+      WORKBENCH_URL: https://app.metorite.com
+    steps:
+      # FULL history, for the ancestry test in `commit_contains`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the box to serve this commit
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+        run: |
+          set -uo pipefail
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+
+          # Diagnostic only, and it decides nothing: can THIS runner open the
+          # ssh port? The next blip then says whether the fault followed the
+          # runner. No key is needed to open a TCP socket.
+          # shellcheck disable=SC2016  # $1 and $2 expand in the inner bash
+          if timeout 10 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$SSH_HOST" "$SSH_PORT" 2>/dev/null; then
+            echo "From this runner, the ssh port OPENS (diagnostic only)."
+          else
+            echo "From this runner, the ssh port does NOT open (diagnostic only)."
+          fi
+
+          rc=0
+          await_pull_delivery "$GITHUB_SHA" || rc=$?
+          case "$rc" in
+            0)
+              # ⚠️ It names no path. A push apply from round 1 can finish
+              # before the runner loses the box, and the marker cannot tell
+              # which path wrote it. The served SHA is the evidence.
+              echo "::warning title=Delivered, confirmed by the served SHA::The deploy runner lost ssh to the box. The box serves ${GITHUB_SHA:0:12} with a complete apply behind it, proved by /version sha and applied_sha. The push path failed on this run."
+              echo "### Delivered, confirmed by the served SHA (H-142)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              echo "The deploy runner lost ssh to the box. The box serves \`${GITHUB_SHA:0:12}\` with a complete apply behind it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              exit 0
+              ;;
+            3)
+              echo "❌ NOT DELIVERED, AND NO EVIDENCE EITHER WAY. The deploy runner could"
+              echo "   not reach the box over ssh, and this runner got no answer from"
+              echo "   $GATEWAY_URL/version for ${PULL_WAIT}s. Check the box from elsewhere:"
+              echo "   curl $GATEWAY_URL/version, then re-run the workflow."
+              echo "::error title=Box unreachable from GitHub::No ssh from the deploy runner and no /version from this one. Delivery is unproven."
+              exit 1
+              ;;
+            *)
+              echo "❌ NOT DELIVERED. The deploy runner could not reach the box over ssh,"
+              echo "   and the box did not deliver ${GITHUB_SHA:0:12} by itself within ${PULL_WAIT}s."
+              echo "   Check the pull path on the box: systemctl status acb-pull.service,"
+              echo "   and journalctl -u acb-pull for 'apply FAILED' or the give-up line."
+              echo "::error title=Not delivered::The runner could not reach the box, and the box did not self-deliver ${GITHUB_SHA:0:12}."
+              exit 1
+              ;;
+          esac
 
   # ── Post-deploy: Smoke test (hit /health endpoint) ─────────────────────
   smoke:

@@ -28,12 +28,12 @@ and its HEAD is the answer. The env override is still honoured first, so a
 future container build — which would have no `.git` — can stamp the value
 without this module changing.
 
-⚠️ **One SHA covers the gateway AND the workbench**, and that is correct rather
-than a simplification: the deploy builds both from the same checkout (`git pull`
-→ `uv sync` → restart gateway → rebuild workbench). It is also the case that
-matters — the bug that prompted this was a FRONTEND asset, and a version
-endpoint that only spoke for the API would have reported "current" while the
-stale icons were still being served.
+⚠️ **`build_sha()` speaks for the GATEWAY only** (corrected for H-142). This
+used to say one SHA covers the gateway AND the workbench because one checkout
+builds both. The order breaks that: the apply restarts the gateway, THEN builds
+the workbench, and a failed build keeps the old web app serving. So the web app
+has its own answer, `applied_marker()`: the deploy marker that `vps_apply.sh`
+writes only when the whole apply finished.
 
 Nothing here touches the database. A version endpoint that needs a query fails
 in precisely the situation where you most want to know what is running.
@@ -147,3 +147,58 @@ def build_sha() -> str | None:
     else:
         git_dir = git_path
     return _sha_from_git_dir(git_dir)
+
+
+_SHA_CHARS = frozenset("0123456789abcdef")
+
+
+def _marker_path() -> Path | None:
+    """Where `vps_apply.sh` writes its deploy marker, or None.
+
+    `vps_apply.sh` and `vps_pull.sh` both default it to
+    `$(dirname "$APP_DIR")/acb-deploy.applied`, beside the checkout, so this is
+    the parent of the repo root. `ACB_DEPLOY_MARKER` overrides it, the same way
+    `DEPLOY_MARKER` overrides it in both scripts.
+    """
+    override = os.environ.get("ACB_DEPLOY_MARKER", "").strip()
+    if override:
+        return Path(override)
+    root = _repo_root()
+    if root is None:
+        return None
+    return root.parent / "acb-deploy.applied"
+
+
+def applied_marker() -> tuple[str | None, str | None]:
+    """The last COMPLETE apply on this box: ``(sha, finished_at)``, or Nones.
+
+    H-142. `vps_apply.sh` writes ``<sha> <UTC time>`` to its marker ONLY at its
+    last line, after the workbench build and its restart. So this answers a
+    question that `build_sha()` cannot: did the WEB app get built too? The
+    gateway restarts before the workbench builds, and a failed build keeps the
+    old web app serving. In that state `build_sha()` reports the new commit and
+    this still reports the last apply that finished.
+
+    `deploy.yml` reads it from outside the box when its runner could not reach
+    the box over ssh, to decide whether the pull timer delivered the commit.
+
+    ⚠️ NOT cached, unlike `build_sha()`. The marker moves at the END of an
+    apply, long after the gateway restarted, so a cached value would lag by a
+    whole deploy. It is one small file read per request.
+
+    Nones when the file is absent, unreadable or malformed. The sha must be
+    40 lowercase hex characters, so a corrupt file cannot pass as a commit.
+    """
+    path = _marker_path()
+    if path is None:
+        return None, None
+    try:
+        parts = path.read_text(encoding="utf-8").split()
+    except (OSError, UnicodeDecodeError):
+        return None, None
+    if not parts:
+        return None, None
+    sha = parts[0]
+    if len(sha) != 40 or not set(sha) <= _SHA_CHARS:
+        return None, None
+    return sha, (parts[1] if len(parts) > 1 else None)
