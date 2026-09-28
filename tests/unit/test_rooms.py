@@ -1332,6 +1332,39 @@ def test_a_group_member_who_starts_a_run_gains_no_owner_row(clean) -> None:
 
 
 @_needs_db
+def test_a_removed_creator_does_not_win_owner_back_by_a_run(clean) -> None:
+    """Round 2, P1. Alice creates the room and adds a group. Bob, an owner,
+    removes Alice. She still sends through the group, and her next run and
+    its fold must not put her owner row back."""
+    from gateway.rooms import resolve_room_access
+
+    _exec(
+        "INSERT INTO org_group (organization_id, slug, display_name) "
+        "SELECT id, :g, :g FROM organization LIMIT 1 ON CONFLICT DO NOTHING",
+        g=_GROUP,
+    )
+    _exec(
+        "INSERT INTO org_group_member (group_id, user_id) "
+        "SELECT g.id, u.id FROM org_group g, app_user u "
+        "WHERE g.slug = :g AND u.email = :e ON CONFLICT DO NOTHING",
+        g=_GROUP, e=_ALICE,
+    )
+    sid = _seed_session(_ALICE, (_BOB, "owner"), (f"group:{_GROUP}", "member"))
+    # Bob removes Alice (remove_participant deletes her row).
+    _exec(
+        "DELETE FROM chat_session_participant "
+        "WHERE session_id = :i AND subject = :s", i=sid, s=_ALICE,
+    )
+    before = _participants(sid)
+    assert _ALICE not in before
+    assert resolve_room_access(sid, _ALICE).role == "member"
+    _mint(sid, "rc1", _ALICE)
+    assert _fold(sid, "rc1", _ALICE, "the answer") == []
+    assert _participants(sid) == before
+    assert resolve_room_access(sid, _ALICE).role == "member"
+
+
+@_needs_db
 def test_a_run_of_another_agent_adds_no_second_primary(clean) -> None:
     sid = _seed_session(_ALICE)
     _exec(

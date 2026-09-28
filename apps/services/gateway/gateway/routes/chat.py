@@ -180,7 +180,10 @@ def _ensure_session(
     §20.4 rule 10). The mint calls it at every run start, as the member who
     starts the run. That member may reach the room only through a group or
     an org grant. So the owner row goes in only for the creator of the
-    session, and the primary agent row only when the room has no primary.
+    session, and only while the room has no participant row at all. An
+    owner may remove the creator, and a later run must not undo that
+    (round 2). The primary agent row goes in only when the room has no
+    primary.
     A browser-created session (``_upsert_session``) still gets both on its
     first run, because that writer makes neither.
     """
@@ -209,6 +212,10 @@ def _ensure_session(
                     "INSERT INTO chat_session_participant (session_id, subject, role) "
                     "SELECT :id, :uid, 'owner' FROM chat_session "
                     "WHERE id = :id AND user_id = :uid "
+                    # Round 2: only a room with no membership yet. A creator
+                    # whom an owner removed must not win the role back.
+                    "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
+                    "WHERE session_id = :id) "
                     "ON CONFLICT DO NOTHING"
                 ),
                 {"id": session_id, "uid": user_id},

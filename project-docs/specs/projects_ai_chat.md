@@ -2897,8 +2897,10 @@ stream.
    `chat_message` CHECK already refused these values, but as a 500 for the
    whole batch.
 8. **`_ensure_session` raises no role** (fix round 1). The mint calls it at
-   every run start. It adds the owner row only when the caller is the
-   creator of the session (`chat_session.user_id`). It adds the `primary`
+   every run start. It adds the owner row only for the creator of the
+   session (`chat_session.user_id`). Since round 2 it also needs a room
+   with no participant row yet. An owner may remove the creator, and a
+   later run of the creator must not give the role back. It adds the `primary`
    agent row only when the room has no `primary` agent. A browser-created
    session
    still gets both on its first run, because `_upsert_session` makes
@@ -3023,6 +3025,11 @@ later slice give these rows a server writer.
    - the mint has no timeout
    - the mint does not call `_ensure_session`
 
+   Round 2 adds one more. The owner insert without its `NOT EXISTS` turns
+   `test_a_removed_creator_does_not_win_owner_back_by_a_run` red. In that
+   test Bob removes Alice, the creator. Alice then runs through a group,
+   and she gets no owner row.
+
 ### 20.7 What S14 does not do
 
 - The run member can still write any content in her own reply until the
@@ -3032,6 +3039,9 @@ later slice give these rows a server writer.
   server, and the prompt takes the browser clock. A browser clock that runs
   more than the time to the first checkpoint fast can still sort the reply
   before its prompt. That was also true before S14.
+- Two members can start their first runs at the same instant on a session
+  with no `primary` agent. Each run can then insert a `primary` row. The
+  reviewer accepted this (round 2, P3).
 - A mint that times out can still finish later in its thread. It only
   inserts, so it changes no row that the fold wrote first.
 - A run that `SupersedeRefused` stops inside the stream leaves an empty
