@@ -1169,7 +1169,7 @@ T2 is `pulse` with `weeks` 1 and `skip_current_week` false. T6 is `finished`, `t
 A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 
 ### R5c — The member setting · BLOCKED
-`reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it.
+`reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
@@ -1320,6 +1320,8 @@ that the render does not need a saved row.
 | Q5 | When does the morning report send? | Nothing sends by itself in Phase 1. Phase 2 uses 09:00 on weekdays, in the recipient's timezone, as its default. |
 | Q6 (2026-09-25) | May a report show one member's private notes (`waiting_on`, `expected_by`, `scheduled_start`) to another reader? | No. The notes show only on the reader's own row (R3d). |
 | Q7 (2026-09-25) | Before R5, who sees the cards for each person? | An admin sees every card. Any other reader sees only their own card, and a line counts the hidden people (R3d, edit E5). |
+| Q8 (2026-09-28) | Where does the member setting of R5c live? | R5c waits for the WS-29 fix that scopes `org_settings` to each organization. The setting stays off until then. |
+| Q9 (2026-09-28) | May a lead of a Center group report on its members? | Yes. A lead of any group reports on the members of that group, whatever its size. Admins control who holds the lead role. |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
