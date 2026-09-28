@@ -1624,14 +1624,14 @@ line — never reclaim a number by deleting the other entry.
   - Each try sends the same headers, so the identity does not change (R5).
   - A caller's `AbortSignal.timeout` does not count the restart. Each try
     after the gateway comes back gets the same timeout again.
-  - Only the final chat checkpoint retries. A periodic one that retried
-    could land last and cut the stored reply short.
+  - Of the chat checkpoints, only the final one retries. A periodic one
+    that retried could land last and cut the stored reply short.
   The seven catch-all proxies lost their own "retry once" code. Fences:
   `gatewayFetch.test.ts`, and three sweeps in `gateway.test.ts`.
   ⚠️ **The cost.** While the gateway is down and not restarting, each call
   now waits 25 s before it fails. To turn the retry off, set
   `GATEWAY_RETRY_DEADLINE_MS=0` in the workbench env and restart
-  `acb-workbench`. A larger value is capped at 25 s.
+  `acb-workbench`. The code caps a larger value at 25 s.
 - **Verify after the merge, then delete this entry.** Do the two checks
   during the next deploy that restarts the gateway.
   1. Loop a signed-in GET from the moment of `==> Restarting gateway`:
