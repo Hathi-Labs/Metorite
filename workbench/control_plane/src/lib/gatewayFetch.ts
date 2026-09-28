@@ -51,6 +51,10 @@
 //    that origin closes the breaker. Without it, a route that makes four
 //    reads in a row, while the gateway is down, would wait four windows.
 //    A restart that recovers inside the window never opens the breaker.
+//    While the outage lasts, each refusal refreshes the 5 s, so the breaker
+//    does not lapse. A request that is still in its window when another
+//    request opens the breaker stops at its next try. So in a long outage
+//    only the first request waits the full window.
 // 6. A streamed response is never retried. `fetch` resolves when the headers
 //    arrive, and this function returns at that moment. A failure while the
 //    caller reads the body happens after this function has returned, so it
@@ -286,6 +290,26 @@ export async function gatewayFetch(
   const tryInit = (): RequestInit =>
     budgetMs === null ? init : { ...init, signal: AbortSignal.timeout(budgetMs) };
 
+  // Rule 9, on each refusal that ends a request.
+  // - A full window of refusals OPENS the breaker.
+  // - While an outage is known (an entry exists, even one whose time ran
+  //   out, because no response has closed it), any refusal REFRESHES it.
+  //   Each fail-fast try is a real connect, so it doubles as a probe, and
+  //   the breaker does not lapse every 5 s during a long outage.
+  // - A single refused write with no known outage does nothing. During a
+  //   restart it must not make the reads fail fast.
+  // The `down` line is written only when the breaker goes from closed to
+  // open, so one outage writes one line.
+  const noteRefusal = (code: string | null, fullWindow: boolean) => {
+    if (code !== REFUSED) return;
+    const known = downUntil.has(origin);
+    if (!known && !fullWindow) return;
+    downUntil.set(origin, Date.now() + breakerMs);
+    if (!known) {
+      log(`[gateway] down: ${origin} refused for ${Date.now() - started} ms; failing fast for ${breakerMs} ms`);
+    }
+  };
+
   const gaveUp = (why: string) => {
     if (retrying) {
       log(`[gateway] gave up: ${method} ${route} after ${attempt} attempts, ${Date.now() - started} ms (${why})`);
@@ -317,6 +341,7 @@ export async function gatewayFetch(
       } else if (!mayRetry(method, code, replayable, opts.retry === true)) {
         const clientGone = init.signal?.aborted && !isTimeout(init.signal.reason);
         gaveUp(clientGone ? "aborted" : (code ?? errorName(err)));
+        noteRefusal(code, false);
         throw err;
       }
       // The connect failed, and the caller's signal fired at about the same
@@ -328,14 +353,14 @@ export async function gatewayFetch(
         }
         takeBudget();
       }
-      if (Date.now() - started + delay > deadlineMs) {
+      // Stop when the window runs out, or when another request opened the
+      // breaker while this one waited: that request already proved the
+      // gateway is down, so this one need not wait out its own window.
+      const othersSawDown = retrying && breakerOpen(origin);
+      if (Date.now() - started + delay > deadlineMs || othersSawDown) {
         gaveUp(code ?? errorName(err));
-        // The full window ran out on a refusal: the gateway is down, not
-        // restarting. Open the breaker, so the next requests fail at once.
-        if (retrying && code === REFUSED && !breakerOpen(origin)) {
-          downUntil.set(origin, Date.now() + breakerMs);
-          log(`[gateway] down: ${origin} refused for ${Date.now() - started} ms; failing fast for ${breakerMs} ms`);
-        }
+        // A full window of refusals means the gateway is down, not restarting.
+        noteRefusal(code, retrying && !othersSawDown);
         throw err;
       }
       if (!retrying) {

@@ -10,7 +10,7 @@
  *
  * Rules: see the header of `gatewayFetch.ts`.
  */
-import { describe, it, expect, afterEach, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { readFileSync } from "node:fs";
@@ -584,6 +584,87 @@ describe("the breaker — a gateway that stays down", () => {
     await gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: f.fake, log: () => {} }).catch(() => {});
     expect(breakerOpen("http://127.0.0.1:1")).toBe(true);
     expect(breakerOpen("http://127.0.0.1:2")).toBe(false);
+  });
+
+  it("does not open on one refused write when no outage is known", async () => {
+    // During a restart, a refused write must not make the reads fail fast.
+    const f = refusingFake();
+    await gatewayFetch(URL_A, { method: "POST", body: "{}" }, { ...SHORT, fetchImpl: f.fake, log: () => {} }).catch(
+      () => {}
+    );
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(false);
+  });
+});
+
+describe("the breaker — a long outage, in production numbers", () => {
+  // Fake timers run the production window (25 s), breaker (5 s) and backoff
+  // (250 ms to 1 s) on a 45 s outage, with one new read each second.
+  const ORIGIN = "http://127.0.0.1:9";
+  afterEach(() => vi.useRealTimers());
+
+  async function outage(seconds: number, drainMs = 30_000) {
+    vi.useFakeTimers();
+    let up = false;
+    const fake = (async () => {
+      if (up) return new Response("ok", { status: 200 });
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+    }) as unknown as typeof fetch;
+    const lines: string[] = [];
+    const log = (l: string) => lines.push(l);
+    const results: Array<{ start: number; ms: number; ok: boolean }> = [];
+    const t0 = Date.now();
+    const pending: Promise<void>[] = [];
+    for (let i = 0; i < seconds; i += 1) {
+      const start = Date.now();
+      pending.push(
+        gatewayFetch(`${ORIGIN}/r`, {}, { fetchImpl: fake, log }).then(
+          () => void results.push({ start: start - t0, ms: Date.now() - start, ok: true }),
+          () => void results.push({ start: start - t0, ms: Date.now() - start, ok: false })
+        )
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await vi.advanceTimersByTimeAsync(drainMs);
+    await Promise.all(pending);
+    results.sort((a, b) => a.start - b.start);
+    return { results, lines, fake, log, goUp: () => (up = true) };
+  }
+
+  it("only the first read waits the full window, and every later read fails fast", async () => {
+    const { results } = await outage(45);
+    expect(results).toHaveLength(45);
+    expect(results.every((r) => !r.ok)).toBe(true);
+    // The first read uses the whole window.
+    expect(results[0].ms).toBeGreaterThanOrEqual(GATEWAY_RETRY.deadlineMs - 1_000);
+    // No other read waits a full window. The reads already waiting stop
+    // within one backoff of the breaker opening.
+    const opened = results[0].start + results[0].ms;
+    for (const r of results.slice(1).filter((x) => x.start < opened)) {
+      expect(r.start + r.ms, `read at ${r.start} ms`).toBeLessThanOrEqual(opened + GATEWAY_RETRY.maxDelayMs);
+    }
+    // Every read that starts after the breaker opens fails at once, all
+    // the way to the end of the 45 s: the breaker never lapses.
+    const later = results.filter((r) => r.start >= opened);
+    expect(later.length).toBeGreaterThan(15);
+    expect(later.every((r) => r.ms === 0)).toBe(true);
+  });
+
+  it("writes the down line once per outage", async () => {
+    const { lines } = await outage(45);
+    expect(lines.filter((l) => l.startsWith("[gateway] down"))).toHaveLength(1);
+  });
+
+  it("the gateway comes back: the next read succeeds and closes the breaker", async () => {
+    // No drain: the last read of the outage was one second ago, so the
+    // breaker is still open when the gateway comes back.
+    const { fake, log, goUp } = await outage(40, 0);
+    expect(breakerOpen(ORIGIN)).toBe(true);
+    goUp();
+    const res = await gatewayFetch(`${ORIGIN}/r`, {}, { fetchImpl: fake, log });
+    expect(res.status).toBe(200);
+    expect(breakerOpen(ORIGIN)).toBe(false);
   });
 });
 

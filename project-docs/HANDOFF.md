@@ -1632,8 +1632,10 @@ line — never reclaim a number by deleting the other entry.
     could land last and cut the stored reply short.
   - A breaker stops the waits from stacking. When a request uses the full
     window on refusals, the workbench marks the gateway down for 5 s. Each
-    request in that time gets one try and then fails at once. The first
-    answer from the gateway closes the breaker.
+    request in that time gets one try and then fails at once. Each refusal
+    during the outage starts the 5 s again, so the breaker stays open for
+    the whole outage. A request that is still waiting stops when the
+    breaker opens. The first answer from the gateway closes the breaker.
   - The log replaces each path segment that looks like an email or an id
     with `<email>` or `<id>`.
   The seven catch-all proxies lost their own "retry once" code. Fences:
@@ -1641,7 +1643,8 @@ line — never reclaim a number by deleting the other entry.
   ⚠️ **The costs.**
   - While the gateway is down and not restarting, the first request waits
     25 s before it fails. Later requests fail at once while the breaker is
-    open, and one request pays the 25 s again after each 5 s cool-down.
+    open. The breaker closes only after 5 s with no request, and then the
+    next request pays the 25 s again.
   - When a restart cuts a chat run, the member's chat stream stays open
     for up to 25 s while the final checkpoint waits for the gateway. That
     wait keeps the reply.
