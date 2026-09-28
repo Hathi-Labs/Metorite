@@ -211,11 +211,14 @@ async def _feed_autosync(hours: float) -> None:
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     hours = _feed_sync_hours()
     task = asyncio.create_task(_feed_autosync(hours)) if hours else None
+    # Always on. An abandoned hold is a customer's credits held for nothing.
+    sweeper = asyncio.create_task(_hold_sweeper())
     try:
         yield
     finally:
         if task is not None:
             task.cancel()
+        sweeper.cancel()
 
 
 app = FastAPI(
@@ -6338,6 +6341,66 @@ MAX_OUTPUT_FOR_HOLD = 4096
 MARGIN_WINDOW_DAYS = 7
 
 
+def _release_call_hold(org_id: str, request_id: str) -> None:
+    """Give one call's reservation back. Idempotent, and never raises.
+
+    🔴 **A failed call kept its hold for ever (measured 2026-09-28).** During a
+    DeepSeek outage every call failed at the provider, and each one left its
+    reservation in the ledger. Hathi Labs had about 22.8 credits it could not
+    spend, and nothing would ever return them. Only the settle released a
+    hold, and a failed call never settles.
+
+    ⚠️ **Safe to call after a billed call too.** `store.release_hold` writes one
+    `release` row per `ref` (`ON CONFLICT DO NOTHING`), and the settle already
+    wrote it, so a second release is a no-op. So each exit may release without
+    first asking whether the meter settled it.
+    """
+    try:
+        with get_engine().begin() as conn:
+            store.release_hold(conn, org_id=org_id, request_id=request_id)
+    except Exception:
+        # The sweeper catches whatever this misses. A failed release must
+        # never turn a finished call into an error.
+        _log.exception("router.hold_release_failed", extra={"router_org": org_id})
+
+
+#: How often the sweeper runs, and how old an open hold must be before it
+#: counts as abandoned. The age exceeds the longest call: a buffered chain is
+#: bounded by `MAX_CHAIN_ATTEMPTS` x 120 s, and a 32k-token stream by about ten
+#: minutes. Releasing a hold that is still live costs only headroom: the
+#: settle's own release is then a no-op, and the usage draw still happens.
+HOLD_SWEEP_EVERY_SECONDS = 600
+HOLD_SWEEP_OLDER_THAN_SECONDS = 1800
+
+
+def _sweep_holds_once() -> list[dict[str, Any]]:
+    with get_engine().begin() as conn:
+        return store.sweep_orphan_holds(
+            conn, older_than_seconds=HOLD_SWEEP_OLDER_THAN_SECONDS
+        )
+
+
+async def _hold_sweeper() -> None:
+    """Return every reservation a call left open. Runs for the process life.
+
+    🔴 `store.sweep_orphan_holds` existed and NOTHING called it (2026-09-28).
+
+    ⚠️ **Every release is logged LOUDLY**, one line each. The route releases on
+    every exit it sees, so a hold that reaches here means a crash, or a stream
+    Starlette never started (§8.6). Each one is a defect report.
+    """
+    while True:
+        try:
+            for freed in await asyncio.to_thread(_sweep_holds_once):
+                _log.warning(
+                    "router.hold_swept org=%s ref=%s credits=%s held_since=%s",
+                    freed["org_id"], freed["ref"], freed["credits"], freed["held_since"],
+                )
+        except Exception as exc:  # the loop outlives any single failure
+            _log.warning("router.hold_sweep_failed error=%s", exc)
+        await asyncio.sleep(HOLD_SWEEP_EVERY_SECONDS)
+
+
 def _place_call_hold(
     conn,
     *,
@@ -7113,6 +7176,11 @@ async def _streamed_completion(
         # died. `aclose_quietly` is the ONE close, shared with the walk's
         # loser path, and it is safe on a stream that already finished.
         await router_mod.aclose_quietly(source)
+        # 🔴 A stream that never STARTED records nothing, so nothing settles its
+        # hold. After a billed stream the settle already released it, and this
+        # is a no-op (`_release_call_hold`).
+        if request_id:
+            await asyncio.to_thread(_release_call_hold, org_id, request_id)
 
 
 def _preflight_gates(
@@ -7283,6 +7351,7 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         # Unchanged shape: the first step names the vendor somebody has to go
         # and configure.
         provider = chain[0].model.split("/", 1)[0]
+        _release_call_hold(org_id, request_id)
         raise HTTPException(
             status_code=503,
             detail=f"no provider credential configured for {provider!r}",
@@ -7402,6 +7471,8 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
             _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
+            # No body generator runs after this, so the route gives the hold back.
+            _release_call_hold(org_id, request_id)
             return StreamingResponse(
                 _stream_closed(), media_type="text/event-stream", headers=headers
             )
@@ -7430,12 +7501,15 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         response, resolved = asyncio.run(
             router_mod.call_chain(attempts, _kwargs_for, _note_failover)
         )
-    except HTTPException:
+    except BaseException as exc:
+        # 🔴 The call failed, so it will never settle. Give the hold back
+        # first, whatever failed: a provider refusal, a timeout, a bug.
+        _release_call_hold(org_id, request_id)
+        if isinstance(exc, router_mod.UpstreamFailed):
+            # ONE mapping, shared with the transcribe route. See
+            # `_upstream_refusal` for what each status becomes and why.
+            raise _upstream_refusal(exc) from exc
         raise
-    except router_mod.UpstreamFailed as failed:
-        # ONE mapping, shared with the transcribe route. See
-        # `_upstream_refusal` for what each status becomes and why.
-        raise _upstream_refusal(failed) from failed
 
     # Metering is best-effort and NEVER fails the call: an unmetered completion
     # is a revenue problem, a failed completion is a product problem, and the
@@ -7458,6 +7532,9 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         started_at=started_at,
         request_id=request_id,
     )
+    # `_record_completion` never raises, so a metering failure inside it would
+    # leave the hold open. After a successful settle this is a no-op.
+    _release_call_hold(org_id, request_id)
 
     # 🔴 **H-179, the other half.** Metering first, because this only renames a
     # field and a completion is already paid for by here. The framework reads

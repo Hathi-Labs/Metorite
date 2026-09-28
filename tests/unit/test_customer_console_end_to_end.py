@@ -417,3 +417,114 @@ def test_with_the_spend_gate_ARMED_a_drained_customer_is_REFUSED(
             {"o": org_id}).all()
     assert len(walls) == 1, "the refusal left no row"
     assert walls[0].billed_credits == 0, "a refused call billed the customer"
+
+
+# ── A failed call gives its hold back (2026-09-28) ─────────────────────────
+#
+# 🔴 Measured on production: during a DeepSeek outage every call failed at the
+# provider and kept its reservation. Hathi Labs held about 22.8 credits it
+# could not spend. Only the settle released a hold, and a failed call never
+# settles. These drive the REAL route with the spend gate armed.
+
+class _VendorDown(Exception):
+    """A provider refusal as litellm raises it: carries the HTTP status."""
+
+    status_code = 402
+
+
+def _open_holds(db, org_id: str) -> int:
+    with db.begin() as c:
+        return c.execute(
+            text(
+                "SELECT count(*) FROM credit_ledger h "
+                "WHERE h.organization_id = CAST(:o AS uuid) AND h.reason = 'hold' "
+                "  AND NOT EXISTS (SELECT 1 FROM credit_ledger r "
+                "                  WHERE r.organization_id = h.organization_id "
+                "                    AND r.ref = h.ref AND r.reason = 'release')"
+            ),
+            {"o": org_id},
+        ).scalar_one()
+
+
+def _holds(db, org_id: str) -> int:
+    with db.begin() as c:
+        return c.execute(
+            text("SELECT count(*) FROM credit_ledger "
+                 "WHERE organization_id = CAST(:o AS uuid) AND reason = 'hold'"),
+            {"o": org_id},
+        ).scalar_one()
+
+
+@pytest.fixture
+def vendor_down():
+    async def _fail(**kwargs):
+        raise _VendorDown("insufficient balance")
+
+    router_mod.set_provider_call(_fail)
+    yield
+    router_mod.set_provider_call(None)
+
+
+def _armed_funded(client, db, monkeypatch):
+    monkeypatch.setenv("CUSTOMER_CONSOLE_SPEND_GATE", "1")
+    run = uuid.uuid4().hex[:8]
+    tier, slug, org_id, key = _stage_one_priced_tier(client, db, run)
+    client.post("/credits/grant", headers=OP, json={
+        "org_slug": slug, "credits": "40", "reason": "purchase", "ref": f"b-{run}"})
+    return tier, org_id, key
+
+
+def test_a_FAILED_buffered_call_gives_its_hold_back(client, db, vendor_down, monkeypatch):
+    tier, org_id, key = _armed_funded(client, db, monkeypatch)
+    before = _balance(db, org_id)
+
+    r = _ask(client, key, tier)
+
+    assert r.status_code == 502, r.text
+    assert _holds(db, org_id) == 1, "the test never reserved, so it proves nothing"
+    assert _open_holds(db, org_id) == 0, "a failed call kept its reservation"
+    assert _balance(db, org_id) == before, "a failed call cost the customer credits"
+
+
+def test_a_stream_that_FAILS_to_open_gives_its_hold_back(
+        client, db, vendor_down, monkeypatch):
+    tier, org_id, key = _armed_funded(client, db, monkeypatch)
+    before = _balance(db, org_id)
+
+    r = client.post("/v1/chat/completions", headers=key, json={
+        "model": tier, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 200  # a stream reports failure in-band
+    assert _holds(db, org_id) == 1
+    assert _open_holds(db, org_id) == 0, "a failed stream kept its reservation"
+    assert _balance(db, org_id) == before
+
+
+def test_a_SUCCESSFUL_call_is_billed_once_and_closes_its_hold(
+        client, db, calls, monkeypatch):
+    """The extra release after a billed call must be a no-op, never a refund."""
+    tier, org_id, key = _armed_funded(client, db, monkeypatch)
+
+    assert _ask(client, key, tier).status_code == 200
+    assert _open_holds(db, org_id) == 0
+    with db.begin() as c:
+        rows = c.execute(
+            text("SELECT reason, count(*) FROM credit_ledger "
+                 "WHERE organization_id = CAST(:o AS uuid) GROUP BY reason"),
+            {"o": org_id}).all()
+    counts = {r[0]: r[1] for r in rows}
+    assert counts.get("release") == 1, counts
+    assert counts.get("usage") == 1, counts
+    assert _balance(db, org_id) == Decimal("40") - Decimal("1.2900")
+
+
+def test_the_console_runs_the_hold_sweeper():
+    """`store.sweep_orphan_holds` existed for weeks and nothing called it."""
+    import inspect
+
+    from customer_console import main
+
+    assert "_hold_sweeper()" in inspect.getsource(main._lifespan)
+    assert main.HOLD_SWEEP_OLDER_THAN_SECONDS > 120 * 3, (
+        "the sweeper would release holds of calls still in flight")
