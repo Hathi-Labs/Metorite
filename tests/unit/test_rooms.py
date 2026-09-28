@@ -1595,6 +1595,112 @@ def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7f. S14 round 4: migration 221 and isOwner
+# ---------------------------------------------------------------------------
+
+_MIGRATION_221 = (
+    __import__("pathlib").Path(__file__).resolve().parents[2]
+    / "infra" / "postgres" / "221_chat_session_creator_owner_backfill.sql"
+)
+
+
+def _apply_221() -> None:
+    """Run migration 221 verbatim on the ladder DB, as the ladder does."""
+    from acb_graph import get_session
+
+    with get_session() as s:
+        raw = s.connection().connection.dbapi_connection
+        with raw.cursor() as cur:
+            cur.execute(_MIGRATION_221.read_text(encoding="utf-8"))
+        s.commit()
+
+
+def _bare_session(creator: str) -> str:
+    sid = f"{_PREFIX}-{uuid.uuid4().hex[:8]}"
+    _exec(
+        "INSERT INTO chat_session (id, user_id, agent_name) "
+        "VALUES (:i, :u, 'orchestrator')", i=sid, u=creator,
+    )
+    return sid
+
+
+def _row(sid: str, subject: str, role: str) -> None:
+    _exec(
+        "INSERT INTO chat_session_participant (session_id, subject, role) "
+        "VALUES (:i, :s, :r)", i=sid, s=subject, r=role,
+    )
+
+
+@_needs_db
+def test_221_gives_back_the_creator_that_round_3_would_lock_out(clean) -> None:
+    """Round 4, P1. Alice shared her chat with Bob before its first fold, so
+    main left a row for Bob and none for her. After round 3 she would get
+    404 on her own chat. The migration gives her the owner row."""
+    from gateway.rooms import resolve_room_access
+    from gateway.routes.chat import _get_sessions
+
+    sid = _bare_session(_ALICE)
+    _row(sid, _BOB, "member")
+    assert resolve_room_access(sid, _ALICE).role is None
+    _apply_221()
+    assert _participants(sid) == {_ALICE: "owner", _BOB: "member"}
+    assert resolve_room_access(sid, _ALICE).role == "owner"
+    assert sid in [r["id"] for r in _get_sessions(_ALICE)]
+
+
+@_needs_db
+def test_221_keeps_a_demoted_creator_demoted(clean) -> None:
+    sid = _bare_session(_ALICE)
+    _row(sid, _ALICE, "member")
+    _row(sid, _CAROL, "owner")
+    _apply_221()
+    assert _participants(sid) == {_ALICE: "member", _CAROL: "owner"}
+
+
+@_needs_db
+def test_221_gives_no_row_to_a_user_id_that_is_not_an_email(clean) -> None:
+    sid = _bare_session("default")
+    _row(sid, _BOB, "member")
+    _apply_221()
+    assert _participants(sid) == {_BOB: "member"}
+
+
+@_needs_db
+def test_221_replays_with_no_error_and_no_change(clean) -> None:
+    sid = _bare_session(_ALICE)
+    _row(sid, _BOB, "member")
+    _apply_221()
+    once = _participants(sid)
+    _apply_221()
+    assert _participants(sid) == once == {_ALICE: "owner", _BOB: "member"}
+
+
+def _is_owner(email: str, sid: str) -> bool:
+    from gateway.routes.chat import _get_sessions
+
+    return next(r for r in _get_sessions(email) if r["id"] == sid)["isOwner"]
+
+
+@_needs_db
+def test_is_owner_follows_the_callers_role_not_the_creator(clean) -> None:
+    """Round 4, P3. ``isOwner`` is the caller's own role. A demoted creator
+    is not an owner, an owner who did not create the room is one, and the
+    creator of a room with no rows is its owner."""
+    demoted = _seed_session(_ALICE, (_BOB, "owner"))
+    _exec(
+        "UPDATE chat_session_participant SET role = 'member' "
+        "WHERE session_id = :i AND subject = :s", i=demoted, s=_ALICE,
+    )
+    assert _is_owner(_ALICE, demoted) is False
+    assert _is_owner(_BOB, demoted) is True
+
+    legacy = _bare_session(_ALICE)
+    assert _is_owner(_ALICE, legacy) is True
+    member = _seed_session(_ALICE, (_CAROL, "member"))
+    assert _is_owner(_CAROL, member) is False
+
+
+# ---------------------------------------------------------------------------
 # 8. The clearance filter
 # ---------------------------------------------------------------------------
 
