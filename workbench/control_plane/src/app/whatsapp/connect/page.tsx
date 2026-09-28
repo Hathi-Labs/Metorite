@@ -320,7 +320,7 @@ function PersonalPairing({
             )}
           </div>
 
-          <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+          <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
             <b>Heads up:</b> linking a personal number this way is outside
             WhatsApp&apos;s official terms and carries a small risk to the
             account. It&apos;s great for your own line; use the Cloud API for a
@@ -350,9 +350,9 @@ function PersonalPairing({
 function BridgeUnreachable({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="mt-3">
-      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-        <Icon name="AlertTriangle" className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-        <div className="text-[12px] text-amber-700 dark:text-amber-400">
+      <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3">
+        <Icon name="AlertTriangle" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+        <div className="text-[12px] text-warning">
           <div className="font-semibold">The WhatsApp bridge isn&apos;t running</div>
           <p className="mt-1 leading-relaxed">
             Personal linking needs the local <code>whatsapp_bridge</code> service

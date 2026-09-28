@@ -540,9 +540,9 @@ export default function EmailPage() {
             {/* Steps */}
             <div className="space-y-4 mb-5">
               {/* Step 1: OAuth */}
-              <div className={`p-3 rounded-xl border ${oauthStatus.gmail && oauthStatus.microsoft ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
+              <div className={`p-3 rounded-xl border ${oauthStatus.gmail && oauthStatus.microsoft ? "border-success/20 bg-success/5" : "border-warning/20 bg-warning/5"}`}>
                 <div className="flex items-start gap-3">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold ${oauthStatus.gmail && oauthStatus.microsoft ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"}`}>
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold ${oauthStatus.gmail && oauthStatus.microsoft ? "bg-success/20 text-success" : "bg-warning/20 text-warning"}`}>
                     {oauthStatus.gmail && oauthStatus.microsoft ? <AppIcon name="CheckCircle2" size={14} /> : "1"}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -605,7 +605,7 @@ export default function EmailPage() {
                         onClick={() => handleConnect("imap")}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-secondary transition-colors"
                       >
-                        <span className="w-4 h-4 rounded-full bg-amber-500/15 text-amber-400 flex items-center justify-center text-[9px] font-bold">IM</span>
+                        <span className="w-4 h-4 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-[9px] font-bold">IM</span>
                         IMAP/SMTP
                       </button>
                     </div>
@@ -860,8 +860,8 @@ export default function EmailPage() {
         {/* ── Reconnect banner: account auth/sync is failing ── */}
         {selectedAccount &&
           (selectedAccount.syncStatus === "error" || authErrors[selectedAccount.id]) && (
-          <div className="flex items-start gap-2 px-3 py-2 border-b border-amber-500/30 bg-amber-500/10 flex-shrink-0">
-            <AppIcon name="AlertCircle" size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start gap-2 px-3 py-2 border-b border-warning/30 bg-warning/10 flex-shrink-0">
+            <AppIcon name="AlertCircle" size={14} className="text-warning mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-foreground">
                 <span className="font-medium">{selectedAccount.emailAddress}</span> can&apos;t
@@ -874,14 +874,14 @@ export default function EmailPage() {
             {(selectedAccount.provider === "gmail" || selectedAccount.provider === "microsoft") ? (
               <button
                 onClick={() => handleConnect(selectedAccount.provider as "gmail" | "microsoft")}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-[11px] font-medium transition-colors flex-shrink-0"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-warning/20 text-warning hover:bg-warning/30 text-[11px] font-medium transition-colors flex-shrink-0"
               >
                 <AppIcon name="ExternalLink" size={11} /> Reconnect
               </button>
             ) : (
               <a
                 href="/integrations?tab=email"
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-[11px] font-medium transition-colors flex-shrink-0"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-warning/20 text-warning hover:bg-warning/30 text-[11px] font-medium transition-colors flex-shrink-0"
               >
                 <AppIcon name="ExternalLink" size={11} /> Fix in Integrations
               </a>
@@ -1110,9 +1110,9 @@ export default function EmailPage() {
               </button>
               <button
                 onClick={() => { setShowAddModal(false); handleConnect("imap"); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-amber-400/40 hover:bg-amber-500/5 transition-colors text-left"
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-cat-12/40 hover:bg-cat-12/5 transition-colors text-left"
               >
-                <span className="w-8 h-8 rounded-full bg-amber-500/15 text-amber-400 flex items-center justify-center text-xs font-bold">IM</span>
+                <span className="w-8 h-8 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-xs font-bold">IM</span>
                 <div>
                   <div className="text-sm font-medium text-foreground">IMAP / SMTP</div>
                   <div className="text-[11px] text-muted-foreground">Manual server configuration</div>

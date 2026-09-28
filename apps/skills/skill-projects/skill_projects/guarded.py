@@ -74,6 +74,10 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 CLOSING = ("done", "cancelled")
 ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each one."
 
+#: WS-27bn R5d (§9 Q12). The words of the server's 403, in
+#: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
+REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
 
 def _many(value: str) -> bool:
     """A comma or a newline in a one-row argument is a list. A space is
@@ -945,6 +949,10 @@ async def report_delete(report_id: str) -> str:
         return f"report_delete {ONE_ACT}"
     rid = uuid_of(report_id, "report_id")
     row = (await get(f"/projects/reports/{rid}")) or {}
+    if row.get("can_delete") is False:
+        # WS-27bn R5d (§9 Q12). The server computed the rule. Say it, and
+        # show no card that the DELETE would refuse.
+        return f"{REPORT_DELETE_REFUSED}\n  report_id: {rid}"
     scope = "the portfolio"
     if row.get("project_id"):
         _scope_id, scope_node = await _node(str(row.get("project_id")))

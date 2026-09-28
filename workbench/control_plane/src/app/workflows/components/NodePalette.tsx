@@ -236,7 +236,7 @@ export default function NodePalette({
       ) : (
         <>
           <div className="flex items-center gap-1.5 px-1 pb-2 text-[10px] text-muted-foreground">
-            <AppIcon name="Zap" className="w-3 h-3 text-amber-500" />
+            <AppIcon name="Zap" className="w-3 h-3 text-cat-12" />
             Drag onto the canvas, or click to append
           </div>
 

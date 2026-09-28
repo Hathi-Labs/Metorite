@@ -104,6 +104,7 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
     // flip and then wonder about.
     const BRANCHING_FLAGS = [
       "NEXT_PUBLIC_PROJECTS_CHAT",
+      "NEXT_PUBLIC_PROJECTS_IMPORT",
       "NEXT_PUBLIC_SHOW_PREVIEW_APPS",
     ];
     const all = sourcesNamingAFlag()

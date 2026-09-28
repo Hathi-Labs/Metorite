@@ -93,7 +93,7 @@ const STATUS_META: Record<SenderStatus, { label: string; cls: string; help: stri
     help: "We sent a real unsubscribe request to the sender",
   },
   AUTO_ARCHIVED: {
-    label: "Auto-archive", cls: "bg-amber-500/15 text-amber-400",
+    label: "Auto-archive", cls: "bg-warning/15 text-warning",
     help: "Future mail from this sender is archived automatically",
   },
 };
@@ -935,8 +935,8 @@ export function BulkUnsubscribeView({
           still live. */}
       {!loading && senders.length > 0 &&
         senders.every((s) => !(s.labelled ?? 0)) && (
-        <div className="flex items-center flex-wrap gap-2 px-3 sm:px-5 py-2 border-b border-border bg-amber-500/10 flex-shrink-0">
-          <Icon name="RotateCcw" size={13} className="text-amber-500 flex-shrink-0" />
+        <div className="flex items-center flex-wrap gap-2 px-3 sm:px-5 py-2 border-b border-border bg-warning/10 flex-shrink-0">
+          <Icon name="RotateCcw" size={13} className="text-warning flex-shrink-0" />
           <span className="text-[11px] text-foreground">
             None of your email is categorized here yet — your labels may not have
             synced down from your mail provider.
@@ -945,7 +945,7 @@ export function BulkUnsubscribeView({
             onClick={restoreLabels}
             disabled={categorizing}
             title="Read the labels back from Gmail / Outlook into this view"
-            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500 text-white text-[11px] font-medium hover:bg-amber-500/90 transition-colors disabled:opacity-50"
+            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-warning text-warning-foreground text-[11px] font-medium hover:bg-warning/90 transition-colors disabled:opacity-50"
           >
             {categorizing ? (
               <Icon name="Loader2" className="animate-spin" size={12} />
@@ -964,8 +964,8 @@ export function BulkUnsubscribeView({
           a number and a route to the decision, a gate just looks like the
           cleaner having got worse. */}
       {pending && (
-        <div className="flex items-center flex-wrap gap-2 px-3 sm:px-5 py-2 border-b border-border bg-amber-500/10 flex-shrink-0">
-          <Icon name="HelpCircle" size={13} className="text-amber-500 flex-shrink-0" />
+        <div className="flex items-center flex-wrap gap-2 px-3 sm:px-5 py-2 border-b border-border bg-warning/10 flex-shrink-0">
+          <Icon name="HelpCircle" size={13} className="text-warning flex-shrink-0" />
           <span className="text-[11px] text-foreground">
             <strong className="font-semibold">{pending.n}</strong>
             {pending.n === 1
@@ -1086,7 +1086,7 @@ export function BulkUnsubscribeView({
               <ActionBtn
                 title="Auto-archive future mail (provider filter)"
                 onClick={() => bulkAct("AUTO_ARCHIVED")}
-                className="hover:bg-amber-500/10 hover:text-amber-400"
+                className="hover:bg-warning/10 hover:text-warning"
               >
                 <Icon name="ArchiveRestore" size={13} /> Auto-archive
               </ActionBtn>
@@ -1409,7 +1409,7 @@ export function BulkUnsubscribeView({
                         <ActionBtn
                           title="Auto-archive future mail from this sender"
                           onClick={() => act(s, "AUTO_ARCHIVED")}
-                          className="hover:bg-amber-500/10 hover:text-amber-400"
+                          className="hover:bg-warning/10 hover:text-warning"
                         >
                           <Icon name="ArchiveRestore" size={13} /> Auto-archive
                         </ActionBtn>
@@ -1828,14 +1828,14 @@ function ReadRing({ value }: { value: number }) {
         />
         <circle
           cx="13" cy="13" r={r} fill="none" strokeWidth="3" strokeLinecap="round"
-          className={low ? "stroke-amber-400" : "stroke-primary"}
+          className={low ? "stroke-warning" : "stroke-primary"}
           strokeDasharray={circ}
           strokeDashoffset={circ * (1 - pct / 100)}
         />
       </svg>
       <span
         className={`absolute text-[8px] font-semibold tabular-nums ${
-          low ? "text-amber-400" : "text-foreground"
+          low ? "text-warning" : "text-foreground"
         }`}
       >
         {pct}

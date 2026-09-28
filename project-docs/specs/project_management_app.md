@@ -8105,9 +8105,10 @@ muted steps follow them at the same indent.
 **Known gaps, not fixed here.**
 
 - The assistant's subtask tool (`skill-my-tasks`) still writes a step through
-  `POST /projects/tasks`. It takes the first lane and states nothing.
-- The Projects panel's "add subtask" also takes the first lane. §12.9 does
-  not say what Projects does, so S4 did not change it.
+  `POST /projects/tasks`. It states nothing. **§11.42 closes the lane half:**
+  the step now takes the parent's open lane.
+- The Projects panel's "add subtask" took the first lane. **Closed by
+  §11.42.**
 - A filed capture keeps its stated INBOX. It shows in the Inbox with its
   crumb until the member clarifies it.
 - A step block shorter than one hour still has more lines than room. The
@@ -8259,6 +8260,59 @@ ticked box for Archive and Move.
 - A board drop that moves two axes at once does not ask.
 - An organize that promotes WITH subtasks names only the parent in the card's
   receipt.
+
+### 11.42 D-PM-38 — a new step lands in its parent's lane from every door (2026-09-28)
+
+**The gap was in §11.40.** Only My Tasks put a new step in the parent's lane.
+The Projects panel, the board and three chat doors create a step through
+`POST /projects/tasks`. The chat doors are `add_subtasks`,
+`my_tasks_add_subtasks` and `create_task` with a `parent_task_id`. That route
+took the first lane.
+
+**The rule, in one seam.** `core.parent_lane_status` decides the lane. A new
+task with a `parent_task_id` takes the parent's lane when all of these are
+true:
+
+- The lane is open and is not triage.
+- The lane is in the new task's own status set. The check is on the set's
+  owner, so a subproject that inherits the set also qualifies.
+- The caller stated no `status_id`.
+
+Otherwise the task takes `load_default_status` (D79). A stated `status_id`
+always wins. `tasks.create_task` and `personal.step_status` both call the
+seam, so there is no second copy. The NEXT rule (`step_overlay`) stays on
+the My Tasks door only.
+
+**The chat receipt names the lane.** `add_subtasks` reads the lane name after
+the writes. The first line reads "Added to «In review» under #7 «…»:". When
+that read fails, the tool still reports the steps.
+
+**The chat `create_task` card and receipt tell the truth.** With a parent and
+no status, the card forecasts the lane from the same statuses read, for
+example "status «In review» (the parent's lane)". A closed or foreign parent
+lane reads "the default". The receipt names the lane off the created row, so
+the gateway's answer wins when the forecast is wrong. With no parent, the card
+keeps "the default".
+
+No migration. No frontend change: both panel doors already send a parent and
+no status.
+
+| Item | Where | Fence |
+|---|---|---|
+| The one lane rule | `core.parent_lane_status` | `test_subtask_parent_lane.py`, live checks (a)–(e) |
+| `POST /tasks` uses it for a step with no stated status | `tasks.create_task` | `test_subtask_parent_lane.py`, live (a), (c) |
+| My Tasks uses the same seam | `personal.step_status` | `test_subtasks_s4.py`, live (g) |
+| The chat receipt names the lane and sends no status | `skill_projects.writes.add_subtasks` | `test_projects_agent_writes.py`, live (f) |
+| The chat `create_task` card forecasts the parent's lane, and its receipt reads the created row | `skill_projects.writes.create_task`, `_parent_lane_label` | `test_projects_agent_writes.py` |
+
+The live checks are `tests/live/live_subtask_parent_lane.py`, on a fresh
+database.
+
+**Known gaps, not fixed here.**
+
+- `skill-my-tasks` `my_tasks_add_subtasks` gets the lane now. It still states
+  no NEXT, and its reply does not name the lane. The door that states NEXT is
+  `POST /my/tasks/{id}/subtasks`, and the tool does not call it yet.
 
 ---
 

@@ -449,9 +449,33 @@ quietly become fiction.
 
 A status tone is also TEXT. The gate measures `text-warning` and its four
 siblings at 4.5 : 1 on the page, the card, `--muted` and their own 10% chip
-tint, in both modes. So light mode needs a darker value than dark mode.
-`--warning` is a dark amber on white and a bright yellow on near-black
-(H-174). The other four still have ratchet entries (H-193).
+tint, in both modes. It also measures each `-foreground` ink on its solid
+fill. So light mode needs a darker value than dark mode. `--warning` is a
+dark amber on white and a bright yellow on near-black (H-174). `--success`,
+`--destructive` and `--info` are also darker in light mode (H-193).
+
+**No status tone may have a ratchet entry.** The test "every status tone
+clears AA" fails if `KNOWN_SHORTFALLS` names one of the five. A new tone
+value that fails is a colour to fix, not an entry to add.
+
+In dark mode, every status fill carries the dark ink. The dark
+`--destructive` is a light red, so white on it measures 3.01 : 1. Write
+`text-destructive-foreground` on `bg-destructive`, never `text-white`.
+
+**Amber is `warning`, and never the raw palette.** `text-amber-500` measures
+2.1 : 1 on white, and no token change can reach it. Use `warning` for a
+state, a caution or a highlight, such as the Calendar's star. Use `cat-12`,
+the amber slot of the ramp, for an identity, such as a workflow category or
+a provider. `conformance.test.ts` refuses a raw amber or yellow class in
+every file, with any utility prefix. It also refuses an amber or yellow hex
+in a class bracket, such as `text-[#f59e0b]`. A `PALETTE_DEBT` budget does
+not excuse either one.
+
+**A surface that is black in both modes takes ink that does not flip.** The
+chat's shell block is one. Its colours are the `--term-*` tokens, which
+`globals.css` declares in `:root` only. A mode token such as `text-cat-12`
+goes dark on black in light mode. `contrast.test.ts` measures each
+`--term-*` ink on `--term-bg`, and `themes.test.ts` refuses a `.light` copy.
 
 If you change a colour, run that test. Never signal state with colour alone —
 pair it with an icon or a label.

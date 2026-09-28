@@ -35,8 +35,8 @@ export default function ErrorCard({ parsed, compact = false }: { parsed: ParsedA
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed">{parsed.detail}</p>
           )}
           <div className="mt-2 flex items-start gap-1.5">
-            <span className="text-amber-500 shrink-0 text-xs mt-0.5">→</span>
-            <p className="text-xs text-amber-400/90 leading-relaxed">{parsed.suggestion}</p>
+            <span className="text-warning shrink-0 text-xs mt-0.5">→</span>
+            <p className="text-xs text-warning/90 leading-relaxed">{parsed.suggestion}</p>
           </div>
         </div>
         <button

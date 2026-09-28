@@ -112,8 +112,10 @@ def build_nodes(bundle: ImportBundle, target: Target) -> tuple[list[NodeSpec], d
 
 def project_statuses(
     bundle: ImportBundle, final: dict[str, tuple[str, Category]]
-) -> tuple[dict[str, list[tuple[str, Category]]], int]:
-    """Each project's status set (§6.3), and how many got a Done added (D79).
+) -> tuple[dict[str, list[tuple[str, Category]]], set[str]]:
+    """Each project's status set (§6.3), and the projects that got a Done
+    added (D79). A set, not a count: the writer reports only the projects it
+    creates, because a reused one already holds its Done.
 
     The set is the Metorite names the project's tasks use, one per name
     case-blind, ordered by stage and then by first sight. A set with no Done
@@ -131,7 +133,7 @@ def project_statuses(
     for project in (c for c in bundle.containers if c.kind == "project"):
         used.setdefault(project.ref, [])
 
-    added = 0
+    added: set[str] = set()
     out: dict[str, list[tuple[str, Category]]] = {}
     for ref, names in used.items():
         ordered = sorted(names, key=lambda nc: STAGE_ORDER[nc[1]])
@@ -140,7 +142,7 @@ def project_statuses(
         if not any(c == "done" for _, c in ordered):
             name = "Done" if "done" not in {n.lower() for n, _ in ordered} else "Done (imported)"
             ordered.append((name, "done"))
-            added += 1
+            added.add(ref)
         out[ref] = ordered
     return out, added
 

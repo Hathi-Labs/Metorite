@@ -1664,6 +1664,79 @@ async def test_report_delete_names_the_scope_project(monkeypatch) -> None:
     assert "«Ops»" in asked[0]["detail"]
 
 
+async def test_u_report_delete_refuses_before_the_card_when_the_server_says_no(
+    monkeypatch,
+) -> None:
+    """WS-27bn R5d (u), `projects_reports.md` §9 Q12. The server computes
+    `can_delete`. When it is false, the tool gives the reason and never
+    calls the card or DELETE. The fake gateway counts the calls."""
+    from skill_projects.guarded import REPORT_DELETE_REFUSED
+
+    def refused(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "can_delete": False}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, refused)
+    out = await skill_projects.report_delete(UUID)
+    assert REPORT_DELETE_REFUSED in out
+    assert asked == []
+    assert writes(calls) == []
+    assert [c["method"] for c in calls] == ["GET"]
+
+    # `can_delete` true: the card, then the DELETE, as before.
+    def allowed(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "can_delete": True}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, allowed)
+    await skill_projects.report_delete(UUID)
+    assert len(asked) == 1
+    assert [c["method"] for c in writes(calls)] == ["DELETE"]
+
+
+async def test_w_report_save_refuses_a_change_before_the_card_when_the_server_says_no(
+    monkeypatch,
+) -> None:
+    """WS-27bn R5d (w), `projects_reports.md` §9 Q13. The server computes
+    `can_edit`. When it is false, the PATCH path of `report_save` gives the
+    reason and never calls the card or PATCH. The fake gateway counts the
+    calls."""
+    from skill_projects.writes import REPORT_CHANGE_REFUSED
+
+    def refused(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "config": {"sections": ["load"]}, "can_edit": False}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, refused)
+    out = await skill_projects.report_save("Renamed", report_id=UUID)
+    assert REPORT_CHANGE_REFUSED in out
+    assert asked == []
+    assert writes(calls) == []
+    assert [c["method"] for c in calls] == ["GET"]
+
+    # `can_edit` true: the card, then the PATCH, as before.
+    def allowed(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": None,
+                    "config": {"sections": ["load"]}, "can_edit": True}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, allowed)
+    await skill_projects.report_save("Renamed", report_id=UUID)
+    assert len(asked) == 1
+    assert [c["method"] for c in writes(calls)] == ["PATCH"]
+
+
 # ── S4 — the forms: an editable card, the member's submit, then the class B card
 
 
@@ -1861,6 +1934,76 @@ async def test_the_subtasks_receipt_opens_the_parent_first(monkeypatch) -> None:
     fake_gateway(monkeypatch, responder)
     out = await skill_projects.add_subtasks(UUID, "a\nb")
     assert out.split("\n")[1] == f"  full_id: {UUID}"
+
+
+async def test_the_subtasks_receipt_names_the_lane_and_sends_no_status(
+    monkeypatch,
+) -> None:
+    """§11.42: the gateway picks the lane (the parent's, when it is open), so
+    the tool sends no status. The receipt names the lane the steps landed
+    in, read off the created row, as every status receipt does (D79)."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.add_subtasks(UUID, "a\nb")
+    posted = [c for c in writes(calls) if c["path"] == "/projects/tasks"]
+    assert posted and all("status_id" not in c["json"] for c in posted)
+    # The fake's created row carries S1, which the statuses read calls "To do".
+    assert out.split("\n")[0] == "Added to «To do» under #7 «Fix the extruder»:"
+    assert out.count("status «To do»") == 2
+
+
+def _lands_in(status_id: str, parent_status: str = S1):
+    """The responder, with the parent in ``parent_status`` and the created
+    row in ``status_id``, so the card (a forecast from the parent) and the
+    receipt (read off the created row) can say different things."""
+
+    def answer(call: dict) -> Any:
+        if call["path"] == f"/projects/tasks/{UUID}":
+            return {**TASK, "status_id": parent_status}
+        if call["method"] == "POST" and call["path"] == "/projects/tasks":
+            return {**responder(call), "status_id": status_id}
+        return responder(call)
+
+    return answer
+
+
+async def test_create_task_with_a_parent_forecasts_the_parents_lane(monkeypatch) -> None:
+    """§11.42: a step with no stated status lands in the parent's open lane.
+    The card says so, and the receipt names the lane off the created row."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _lands_in(S2, parent_status=S2))
+    out = await skill_projects.create_task(UUID, "A step", parent_task_id=UUID)
+    assert "status «In progress» (the parent's lane)" in asked[0]["detail"]
+    assert "status: «In progress» (the parent's lane)" in asked[0]["context"]
+    assert "the default" not in asked[0]["detail"]
+    assert "status «In progress»" in out
+
+
+async def test_create_task_under_a_closed_parent_forecasts_the_default(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _lands_in(S1, parent_status=S3))
+    out = await skill_projects.create_task(UUID, "A step", parent_task_id=UUID)
+    assert "status the default (the parent's lane is closed" in asked[0]["detail"]
+    assert "status «To do»" in out
+
+
+async def test_create_task_receipt_reads_the_created_row(monkeypatch) -> None:
+    """The receipt is the truth, whatever the card forecast."""
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _lands_in(S3, parent_status=S2))
+    out = await skill_projects.create_task(UUID, "A step", parent_task_id=UUID)
+    assert "status «Done»" in out
+    assert "In progress" not in out
+
+
+async def test_create_task_without_a_parent_keeps_the_default_on_the_card(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _lands_in(S1))
+    out = await skill_projects.create_task(UUID, "Top level")
+    assert "status the default" in asked[0]["detail"]
+    assert "status «To do»" in out
 
 
 def test_the_cards_know_every_guarded_tool() -> None:

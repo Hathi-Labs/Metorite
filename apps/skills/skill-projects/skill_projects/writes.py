@@ -357,7 +357,8 @@ async def create_task(
     assignees is comma-separated emails, agent:<name>, or people's names.
     due is YYYY-MM-DD. tags is comma-separated. Omit every priority argument
     to leave the task unjudged.
-    parent_task_id makes it a subtask. The member approves a card first;
+    parent_task_id makes it a subtask. A subtask with no status lands in the
+    parent's status when that status is open. The member approves a card first;
     nothing is created if they decline. Archive is the undo."""
     pid = uuid_of(project_id, "project_id")
     name = str(title or "").strip()
@@ -387,8 +388,13 @@ async def create_task(
     if tags.strip():
         payload["tags"] = _split(tags)
     if parent_task_id.strip():
-        parent_id, _parent = await _task(parent_task_id)
+        parent_id, parent = await _task(parent_task_id)
         payload["parent_task_id"] = parent_id
+        if "status_id" not in payload:
+            # The gateway puts a step with no stated status in the parent's
+            # lane (`core.parent_lane_status`, §11.42), so "the default" on
+            # the card would be false.
+            status_label = await _parent_lane_label(pid, parent)
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
     card = _priority_card(payload)
@@ -409,7 +415,36 @@ async def create_task(
     if who:
         await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
         task["assignees"] = who
+    if "status_id" not in payload:
+        # The receipt names the lane the row really landed in, read off the
+        # created row, as `add_subtasks` does. The card was a forecast.
+        status_label = await _lane_name(pid, task.get("status_id")) or status_label
     return "\n".join(["Created:", *_task_line(task, status_label), *notes])
+
+
+#: The card's words for a step whose lane the preview cannot name.
+PARENT_LANE_FALLBACK = "the parent's lane when it is open, else the default"
+
+
+async def _parent_lane_label(project_id: str, parent: dict[str, Any]) -> str:
+    """What the card says a new step's status will be.
+
+    A forecast of ``core.parent_lane_status`` from the same statuses read
+    ``_lane_name`` uses: the parent's lane when it is in this project's set,
+    open and not triage, else the first lane. The gateway decides, and the
+    receipt reads the real row, so a forecast that drifts cannot make the
+    receipt false. When the read fails, the card states the rule instead.
+    """
+    try:
+        rows = await _statuses_of(project_id)
+    except Exception:  # a card detail, never a write
+        return PARENT_LANE_FALLBACK
+    lane = next(
+        (r for r in rows if str(r.get("id")) == str(parent.get("status_id"))), None
+    )
+    if lane is not None and lane.get("category") not in ("done", "cancelled", "triage"):
+        return f"{data(lane.get('name'))} (the parent's lane)"
+    return "the default (the parent's lane is closed or in another set)"
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
@@ -566,8 +601,9 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
 async def add_subtasks(task_id: str, titles: str) -> str:
     """Break a task into steps. titles is one subtask per line, or
     comma-separated. ONE card lists every subtask; the member approves the
-    batch once. Each subtask lands in the parent's project with the default
-    status. Archive undoes any of them."""
+    batch once. Each subtask lands in the parent's project, in the parent's
+    status when that status is open, else in the project's first status.
+    The receipt names the status. Archive undoes any of them."""
     tid, parent = await _task(task_id)
     pid = str(parent.get("project_id"))
     raw = str(titles or "")
@@ -582,15 +618,41 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         context=_fields_block({f"{i + 1}": t for i, t in enumerate(parts)}),
     ):
         return CANCELLED
-    # The parent's id FIRST: the receipt card opens the first `full_id`,
-    # and its heading names the parent (H-162).
-    out = [f"Added under {_ref(parent)}:", f"  full_id: {tid}"]
-    for title in parts:
-        row = await post(
+    # No status is sent: the gateway puts each step in the parent's lane
+    # when that lane is open (`core.parent_lane_status`, D-PM-38).
+    rows = [
+        await post(
             "/projects/tasks", {"project_id": pid, "title": title, "parent_task_id": tid}
         )
-        out.extend(_task_line(row))
+        for title in parts
+    ]
+    lane = await _lane_name(pid, rows[0].get("status_id"))
+    # The parent's id FIRST: the receipt card opens the first `full_id`,
+    # and its heading names the parent (H-162). The heading also names the
+    # lane the steps landed in, as every status receipt does (D79).
+    head = f"Added to {data(lane)} under {_ref(parent)}:" if lane else f"Added under {_ref(parent)}:"
+    out = [head, f"  full_id: {tid}"]
+    for row in rows:
+        out.extend(_task_line(row, lane))
     return "\n".join(out)
+
+
+async def _lane_name(project_id: str, status_id: Any) -> str:
+    """The name of the lane a new row landed in, or ``""``.
+
+    Read after the writes, so a failed read must not hide them: the rows
+    exist, and a raised error would tell the model that nothing was written.
+    """
+    if not status_id:
+        return ""
+    try:
+        rows = await _statuses_of(project_id)
+    except Exception:  # a receipt detail, never a write
+        return ""
+    return next(
+        (str(r.get("name") or "") for r in rows if str(r.get("id")) == str(status_id)),
+        "",
+    )
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
@@ -933,6 +995,51 @@ REPORT_SECTIONS = (
     "hygiene", "conflicts", "rebalance",
 )
 
+#: WS-27bn R5d (§9 Q13). The words of the server's 403, in
+#: ``reports.CHANGE_REFUSED``. A test pins the two as one sentence.
+REPORT_CHANGE_REFUSED = "Only the author of this report or an admin may change it."
+
+
+async def _report_change(
+    report_id: str, project_id: str, payload: dict[str, Any], config: dict[str, Any],
+) -> str:
+    """The UPDATE path of ``report_save``.
+
+    The route changes `name` and `config` only, and it REPLACES `config`
+    (reports.py `update_report`), so the tool merges the member's change into
+    the saved config first and never sends a scope: a report's scope cannot
+    change, and the card must not say it can. Save a new report for another
+    scope.
+    """
+    rid = uuid_of(report_id, "report_id")
+    if project_id.strip():
+        return (
+            "A saved report keeps its scope. Save a new report for another "
+            "project, or leave project_id empty to change this one."
+        )
+    existing = await get(f"/projects/reports/{rid}") or {}
+    if existing.get("can_edit") is False:
+        # WS-27bn R5d (§9 Q13). The server computed the rule. Say it, and
+        # show no card that the PATCH would refuse.
+        return f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
+    if config:
+        merged = dict(existing.get("config") or {})
+        merged.update(config)
+        payload["config"] = merged
+    if not payload:
+        return "Nothing to change."
+    card = dict(payload)
+    if "config" in card:
+        card["config"] = ", ".join(f"{k} {v}" for k, v in payload["config"].items())
+    if not await _confirm(
+        title="Change this report?",
+        detail=data(existing.get("name")),
+        context=_fields_block(card),
+    ):
+        return CANCELLED
+    row = await patch(f"/projects/reports/{rid}", payload)
+    return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
+
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
 async def report_save(
@@ -962,35 +1069,7 @@ async def report_save(
         payload["name"] = label
     scope = "the portfolio"
     if report_id.strip():
-        # An UPDATE. The route changes `name` and `config` only, and it
-        # REPLACES `config` (reports.py `update_report`), so the tool merges
-        # the member's change into the saved config first and never sends a
-        # scope: a report's scope cannot change, and the card must not say
-        # it can. Save a new report for another scope.
-        rid = uuid_of(report_id, "report_id")
-        if project_id.strip():
-            return (
-                "A saved report keeps its scope. Save a new report for another "
-                "project, or leave project_id empty to change this one."
-            )
-        existing = await get(f"/projects/reports/{rid}")
-        if config:
-            merged = dict(existing.get("config") or {})
-            merged.update(config)
-            payload["config"] = merged
-        if not payload:
-            return "Nothing to change."
-        card = dict(payload)
-        if "config" in card:
-            card["config"] = ", ".join(f"{k} {v}" for k, v in payload["config"].items())
-        if not await _confirm(
-            title="Change this report?",
-            detail=data(existing.get("name")),
-            context=_fields_block(card),
-        ):
-            return CANCELLED
-        row = await patch(f"/projects/reports/{rid}", payload)
-        return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
+        return await _report_change(report_id, project_id, payload, config)
     if config:
         payload["config"] = config
     if project_id.strip():

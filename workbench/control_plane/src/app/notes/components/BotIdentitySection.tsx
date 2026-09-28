@@ -165,8 +165,8 @@ export default function BotIdentitySection() {
           </span>
         </p>
       ) : (
-        <p className="mb-3 flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
-          <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <p className="mb-3 flex items-start gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs">
+          <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
           <span>
             Not signed in, so Google will decline the notetaker — it refuses
             participants that aren&apos;t signed in, and being in the call
@@ -192,7 +192,7 @@ export default function BotIdentitySection() {
       )}
 
       {id.profile === false && (
-        <p className="mb-3 text-xs text-amber-500">
+        <p className="mb-3 text-xs text-warning">
           No persistent browser profile is configured (MEET_PROFILE_DIR), so a
           sign-in wouldn&apos;t survive a restart. Fix that on the server first.
         </p>

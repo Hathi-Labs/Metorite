@@ -1215,7 +1215,7 @@ const AGENT_COLORS: Record<string, string> = {
   "task-manager": "text-cyan-400",
   "sales":        "text-emerald-400",
   "delivery":     "text-blue-400",
-  "triage":       "text-amber-400",
+  "triage":       "text-cat-12",
   "reconciler":   "text-violet-400",
   "billing":      "text-indigo-400",
   "strategy":     "text-orange-400",
@@ -1310,7 +1310,7 @@ function AgentTile({
           <button
             onClick={handlePull}
             disabled={pulling}
-            className="absolute top-1 right-1 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white shadow-md hover:bg-amber-600 disabled:opacity-60 transition-colors cursor-pointer z-10"
+            className="absolute top-1 right-1 rounded-full bg-warning px-2 py-0.5 text-[10px] font-bold text-warning-foreground shadow-md hover:bg-warning/90 disabled:opacity-60 transition-colors cursor-pointer z-10"
             title={`${behindBy} commit${behindBy !== 1 ? "s" : ""} behind — click to pull`}
           >
             {pulling ? "…" : behindBy}
@@ -1972,7 +1972,7 @@ function AgentSidePanel({
               <button
                 onClick={doPull}
                 disabled={pulling}
-                className="flex items-center justify-center gap-2 w-full rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs font-medium text-amber-600 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
+                className="flex items-center justify-center gap-2 w-full rounded-lg bg-warning/10 border border-warning/20 px-3 py-2 text-xs font-medium text-warning hover:bg-warning/20 disabled:opacity-50 transition-colors"
               >
                 <AppIcon name="RefreshCw" className={`w-3.5 h-3.5 ${pulling ? "animate-spin" : ""}`} />
                 {pulling
@@ -2189,7 +2189,7 @@ export default function AgentsPage() {
               disabled={checkingAll}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm font-medium transition-colors disabled:opacity-50 ${
                 behindCount > 0
-                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20"
+                  ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/20"
                   : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
               title={

@@ -151,7 +151,7 @@ function FlagToggle({
 }) {
   const on =
     tone === "important"
-      ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      ? "border-warning/50 bg-warning/10 text-warning"
       : tone === "leveraged"
         ? "border-violet-500/50 bg-violet-500/10 text-violet-600 dark:text-violet-400"
         : "border-sky-500/50 bg-sky-500/10 text-sky-600 dark:text-sky-400";
@@ -203,8 +203,10 @@ export function PriorityBadge({
 const SUGGESTION_TONE: Record<Exclude<ActionMode, "do">, string> = {
   delegate:
     "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
+  // `primary`, as ListColumns' MODE_TONE draws `schedule` (H-193 moved it
+  // off raw amber; "it stays with you" is not a warning).
   schedule:
-    "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    "border-primary/40 bg-primary/10 text-primary",
   drop: "border-border bg-secondary/60 text-muted-foreground",
 };
 

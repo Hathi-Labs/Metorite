@@ -13,8 +13,9 @@ T13 live). **R3d BUILT 2026-09-28** (the `pulse` section, `PulsePanel`,
 and T1 live).
 
 **R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
-server, in `report_scope.py`). R5b is next. R5c is blocked. R4, R4b, R5b,
-R6 to R9 and Phases 2 and 3 are not built.
+server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
+chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13). R5b is next. R5c is
+blocked. R4, R4b, R5b, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -137,11 +138,12 @@ defect.
 - `TEMPLATES` (`:184`) is the template catalogue of §4 (R2).
 - `SCHEDULES` (`:284`) holds only `"weekly"`.
 - `delivery_armed()` (`:287`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:528`, templates at `:576` and subjects at
-  `:593` (R5a). Create is at `:613`. Get, patch and delete are at `:650` to
-  `:698`. Render is at `:1053` and preview at `:1089`. Recipients are at
-  `:1175` to `:1256`, and schedule is at `:1274`.
-- `render_body` (`:712`) holds the section loop. Render and preview both
+- The routes: list is at `:567`, templates at `:615` and subjects at
+  `:632` (R5a). Create is at `:652`. Get, patch and delete are at `:689` to
+  `:739`. Render is at `:1094` and preview at `:1130`. Recipients are at
+  `:1220` to `:1302`, and schedule is at `:1320`. These anchors were
+  measured again on 2026-09-28, after the R5d change rule.
+- `render_body` (`:753`) holds the section loop. Render and preview both
   call it.
 - **Since R5a:** `routes/projects/report_scope.py` holds the rule of §7.1,
   the subject clause and the row filter.
@@ -349,7 +351,7 @@ The builder is one sentence of chips, with a live preview beside it:
   Today, a custom range and the forward periods need new config fields. A
   later slice adds those fields and those periods.
 - **"More"** opens the section list, so a member can add or remove a section.
-  Order stays fixed by `SECTIONS` (`reports.py:80` to `:92` gives the reason).
+  Order stays fixed by `SECTIONS` (`reports.py:100` to `:123` gives the reason).
 - **The preview renders from the server** on each change, with a short delay.
   It uses `POST /projects/reports/preview` with an unsaved config. The
   browser computes no figure (§9.12.7).
@@ -728,7 +730,7 @@ spec-auditor split R3 into four slices on 2026-09-24. Each slice is one PR.
 **The lockstep list.** A section name lives in seven places, plus the chat
 card map. A slice adds its name to each of them in the same PR:
 
-1. `reports.py` `SECTIONS` (`:108`).
+1. `reports.py` `SECTIONS` (`:124`).
 2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1447`). This is the
    chat's list, not `views.py`.
 3. `skill_projects/writes.py` `REPORT_SECTIONS` (`:854`).
@@ -1180,6 +1182,94 @@ A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
 
+### R5d — The role rule in the chat, and who may change a report · AGENT-SAFE
+
+**What:** two server changes and their words in the chat and the UI. The dataset read obeys §7.1 rule 3 (Q10). The delete route obeys Q12. A change to a report obeys the same rule (Q13).
+
+**Rules, the dataset** (`analytics_dataset.py`, the chat tool `task_dataset`):
+- The route calls `reader_scope` once, in the tenant session of the request. An admin gets `None`, and the answer for an admin does not change.
+- With `group_by=assignee`, the groups of people outside the allowed set go. The unassigned group and the `agent:` groups stay.
+- `filter_person_rows` with `key="key"` removes them. A second filter in another module is a defect.
+- The filter runs before the cap of `MAX_GROUPS`. The SQL limit must never remove an allowed person.
+- `total` still counts every task. `groups_total` and `groups_truncated` count the groups that the reader receives.
+- `hidden_people` counts the people whose groups went. Only a restricted reader receives it, as in R5a.
+- An `assignee` or `assignees` filter that names a person outside the allowed set gets 403. The reason comes from `ReaderScope.allows`. This binds rows and groups, because `total` is then a count for that person.
+- A row keeps its `assignees` column. The reader can open each task and see its assignees. This is the R5a rule for dependency conflict rows.
+- The HR gate of O3 and the K rule (`MIN_GROUP_PEOPLE`) stay unchanged.
+- `task_dataset` prints the hidden line through `hidden_people_line(payload, "view")`.
+
+**Rules, the delete** (`reports.py` `delete_report`):
+- A report on a node that the reader cannot see still gets 404.
+- The author of the report may delete it. An admin (`can_read_hr_fields`) may delete it too.
+- Every other reader gets 403 with the reason "Only the author of this report or an admin may delete it."
+- The author may delete their report when the subject check refuses them. So a lead who left a team can still remove their own report.
+- `_report_dict` carries `can_delete`, which the server computes, as it computes `mine`.
+- The chat tool `report_delete` reads `can_delete` before the card. When the value is false, the tool gives the reason and shows no card.
+
+**Rules, a change** (`reports.py`, §9 Q13, added 2026-09-28):
+- The rule of the delete also binds `PATCH /reports/{id}`, the recipient add and remove routes, and `PATCH /reports/{id}/schedule`.
+- The order is the same. A report on a node that the reader cannot see still gets 404. Then the author or an admin passes.
+- Every other reader gets 403 with the reason "Only the author of this report or an admin may change it."
+- The author path skips the subject check of the report, as the delete does. A new subject in a PATCH still passes `require_subject`.
+- One function, `_may_change`, holds the rule for a delete and a change. A second copy of the rule is a defect.
+- `_report_dict` carries `can_edit` beside `can_delete`. Both come from `_may_change`, so the two values are always equal.
+- The chat tool `report_save` reads `can_edit` before the card of a change. When the value is false, the tool gives the reason and shows no card.
+- The Reports app shows Edit only when `can_edit` is true. The control is absent, never disabled, as in `people_center_app.md` §3.2.
+- A read does not change. Any reader who may open the report can still get it, render it and list its recipients.
+
+**Out of R5d, with the reason:**
+- `rebalance`, `fit_for_task` and `propose_plan`. The HR grant gates their per-person figures, and only the admin row holds it.
+- `analytics_load`, `team_capacity`, `find_conflicts`, `status_report` and `render_report`. R5a filters them.
+- `people_for`. Its load and skills are HR tier, and its names are directory tier.
+- `list_tasks` and `find_tasks`. They list tasks that the reader can open.
+- A count that the model makes over the rows. This limit is advisory, as O1 of `projects_ai_chat.md` §13.7 says.
+
+**Non-goals:** `created_by` (Q11). Any UI change other than Edit.
+
+**Done when** (each on a real database, in `test_projects_report_scope_r5.py`, which reuses the `seeded` fixture):
+- (l) Member M reads the dataset with `group_by=assignee`. The groups hold M, the unassigned group and the `agent:` groups only. `hidden_people` counts the others. `total` equals the total for an admin.
+- (m) An admin makes the same read. It holds a group for each person and no `hidden_people` key.
+- (n) Lead L makes the same read. It holds the groups of L and team A, and no group from team B.
+- (o) M reads with `assignee` set to N and gets 403. The reason names the role that would allow it. This holds with `group_by` and without it. L reads with `assignee` set to M and gets 200.
+- (p) M reads rows with the `assignees` column. Each row keeps its assignees. The row count equals the admin's for the same filters.
+- (q) With `MAX_GROUPS` set to 2 by the test, an allowed person who ranks third still receives a group.
+- (r) The author deletes a report and gets 204. An admin deletes the report of another person and gets 204.
+- (s) A member who can open the report of another person gets 403 with the reason. The row still exists.
+- (t) L saves a report on N and then leaves team B. L deletes it and gets 204.
+- (u) `report_delete` with `can_delete` false returns the reason. It never calls the card or DELETE. A fake gateway counts the calls.
+- (v) If the dataset filter is removed, (l) turns red. If the delete check is removed, (s) turns red.
+- (w) `report_save` with `report_id` and `can_edit` false returns the reason. It never calls the card or PATCH. A fake gateway counts the calls.
+- (x) The author and an admin each get 200 from the PATCH, the recipient add and remove, and the schedule. `can_edit` is true for each.
+- (y) A member who can open the report of another person gets 403 with the reason from each change route. The row, its recipients and its schedule do not change. The member can still render the report.
+- (z) L saves a report on N and then leaves team B. L changes it, its recipients and its schedule, and gets 200 each time. The render still gets 403.
+- (aa) A report on a node that the reader cannot see gets 404 from each change route, before the author path.
+- (ab) The Reports app shows Edit to the author and to an admin, and shows no Edit to any other member. A vitest proves it.
+- (ac) A mutation that removes the change check from the PATCH turns (y) red.
+
+**As built (2026-09-28).** `analytics_dataset.py` reads `reader_scope` once in the route. `assignee_refusal` gives the 403, and `dataset_body` takes `allowed`.
+For a restricted reader grouped by assignee, the SQL takes no limit, and `filter_person_rows` runs before the cap.
+
+`reports.py` holds `DELETE_REFUSED`. The 2026-09-28 change below renamed `_may_delete` to `_may_change`.
+`_visible_report` with `refusal` runs the project 404 and then the author-or-admin rule. It skips the subject check.
+
+The delete rule also replaces the old 422 for a stored subject with a bad shape. Any other reader now gets the 403 of the delete rule.
+Test (i) no longer expects 403 from the delete, because (t) replaces that half.
+
+`test_projects_report_scope_r5.py` proves (l) to (t) on a real database, and `test_projects_agent_writes.py` proves (u).
+Six mutations each turn a test red (v). They remove the filter, its 403, the author path, the delete check or the chat check, or they put back the SQL limit.
+
+**As built, the change rule (2026-09-28, §9 Q13).** `reports.py` holds `CHANGE_REFUSED` and one function, `_may_change`, for the delete and for a change.
+`_visible_report` takes `refusal`. The delete passes `DELETE_REFUSED`. `update_report`, `add_recipient`, `remove_recipient` and `set_schedule` pass `CHANGE_REFUSED`.
+
+`_report_dict` sets `can_edit` and `can_delete` from one call to `_may_change`. The two flags keep the name of each act for the client that offers it.
+
+`writes.py` holds `REPORT_CHANGE_REFUSED`, and `_report_change` is the update path of `report_save`. It reads `can_edit` before the card.
+`ReportsView.tsx` exports `ReportActions`, which renders Edit only when `can_edit` is true. `reportActions.test.ts` proves (ab).
+
+`test_projects_report_scope_r5.py` proves (w) to (aa) on a real database, and `test_projects_agent_writes.py` proves (w) for the chat.
+Six mutations each turn a test red (ac). Three change the server: no PATCH check, a pass for every change, or no author path for a change.
+Three change a client: `can_edit` always true, no chat check, or Edit always.
+
 ### R6 — The AI summary, on request · AGENT-SAFE
 
 **What:** a **Summarize with AI** control on a rendered report. When a person
@@ -1331,6 +1421,10 @@ that the render does not need a saved row.
 | Q7 (2026-09-25) | Before R5, who sees the cards for each person? | An admin sees every card. Any other reader sees only their own card, and a line counts the hidden people (R3d, edit E5). |
 | Q8 (2026-09-28) | Where does the member setting of R5c live? | R5c waits for the WS-29 fix that scopes `org_settings` to each organization. The setting stays off until then. |
 | Q9 (2026-09-28) | May a lead of a Center group report on its members? | Yes. A lead of any group reports on the members of that group, whatever its size. Admins control who holds the lead role. |
+| Q10 (2026-09-28) | Does the chat's task data read obey the role rule? | The owner: "run role rule in chat". The dataset read obeys §7.1 rule 3. A reader cannot group or count tasks by a person outside the people they may report on. This amends O3 of `projects_ai_chat.md` §13.7 (R5d). |
+| Q11 (2026-09-28) | May a report show the address of its author? | The owner: "author email address is fine for people from the same org". Every reader is in the organization of the report. So `created_by` stays in the report, the list and the chat. Nothing changes. |
+| Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
+| Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
@@ -1361,7 +1455,7 @@ uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_analytics_load.py \
   tests/unit/test_projects_analytics_capacity.py \
   tests/unit/test_projects_analytics_rebalance.py \
-  tests/unit/test_projects_analytics_conflicts.py -q -rs
+  tests/unit/test_projects_analytics_conflicts.py   tests/unit/test_projects_analytics_dataset.py -q -rs
 
 uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_recipients.py \
@@ -1373,7 +1467,7 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_templates.py \
   tests/unit/test_projects_report_visuals.py \
   tests/unit/test_projects_analytics_outlook.py \
-  tests/unit/test_tenant_coverage.py -q -rs
+  tests/unit/test_tenant_coverage.py   tests/unit/test_projects_agent_writes.py -q -rs
 ```
 
 `test_projects_agent.py` holds the class-A reach fence. A manifest row that

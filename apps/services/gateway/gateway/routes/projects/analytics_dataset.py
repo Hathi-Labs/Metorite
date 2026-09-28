@@ -34,6 +34,14 @@ may count tasks per person. ``estimate_sum`` and the two cycle measures per
 person need ``admin:members:read``. Without it the group keeps ``key``,
 ``label`` and ``n``, the value keys are ABSENT, and ``measure_hidden`` says so.
 
+⚠️ **The groups by person follow the report rule** (WS-27bn R5d,
+``projects_reports.md`` §7.1 rule 3 and §9 Q10). A reader who is not an admin
+receives the groups of the people they may report on, the unassigned group
+and the ``agent:`` groups. ``hidden_people`` counts the rest, and ``total``
+still counts every task. An ``assignee`` or ``assignees`` filter that names
+another person is a 403. A row keeps its ``assignees`` column, because the
+reader can open the task and see them.
+
 Read-only, and no migration.
 """
 
@@ -71,7 +79,12 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
-from gateway.routes.projects.filters import build_task_filters, parse_when
+from gateway.routes.projects.filters import build_task_filters, parse_when, split_csv
+from gateway.routes.projects.report_scope import (
+    ReaderScope,
+    filter_person_rows,
+    reader_scope,
+)
 from gateway.routes.tasks.core import can_read_hr_fields
 from sqlalchemy import text
 
@@ -310,6 +323,27 @@ def per_person(query: DatasetQuery) -> bool:
         query.group_by == "assignee"
         or any(query.filters.get(k) for k in ASSIGNEE_FILTERS)
     )
+
+
+def assignee_refusal(query: DatasetQuery, scope: ReaderScope) -> str | None:
+    """The 403 reason when a filter names a person outside the reader's set.
+
+    WS-27bn R5d (§9 Q10). An ``assignee`` or ``assignees`` filter makes
+    ``total``, the rows and the groups a figure for those people. So each
+    named person passes :meth:`ReaderScope.allows`, which gives the reason.
+    An ``agent:`` value is not a person, and it passes.
+    """
+    f = query.filters
+    named = [a.lower() for a in split_csv(f.get("assignees"))]
+    if str(f.get("assignee") or "").strip():
+        named.append(str(f["assignee"]).strip().lower())
+    for email in named:
+        if email.startswith("agent:"):
+            continue
+        ok, reason = scope.allows({"kind": "person", "email": email})
+        if not ok:
+            return reason
+    return None
 
 
 def hr_gate(query: DatasetQuery, hr_visible: bool) -> tuple[DatasetQuery, list[str]]:
@@ -599,10 +633,16 @@ async def dataset(
     query = parse_query(request.query_params.multi_items())
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        # WS-27bn R5d. The report rule, read once for this request. An
+        # admin's scope is everyone, and their answer does not change.
+        scope = await reader_scope(db, user, vis)
+        if reason := assignee_refusal(query, scope):
+            raise HTTPException(status_code=403, detail=reason)
         return await dataset_body(
             db, vis, query,
             hr_visible=can_read_hr_fields(user),
             viewer=actor(user).lower(),
+            allowed=scope.people_filter,
         )
 
 
@@ -628,11 +668,15 @@ async def dataset_body(
     *,
     hr_visible: bool,
     viewer: str = "",
+    allowed: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """The dataset answer, on a session and a visibility the caller resolved.
 
     ``hr_visible`` is the CALLER's grant, taken as an argument because this
     function has no request to read it from.
+
+    ``allowed`` is ``ReaderScope.people_filter`` (WS-27bn R5d): the people
+    whose groups a reader may receive. ``None`` keeps every group.
     """
     # 404 for a node the caller cannot see, before anything else is read.
     scope_sql = await scope_clause(db, vis, query.project_id, query.include_subtree)
@@ -662,7 +706,9 @@ async def dataset_body(
         },
     }
     if query.group_by is not None:
-        return {**head, **await _grouped(db, vis, history, where, params, query, hr_visible)}
+        return {**head, **await _grouped(
+            db, vis, history, where, params, query, hr_visible, allowed,
+        )}
     query, hidden_columns = hr_gate(query, hr_visible)
     body = await _tabled(db, vis, history, where, params, query)
     # Always present in the table shape, so a client never has to guess
@@ -678,6 +724,7 @@ async def _grouped(
     params: dict[str, Any],
     query: DatasetQuery,
     hr_visible: bool,
+    allowed: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """The groups (rule 7). The value keys are absent when O3 hides them."""
     assert query.group_by is not None
@@ -685,13 +732,24 @@ async def _grouped(
     # Grouped by person, or filtered to named people: every value is a
     # person's estimate or speed (O3), so the server does not compute it.
     hidden = gated and per_person(query)
+    # WS-27bn R5d. For a restricted reader grouped by person, the filter
+    # runs BEFORE the cap. So the SQL takes no limit (LIMIT NULL is no
+    # limit), and the others never push out a person the reader may see.
+    by_person = query.group_by == "assignee" and allowed is not None
     rows = (await db.execute(
         text(groups_sql(history, where, query.group_by, None if hidden else query.measure)),
-        {**params, "ds_groups": MAX_GROUPS + 1},
+        {**params, "ds_groups": None if by_person else MAX_GROUPS + 1},
     )).fetchall()
     # No group means no task, because every group key join is a LEFT join.
     total = int(rows[0].total) if rows else 0
     groups_total = int(rows[0].groups_total) if rows else 0
+    hidden_people = 0
+    if by_person:
+        keyed = [{"key": None if r.k is None else str(r.k), "row": r} for r in rows]
+        keyed, hidden_people = filter_person_rows(keyed, allowed, key="key")
+        rows = [item["row"] for item in keyed]
+        # The groups the reader receives, never the groups that went.
+        groups_total = len(rows)
     rows = rows[:MAX_GROUPS]
 
     keys = [None if r.k is None else str(r.k) for r in rows]
@@ -740,6 +798,9 @@ async def _grouped(
     }
     if hidden:
         out["measure_hidden"] = True
+    if by_person:
+        # Only a restricted reader receives the key, as in R5a.
+        out["hidden_people"] = hidden_people
     return out
 
 

@@ -506,7 +506,7 @@ function ThreadRow({
       {row.important && (
         <AppIcon name="AlertTriangle"
           size={11}
-          className="text-amber-500 flex-shrink-0"
+          className="text-warning flex-shrink-0"
           aria-label="High importance"
         />
       )}
@@ -528,7 +528,7 @@ function ThreadRow({
       </span>
       <span
         className={`tabular-nums flex-shrink-0 ${
-          row.age_days > 14 ? "text-amber-500" : "text-muted-foreground"
+          row.age_days > 14 ? "text-warning" : "text-muted-foreground"
         }`}
       >
         {_agePhrase(row.age_days)}

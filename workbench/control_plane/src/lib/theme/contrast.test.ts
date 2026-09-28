@@ -7,7 +7,8 @@
  *
  * The RapidTool exceptions
  * ------------------------
- * Seven pairs in the default theme are below AA. They are the app's ORIGINAL
+ * Seven pairs in the default theme were below AA, and one still is (the light
+ * accent ink). H-174 and H-193 fixed the status tones. They were the app's ORIGINAL
  * colours, preserved token-for-token when the theming engine was built, and
  * fixing them means changing how the shipped product looks — a design decision
  * for whoever owns the brand, not a side effect of adding a test.
@@ -29,7 +30,7 @@ import {
   parseColor,
 } from "./contrast";
 import { THEME } from "./themes";
-import { CATEGORICAL_TOKENS } from "./types";
+import { CATEGORICAL_TOKENS, TERMINAL_INKS } from "./types";
 import type { ColorTokens } from "./types";
 
 type Pair = {
@@ -68,6 +69,9 @@ const PAIRS: Pair[] = [
   { fg: "destructiveForeground", bg: "destructive", min: AA_NORMAL_TEXT },
   { fg: "successForeground", bg: "success", min: AA_NORMAL_TEXT },
   { fg: "warningForeground", bg: "warning", min: AA_NORMAL_TEXT },
+  // H-193: the two tones added for lanes also carry words on a solid fill.
+  { fg: "infoForeground", bg: "info", min: AA_NORMAL_TEXT },
+  { fg: "violetForeground", bg: "violet", min: AA_NORMAL_TEXT },
   // The accent, as a link or an active mark on a surface.
   { fg: "primary", bg: "background", min: AA_LARGE_TEXT },
   { fg: "primary", bg: "card", min: AA_LARGE_TEXT },
@@ -103,28 +107,10 @@ const key = (themeId: string, mode: string, p: Pair) => `${themeId}/${mode}/${p.
  * means picking a new colour — see the module comment.
  */
 const KNOWN_SHORTFALLS: Record<string, number> = {
-  "rapidtool/dark/destructiveForeground-on-destructive": 3.63,
   "rapidtool/light/accentForeground-on-accent": 2.16,
-  "rapidtool/light/destructiveForeground-on-destructive": 3.59,
-  "rapidtool/light/successForeground-on-success": 1.9,
-  "rapidtool/light/success-on-card": 1.99,
-  // Status TEXT tones below 4.5, recorded when H-174 raised their threshold
-  // from 3.0 on the card to 4.5 on every surface. `--warning` was fixed in
-  // that change and has no entry. HANDOFF H-193 carries the rest.
-  "rapidtool/dark/destructive-on-muted": 4.05,
-  "rapidtool/dark/destructive-on-destructive-chip": 4.19,
-  "rapidtool/dark/violet-on-muted": 4.46,
-  "rapidtool/light/destructive-on-background": 3.76,
-  "rapidtool/light/destructive-on-card": 3.76,
-  "rapidtool/light/destructive-on-muted": 3.42,
-  "rapidtool/light/destructive-on-destructive-chip": 3.3,
-  "rapidtool/light/success-on-background": 1.99,
-  "rapidtool/light/success-on-muted": 1.81,
-  "rapidtool/light/success-on-success-chip": 1.84,
-  "rapidtool/light/info-on-background": 4.22,
-  "rapidtool/light/info-on-card": 4.22,
-  "rapidtool/light/info-on-muted": 3.85,
-  "rapidtool/light/info-on-info-chip": 3.72,
+  // No status tone has an entry, and none may get one. H-174 fixed `--warning`
+  // and H-193 fixed the other four, with their `-foreground` inks. The test
+  // "every status tone clears AA …" below refuses a new entry for any of them.
 };
 
 /** Float noise guard — ratios are compared to two decimal places. */
@@ -231,16 +217,43 @@ describe("theme contrast", () => {
     expect(stale, "these no longer correspond to a measured pair").toEqual([]);
   });
 
-  it("warning text clears AA on every surface in both modes, with no exception (H-174)", () => {
-    // The light `--warning` was the dark-mode yellow, 1.57 : 1 as words on a
-    // white card. This names the fix, so a ratchet entry cannot excuse it again.
-    const warning = measurements.filter((m) => /\/warning-on-/.test(m.id));
-    expect(warning.length).toBe(2 * 4); // two modes × page, card, muted, chip
-    expect(Object.keys(KNOWN_SHORTFALLS).filter((id) => /\/warning-on-/.test(id))).toEqual([]);
-    for (const m of warning) {
-      expect(m.ratio, `${m.id} is ${m.ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
-    }
-  });
+  it.each(STATUS_TEXT_TONES)(
+    "every status tone clears AA as text and under its ink, in both modes, with no exception (%s — H-174, H-193)",
+    (tone) => {
+      // The light `--warning` was the dark-mode yellow, 1.57 : 1 as words on a
+      // white card (H-174). The light `--success` was 1.99 (H-193). This names
+      // each tone, so a ratchet entry cannot excuse any of them again.
+      const asText = new RegExp(`/${tone}-on-`);
+      const asInk = new RegExp(`/${tone}Foreground-on-${tone}$`);
+      const text = measurements.filter((m) => asText.test(m.id));
+      const ink = measurements.filter((m) => asInk.test(m.id));
+      expect(text.length).toBe(2 * 4); // two modes × page, card, muted, chip
+      expect(ink.length).toBe(2); // the -foreground ink on the solid fill
+      expect(
+        Object.keys(KNOWN_SHORTFALLS).filter((id) => asText.test(id) || asInk.test(id)),
+        `KNOWN_SHORTFALLS may not excuse --${tone}`,
+      ).toEqual([]);
+      for (const m of [...text, ...ink]) {
+        expect(m.ratio, `${m.id} is ${m.ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+      }
+    },
+  );
+
+  it.each(TERMINAL_INKS)(
+    "terminal ink %s clears AA on the black shell block, which does not change with the mode",
+    (ink) => {
+      // The shell block in ThinkingContainer is black in BOTH modes. Its ink
+      // was the mode-aware `text-cat-12` and `text-cat-8`, which went dark on
+      // black in light mode (3.7 : 1, PR #514 review). The `--term-*` set has
+      // one value for both modes, so one measurement covers both. themes.test
+      // refuses a `.light` copy, which is what would make it flip again.
+      const ratio = contrast(THEME.terminal[ink], THEME.terminal.bg);
+      expect(ratio, `--term-${ink}`).not.toBeNull();
+      expect(ratio!, `--term-${ink} on --term-bg is ${ratio!.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        AA_NORMAL_TEXT,
+      );
+    },
+  );
 
   it("confines the exception list to the original theme", () => {
     // Themes added after the gate went in have no excuse for shipping below AA.

@@ -412,7 +412,7 @@ function NavLink({
       >
         <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} />
         {badge !== undefined && badge > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[8px] font-bold text-white">
+          <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-warning text-[8px] font-bold text-warning-foreground">
             {badge > 9 ? "9+" : badge}
           </span>
         )}
@@ -435,7 +435,7 @@ function NavLink({
           <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} />
           <span className="font-medium text-[13px]">{pane.label}</span>
           {badge !== undefined && badge > 0 && (
-            <span className="ml-auto rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+            <span className="ml-auto rounded-full bg-warning px-1.5 py-0.5 text-[10px] font-bold text-warning-foreground">
               {badge}
             </span>
           )}

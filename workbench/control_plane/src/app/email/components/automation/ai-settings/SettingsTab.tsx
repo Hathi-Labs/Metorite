@@ -1152,7 +1152,7 @@ function KnowledgeBase({ accountId }: { accountId: string | null }) {
                   {entry.status === "suggested" ? (
                     <span
                       title="Proposed by the voice-profile builder — not used in drafts until you approve it"
-                      className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500 flex-shrink-0"
+                      className="text-[9px] px-1.5 py-0.5 rounded-full bg-warning/15 text-warning flex-shrink-0"
                     >
                       Suggested
                     </span>
@@ -1468,7 +1468,7 @@ function LearnedPatternsList({ accountId }: { accountId: string | null }) {
               <button
                 onClick={() => review(undefined, true)}
                 disabled={busy}
-                className="text-[11px] px-2 py-1 rounded-md bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 transition-colors disabled:opacity-50 whitespace-nowrap"
+                className="text-[11px] px-2 py-1 rounded-md bg-warning/20 text-warning hover:bg-warning/30 transition-colors disabled:opacity-50 whitespace-nowrap"
               >
                 {busy ? "Approving…" : `Approve all ${needsReview.length}`}
               </button>
@@ -1566,7 +1566,7 @@ function PatternGroup({
         <div className="min-w-0 flex-1">
           <h5
             className={`text-[11px] font-semibold ${
-              tone === "review" ? "text-amber-500" : "text-foreground"
+              tone === "review" ? "text-warning" : "text-foreground"
             }`}
           >
             {`${title} · ${count}`}
@@ -1603,7 +1603,7 @@ export function PatternRow({
     <div
       className={`rounded-lg px-3 py-2 border ${
         tone === "review"
-          ? "bg-amber-500/5 border-amber-500/30"
+          ? "bg-warning/5 border-warning/30"
           : tone === "rejected"
             ? "bg-transparent border-border/60 opacity-70"
             : "bg-card border-border"

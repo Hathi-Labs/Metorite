@@ -161,8 +161,8 @@ function DataHealth({ data }: { data: AnalyticsOverview }) {
   const damaged = data.data_health?.damaged_threads ?? 0;
   if (damaged <= 0) return null;
   return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-      <div className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+    <div className="rounded-xl border border-warning/30 bg-warning/10 px-4 py-3">
+      <div className="text-[10px] uppercase tracking-wide text-warning">
         Conversation health
       </div>
       <p className="mt-1 text-sm text-foreground">

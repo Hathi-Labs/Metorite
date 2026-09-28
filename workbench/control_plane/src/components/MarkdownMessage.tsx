@@ -173,7 +173,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         {isTerminal ? (
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-cat-12/70" />
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
             <span className="ml-2 text-[11px] text-muted-foreground font-mono">{lang}</span>
           </div>

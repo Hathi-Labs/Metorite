@@ -548,9 +548,9 @@ export function TimeGrid({
                         : conflict
                           ? "border-destructive/60 bg-destructive/10"
                           : isOneThing
-                            ? "border-amber-400/80 bg-amber-500/15 shadow-[0_0_12px_rgba(245,158,11,0.18)]"
+                            ? "border-warning/80 bg-warning/15 shadow-[0_0_12px_color-mix(in_srgb,var(--warning)_18%,transparent)]"
                             : isLeveraged
-                              ? "border-amber-500/50 bg-amber-500/10"
+                              ? "border-warning/50 bg-warning/10"
                               : isNow
                                 ? "border-primary bg-primary/20"
                                 : "border-primary/40 bg-primary/10",
@@ -563,7 +563,7 @@ export function TimeGrid({
                       // Leveraged work carries a gold left edge even when other
                       // states (now/fixed) win the fill.
                       isLeveraged && !isFixed
-                        ? "border-l-2 border-l-amber-400"
+                        ? "border-l-2 border-l-warning"
                         : "",
                     ].join(" ")}
                   >
@@ -579,7 +579,7 @@ export function TimeGrid({
                         className={[
                           "mt-[1px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
                           isDone
-                            ? "border-success bg-success text-white"
+                            ? "border-success bg-success text-success-foreground"
                             : "border-muted-foreground/50 text-transparent hover:border-success hover:text-success/70",
                         ].join(" ")}
                       >
@@ -596,7 +596,7 @@ export function TimeGrid({
                         ].join(" ")}
                       >
                         {isOneThing && (
-                          <span className="text-amber-400">★ </span>
+                          <span className="text-warning">★ </span>
                         )}
                         {b.item.title}
                       </button>
@@ -613,7 +613,7 @@ export function TimeGrid({
                         A step's block spends one line on its crumb, so the
                         ribbon needs a taller block there. */}
                     {outcome && lines.outcome && (
-                      <div className="truncate pr-3 text-[9px] font-medium text-amber-500/90">
+                      <div className="truncate pr-3 text-[9px] font-medium text-warning/90">
                         → {outcome}
                       </div>
                     )}
@@ -690,8 +690,8 @@ export function TimeGrid({
                         className={[
                           "tech-transition absolute right-[36px] top-0.5 rounded p-0.5",
                           isOneThing
-                            ? "text-amber-400 hover:bg-black/10"
-                            : "text-muted-foreground hover:bg-black/10 hover:text-amber-400 reveal-on-hover",
+                            ? "text-warning hover:bg-black/10"
+                            : "text-muted-foreground hover:bg-black/10 hover:text-warning reveal-on-hover",
                         ].join(" ")}
                       >
                         <Icon name="Star"

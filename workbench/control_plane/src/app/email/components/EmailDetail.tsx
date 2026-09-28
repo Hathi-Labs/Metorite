@@ -881,7 +881,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
               </span>
             )}
             {flagged && (
-              <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded-full">
+              <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full">
                 <AppIcon name="Flag" size={9} /> Flagged
               </span>
             )}

@@ -110,7 +110,7 @@ export default function FileUploadButton({
           title="Upload files to agent"
           className={`rounded-lg p-2 transition-colors ${className} ${
             state.phase === "uploading"
-              ? "text-amber-400 cursor-wait"
+              ? "text-warning cursor-wait"
               : state.phase === "success"
                 ? "text-emerald-400"
                 : state.phase === "error"
@@ -167,7 +167,7 @@ export default function FileUploadButton({
       />
 
       {state.phase === "uploading" ? (
-        <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-amber-400">
+        <div className="flex items-center justify-center gap-2 py-3 px-4 text-sm text-warning">
           <Icon name="Loader2" size={16} className="animate-spin" />
           Uploading {state.count} file{state.count > 1 ? "s" : ""}…
         </div>

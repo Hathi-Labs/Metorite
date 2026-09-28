@@ -260,8 +260,8 @@ export function TaskCaptureModal({
 
               {/* Similar-task warning. */}
               {similar.length > 0 && (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
-                  <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-500 font-medium mb-1">
+                <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs">
+                  <div className="flex items-center gap-1.5 text-warning font-medium mb-1">
                     <Icon name="AlertTriangle" size={13} /> You may already have this
                   </div>
                   <ul className="space-y-0.5">
