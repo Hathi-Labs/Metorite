@@ -316,6 +316,21 @@ def _add_participant(
     from sqlalchemy import text
 
     with get_session() as s:
+        # S14 round 3: the creator owns a room with no participant row only
+        # through the fallback in resolve_room_access, and the first row ends
+        # that fallback. So the first add writes the creator's owner row
+        # first, in this same transaction, or she loses her own room.
+        s.execute(
+            text(
+                "INSERT INTO chat_session_participant (session_id, subject, role) "
+                "SELECT id, user_id, 'owner' FROM chat_session "
+                "WHERE id = :sid AND user_id LIKE '%@%' "
+                "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
+                "WHERE session_id = :sid) "
+                "ON CONFLICT DO NOTHING"
+            ),
+            {"sid": session_id},
+        )
         count = s.execute(
             text("SELECT count(*) AS n FROM chat_session_participant WHERE session_id = :sid"),
             {"sid": session_id},

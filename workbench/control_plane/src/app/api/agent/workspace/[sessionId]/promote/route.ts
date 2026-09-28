@@ -4,7 +4,7 @@
  *   Body: { path: "inputs/x.pdf", dest?: "agent-data/x.pdf" }
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function POST(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/agent/workspace/${sessionId}/promote`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/workspace/${sessionId}/promote`, {
       method: "POST",
       headers: { ...(await gatewayHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(body),

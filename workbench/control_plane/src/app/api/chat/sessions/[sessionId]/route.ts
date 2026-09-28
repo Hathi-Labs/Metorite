@@ -3,7 +3,7 @@
  * DELETE /api/chat/sessions/[sessionId]   — delete session + cascade messages
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +16,7 @@ export async function PATCH(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}`, {
       method: "PATCH",
       headers: {
         ...(await gatewayHeaders()),
@@ -43,7 +43,7 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
-    const res = await fetch(`${GATEWAY_URL}/chat/sessions/${sessionId}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}`, {
       method: "DELETE",
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),

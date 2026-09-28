@@ -10,7 +10,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   const headers = await gatewayHeaders({ "Content-Type": "application/json" });
 
   try {
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/run/${encodeURIComponent(threadId)}/cancel`,
       { method: "POST", headers, signal: AbortSignal.timeout(8_000) },
     );

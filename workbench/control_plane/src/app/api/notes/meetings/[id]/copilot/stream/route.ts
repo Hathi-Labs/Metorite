@@ -7,7 +7,7 @@
  * buffers JSON and would break streaming, hence this dedicated route.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,7 +21,7 @@ export async function GET(
   const { id } = await ctx.params;
   let upstream: Response;
   try {
-    upstream = await fetch(
+    upstream = await gatewayFetch(
       `${GATEWAY_URL}/notes/meetings/${encodeURIComponent(id)}/copilot/stream`,
       { headers: await gatewayHeaders(), signal: req.signal }
     );

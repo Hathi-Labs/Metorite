@@ -2,7 +2,7 @@
  * DELETE /api/settings/llm/enabled-models/[id] — disable a model
  */
 import { NextRequest, NextResponse } from "next/server";
-import { gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 // These handlers resolve the signed-in member, so they can never be
 // statically evaluated. Without this, `next build`'s page-data collection
@@ -20,7 +20,7 @@ export async function DELETE(
   const { id } = await params;
   const modelId = decodeURIComponent(id);
   try {
-    const r = await fetch(
+    const r = await gatewayFetch(
       `${GATEWAY}/settings/llm/enabled-models/${encodeURIComponent(modelId)}`,
       {
         method: "DELETE",

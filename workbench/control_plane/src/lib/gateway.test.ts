@@ -371,6 +371,106 @@ describe("the route surface", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("reaches the gateway only through gatewayFetch (H-194)", () => {
+    // The workbench server calls the gateway on 127.0.0.1:8080, not through
+    // Caddy, so Caddy's restart hold does not cover it. `gatewayFetch` is
+    // what keeps a member's request alive while the gateway restarts. A bare
+    // `fetch` to the gateway fails for the 10 s or more of each deploy.
+    //
+    // A module "reaches the gateway" when it imports GATEWAY_URL from
+    // lib/gateway, or reads GATEWAY_BASE_URL, LITELLM_BASE_URL or
+    // COPILOT_LLM_BASE_URL itself. The last two default to the gateway's
+    // `/v1` on 127.0.0.1:8080, and the box sets them there
+    // (deploy/hostinger/README.md). Such a module may not
+    // call the bare `fetch` at all. The one exception is named with its
+    // count, so a NEW bare fetch in that file also fails:
+    //
+    //   lib/memory.ts  4 calls to the legacy Mem0 server (MEM0_API_URL),
+    //                  which is not the gateway.
+    const ALLOWED: Record<string, number> = { "lib/memory.ts": 4 };
+    const SRC_DIR = fileURLToPath(new URL("..", import.meta.url));
+    const IMPORTS_URL = /import\s*\{[^}]*\bGATEWAY_URL\b[^}]*\}\s*from\s*["']@\/lib\/gateway["']/;
+    const offenders: string[] = [];
+    let swept = 0;
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry) || /\.test\.tsx?$/.test(entry)) continue;
+        const rel = full.slice(SRC_DIR.length).replace(/\\/g, "/").replace(/^\//, "");
+        if (rel === "lib/gateway.ts" || rel === "lib/gatewayFetch.ts") continue;
+        const src = readFileSync(full, "utf8");
+        if (
+          !IMPORTS_URL.test(src) &&
+          !/process\.env\.(GATEWAY_BASE_URL|LITELLM_BASE_URL|COPILOT_LLM_BASE_URL)\b/.test(src)
+        ) {
+          continue;
+        }
+        swept += 1;
+        const bare = (src.match(/(?<![\w.$])fetch\(/g) ?? []).length;
+        if (bare !== (ALLOWED[rel] ?? 0)) offenders.push(`${rel}: ${bare} bare fetch call(s)`);
+      }
+    };
+    walk(SRC_DIR);
+    // Guards the sweep itself: a broken walk would pass with nothing checked.
+    expect(swept).toBeGreaterThan(90);
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps every LLM base-URL call a POST, which does not retry (H-194)", () => {
+    // LITELLM_BASE_URL and COPILOT_LLM_BASE_URL point at the gateway's `/v1`
+    // on the box, but an operator can point them at an external host. A POST
+    // does not retry by default, so today no call to that URL retries. A GET,
+    // or a POST with `retry: true`, would retry against whatever host the URL
+    // names. This test stops that change, so someone decides it on purpose.
+    const LLM_CALL = /gatewayFetch\(\s*`\$\{(?:LITELLM_BASE_URL|v1Base\(\))\}[^`]*`\s*,\s*\{/g;
+    // The call ends at the first line that closes the init object and the
+    // call, with or without an options object: `});` or `}, { … });`.
+    const CALL_END = /\n\s*\}(?:\s*,\s*\{[^}]*\})?\s*\);/;
+    const found: string[] = [];
+    const offenders: string[] = [];
+    for (const r of ROUTES) {
+      for (const m of r.src.matchAll(LLM_CALL)) {
+        found.push(r.rel);
+        const rest = r.src.slice(m.index! + m[0].length);
+        const end = rest.match(CALL_END);
+        const call = end ? rest.slice(0, end.index! + end[0].length) : rest;
+        const post = /^\s*method:\s*"POST"/.test(call);
+        const optsIn = /retry:\s*true/.test(call);
+        if (!end || !post || optsIn) offenders.push(r.rel);
+      }
+    }
+    // Guards the sweep: agent/chat, chat/suggestions and chat compact.
+    expect(found).toHaveLength(3);
+    expect(offenders).toEqual([]);
+  });
+
+  it("retries only the FINAL chat checkpoint through a restart (H-194)", () => {
+    // All checkpoints of one reply share one id, and the gateway keeps the
+    // last write. A periodic checkpoint that retried could land after the
+    // final one and cut the stored reply short.
+    const chat = ROUTES.find((r) => r.rel.replace(/\\/g, "/") === "/agent/chat/route.ts");
+    expect(chat, "agent/chat/route.ts moved").toBeDefined();
+    expect(chat!.src).toMatch(/\{\s*retry:\s*final\s*\}/);
+    const calls = [...chat!.src.matchAll(/persistAssistantMessage\(([^;]*?)\)\.catch/g)].map((m) => m[1]);
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((args) => /,\s*true\s*$/.test(args))).toHaveLength(1);
+    // And the periodic call passes nothing after the agent, so it cannot opt
+    // in through a variable either.
+    expect(calls.filter((args) => /agentName\s*$/.test(args))).toHaveLength(1);
+  });
+
+  it("adds no second retry around gatewayFetch in a route (H-194)", () => {
+    // Seven proxies had their own "retry a GET once" block. Around
+    // gatewayFetch, such a block doubles the wait to about 50 s, and it also
+    // replays a GET after a timeout or any other error.
+    const RETRY_ONCE = /catch\s*\(\w*\)\s*\{\s*if\s*\(method\s*!==\s*"GET"\)\s*throw/;
+    expect(ROUTES.filter((r) => RETRY_ONCE.test(r.src)).map((r) => r.rel)).toEqual([]);
+  });
+
   it("keeps every identity-free call to a written reason", () => {
     // serviceHeaders() takes a reason precisely so this is reviewable. An
     // empty string would satisfy the type and defeat the point.

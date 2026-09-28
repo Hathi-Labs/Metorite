@@ -3,7 +3,7 @@
  * Proxy to gateway /agent/artifacts — global artifact browser.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (agent) upstream.searchParams.set("agent", agent);
     if (category) upstream.searchParams.set("category", category);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(15_000),
     });

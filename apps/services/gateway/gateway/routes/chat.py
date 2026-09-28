@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
@@ -56,7 +56,11 @@ class SessionPatchRequest(BaseModel):
 
 class MessageRecord(BaseModel):
     id: str
-    role: str
+    #: The three roles the ``chat_message`` CHECK allows, and no other string
+    #: (S14 fix round 1). The browser draws every role that is not ``user``
+    #: as an agent reply, so a free-form role would pass as one. The route
+    #: answers 422 for any other value, before any row is written.
+    role: Literal["user", "assistant", "system"]
     content: str
     timestamp: int          # epoch-ms in JS; stored as timestamp_ms
     tool_events: list[Any] = []
@@ -68,6 +72,9 @@ class MessageRecord(BaseModel):
     #: when ``author_kind == 'agent'``. Clients MAY send it; the server
     #: overrides it for human turns with the authenticated caller, because a
     #: client-supplied author is a client-supplied identity.
+    #: A client write that names an agent can only UPDATE a row that the
+    #: server created (WS-27bm S14, ``projects_ai_chat.md`` §20). It never
+    #: inserts one.
     author_email: str | None = None
     author_kind: str | None = None      # human | agent | system
 
@@ -93,8 +100,12 @@ def _get_sessions(user_id: str) -> list[dict]:
                 "       s.message_count, s.created_at, s.updated_at, "
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
-                "          WHERE p.session_id = s.id) AS participant_count "
+                "          WHERE p.session_id = s.id) AS participant_count, "
+                "       me.role AS my_role "
                 "FROM chat_session s "
+                # One join on the participant key, so no query per row.
+                "LEFT JOIN chat_session_participant me "
+                "  ON me.session_id = s.id AND me.subject = :uid "
                 f"WHERE {SESSION_VISIBLE_SQL} "
                 "ORDER BY s.updated_at DESC"
             ),
@@ -110,7 +121,20 @@ def _get_sessions(user_id: str) -> list[dict]:
             "createdAt": r.created_at.isoformat(),
             "updatedAt": r.updated_at.isoformat(),
             "visibility": r.visibility,
-            "isOwner": r.user_id == user_id,
+            # The caller's own role, not the creator (S14 round 4). A room
+            # with no participant row is still its creator's, the same rule
+            # as resolve_room_access. A demoted creator is not an owner.
+            "isOwner": (
+                r.my_role == "owner"
+                or (
+                    r.user_id == user_id
+                    and (
+                        int(r.participant_count or 0) == 0
+                        # Round 5: a non-email creator keeps the fallback.
+                        or "@" not in (user_id or "")
+                    )
+                )
+            ),
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
@@ -135,7 +159,19 @@ def _upsert_session(user_id: str, req: SessionUpsertRequest) -> None:
                     last_preview  = COALESCE(EXCLUDED.last_preview, chat_session.last_preview),
                     message_count = EXCLUDED.message_count,
                     updated_at    = now()
-                WHERE chat_session.user_id = :uid
+                WHERE (
+                       chat_session.user_id = :uid
+                       -- S14 round 3: the creator only while the room has no
+                       -- membership. An owner may have removed her. Round 5:
+                       -- a non-email creator has no row, so it keeps the arm.
+                       AND (
+                           chat_session.user_id NOT LIKE '%@%'
+                           OR NOT EXISTS (
+                               SELECT 1 FROM chat_session_participant p0
+                               WHERE p0.session_id = chat_session.id
+                           )
+                       )
+                   )
                    OR EXISTS (
                        SELECT 1 FROM chat_session_participant p
                        WHERE p.session_id = chat_session.id
@@ -168,6 +204,17 @@ def _ensure_session(
     foreign key and silently lose the message (defeating P0-3). This creates
     the parent row on demand, owned by the acting user, and never clobbers an
     existing session's metadata (DO NOTHING on conflict).
+
+    🔴 **It never raises a role** (S14 fix round 1, ``projects_ai_chat.md``
+    §20.4 rule 10). The mint calls it at every run start, as the member who
+    starts the run. That member may reach the room only through a group or
+    an org grant. So the owner row goes in only for the creator of the
+    session, and only while the room has no participant row at all. An
+    owner may remove the creator, and a later run must not undo that
+    (round 2). The primary agent row goes in only when the room has no
+    primary.
+    A browser-created session (``_upsert_session``) still gets both on its
+    first run, because that writer makes neither.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -192,7 +239,13 @@ def _ensure_session(
             s.execute(
                 text(
                     "INSERT INTO chat_session_participant (session_id, subject, role) "
-                    "VALUES (:id, :uid, 'owner') ON CONFLICT DO NOTHING"
+                    "SELECT :id, :uid, 'owner' FROM chat_session "
+                    "WHERE id = :id AND user_id = :uid "
+                    # Round 2: only a room with no membership yet. A creator
+                    # whom an owner removed must not win the role back.
+                    "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
+                    "WHERE session_id = :id) "
+                    "ON CONFLICT DO NOTHING"
                 ),
                 {"id": session_id, "uid": user_id},
             )
@@ -200,7 +253,10 @@ def _ensure_session(
             s.execute(
                 text(
                     "INSERT INTO chat_session_agent (session_id, agent_name, role) "
-                    "VALUES (:id, :agent, 'primary') ON CONFLICT DO NOTHING"
+                    "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM chat_session_agent "
+                    "  WHERE session_id = :id AND role = 'primary') "
+                    "ON CONFLICT DO NOTHING"
                 ),
                 {"id": session_id, "agent": agent_name},
             )
@@ -246,7 +302,11 @@ def _delete_session(session_id: str, user_id: str) -> bool:
             text(
                 "DELETE FROM chat_session s "
                 "WHERE s.id = :id AND ("
-                "    s.user_id = :uid"
+                # S14 round 3: the creator only while the room has no
+                # membership, the same rule as resolve_room_access.
+                "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
+                "        SELECT 1 FROM chat_session_participant p0"
+                "        WHERE p0.session_id = s.id)))"
                 "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
                 "               WHERE p.session_id = s.id AND p.subject = :uid"
                 "                 AND p.role = 'owner')"
@@ -306,6 +366,16 @@ def _get_messages(
             "SELECT id, role, content, timestamp_ms, tool_events, progress_lines, "
             "reasoning, agent_state, custom_events, author_email, author_kind, "
             "authority FROM chat_message WHERE session_id = :sid"
+            # S14 (§20): the gateway mints the agent row of a run with no
+            # content before the first checkpoint. A reader does not see it
+            # until it holds content, a tool event, a custom event or
+            # reasoning. SQL, not Python, so a LIMIT does not count it.
+            " AND NOT (COALESCE(author_kind, CASE role WHEN 'assistant' "
+            "THEN 'agent' ELSE 'other' END) = 'agent' "
+            "AND content = '' "
+            "AND jsonb_array_length(COALESCE(tool_events, '[]'::jsonb)) = 0 "
+            "AND jsonb_array_length(COALESCE(custom_events, '[]'::jsonb)) = 0 "
+            "AND COALESCE(reasoning, '') = '')"
         )
         params: dict = {"sid": session_id}
         if before is not None:
@@ -400,8 +470,9 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 
 #: Upsert for one chat_message row.
 #:
-#: THREE writers race on the same row: the Next translator's 3s checkpoints
-#: (app/api/agent/chat/route.ts), the gateway's run-boundary fold
+#: FOUR writers reach the same row: the gateway's mint when a run starts
+#: (routes/agent.py ``_mint_run_row``, S14), the Next translator's 3s
+#: checkpoints (app/api/agent/chat/route.ts), the gateway's run-boundary fold
 #: (chat_fold.persist_final_assistant_message), and the browser re-POSTing its
 #: whole message list whenever anything changes (lib/sessions.saveMessages).
 #: Blind ``= EXCLUDED.*`` made this last-writer-wins, so the LEANEST writer won:
@@ -452,7 +523,28 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #:   the run (``run_member_email``), and only before the seal. A NULL run
 #:   member means that only the fold may update the row. That covers legacy
 #:   rows and rows written by old code during the deploy.
-#: * **System row:** no write updates it. A client may still INSERT one.
+#: * **System row:** no write updates it.
+#:
+#: 🔴 **Only the server creates an agent row or a system row** (S14,
+#: ``projects_ai_chat.md`` §20). The ``INSERT`` is a ``SELECT`` with a guard.
+#: It gives a new row only when ``:may_insert`` is true, which
+#: ``_upsert_messages`` sets for a human write, the fold and the mint. For
+#: every other write the ``SELECT`` gives a row only when the id exists, so
+#: the conflict and the ``WHERE`` decide. A client insert of an agent row
+#: would reach the model context of every member, because the history keeps
+#: agent and system rows. ``VALUES`` coerced each parameter to its column
+#: type and a ``SELECT`` does not, so every parameter carries a ``CAST``.
+#:
+#: **The mint only inserts** (``:mint``). The gateway creates the agent row
+#: of a run before it opens the stream. On an existing id the ``WHERE`` is
+#: false, so a mint never changes a row, even the caller's own reply.
+#:
+#: **The first content sets the time** (S14 fix round 1). The mint stamps the
+#: server clock when the request arrives, and the prompt carries the browser
+#: clock. A fast browser clock would sort the reply above its prompt. So while
+#: the stored content is empty, a permitted write moves ``timestamp_ms``
+#: forward to its own value. That is the time the first checkpoint had before
+#: S14. Only a write that passes the ``WHERE`` reaches the ``SET``.
 #:
 #: ``run_member_email`` is set once, by the first writer of an agent row.
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
@@ -464,15 +556,25 @@ _MESSAGE_UPSERT_SQL = """
          tool_events, progress_lines, reasoning, agent_state, custom_events,
          author_email, author_kind, authority,
          run_member_email, run_final_at)
-    VALUES
-        (:id, :sid, :role, :content, :ts,
-         CAST(:tool_events AS jsonb), CAST(:progress_lines AS jsonb),
-         :reasoning, CAST(:agent_state AS jsonb), CAST(:custom_events AS jsonb),
-         :author_email, :author_kind, CAST(:authority AS jsonb),
-         :run_member_email,
-         CASE WHEN CAST(:author_from_run AS boolean) THEN now() END)
+    SELECT
+        CAST(:id AS text), CAST(:sid AS text), CAST(:role AS text),
+        CAST(:content AS text), CAST(:ts AS bigint),
+        CAST(:tool_events AS jsonb), CAST(:progress_lines AS jsonb),
+        CAST(:reasoning AS text), CAST(:agent_state AS jsonb),
+        CAST(:custom_events AS jsonb),
+        CAST(:author_email AS text), CAST(:author_kind AS text),
+        CAST(:authority AS jsonb),
+        CAST(:run_member_email AS text),
+        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END
+    WHERE CAST(:may_insert AS boolean)
+       OR EXISTS (SELECT 1 FROM chat_message
+                  WHERE session_id = CAST(:sid AS text)
+                    AND id = CAST(:id AS text))
     ON CONFLICT (session_id, id) DO UPDATE SET
         content        = EXCLUDED.content,
+        timestamp_ms   = CASE WHEN chat_message.content = ''
+            THEN GREATEST(chat_message.timestamp_ms, EXCLUDED.timestamp_ms)
+            ELSE chat_message.timestamp_ms END,
         author_email   = CASE
             WHEN CAST(:author_from_run AS boolean)
                  AND EXCLUDED.author_email IS NOT NULL
@@ -494,7 +596,8 @@ _MESSAGE_UPSERT_SQL = """
         custom_events  = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.custom_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.custom_events ELSE chat_message.custom_events END
-    WHERE CASE COALESCE(
+    WHERE NOT CAST(:mint AS boolean)
+      AND CASE COALESCE(
             chat_message.author_kind,
             CASE chat_message.role
                 WHEN 'assistant' THEN 'agent'
@@ -529,6 +632,7 @@ def _upsert_messages(
     agent_name: str | None = None,
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
+    mint: bool = False,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
 
@@ -546,7 +650,16 @@ def _upsert_messages(
     ``actor_email`` is also the run member of an agent row (S13): the caller
     for a client write, and the member who started the run for the fold.
 
-    Returns the ids whose write the ``WHERE`` declined, in request order.
+    ``mint`` is for ``routes/agent.py`` ONLY (WS-27bm S14, §20). The gateway
+    creates the agent row of a run before it opens the stream. A mint only
+    inserts. When a row with that id exists, the mint changes nothing.
+
+    Only the server creates an agent row or a system row (S14). A client
+    write of a new agent row or a new system row inserts nothing, and its id
+    is in the return value. A client may still update an agent row that the
+    server created, under the S13 rules.
+
+    Returns the ids whose write the SQL declined, in request order.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -562,6 +675,9 @@ def _upsert_messages(
     with get_session() as s:
         for m in messages:
             kind, author = _attribute(m, actor_email, agent_name)
+            # S14: a client inserts a human row only. The fold and the mint
+            # are the server, and they may insert an agent row.
+            may_insert = kind == "human" or bool(author_from_run) or bool(mint)
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
@@ -581,11 +697,14 @@ def _upsert_messages(
                     # words are theirs regardless of what the run could reach.
                     "authority": authority_json if kind == "agent" else None,
                     "author_from_run": bool(author_from_run),
+                    "mint": bool(mint),
+                    "may_insert": may_insert,
                     # Only an agent row belongs to a run (S13).
                     "run_member_email": run_member if kind == "agent" else None,
                 },
             )
-            # RETURNING gives no row when the WHERE declined the update.
+            # RETURNING gives no row when the WHERE declined the update, or
+            # when the insert guard declined a new row (S14).
             if result.first() is None:
                 declined.append(m.id)
     return declined
@@ -596,16 +715,22 @@ def _attribute(
 ) -> tuple[str | None, str | None]:
     """(author_kind, author_email) for one record.
 
-    A client may TELL us a turn is an agent's — that is information we don't
-    otherwise have when the browser saves a run it just watched. It may not
-    tell us which HUMAN authored a turn: that is an identity claim, and the
-    authenticated caller is the only answer we accept.
+    A client may TELL us a turn is an agent's. It may not tell us which HUMAN
+    authored a turn: that is an identity claim, and the authenticated caller
+    is the only answer we accept.
+
+    Since S14 (``projects_ai_chat.md`` §20) the agent claim of a client
+    decides only how the upsert treats the write. A client write with the
+    kind ``agent`` or ``system`` inserts no row. It may update an agent row
+    that the mint or the fold created, under the S13 rules, and the author
+    that the server stored first stays.
     """
     if m.role == "system":
         return "system", None
-    if m.role == "assistant" or m.author_kind == "agent":
-        return "agent", (m.author_email or agent_name or None)
-    return "human", (actor_email or None)
+    if m.role == "user" and m.author_kind != "agent":
+        return "human", (actor_email or None)
+    # Only the role ``user`` is a human turn (S14 fix round 1).
+    return "agent", (m.author_email or agent_name or None)
 
 
 # ---------------------------------------------------------------------------

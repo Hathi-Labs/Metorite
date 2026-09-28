@@ -3,7 +3,7 @@
  *   — version history of an agent's tracked files (blob store).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +21,7 @@ export async function GET(
     const limit = searchParams.get("limit");
     if (path) qs.set("path", path);
     if (limit) qs.set("limit", limit);
-    const res = await fetch(
+    const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/workspace/${sessionId}/history?${qs.toString()}`,
       { headers: await gatewayHeaders(), signal: AbortSignal.timeout(10_000) },
     );

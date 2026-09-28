@@ -18,7 +18,7 @@
  * is asked *whether* to render a signed-in UI, so it must be able to say no.
  */
 import { NextResponse } from "next/server";
-import { GATEWAY_URL, currentIdentity, headersActingAs } from "@/lib/gateway";
+import { GATEWAY_URL, currentIdentity, headersActingAs, gatewayFetch } from "@/lib/gateway";
 import { NO_ACCESS } from "@/lib/access";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +27,7 @@ export async function GET(): Promise<NextResponse> {
   const me = await currentIdentity();
   if (!me) return NextResponse.json(NO_ACCESS, { status: 200 });
   try {
-    const res = await fetch(`${GATEWAY_URL}/auth/me`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/auth/me`, {
       headers: headersActingAs(me.email),
       cache: "no-store",
       signal: AbortSignal.timeout(8000),

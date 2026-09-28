@@ -157,5 +157,11 @@ export default defineConfig({
     // Dev compiles the route on first request, which is slower than serving a
     // prebuilt one — this is a cold Next.js compile, not a hang.
     timeout: 180_000,
+    // No gateway runs under this suite, so every server-side gateway call is
+    // refused. `gatewayFetch` would retry each one for 25 s (H-194), and a
+    // spec that reloads a page then times out. The specs stub what they need
+    // and expect a refusal to fail at once, so the retry is off here.
+    // Fence: `src/lib/gatewayFetch.test.ts`.
+    env: { GATEWAY_RETRY_DEADLINE_MS: "0" },
   },
 });

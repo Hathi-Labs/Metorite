@@ -8,7 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export async function DELETE(
   }
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/agent/${encodeURIComponent(name)}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/${encodeURIComponent(name)}`, {
       method: "DELETE",
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(8_000),
@@ -66,7 +66,7 @@ export async function PATCH(
   }
 
   try {
-    const res = await fetch(`${GATEWAY_URL}/agent/${encodeURIComponent(name)}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/${encodeURIComponent(name)}`, {
       method: "PATCH",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),

@@ -4,7 +4,7 @@
  * Proxy for the global artifact browser — read and write individual files.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     upstream.searchParams.set("agent", agent);
     upstream.searchParams.set("path", filePath);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       headers: await gatewayHeaders(),
     });
 
@@ -67,7 +67,7 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     upstream.searchParams.set("agent", agent);
     upstream.searchParams.set("path", filePath);
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       method: "PUT",
       headers: {
         ...(await gatewayHeaders()),

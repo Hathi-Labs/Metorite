@@ -3,7 +3,7 @@
  * PATCH /api/agent/workspace/[sessionId]  — set workspace_path for a session
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
-    const res = await fetch(`${GATEWAY_URL}/agent/workspace/${sessionId}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/workspace/${sessionId}`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(10_000),
     });
@@ -35,7 +35,7 @@ export async function PATCH(
   try {
     const { sessionId } = await params;
     const body = await req.json();
-    const res = await fetch(`${GATEWAY_URL}/agent/workspace/${sessionId}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/agent/workspace/${sessionId}`, {
       method: "PATCH",
       headers: {
         ...(await gatewayHeaders()),

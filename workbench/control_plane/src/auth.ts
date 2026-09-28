@@ -89,7 +89,7 @@ import { isAuthConfigured as hasProvider } from "@/authPosture";
 // The env variable is deliberately NOT named in this comment: the fences that
 // forbid it here are plain substring scans over this file, and a fence you have
 // to teach about prose is a fence somebody eventually widens.
-import { GATEWAY_URL, headersActingAs } from "@/lib/gateway";
+import { GATEWAY_URL, headersActingAs, gatewayFetch } from "@/lib/gateway";
 
 const providers: Provider[] = [];
 if (process.env.AUTH_MICROSOFT_ENTRA_ID_ID) {
@@ -342,7 +342,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!email) return "/signin?error=ConsoleUnavailable";
 
       try {
-        const res = await fetch(`${GATEWAY_URL}/signin/resolve`, {
+        const res = await gatewayFetch(`${GATEWAY_URL}/signin/resolve`, {
           method: "POST",
           headers: headersActingAs(email, {
             "Content-Type": "application/json",

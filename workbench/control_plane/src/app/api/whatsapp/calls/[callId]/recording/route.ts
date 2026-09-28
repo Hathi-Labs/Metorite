@@ -9,7 +9,7 @@
  * adding this file is enough to take the binary path.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<Response> {
     const upstream = `${GATEWAY_URL}/whatsapp/calls/${encodeURIComponent(
       callId
     )}/recording?account_id=${encodeURIComponent(accountId)}`;
-    const res = await fetch(upstream, {
+    const res = await gatewayFetch(upstream, {
       headers: await gatewayHeaders(),
       // Generous: a long call's WAV is a few MB and the gateway pulls it from
       // the bridge before handing it on.
