@@ -18,7 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, patch, post, uuid_of
-from skill_projects.priority import priority_fields, takes_priority
+from skill_projects.priority import priority_fields, takes_important_only
 from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
     CANCELLED,
@@ -276,7 +276,7 @@ async def save_view(project_id: str, name: str, view_type: str = "list", view_id
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
-@takes_priority
+@takes_important_only
 async def capture_intake(
     title: str,
     project_id: str = "",

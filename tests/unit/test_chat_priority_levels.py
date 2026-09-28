@@ -190,11 +190,16 @@ def test_the_tool_descriptions_name_the_levels() -> None:
         skill_projects.create_task,
         skill_projects.update_task,
         skill_projects.bulk_update,
-        skill_projects.capture_intake,
     ):
         doc = tool.__doc__ or ""
         assert shared.level_names() in doc, tool.__name__
         assert "0 to 4" not in doc, tool.__name__
+    # A capture stores no Leveraged, so its description offers no leveraged
+    # level and no `leveraged` argument (review 2026-09-28).
+    doc = skill_projects.capture_intake.__doc__ or ""
+    for cell, (_important, leveraged) in shared.CELL_FLAGS.items():
+        assert (_label(cell) in doc.split("A capture takes")[-1]) is (not leveraged), cell
+    assert "important and leveraged" not in doc
 
 
 # ── 2. The writers round-trip every level ───────────────────────────────────
@@ -373,6 +378,37 @@ def test_a_plan_row_round_trips_a_level(cell: str) -> None:
     body = forms._row_flags(row)
     assert shared.task_cell({**body, "due_at": row["due"]}) == cell
     assert f"priority {_label(cell)}" in forms._task_card_line(row, "Priya")
+
+
+def test_a_plan_row_reads_a_level_sent_as_priority() -> None:
+    """Every other tool takes the level as `priority`, so a plan row that
+    sends it there is read, never dropped. A number there is the score."""
+    item = {
+        "title": "Call the vendor",
+        "owner": "priya@x.io",
+        "effort_mins": 60,
+        "due": "2026-12-01",
+        "priority": "high leverage",
+    }
+    row = forms._plan_row(1, item)
+    assert isinstance(row, dict)
+    assert (row["important"], row["leveraged"]) == (True, True)
+    row = forms._plan_row(1, {**item, "priority": 27})
+    assert isinstance(row, dict)
+    assert "important" not in row and "leveraged" not in row
+
+
+async def test_a_stated_flag_that_is_also_cleared_is_refused(monkeypatch) -> None:
+    """The task already holds the flag, so nothing would change, and the
+    clear must still not win (review 2026-09-28)."""
+    approve(monkeypatch)
+    store = Store(importance=3, leveraged=True)
+    calls = fake_gateway(monkeypatch, store)
+    out = await skill_projects.update_task(TID, priority="High-Leverage", clear="leveraged")
+    assert "both set and cleared" in out
+    out = await skill_projects.update_task(TID, important="true", clear="important")
+    assert "both set and cleared" in out
+    assert writes(calls) == []
 
 
 def test_the_edit_form_draws_the_two_flags() -> None:

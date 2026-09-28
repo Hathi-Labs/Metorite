@@ -30,7 +30,10 @@ from typing import Any
 
 from acb_common.priority import (
     CELL_FLAGS,
+    CELLS_IN_ORDER,
     DEFAULT_URGENT_WINDOW_HOURS,
+    PriorityInputs,
+    cell_for_inputs,
     cell_for_name,
     cell_label,
     importance_for,
@@ -41,24 +44,56 @@ from acb_common.priority import (
     task_cell,
 )
 
+
+def _labels(cells: list[str]) -> str:
+    """The labels of ``cells``, in rank order, as "A, B or C"."""
+    names = [cell_label(c) for c in CELLS_IN_ORDER if c in cells]
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} or {names[-1]}"
+
+
+#: The levels that need a close due date. Derived from the matrix, so a
+#: description never spells a level by hand.
+_URGENT_CELLS = sorted(
+    {
+        cell_for_inputs(PriorityInputs(important=i, urgent=True, leveraged=lev))
+        for i, lev in CELL_FLAGS.values()
+    }
+    - {"low-priority"}
+)
+#: The levels a capture can take: the intake route stores no Leveraged.
+_UNLEVERAGED_CELLS = [c for c, (_imp, lev) in CELL_FLAGS.items() if not lev]
+
 #: The words a tool description uses for the priority arguments.
 PRIORITY_ARGS_DOC = (
     "priority is a level name: " + level_names() + ". It sets that level's "
     "Important and Leveraged flags. The due date sets Urgent, so the task "
-    "reads Critical, Urgent or Quick Leverage Win only while it is due within "
+    f"reads {_labels(_URGENT_CELLS)} only while it is due within "
     f"{DEFAULT_URGENT_WINDOW_HOURS} hours. Or set important and leveraged "
     "directly (true or false). importance (a number) is deprecated: 2 or more "
     "reads as Important."
 )
 
-def takes_priority(fn):
-    """Append ``PRIORITY_ARGS_DOC`` to a tool's description.
+#: `capture_intake`'s version: it takes Important only (H-194).
+INTAKE_PRIORITY_DOC = (
+    f"priority is a level name that is not leveraged: {_labels(_UNLEVERAGED_CELLS)}. "
+    "Or set important directly (true or false). importance (a number) is "
+    "deprecated: 2 or more reads as Important."
+)
+
+
+def takes_priority(fn, text: str = PRIORITY_ARGS_DOC):
+    """Append the priority arguments' text to a tool's description.
 
     The model reads the docstring as the tool's description. Built from the
     one source, the level names in it cannot drift from the app's labels.
     """
-    fn.__doc__ = f"{(fn.__doc__ or '').rstrip()} {PRIORITY_ARGS_DOC}"
+    fn.__doc__ = f"{(fn.__doc__ or '').rstrip()} {text}"
     return fn
+
+
+def takes_important_only(fn):
+    """``takes_priority`` for a tool that cannot store Leveraged."""
+    return takes_priority(fn, INTAKE_PRIORITY_DOC)
 
 
 #: `clear` words for the priority → the stored fields each one empties.

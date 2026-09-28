@@ -429,9 +429,15 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
         row["start"] = start
     # D78 (H-173): the row's priority is the level's two stated flags. The
     # level name rides in `level`, because `priority` is this row's score
-    # below, and the card sends the score back on submit.
+    # below, and the card sends the score back on submit. A `priority` that
+    # is TEXT is a level name the model sent the way every other tool takes
+    # it, so it is read as one, never dropped (review 2026-09-28).
+    spoken = item.get("priority")
+    level = item.get("level") or (
+        spoken if isinstance(spoken, str) and not spoken.strip().isdigit() else ""
+    )
     judged = priority_fields(
-        priority=str(item.get("level") or ""),
+        priority=str(level or ""),
         important=item.get("important", ""),
         leveraged=item.get("leveraged", ""),
         importance=item.get("importance", -1),

@@ -447,6 +447,11 @@ async def update_task(
     if isinstance(judged, str):
         return judged
     flags, notes = judged
+    # Every flag the member STATED, including one the task already holds.
+    # `flags` drops those, and a clear of a stated flag must still be refused.
+    stated = priority_fields(
+        priority=priority, important=important, leveraged=leveraged, importance=importance
+    )
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
     if title.strip():
@@ -474,7 +479,7 @@ async def update_task(
     if tags.strip():
         payload["tags"] = _split(tags)
         before["tags"] = task.get("tags")
-    cleared = _clears(clear, _CLEAR_WORDS, flags)
+    cleared = _clears(clear, _CLEAR_WORDS, stated[0] if isinstance(stated, tuple) else flags)
     if isinstance(cleared, str):
         return cleared
     for key in cleared:
