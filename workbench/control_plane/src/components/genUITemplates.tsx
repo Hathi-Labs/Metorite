@@ -45,6 +45,9 @@ import {
 import { Checkbox } from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
+import { taskCell } from "@/app/projects/lib/matrix";
+import { PriorityChip } from "@/components/TaskMeta";
+import { priorityChip } from "@/lib/taskCard";
 
 type Data = Record<string, unknown>;
 
@@ -140,7 +143,7 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   {
     name: "taskBoard",
     summary: "A kanban board: one column per lane, task cards with assignees and due dates; a card opens the task.",
-    data: "{ title?, total?, columns:[{ id?, name, category?, tasks:[{ id, number?, title, assignees?:[string], due?, importance?, done?:bool }] }] }",
+    data: "{ title?, total?, columns:[{ id?, name, category?, tasks:[{ id, number?, title, assignees?:[string], due?, due_at?, importance?, leveraged?:bool, done?:bool }] }] }",
   },
   {
     name: "dataGrid",
@@ -155,7 +158,7 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   {
     name: "planCard",
     summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
-    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], importance?, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
+    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },
 ];
 
@@ -1075,6 +1078,13 @@ function Timeline({ data }: { data: Data }) {
 
 function TaskChip({ t }: { t: Data }) {
   const href = taskHref(t.id);
+  // D78 (H-173): THE priority chip, the level the Projects card draws, from
+  // the one client rule. Low Priority earns no chip there, so none here.
+  const level = taskCell({
+    importance: typeof t.importance === "number" ? t.importance : null,
+    leveraged: t.leveraged === true,
+    due_at: typeof t.due_at === "string" ? t.due_at : typeof t.due === "string" ? t.due : null,
+  });
   const people = arr(t.assignees).map((a) => str(a)).filter(Boolean);
   const body = (
     <div style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
@@ -1082,11 +1092,7 @@ function TaskChip({ t }: { t: Data }) {
       <div style={{ ...CELL, display: "flex", gap: 6 }}>
         {t.number != null && <span style={MUTED}>#{str(t.number)}</span>}
         <span style={{ textDecoration: t.done ? "line-through" : "none", flex: 1 }}>{str(t.title)}</span>
-        {num(t.importance) > 0 && (
-          <span style={{ ...MUTED, fontVariantNumeric: "tabular-nums" }} title="importance">
-            !{num(t.importance)}
-          </span>
-        )}
+        {level !== "low-priority" && <PriorityChip chip={priorityChip(level)} />}
       </div>
       {(people.length > 0 || t.due != null) && (
         <div style={{ ...MUTED, display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>

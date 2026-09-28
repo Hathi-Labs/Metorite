@@ -113,6 +113,10 @@ _needs_db = pytest.mark.skipif(
 # Throwaway ids so nothing collides with real chat data; purged after.
 _TEST_SESSION = "pytest-chat-message-upsert"
 _TEST_MESSAGE = "pytest-msg-1"
+# The member who writes both turns (S13, projects_ai_chat.md §19). An agent
+# row takes a client update only from the member who started its run, so the
+# second write must come from the same member as the first.
+_ACTOR = "pytest@local"
 
 
 def _purge() -> None:
@@ -166,7 +170,7 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
         agent_state={"segments": [{"id": "m1", "text": "hi"}]},
         custom_events=[card],
     )
-    _upsert_messages(_TEST_SESSION, [rich])
+    _upsert_messages(_TEST_SESSION, [rich], actor_email=_ACTOR)
 
     # The browser re-POSTs its whole list; its copy of this turn lost the
     # stream artifacts (dropped SSE), so everything but content is empty.
@@ -176,7 +180,7 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
         content="here is the pipeline",
         timestamp=1_700_000_000_000,
     )
-    _upsert_messages(_TEST_SESSION, [lean])
+    _upsert_messages(_TEST_SESSION, [lean], actor_email=_ACTOR)
 
     stored = [
         m for m in _get_messages(_TEST_SESSION, "pytest@local")
@@ -215,7 +219,7 @@ def test_richer_write_still_wins() -> None:
         tool_events=[{"name": "zoho_crm"}],
         custom_events=[{"name": "generative_ui", "value": {"v": 1}}],
     )
-    _upsert_messages(_TEST_SESSION, [base])
+    _upsert_messages(_TEST_SESSION, [base], actor_email=_ACTOR)
 
     grown = MessageRecord(
         id=_TEST_MESSAGE,
@@ -228,7 +232,7 @@ def test_richer_write_still_wins() -> None:
             {"name": "generative_ui", "value": {"v": 2}},
         ],
     )
-    _upsert_messages(_TEST_SESSION, [grown])
+    _upsert_messages(_TEST_SESSION, [grown], actor_email=_ACTOR)
 
     row = next(
         m for m in _get_messages(_TEST_SESSION, "pytest@local")

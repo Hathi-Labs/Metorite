@@ -47,6 +47,13 @@ from skill_projects.client import (
     put,
     uuid_of,
 )
+from skill_projects.priority import (
+    CLEAR_PRIORITY,
+    card_view,
+    level_label,
+    priority_fields,
+    takes_priority,
+)
 from skill_projects.reads import _rule_text, _task_line
 
 try:
@@ -72,7 +79,6 @@ CARD_NOTE = "This change is recorded as yours, made through the Projects assista
 MAX_BATCH = 50
 
 LINK_TYPES = ("blocks", "relates_to", "duplicates")
-IMPORTANCE = (0, 1, 2, 3, 4)
 
 
 # ── The card ─────────────────────────────────────────────────────────────────
@@ -259,20 +265,77 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _importance(value: Any) -> int | None:
-    """Importance: -1 (the default) means "not passed". 0 is a real value —
-    it is how a member drops the priority — so it must not read as absent."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return None if parsed < 0 else parsed
+#: `update_task`'s clear words that are not priority words → the field each
+#: one empties.
+_CLEAR_WORDS: dict[str, str] = {
+    "due": "due_at",
+    "start": "start_date",
+    "description": "description",
+    "estimate": "estimate_mins",
+}
+
+
+def _clears(clear: str, words: dict[str, str], taken: dict[str, Any]) -> dict[str, Any] | str:
+    """The fields a ``clear`` list empties, or the refusal.
+
+    ``words`` maps the plain words to their fields. The priority words
+    (``CLEAR_PRIORITY``) are accepted everywhere. A field in ``taken`` is
+    being set by the same call, so clearing it too is refused.
+    """
+    out: dict[str, Any] = {}
+    for field in _split(clear):
+        word = field.lower()
+        empties = CLEAR_PRIORITY.get(word) or (
+            {words[word]: None} if word in words else None
+        )
+        if empties is None:
+            names = ", ".join([*words, *CLEAR_PRIORITY])
+            return f"clear takes {names}, not {data(field)}."
+        for key, value in empties.items():
+            if key in taken:
+                return f"{data(field)} is both set and cleared. Pass one or the other."
+            out[key] = value
+    return out
+
+
+def _priority_card(
+    payload: dict[str, Any],
+    *,
+    before: dict[str, Any] | None = None,
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The card's view of a task payload: the priority as a member reads it.
+
+    The stored ``importance`` number becomes ``important: yes``, and a
+    ``priority`` line names the level the app will draw (H-173). ``before``
+    gains the same keys, so an update card shows each flag and the level as
+    before → after.
+    """
+    # In payload order, so a cleared flag stays at the top of the card.
+    card: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in ("importance", "leveraged"):
+            card.update(card_view({key: value}))
+        else:
+            card[key] = value
+    touched = {"importance", "leveraged"} & set(payload)
+    if not touched and not ("due_at" in payload and task is not None):
+        return card
+    card["priority"] = level_label({**(task or {}), **payload})
+    if before is not None and task is not None:
+        # `leveraged` keeps its key on the card, `importance` becomes
+        # `important`. Drop the stored number first, then add the flags.
+        before.pop("importance", None)
+        before.update(card_view({k: task.get(k) for k in touched}))
+        before["priority"] = level_label(task)
+    return card
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
+@takes_priority
 async def create_task(
     project_id: str,
     title: str,
@@ -284,18 +347,28 @@ async def create_task(
     estimate_mins: int = 0,
     tags: str = "",
     parent_task_id: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
     NAME from that project's vocabulary, or omitted for the default.
     assignees is comma-separated emails, agent:<name>, or people's names.
-    due is YYYY-MM-DD. importance is 0 to 4 (omit to leave it). tags is comma-separated.
+    due is YYYY-MM-DD. tags is comma-separated. Omit every priority argument
+    to leave the task unjudged.
     parent_task_id makes it a subtask. The member approves a card first;
     nothing is created if they decline. Archive is the undo."""
     pid = uuid_of(project_id, "project_id")
     name = str(title or "").strip()
     if not name:
         return "A task needs a title."
+    judged = priority_fields(
+        priority=priority, important=important, leveraged=leveraged, importance=importance
+    )
+    if isinstance(judged, str):
+        return judged
+    flags, notes = judged
     payload: dict[str, Any] = {"project_id": pid, "title": name}
     if description.strip():
         payload["description"] = description.strip()
@@ -307,11 +380,7 @@ async def create_task(
         status_label = "the default"
     if due.strip():
         payload["due_at"] = due.strip()
-    imp = _importance(importance)
-    if imp is not None:
-        if imp not in IMPORTANCE:
-            return "importance is 0 to 4."
-        payload["importance"] = imp
+    payload.update(flags)
     est = _int_or_none(estimate_mins)
     if est is not None:
         payload["estimate_mins"] = est
@@ -322,7 +391,7 @@ async def create_task(
         payload["parent_task_id"] = parent_id
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
-    card = dict(payload)
+    card = _priority_card(payload)
     card["status"] = status_label
     if who:
         card["assignees"] = ", ".join(who)
@@ -340,10 +409,11 @@ async def create_task(
     if who:
         await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
         task["assignees"] = who
-    return "\n".join(["Created:", *_task_line(task, status_label)])
+    return "\n".join(["Created:", *_task_line(task, status_label), *notes])
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
+@takes_priority
 async def update_task(
     task_id: str,
     title: str = "",
@@ -355,15 +425,33 @@ async def update_task(
     estimate_mins: int = 0,
     tags: str = "",
     clear: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
 ) -> str:
     """Change a task's fields. Only the arguments you pass change. status is
     by NAME from the task's project. due and start are YYYY-MM-DD. tags
-    REPLACES the tag list. importance 0 to 4 (omit to leave it). clear is a
-    comma-separated list of fields to empty: due, start, description,
-    estimate, importance. The card shows each change as
-    before → after. The timeline records every field change, and the app
-    can revert one."""
+    REPLACES the tag list. clear is a comma-separated list of fields to
+    empty: due, start, description, estimate, important (the task is then
+    unjudged), leveraged, or priority (both flags). The card shows each
+    change as before → after, and the priority level before and after. The
+    timeline records every field change, and the app can revert one."""
     tid, task = await _task(task_id)
+    judged = priority_fields(
+        priority=priority,
+        important=important,
+        leveraged=leveraged,
+        importance=importance,
+        current=task,
+    )
+    if isinstance(judged, str):
+        return judged
+    flags, notes = judged
+    # Every flag the member STATED, including one the task already holds.
+    # `flags` drops those, and a clear of a stated flag must still be refused.
+    stated = priority_fields(
+        priority=priority, important=important, leveraged=leveraged, importance=importance
+    )
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
     if title.strip():
@@ -383,12 +471,7 @@ async def update_task(
     if start.strip():
         payload["start_date"] = start.strip()
         before["start_date"] = (task.get("start_date") or "")[:10]
-    imp = _importance(importance)
-    if imp is not None:
-        if imp not in IMPORTANCE:
-            return "importance is 0 to 4."
-        payload["importance"] = imp
-        before["importance"] = task.get("importance")
+    payload.update(flags)
     est = _int_or_none(estimate_mins)
     if est is not None:
         payload["estimate_mins"] = est
@@ -396,19 +479,10 @@ async def update_task(
     if tags.strip():
         payload["tags"] = _split(tags)
         before["tags"] = task.get("tags")
-    cleared: dict[str, Any] = {}
-    for field in _split(clear):
-        key = {
-            "due": "due_at",
-            "start": "start_date",
-            "estimate": "estimate_mins",
-            "priority": "importance",
-        }.get(field.lower(), field.lower())
-        if key not in ("due_at", "start_date", "description", "estimate_mins", "importance"):
-            return (
-                f"clear takes due, start, description, estimate or importance, not {data(field)}."
-            )
-        cleared[key] = None
+    cleared = _clears(clear, _CLEAR_WORDS, stated[0] if isinstance(stated, tuple) else flags)
+    if isinstance(cleared, str):
+        return cleared
+    for key in cleared:
         before[key] = task.get(key)
     # Cleared fields go FIRST in the card. The card clips its tail at 4000
     # characters, and a long description must never push "due → None" out of
@@ -417,7 +491,7 @@ async def update_task(
     if not payload:
         return "Nothing to change. Pass at least one field."
 
-    card = dict(payload)
+    card = _priority_card(payload, before=before, task=task)
     if status_label:
         card["status"] = status_label
         card.pop("status_id", None)
@@ -429,7 +503,7 @@ async def update_task(
         return CANCELLED
     updated = await patch(f"/projects/tasks/{tid}", payload)
     updated["assignees"] = task.get("assignees") or []
-    return "\n".join(["Updated:", *_task_line(updated, status_label)])
+    return "\n".join(["Updated:", *_task_line(updated, status_label), *notes])
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True)

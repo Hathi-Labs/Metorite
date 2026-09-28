@@ -140,10 +140,14 @@ def _org_id(db, slug: str) -> str:
         )
 
 
-def _chat(client, token: str, *, member: str | None):
+def _chat(client, token: str, *, member: str | None, proven: bool = True):
     headers = {"Authorization": f"Bearer {token}"}
     if member is not None:
         headers["X-CC-Member"] = member
+        # The gateway marks a member it verified (H-73). On this arm only a
+        # proven member may choose the organization, so the happy path sends it.
+        if proven:
+            headers["X-CC-Member-Proven"] = "1"
     return client.post(
         "/v1/chat/completions",
         headers=headers,
@@ -188,6 +192,7 @@ class TestTheDeploymentArmResolvesTheTenant:
                 request=None,  # type: ignore[arg-type]
                 authorization=f"Bearer {token}",
                 x_cc_member=owner,
+                x_cc_member_proven="1",
             )
             assert caller.organization_id == _org_id(db, slug), (
                 f"{owner} resolved to the wrong tenant")
@@ -290,6 +295,33 @@ class TestWhatItRefuses:
                     text("UPDATE organization SET status = 'active' WHERE slug = :s"),
                     {"s": slug},
                 )
+
+
+class TestOnlyAPROVENMemberChoosesTheOrganization:
+    """🔴 2026-09-28. On the deployment arm the member IS the tenant decision,
+    and any holder of the gateway's LLM key can send `X-CC-Member`. An
+    unsigned member naming another tenant's person would bill that tenant."""
+
+    def test_an_unproven_member_is_403_and_bills_nobody(self, client, db):
+        token = _mint_deployment_key(db, capabilities=["serve"])
+        r = _chat(client, token, member="someone@example.com", proven=False)
+        assert r.status_code == 403, r.text
+        assert "PROVEN" in r.json()["detail"]
+
+    def test_a_proven_flag_that_is_not_exactly_1_is_refused(self, client, db):
+        token = _mint_deployment_key(db, capabilities=["serve"])
+        r = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-CC-Member": "someone@example.com",
+                "X-CC-Member-Proven": "true",
+            },
+            json={"tier": "tier-fast", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert r.status_code == 403, r.text
+        # The PROVEN refusal, not the unknown-member one that also answers 403.
+        assert "PROVEN" in r.json()["detail"]
 
 
 class TestTheORGANIZATION_ARM_IS_UNCHANGED:

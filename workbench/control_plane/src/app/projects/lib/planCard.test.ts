@@ -191,3 +191,27 @@ describe("the Waits on count and name (fix round 1)", () => {
     expect(waitsOnName({ ...CHAIN[1], title: "  " })).toBe("Waits on (for Untitled task)");
   });
 });
+
+describe("the priority flags ride the card and come back (D78, H-173)", () => {
+  it("keeps important and leveraged, and sends them back on submit", () => {
+    const rows = planRowsFrom([
+      { ...TASKS[0], important: true, leveraged: false },
+      { ...TASKS[1], important: "false", leveraged: "true" },
+    ]);
+    expect(rows.map((r) => [r.important, r.leveraged])).toEqual([
+      [true, false],
+      [false, true],
+    ]);
+    const out = planSubmit({}, "Frame", rows);
+    expect(out.tasks.map((t) => [t.important, t.leveraged])).toEqual([
+      [true, false],
+      [false, true],
+    ]);
+  });
+
+  it("sends null for a row that states no flag, never a guess", () => {
+    const out = planSubmit({}, "Frame", planRowsFrom(TASKS));
+    expect(out.tasks[0]).toMatchObject({ important: null, leveraged: null });
+    expect("importance" in out.tasks[0]).toBe(false);
+  });
+});

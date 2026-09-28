@@ -1001,8 +1001,9 @@ class TestTheDeploymentArm:
         self, client, db, org, bound
     ):
         token = self._key(db, ["serve"])
+        # A PROVEN member: on this arm only a verified member picks the org.
         r = _decide(client, {"Authorization": f"Bearer {token}"},
-                    headers={"X-CC-Member": org["owner"]})
+                    headers={"X-CC-Member": org["owner"], "X-CC-Member-Proven": "1"})
         assert r.status_code == 200, r.text
         rows = _rows(db, org["id"])
         assert len(rows) == 1 and rows[0].task == "decide"

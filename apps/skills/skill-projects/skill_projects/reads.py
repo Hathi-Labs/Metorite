@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
+from skill_projects.priority import change_view, level_detail, level_fact
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -99,9 +100,10 @@ def _task_line(task: dict[str, Any], status_name: str = "") -> list[str]:
         facts.append(_people(task.get("assignees")))
     if task.get("project_name"):
         facts.append(f"in {data(task['project_name'])}")
-    imp = task.get("importance")
-    if imp:
-        facts.append(f"importance {imp}")
+    # D78: the level the app draws, never the retired 0-4 number (H-173).
+    level = level_fact(task)
+    if level:
+        facts.append(level)
     if task.get("archived_at"):
         facts.append("archived")
     head = f"- {_number(task)} {data(task.get('title'))}"
@@ -372,7 +374,8 @@ async def _timeline_block(task_id: str) -> list[str]:
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):
-            line += f": {meta.get('field')} {data(meta.get('before'))} → {data(meta.get('after'))}"
+            field, was, now = change_view(meta.get("field"), meta.get("before"), meta.get("after"))
+            line += f": {field} {data(was)} → {data(now)}"
         out.append(line)
     return out
 
@@ -394,11 +397,11 @@ async def task_detail(task_id: str) -> str:
     status = names.get(str(task.get("status_id")), str(task.get("status_id")))
     out.append(f"  status: {data(status)}")
     out.append(f"  assignees: {_people(task.get('assignees'))}")
+    out.append(f"  priority: {level_detail(task)}")
     for key, label in (
         ("due_at", "due"),
         ("start_date", "start"),
         ("completed_at", "completed"),
-        ("importance", "importance"),
         ("estimate_mins", "estimate (mins)"),
         ("created_by", "created by"),
         ("archived_at", "archived"),

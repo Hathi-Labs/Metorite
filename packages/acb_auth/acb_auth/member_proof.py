@@ -50,18 +50,47 @@ import hmac
 import secrets
 import time
 
-__all__ = ["MEMBER_PROOF_HEADER", "PROOF_TTL_SECONDS", "sign_member", "verify_member"]
+__all__ = [
+    "MEMBER_PROOF_HEADER",
+    "PROOF_TTL_SECONDS",
+    "PUBLIC_DEFAULT_SECRETS",
+    "sign_member",
+    "verify_member",
+]
 
 #: The header a proof travels in. Deliberately NOT ``X-CC-Member`` — the two
 #: carry different claims and collapsing them would make an unsigned header
 #: indistinguishable from a verified one at every reader.
 MEMBER_PROOF_HEADER = "X-CC-Member-Proof"
 
-#: ⚠️ **Short, because this is a bearer claim.** A proof that leaks is a proof
-#: somebody else can spend under, so its value has to expire faster than an
-#: investigation. Long enough for a slow completion to be issued and consumed,
-#: which is what ``_ROUTER_TIMEOUT_SECONDS`` (120s) bounds.
-PROOF_TTL_SECONDS = 300
+#: ⚠️ **Bounded, because this is a bearer claim.** A proof that leaks is a
+#: proof somebody else can spend under, so it must expire.
+#:
+#: 🔴 **An hour, not five minutes (2026-09-28).** It was 300 s, sized for one
+#: MAF completion, which signs again on every request. A Copilot session does
+#: not: the CLI stamps the provider headers once and resends them on every
+#: model call of the turn, and a turn with a tool open or a person answering
+#: can last an hour (the HITL wait is 3600 s). Once the deployment key makes
+#: the proven member choose WHO PAYS, an expired proof refuses the rest of that
+#: turn outright. A proof lives only in server processes and the sandbox that
+#: runs for that member, so the longer window buys no new reader.
+PROOF_TTL_SECONDS = 3600
+
+#: Signing secrets that are PUBLIC, so they prove nothing. `acb_common.settings`
+#: ships the first as its default and `.env.example` repeats it.
+#:
+#: 🔴 A box that never set `GATEWAY_SESSION_SECRET` signs under a string anyone
+#: can read. Under the deployment key a proof picks the paying organization, so
+#: accepting one here would let any holder of the gateway LLM key bill any
+#: tenant. Such a secret is treated as EMPTY: nothing is signed, nothing
+#: verifies. `test_member_proof.py` pins this list to the settings default.
+PUBLIC_DEFAULT_SECRETS = frozenset({"change-me-dev-only"})
+
+
+def _usable(secret: str | None) -> bool:
+    """A secret that can actually prove something: set, and not public."""
+    s = (secret or "").strip()
+    return bool(s) and s not in PUBLIC_DEFAULT_SECRETS
 
 
 def _digest(secret: str, msg: str) -> str:
@@ -91,8 +120,8 @@ def sign_member(email: str, secret: str, *, now: float | None = None) -> str:
     who = _normalise(email)
     if not who:
         raise ValueError("a member proof needs an address")
-    if not secret.strip():
-        raise ValueError("a member proof needs a signing secret")
+    if not _usable(secret):
+        raise ValueError("a member proof needs a signing secret that is set and not public")
 
     # ⚠️ The nonce makes two proofs for one member in one second differ. It
     # buys no security on its own — it stops a proof being a stable string
@@ -115,7 +144,7 @@ def verify_member(proof: str | None, secret: str, *, now: float | None = None) -
     must refuse every proof rather than accept every proof, which is what a
     naive ``hmac`` over ``""`` would do.
     """
-    if not proof or not secret.strip():
+    if not proof or not _usable(secret):
         return None
 
     # ⚠️ Split from the RIGHT with a bounded count. The address is the part

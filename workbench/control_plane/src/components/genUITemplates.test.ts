@@ -17,6 +17,7 @@ import {
   taskHref,
 } from "./genUITemplates";
 import { PROJECTS_CHANGED_EVENT } from "./projects/ProjectToolCards";
+import { CELL_META, type PriorityCell } from "@/app/tasks/lib/priority";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
@@ -133,5 +134,39 @@ describe("the plan card's Waits on control", () => {
 
   it("is absent from a plan of one task", () => {
     expect(plan([row("t1")])).not.toContain("Waits on");
+  });
+});
+
+describe("the board card draws THE priority chip (D78, H-173)", () => {
+  // The chat's board card drew `!2`, the retired 0-4 number. It now draws
+  // the level chip the Projects card draws, from `projects/lib/matrix`.
+  const soon = new Date(Date.now() + 2 * 3_600_000).toISOString();
+  const board = (task: Record<string, unknown>) =>
+    renderToStaticMarkup(
+      createElement(() =>
+        TEMPLATE_REGISTRY.taskBoard({
+          columns: [{ id: "s1", name: "To do", tasks: [{ id: ID, number: 7, title: "Ship it", ...task }] }],
+        }),
+      ),
+    );
+  const cases: Array<[Record<string, unknown>, PriorityCell]> = [
+    [{ importance: 2, leveraged: true, due_at: soon }, "critical"],
+    [{ importance: 3, due_at: soon }, "urgent"],
+    [{ importance: 2, leveraged: true }, "high-leverage"],
+    [{ importance: 2 }, "important"],
+    [{ leveraged: true, due_at: soon }, "quick-leverage"],
+    [{ leveraged: true }, "speculative-bet"],
+  ];
+
+  it.each(cases)("labels %j with its level", (task, cell) => {
+    const html = board(task);
+    expect(html).toContain(`Priority: ${CELL_META[cell].label}`);
+    expect(html).not.toMatch(/!\d/);
+  });
+
+  it("draws no chip for Low Priority, as the Projects card does", () => {
+    const html = board({ importance: 1 });
+    expect(html).not.toContain("Priority:");
+    expect(html).not.toContain("!1");
   });
 });
