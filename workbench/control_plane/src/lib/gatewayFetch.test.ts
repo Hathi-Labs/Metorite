@@ -25,6 +25,7 @@ import {
   redactPath,
   resetGatewayBreaker,
   retryDeadlineMs,
+  withJsonContentType,
 } from "@/lib/gatewayFetch";
 
 // The breaker is process state. Each test starts with every breaker closed.
@@ -722,5 +723,63 @@ describe("the classifiers", () => {
     expect(isReplayableBody(new FormData())).toBe(true);
     expect(isReplayableBody(new Blob(["x"]))).toBe(true);
     expect(isReplayableBody(new ReadableStream())).toBe(false);
+  });
+});
+
+// WS-27bm S15 (projects_ai_chat.md §21). For a string body, Node's `fetch`
+// sends text/plain, and FastAPI answered 422 to every chat save on production.
+describe("rule 10 — a string body goes out as JSON", () => {
+  it("sends application/json for a string body with no content type", async () => {
+    const port = await freePort();
+    const seen = gatewayLater(port, 0, (_req, _body, res) => res.end("{}"));
+    await new Promise((r) => setTimeout(r, 30));
+    await gatewayFetch(
+      `http://127.0.0.1:${port}/chat/sessions`,
+      { method: "POST", headers: { ...IDENTITY }, body: JSON.stringify([{ id: "m1" }]) },
+      { retry: false },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers["content-type"]).toBe("application/json");
+    // The identity headers the caller gave still go out unchanged (rule 7).
+    expect(seen[0].headers["x-user-email"]).toBe("alice@fracktal.in");
+  });
+
+  it("keeps an explicit content type, in any letter case", async () => {
+    const port = await freePort();
+    const seen = gatewayLater(port, 0, (_req, _body, res) => res.end("{}"));
+    await new Promise((r) => setTimeout(r, 30));
+    await gatewayFetch(
+      `http://127.0.0.1:${port}/x`,
+      { method: "POST", headers: { ...IDENTITY, "content-type": "text/markdown" }, body: "# hi" },
+      { retry: false },
+    );
+    expect(seen[0].headers["content-type"]).toBe("text/markdown");
+  });
+
+  it("leaves a FormData body alone, so fetch sets the multipart boundary", async () => {
+    const port = await freePort();
+    const seen = gatewayLater(port, 0, (_req, _body, res) => res.end("{}"));
+    await new Promise((r) => setTimeout(r, 30));
+    const form = new FormData();
+    form.set("file", new Blob(["x"]), "a.txt");
+    await gatewayFetch(
+      `http://127.0.0.1:${port}/upload`,
+      { method: "POST", headers: { ...IDENTITY }, body: form },
+      { retry: false },
+    );
+    expect(seen[0].headers["content-type"]).toMatch(/^multipart\/form-data; boundary=/);
+  });
+
+  it("keeps the shape of the headers the caller gave", () => {
+    const rec = withJsonContentType({ body: "{}", headers: { A: "1" } });
+    expect(rec.headers).toEqual({ A: "1", "Content-Type": "application/json" });
+    const arr = withJsonContentType({ body: "{}", headers: [["A", "1"]] });
+    expect(arr.headers).toEqual([["A", "1"], ["Content-Type", "application/json"]]);
+    const inst = withJsonContentType({ body: "{}", headers: new Headers({ A: "1" }) });
+    expect((inst.headers as Headers).get("content-type")).toBe("application/json");
+    const none = withJsonContentType({ body: "{}" });
+    expect(none.headers).toEqual({ "Content-Type": "application/json" });
+    const get = { method: "GET" };
+    expect(withJsonContentType(get)).toBe(get);
   });
 });

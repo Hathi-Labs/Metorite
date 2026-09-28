@@ -519,6 +519,16 @@ export async function fetchMessagesFromDb(
     // Update localStorage cache with authoritative Postgres data — only on a
     // full (unpaginated) fetch.  A windowed/paginated fetch must not shrink or
     // clobber the cache.
+    //
+    // An EMPTY server answer never replaces a non-empty cache (WS-27bm S15,
+    // projects_ai_chat.md §21). On production the server held no row, so every
+    // full fetch answered [] and this line erased the member's local history.
+    // An empty answer can also mean a save that has not landed yet. The cache
+    // is the only copy then, so it stays, and the caller gets it back.
+    if (!paginated && mapped.length === 0) {
+      const cached = getMessages(sessionId);
+      if (cached.length > 0) return cached;
+    }
     if (!paginated) {
       try {
         localStorage.setItem(MESSAGES_PREFIX + sessionId, JSON.stringify(mapped));

@@ -27,7 +27,7 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
       `${GATEWAY_URL}/observability/avatars/${encodeURIComponent(name)}`,
       {
         method: "PUT",
-        headers: await gatewayHeaders(),
+        headers: await gatewayHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(8_000),
       },

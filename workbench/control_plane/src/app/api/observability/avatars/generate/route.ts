@@ -23,7 +23,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     const res = await gatewayFetch(`${GATEWAY_URL}/observability/avatars/generate`, {
       method: "POST",
-      headers: await gatewayHeaders(),
+      headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(115_000),
     });

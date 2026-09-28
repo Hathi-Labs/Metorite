@@ -50,7 +50,7 @@ export async function POST(
     const body = await req.json();
     const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/messages`, {
       method: "POST",
-      headers: await gatewayHeaders(),
+      headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10_000),
     });
