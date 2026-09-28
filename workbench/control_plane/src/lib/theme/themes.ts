@@ -189,7 +189,8 @@ const rapidtool: Theme = {
       ring: "hsl(198 89% 50%)",
       success: "hsl(142 76% 47%)",
       successForeground: "hsl(210 40% 98%)",
-      warning: "hsl(47 96% 53%)",
+      // A dark amber, not the dark-mode yellow — see globals.css (H-174).
+      warning: "hsl(36 92% 29%)",
       warningForeground: "hsl(210 40% 98%)",
       info: "hsl(198 89% 38%)",
       infoForeground: "hsl(210 40% 98%)",

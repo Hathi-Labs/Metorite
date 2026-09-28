@@ -248,7 +248,7 @@ function PendingCommits({ agentName }: { agentName: string }) {
                 </div>
 
                 {m.test_summary && (
-                  <div className={`mt-1 ${isEvalFailed ? "text-warning/80" : "text-muted-foreground"}`}>
+                  <div className={`mt-1 ${isEvalFailed ? "text-warning" : "text-muted-foreground"}`}>
                     {m.test_summary}
                   </div>
                 )}
@@ -282,7 +282,7 @@ function PendingCommits({ agentName }: { agentName: string }) {
                 {/* eval_failed actions */}
                 {isEvalFailed && m.id && (
                   <div className="mt-2 flex flex-col gap-1.5">
-                    <p className="text-[10px] text-warning/70 mb-0.5">
+                    <p className="text-[10px] text-warning mb-0.5">
                       Tests failed — review the diff, then choose an action.
                     </p>
                     <div className="flex gap-1.5 flex-wrap">

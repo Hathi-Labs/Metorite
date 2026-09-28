@@ -20,7 +20,14 @@
 
 import { describe, expect, it } from "vitest";
 
-import { AA_LARGE_TEXT, AA_NORMAL_TEXT, accentInk, contrast, parseColor } from "./contrast";
+import {
+  AA_LARGE_TEXT,
+  AA_NORMAL_TEXT,
+  accentInk,
+  contrast,
+  contrastRatio,
+  parseColor,
+} from "./contrast";
 import { THEME } from "./themes";
 import { CATEGORICAL_TOKENS } from "./types";
 import type { ColorTokens } from "./types";
@@ -30,6 +37,17 @@ type Pair = {
   bg: keyof ColorTokens;
   min: number;
 };
+
+/**
+ * The semantic hues a member reads as WORDS: `statusAccent.ts` draws its red,
+ * amber, green, blue and violet text slots with these, and so do toasts,
+ * banners, badges and the priority chip. The accent (`primary`) is not here,
+ * because a member picks it.
+ */
+const STATUS_TEXT_TONES = ["destructive", "success", "warning", "info", "violet"] as const;
+
+/** The tint behind a status chip: `bg-warning/10` on a card. */
+const CHIP_TINT = 0.1;
 
 /**
  * Token pairs that actually carry text or convey state.
@@ -50,12 +68,20 @@ const PAIRS: Pair[] = [
   { fg: "destructiveForeground", bg: "destructive", min: AA_NORMAL_TEXT },
   { fg: "successForeground", bg: "success", min: AA_NORMAL_TEXT },
   { fg: "warningForeground", bg: "warning", min: AA_NORMAL_TEXT },
-  // Status colours used as text/dots directly on a surface.
+  // The accent, as a link or an active mark on a surface.
   { fg: "primary", bg: "background", min: AA_LARGE_TEXT },
   { fg: "primary", bg: "card", min: AA_LARGE_TEXT },
-  { fg: "destructive", bg: "card", min: AA_LARGE_TEXT },
-  { fg: "success", bg: "card", min: AA_LARGE_TEXT },
-  { fg: "warning", bg: "card", min: AA_LARGE_TEXT },
+  // The status TEXT tones, at the BODY-TEXT threshold (H-174). Each one is
+  // `text-warning`, `text-success` … on a page, a card or a muted panel — small
+  // words, not only a dot. They were measured at 3.0 on the card alone, so the
+  // light-mode `--warning` shipped at 1.57 : 1 as text with only a ratchet
+  // entry to show for it. `STATUS_TEXT_TONES` below also measures each one on
+  // its own 10% chip tint, which is what `statusAccent.ts` draws.
+  ...STATUS_TEXT_TONES.flatMap((token) =>
+    (["background", "card", "muted"] as const).map(
+      (bg) => ({ fg: token, bg, min: AA_NORMAL_TEXT }) as Pair,
+    ),
+  ),
   // The categorical ramp, at the BODY-TEXT threshold rather than the 3.0 used
   // for dots and icons: a `--cat-*` slot's main job is `text-cat-3` on a
   // context chip, i.e. small words, and a chip is measured against both the
@@ -81,9 +107,24 @@ const KNOWN_SHORTFALLS: Record<string, number> = {
   "rapidtool/light/accentForeground-on-accent": 2.16,
   "rapidtool/light/destructiveForeground-on-destructive": 3.59,
   "rapidtool/light/successForeground-on-success": 1.9,
-  "rapidtool/light/warningForeground-on-warning": 1.5,
   "rapidtool/light/success-on-card": 1.99,
-  "rapidtool/light/warning-on-card": 1.57,
+  // Status TEXT tones below 4.5, recorded when H-174 raised their threshold
+  // from 3.0 on the card to 4.5 on every surface. `--warning` was fixed in
+  // that change and has no entry. HANDOFF H-193 carries the rest.
+  "rapidtool/dark/destructive-on-muted": 4.05,
+  "rapidtool/dark/destructive-on-destructive-chip": 4.19,
+  "rapidtool/dark/violet-on-muted": 4.46,
+  "rapidtool/light/destructive-on-background": 3.76,
+  "rapidtool/light/destructive-on-card": 3.76,
+  "rapidtool/light/destructive-on-muted": 3.42,
+  "rapidtool/light/destructive-on-destructive-chip": 3.3,
+  "rapidtool/light/success-on-background": 1.99,
+  "rapidtool/light/success-on-muted": 1.81,
+  "rapidtool/light/success-on-success-chip": 1.84,
+  "rapidtool/light/info-on-background": 4.22,
+  "rapidtool/light/info-on-card": 4.22,
+  "rapidtool/light/info-on-muted": 3.85,
+  "rapidtool/light/info-on-info-chip": 3.72,
 };
 
 /** Float noise guard — ratios are compared to two decimal places. */
@@ -100,6 +141,20 @@ for (const mode of ["dark", "light"] as const) {
     const ratio = contrast(fg, bg);
     if (ratio === null) continue;
     measurements.push({ id: key(THEME.id, mode, pair), ratio, min: pair.min });
+  }
+  // A chip is the tone as text on the tone itself at 10% over the card. The
+  // browser composites the tint in sRGB, so the maths does the same.
+  for (const tone of STATUS_TEXT_TONES) {
+    const fg = parseColor(THEME.colors[mode][tone] ?? "");
+    const card = parseColor(THEME.colors[mode].card ?? "");
+    if (!fg || !card) continue;
+    const over = (f: number, b: number) => f * CHIP_TINT + b * (1 - CHIP_TINT);
+    const tint = { r: over(fg.r, card.r), g: over(fg.g, card.g), b: over(fg.b, card.b) };
+    measurements.push({
+      id: `${THEME.id}/${mode}/${tone}-on-${tone}-chip`,
+      ratio: contrastRatio(fg, tint),
+      min: AA_NORMAL_TEXT,
+    });
   }
 }
 
@@ -174,6 +229,17 @@ describe("theme contrast", () => {
     const ids = new Set(measurements.map((m) => m.id));
     const stale = Object.keys(KNOWN_SHORTFALLS).filter((id) => !ids.has(id));
     expect(stale, "these no longer correspond to a measured pair").toEqual([]);
+  });
+
+  it("warning text clears AA on every surface in both modes, with no exception (H-174)", () => {
+    // The light `--warning` was the dark-mode yellow, 1.57 : 1 as words on a
+    // white card. This names the fix, so a ratchet entry cannot excuse it again.
+    const warning = measurements.filter((m) => /\/warning-on-/.test(m.id));
+    expect(warning.length).toBe(2 * 4); // two modes × page, card, muted, chip
+    expect(Object.keys(KNOWN_SHORTFALLS).filter((id) => /\/warning-on-/.test(id))).toEqual([]);
+    for (const m of warning) {
+      expect(m.ratio, `${m.id} is ${m.ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    }
   });
 
   it("confines the exception list to the original theme", () => {
