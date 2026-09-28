@@ -7055,6 +7055,35 @@ def _resolve_serving_chain(
     return chain, _TierWall(None, tier, task)
 
 
+def _open_stream_or_release(
+    attempts: list[ResolvedTier],
+    kwargs_for: Any,
+    on_failover: Any,
+    *,
+    org_id: str,
+    request_id: str,
+) -> tuple[list[Any], Any, ResolvedTier] | None:
+    """Open the stream, or give the call's hold back. ``None`` = every step failed.
+
+    🔴 **Every way the stream fails to open returns the hold (2026-09-28).**
+    No body generator runs after a failed open, so nothing else would settle
+    it. A vendor refusal answers ``None`` and the route sends the closed-stream
+    sentinel. Any other error (an anyio error, a bug building the call) also
+    returns the hold, then propagates unchanged.
+
+    📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
+    """
+    try:
+        return _open_stream_chain(attempts, kwargs_for, on_failover)
+    except router_mod.UpstreamFailed as failed:
+        _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
+        _release_call_hold(org_id, request_id)
+        return None
+    except BaseException:
+        _release_call_hold(org_id, request_id)
+        raise
+
+
 def _open_stream_chain(
     attempts: list[ResolvedTier],
     kwargs_for: Any,
@@ -7463,28 +7492,20 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             # Proxies that buffer turn a stream into one late blob.
             "X-Accel-Buffering": "no",
         }
-        try:
-            head, source, resolved = _open_stream_chain(
-                attempts, _stream_kwargs_for, _note_failover
-            )
-        except router_mod.UpstreamFailed as failed:
+        opened = _open_stream_or_release(
+            attempts, _stream_kwargs_for, _note_failover,
+            org_id=org_id, request_id=request_id,
+        )
+        if opened is None:
             # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
             # raises. `_stream_closed` holds the reason this stayed a 200 once
             # the walk moved out of the body generator and made a 502
             # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
-            # No body generator runs after this, so the route gives the hold back.
-            _release_call_hold(org_id, request_id)
             return StreamingResponse(
                 _stream_closed(), media_type="text/event-stream", headers=headers
             )
-        except BaseException:
-            # Anything else that stops the stream opening (an anyio error, a
-            # bug building the call) also leaves no generator to settle, so
-            # the hold goes back here too, and the error propagates unchanged.
-            _release_call_hold(org_id, request_id)
-            raise
+        head, source, resolved = opened
 
         return StreamingResponse(
             _streamed_completion(
