@@ -73,8 +73,11 @@ export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
 /** `reports.py` `MAX_NAME`. The server refuses a longer name with 422. */
 export const MAX_REPORT_NAME = 120;
 
-/** The name a new report starts with. The member can change it. */
-export const NEW_REPORT_NAME = "Weekly delivery";
+/**
+ * The name a new custom report starts with. The member can change it. A
+ * report from a template starts with the template's name (R5b-1 repair).
+ */
+export const NEW_REPORT_NAME = "Untitled report";
 
 export interface PeriodOption {
   key: string;
@@ -186,17 +189,18 @@ export function builderStateFromTemplate(
 ): BuilderState | null {
   if (!template.available || !template.sections?.length) return null;
   const base = newBuilderState();
-  return {
+  const state: BuilderState = {
     ...base,
     name: template.name,
     weeks: template.weeks ?? base.weeks,
     skipCurrentWeek: template.skip_current_week ?? base.skipCurrentWeek,
     sections: orderedSections(template.sections),
     template: template.key,
-    // WS-27bn R5b. A link can name the subject. A template that is not
-    // about a person or a team takes none.
-    subject: subject && subjectChipShown(template) ? subject : null,
+    subject: null,
   };
+  // WS-27bn R5b. A link can name the subject. A template that is not about
+  // a person or a team takes none. `withSubject` keeps a section on.
+  return withSubject(state, subject && subjectChipShown(template) ? subject : null);
 }
 
 /** The most cards "Your reports" shows (§6.1, the R2 narrowing). */
@@ -323,8 +327,20 @@ export const NO_SUBJECT_NOTE =
 /** The subject chip's value for "Everyone": no subject. */
 export const EVERYONE = "";
 
-/** The note beside the locked chip of "My day". */
+/** The note beside the locked chip of "My day", for its author. */
 export const SELF_SUBJECT_NOTE = "My day is always about you.";
+
+/**
+ * The note beside the locked chip of "My day" when an admin edits the
+ * report of another member. The server keeps a T2 about its author.
+ */
+export const AUTHOR_SUBJECT_NOTE = "My day is always about its author.";
+
+/** The subject chip's line when the subjects read fails. */
+export const SUBJECTS_FAILED = "People and teams did not load.";
+
+/** The subject chip's line when the answer lists nobody. */
+export const NOBODY_TO_CHOOSE = "There is no person or team to choose yet.";
 
 /**
  * The sections `configFor` sends. With a subject, `outlook` and `hygiene`
@@ -404,11 +420,13 @@ export function teamLabel(name: string): string {
  *
  * ⚠️ A saved subject that the answer does not list stays as an option, as
  * the period chip keeps a saved period. So an edit of the name does not
- * change the subject.
+ * change the subject. `editing` decides its hint: "as saved" for a saved
+ * row, and "not in your list" for a subject that a link named.
  */
 export function subjectOptions(
   answer: ReportSubjects | null | undefined,
-  current: ReportSubject | null = null
+  current: ReportSubject | null = null,
+  editing = false
 ): SelectOption[] {
   const options: SelectOption[] = [
     { value: EVERYONE, label: "Everyone", group: "Everyone" },
@@ -438,7 +456,9 @@ export function subjectOptions(
     options.push({
       value: saved,
       label: current.kind === "person" ? current.email : teamLabel(current.slug),
-      hint: "as saved",
+      // "as saved" is true only for a saved row. A subject from a link was
+      // never saved, and the server refuses it on the preview.
+      hint: editing ? "as saved" : "not in your list",
       group: current.kind === "person" ? "People" : "Teams",
     });
   }
@@ -474,12 +494,77 @@ export function requiredSubject(
 /**
  * Apply a subject chip choice. `outlook` and `hygiene` stay in `sections`,
  * so "Everyone" gives them back, and `configFor` leaves them out.
+ *
+ * ⚠️ When the subject turns off EVERY chosen section, the default sections
+ * go into `sections` here (R5b-1 repair). Before, only `configFor` added
+ * them, so the preview showed four sections and no checkbox showed them.
  */
 export function withSubject(
   state: BuilderState,
   subject: ReportSubject | null
 ): BuilderState {
-  return { ...state, subject };
+  const ordered = orderedSections(state.sections);
+  const kept = ordered.filter((s) => !NO_SUBJECT_SECTIONS.includes(s));
+  const sections =
+    subject && kept.length === 0
+      ? orderedSections([...ordered, ...DEFAULT_REPORT_SECTIONS])
+      : ordered;
+  return { ...state, subject, sections };
+}
+
+/**
+ * The state the builder shows and sends (R5b-1 repair).
+ *
+ * A NEW "My day" takes the reader as its subject, derived here and never
+ * typed. ⚠️ **An edit keeps the stored subject.** A T2 is always about its
+ * AUTHOR, and an admin may edit it (§9 Q13). Before this function, the
+ * builder put the admin in as the subject of the member's report, and the
+ * member then lost it.
+ */
+export function builderSubject(
+  draft: BuilderState,
+  needs: "self" | "person" | null,
+  self: ReportSubject | null,
+  editing: boolean
+): BuilderState {
+  if (needs === "self" && !editing && self) return withSubject(draft, self);
+  return draft;
+}
+
+/** What the subject chip draws while the subjects read runs, or fails. */
+export type SubjectChipStatus = "loading" | "failed" | "ready";
+
+/** The subject chip's status. An answer wins over an old error. */
+export function subjectChipStatus(
+  answer: ReportSubjects | null | undefined,
+  failed: boolean
+): SubjectChipStatus {
+  if (answer) return "ready";
+  return failed ? "failed" : "loading";
+}
+
+/**
+ * The muted note beside a ready subject chip, or `null`.
+ *
+ * "My day" says who it is about: "you" for its author, and "its author"
+ * for an admin who edits the report of another member. A reader with
+ * nobody to choose reads that, and not an empty list.
+ */
+export function subjectChipNote(
+  needs: "self" | "person" | null,
+  answer: ReportSubjects,
+  subject: ReportSubject | null,
+  editing: boolean
+): string | null {
+  if (needs === "self") {
+    const me = (answer.me ?? "").trim().toLowerCase();
+    const mine = subject?.kind === "person" && subject.email === me;
+    return editing && !mine ? AUTHOR_SUBJECT_NOTE : SELF_SUBJECT_NOTE;
+  }
+  if (answer.people.length === 0 && answer.teams.length === 0) {
+    return NOBODY_TO_CHOOSE;
+  }
+  return null;
 }
 
 /**
@@ -489,14 +574,19 @@ export function withSubject(
  */
 export function subjectPrompt(
   state: Pick<BuilderState, "subject">,
-  template: ReportTemplate | null | undefined
+  template: ReportTemplate | null | undefined,
+  listFailed = false
 ): string | null {
   const needs = requiredSubject(template);
   if (!needs) return null;
   if (state.subject?.kind === "person") return null;
-  return needs === "self"
-    ? "Your own day shows when the list of people loads."
-    : "Choose a person in the About chip to see this report.";
+  if (needs === "person") {
+    return "Choose a person in the About chip to see this report.";
+  }
+  // The builder puts a Retry button beside the failed line.
+  return listFailed
+    ? "The list of people did not load, so your own day cannot show."
+    : "Your own day shows when the list of people loads.";
 }
 
 /** Which chip an error from the server belongs to. */
@@ -560,17 +650,31 @@ export interface ReportLinkIntent {
   node: string | null;
 }
 
+/** A UUID, the shape of every project id. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * The parser of `reportLink`. `null` opens the home screen: no key after
  * `app`, an unknown or coming-soon template, or a subject with a bad shape.
+ *
+ * ⚠️ **The node must be a UUID in the reader's tree** (R5b-1 repair). The
+ * server casts the id to a uuid, and a bad one made the preview answer 500.
+ * A node that fails either test is dropped. `roots` is the `/tree` answer.
  */
 export function parseReportLink(
   params: URLSearchParams,
-  templates: readonly ReportTemplate[]
+  templates: readonly ReportTemplate[],
+  roots: readonly ProjectRow[] = []
 ): ReportLinkIntent | null {
   const key = params.get("template");
   const rawSubject = params.get("subject");
-  const node = params.get("report_node") || null;
+  const rawNode = (params.get("report_node") || "").trim();
+  const node =
+    rawNode &&
+    UUID.test(rawNode) &&
+    scopeOptions(roots).some((o) => o.value === rawNode)
+      ? rawNode
+      : null;
   if (!key && !rawSubject && !node) return null;
   let template: ReportTemplate | null = null;
   if (key) {
@@ -597,11 +701,9 @@ export function builderStateFromLink(intent: ReportLinkIntent): BuilderState {
     intent.subject.kind !== "person"
       ? null
       : intent.subject;
-  const base = (intent.template &&
-    builderStateFromTemplate(intent.template, subject)) || {
-    ...newBuilderState(),
-    subject,
-  };
+  const base =
+    (intent.template && builderStateFromTemplate(intent.template, subject)) ||
+    withSubject(newBuilderState(), subject);
   return { ...base, projectId: intent.node };
 }
 

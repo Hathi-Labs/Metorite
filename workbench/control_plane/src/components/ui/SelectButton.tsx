@@ -45,7 +45,7 @@
  * it does not hand-roll a second containment check — the walker is what makes
  * a portalled child not count as "outside".
  */
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
@@ -99,6 +99,60 @@ export function filterOptions(
       o.label.toLowerCase().includes(q) ||
       (o.hint ?? "").toLowerCase().includes(q)
   );
+}
+
+/**
+ * The list's open state and its filter query, as ONE state (R5b-1 repair).
+ *
+ * ⚠️ **Every close clears the query.** A pick, Escape, a click outside and a
+ * second click on the trigger all close the list. Before this reducer, the
+ * last two kept the query, so the list opened again already filtered.
+ */
+export interface SelectPanelState {
+  open: boolean;
+  query: string;
+}
+
+export type SelectPanelAction =
+  | { type: "toggle" }
+  | { type: "close" }
+  | { type: "query"; query: string };
+
+export function selectPanelReducer(
+  state: SelectPanelState,
+  action: SelectPanelAction
+): SelectPanelState {
+  switch (action.type) {
+    case "toggle":
+      return { open: !state.open, query: "" };
+    case "close":
+      return { open: false, query: "" };
+    case "query":
+      return state.open ? { ...state, query: action.query } : state;
+  }
+}
+
+/** One heading and its options, in the caller's order. */
+export interface OptionGroup {
+  /** `undefined` for options with no heading. */
+  group: string | undefined;
+  options: SelectOption[];
+}
+
+/**
+ * The options, cut into runs of one group (R5b-1 repair). The list draws
+ * each run with a group name as `role="group"` with that name as its label,
+ * so a screen reader says the heading. Order is kept, so the caller keeps
+ * each group together.
+ */
+export function groupOptions(options: readonly SelectOption[]): OptionGroup[] {
+  const out: OptionGroup[] = [];
+  for (const option of options) {
+    const last = out.at(-1);
+    if (last && last.group === option.group) last.options.push(option);
+    else out.push({ group: option.group, options: [option] });
+  }
+  return out;
 }
 
 export interface SelectOption {
@@ -206,10 +260,16 @@ export function SelectButton({
   prompt,
   filterAbove,
 }: SelectButtonProps) {
-  const [open, setOpen] = useState(autoOpen);
-  const [query, setQuery] = useState("");
+  const [{ open, query }, dispatch] = useReducer(selectPanelReducer, {
+    open: autoOpen,
+    query: "",
+  });
   const filtering = filterAbove !== undefined && options.length > filterAbove;
   const shown = filtering ? filterOptions(options, query) : options;
+  // ⚠️ A list with no filter box and no group keeps the markup it always
+  // had: the panel IS the listbox. The 19 callers from before R5b pass
+  // neither, so they render unchanged.
+  const structured = filtering || options.some((o) => o.group !== undefined);
   const root = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   /**
@@ -239,7 +299,7 @@ export function SelectButton({
     if (!open) return;
     const onDown = (event: MouseEvent) => {
       if (shouldDismiss(event.target as Element | null, domClickWalk(root.current))) {
-        setOpen(false);
+        dispatch({ type: "close" });
       }
     };
     // ⚠️ Escape closes, and focus returns to the trigger. Without the return
@@ -247,8 +307,7 @@ export function SelectButton({
     // means walking the whole filter bar again.
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOpen(false);
-        setQuery("");
+        dispatch({ type: "close" });
         root.current?.querySelector("button")?.focus();
       }
     };
@@ -263,8 +322,7 @@ export function SelectButton({
   const pick = useCallback(
     (next: string) => {
       onChange(next);
-      setOpen(false);
-      setQuery("");
+      dispatch({ type: "close" });
       root.current?.querySelector("button")?.focus();
     },
     [onChange]
@@ -280,7 +338,7 @@ export function SelectButton({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         disabled={disabled}
-        onClick={() => setOpen((was) => !was)}
+        onClick={() => dispatch({ type: "toggle" })}
         className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
       >
         <span className="min-w-0 flex-1 truncate pr-px">
@@ -308,65 +366,157 @@ export function SelectButton({
         open={open}
         layer={layer}
         className="max-h-64 w-max p-1"
-        panelProps={{ id: listId, role: "listbox", "aria-label": label }}
+        panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >
-          {filtering ? (
-            <div className="p-1">
-              <Input
-                inputSize="sm"
-                autoFocus
-                className="w-full"
-                placeholder="Type to filter"
-                aria-label={`Filter ${label}`}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-          ) : null}
-          {filtering && shown.length === 0 ? (
-            <p className="px-2 py-1 text-[11px] text-muted-foreground">
-              Nothing matches.
-            </p>
-          ) : null}
-          {shown.map((option, i) => (
-            <Fragment key={option.value}>
-              {option.group && option.group !== shown[i - 1]?.group ? (
-                <p
-                  role="presentation"
-                  className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold text-muted-foreground"
-                >
-                  {option.group}
-                </p>
-              ) : null}
-              <button
-                type="button"
-                role="option"
-                aria-selected={option.value === value}
-                aria-disabled={option.disabled || undefined}
-                disabled={option.disabled}
-                onClick={() => pick(option.value)}
-                className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
-                  option.disabled
-                    ? "cursor-not-allowed text-muted-foreground"
-                    : "hover:bg-muted"
-                } ${option.value === value ? "bg-muted font-medium" : ""}`}
-                // A tree's indent, in `rem` so it follows the member's density.
-                // `px` here would stop matching the text beside it at compact.
-                style={
-                  option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
-                }
-              >
-                <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
-                {option.hint ? (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
-                    {option.hint}
-                  </span>
-                ) : null}
-              </button>
-            </Fragment>
-          ))}
+        <SelectList
+          label={label}
+          listId={listId}
+          value={value}
+          options={shown}
+          filtering={filtering}
+          structured={structured}
+          query={query}
+          onQuery={(next) => dispatch({ type: "query", query: next })}
+          onPick={pick}
+        />
       </AnchoredPanel>
     </div>
+  );
+}
+
+/** One option row. */
+function OptionRow({
+  option,
+  selected,
+  onPick,
+}: {
+  option: SelectOption;
+  selected: boolean;
+  onPick: (value: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      aria-disabled={option.disabled || undefined}
+      disabled={option.disabled}
+      onClick={() => onPick(option.value)}
+      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+        option.disabled
+          ? "cursor-not-allowed text-muted-foreground"
+          : "hover:bg-muted"
+      } ${selected ? "bg-muted font-medium" : ""}`}
+      // A tree's indent, in `rem` so it follows the member's density.
+      // `px` here would stop matching the text beside it at compact.
+      style={
+        option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
+      }
+    >
+      <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      {option.hint ? (
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {option.hint}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+/**
+ * The panel's content. Exported so a test can render it without a DOM: the
+ * panel itself is a portal, which a server render cannot draw.
+ *
+ * ⚠️ **The filter box sits ABOVE the listbox, never inside it** (R5b-1
+ * repair). A listbox holds options, and a text field inside one is a
+ * control that assistive technology does not expect there. Each group is
+ * `role="group"` with its heading as the label, and the heading is
+ * `aria-hidden`, so a screen reader says it once.
+ *
+ * When `structured` is false, the caller has made the panel the listbox,
+ * and this draws the option rows only, as before R5b.
+ */
+export function SelectList({
+  label,
+  listId,
+  value,
+  options,
+  filtering,
+  structured,
+  query,
+  onQuery,
+  onPick,
+}: {
+  label: string;
+  listId: string;
+  value: string;
+  options: readonly SelectOption[];
+  filtering: boolean;
+  structured: boolean;
+  query: string;
+  onQuery: (query: string) => void;
+  onPick: (value: string) => void;
+}) {
+  if (!structured) {
+    return (
+      <>
+        {options.map((option) => (
+          <OptionRow
+            key={option.value}
+            option={option}
+            selected={option.value === value}
+            onPick={onPick}
+          />
+        ))}
+      </>
+    );
+  }
+  return (
+    <>
+      {filtering ? (
+        <div className="p-1">
+          <Input
+            inputSize="sm"
+            autoFocus
+            className="w-full"
+            placeholder="Type to filter"
+            aria-label={`Filter ${label}`}
+            aria-controls={listId}
+            value={query}
+            onChange={(e) => onQuery(e.target.value)}
+          />
+        </div>
+      ) : null}
+      {filtering && options.length === 0 ? (
+        <p className="px-2 py-1 text-[11px] text-muted-foreground">
+          Nothing matches.
+        </p>
+      ) : null}
+      <div id={listId} role="listbox" aria-label={label}>
+        {groupOptions(options).map((run, i) => {
+          const rows = run.options.map((option) => (
+            <OptionRow
+              key={option.value}
+              option={option}
+              selected={option.value === value}
+              onPick={onPick}
+            />
+          ));
+          if (run.group === undefined) return <div key={`run-${i}`}>{rows}</div>;
+          return (
+            <div key={`run-${i}`} role="group" aria-label={run.group}>
+              <p
+                aria-hidden="true"
+                className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold text-muted-foreground"
+              >
+                {run.group}
+              </p>
+              {rows}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

@@ -8,13 +8,19 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { ReportRow, ReportSubjects, ReportTemplate } from "./api";
+import type { ProjectRow, ReportRow, ReportSubjects, ReportTemplate } from "./api";
 import {
+  AUTHOR_SUBJECT_NOTE,
+  DEFAULT_REPORT_SECTIONS,
   EVERYONE,
+  NEW_REPORT_NAME,
+  NOBODY_TO_CHOOSE,
   NO_SUBJECT_NOTE,
+  SELF_SUBJECT_NOTE,
   builderStateFrom,
   builderStateFromLink,
   builderStateFromTemplate,
+  builderSubject,
   configFor,
   createPayload,
   errorChip,
@@ -26,7 +32,9 @@ import {
   sectionBlockedBySubject,
   sectionsFor,
   selfSubject,
+  subjectChipNote,
   subjectChipShown,
+  subjectChipStatus,
   subjectOptions,
   subjectPrompt,
   subjectSectionNote,
@@ -218,11 +226,22 @@ describe("(b) the subject chip lists what the server answered", () => {
 
   it("a saved subject the answer omits stays as an option", () => {
     const gone = { kind: "person", email: "gone@example.test" } as const;
-    const last = subjectOptions(MEMBER, gone).at(-1);
+    const last = subjectOptions(MEMBER, gone, true).at(-1);
     expect(last).toMatchObject({
       value: "person:gone@example.test",
       hint: "as saved",
     });
+  });
+
+  it("(7) a subject from a link that the answer omits is not in your list", () => {
+    // It was never saved, so "as saved" would be false. The server refuses
+    // it on the preview.
+    const other = { kind: "person", email: "noa@example.test" } as const;
+    expect(subjectOptions(MEMBER, other).at(-1)).toMatchObject({
+      value: "person:noa@example.test",
+      hint: "not in your list",
+    });
+    expect(subjectOptions(MEMBER, other, false).at(-1)?.hint).toBe("not in your list");
   });
 
   it("the chip value and its parser agree, and a bad value is refused", () => {
@@ -274,6 +293,13 @@ describe("(c) a subject turns off outlook and hygiene", () => {
   });
 });
 
+const NODE_1 = "0b6f3c1e-5d2a-4b7c-9e8f-1a2b3c4d5e6f";
+const NODE_2 = "7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+const CHILD = { id: NODE_2, name: "Child", children: [] } as unknown as ProjectRow;
+const ROOTS = [
+  { id: NODE_1, name: "Root", children: [CHILD] } as unknown as ProjectRow,
+];
+
 describe("(d) the link contract", () => {
   it("reportLink builds the one address, with report_node and never project", () => {
     const link = reportLink({ template: "one_on_one", subject: PERSON, node: "n-1" });
@@ -289,17 +315,37 @@ describe("(d) the link contract", () => {
 
   it("the parser keeps the template, the subject and the node", () => {
     for (const parts of [
-      { template: "one_on_one", subject: PERSON, node: "n-1" },
+      { template: "one_on_one", subject: PERSON, node: NODE_1 },
       { template: "team_pulse", subject: TEAM, node: null },
-      { template: null, subject: null, node: "n-2" },
+      // A node under a root is in the tree too.
+      { template: null, subject: null, node: NODE_2 },
     ]) {
       const params = new URL(reportLink(parts), "https://x.test").searchParams;
-      const intent = parseReportLink(params, CATALOGUE);
+      const intent = parseReportLink(params, CATALOGUE, ROOTS);
       expect(intent).not.toBeNull();
       expect(intent!.template?.key ?? null).toBe(parts.template);
       expect(intent!.subject).toEqual(parts.subject);
       expect(intent!.node).toBe(parts.node);
     }
+  });
+
+  it("(3) a node that is not a UUID in the reader's tree is dropped", () => {
+    const parse = (qs: string) =>
+      parseReportLink(new URLSearchParams(qs), CATALOGUE, ROOTS);
+    const unknown = "11111111-2222-4333-8444-555555555555";
+    // The server casts the node to a uuid: a bad one made the preview 500.
+    for (const bad of ["n-1", "x';--", unknown, `${NODE_1}x`, " "]) {
+      const q = `template=one_on_one&report_node=${encodeURIComponent(bad)}`;
+      expect(parse(q)).toMatchObject({ template: T6, node: null });
+      // A link with only a bad node has nothing left, so it opens the home.
+      expect(parse(`report_node=${encodeURIComponent(bad)}`)).toBeNull();
+    }
+    // With no tree, no node is kept.
+    expect(
+      parseReportLink(new URLSearchParams(`report_node=${NODE_1}`), CATALOGUE)
+    ).toBeNull();
+    expect(parse(`report_node=${NODE_1.toUpperCase()}`)).toBeNull();
+    expect(parse(`report_node=${NODE_1}`)?.node).toBe(NODE_1);
   });
 
   it("an unknown template, a coming-soon one, or a bad subject opens the home", () => {
@@ -332,6 +378,15 @@ describe("(o) a template that needs a subject says what to do", () => {
     expect(subjectPrompt(state, T6)).toMatch(/Choose a person/);
     expect(subjectPrompt(withSubject(state, TEAM), T6)).toMatch(/Choose a person/);
     expect(subjectPrompt(withSubject(state, PERSON), T6)).toBeNull();
+  });
+
+  it("(8) T2 says the list did not load when the read fails", () => {
+    const state = builderStateFromTemplate(T2)!;
+    expect(subjectPrompt(state, T2, true)).toMatch(/did not load/);
+    expect(subjectPrompt(state, T2, true)).not.toMatch(/shows when/);
+    expect(subjectPrompt(state, T2, false)).toMatch(/shows when the list/);
+    // T6 still asks for a person. The chip carries the Retry.
+    expect(subjectPrompt(builderStateFromTemplate(T6)!, T6, true)).toMatch(/Choose a person/);
   });
 
   it("T2 waits for the reader, and a template with no rule never asks", () => {
@@ -369,9 +424,113 @@ describe("(r) an error shows next to the chip that caused it", () => {
     ["other is not a team of this organization.", "subject"],
     ["The template 'my_day' is your own day. Its subject must be you.", "subject"],
     ["The template 'one_on_one' is about one person. Choose a person as its subject.", "subject"],
+    ["My day is always about its author. The subject of this 'my_day' report must stay m@x.", "subject"],
     ["Project not found", "scope"],
     ["The preview could not be rendered.", "other"],
   ] as const)("%s", (text, chip) => {
     expect(errorChip(text)).toBe(chip);
+  });
+});
+
+describe("(1) a T2 is always about its author", () => {
+  const memberT2: ReportRow = {
+    id: "r-t2",
+    project_id: null,
+    scope: "portfolio",
+    name: "Mia day",
+    config: {
+      weeks: 1,
+      skip_current_week: false,
+      include_subtree: true,
+      sections: ["pulse"],
+      template: "my_day",
+      subject: PERSON,
+    },
+    created_by: "mia@example.test",
+    created_at: "2026-09-29T00:00:00Z",
+  };
+  const admin = selfSubject(ADMIN);
+
+  it("an admin who edits a member's T2 keeps the member as its subject", () => {
+    const draft = { ...builderStateFrom(memberT2), name: "Renamed" };
+    const state = builderSubject(draft, "self", admin, true);
+    expect(state.subject).toEqual(PERSON);
+    expect(patchPayload(state).config.subject).toEqual(PERSON);
+  });
+
+  it("a new T2 takes the reader, and a link subject never wins", () => {
+    const fresh = builderStateFromTemplate(T2, PERSON)!;
+    expect(builderSubject(fresh, "self", admin, false).subject).toEqual(admin);
+    // No answer yet: the draft stays, and the preview line waits.
+    expect(builderSubject(fresh, "self", null, false)).toBe(fresh);
+  });
+
+  it("a template with no self rule is never changed", () => {
+    const draft = withSubject(newBuilderState(), TEAM);
+    expect(builderSubject(draft, "person", admin, false)).toBe(draft);
+    expect(builderSubject(draft, null, admin, false)).toBe(draft);
+  });
+
+  it("the locked chip names its author for an admin, and says why", () => {
+    expect(subjectChipNote("self", ADMIN, PERSON, true)).toBe(AUTHOR_SUBJECT_NOTE);
+    expect(subjectChipNote("self", MEMBER, PERSON, true)).toBe(SELF_SUBJECT_NOTE);
+    expect(subjectChipNote("self", ADMIN, admin, false)).toBe(SELF_SUBJECT_NOTE);
+    // The chip label is the member's name, from the admin's answer.
+    const label = subjectOptions(ADMIN, PERSON, true).find(
+      (o) => o.value === subjectValue(PERSON)
+    )?.label;
+    expect(label).toBe("Mia Rao");
+    expect(subjectOptions(MEMBER, PERSON, true)[1].label).toBe("Me");
+  });
+});
+
+describe("(6) a subject that turns off every section fills the checkboxes", () => {
+  it("writes the default sections into state.sections", () => {
+    const only = { ...newBuilderState(), sections: ["hygiene"] };
+    const about = withSubject(only, PERSON);
+    // The checkboxes read state.sections. They now show what the preview shows.
+    const shown = about.sections.filter((k) => !sectionBlockedBySubject(about, k));
+    expect(shown).toEqual([...DEFAULT_REPORT_SECTIONS]);
+    expect(configFor(about).sections).toEqual(shown);
+    // The hygiene choice is kept, so Everyone gives it back.
+    expect(withSubject(about, null).sections).toContain("hygiene");
+  });
+
+  it("a link to a custom report with a subject starts with sections on", () => {
+    const state = builderStateFromLink({ template: null, subject: PERSON, node: null });
+    expect(state.sections.filter((k) => !sectionBlockedBySubject(state, k)).length).toBeGreaterThan(0);
+  });
+
+  it("leaves the sections alone when one survives", () => {
+    const state = { ...newBuilderState(), sections: ["outlook", "load"] };
+    expect(withSubject(state, PERSON).sections).toEqual(["outlook", "load"]);
+  });
+});
+
+describe("(8) a custom report starts as Untitled report", () => {
+  it("names a new custom report Untitled report", () => {
+    expect(NEW_REPORT_NAME).toBe("Untitled report");
+    expect(newBuilderState().name).toBe("Untitled report");
+    expect(builderStateFromTemplate(T4)!.name).toBe("Weekly delivery");
+  });
+});
+
+describe("(9) the subject chip's loading, empty and failed states", () => {
+  it("loading draws the skeleton until the answer arrives", () => {
+    expect(subjectChipStatus(undefined, false)).toBe("loading");
+    expect(subjectChipStatus(null, false)).toBe("loading");
+  });
+
+  it("a failed read draws the Retry line, and an answer wins over an old error", () => {
+    expect(subjectChipStatus(undefined, true)).toBe("failed");
+    expect(subjectChipStatus(MEMBER, true)).toBe("ready");
+    expect(subjectChipStatus(MEMBER, false)).toBe("ready");
+  });
+
+  it("an answer with nobody in it says so", () => {
+    const empty: ReportSubjects = { everyone: false, me: "x@y.test", people: [], teams: [] };
+    expect(subjectChipNote(null, empty, null, false)).toBe(NOBODY_TO_CHOOSE);
+    expect(subjectChipNote("person", empty, null, false)).toBe(NOBODY_TO_CHOOSE);
+    expect(subjectChipNote(null, MEMBER, null, false)).toBeNull();
   });
 });

@@ -19,7 +19,17 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { arrowFor, filterOptions } from "./SelectButton";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import {
+  SelectList,
+  arrowFor,
+  filterOptions,
+  groupOptions,
+  selectPanelReducer,
+  type SelectOption,
+} from "./SelectButton";
 
 describe("arrowFor", () => {
   it("draws TWO heads at the default", () => {
@@ -82,5 +92,89 @@ describe("filterOptions (WS-27bn R5b)", () => {
     expect(filterOptions(options, "a@x").map((o) => o.value)).toEqual(["person:a@x.test"]);
     expect(filterOptions(options, "hard").map((o) => o.group)).toEqual(["Teams"]);
     expect(filterOptions(options, "zzz")).toEqual([]);
+  });
+});
+
+describe("(4) every close clears the filter query (R5b-1 repair)", () => {
+  const typed = selectPanelReducer(
+    selectPanelReducer({ open: false, query: "" }, { type: "toggle" }),
+    { type: "query", query: "ana" }
+  );
+
+  it("the query holds while the list is open", () => {
+    expect(typed).toEqual({ open: true, query: "ana" });
+  });
+
+  it("an outside click, Escape or a pick clears it", () => {
+    expect(selectPanelReducer(typed, { type: "close" })).toEqual({ open: false, query: "" });
+  });
+
+  it("a second click on the trigger clears it", () => {
+    const shut = selectPanelReducer(typed, { type: "toggle" });
+    expect(shut).toEqual({ open: false, query: "" });
+    // And it opens again with no filter.
+    expect(selectPanelReducer(shut, { type: "toggle" })).toEqual({ open: true, query: "" });
+  });
+
+  it("a closed list takes no query", () => {
+    expect(selectPanelReducer({ open: false, query: "" }, { type: "query", query: "x" }).query).toBe("");
+  });
+});
+
+describe("(5) the filter box sits above the listbox, and each group is a group", () => {
+  const grouped: SelectOption[] = [
+    { value: "", label: "Everyone", group: "Everyone" },
+    { value: "person:a@x.test", label: "Ana", hint: "a@x.test", group: "People" },
+    { value: "person:b@x.test", label: "Ben", group: "People" },
+    { value: "team:hw", label: "Hardware team", group: "Teams" },
+  ];
+  const render = (options: SelectOption[], filtering: boolean, structured: boolean) =>
+    renderToStaticMarkup(
+      createElement(SelectList, {
+        label: "Subject",
+        listId: "L",
+        value: "",
+        options,
+        filtering,
+        structured,
+        query: "",
+        onQuery: () => {},
+        onPick: () => {},
+      })
+    );
+
+  it("groupOptions cuts runs in order", () => {
+    expect(groupOptions(grouped).map((g) => [g.group, g.options.length])).toEqual([
+      ["Everyone", 1],
+      ["People", 2],
+      ["Teams", 1],
+    ]);
+  });
+
+  it("the input is outside role=listbox, and the groups are inside it", () => {
+    const html = render(grouped, true, true);
+    const input = html.indexOf("<input");
+    const listbox = html.indexOf('role="listbox"');
+    expect(input).toBeGreaterThanOrEqual(0);
+    expect(listbox).toBeGreaterThan(input);
+    // Nothing but options and groups inside the listbox.
+    const inside = html.slice(listbox);
+    expect(inside).not.toContain("<input");
+    for (const g of ["Everyone", "People", "Teams"]) {
+      expect(inside).toContain(`role="group" aria-label="${g}"`);
+    }
+    expect(inside.match(/role="option"/g)?.length).toBe(4);
+  });
+
+  it("a plain list renders option rows only, as before R5b", () => {
+    const plain: SelectOption[] = [
+      { value: "a", label: "A" },
+      { value: "b", label: "B", hint: "2" },
+    ];
+    const html = render(plain, false, false);
+    expect(html.startsWith('<button type="button" role="option"')).toBe(true);
+    expect(html).not.toContain('role="listbox"');
+    expect(html).not.toContain('role="group"');
+    expect(html).not.toContain("<input");
   });
 });

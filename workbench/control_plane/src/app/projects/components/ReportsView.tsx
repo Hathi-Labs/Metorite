@@ -102,11 +102,12 @@ import {
   REPORT_LINK_KEYS,
   REPORT_SECTIONS,
   SAVED_PERIOD,
-  SELF_SUBJECT_NOTE,
+  SUBJECTS_FAILED,
   WHOLE_ORGANIZATION,
   builderStateFrom,
   builderStateFromLink,
   builderStateFromTemplate,
+  builderSubject,
   configFor,
   createPayload,
   errorChip,
@@ -121,7 +122,9 @@ import {
   scopeOptions,
   sectionBlockedBySubject,
   selfSubject,
+  subjectChipNote,
   subjectChipShown,
+  subjectChipStatus,
   subjectOptions,
   subjectPrompt,
   subjectSectionNote,
@@ -749,21 +752,22 @@ function ReportBuilder({
   const needs = requiredSubject(template);
   const chipShown = subjectChipShown(template) || draft.subject !== null;
 
-  // "My day" is always the reader's own day. The subject is derived here
-  // and never typed, so no effect writes it and no stale value survives.
+  // "My day" is always about its AUTHOR. A new one takes the reader, derived
+  // here and never typed. An edit keeps the stored subject, so an admin who
+  // edits a member's day leaves it about the member (R5b-1 repair).
   const self = selfSubject(subjects.data);
-  const state: BuilderState =
-    needs === "self" && self ? withSubject(draft, self) : draft;
+  const state = builderSubject(draft, needs, self, editing !== null);
+  const chipStatus = subjectChipStatus(subjects.data, Boolean(subjects.error));
 
   const scopes = useMemo(() => scopeOptions(roots), [roots]);
   // "1:1 prep" is about one person: no "Everyone" and no team.
-  const allSubjects = subjectOptions(subjects.data, state.subject);
+  const allSubjects = subjectOptions(subjects.data, state.subject, editing !== null);
   const people =
     needs === "person"
       ? allSubjects.filter((o) => o.group === "People")
       : allSubjects;
   const refusal = saveRefusal(state);
-  const prompt = subjectPrompt(state, template);
+  const prompt = subjectPrompt(state, template, chipStatus === "failed");
 
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
@@ -830,23 +834,21 @@ function ReportBuilder({
     errorAt === "other" && !saveError ? previewError : null;
   const sectionNote = subjectSectionNote(state);
   const answer = subjects.data;
-  const nobodyToChoose =
-    answer !== undefined && answer.people.length === 0 && answer.teams.length === 0;
 
   let subjectChip: React.ReactNode = null;
   if (chipShown) {
-    if (answer === undefined && subjects.error) {
+    if (chipStatus === "failed") {
       subjectChip = (
         <ChipSlot>
           <p className="flex items-center gap-2 text-[11px] text-muted-foreground" role="alert">
-            People and teams did not load.
+            {SUBJECTS_FAILED}
             <Button variant="text" size="sm" onClick={subjects.refresh}>
               Retry
             </Button>
           </p>
         </ChipSlot>
       );
-    } else if (answer === undefined) {
+    } else if (chipStatus === "loading" || !answer) {
       subjectChip = (
         <ChipSlot>
           <Skeleton className="h-7 w-full sm:w-[16rem]" />
@@ -856,13 +858,7 @@ function ReportBuilder({
       subjectChip = (
         <ChipSlot
           error={subjectError}
-          note={
-            needs === "self"
-              ? SELF_SUBJECT_NOTE
-              : nobodyToChoose
-                ? "There is no person or team to choose yet."
-                : null
-          }
+          note={subjectChipNote(needs, answer, state.subject, editing !== null)}
         >
           <SelectButton
             label="Subject"
@@ -887,10 +883,10 @@ function ReportBuilder({
 
   return (
     <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-foreground">
+        {template?.name ?? "Custom report"}
+      </h3>
       <div className="flex flex-wrap items-start gap-2 text-xs">
-        <p className="flex h-7 w-full items-center text-xs font-semibold text-foreground sm:w-auto">
-          {template?.name ?? "Custom report"}
-        </p>
         {subjectChip}
         <ChipSlot error={scopeError}>
           <SelectButton
@@ -922,7 +918,8 @@ function ReportBuilder({
         </ChipSlot>
       </div>
 
-      {state.template && (
+      {/* A template that locks the subject does not let each choice change. */}
+      {state.template && needs !== "self" && (
         <p className="text-[11px] text-muted-foreground">
           Started from a template. You can change each choice.
         </p>
@@ -1034,6 +1031,11 @@ function ReportBuilder({
           <p className="flex items-center gap-2 text-xs text-foreground">
             <Icon name="User" className="h-3.5 w-3.5 shrink-0 text-primary" />
             {prompt}
+            {chipStatus === "failed" && (
+              <Button variant="text" size="sm" onClick={subjects.refresh}>
+                Retry
+              </Button>
+            )}
           </p>
         ) : previewError ? (
           <p
@@ -1284,9 +1286,11 @@ export default function ReportsView({
     ? searchParams.toString()
     : "";
   useEffect(() => {
+    // The tree must arrive too: the node is kept only when it is in it.
     if (!linkQuery || templates === undefined) return;
+    if (tree.data === undefined && !tree.error) return;
     const params = new URLSearchParams(linkQuery);
-    const intent = parseReportLink(params, templates);
+    const intent = parseReportLink(params, templates, roots);
     // A link is consumed by setting state once, as the page's `?app=` does.
     /* eslint-disable react-hooks/set-state-in-effect */
     if (intent) setPane({ kind: "new", initial: builderStateFromLink(intent) });
@@ -1295,7 +1299,7 @@ export default function ReportsView({
     const qs = params.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linkQuery, templates]);
+  }, [linkQuery, templates, roots, tree.error]);
 
   /** Open the builder from a template. A coming-soon one opens nothing. */
   function start(template: ReportTemplate) {
