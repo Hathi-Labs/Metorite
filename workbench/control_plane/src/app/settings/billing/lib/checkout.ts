@@ -234,7 +234,7 @@ const ORDER_REASONS: Record<string, string> = {
  * Turn the Console's refusal into copy, preserving the partition.
  *
  * `body` is the relayed upstream JSON (the write proxies pass 400/404/409
- * through verbatim, `api/billing/_console.ts`). The 404s are told apart by the
+ * through verbatim, the gateway's `routes/billing.py`). The 404s are told apart by the
  * Console's **own** `detail` string rather than by anything invented here.
  */
 export function redeemRefusal(status: number, body: unknown): Refusal {

@@ -183,12 +183,15 @@ __all__ = [
     "assign_seat_on_console",
     "billing_read_on_console",
     "chat_completion_on_console",
+    "create_order_on_console",
     "decide_on_console",
     "invalidate",
     "invite_member_on_console",
     "is_wired",
     "provision_org_on_console",
+    "read_order_on_console",
     "reconcile",
+    "redeem_code_on_console",
     "release_seat_on_console",
     "resolve_for_signin",
     "router_is_wired",
@@ -1043,6 +1046,78 @@ async def billing_read_on_console(
         payload["scope"] = "org" if scope == "org" else "self"
     return await _post_deployment_door(
         endpoint, payload, unavailable=ConsoleBillingUnavailable
+    )
+
+
+# ── The customer CHECKOUT client (H-152, the checkout half) ─────────────────
+#
+# The same transport and the same R11 shape as the reads above, on the
+# Console's `billing_purchase` doors. The body names the actor and the basket
+# or the code — never an organization and never an amount. The price is the
+# catalog's, Console-side.
+#
+# **Non-allocating.** None of these doors touches `resolve_for_signin`. A
+# redeemed code can grant seats through `payments.fulfil`, which is the one
+# edge the Console's transitive fence permits, and the code is the operator's
+# pre-authorization, not this box's.
+
+#: The Console path of the order doors. The order id is quoted into the path,
+#: and the Console validates it as a UUID.
+_ORDERS_PATH = "/registry/billing/orders"
+
+
+def _order_path(order_id: str, suffix: str = "") -> str:
+    from urllib.parse import quote
+
+    return f"{_ORDERS_PATH}/{quote(order_id, safe='')}{suffix}"
+
+
+async def create_order_on_console(
+    *, actor_email: str, lines: list[dict[str, Any]]
+) -> tuple[int, dict[str, Any]]:
+    """Create a pending order for the acting member's organization.
+
+    ``lines`` is ``[{plan_slug, quantity}]`` and nothing else; the gateway
+    route rebuilds it from the browser body. Returns the Console's
+    ``(status_code, body)``. Raises :class:`ConsoleBillingUnavailable` on an
+    unwired box or a no-answer status.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _ORDERS_PATH,
+        {"actor_email": actor_email, "lines": lines},
+        unavailable=ConsoleBillingUnavailable,
+    )
+
+
+async def read_order_on_console(
+    *, actor_email: str, order_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Read one order of the acting member's organization back."""
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _order_path(order_id),
+        {"actor_email": actor_email},
+        unavailable=ConsoleBillingUnavailable,
+    )
+
+
+async def redeem_code_on_console(
+    *, actor_email: str, order_id: str, code: str
+) -> tuple[int, dict[str, Any]]:
+    """Present a discount code against one order of the member's organization.
+
+    ⚠️ The code is a bearer secret. This function never logs it; the
+    transport logs nothing about a body.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _order_path(order_id, "/redeem"),
+        {"actor_email": actor_email, "code": code},
+        unavailable=ConsoleBillingUnavailable,
     )
 
 
