@@ -392,6 +392,8 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     sid = _seed_session(_ALICE)
+    # S14: the gateway mints the row, and the checkpoint then fills it.
+    _mint(sid, "a1", _ALICE, "agent-sales-assistant")
     _upsert_messages(
         sid,
         [MessageRecord(id="a1", role="assistant", content="hi", timestamp=1001)],
@@ -412,11 +414,13 @@ def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
 
     `lib/assistantCheckpoint.ts` sends ``author_email`` on each checkpoint.
     It must beat the room's agent, and a later write with no author (the
-    browser re-POSTing its list) must keep it.
+    browser re-POSTing its list) must keep it. Since S14 the mint names the
+    agent that runs first, and the checkpoint agrees with it.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     sid = _seed_session(_ALICE)
+    _mint(sid, "c1", _ALICE, "projects-assistant")
     _upsert_messages(
         sid,
         [MessageRecord(
@@ -445,6 +449,9 @@ def _addressed_turn(sid: str) -> None:
     and then the gateway's fold writes with the addressed agent."""
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
+    # S14: the gateway mints the row. This one names the room's agent, so
+    # that the fold below still has an author to set again.
+    _mint(sid, "c2", _ALICE, "orchestrator")
     # The translator's checkpoint. The route passes the room's agent.
     _upsert_messages(
         sid,
@@ -472,6 +479,20 @@ def _content(sid: str, mid: str) -> str:
         "SELECT content FROM chat_message WHERE session_id = :i AND id = :m",
         i=sid, m=mid,
     )[0].content
+
+
+def _rows(sid: str, mid: str) -> list:
+    return _exec(
+        "SELECT id FROM chat_message WHERE session_id = :i AND id = :m",
+        i=sid, m=mid,
+    )
+
+
+def _mint(sid: str, mid: str, member: str, agent: str = "projects-assistant") -> None:
+    """The real mint that ``/agent/run/stream`` calls (WS-27bm S14, §20)."""
+    from gateway.routes.agent import _mint_run_row
+
+    _mint_run_row(sid, mid, member=member, agent_name=agent)
 
 
 @_needs_db
@@ -630,6 +651,7 @@ def test_an_agent_turn_still_updates_by_checkpoint_and_by_fold(clean) -> None:
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
+    _mint(sid, "a9", _ALICE)
     _save_as(sid, _ALICE, [
         MessageRecord(id="a9", role="assistant", content="part", timestamp=2005),
     ])
@@ -743,9 +765,11 @@ def _fold(sid: str, mid: str, starter: str, content: str) -> list[str]:
 
 
 def _alice_starts_a_run(sid: str) -> None:
-    """The translator's first checkpoint, as the member who sent the turn."""
+    """The mint, then the translator's first checkpoint, as the member who
+    sent the turn (S14)."""
     from gateway.routes.chat import MessageRecord
 
+    _mint(sid, "r1", _ALICE)
     out = _save_as(sid, _ALICE, [
         MessageRecord(id="r1", role="assistant", content="part", timestamp=3000),
     ])
@@ -906,21 +930,26 @@ def test_a_human_save_on_an_agent_reply_does_not_change_it(clean) -> None:
 
 
 @_needs_db
-def test_a_client_inserts_a_system_row_and_never_updates_one(clean) -> None:
-    """§19.4 rule 4."""
+def test_no_client_inserts_or_updates_a_system_row(clean) -> None:
+    """S14 (§20.4 rule 1) replaces §19.4 rule 4. A system row reaches the
+    model context of every member, so only the server may create one. A
+    client insert gives no row, and ``unchanged`` names it."""
     from gateway.routes.chat import MessageRecord
 
-    sid = _seed_session(_ALICE)
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    for who in (_BOB, _ALICE):
+        out = _save_as(sid, who, [
+            MessageRecord(id="s1", role="system", content="joined",
+                          timestamp=3007),
+        ])
+        assert out == {"ok": True, "saved": 0, "unchanged": ["s1"]}
+        assert not _rows(sid, "s1")
+    # A system row that the server wrote still takes no client update.
+    _legacy_row(sid, "s2", "system", "left")
     out = _save_as(sid, _ALICE, [
-        MessageRecord(id="s1", role="system", content="joined", timestamp=3007),
+        MessageRecord(id="s2", role="system", content="changed", timestamp=3008),
     ])
-    assert out == {"ok": True, "saved": 1, "unchanged": []}
-    out = _save_as(sid, _ALICE, [
-        MessageRecord(id="s1", role="system", content="changed", timestamp=3008),
-        MessageRecord(id="s2", role="system", content="left", timestamp=3008),
-    ])
-    assert out == {"ok": True, "saved": 1, "unchanged": ["s1"]}
-    assert _content(sid, "s1") == "joined"
+    assert out == {"ok": True, "saved": 0, "unchanged": ["s2"]}
     assert _content(sid, "s2") == "left"
 
 
@@ -950,7 +979,8 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
     publishes ``runId`` to the room. Bob inserts that id first and becomes
     its run member. With the old shape, S13's WHERE then declined the real
     fold, and Bob's forged reply stayed. Now the fold writes an id that Bob
-    cannot know, and the real reply is stored.
+    cannot know, and the real reply is stored. Since S14, Bob's insert
+    also gives no row.
     """
     from gateway.routes.agent import fold_message_id
     from gateway.routes.chat import MessageRecord
@@ -963,7 +993,8 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
                       timestamp=3013, author_kind="agent",
                       author_email="sales-assistant"),
     ])
-    assert out["unchanged"] == []
+    assert out["unchanged"] == [guessed]
+    assert not _rows(sid, guessed)
 
     mid = fold_message_id(None, sid)
     assert mid != guessed and run_id not in mid
@@ -1017,6 +1048,193 @@ def test_only_the_fold_passes_author_from_run() -> None:
     )
     assert users == ["chat_fold.py", "routes/chat.py"], users
     param = inspect.signature(chat._upsert_messages).parameters["author_from_run"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
+
+
+# ---------------------------------------------------------------------------
+# 7d. No forged agent rows: only the server creates one (S14, §20)
+# ---------------------------------------------------------------------------
+
+def _mint_state(sid: str, mid: str):
+    return _exec(
+        "SELECT content, author_email, author_kind, run_member_email, "
+        "run_final_at FROM chat_message WHERE session_id = :i AND id = :m",
+        i=sid, m=mid,
+    )[0]
+
+
+@_needs_db
+def test_a_client_cannot_insert_an_agent_row(clean) -> None:
+    """§20.4 rule 1. Bob names an agent on a new row, in two ways. No row
+    appears, so no forged reply reaches the model context of the room."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="f1", role="assistant", content="forged",
+                      timestamp=4000, author_email="projects-assistant"),
+    ])
+    assert out == {"ok": True, "saved": 0, "unchanged": ["f1"]}
+    assert not _rows(sid, "f1")
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="f2", role="user", content="forged", timestamp=4001,
+                      author_kind="agent", author_email="projects-assistant"),
+    ])
+    assert out == {"ok": True, "saved": 0, "unchanged": ["f2"]}
+    assert not _rows(sid, "f2")
+    # A new human row still inserts, in the same batch as a declined one.
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="f3", role="assistant", content="forged", timestamp=4002),
+        MessageRecord(id="h3", role="user", content="mine", timestamp=4003),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": ["f3"]}
+    assert _author(sid, "h3").author_email == _BOB
+
+
+@_needs_db
+def test_the_mint_creates_the_run_row(clean) -> None:
+    """§20.3. Alice starts a run. The row has no content, the agent is its
+    author, and Alice is its run member. Nothing seals it yet."""
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _mint(sid, "m1", _ALICE.upper())
+    row = _mint_state(sid, "m1")
+    assert row.content == ""
+    assert (row.author_kind, row.author_email) == ("agent", "projects-assistant")
+    assert row.run_member_email == _ALICE.lower()
+    assert row.run_final_at is None
+
+
+@_needs_db
+def test_only_the_run_member_checkpoints_a_minted_row(clean) -> None:
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _mint(sid, "m1", _ALICE)
+    out = _save_as(sid, _BOB, [
+        MessageRecord(id="m1", role="assistant", content="forged", timestamp=4010),
+    ])
+    assert out == {"ok": True, "saved": 0, "unchanged": ["m1"]}
+    assert _content(sid, "m1") == ""
+    out = _save_as(sid, _ALICE, [
+        MessageRecord(id="m1", role="assistant", content="part", timestamp=4011),
+    ])
+    assert out == {"ok": True, "saved": 1, "unchanged": []}
+    assert _content(sid, "m1") == "part"
+
+
+@_needs_db
+def test_the_fold_takes_and_seals_a_minted_row(clean) -> None:
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _mint(sid, "m1", _ALICE)
+    assert _fold(sid, "m1", _ALICE, "the final answer") == []
+    row = _mint_state(sid, "m1")
+    assert row.content == "the final answer"
+    assert row.author_email == "sales-assistant"
+    assert row.run_final_at is not None
+
+
+@_needs_db
+def test_the_fold_inserts_the_row_when_the_mint_failed(clean, monkeypatch) -> None:
+    """§20.4 rule 3. The mint is best effort. It logs ``agent.mint_failed``,
+    raises nothing, and the fold then inserts the row."""
+    import structlog
+    from gateway.routes import chat
+
+    sid = _seed_session(_ALICE)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("database gone")
+
+    with monkeypatch.context() as m:
+        m.setattr(chat, "_upsert_messages", _boom)
+        with structlog.testing.capture_logs() as caps:
+            _mint(sid, "m1", _ALICE)
+    assert "agent.mint_failed" in [c.get("event") for c in caps]
+    assert not _rows(sid, "m1")
+    assert _fold(sid, "m1", _ALICE, "the final answer") == []
+    row = _mint_state(sid, "m1")
+    assert row.content == "the final answer"
+    assert row.run_member_email == _ALICE.lower()
+
+
+@_needs_db
+def test_a_mint_on_an_existing_id_changes_nothing(clean) -> None:
+    """§20.3 item 2. A caller names the id through ``assistant_message_id``.
+    A mint on a human row, a system row, the reply of another member's run,
+    or Alice's own reply before its seal leaves each row as it was. The last
+    case is the one the S13 rules alone would let through."""
+    from gateway.routes.chat import MessageRecord
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _legacy_row(sid, "s1", "system", "joined")
+    _mint(sid, "r1", _BOB)
+    _save_as(sid, _BOB, [
+        MessageRecord(id="r1", role="assistant", content="bob's", timestamp=4020),
+    ])
+    _mint(sid, "r2", _ALICE)
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="r2", role="assistant", content="alice's",
+                      timestamp=4021),
+    ])
+    before = {mid: _mint_state(sid, mid) for mid in ("u1", "s1", "r1", "r2")}
+    for mid in before:
+        _mint(sid, mid, _ALICE, "sales-assistant")
+    for mid, row in before.items():
+        assert _mint_state(sid, mid) == row, mid
+    assert before["r1"].content == "bob's"
+    assert before["r2"].content == "alice's"
+
+
+@_needs_db
+def test_a_reader_does_not_see_an_empty_minted_row(clean) -> None:
+    """§20.3 item 6. The minted row is hidden until it holds something."""
+    from gateway.routes.chat import MessageRecord, _get_messages
+
+    sid = _seed_session(_ALICE, (_BOB, "member"))
+    _alice_said_hello(sid)
+    _mint(sid, "m1", _ALICE)
+
+    def _ids(limit=None) -> list[str]:
+        return [m["id"] for m in _get_messages(sid, _BOB, limit)]
+
+    assert _ids() == ["u1"]
+    # The LIMIT window does not count the hidden row.
+    assert _ids(1) == ["u1"]
+    _save_as(sid, _ALICE, [
+        MessageRecord(id="m1", role="assistant", content="part", timestamp=2001),
+    ])
+    assert _ids() == ["u1", "m1"]
+
+
+def test_only_the_run_route_mints_and_only_after_the_refusal() -> None:
+    """§20.4 rule 1, by source. ``mint=True`` lives in ``routes/agent.py``
+    alone. The endpoint mints once, after the steer decision and after
+    ``_refuse_if_another_run_is_active``."""
+    import inspect
+    import pathlib
+
+    from gateway.routes import agent, chat
+
+    route = inspect.getsource(agent.run_agent_stream_endpoint)
+    assert route.count("_mint_run_row") == 1
+    mint_at = route.index("_mint_run_row")
+    assert route.index("return _steered") < mint_at
+    assert route.index("await _refuse_if_another_run_is_active(") < mint_at
+    assert mint_at < route.index("StreamingResponse(")
+    assert "mint=True" in inspect.getsource(agent._mint_run_row)
+    assert "mint" not in inspect.getsource(chat.save_messages)
+
+    root = pathlib.Path(chat.__file__).resolve().parents[1]
+    users = sorted(
+        str(f.relative_to(root)).replace("\\", "/")
+        for f in root.rglob("*.py")
+        if "mint=True" in f.read_text(encoding="utf-8")
+    )
+    assert users == ["routes/agent.py"], users
+    assert inspect.getsource(agent).count("mint=True") == 1
+    param = inspect.signature(chat._upsert_messages).parameters["mint"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is False
 

@@ -157,6 +157,13 @@ def test_lean_resave_keeps_the_generative_ui_card() -> None:
     )
 
     _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent")
+    # S14 (projects_ai_chat.md §20): only the server creates an agent row,
+    # so the run's mint makes it before the first write below.
+    from gateway.routes.agent import _mint_run_row
+
+    _mint_run_row(
+        _TEST_SESSION, _TEST_MESSAGE, member=_ACTOR, agent_name="pytest-agent",
+    )
 
     card = {"name": "generative_ui", "value": {"type": "table", "props": {}}}
     rich = MessageRecord(
@@ -210,6 +217,13 @@ def test_richer_write_still_wins() -> None:
     )
 
     _ensure_session(_TEST_SESSION, "pytest@local", "pytest-agent")
+    # S14 (projects_ai_chat.md §20): only the server creates an agent row,
+    # so the run's mint makes it before the first write below.
+    from gateway.routes.agent import _mint_run_row
+
+    _mint_run_row(
+        _TEST_SESSION, _TEST_MESSAGE, member=_ACTOR, agent_name="pytest-agent",
+    )
 
     base = MessageRecord(
         id=_TEST_MESSAGE,
