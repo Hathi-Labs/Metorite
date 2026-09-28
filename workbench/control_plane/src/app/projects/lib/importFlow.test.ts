@@ -289,3 +289,15 @@ describe("the history list", () => {
     expect(dialog).toContain("<DiscardImportButton");
   });
 });
+
+describe("an admin can find the import (I-7)", () => {
+  // The owner looked for it, and an unlabelled icon beside the + read as "no
+  // import UI". So it is a labelled row, and the empty tree offers it too.
+  const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
+  it("is a labelled row in the Projects sidebar", () => {
+    expect(page).toContain('<span className="min-w-0 flex-1 truncate">Import from ClickUp</span>');
+  });
+  it("is offered where an organization has no spaces yet", () => {
+    expect(page).toMatch(/onImport && roots\.length === 0 &&/);
+  });
+});
