@@ -1025,6 +1025,37 @@ function ReportsHome({
   );
 }
 
+/**
+ * Home and Edit above a saved report.
+ *
+ * WS-27bn R5d (§9 Q13). **Edit shows only when the server's `can_edit` is
+ * true**, so a reader who is not the author or an admin sees no Edit at all.
+ * It is absent, never disabled, as the People Center renders a control the
+ * reader may not use. The server still refuses the PATCH with 403.
+ */
+export function ReportActions({
+  row,
+  onHome,
+  onEdit,
+}: {
+  row: ReportRow;
+  onHome: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="ml-auto flex gap-2">
+      <Button variant="ghost" size="sm" icon="LayoutGrid" onClick={onHome}>
+        Home
+      </Button>
+      {row.can_edit === true && (
+        <Button variant="ghost" size="sm" icon="Pencil" onClick={onEdit}>
+          Edit
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** What the right pane shows: a saved render, or the builder. */
 type Pane =
   | { kind: "view" }
@@ -1221,24 +1252,11 @@ export default function ReportsView({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <ReportFileButtons reportId={selected} />
                 {selectedRow && (
-                  <div className="ml-auto flex gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      icon="LayoutGrid"
-                      onClick={() => setSelected(null)}
-                    >
-                      Home
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      icon="Pencil"
-                      onClick={() => setPane({ kind: "edit", row: selectedRow })}
-                    >
-                      Edit
-                    </Button>
-                  </div>
+                  <ReportActions
+                    row={selectedRow}
+                    onHome={() => setSelected(null)}
+                    onEdit={() => setPane({ kind: "edit", row: selectedRow })}
+                  />
                 )}
               </div>
               <RenderedBody body={body} />
