@@ -3244,7 +3244,7 @@ Under the unbound read, `_load_room` found no row for any session id. "No
 row" resolves to `_unsaved_thread()`, and that is owner access. So once the
 writes worked, any member could read and write any room in their own org.
 
-The bind of `_load_room` is therefore part of this slice and not a
+So the bind of `_load_room` is part of this slice and not a
 follow-up. Every caller of `resolve_room_access` passes the tenant. The
 callers are `routes/chat.py`, `routes/rooms.py`, `routes/memory.py` and, in
 `routes/agent.py`, `_resolve_room`, `_thread_owner_ok` and
