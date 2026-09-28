@@ -57,6 +57,9 @@ import { useSubtaskComplete } from "./components/useSubtaskComplete";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
+import ImportDialog from "./components/ImportDialog";
+import { canImport, importEnabled } from "./lib/importFlow";
+import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
@@ -214,6 +217,11 @@ import {
 const PROJECT_APP_SECTIONS = projectAppSections();
 /** The same flag, as the dock reads it (`lib/chatDock.ts`). */
 const CHAT_LIVE = chatEnabled();
+/**
+ * WS-41 I-4 — the file import (`NEXT_PUBLIC_PROJECTS_IMPORT`, default off).
+ * Read once, at module scope, for the same reason as the chat flag.
+ */
+const IMPORT_LIVE = importEnabled();
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -326,6 +334,7 @@ function ProjectNav({
   onMove,
   onDropNode,
   onNewSpace,
+  onImport,
   creating,
   onCommitCreate,
   onCancelCreate,
@@ -351,6 +360,11 @@ function ProjectNav({
   onDropNode: (movingId: string, target: TreeDropTarget) => void;
   /** The + on the Spaces heading. */
   onNewSpace: () => void;
+  /**
+   * WS-41 — "Import from ClickUp" beside the +. Absent when the flag is off
+   * or the member may not import, and then nothing is drawn.
+   */
+  onImport?: () => void;
   /** The row being named, drawn in place by the tree. */
   creating?: CreatingDraft | null;
   onCommitCreate: (name: string) => void;
@@ -439,6 +453,19 @@ function ProjectNav({
         >
           <Icon name="Plus" className="h-4 w-4" />
         </button>
+        {onImport && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="Upload"
+            aria-label="Import from ClickUp"
+            title="Import from ClickUp"
+            onClick={() => {
+              onImport();
+              onPicked?.();
+            }}
+          />
+        )}
       </div>
 
       <ProjectTree
@@ -689,6 +716,11 @@ function ProjectsWorkspace() {
   const [settingsFor, setSettingsFor] = useState<ProjectRow | null>(null);
   /** WS-27bk §9.12.4 — the node whose "Move to…" picker is open. */
   const [movingNode, setMovingNode] = useState<ProjectRow | null>(null);
+  // WS-41 I-4 — the file import. A courtesy gate: the gateway refuses anybody
+  // without `admin:access:manage` whatever this shows.
+  const [importing, setImporting] = useState(false);
+  const { access, loading: accessLoading } = useAccess();
+  const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
   const [moving, setMoving] = useState(false);
   //: H-8 — the row whose delete confirmation is open, and whether the call is
   //: in flight. Shaped exactly like the move pair above, because the two are
@@ -1495,6 +1527,7 @@ function ProjectsWorkspace() {
                 label: "New space", level: "space",
               });
             }}
+            onImport={mayImport ? () => setImporting(true) : undefined}
             creating={treeDraft}
             onCommitCreate={(name) => void submitProject(name)}
             onCancelCreate={() => setCreating(undefined)}
@@ -4083,6 +4116,25 @@ function ProjectsWorkspace() {
    *  branches cannot end up offering different dialogs. */
   const overlays = (
     <>
+      {/* WS-41 I-4 — "Import from ClickUp". In `overlays`, which BOTH returns
+          render: mounted beside MoveDialog it would open nothing on a phone
+          (H-120 is that defect for "Move to…"). The rig found this one. */}
+      {mayImport ? (
+        <ImportDialog
+          open={importing}
+          roots={roots}
+          onClose={() => setImporting(false)}
+          onDone={() => void refreshTree()}
+          onOpenSpace={(id) => {
+            const space = roots.find((r) => r.id === id);
+            if (space) {
+              setApp(null);
+              setSelected(space);
+            }
+            setImporting(false);
+          }}
+        />
+      ) : null}
       {/* H-8 — the delete confirmation.
           ⚠️ **Here, and NOT beside `MoveDialog`, on purpose.** This page has
           two returns: the phone branch above and the desktop one below. Only
@@ -4402,6 +4454,7 @@ function ProjectsWorkspace() {
                   label: "New space", level: "space",
                 });
               }}
+              onImport={mayImport ? () => setImporting(true) : undefined}
               creating={treeDraft}
               onCommitCreate={(name) => void submitProject(name)}
               onCancelCreate={() => setCreating(undefined)}

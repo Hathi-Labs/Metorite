@@ -89,7 +89,7 @@ def _only_space(raw: bytes, space: str) -> bytes:
 def test_every_project_gets_a_done_status_and_seven_needed_one(bundle: ImportBundle) -> None:
     final = resolve_statuses(bundle, ImportMapping())
     sets, added = project_statuses(bundle, final)
-    assert added == 7
+    assert len(added) == 7 and added <= set(sets)
     assert len(sets) == 48
     for names in sets.values():
         assert any(c == "done" for _, c in names)

@@ -93,9 +93,12 @@ PRIORITY = {"1": 3, "2": 2, "3": 1, "4": 0}
 LOSSES = (
     Loss(
         what="custom fields",
-        why="the workspace export has no custom-field column; add a view export (I-5)",
+        why="the workspace export has no custom-field column; ClickUp puts them only in a per-view export",
     ),
-    Loss(what="completion date", why="no column says when a task closed; §6.6 sets the rule"),
+    Loss(
+        what="completion date",
+        why="no column says when a task closed; each gets the latest date it carries, as an estimate",
+    ),
     Loss(what="status type", why="the file names each status and never says whether it means done"),
     Loss(what="checklist ticks", why="a checklist item is text only, with no ticked state"),
     Loss(

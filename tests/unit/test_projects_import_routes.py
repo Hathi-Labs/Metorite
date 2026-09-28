@@ -10,6 +10,7 @@ hides, and that no statement writes a ``pm_*`` table other than the run's own.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import pathlib
@@ -534,3 +535,55 @@ def test_an_inherited_mapping_is_case_blind() -> None:
     directory = {"m4@acme.test": "Four"}
     people = {"name:a": "M4@Acme.TEST", "name:b": None, "name:c": "gone@acme.test"}
     assert imports.usable_people(people, directory) == {"name:a": "m4@acme.test", "name:b": None}
+
+
+async def test_the_plan_asks_the_writer_whether_it_continues(
+    db: RecordingDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-4: the review step says when a run goes into an earlier import's
+    spaces. The plan asks the WRITER's own rule, with this file's hashes, on
+    the upload and again on every saved mapping, so a second copy of the rule
+    cannot drift from what the writer does."""
+    from gateway.routes.projects import import_writer
+
+    asked: list[tuple[str, str, list[str]]] = []
+
+    async def continues(_db, _org, run_id, _bundle, mapping, hashes):  # type: ignore[no-untyped-def]
+        asked.append((run_id, mapping.target.name or "", hashes))
+        return mapping.target.name != "Elsewhere"
+
+    monkeypatch.setattr(import_writer, "continues_earlier", continues)
+    raw = FIXTURE.read_bytes()
+    view = await imports.create_import_run([_upload(raw)], _user())
+    assert view["plan"]["continues"] is True
+    db.runs[view["id"]]["plan"] = json.dumps({**view["plan"], "inherited_from": "r0"})
+    moved = await imports.save_import_mapping(
+        view["id"], ImportMapping(target=Target(kind="new_space", name="Elsewhere")), _user()
+    )
+    assert moved["plan"]["continues"] is False and moved["plan"]["inherited_from"] == "r0"
+    digest = hashlib.sha256(raw).hexdigest()
+    assert [a[2] for a in asked] == [[digest], [digest]]
+    assert {a[0] for a in asked} == {view["id"]}
+
+
+def test_the_view_carries_progress_and_report_but_not_the_lease() -> None:
+    """The I-4 review's P0: the view dropped both, so the Import step showed
+    no progress, no report and no failure reason."""
+    row = SimpleNamespace(
+        id="r1",
+        source="clickup",
+        state="done",
+        created_by="a@acme.test",
+        created_at=None,
+        updated_at=None,
+        finished_at=None,
+        files="[]",
+        mapping="{}",
+        plan="{}",
+        progress=json.dumps({"cursor": 600, "lease": "secret", "node_ids": {"a": "b"}}),
+        report=json.dumps({"tasks_written": 2423, "space_ids": ["s1"]}),
+    )
+    view = imports.run_view(row)
+    assert view["progress"] == {"cursor": 600}
+    assert view["report"]["space_ids"] == ["s1"]
+    assert "secret" not in json.dumps(view)

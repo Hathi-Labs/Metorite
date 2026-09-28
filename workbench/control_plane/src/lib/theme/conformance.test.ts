@@ -1164,6 +1164,8 @@ describe("the headless substrate is wrapped, not imported", () => {
   ];
 
   const CONVERTED = [
+    // 2026-09-28 — WS-41 I-4, the ClickUp file import wizard.
+    "app/projects/components/ImportDialog.tsx",
     "app/projects/components/ShortcutsSheet.tsx",
     "app/projects/components/SearchPalette.tsx",
     "app/projects/components/FieldManager.tsx",

@@ -410,11 +410,15 @@ async def _write_nodes(
     transaction with the progress row. A node an earlier run of THIS export
     wrote, for the same target and grant, is reused (§6.9)."""
     specs, home = build_nodes(bundle, mapping.target)
-    statuses, done_added = project_statuses(bundle, final)
+    statuses, done_refs = project_statuses(bundle, final)
+    # Only a project this run CREATES gains the Done. A reused one got it from
+    # the run that made it; a lane added there shows in `lanes_added`.
+    done_added = 0
     node_ids: dict[str, str] = {}
     root_of: dict[str, str] = {}
     status_ids: dict[str, list[list[str]]] = {}
     counts = {"spaces": 0, "folders": 0, "projects": 0, "reused": 0}
+    lanes_added: list[str] = []
     label = SOURCE_LABEL.get(bundle.source, bundle.source)
 
     async with _tenant_session(organization_id) as db:
@@ -442,6 +446,7 @@ async def _write_nodes(
                         node_ids[spec.ref],
                         statuses.get(spec.ref, []),
                         earlier_status.get(spec.ref),
+                        added=lanes_added,
                     )
                 continue
             if spec.kind == "space" and not grant_checked:
@@ -489,6 +494,7 @@ async def _write_nodes(
                 counts["folders"] += 1
             else:
                 counts["projects"] += 1
+                done_added += spec.ref in done_refs
                 ids = []
                 for position, (name, category) in enumerate(statuses.get(spec.ref, []), start=1):
                     status = await insert_row(
@@ -514,10 +520,28 @@ async def _write_nodes(
             "created": counts,
             "continued_from": sorted(continued),
             "done_status_added": done_added,
+            "lanes_added": len(lanes_added),
             "cursor": 0,
         }
         await _save_progress(db, organization_id, run_id, lease, progress)
     return progress
+
+
+async def continues_earlier(
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    file_hashes: list[str],
+) -> bool:
+    """Will this run go into an earlier import's tree? The plan asks, so the
+    wizard can say so before any write (I-4). It is the writer's OWN rule,
+    read-only: a second copy of the rule is how the note would start to lie."""
+    nodes, _continued, _statuses = await _earlier_nodes(
+        db, organization_id, run_id, bundle, mapping, file_hashes
+    )
+    return bool(nodes)
 
 
 async def _earlier_nodes(
@@ -613,6 +637,7 @@ async def _reuse_statuses(
     project_id: str,
     wanted: list[tuple[str, Any]],
     earlier: dict[str, str] | None = None,
+    added: list[str] | None = None,
 ) -> list[list[str]]:
     """The status set a reused project uses, plus any name this run needs that
     it lacks. The set is the one its status OWNER holds (migration 196), which
@@ -651,6 +676,9 @@ async def _reuse_statuses(
         )
         have.append([name.lower(), str(status.id), category])
         positions.append((stage, position))
+        if added is not None:
+            # A lane in a set this run did not create: the report names it.
+            added.append(name)
     return have
 
 
@@ -1283,6 +1311,7 @@ async def _finish(
         "comments_written": progress.get("comments", 0),
         "completed_at_estimated": progress.get("completed_estimated", 0),
         "done_status_added": progress.get("done_status_added", 0),
+        "lanes_added": progress.get("lanes_added", 0),
         "tags_dropped": progress.get("tags_dropped", 0),
         "epic_demoted": progress.get("epic_demoted", 0),
         "people_unassigned": sum(1 for p in plan["people"] if p["member"] is None),

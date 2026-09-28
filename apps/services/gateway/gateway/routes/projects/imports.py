@@ -234,6 +234,9 @@ async def create_import_run(
             mapping.people = usable_people(mapping.people, facts["directory"])
             plan = build_plan(bundle, mapping, **facts)
             plan["inherited_from"] = inherited
+            plan["continues"] = await _continues(
+                db, organization_id, run_id, bundle, mapping, [_sha256(raw) for _, raw in uploads]
+            )
 
             stored = _store(organization_id, run_id, uploads)
             superseded = [
@@ -337,6 +340,15 @@ async def save_import_mapping(
     async with _tenant_session() as db:
         facts = await _facts(db, bundle, mapping, vis, organization_id)
         plan = build_plan(bundle, mapping, **facts)
+        plan["inherited_from"] = (_json(row.plan) or {}).get("inherited_from")
+        plan["continues"] = await _continues(
+            db,
+            organization_id,
+            run_id,
+            bundle,
+            mapping,
+            [str(f.get("sha256")) for f in (_json(row.files) or [])],
+        )
         saved = (
             await db.execute(
                 text(SAVE_MAPPING_SQL),
@@ -352,6 +364,25 @@ async def save_import_mapping(
         # The run moved on while the file was parsed.
         raise HTTPException(status_code=409, detail=_not_editable("no longer open"))
     return run_view(saved)
+
+
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+async def _continues(
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    file_hashes: list[str],
+) -> bool:
+    """The writer's own reuse rule, asked before any write (I-4). Imported
+    late: the writer imports this module."""
+    from gateway.routes.projects.import_writer import continues_earlier
+
+    return await continues_earlier(db, organization_id, run_id, bundle, mapping, file_hashes)
 
 
 def _not_editable(state: str) -> str:
@@ -620,7 +651,7 @@ def _store(
                 "name": name,
                 "disk_name": disk_name,
                 "bytes": len(raw),
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sha256": _sha256(raw),
             }
         )
     return stored
@@ -670,6 +701,11 @@ def run_view(row: Any) -> dict[str, Any]:
         "files": files,
         "mapping": _json(row.mapping),
         "plan": _json(row.plan),
+        # The writer's cursor only. The lease and the node maps stay here.
+        "progress": {
+            "cursor": int((_json(getattr(row, "progress", None)) or {}).get("cursor") or 0)
+        },
+        "report": _json(getattr(row, "report", None)),
     }
 
 
