@@ -346,6 +346,7 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     check("3.7 the upload is deleted when the run is done", files == [], str(files))
 
     # ── 4. a second run of the same file writes and creates nothing ─────
+    before_rerun = await one(org, "SELECT now()")
     again, lease = await new_run(org, ADMIN, bundle, raw, ImportMapping())
     busy = await one(org, imports.BUSY_SQL, id=str(uuid.uuid4()))
     check("4.1 while one run writes, a second start sees it", str(busy) == again, str(busy))
@@ -354,9 +355,12 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again)
     )
     check(
-        "4.2 a re-run writes nothing and skips all 2,423",
-        second.get("tasks_written") == 0 and second.get("tasks_skipped") == 2423,
-        json.dumps(second)[:200],
+        "4.2 a re-run of the same file writes nothing and finds all 2,423 unchanged",
+        second.get("tasks_written") == 0
+        and second.get("tasks_unchanged") == 2423
+        and second.get("tasks_updated") == 0
+        and second.get("comments_written") == 0,
+        json.dumps(second)[:300],
     )
     created = second.get("created", {})
     check(
@@ -369,6 +373,239 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     )
     after = await tree_counts(org)
     check("4.4 the tree is still 5 / 9 / 48", after == kinds, str(after))
+
+    # ── 4b. a NEW export of the same workspace updates the tasks ────────
+    # Owner decision 2026-09-28 (§11 Q-5). Four tasks, four cases:
+    #   A — the title changed in ClickUp, untouched here      → updated
+    #   B — the priority changed in ClickUp                   → updated
+    #   C — the title changed in BOTH places                  → member wins, conflict
+    #   D — a member edited the description; ClickUp did not  → kept, no conflict
+    # and A gains a new ClickUp comment, which lands once.
+    import csv
+    import io
+
+    table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+    head = table[0]
+    col = {name: i for i, name in enumerate(head)}
+    roots = [r for r in table[1:] if r[col["Parent ID"]] == "null"]
+    a, b, c, d = (roots[i][col["Task ID"]] for i in (0, 1, 2, 3))
+    for row in table[1:]:
+        tid = row[col["Task ID"]]
+        if tid == a:
+            row[col["Task Name"]] = "Renamed in ClickUp"
+            row[col["Comments"]] = json.dumps(
+                [
+                    {
+                        "text": "A new comment\n",
+                        "by": "person1@example.com",
+                        "date": "9/27/2026, 10:00:00 AM GMT+5:30",
+                        "assigned": False,
+                        "resolved": "N/A",
+                    }
+                ]
+            )
+        elif tid == b:
+            row[col["Priority"]] = "1"
+        elif tid == c:
+            row[col["Task Name"]] = "Renamed in ClickUp too"
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows(table)
+    edited = out.getvalue().encode("utf-8")
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "UPDATE pm_tasks SET title = 'A member renamed it' "
+                " WHERE organization_id = CAST(:o AS uuid) AND origin->>'external_id' = :c"
+            ),
+            {"o": org, "c": c},
+        )
+        await db.execute(
+            text(
+                "UPDATE pm_tasks SET description = 'A member wrote this' "
+                " WHERE organization_id = CAST(:o AS uuid) AND origin->>'external_id' = :d"
+            ),
+            {"o": org, "d": d},
+        )
+    edited_bundle = clickup.parse([(FIXTURE.name, edited)])
+    update_run, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, update_run, lease)
+    rep_ = as_dict(
+        await one(
+            org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=update_run
+        )
+    )
+    check(
+        "4b.1 the new export updates two tasks and keeps one member edit",
+        rep_.get("tasks_updated") == 2
+        and rep_.get("conflicts_kept") == 1
+        and rep_.get("tasks_written") == 0
+        and rep_.get("comments_written") == 1,
+        json.dumps(
+            {
+                k: rep_.get(k)
+                for k in (
+                    "tasks_updated",
+                    "tasks_unchanged",
+                    "conflicts_kept",
+                    "tasks_written",
+                    "comments_written",
+                    "created",
+                )
+            }
+        ),
+    )
+    by_ref = {
+        r.ref: r
+        for r in await rows(
+            org,
+            "SELECT origin->>'external_id' AS ref, title, description, importance FROM pm_tasks "
+            " WHERE organization_id = CAST(:org AS uuid) AND origin->>'external_id' = ANY(:refs)",
+            refs=[a, b, c, d],
+        )
+    }
+    check(
+        "4b.2 A takes ClickUp's new title", by_ref[a].title == "Renamed in ClickUp", by_ref[a].title
+    )
+    check(
+        "4b.3 B takes ClickUp's new priority (1 = Urgent = 3)",
+        by_ref[b].importance == 3,
+        str(by_ref[b].importance),
+    )
+    check(
+        "4b.4 C keeps the member's title", by_ref[c].title == "A member renamed it", by_ref[c].title
+    )
+    check(
+        "4b.5 D keeps the member's description",
+        by_ref[d].description == "A member wrote this",
+        str(by_ref[d].description),
+    )
+    a_comments = await one(
+        org,
+        "SELECT count(*) FROM pm_activities x JOIN pm_tasks t ON t.id = x.task_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :a "
+        "   AND x.type = 'comment' AND x.body = 'A new comment'",
+        a=a,
+    )
+    check("4b.6 the new comment lands once", a_comments == 1, str(a_comments))
+    again_upd, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, again_upd, lease)
+    rep2 = as_dict(
+        await one(
+            org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again_upd
+        )
+    )
+    a_comments = await one(
+        org,
+        "SELECT count(*) FROM pm_activities x JOIN pm_tasks t ON t.id = x.task_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :a "
+        "   AND x.type = 'comment' AND x.body = 'A new comment'",
+        a=a,
+    )
+    touched = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'kind' = 'import' AND updated_at > :t",
+        t=before_rerun,
+    )
+    # The 4b member edits and updates happen after this point, so compare the
+    # rerun window only: `again` ran between `before_rerun` and 4b.
+    check_rerun_quiet = touched  # read again below, once 4b has run
+    check(
+        "4b.7 the same export again changes nothing and adds no comment twice",
+        rep2.get("tasks_updated") == 0 and rep2.get("comments_written") == 0 and a_comments == 1,
+        json.dumps(
+            {k: rep2.get(k) for k in ("tasks_updated", "conflicts_kept", "comments_written")}
+        ),
+    )
+
+    # ── 4c. what the I-3b review found ──────────────────────────────────
+    created_by_first = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'run_id' = :id",
+        id=run_id,
+    )
+    check(
+        "4c.1 origin.run_id still names the run that CREATED each task",
+        created_by_first == 2423,
+        str(created_by_first),
+    )
+    quiet_before = await one(org, "SELECT now()")
+    idle, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, idle, lease)
+    moved_at = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'kind' = 'import' AND updated_at > :t",
+        t=quiet_before,
+    )
+    check(
+        "4c.2 a no-op re-run moves no task's updated_at (the If-Match token)",
+        moved_at == 0,
+        f"{moved_at} moved; the earlier window saw {check_rerun_quiet}",
+    )
+
+    # The admin now maps "Person 1" to nobody. The SOURCE did not change, so
+    # nobody is unassigned.
+    assigned_before = await one(
+        org, "SELECT count(*) FROM pm_task_assignees WHERE assignee = :m", m=MEMBER
+    )
+    remap, lease = await new_run(
+        org, ADMIN, edited_bundle, edited, ImportMapping(people={"name:person 1": None})
+    )
+    await import_writer.apply_run(org, remap, lease)
+    assigned_after = await one(
+        org, "SELECT count(*) FROM pm_task_assignees WHERE assignee = :m", m=MEMBER
+    )
+    check(
+        "4c.3 a changed people mapping unassigns nobody",
+        assigned_after == assigned_before,
+        f"{assigned_before} -> {assigned_after}",
+    )
+
+    # A member renames a status lane. The same export again must not bring the
+    # old name back as a new lane, nor move a task.
+    lane = (
+        await rows(
+            org,
+            "SELECT s.id, s.project_id, (SELECT count(*) FROM pm_task_statuses x "
+            "        WHERE x.project_id = s.project_id) AS n "
+            "  FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+            " WHERE p.organization_id = CAST(:org AS uuid) AND p.source = 'import' "
+            "   AND p.parent_project_id IS NOT NULL AND s.name = 'backlog' LIMIT 1",
+        )
+    )[0]
+    async with tenant_session(org) as db:
+        await db.execute(
+            text("UPDATE pm_task_statuses SET name = 'Someday' WHERE id = CAST(:s AS uuid)"),
+            {"s": str(lane.id)},
+        )
+    in_lane = await one(
+        org, "SELECT count(*) FROM pm_tasks WHERE status_id = CAST(:s AS uuid)", s=str(lane.id)
+    )
+    renamed, lease = await new_run(org, ADMIN, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, renamed, lease)
+    lanes_now = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)",
+        p=str(lane.project_id),
+    )
+    still_in = await one(
+        org, "SELECT count(*) FROM pm_tasks WHERE status_id = CAST(:s AS uuid)", s=str(lane.id)
+    )
+    check(
+        "4c.4 a member-renamed lane is followed: no duplicate lane, no task moves",
+        lanes_now == lane.n and still_in == in_lane,
+        f"lanes {lane.n}->{lanes_now}, tasks {in_lane}->{still_in}",
+    )
+
+    async with tenant_session(org) as db:
+        _inherited_mapping, inherited_run = await imports._inherited_mapping(db, org, edited_bundle)
+    check(
+        "4c.5 a new upload of the same workspace starts from the NEWEST earlier run's mapping",
+        inherited_run == renamed,
+        str(inherited_run),
+    )
 
     # A list moved to another space since: the old map is stale, so the list
     # is created again rather than reused with a wrong root.

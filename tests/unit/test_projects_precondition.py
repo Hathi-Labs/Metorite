@@ -23,6 +23,7 @@ def _row(updated_at: datetime = STAMP) -> SimpleNamespace:
 
 # ── The advisory contract ────────────────────────────────────────────────────
 
+
 def test_absent_header_succeeds() -> None:
     """D-PM-20: advisory now, mandatory later.
 
@@ -61,6 +62,7 @@ def test_mismatched_token_is_412_carrying_the_current_row() -> None:
 
 # ── Fence 1: the naive token. MEASURED, not assumed. ─────────────────────────
 
+
 def test_naive_token_is_refused() -> None:
     """A tz-less token must 400 rather than compare.
 
@@ -88,6 +90,7 @@ def test_naive_token_is_refused_even_when_it_would_have_matched() -> None:
 
 
 # ── Fence 2: instants, never strings. MEASURED. ──────────────────────────────
+
 
 def test_trailing_zero_microseconds_match() -> None:
     """pg's ``::text`` renders this ``.1`` where the encoder renders ``.100000``.
@@ -118,6 +121,7 @@ def test_a_different_offset_naming_the_same_instant_matches() -> None:
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
 
+
 def test_quoted_etag_spelling_is_tolerated() -> None:
     require_precondition(_row(), f'"{STAMP.isoformat()}"', {})
 
@@ -135,6 +139,7 @@ def test_parse_returns_an_aware_datetime() -> None:
 
 # ── The two touch=False sites, and why they stay ─────────────────────────────
 
+
 def test_touch_false_is_used_only_for_recurrence_bookkeeping() -> None:
     """D-PM-20's audit turned on this fact, so it is fenced rather than trusted.
 
@@ -148,16 +153,31 @@ def test_touch_false_is_used_only_for_recurrence_bookkeeping() -> None:
     edit would stop moving ``updated_at``, and this precondition would then
     report "unchanged" for a row that had changed. Whoever adds one has to come
     here and argue it for both consumers.
+
+    **The third site, argued (WS-41 I-3b, 2026-09-28): ``import_writer.py``.**
+    A re-import of a task that did not change writes ONLY ``pm_tasks.origin``:
+    the importer's own bookkeeping (``import_values``, ``import_source``,
+    ``updated_by_run``, and a refresh of ``custom_id``, ``url``,
+    ``time_spent_mins`` and ``assignee_names``). No client renders those keys,
+    and the keys a client reads (``kind`` and the email fields) do not change. So for the delta
+    cursor there is nothing new to send, and for this precondition a member's
+    pending edit is of a row whose visible fields did not move. Touching would
+    re-send 2,423 rows and fail every open editor's next save after a no-op
+    re-import. Any import write that changes a real field goes through the
+    ordinary touch. ``tests/live/live_ws41_writer.py`` check 4c.2 fences the
+    behaviour.
     """
     from pathlib import Path
 
-    pkg = Path(__file__).resolve().parents[2] / (
-        "apps/services/gateway/gateway/routes/projects"
-    )
+    pkg = Path(__file__).resolve().parents[2] / ("apps/services/gateway/gateway/routes/projects")
     sites = [
         (path.name, line.strip())
         for path in sorted(pkg.glob("*.py"))
         for line in path.read_text(encoding="utf-8").splitlines()
         if "touch=False" in line
     ]
-    assert [name for name, _ in sites] == ["recurrence.py", "recurrence.py"], sites
+    assert [name for name, _ in sites] == [
+        "import_writer.py",
+        "recurrence.py",
+        "recurrence.py",
+    ], sites

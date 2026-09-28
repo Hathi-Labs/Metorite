@@ -176,3 +176,164 @@ def test_origin_always_carries_the_index_key() -> None:
         "run_id": "run-1",
         "url": "https://app.clickup.com/t/86a1",
     }
+
+
+# ── update mode (I-3b, owner decision 2026-09-28) ───────────────────────────
+
+from gateway.routes.projects.importer.layout import (  # noqa: E402
+    comment_key,
+    merge_fields,
+    snapshot,
+)
+
+
+def _state(**over: object) -> dict:
+    base = {
+        "title": "Ship it",
+        "description": None,
+        "status_id": "s1",
+        "due_at": dt.datetime(2026, 9, 24, 6, 30, tzinfo=dt.UTC),
+        "start_date": None,
+        "importance": 1,
+        "estimate_mins": None,
+        "tags": ["a"],
+        "assignees": ["ann@x.test"],
+    }
+    base.update(over)
+    return base
+
+
+def test_a_source_change_updates_an_untouched_field() -> None:
+    last = snapshot(_state())
+    m = merge_fields(_state(), last, _state(title="Ship it now", importance=3))
+    assert m.changes == {"title": "Ship it now", "importance": 3}
+    assert m.conflicts == ()
+    assert m.new_snapshot["title"] == "Ship it now"
+
+
+def test_a_member_edit_is_never_overwritten() -> None:
+    """Both changed the title: the member's value stays, and it is a conflict."""
+    last = snapshot(_state())
+    m = merge_fields(_state(title="Member's title"), last, _state(title="Source title"))
+    assert m.changes == {} and m.conflicts == ("title",)
+
+
+def test_a_member_edit_the_source_did_not_touch_is_kept_quietly() -> None:
+    last = snapshot(_state())
+    m = merge_fields(_state(title="Member's title"), last, _state())
+    assert m.changes == {} and m.conflicts == ()
+
+
+def test_order_and_case_do_not_count_as_a_change() -> None:
+    last = snapshot(_state(tags=["b", "a"]))
+    m = merge_fields(_state(tags=["A", "b"]), last, _state(tags=["a", "B"]))
+    assert m.changes == {} and m.conflicts == ()
+
+
+def test_the_same_instant_in_another_zone_is_no_change() -> None:
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    same = dt.datetime(2026, 9, 24, 12, 0, tzinfo=ist)
+    assert merge_fields(_state(), snapshot(_state()), _state(due_at=same)).changes == {}
+
+
+def test_without_a_snapshot_every_difference_is_a_conflict() -> None:
+    m = merge_fields(_state(), None, _state(title="New"))
+    assert m.changes == {} and m.conflicts == ("title",)
+
+
+def test_a_frozen_field_never_changes() -> None:
+    last = snapshot(_state())
+    m = merge_fields(_state(), last, _state(status_id="s2"), frozen=("status_id",))
+    assert m.changes == {} and m.conflicts == ()
+
+
+def test_assignees_follow_the_same_rule() -> None:
+    last = snapshot(_state())
+    m = merge_fields(_state(), last, _state(assignees=["ann@x.test", "bo@x.test"]))
+    assert m.changes == {"assignees": ["ann@x.test", "bo@x.test"]}
+
+
+def test_a_comment_key_is_stable_and_distinct() -> None:
+    at = dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+    one = Comment(task_ref="t", author_ref="a@x.test", created_at=at, body_md="Hi")
+    assert comment_key(one) == comment_key(
+        Comment(task_ref="t", author_ref="a@x.test", created_at=at, body_md="Hi ")
+    )
+    assert comment_key(one) != comment_key(
+        Comment(task_ref="t", author_ref="a@x.test", created_at=at, body_md="Ho")
+    )
+
+
+# ── I-3b review: a mapping change is not a source change ────────────────────
+
+
+def _src(**over: object) -> dict:
+    base = {
+        "title": "Ship it",
+        "description": None,
+        "status_id": "in review",
+        "due_at": dt.datetime(2026, 9, 24, 6, 30, tzinfo=dt.UTC),
+        "start_date": None,
+        "importance": 1,
+        "estimate_mins": None,
+        "tags": ["a"],
+        "assignees": ["name:vijay r"],
+    }
+    base.update(over)
+    return base
+
+
+def test_a_changed_people_mapping_unassigns_nobody() -> None:
+    """Run 1 mapped "Vijay R" to a member; run 2 maps him to nobody. The
+    source did not change, so nothing moves."""
+    written = snapshot(_state(assignees=["vijay@x.test"]))
+    m = merge_fields(
+        _state(assignees=["vijay@x.test"]),
+        written,
+        _state(assignees=[]),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {} and m.conflicts == ()
+    assert m.new_snapshot["assignees"] == ["vijay@x.test"]
+
+
+def test_a_changed_status_mapping_moves_no_task() -> None:
+    written = snapshot(_state(status_id="s-review"))
+    m = merge_fields(
+        _state(status_id="s-review"),
+        written,
+        _state(status_id="s-new-lane"),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+
+
+def test_a_source_change_still_lands_through_the_mapping() -> None:
+    written = snapshot(_state(status_id="s-review"))
+    m = merge_fields(
+        _state(status_id="s-review"),
+        written,
+        _state(status_id="s-done"),
+        last_source=snapshot(_src()),
+        incoming_source=_src(status_id="done"),
+    )
+    assert m.changes == {"status_id": "s-done"}
+    assert m.new_source["status_id"] == "done"
+
+
+def test_a_frozen_field_keeps_the_last_source_value() -> None:
+    """The source changed the status of a task a member moved. The change is
+    not applied, and the snapshot keeps the OLD source value, so it still
+    lands once the task is moved back."""
+    m = merge_fields(
+        _state(status_id="s-open"),
+        snapshot(_state(status_id="s-open")),
+        _state(status_id="s-done"),
+        last_source=snapshot(_src(status_id="open")),
+        incoming_source=_src(status_id="done"),
+        frozen=("status_id",),
+    )
+    assert m.changes == {}
+    assert m.new_source["status_id"] == "open"
