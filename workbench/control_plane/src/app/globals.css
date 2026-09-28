@@ -173,7 +173,12 @@
   --success: hsl(142 76% 47%);
   --success-foreground: hsl(210 40% 98%);
 
-  --warning: hsl(47 96% 53%);
+  /* A dark amber, not the bright dark-mode yellow (H-174). `text-warning` is
+     words on a white card, and the yellow measured 1.57 : 1 there. This value
+     measures 5.94 on white, 5.41 on --muted and 5.16 on its own 10% chip tint.
+     It is also the fill, so a dot or a border clears 3 : 1 and the light ink
+     above it clears 5.67. contrast.test.ts holds every one of these numbers. */
+  --warning: hsl(36 92% 29%);
   --warning-foreground: hsl(210 40% 98%);
 
   /* Light mode. Deeper than the dark values, because these have to clear AA

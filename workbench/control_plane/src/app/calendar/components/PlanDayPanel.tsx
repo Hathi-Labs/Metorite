@@ -381,7 +381,7 @@ export function PlanDayPanel({
                       your note and standing prompt weren&apos;t applied. Times
                       are still packed around your calendar. Try Re-plan.
                       {plan.rankNote && (
-                        <span className="mt-1 block text-warning/80">
+                        <span className="mt-1 block text-warning">
                           Reason: {plan.rankNote}
                         </span>
                       )}

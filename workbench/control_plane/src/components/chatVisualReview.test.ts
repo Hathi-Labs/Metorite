@@ -192,10 +192,12 @@ describe("the generative-UI primitives", () => {
   });
 
   it("does not draw badge words in a status colour a light card cannot carry", () => {
-    // Why: the manifest's own numbers. Warning ink on a light card fails even
-    // the large-text threshold, so it must not carry a badge's words.
+    // Why: the manifest's own numbers. Success ink on a light card fails even
+    // the large-text threshold, so a status hue must not carry a badge's
+    // words. (Warning was the example until H-174 gave light mode a dark amber
+    // that passes. Success still fails, and H-193 carries it.)
     const light = THEME.colors.light;
-    expect(contrast(light.warning, light.card)!).toBeLessThan(AA_LARGE_TEXT);
+    expect(contrast(light.success, light.card)!).toBeLessThan(AA_LARGE_TEXT);
     expect(contrast(light.foreground, light.card)!).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
     for (const tone of Object.keys(TONE_HUE)) {
       const html = renderToStaticMarkup(

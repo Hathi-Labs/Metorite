@@ -95,19 +95,6 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-183 · The report schedule PATCH fails on a real database · [AGENT]
-- **Check:** `grep -n '"updated_at": text("now()")' apps/services/gateway/gateway/routes/projects/reports.py`
-  → a hit means this is open.
-- **Why:** `PATCH /projects/reports/{id}/schedule` sends `updated_at` to
-  `update_row`, and `update_row` also adds `updated_at = now()`. Postgres
-  refuses two assignments to one column, so each call gets 500. The WS-27bn R1
-  real-DB test found the same defect in `PATCH /projects/reports/{id}`, and
-  R1 repaired that route only. The schedule is out of R1's scope.
-- **Do:** Remove the `updated_at` key from the schedule route's values. Add a
-  real-DB test that calls the route and reads the row back.
-- **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
-- **Added:** 2026-09-24 · the WS-27bn R1 build
-
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -344,27 +331,27 @@ line — never reclaim a number by deleting the other entry.
   owner decision 2026-09-24
 - **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
-### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
-- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
-  Two lines with the same value, one in `:root` and one in `.light`, means
-  this is open.
-- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
-  or a border on a dark ground it reads well. As TEXT on white it measured
-  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
-  measured 11.28 : 1, so only light mode is broken.
-- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
-  hue's text slot with it, so an amber status reads pale yellow on white. The
-  D76 "suggested" chip met it first and moved its words to
-  `muted-foreground`.
-- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
-  and keep the bright value for dark mode. Then look at every amber status in
-  light mode, because this is the one look (`globals.css`). Mirror the value
-  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
-- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
-  text on `--background` in both modes.
-- Added: 2026-09-23, found while building D76. Minted as H-172 and
-  renumbered the same day: #431 took H-172 three minutes before #429
-  merged, and #429 merged second.
+### H-193 · Four status text tones are below AA as words, and the Calendar draws amber from the raw palette · [AGENT]
+- **Check:** `grep -cE '"rapidtool/(dark|light)/(destructive|success|info|violet)-on-' workbench/control_plane/src/lib/theme/contrast.test.ts`.
+  A count of 1 or more means `KNOWN_SHORTFALLS` still excuses a status text
+  tone, and this is open.
+- **What happens.** H-174 raised the gate for `text-destructive`,
+  `text-success`, `text-warning`, `text-info` and `text-violet` from 3.0 on
+  the card to 4.5 on the page, the card, `--muted` and the tone's own 10%
+  chip tint. Only `--warning` was fixed. The ratchet records the other
+  failures. The worst is light `--success`, at 1.99 : 1 on white. Light
+  `--destructive` is 3.76 and light `--info` is 4.23. Dark `--destructive`
+  is 4.06 on `--muted`, and dark `--violet` is 4.47.
+- **Do.** Give `.light` a darker value for each tone, as H-174 did for
+  `--warning`, and mirror it in `themes.ts`. Then delete each entry the gate
+  names. Look at every status chip in light mode after the change.
+- **Also.** The Calendar draws its star, its focus meter and some card
+  borders with `text-amber-*` and `border-amber-*`. The tree has 143 such
+  raw classes. `text-amber-500` on white is about 2.1 : 1, and no token
+  change reaches it. Move each one to `warning` or to a `--cat-*` slot.
+- **Authority:** `DESIGN_SYSTEM.md` §7 · H-174 (PR "Theme: a readable
+  warning text tone in light mode").
+- Added: 2026-09-28, found while fixing H-174.
 
 ### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
@@ -1569,151 +1556,42 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** run 35855523275 · `journalctl -u acb-workbench`
 - **Added:** 2026-09-23 · the H-152 gateway slice.
 
-### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
-- 🟢 **2026-09-28 — the no-502 PR removes most of the window. Keep this entry
-  until a deploy on the box proves it.**
-  - **What the "~3 minutes" was, measured on the #497 deploy (run
-    36320367460, 2026-09-27).** It is the time from the first restart at
-    12:55:27 to the Caddy restart at 12:58:19. Inside it, four separate faults:
-    - the gateway restart also restarted the workbench through `Requires=`.
-      Every Caddy 502 on :3001 from 2026-09-26 to 2026-09-27 falls in that
-      second: 4 to 14 browser requests per deploy.
-    - the gateway was cold for **15 to 23 s**. The workbench calls it directly
-      on localhost, so its API routes failed for that time.
-    - `npm ci` deleted `node_modules` under the running workbench for **38 s**.
-      It answered 500 with `Cannot find module 'next/dist/compiled/cookie'`.
-    - the Caddy step ran `reload || restart`. `admin off` makes every reload
-      fail, so every deploy restarted Caddy and cut every open stream.
-  - **What the PR changes.**
-    - Caddy retries a refused dial for up to 30 s (`lb_try_duration`) on
-      app, api and operator. A request in a restart gap waits, and a POST
-      keeps its body. Proved against Caddy v2.11.4, the version on the box.
-    - The repo Caddyfile now matches the box, and the apply installs it before
-      the restarts. It validates the file first and restarts Caddy only when
-      the file changed. A file that does not start is rolled back.
-    - `acb-workbench.service` has `Wants=`, not `Requires=`. The apply
-      installs it before the gateway restart. The workbench restarts once.
-    - The install keeps `node_modules` when `package-lock.json` and node are
-      unchanged. That was 323 of 324 merges in 30 days.
-    - Each restart waits until its service answers HTTP, with a bound.
-    - The watchdog probes Caddy on `/internal/…`, which Caddy answers with
-      404 itself. A probe of `/health` would wait for a cold gateway, pass
-      its 15 s bound, and restart a healthy Caddy. `vps-health.yml` waits
-      40 s, which is longer than the 30 s retry.
-  - **What stays.** The gateway is still cold for 15 to 23 s on every deploy.
-    Workbench API routes fail for that time, because they do not go through
-    Caddy. A deploy that changes `package-lock.json` still runs `npm ci`
-    under the running server. The first deploy after the merge restarts Caddy
-    once, to install the new file.
-  - **Follow-up, only if the measurement below still shows a window:** a
-    retry in the workbench's gateway client, or two gateway units behind a
-    swapped port. Skipping the gateway restart is NOT safe: `build_sha()` is
-    cached per process, and `deploy.yml` verifies `/version`.
-  - 🟢 **The owner decided gate (a) on 2026-09-28: "Auto, except sign-in
-    changes".** Every deploy installs the repo Caddyfile. A change to its
-    auth-relevant lines cannot merge without the owner.
-    - **The fence** is `tests/unit/test_caddy_auth_gate.py`. It hashes the
-      auth lines and compares the hash with `_BASELINE`
-      (`b134ae70…cdbd4b1cd`). The box's live Caddyfile hashes to the same
-      value on 2026-09-28. The owner approves a new hash with the line
-      `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md`. The test
-      failure prints the exact line.
-    - It covers the header lines, the sign-in blocks, `handle`,
-      `handle_path`, `route`, `rewrite`, `uri`, `redir`, `tls`, `transport`,
-      `import`, named matchers, every site label and `admin`. An `import`
-      of a file fails outright.
-    - ⚠️ An agent that edits `_BASELINE` defeats the fence. Review must treat
-      that edit as gate (a).
-    - `work_plan.md` §6 gate (a) and `onboarding_preflight.py` now say this.
-  - **More fences from the review round:**
-    - After a Caddy restart, the apply asks every site host through Caddy.
-      Any HTTP answer, a 500 too, proves that Caddy routes the host. The
-      probe tries each host for up to 90 s, because a new host has no
-      certificate at first. Only no answer at that deadline rolls back.
-    - No backup of the live file means no install. The apply keeps the last
-      five backups.
-    - CI runs `caddy validate` and `caddy fmt` (`caddy:2.11.4`), so a broken
-      Caddyfile cannot merge green.
-    - 📌 **[OWNER] follow-up: add 'Caddy config (validate)' to the required
-      checks on `main`.** Until then, a red run of that job does not block a
-      merge. Only the owner can change branch protection.
-    - The apply removes the deps stamp before an install starts.
-    - `DEPLOY_FORCE=1` no longer runs `npm ci`. `DEPLOY_REINSTALL=1` does:
-      the `reinstall` dispatch input, or `vps_pull.sh --reinstall`.
-  - ⚠️ **The identity-header strip is NOT on the box.**
-    `colleague_onboarding.md` G1 says that the owner added
-    `header_up -X-User-Email` and `-X-User-Role` to the live file on
-    2026-08-04. The live file on 2026-09-28 has neither line. The repo file
-    matches the box, so this PR does not remove them. Adding them is an
-    auth change, so it needs the owner under gate (a).
-  - **Measure it on the first two deploys after the merge.** The first one
-    installs the new units and the Caddyfile. The second one is the real test.
-    Run this from any machine while the deploy runs:
+### H-194 · Workbench API calls fail while the gateway restarts · [AGENT]
+- **Check:** during a deploy, time `GET https://app.metorite.com/api/auth/me`
+  with a signed-in cookie from the moment of `==> Restarting gateway`. A
+  5xx or a failed fetch for about 10 to 20 s means this is still real.
+- **What it is.** The workbench server calls the gateway directly on
+  `127.0.0.1:8080`, not through Caddy. So the Caddy `lb_try_duration` hold
+  (H-60, closed 2026-09-28) does not cover it. The gateway is cold for 10 to
+  23 s on each deploy, and the workbench API routes fail in that time.
+- **Options, in order.** A bounded retry in the workbench's gateway client,
+  for idempotent reads and for connection-refused only. Or two gateway units
+  behind a swapped port. Do NOT skip the gateway restart: `build_sha()` is
+  cached per process, and `deploy.yml` verifies `/version`.
+- **Authority:** `deploy_delivery_path.md` · PR #498
+- **Added:** 2026-09-28 · the H-60 close-out
 
-        while :; do for h in app api; do curl -s -o /dev/null --max-time 60 \
-          -w "$(date +%T) $h %{http_code} %{time_total}\n" \
-          https://$h.metorite.com/$([ $h = api ] && echo health); done; \
-          sleep 0.5; done | tee deploy-probe.log
-        awk '$3 !~ /^[23]/' deploy-probe.log | wc -l     # must be 0
-        sort -k4 -n deploy-probe.log | tail -3            # the worst wait
-
-    Then read Caddy on the box. Zero lines is the pass. A retry that
-    succeeds writes no line, so each line is a 502 that reached a client:
-
-        sudo journalctl -u caddy --since "30 min ago" \
-          | grep -cE '127\.0\.0\.1:(3001|3002|8080).*connection refused'
-
-    On the box, the apply log must say `Caddy is NOT restarted` and
-    `node_modules is KEPT` on the second deploy.
-- 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
-  workbench on :3001 returned **500** while the old process was still
-  serving. Its pid changed from 1119154 to 1121629 and the next probe
-  returned 307. Three passes afterwards were all 307, `NRestarts=0` on
-  every unit, and `app.metorite.com` answered 307. So this is the window
-  this entry describes and not a crash loop — but it is still a real
-  outage that a customer sees on every single merge.
-- **Check:** merge anything, then `curl -s -o /dev/null -w "%{http_code}" https://app.metorite.com/`
-  during the deploy window. A `500` or `502` means this is live. A `307` means the
-  box is up.
-- **Why:** 🔴 **Measured twice on 2026-08-26, on a box holding a real customer.**
-  During PR #114's deploy, Caddy logged `dial tcp 127.0.0.1:3001: connect:
-  connection refused` against `/api/auth/me`, `/api/apps/pins`,
-  `/api/projects/notifications` and `/api/chat/sessions`. **Two real browsers**
-  were in it — one Windows on `/projects`, one macOS on `/chat`. During PR #120's
-  deploy the workbench answered **HTTP 500** and `GET /version` returned empty.
-  📌 The cause is ordinary and the fix is not exotic. `vps_apply.sh` restarts the
-  workbench in place. Nothing holds requests while port 3001 is down, so Caddy
-  fails them instead of queuing or retrying.
-  ⚠️ **The deploy verification cannot see this, by construction.** `deploy.yml`
-  checks health AFTER the restart, so it measures the recovered box and reports
-  a clean deploy. The outage is real and invisible to the thing watching for it.
-  🟢 **Cheapest real options, in order.**
-  - (a) Caddy `lb_try_duration` on the workbench upstream. A request in the gap
-    then WAITS instead of failing. Minutes of work, and it covers most of the
-    window.
-  - (b) Two workbench units and a swapped upstream.
-  - (c) Accept it, and say so in the release notes.
-  ⚠️ Do not "fix" this by making the health check gentler. The check is honest.
-  It is watching the wrong moment.
-- 🟢 **The DOMINANT term is fixed, and it was not the restart (2026-09-01).**
-  This entry named the restart as the cause. Measured that morning, the restart
-  was the small half. `vps_apply.sh` ran `rm -rf .next` and then built, so the
-  live server lost the directory it serves from and answered **HTTP 500 on
-  every route for the whole build** — minutes, with two Next builds per deploy,
-  not the seconds a restart costs. `build_next_staged` now builds into
-  `.next.staging` and renames it in on success, so the window shrinks to the
-  restart alone and a FAILED build changes nothing.
-  ⚠️ **This entry stays OPEN.** The restart gap this entry describes is still
-  there, and options (a) and (b) remain the fix for it. What changed is the
-  size of the problem, not its existence.
-  📌 **Nothing saw the big half for a day.** `vps-health.yml` counted an HTTP
-  500 as proof of life. That is fixed in the same PR, and the two changes must
-  not be separated — alarming on 5xx is only correct once deploys stop serving
-  them routinely. Fence: `test_deploy_next_build_swap.py`.
-- **Authority:** `deploy/hostinger/` (owner-gated) · `.github/workflows/deploy.yml` ·
-  D36 (Fracktal is customer zero)
-- **Added:** 2026-08-26 · guardrails + handoff session · build half measured and
-  fixed 2026-09-01
+### H-195 · Two Caddy follow-ups that only the owner can do · [OWNER]
+- **Check:** (1) GitHub branch protection on `main` lists
+  "Caddy config (validate)" as a required check. (2) The owner decides the
+  identity-header strip, and the live `/etc/caddy/Caddyfile` matches that
+  decision. Delete this entry when both are done.
+- **(1) The required check.** PR #498 added the CI job "Caddy config
+  (validate)". It is not a required check, so a red run does not block a
+  merge. An invalid Caddyfile can then merge, and every later deploy refuses
+  to install it. The live site stays up, but deploys stop. Only the owner can
+  change branch protection.
+- **(2) The identity-header strip is NOT on the box.**
+  `colleague_onboarding.md` G1 says that the owner added
+  `header_up -X-User-Email` and `header_up -X-User-Role` to the live file on
+  2026-08-04. The live file on 2026-09-28 has neither line. The exposure is
+  low: the gateway trusts `X-User-Email` only with the internal token, and
+  `:8080` is closed to the outside. The strip is defence in depth.
+  To restore it, an agent adds the two lines, `test_caddy_auth_gate.py`
+  refuses the merge, and the owner approves the printed hash with
+  `CADDY-AUTH-APPROVED <sha256>` in `.claude/OWNER_GRANTS.md` (gate (a)).
+- **Authority:** `work_plan.md` §6 gate (a) · PR #498
+- **Added:** 2026-09-28 · the H-60 close-out
 
 ### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
 - **Check:** `rg -n "ast\." tests/unit/test_ingestion_receiver_parity.py` → no AST walk
