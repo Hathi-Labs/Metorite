@@ -187,6 +187,10 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/registry/usage/activity": "billing_read",
     "/registry/usage/apps": "billing_read",
     "/registry/usage/members": "billing_read",
+    # The checkout half, on the SEVENTH capability.
+    "/registry/billing/orders": "billing_purchase",
+    "/registry/billing/orders/{order_id}": "billing_purchase",
+    "/registry/billing/orders/{order_id}/redeem": "billing_purchase",
 }
 
 
