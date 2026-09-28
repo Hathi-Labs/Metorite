@@ -471,6 +471,11 @@ async function translateAndPersistStream(
   }
 
   // Final persist — ensure the complete message is saved with all stream metadata.
+  // ⚠️ This persist retries through a gateway restart (H-194), and it is
+  // awaited. When a restart cuts the run stream, the member's SSE response
+  // stays open for up to 25 s (GATEWAY_RETRY.deadlineMs), until the gateway
+  // takes the write or the window ends. That wait is the price of a reply
+  // that survives the deploy.
   if (assistantContent.trim() || toolEvents.length > 0 || reasoningBlocks.length > 0 || latestTodos.length > 0 || customEvents.length > 0) {
     await persistAssistantMessage(threadId, assistantContent, toolEvents, reasoningBlocks, progressLines, persistId, latestTodos, customEvents, segments, agentName, true).catch(() => {});
   }

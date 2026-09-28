@@ -10,7 +10,7 @@
  *
  * Rules: see the header of `gatewayFetch.ts`.
  */
-import { describe, it, expect, afterEach, beforeAll } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, beforeEach } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { readFileSync } from "node:fs";
@@ -18,11 +18,17 @@ import { fileURLToPath } from "node:url";
 
 import {
   GATEWAY_RETRY,
+  breakerOpen,
   connectFailureCode,
   gatewayFetch,
   isReplayableBody,
+  redactPath,
+  resetGatewayBreaker,
   retryDeadlineMs,
 } from "@/lib/gatewayFetch";
+
+// The breaker is process state. Each test starts with every breaker closed.
+beforeEach(() => resetGatewayBreaker());
 
 // Short delays keep the suite fast. The production values are pinned below.
 const FAST = { firstDelayMs: 40, maxDelayMs: 80, deadlineMs: 5_000 };
@@ -227,6 +233,9 @@ describe("gatewayFetch — what is never retried", () => {
       })
     ).rejects.toThrow();
     expect(gw.connections()).toBeGreaterThan(1);
+    // A gateway that accepts and then drops the socket is UP, so a give-up
+    // on that error must not open the breaker (rule 9 opens on refusals only).
+    expect(breakerOpen(`http://127.0.0.1:${gw.port}`)).toBe(false);
   });
 
   it("a 503 response is NOT retried", async () => {
@@ -318,7 +327,9 @@ describe("gatewayFetch — the window is bounded", () => {
     expect(connectFailureCode(err)).toBe("ECONNREFUSED");
     expect(elapsed).toBeLessThan(400 + 300);
     expect(lines[0]).toMatch(/^\[gateway\] retry:/);
-    expect(lines.at(-1)).toMatch(/^\[gateway\] gave up: GET \/auth\/me after \d+ attempts/);
+    // The give-up line, then the breaker opens (rule 9).
+    expect(lines.at(-2)).toMatch(/^\[gateway\] gave up: GET \/auth\/me after \d+ attempts/);
+    expect(lines.at(-1)).toMatch(/^\[gateway\] down:/);
   });
 
   it("a caller timeout does not cut the restart window short", async () => {
@@ -426,9 +437,12 @@ describe("gatewayFetch — the window is bounded", () => {
   });
 
   it("keeps the production window below Caddy's hold", () => {
-    // The browser reaches the workbench through Caddy, which holds a request
-    // for `lb_try_duration`. A retry window longer than that hold would still
-    // be running when Caddy gives up on the member.
+    // `lb_try_duration` is Caddy's CONNECT hold: how long Caddy keeps trying
+    // to dial the workbench while the workbench restarts. It is not a limit
+    // on the answer time, because Caddy sets no response timeout. This pin
+    // keeps our connect hold to the gateway no longer than Caddy's connect
+    // hold to us, so a gateway restart never makes a member wait longer than
+    // a workbench restart does. The same deploy restarts both.
     const caddyfile = readFileSync(
       fileURLToPath(new URL("../../../../deploy/hostinger/caddy/Caddyfile", import.meta.url)),
       "utf8"
@@ -484,6 +498,121 @@ describe("turning the retry off", () => {
       "utf8"
     );
     expect(config).toMatch(/GATEWAY_RETRY_DEADLINE_MS:\s*"0"/);
+  });
+});
+
+describe("the breaker — a gateway that stays down", () => {
+  const refusingFake = () => {
+    let calls = 0;
+    const fake = (async () => {
+      calls += 1;
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+    }) as unknown as typeof fetch;
+    return { fake, calls: () => calls };
+  };
+  const URL_A = "http://127.0.0.1:1/models";
+  const SHORT = { firstDelayMs: 20, maxDelayMs: 40, deadlineMs: 200 };
+
+  it("after a give-up, the next read fails fast with the original error", async () => {
+    const f = refusingFake();
+    const { lines, log } = recorder();
+    await expect(gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: f.fake, log })).rejects.toThrow();
+    const firstCalls = f.calls();
+    expect(firstCalls).toBeGreaterThan(1);
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(true);
+    expect(lines.at(-1)).toMatch(/^\[gateway\] down: http:\/\/127\.0\.0\.1:1 refused/);
+
+    const t0 = Date.now();
+    const err = await gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: f.fake, log }).catch((e: unknown) => e);
+    expect(Date.now() - t0).toBeLessThan(50);
+    expect(connectFailureCode(err)).toBe("ECONNREFUSED");
+    expect(f.calls()).toBe(firstCalls + 1);
+  });
+
+  it("closes after the cool-down", async () => {
+    const f = refusingFake();
+    await gatewayFetch(URL_A, {}, { ...SHORT, breakerMs: 100, fetchImpl: f.fake, log: () => {} }).catch(() => {});
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(true);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(false);
+
+    // The window is back: the next read retries again.
+    const before = f.calls();
+    await gatewayFetch(URL_A, {}, { ...SHORT, breakerMs: 100, fetchImpl: f.fake, log: () => {} }).catch(() => {});
+    expect(f.calls() - before).toBeGreaterThan(1);
+  });
+
+  it("closes on the first response", async () => {
+    const f = refusingFake();
+    await gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: f.fake, log: () => {} }).catch(() => {});
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(true);
+
+    const ok = (async () => new Response("up", { status: 200 })) as unknown as typeof fetch;
+    expect((await gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: ok })).status).toBe(200);
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(false);
+  });
+
+  it("a restart that recovers inside the window never opens the breaker", async () => {
+    const port = await freePort();
+    gatewayLater(port, 250, (_req, _body, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const { lines, log } = recorder();
+    const res = await gatewayFetch(`http://127.0.0.1:${port}/auth/me`, {}, { ...FAST, log });
+    expect(res.status).toBe(200);
+    expect(breakerOpen(`http://127.0.0.1:${port}`)).toBe(false);
+    expect(lines.some((l) => l.startsWith("[gateway] down"))).toBe(false);
+  });
+
+  it("a route with sequential reads waits about one window, not N", async () => {
+    // `/api/models/all` makes several reads in a row. Without the breaker,
+    // a down gateway would cost one full window per read.
+    const f = refusingFake();
+    const t0 = Date.now();
+    for (let i = 0; i < 4; i += 1) {
+      await gatewayFetch(`http://127.0.0.1:1/r${i}`, {}, { ...SHORT, fetchImpl: f.fake, log: () => {} }).catch(() => {});
+    }
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(SHORT.deadlineMs * 2);
+  });
+
+  it("does not open for a different origin", async () => {
+    const f = refusingFake();
+    await gatewayFetch(URL_A, {}, { ...SHORT, fetchImpl: f.fake, log: () => {} }).catch(() => {});
+    expect(breakerOpen("http://127.0.0.1:1")).toBe(true);
+    expect(breakerOpen("http://127.0.0.1:2")).toBe(false);
+  });
+});
+
+describe("the log carries no address or id", () => {
+  it("redacts an email and an id in the path", () => {
+    expect(redactPath("/memory/nithin%40hathilabs.com")).toBe("/memory/<email>");
+    expect(redactPath("/memory/alice@fracktal.in/search")).toBe("/memory/<email>/search");
+    expect(redactPath("/chat/sessions/3f2a9c1e-8b7d-4e6f-a1b2-c3d4e5f60718/messages")).toBe(
+      "/chat/sessions/<id>/messages"
+    );
+    expect(redactPath("/projects/tasks/123456")).toBe("/projects/tasks/<id>");
+    expect(redactPath("/agent/run/0123456789abcdef0123/cancel")).toBe("/agent/run/<id>/cancel");
+    // Route words stay, so the log still says which door failed.
+    expect(redactPath("/chat/active-sessions")).toBe("/chat/active-sessions");
+    expect(redactPath("/projects/notifications")).toBe("/projects/notifications");
+  });
+
+  it("writes no email into a retry line", async () => {
+    const port = await freePort();
+    gatewayLater(port, 150, (_req, _body, res) => {
+      res.writeHead(200);
+      res.end("[]");
+    });
+    const { lines, log } = recorder();
+    await gatewayFetch(`http://127.0.0.1:${port}/memory/alice%40fracktal.in?q=bob@x.io`, {}, { ...FAST, log });
+    expect(lines.length).toBeGreaterThan(0);
+    const all = lines.join("\n");
+    expect(all).toContain("/memory/<email>");
+    expect(all).not.toMatch(/alice|fracktal|bob|%40|@/);
   });
 });
 

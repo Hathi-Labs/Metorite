@@ -1630,12 +1630,24 @@ line — never reclaim a number by deleting the other entry.
   - The final chat checkpoint is the one write that opts in today. A
     periodic checkpoint passes `{ retry: false }`, because a stale copy
     could land last and cut the stored reply short.
+  - A breaker stops the waits from stacking. When a request uses the full
+    window on refusals, the workbench marks the gateway down for 5 s. Each
+    request in that time gets one try and then fails at once. The first
+    answer from the gateway closes the breaker.
+  - The log replaces each path segment that looks like an email or an id
+    with `<email>` or `<id>`.
   The seven catch-all proxies lost their own "retry once" code. Fences:
-  `gatewayFetch.test.ts`, and three sweeps in `gateway.test.ts`.
-  ⚠️ **The cost.** While the gateway is down and not restarting, each call
-  now waits 25 s before it fails. To turn the retry off, set
-  `GATEWAY_RETRY_DEADLINE_MS=0` in the workbench env and restart
-  `acb-workbench`. The code caps a larger value at 25 s.
+  `gatewayFetch.test.ts`, and four sweeps in `gateway.test.ts`.
+  ⚠️ **The costs.**
+  - While the gateway is down and not restarting, the first request waits
+    25 s before it fails. Later requests fail at once while the breaker is
+    open, and one request pays the 25 s again after each 5 s cool-down.
+  - When a restart cuts a chat run, the member's chat stream stays open
+    for up to 25 s while the final checkpoint waits for the gateway. That
+    wait keeps the reply.
+  - To turn the retry off, set `GATEWAY_RETRY_DEADLINE_MS=0` in the
+    workbench env and restart `acb-workbench`. The code caps a larger value
+    at 25 s.
 - **Verify after the merge, then delete this entry.** Do the two checks
   during the next deploy that restarts the gateway.
   1. Loop a signed-in GET from the moment of `==> Restarting gateway`:
@@ -1651,7 +1663,8 @@ line — never reclaim a number by deleting the other entry.
   A `gave up` line names its cause. `ECONNREFUSED` means that the gateway
   was cold for more than 25 s. Then the second option applies: two gateway
   units behind a swapped port. `aborted` means that the browser left, and
-  is not a failure.
+  is not a failure. A `[gateway] down` line comes after a `gave up
+  (ECONNREFUSED)` line and means the breaker opened.
   Do NOT skip the gateway restart: `build_sha()` is cached per process, and
   `deploy.yml` verifies `/version`.
 - **Authority:** `deploy_delivery_path.md` · PR #498

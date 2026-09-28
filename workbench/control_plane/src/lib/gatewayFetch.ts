@@ -41,8 +41,16 @@
 //    the gateway's own answer time comes on top, as it always did. The env
 //    `GATEWAY_RETRY_DEADLINE_MS` can shorten the window, and `0` turns the
 //    retry off (see retryDeadlineMs). A call can pass `{ retry: false }`.
-//    ⚠️ The cost: while the gateway is DOWN, not restarting, each call waits
-//    the full window before it fails, where it used to fail at once.
+//    Why 25 s: the measured restart took 10.3 s, and cold starts ran 10 to
+//    23 s. A shorter window would fail the slow starts. The breaker (rule 9)
+//    removes the cost of a long window while the gateway is truly down.
+// 9. THE BREAKER. When a request gives up at the deadline on ECONNREFUSED,
+//    that gateway origin is marked DOWN for GATEWAY_RETRY.breakerMs (5 s).
+//    While it is down, each new request gets ONE try and no retry window, so
+//    it fails at once with the original connection error. Any response from
+//    that origin closes the breaker. Without it, a route that makes four
+//    reads in a row, while the gateway is down, would wait four windows.
+//    A restart that recovers inside the window never opens the breaker.
 // 6. A streamed response is never retried. `fetch` resolves when the headers
 //    arrive, and this function returns at that moment. A failure while the
 //    caller reads the body happens after this function has returned, so it
@@ -66,8 +74,11 @@
 // A request that needs a retry writes one `[gateway] retry` line when it
 // first fails, and one `[gateway] recovered` or `[gateway] gave up` line at
 // the end. `gave up` names why: the last error code, `aborted`, or the name
-// of the error that ended the last try, such as `TimeoutError`. So `journalctl -u acb-workbench | grep '\[gateway\]'` shows the
-// restart window of every deploy.
+// of the error that ended the last try, such as `TimeoutError`. A breaker
+// that opens writes one `[gateway] down` line. So
+// `journalctl -u acb-workbench | grep '\[gateway\]'` shows the restart
+// window of every deploy. The logged path has each segment that looks like
+// an email or an id replaced (see redactPath), so no address reaches the log.
 //
 // Fence: `src/lib/gatewayFetch.test.ts` proves the rules against a real local
 // HTTP server. `src/lib/gateway.test.ts` fails if a module that reaches the
@@ -78,7 +89,22 @@ export const GATEWAY_RETRY = Object.freeze({
   deadlineMs: 25_000,
   firstDelayMs: 250,
   maxDelayMs: 1_000,
+  /** How long a gateway stays marked down after a give-up (rule 9). */
+  breakerMs: 5_000,
 });
+
+// Rule 9. Origin -> the time until which that origin fails fast.
+const downUntil = new Map<string, number>();
+
+/** True while the breaker for this origin is open. */
+export function breakerOpen(origin: string, now: number = Date.now()): boolean {
+  return (downUntil.get(origin) ?? 0) > now;
+}
+
+/** For tests only: close every breaker. */
+export function resetGatewayBreaker(): void {
+  downUntil.clear();
+}
 
 /**
  * The retry window for this process, in ms.
@@ -109,6 +135,8 @@ export interface GatewayRetryOptions {
    */
   retry?: boolean;
   deadlineMs?: number;
+  /** For tests only. Defaults to GATEWAY_RETRY.breakerMs. */
+  breakerMs?: number;
   firstDelayMs?: number;
   maxDelayMs?: number;
   /** For tests only. Defaults to the global `fetch`, read at call time. */
@@ -168,12 +196,41 @@ function mayRetry(
   return retryWrites && code === REFUSED;
 }
 
-function routeOf(input: string | URL): string {
+const EMAIL_SEGMENT = /@/;
+const ID_SEGMENT =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{4,}|[A-Za-z0-9_-]{24,})$/i;
+
+/**
+ * A path that is safe to log.
+ *
+ * Paths such as `/memory/<userId>` carry an email, and paths such as
+ * `/chat/sessions/<uuid>` carry an id. Each segment that looks like an email
+ * becomes `<email>`, and each one that looks like an id becomes `<id>`. The
+ * query string is dropped, because it can carry a search term or an address.
+ */
+export function redactPath(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((raw) => {
+      let seg = raw;
+      try {
+        seg = decodeURIComponent(raw);
+      } catch {
+        // Keep the raw segment. It is checked as it is.
+      }
+      if (EMAIL_SEGMENT.test(seg)) return "<email>";
+      if (ID_SEGMENT.test(seg)) return "<id>";
+      return raw;
+    })
+    .join("/");
+}
+
+function parse(input: string | URL): { origin: string; route: string } {
   try {
-    // The path only. A query string can carry a search term or an address.
-    return new URL(String(input)).pathname;
+    const url = new URL(String(input));
+    return { origin: url.origin, route: redactPath(url.pathname) };
   } catch {
-    return "?";
+    return { origin: "?", route: "?" };
   }
 }
 
@@ -203,14 +260,17 @@ export async function gatewayFetch(
   init: RequestInit = {},
   opts: GatewayRetryOptions = {}
 ): Promise<Response> {
-  const deadlineMs = opts.retry === false ? 0 : (opts.deadlineMs ?? retryDeadlineMs());
+  const { origin, route } = parse(input);
+  // Rule 9: while the breaker is open, one try and no window.
+  const failFast = opts.retry === false || breakerOpen(origin);
+  const deadlineMs = failFast ? 0 : (opts.deadlineMs ?? retryDeadlineMs());
+  const breakerMs = opts.breakerMs ?? GATEWAY_RETRY.breakerMs;
   const maxDelayMs = opts.maxDelayMs ?? GATEWAY_RETRY.maxDelayMs;
   let delay = opts.firstDelayMs ?? GATEWAY_RETRY.firstDelayMs;
   const doFetch = opts.fetchImpl ?? ((i: RequestInfo | URL, r?: RequestInit) => globalThis.fetch(i, r));
   const log = opts.log ?? ((line: string) => console.warn(line));
 
   const method = (init.method ?? "GET").toUpperCase();
-  const route = routeOf(input);
   const replayable = isReplayableBody(init.body);
   const started = Date.now();
   let attempt = 1;
@@ -235,6 +295,8 @@ export async function gatewayFetch(
   for (;;) {
     try {
       const res = await doFetch(input, tryInit());
+      // Any response proves the gateway is up, so it closes the breaker.
+      downUntil.delete(origin);
       if (retrying) {
         log(`[gateway] recovered: ${method} ${route} after ${attempt} attempts, ${Date.now() - started} ms`);
       }
@@ -268,6 +330,12 @@ export async function gatewayFetch(
       }
       if (Date.now() - started + delay > deadlineMs) {
         gaveUp(code ?? errorName(err));
+        // The full window ran out on a refusal: the gateway is down, not
+        // restarting. Open the breaker, so the next requests fail at once.
+        if (retrying && code === REFUSED && !breakerOpen(origin)) {
+          downUntil.set(origin, Date.now() + breakerMs);
+          log(`[gateway] down: ${origin} refused for ${Date.now() - started} ms; failing fast for ${breakerMs} ms`);
+        }
         throw err;
       }
       if (!retrying) {

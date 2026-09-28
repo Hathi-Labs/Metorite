@@ -420,6 +420,34 @@ describe("the route surface", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("keeps every LLM base-URL call a POST, which does not retry (H-194)", () => {
+    // LITELLM_BASE_URL and COPILOT_LLM_BASE_URL point at the gateway's `/v1`
+    // on the box, but an operator can point them at an external host. A POST
+    // does not retry by default, so today no call to that URL retries. A GET,
+    // or a POST with `retry: true`, would retry against whatever host the URL
+    // names. This test stops that change, so someone decides it on purpose.
+    const LLM_CALL = /gatewayFetch\(\s*`\$\{(?:LITELLM_BASE_URL|v1Base\(\))\}[^`]*`\s*,\s*\{/g;
+    // The call ends at the first line that closes the init object and the
+    // call, with or without an options object: `});` or `}, { … });`.
+    const CALL_END = /\n\s*\}(?:\s*,\s*\{[^}]*\})?\s*\);/;
+    const found: string[] = [];
+    const offenders: string[] = [];
+    for (const r of ROUTES) {
+      for (const m of r.src.matchAll(LLM_CALL)) {
+        found.push(r.rel);
+        const rest = r.src.slice(m.index! + m[0].length);
+        const end = rest.match(CALL_END);
+        const call = end ? rest.slice(0, end.index! + end[0].length) : rest;
+        const post = /^\s*method:\s*"POST"/.test(call);
+        const optsIn = /retry:\s*true/.test(call);
+        if (!end || !post || optsIn) offenders.push(r.rel);
+      }
+    }
+    // Guards the sweep: agent/chat, chat/suggestions and chat compact.
+    expect(found).toHaveLength(3);
+    expect(offenders).toEqual([]);
+  });
+
   it("retries only the FINAL chat checkpoint through a restart (H-194)", () => {
     // All checkpoints of one reply share one id, and the gateway keeps the
     // last write. A periodic checkpoint that retried could land after the
