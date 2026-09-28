@@ -8,8 +8,65 @@ once from the gateway lifespan, before background sync starts.
 
 from __future__ import annotations
 
+import functools
+from typing import Any
+
 from email_ingestion.post_sync import register_post_sync_hooks
 from gateway.routes.email.core import _get_db, _log
+
+
+async def mailbox_owner(account_id: str) -> str | None:
+    """The member who owns a mailbox, from ``email_accounts``. Never raises.
+
+    The row's ``user_id`` is the owner's address. It is a stored fact, so a
+    job may bind it VERIFIED (H-73). ``None`` when the row is gone or the read
+    fails, and the job then runs memberless rather than as a bystander.
+    """
+    from sqlalchemy import text
+
+    try:
+        db = await _get_db()
+        try:
+            row = (
+                await db.execute(
+                    text("SELECT user_id FROM email_accounts WHERE id = :aid"),
+                    {"aid": account_id},
+                )
+            ).fetchone()
+        finally:
+            await db.close()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.mailbox_owner_unresolved", account_id=account_id,
+                     error=str(exc)[:200])
+        return None
+    return str(row.user_id) if row is not None and row.user_id else None
+
+
+def as_mailbox_owner(fn: Any) -> Any:
+    """Run a per-mailbox job AS the mailbox's owner (H-152).
+
+    🔴 **The sync loop's model calls named nobody.** Rules, Reply Zero, the
+    morning brief and the follow-up drafts all run from the email sync loop or
+    the Microsoft Graph webhook. Neither has a session. So every call reached
+    the Router with no member, which the per-box deployment key refuses.
+
+    ⚠️ The owner is read from ``email_accounts`` by the ``account_id`` the
+    loop holds, never from mail content. ``job_member_scope`` also DROPS the
+    member a loop inherited from the request that started it, so a mailbox
+    never bills whoever last saved its settings.
+
+    Fence: ``tests/unit/test_background_ai_member.py::TestTheEmailJobs``.
+    """
+
+    @functools.wraps(fn)
+    async def _wrapped(account_id: str, *args: Any, **kwargs: Any) -> Any:
+        from acb_common import job_member_scope
+
+        owner = await mailbox_owner(account_id)
+        with job_member_scope(owner, app="email"):
+            return await fn(account_id, *args, **kwargs)
+
+    return _wrapped
 
 
 async def auto_run_rules_for_account(account_id: str) -> None:
@@ -56,6 +113,7 @@ async def auto_run_rules_for_account(account_id: str) -> None:
     await _run_rules_job(account_id, 50, False, "scheduler")
 
 
+@as_mailbox_owner
 async def process_new_mail(account_id: str) -> None:
     """The shared new-mail pipeline (H1): auto-run rules → sweep the leftovers →
     categorize senders → classify threads (Reply Zero) → auto-archive → CRM
@@ -200,11 +258,14 @@ def register_email_post_sync_hooks() -> None:
         # fire-and-forget, so drop the return to match the hook's () -> None shape.
         await _maybe_send_follow_up_reminders(account_id)
 
+    # H-152: the three hooks that call a model run as the mailbox owner.
+    # `process_new_mail` carries its own decorator, because the manual-sync
+    # route and the Graph webhook call it directly.
     register_post_sync_hooks(
         on_new_mail=process_new_mail,
-        classify_threads=_classify_threads,
-        send_digest=_maybe_send_digest,
-        send_follow_up_reminders=_follow_up,
+        classify_threads=as_mailbox_owner(_classify_threads),
+        send_digest=as_mailbox_owner(_maybe_send_digest),
+        send_follow_up_reminders=as_mailbox_owner(_follow_up),
         ensure_subscription=_ensure_subscription,
         learn_label_changes=learn_label_changes,
     )

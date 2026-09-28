@@ -78,7 +78,6 @@ class GraphitiClient:
             from graphiti_core.llm_client.openai_client import (
                 OpenAIClient as _GOpenAI,
             )
-            from openai import AsyncOpenAI
 
             # Reuse gateway /v1 (litellm SDK) for both LLM and embeddings so
             # no separate API key or model config is needed.  The gateway
@@ -89,7 +88,14 @@ class GraphitiClient:
             # pass instead of diverting to OpenRouter and rejecting the
             # ``tier-fast`` alias — the same hijack mem0 hit.  See gateway_only_env.
             with gateway_only_env():
-                openai_client = AsyncOpenAI(
+                # H-152: `attributed_openai` stamps each request with the
+                # run's member from the run context. A bare AsyncOpenAI sent
+                # the LLM key and nothing else, so every extraction reached
+                # the Router with no member, which the per-box deployment key
+                # refuses. Fence: tests/unit/test_background_ai_member.py.
+                from acb_llm.attribution import attributed_openai
+
+                openai_client = attributed_openai(
                     api_key=litellm_key,
                     base_url=litellm_url,
                 )

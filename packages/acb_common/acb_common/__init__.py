@@ -5,6 +5,7 @@ from acb_common._log import (
     configure_logging,
     get_logger,
     get_run_context,
+    job_member_scope,
     run_context_scope,
 )
 from acb_common.activity import (
@@ -28,6 +29,7 @@ __all__ = [
     "get_logger",
     "get_run_context",
     "get_settings",
+    "job_member_scope",
     "load_org_setting",
     "publish_activity",
     "read_activity_since",

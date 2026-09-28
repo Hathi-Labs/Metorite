@@ -1915,8 +1915,25 @@ def _run_member(event_payload: Any, session_user: str | None = None) -> tuple[st
         return verified, True
     if not isinstance(event_payload, dict):
         return "", False
-    claimed = event_payload.get("user_email") or event_payload.get("user_id") or ""
-    return str(claimed).strip(), False
+    claimed = str(
+        event_payload.get("user_email") or event_payload.get("user_id") or ""
+    ).strip()
+    # H-152: a claim that NAMES the member this task already holds VERIFIED
+    # adds nothing a body could forge, so it keeps the verification. A
+    # background job binds its owner through `job_member_scope`, and its
+    # nested run then names the same owner in `user_email`. Without this the
+    # nested run dropped the proof. A claim naming ANYONE else stays a claim.
+    if claimed:
+        try:
+            from acb_common import get_run_context
+
+            ctx = get_run_context()
+            held = str(ctx.get("user") or "").strip()
+            if ctx.get("member_verified") == "1" and held.lower() == claimed.lower():
+                return held, True
+        except Exception:
+            pass
+    return claimed, False
 
 
 def _bind_run_app(config: Any) -> None:

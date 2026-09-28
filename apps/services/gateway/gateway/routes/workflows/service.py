@@ -137,24 +137,118 @@ def _hub_close(run_id: str) -> None:
 # ── Real NodeServices ────────────────────────────────────────────────────────
 
 
-async def _run_agent_node(agent: str, message: str, model: str | None) -> str:
+#: Who pays for a workflow's model calls, from OUR tables only (H-152).
+#:
+#: One read answers both halves. ``owner_email`` is the workflow's owner, an
+#: ACTIVE member with an organization. ``ambient_email`` is the member already
+#: bound on this run (the person who pressed Run), and it comes back only when
+#: that person is an active member of the OWNER's organization. So a run can
+#: never bill a person outside the organization the workflow belongs to.
+_SQL_WORKFLOW_BILLING_MEMBER = (
+    "SELECT o.email AS owner_email, "
+    "       (SELECT m.email FROM app_user m "
+    "         WHERE lower(m.email) = lower(:ambient) "
+    "           AND m.organization_id = o.organization_id "
+    "           AND m.status = 'active') AS ambient_email "
+    "  FROM workflows w "
+    "  JOIN app_user o ON lower(o.email) = lower(w.owner_email) "
+    " WHERE w.id = CAST(:wid AS uuid) "
+    "   AND o.organization_id IS NOT NULL "
+    "   AND o.status = 'active'"
+)
+
+
+async def _workflow_billing_member(workflow_id: str) -> str | None:
+    """The member a workflow's agent node runs for. **A stored fact** (H-152).
+
+    🔴 **A scheduled run had no member, and the Router will refuse it.** The
+    agent node called ``run_agent`` with no ``session_user``. A manual run
+    inherited the clicker from the request, but a schedule, a webhook or an
+    event ran with nobody bound. Under the per-box deployment key the Console
+    derives the organization from ``X-CC-Member``, and a call without one is a
+    400.
+
+    Two answers, in this order:
+
+    1. **The member already bound on this run, if the session VERIFIED them**
+       and they belong to the workflow's organization. That is the person who
+       pressed Run or approved the gate, so the bill names them.
+    2. **The workflow's owner.** A schedule has no person, and the owner is
+       the one who set it running. ``_workflow_organization`` already takes
+       the tenant from the same owner, so the bill and the writes name one
+       organization.
+
+    ⚠️ **Never a request body.** A webhook payload, an event body and a
+    ``user_email`` claim all stay out, because the member decides which
+    organization pays. An unverified ambient member is replaced by the owner.
+
+    ⚠️ **``None`` when neither resolves, never a guess.** The node then runs
+    as it did before this change. On the org-key arm that still bills the one
+    organization, and on the deployment arm the Console refuses it loudly.
+    """
+    ambient = ""
     try:
-        from orchestrator.executor import AgentRunError, run_agent
-    except Exception as exc:  # pragma: no cover - orchestrator is a dep
-        raise NodeExecutionError("orchestrator unavailable") from exc
-    payload: dict[str, Any] = {
-        "message": message,
-        "mode": "sub_task",
-        "source": "workflow",
-    }
+        from acb_common import get_run_context
+
+        ctx = get_run_context()
+        if ctx.get("member_verified") == "1":
+            ambient = str(ctx.get("user") or "").strip()
+    except Exception:
+        ambient = ""
+    if not workflow_id:
+        return ambient or None
+
     try:
-        result = await run_agent(agent, payload, model=model)
-    except AgentRunError as exc:
-        raise NodeExecutionError(f"agent '{agent}' failed: {exc}") from exc
-    text_out = str(result.get("result") or result.get("answer") or "")
-    if not text_out:
-        raise NodeExecutionError(f"agent '{agent}' returned no output")
-    return text_out
+        db = await _get_db()
+        try:
+            row = (
+                await db.execute(
+                    text(_SQL_WORKFLOW_BILLING_MEMBER),
+                    {"wid": workflow_id, "ambient": ambient},
+                )
+            ).fetchone()
+        finally:
+            await db.close()
+    except Exception as exc:
+        _log.warning(
+            "workflows.billing_member_unresolved",
+            workflow_id=workflow_id,
+            error=str(exc)[:160],
+        )
+        return None
+    if row is None:
+        _log.warning("workflows.billing_member_unresolved", workflow_id=workflow_id)
+        return None
+    return str(row.ambient_email or row.owner_email)
+
+
+def _agent_runner(workflow_id: str) -> Any:
+    """The agent node's seam, with this workflow's billing member bound in."""
+
+    async def _run_agent_node(agent: str, message: str, model: str | None) -> str:
+        try:
+            from orchestrator.executor import AgentRunError, run_agent
+        except Exception as exc:  # pragma: no cover - orchestrator is a dep
+            raise NodeExecutionError("orchestrator unavailable") from exc
+        payload: dict[str, Any] = {
+            "message": message,
+            "mode": "sub_task",
+            "source": "workflow",
+        }
+        # H-152: a server-derived member goes in as ``session_user``, the
+        # keyword no request body can set. The executor then binds it
+        # VERIFIED, so the Router names it and a cap may key on it.
+        member = await _workflow_billing_member(workflow_id)
+        try:
+            result = await run_agent(agent, payload, model=model, session_user=member)
+        except AgentRunError as exc:
+            raise NodeExecutionError(f"agent '{agent}' failed: {exc}") from exc
+        text_out = str(result.get("result") or result.get("answer") or "")
+        if not text_out:
+            raise NodeExecutionError(f"agent '{agent}' returned no output")
+        return text_out
+
+    return _run_agent_node
 
 
 async def _get_module_code(module_id: str) -> str | None:
@@ -294,7 +388,7 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
 
 def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
     return NodeServices(
-        run_agent=_run_agent_node,
+        run_agent=_agent_runner(workflow_id),
         run_tool=execute_tool,
         get_module_code=_get_module_code,
         actor=actor,
