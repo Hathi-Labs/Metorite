@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
@@ -56,7 +56,11 @@ class SessionPatchRequest(BaseModel):
 
 class MessageRecord(BaseModel):
     id: str
-    role: str
+    #: The three roles the ``chat_message`` CHECK allows, and no other string
+    #: (S14 fix round 1). The browser draws every role that is not ``user``
+    #: as an agent reply, so a free-form role would pass as one. The route
+    #: answers 422 for any other value, before any row is written.
+    role: Literal["user", "assistant", "system"]
     content: str
     timestamp: int          # epoch-ms in JS; stored as timestamp_ms
     tool_events: list[Any] = []
@@ -171,6 +175,14 @@ def _ensure_session(
     foreign key and silently lose the message (defeating P0-3). This creates
     the parent row on demand, owned by the acting user, and never clobbers an
     existing session's metadata (DO NOTHING on conflict).
+
+    🔴 **It never raises a role** (S14 fix round 1, ``projects_ai_chat.md``
+    §20.4 rule 10). The mint calls it at every run start, as the member who
+    starts the run. That member may reach the room only through a group or
+    an org grant. So the owner row goes in only for the creator of the
+    session, and the primary agent row only when the room has no primary.
+    A browser-created session (``_upsert_session``) still gets both on its
+    first run, because that writer makes neither.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -195,7 +207,9 @@ def _ensure_session(
             s.execute(
                 text(
                     "INSERT INTO chat_session_participant (session_id, subject, role) "
-                    "VALUES (:id, :uid, 'owner') ON CONFLICT DO NOTHING"
+                    "SELECT :id, :uid, 'owner' FROM chat_session "
+                    "WHERE id = :id AND user_id = :uid "
+                    "ON CONFLICT DO NOTHING"
                 ),
                 {"id": session_id, "uid": user_id},
             )
@@ -203,7 +217,10 @@ def _ensure_session(
             s.execute(
                 text(
                     "INSERT INTO chat_session_agent (session_id, agent_name, role) "
-                    "VALUES (:id, :agent, 'primary') ON CONFLICT DO NOTHING"
+                    "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM chat_session_agent "
+                    "  WHERE session_id = :id AND role = 'primary') "
+                    "ON CONFLICT DO NOTHING"
                 ),
                 {"id": session_id, "agent": agent_name},
             )
@@ -482,6 +499,13 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: of a run before it opens the stream. On an existing id the ``WHERE`` is
 #: false, so a mint never changes a row, even the caller's own reply.
 #:
+#: **The first content sets the time** (S14 fix round 1). The mint stamps the
+#: server clock when the request arrives, and the prompt carries the browser
+#: clock. A fast browser clock would sort the reply above its prompt. So while
+#: the stored content is empty, a permitted write moves ``timestamp_ms``
+#: forward to its own value. That is the time the first checkpoint had before
+#: S14. Only a write that passes the ``WHERE`` reaches the ``SET``.
+#:
 #: ``run_member_email`` is set once, by the first writer of an agent row.
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
 #: nothing. ``RETURNING id`` then gives no row, and ``_upsert_messages``
@@ -508,6 +532,9 @@ _MESSAGE_UPSERT_SQL = """
                     AND id = CAST(:id AS text))
     ON CONFLICT (session_id, id) DO UPDATE SET
         content        = EXCLUDED.content,
+        timestamp_ms   = CASE WHEN chat_message.content = ''
+            THEN GREATEST(chat_message.timestamp_ms, EXCLUDED.timestamp_ms)
+            ELSE chat_message.timestamp_ms END,
         author_email   = CASE
             WHEN CAST(:author_from_run AS boolean)
                  AND EXCLUDED.author_email IS NOT NULL
@@ -660,9 +687,10 @@ def _attribute(
     """
     if m.role == "system":
         return "system", None
-    if m.role == "assistant" or m.author_kind == "agent":
-        return "agent", (m.author_email or agent_name or None)
-    return "human", (actor_email or None)
+    if m.role == "user" and m.author_kind != "agent":
+        return "human", (actor_email or None)
+    # Only the role ``user`` is a human turn (S14 fix round 1).
+    return "agent", (m.author_email or agent_name or None)
 
 
 # ---------------------------------------------------------------------------

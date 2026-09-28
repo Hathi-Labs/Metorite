@@ -1814,8 +1814,9 @@ def _mint_run_row(
 
     run_member = (member or "").strip().lower()
     try:
-        # The parent session must exist before the message FK insert.
-        _ensure_session(thread_id, run_member, agent_name)
+        # The parent session must exist before the message FK insert. It
+        # takes the email as the session stores it, the same as the fold.
+        _ensure_session(thread_id, (member or "").strip(), agent_name)
         _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -1831,6 +1832,40 @@ def _mint_run_row(
             "agent.mint_failed",
             thread_id=thread_id[:12], message_id=message_id[:40],
             error=str(exc)[:200],
+        )
+
+
+#: How long the run waits for its mint before it opens the stream (S14 fix
+#: round 1). The mint is best effort, so a slow database must not hold the
+#: first byte of the reply.
+_MINT_TIMEOUT_S = 2.0
+
+
+async def _mint_run_row_bounded(
+    thread_id: str, message_id: str, *, member: str, agent_name: str,
+) -> None:
+    """``_mint_run_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+
+    On a timeout it logs ``agent.mint_failed`` with the reason ``timeout``,
+    and the run goes on. The thread can still finish later. The mint only
+    inserts, so a late mint changes no row that a checkpoint or the fold
+    wrote first.
+    """
+    import asyncio
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                _mint_run_row, thread_id, message_id,
+                member=member, agent_name=agent_name,
+            ),
+            _MINT_TIMEOUT_S,
+        )
+    except TimeoutError:
+        _log.warning(
+            "agent.mint_failed",
+            thread_id=thread_id[:12], message_id=message_id[:40],
+            reason="timeout",
         )
 
 
@@ -2169,8 +2204,8 @@ async def run_agent_stream_endpoint(
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
     # steered or refused turn mints nothing.
-    await asyncio.to_thread(
-        _mint_run_row, thread_id, _persist_message_id,
+    await _mint_run_row_bounded(
+        thread_id, _persist_message_id,
         member=_mem_user, agent_name=agent_name,
     )
 
