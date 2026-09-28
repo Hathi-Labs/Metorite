@@ -62,6 +62,7 @@ from gateway.routes.projects.core import (
     next_task_number,
     node_kind,
     now,
+    parent_lane_status,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -413,17 +414,22 @@ async def create_task(
         status_home = await status_owner_id(db, str(project_id))
 
         parent_id = values.get("parent_task_id")
-        if parent_id:
-            await load_visible_task(db, vis, str(parent_id))
+        parent = (
+            await load_visible_task(db, vis, str(parent_id)) if parent_id else None
+        )
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
 
-        status = (
-            await require_status_in_project(
+        # A stated status always wins. A new step with no stated status takes
+        # its parent's lane through the ONE seam (D-PM-38, D79), so the
+        # Projects panel, the board, both chat tools and My Tasks agree.
+        if values.get("status_id"):
+            status = await require_status_in_project(
                 db, status_home, str(values["status_id"]),
             )
-            if values.get("status_id")
-            else await load_default_status(db, status_home)
-        )
+        elif parent is not None:
+            status = await parent_lane_status(db, parent, status_home)
+        else:
+            status = await load_default_status(db, status_home)
         values["status_id"] = str(status.id)
         values["task_number"] = await next_task_number(db, root)
         # WS-27m — through the registry, never straight into the array. Create
