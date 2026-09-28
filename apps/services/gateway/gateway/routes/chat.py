@@ -100,8 +100,12 @@ def _get_sessions(user_id: str) -> list[dict]:
                 "       s.message_count, s.created_at, s.updated_at, "
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
-                "          WHERE p.session_id = s.id) AS participant_count "
+                "          WHERE p.session_id = s.id) AS participant_count, "
+                "       me.role AS my_role "
                 "FROM chat_session s "
+                # One join on the participant key, so no query per row.
+                "LEFT JOIN chat_session_participant me "
+                "  ON me.session_id = s.id AND me.subject = :uid "
                 f"WHERE {SESSION_VISIBLE_SQL} "
                 "ORDER BY s.updated_at DESC"
             ),
@@ -117,7 +121,13 @@ def _get_sessions(user_id: str) -> list[dict]:
             "createdAt": r.created_at.isoformat(),
             "updatedAt": r.updated_at.isoformat(),
             "visibility": r.visibility,
-            "isOwner": r.user_id == user_id,
+            # The caller's own role, not the creator (S14 round 4). A room
+            # with no participant row is still its creator's, the same rule
+            # as resolve_room_access. A demoted creator is not an owner.
+            "isOwner": (
+                r.my_role == "owner"
+                or (r.user_id == user_id and int(r.participant_count or 0) == 0)
+            ),
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
