@@ -832,12 +832,14 @@ describe("an empty panel for a member whose rows are all hidden", () => {
   const MEMBER: Sections = {
     load: { people: [], total_tasks: 5, hidden_people: 2 },
     capacity: {
+      ...SECTIONS.capacity,
       people: [], people_total: 2, total_tasks: 5, hr_visible: false,
-      horizon_days: 14, hidden_people: 2,
+      hidden_people: 2,
     },
     conflicts: {
+      ...SECTIONS.conflicts,
       rows: [], total: 2, by_kind: { parallel_person: 2 }, hr_visible: false,
-      horizon_days: 14, hidden_people: 1,
+      hidden_people: 1,
     },
   };
 
@@ -855,7 +857,7 @@ describe("an empty panel for a member whose rows are all hidden", () => {
   it("an admin's empty scope still says it is empty", () => {
     const html = draw({
       load: { people: [], total_tasks: 0 },
-      conflicts: { rows: [], total: 0, by_kind: {}, hr_visible: true, horizon_days: 14 },
+      conflicts: { ...SECTIONS.conflicts, rows: [], total: 0, by_kind: {} },
     });
     expect(html).toContain("No open work in this scope.");
     expect(html).toContain("No conflicts in this scope.");
