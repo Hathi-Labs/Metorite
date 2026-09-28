@@ -1285,8 +1285,12 @@ def _dataset_groups(payload: dict[str, Any]) -> list[str]:
         f"Groups by {payload.get('group_by')}, measure {measure}, computed by the"
         f" server over {total} {payload.get('state')} tasks:",
         _cycle_line(payload),
-        "key · value · n",
     ]
+    if line := hidden_people_line(payload, "view"):
+        # WS-27bn R5d. The groups below are not every person, and the total
+        # above still counts every task. Say so, as `analytics_load` does.
+        out.append(f"  {line}. Do not compare the groups below with them.")
+    out.append("key · value · n")
     hidden = bool(payload.get("measure_hidden"))
     for group in payload.get("groups") or []:
         if not isinstance(group, dict):

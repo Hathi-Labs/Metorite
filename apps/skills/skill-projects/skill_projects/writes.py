@@ -995,6 +995,51 @@ REPORT_SECTIONS = (
     "hygiene", "conflicts", "rebalance",
 )
 
+#: WS-27bn R5d (§9 Q13). The words of the server's 403, in
+#: ``reports.CHANGE_REFUSED``. A test pins the two as one sentence.
+REPORT_CHANGE_REFUSED = "Only the author of this report or an admin may change it."
+
+
+async def _report_change(
+    report_id: str, project_id: str, payload: dict[str, Any], config: dict[str, Any],
+) -> str:
+    """The UPDATE path of ``report_save``.
+
+    The route changes `name` and `config` only, and it REPLACES `config`
+    (reports.py `update_report`), so the tool merges the member's change into
+    the saved config first and never sends a scope: a report's scope cannot
+    change, and the card must not say it can. Save a new report for another
+    scope.
+    """
+    rid = uuid_of(report_id, "report_id")
+    if project_id.strip():
+        return (
+            "A saved report keeps its scope. Save a new report for another "
+            "project, or leave project_id empty to change this one."
+        )
+    existing = await get(f"/projects/reports/{rid}") or {}
+    if existing.get("can_edit") is False:
+        # WS-27bn R5d (§9 Q13). The server computed the rule. Say it, and
+        # show no card that the PATCH would refuse.
+        return f"{REPORT_CHANGE_REFUSED}\n  report_id: {rid}"
+    if config:
+        merged = dict(existing.get("config") or {})
+        merged.update(config)
+        payload["config"] = merged
+    if not payload:
+        return "Nothing to change."
+    card = dict(payload)
+    if "config" in card:
+        card["config"] = ", ".join(f"{k} {v}" for k, v in payload["config"].items())
+    if not await _confirm(
+        title="Change this report?",
+        detail=data(existing.get("name")),
+        context=_fields_block(card),
+    ):
+        return CANCELLED
+    row = await patch(f"/projects/reports/{rid}", payload)
+    return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
+
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
 async def report_save(
@@ -1024,35 +1069,7 @@ async def report_save(
         payload["name"] = label
     scope = "the portfolio"
     if report_id.strip():
-        # An UPDATE. The route changes `name` and `config` only, and it
-        # REPLACES `config` (reports.py `update_report`), so the tool merges
-        # the member's change into the saved config first and never sends a
-        # scope: a report's scope cannot change, and the card must not say
-        # it can. Save a new report for another scope.
-        rid = uuid_of(report_id, "report_id")
-        if project_id.strip():
-            return (
-                "A saved report keeps its scope. Save a new report for another "
-                "project, or leave project_id empty to change this one."
-            )
-        existing = await get(f"/projects/reports/{rid}")
-        if config:
-            merged = dict(existing.get("config") or {})
-            merged.update(config)
-            payload["config"] = merged
-        if not payload:
-            return "Nothing to change."
-        card = dict(payload)
-        if "config" in card:
-            card["config"] = ", ".join(f"{k} {v}" for k, v in payload["config"].items())
-        if not await _confirm(
-            title="Change this report?",
-            detail=data(existing.get("name")),
-            context=_fields_block(card),
-        ):
-            return CANCELLED
-        row = await patch(f"/projects/reports/{rid}", payload)
-        return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
+        return await _report_change(report_id, project_id, payload, config)
     if config:
         payload["config"] = config
     if project_id.strip():

@@ -157,23 +157,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-152 · `specs/customer_console.md` §6A · PR #507 · PR #511
 - **Added:** 2026-09-28 · the deployment-key switch session
 
-### H-197 · Decide whether the dataset read must apply the report rule · [AGENT+OWNER]
-- **Check:** `grep -n "reportable_people" apps/services/gateway/gateway/routes/projects/analytics_dataset.py`.
-  No hit, and no owner answer below, means this is open.
-- **Why.** `/analytics/dataset` (the chat's `task_dataset`, S7e) lets a
-  member group tasks by assignee and read per-person counts. That is outside
-  the report rule of §7.1 rule 3 in `specs/projects_reports.md`. R5a filters
-  `load`, `capacity`, `pulse` and `conflicts`, and it does not filter the
-  dataset. Decide whether the dataset must apply the reader filter.
-- **Second item, low severity.** `render_report` returns `report.created_by`
-  (the address of the author) to each reader who may open the report. This is
-  older than R5a. The owner says whether rule (f) covers the envelope.
-- **Do.** The owner answers both. If the answer is yes, the agent adds the
-  filter of `report_scope.py` to the dataset groups and proves it on a real
-  database (R8).
-- **Authority:** `specs/projects_reports.md` §7.1 and §8 R5a.
-- **Added:** 2026-09-28 · the R5a verification, finding 3.
-
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -3500,6 +3483,23 @@ line — never reclaim a number by deleting the other entry.
   header, "Why it polls `release` and NOT `main`"
 - **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
   that PR on purpose, because it changes what the pull path deploys.
+
+### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
+- **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
+  → no hit means the chat still reads the report through the read rule.
+- **Why:** R5d lets the author change or delete their report after they
+  lose access to its subject (spec §8 R5d, test (t) and (z)). The server
+  allows it. But `report_delete` (`guarded.py`) and the change path of
+  `report_save` (`writes.py`) first call `GET /projects/reports/{id}`. That
+  read applies the subject check and returns 403, so the chat stops before
+  it reads `can_delete` or `can_edit`. The UI has no delete control, and the
+  list hides the row. So no product surface reaches the author path today.
+  It fails closed and leaks nothing.
+- **Do:** let the two tools read the row through the change rule. A read
+  that passes `refusal` lets the author reach the card. Add a chat test
+  for a lead who left team B.
+- **Authority:** `specs/projects_reports.md` §8 R5d · the R5d review, 2026-09-28
+- **Added:** 2026-09-28 · the WS-27bn R5d session
 
 # DONE — deleted, not archived
 

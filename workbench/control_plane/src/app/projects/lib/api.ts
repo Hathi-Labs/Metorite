@@ -909,6 +909,13 @@ export interface ReportRow {
    * from the authenticated caller. "Your reports" reads it.
    */
   mine?: boolean;
+  /**
+   * WS-27bn R5d (§9 Q12 and Q13). True when the caller is the author or an
+   * admin, so the server lets them change or delete this report. The SERVER
+   * decides from one rule. The UI shows Edit only when `can_edit` is true.
+   */
+  can_edit?: boolean;
+  can_delete?: boolean;
 }
 
 /**
