@@ -22,6 +22,7 @@ import { PILL_HUE, PILL_LABEL, hours } from "@/app/people/lib/dashboard";
 import {
   HELP_REASON_WORDS,
   PULSE_STATUS_WORDS,
+  emptyPanelLine,
   hiddenPeopleLine,
 } from "@/lib/reportEmail";
 import type { AccentHue } from "@/lib/statusAccent";
@@ -30,7 +31,7 @@ import type { PulseFocusTask, PulseReport, PulseRow } from "./api";
 import { asList } from "./analyticsRead";
 import { moreNote } from "./hygiene";
 
-export { hiddenPeopleLine };
+export { emptyPanelLine, hiddenPeopleLine };
 
 /** How many focus tasks a card names. The folded table names them all. */
 export const FOCUS_SHOWN = 3;

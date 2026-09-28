@@ -915,3 +915,32 @@ describe("reportEmail · outlook (WS-27bn R3a)", () => {
     }
   });
 });
+
+// WS-27bn R5a, done-when (k). The email prints the hidden line for the three
+// sections whose rows the server filters, as the panels and the chat do.
+describe("reportEmail · the hidden line on load, capacity and conflicts", () => {
+  const load = rendered.sections.load!;
+  it("prints the line when the server hid somebody", () => {
+    const text = reportEmail({
+      ...rendered,
+      sections: {
+        load: { ...load, hidden_people: 2 },
+        capacity: {
+          people: [], total_tasks: 0, hr_visible: false, horizon_days: 14,
+          hidden_people: 1,
+        },
+        conflicts: {
+          rows: [], total: 0, hr_visible: false, horizon_days: 14,
+          hidden_people: 3,
+        },
+      },
+    }).text;
+    expect(text).toContain("This report hides 2 other people");
+    expect(text).toContain("This report hides 1 other person");
+    expect(text).toContain("This report hides 3 other people");
+  });
+
+  it("prints no line for an admin, who gets no count", () => {
+    expect(reportEmail(rendered).text).not.toContain("This report hides");
+  });
+});

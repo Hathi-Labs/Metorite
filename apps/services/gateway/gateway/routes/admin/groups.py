@@ -151,6 +151,48 @@ async def _members_of(db: Any, group_id: str) -> list[GroupMemberEntry]:
     ]
 
 
+async def active_memberships(
+    db: Any, org_id: str | None, *, slug: str | None = None,
+) -> list[tuple[str, str, str]]:
+    """``(slug, email, role)`` for each ACTIVE member of each group of one org.
+
+    WS-27bn R5a. The one reader of group membership for the report scope
+    (`projects_reports.md` §7.1). `routes/projects/report_scope.py` calls it
+    to expand a team subject and to find the teams a reader leads. A second
+    reader of `org_group_member` for reports is a defect.
+
+    ⚠️ **The organization is stated in the SQL.** `org_group` carries no row
+    security, so `g.organization_id = :org` is the tenant bound, not a hint.
+    A NULL ``org_id`` matches nothing.
+
+    ⚠️ **Active members only.** `_members_of` above lists every member for
+    the admin screen, departed ones too. A departed member is not a person a
+    report can be about, and a departed lead leads nothing.
+
+    The email is lowercased and trimmed, the form `pm_task_assignees` is
+    compared in. ``slug`` narrows the answer to one group.
+    """
+    if not org_id:
+        return []
+    rows = (
+        await db.execute(
+            text(
+                "SELECT g.slug, lower(btrim(u.email)) AS email, gm.role"
+                "  FROM org_group g"
+                "  JOIN org_group_member gm ON gm.group_id = g.id"
+                "  JOIN app_user u ON u.id = gm.user_id"
+                " WHERE g.organization_id = CAST(:org AS uuid)"
+                "   AND u.status = 'active'"
+                "   AND u.organization_id = g.organization_id"
+                "   AND (CAST(:slug AS text) IS NULL OR g.slug = :slug)"
+                " ORDER BY g.slug, email"
+            ),
+            {"org": str(org_id), "slug": slug},
+        )
+    ).fetchall()
+    return [(str(r.slug), str(r.email), str(r.role)) for r in rows if r.email]
+
+
 async def _entry(db: Any, group: dict[str, Any]) -> GroupEntry:
     members = await _members_of(db, group["id"])
     return GroupEntry(

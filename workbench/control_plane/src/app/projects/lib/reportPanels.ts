@@ -111,6 +111,10 @@ export function loadPanelData(
     people: asList<NonNullable<Sections["load"]>["people"][number]>(
       section.people
     ).map((p) => ({ ...p })),
+    // WS-27bn R5a. Copied, never counted. Absent for an admin.
+    ...(typeof section.hidden_people === "number"
+      ? { hidden_people: section.hidden_people }
+      : {}),
   };
 }
 
@@ -127,6 +131,10 @@ export function capacityPanelData(
     total_tasks: section.total_tasks,
     people_total: section.people_total,
     rows: asList<CapacityReport["rows"][number]>(section.people),
+    // WS-27bn R5a. Copied, never counted. Absent for an admin.
+    ...(typeof section.hidden_people === "number"
+      ? { hidden_people: section.hidden_people }
+      : {}),
   };
 }
 
@@ -178,6 +186,10 @@ export function conflictsPanelData(
     total: section.total,
     by_kind: section.by_kind ?? {},
     rows: asList<ConflictsReport["rows"][number]>(section.rows),
+    // WS-27bn R5a. Copied, never counted. Absent for an admin.
+    ...(typeof section.hidden_people === "number"
+      ? { hidden_people: section.hidden_people }
+      : {}),
   };
 }
 

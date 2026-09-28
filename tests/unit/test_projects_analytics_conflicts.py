@@ -491,9 +491,16 @@ def test_the_route_passes_the_callers_grant_not_a_constant(monkeypatch) -> None:
 
     async def _body(_db, _vis, *, hr_visible, **_k):
         seen.append(hr_visible)
-        return {}
+        return {"rows": []}
+
+    async def _everyone(_db, _user, _vis):
+        return None
 
     monkeypatch.setattr(route, "_tenant_session", _session)
+    # WS-27bn R5a. The route filters the rows for the reader after the body.
+    # This fence is about the grant the body receives, so the reader's scope
+    # is "everyone" here.
+    monkeypatch.setattr(route, "reportable_people", _everyone)
     monkeypatch.setattr(route, "resolve_visibility", _vis)
     monkeypatch.setattr(route, "conflicts_body", _body)
     for grants, want in ((["feature:projects"], False),

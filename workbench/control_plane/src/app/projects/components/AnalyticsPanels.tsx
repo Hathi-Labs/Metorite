@@ -99,6 +99,7 @@ import {
   focusShown,
   focusWhy,
   helpLine,
+  emptyPanelLine,
   hiddenPeopleLine,
   loadBar,
   pulseName,
@@ -470,6 +471,24 @@ export function StuckPanel({ data }: { data: StuckReport }) {
   );
 }
 
+/**
+ * WS-27bn R5a. "This view hides N other people", under a panel whose rows
+ * the server filtered for this reader. The server removes the rows. The
+ * panel only prints the line that counts them, and nothing for an admin.
+ */
+function HiddenPeople({ n }: { n: number | null | undefined }) {
+  const line = hiddenPeopleLine(n, "view");
+  if (!line) return null;
+  return (
+    <p
+      className="mt-2 text-[11px] text-muted-foreground"
+      title="You see your own row, and the rows of the members of the teams you lead. An admin sees every row. The totals still count everybody."
+    >
+      {line}
+    </p>
+  );
+}
+
 /** (b) Who is overloaded? */
 export function LoadPanel({ data }: { data: LoadReport }) {
   // ⚠️ `asList` at the boundary, not `Array.isArray` at each use site. Four
@@ -489,7 +508,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
     >
       {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No open work in this scope.
+          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
         </p>
       ) : (
         <>
@@ -595,6 +614,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
           <EffortLine data={data} />
         </>
       )}
+      <HiddenPeople n={data?.hidden_people} />
     </Panel>
   );
 }
@@ -622,7 +642,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
     >
       {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No open work in this scope.
+          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -729,6 +749,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
           {windowsLine(data)}
         </p>
       )}
+      <HiddenPeople n={data?.hidden_people} />
     </Panel>
   );
 }
@@ -758,7 +779,7 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
     >
       {drawn.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No conflicts in this scope.
+          {emptyPanelLine(data?.hidden_people, "No conflicts in this scope.")}
         </p>
       ) : (
         <>
@@ -834,6 +855,7 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
           </p>
         )
       )}
+      <HiddenPeople n={data?.hidden_people} />
     </Panel>
   );
 }
@@ -1060,15 +1082,15 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
  * person on leave draws "On leave", never the pill, so "Idle" cannot say
  * that somebody who is away has room.
  *
- * ⚠️ **The server removes the cards this reader may not see** (edit E5).
- * The panel only prints the line that counts them.
+ * ⚠️ **The server removes the cards this reader may not see** (§7.1, WS-27bn
+ * R5a). The panel only prints the line that counts them.
  *
  * ⚠️ **A report panel only.** The Analytics app does not mount it: there is
  * no `/analytics/pulse` route yet.
  */
 export function PulsePanel({ data }: { data: PulseReport }) {
   const rows = pulseRows(data);
-  const hidden = hiddenPeopleLine(data?.hidden_people);
+  const hidden = hiddenPeopleLine(data?.hidden_people, "view");
   const overdue = accentForHue("red");
   const help = accentForHue("red");
 
@@ -1198,7 +1220,7 @@ export function PulsePanel({ data }: { data: PulseReport }) {
       {(hidden || data?.help_note) && (
         <div className="mt-3 space-y-0.5 border-t border-border pt-2 text-[11px] text-muted-foreground">
           {hidden && (
-            <p title="Before team reports, a reader who is not an admin sees only their own card.">
+            <p title="You see your own card, and the cards of the members of the teams you lead. An admin sees every card.">
               {hidden}
             </p>
           )}

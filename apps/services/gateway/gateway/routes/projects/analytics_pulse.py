@@ -33,10 +33,13 @@ of the row it builds. So an admin never sees the waiting items of another
 member, or a task that member scheduled today. The member's own render shows
 both.
 
-⚠️ **Who sees which card (edit E5).** An admin sees every card, up to
-``MAX_PEOPLE``. Any other reader sees their own card only. The filter runs
-HERE, before the body leaves the server, and ``hidden_people`` counts the cards
-the filter removed. Before R5 this is a strict subset of §7.1.
+⚠️ **Who sees which card (§7.1, WS-27bn R5a).** The row filter of
+``report_scope`` replaces edit E5. An admin sees every card, up to
+``MAX_PEOPLE``. A lead sees their own card and the cards of the members of
+the teams they lead. Any other reader sees their own card only. The filter
+runs HERE, after ``capacity_body`` and before the body leaves the server,
+and ``hidden_people`` counts the cards the filter removed. A lead without
+the HR grant reads the task half of a team member's card (edit E4).
 """
 
 from __future__ import annotations
@@ -56,6 +59,10 @@ from gateway.routes.projects.analytics import (
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.core import STARTED_CATEGORY
 from gateway.routes.projects.personal import effective_disposition
+from gateway.routes.projects.report_scope import (
+    filter_person_rows,
+    reportable_people,
+)
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.work_schedule import absent_on
 from sqlalchemy import text
@@ -311,6 +318,7 @@ async def pulse_body(
     project_id: str | None,
     include_subtree: bool,
     today: date | None = None,
+    subject_people: list[str] | None = None,
 ) -> dict[str, Any]:
     """The ``pulse`` report section, on a session and a visibility the caller
     resolved (`projects_reports.md` §8 R3d).
@@ -318,30 +326,34 @@ async def pulse_body(
     ``today`` is ONE UTC day. It goes to ``capacity_body`` and to each query
     here, so the pill, the leave check, the focus and the waiting items read
     the same day. The section ignores the report period.
+
+    ``subject_people`` (WS-27bn R5a) goes to ``capacity_body``, which keeps
+    the rows of those people only.
     """
     today = today or datetime.now(UTC).date()
     hr_grant = can_read_hr_fields(user)
     me = str(getattr(user, "email", "") or "").strip().lower()
 
     # ⚠️ `hr_visible=True` for every reader: the self door needs the HR half
-    # of the reader's own row. The rows of other people leave this function
-    # only for an admin (the E5 filter below), so a member never receives
-    # the hours of anybody else.
+    # of the reader's own row. `pulse_row` drops the HR half of every other
+    # row for a reader without the grant, so a member never receives the
+    # hours of anybody else.
     cap = await capacity_body(
         db, vis,
         hr_visible=True,
         project_id=project_id,
         include_subtree=include_subtree,
         today=today,
+        subject_people=subject_people,
     )
     people = [r for r in cap["rows"] if r.get("kind") == "person"]
     people_total = len(people)
-    if hr_grant:
-        shown = people[:MAX_PEOPLE]
-        hidden = 0
-    else:
-        shown = [r for r in people if (r.get("assignee") or "") == me]
-        hidden = people_total - len(shown)
+    # WS-27bn R5a. The shared row filter replaces edit E5. It runs after
+    # the body, and before the per-card reads below, so no hidden card
+    # costs a statement.
+    allowed = await reportable_people(db, user, vis)
+    kept, hidden = filter_person_rows(people, allowed)
+    shown = kept[:MAX_PEOPLE]
 
     holders = [str(r["assignee"]) for r in shown]
     counts: dict[str, Any] = {}

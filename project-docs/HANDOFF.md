@@ -116,6 +116,23 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 D78.
 - **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
 
+### H-197 · Decide whether the dataset read must apply the report rule · [AGENT+OWNER]
+- **Check:** `grep -n "reportable_people" apps/services/gateway/gateway/routes/projects/analytics_dataset.py`.
+  No hit, and no owner answer below, means this is open.
+- **Why.** `/analytics/dataset` (the chat's `task_dataset`, S7e) lets a
+  member group tasks by assignee and read per-person counts. That is outside
+  the report rule of §7.1 rule 3 in `specs/projects_reports.md`. R5a filters
+  `load`, `capacity`, `pulse` and `conflicts`, and it does not filter the
+  dataset. Decide whether the dataset must apply the reader filter.
+- **Second item, low severity.** `render_report` returns `report.created_by`
+  (the address of the author) to each reader who may open the report. This is
+  older than R5a. The owner says whether rule (f) covers the envelope.
+- **Do.** The owner answers both. If the answer is yes, the agent adds the
+  filter of `report_scope.py` to the dataset groups and proves it on a real
+  database (R8).
+- **Authority:** `specs/projects_reports.md` §7.1 and §8 R5a.
+- **Added:** 2026-09-28 · the R5a verification, finding 3.
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
