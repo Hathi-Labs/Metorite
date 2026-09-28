@@ -1871,3 +1871,38 @@ def test_the_run_path_is_wired_to_the_run_clearance() -> None:
     assert "_extract_user = _clearance.write if _room_is_shared else _mem_user" in src
     # ...and the session owner / authorship actor is still a real email.
     assert '_mem_user = (user.email or "").strip()' in src
+
+
+# ---------------------------------------------------------------------------
+# 9. S15: every chat, room, run and blob session is bound to a tenant
+# ---------------------------------------------------------------------------
+
+def test_no_chat_or_room_path_opens_an_unbound_session() -> None:
+    """WS-27bm S15 (projects_ai_chat.md §21). The chat tables are FORCE RLS in
+    production. An unbound ``get_session()`` there refuses every write and
+    reads no row, and an unbound ``_load_room`` gives every member owner
+    access to every room. This check reads the source, so it cannot skip on
+    a machine with no database. ``test_chat_write_under_rls.py`` is the R8
+    half."""
+    import inspect
+
+    from acb_memory import blob_store
+    from gateway import chat_fold, rooms, run_trace
+    from gateway.routes import agent, chat
+    from gateway.routes import rooms as room_routes
+
+    for module in (chat, rooms, room_routes, run_trace, blob_store, chat_fold):
+        src = inspect.getsource(module)
+        assert "import get_session" not in src, module.__name__
+        assert "with get_session()" not in src, module.__name__
+    for fn in (agent._room_agents, agent._resolve_agent_for_run,
+               agent._mint_run_row, agent._resolve_room):
+        src = inspect.getsource(fn)
+        assert "get_session" not in src, fn.__name__
+    # The tenant is a required argument, with no default to fall back on.
+    for fn in (rooms.resolve_room_access, chat._upsert_messages,
+               chat._ensure_session, chat._get_messages,
+               chat_fold.persist_final_assistant_message,
+               run_trace.record_run_trace, agent._mint_run_row):
+        param = inspect.signature(fn).parameters["organization_id"]
+        assert param.default is inspect.Parameter.empty, fn.__name__
