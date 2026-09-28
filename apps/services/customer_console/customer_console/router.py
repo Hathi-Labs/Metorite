@@ -1316,6 +1316,7 @@ async def walk_chain(
     attempts: Sequence[ResolvedTier],
     attempt: Callable[[ResolvedTier], Awaitable[Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
+    on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Try each step in order and return the first answer, and who gave it.
 
@@ -1336,6 +1337,13 @@ async def walk_chain(
     `attempt` is a callable because the two shapes differ in what "an answer"
     is: a response body for one, an open stream plus its first chunk for the
     other. The POLICY does not differ, so it is written once.
+
+    🔴 **`on_refusal` sees EVERY failed step, and a failover hides one.**
+    Measured 2026-09-28: DeepSeek answered 402 for two days. A chain that
+    fell over to a second vendor served the customer and said nothing, so the
+    empty account left no trace but a log line. The hook is how
+    ``provider_balance`` counts refusals per vendor. It runs inside a
+    ``suppress``, so a broken hook can never change what the walk does.
     """
     dead_vendors: set[str] = set()
     for position, step in enumerate(attempts):
@@ -1346,6 +1354,11 @@ async def walk_chain(
             return await attempt(step), step
         except Exception as exc:
             status = getattr(exc, "status_code", None)
+            if on_refusal is not None:
+                # Best effort. Recording a refusal must never become a second
+                # failure on a call that is already failing.
+                with contextlib.suppress(Exception):
+                    on_refusal(step, status)
             if status in CREDENTIAL_STATUSES:
                 dead_vendors.add(vendor)
             remaining = [
@@ -1369,6 +1382,7 @@ async def call_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
+    on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Walk the chain for a BUFFERED completion.
 
@@ -1384,7 +1398,7 @@ async def call_chain(
     async def _attempt(step: ResolvedTier) -> Any:
         return await call_provider(**kwargs_for(step))
 
-    return await walk_chain(attempts, _attempt, on_failover)
+    return await walk_chain(attempts, _attempt, on_failover, on_refusal)
 
 
 async def aclose_quietly(source: Any) -> None:
@@ -1416,6 +1430,7 @@ async def open_stream_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
+    on_refusal: Callable[[ResolvedTier, int | None], None] | None = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Open a provider STREAM, pull its first chunk, and walk while doing it.
 
@@ -1451,5 +1466,5 @@ async def open_stream_chain(
             await aclose_quietly(iterator)
             raise
 
-    (head, source), step = await walk_chain(attempts, _attempt, on_failover)
+    (head, source), step = await walk_chain(attempts, _attempt, on_failover, on_refusal)
     return head, source, step

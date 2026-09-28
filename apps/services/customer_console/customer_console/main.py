@@ -56,7 +56,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal, NoReturn
 
@@ -87,6 +87,7 @@ from customer_console import (
     operators,
     payments,
     pricing_window,
+    provider_balance,
     provider_keys,
     store,
 )
@@ -207,18 +208,108 @@ async def _feed_autosync(hours: float) -> None:
         await asyncio.sleep(hours * 3600)
 
 
+# ── Provider health: the watch loop (owner request, 2026-09-28) ─────────────
+#
+# 🔴 DeepSeek held -0.05 USD for two days and every AI call failed with nobody
+# told. This loop does two jobs on two clocks:
+#
+#   * every `_PROVIDER_FLUSH_SECONDS` it writes the refusal counts the Router
+#     buffered (`provider_balance.note_refusal`) and re-judges each provider,
+#     so a 402 reaches the console within a minute;
+#   * every `CUSTOMER_CONSOLE_PROVIDER_PROBE_MINUTES` (default 30) it asks each
+#     vendor that exposes one for its balance.
+#
+# ⚠️ **ON by default, and that is a choice.** A probe is a read-only GET to the
+# vendor, with the key the Router already sends it on every call. `0` turns
+# the probe off. The refusal flush has no switch: it only counts what the
+# serving path already saw.
+_PROVIDER_PROBE_MINUTES_VAR = "CUSTOMER_CONSOLE_PROVIDER_PROBE_MINUTES"
+_PROVIDER_PROBE_DEFAULT_MINUTES = 30.0
+_PROVIDER_FLUSH_SECONDS = 30
+#: The first probe waits this long, so a restart loop cannot hammer a vendor.
+_PROVIDER_FIRST_PROBE_SECONDS = 60
+
+
+def _provider_probe_minutes() -> float:
+    raw = os.environ.get(_PROVIDER_PROBE_MINUTES_VAR, "").strip()
+    if not raw:
+        return _PROVIDER_PROBE_DEFAULT_MINUTES
+    try:
+        minutes = float(raw)
+    except ValueError:
+        _log.warning("provider.probe_off reason=unparseable %s", _PROVIDER_PROBE_MINUTES_VAR)
+        return 0.0
+    return minutes if minutes > 0 else 0.0
+
+
+def _provider_judge_once() -> None:
+    """Re-judge every provider and log each transition once."""
+    with get_engine().begin() as conn:
+        provider_balance.refresh_alerts(conn, provider_balance.health_report(conn))
+
+
+def _provider_tick(probe: bool) -> None:
+    flushed = provider_balance.flush_refusals(get_engine())
+    if probe:
+        provider_balance.probe_all(get_engine())
+    if probe or flushed:
+        _provider_judge_once()
+
+
+async def _provider_watch(minutes: float) -> None:
+    next_probe = time.monotonic() + _PROVIDER_FIRST_PROBE_SECONDS
+    while True:
+        try:
+            due = bool(minutes) and time.monotonic() >= next_probe
+            await asyncio.to_thread(_provider_tick, due)
+            if due:
+                # A timedelta, not a bare sixty: `test_customer_console_vendor_feed`
+                # fences every "* 60" in this file, because one of them once
+                # turned a per-second PRICE into a per-minute one.
+                next_probe = time.monotonic() + timedelta(minutes=minutes).total_seconds()
+        except Exception as exc:  # the loop outlives any single failure
+            _log.warning("provider.watch_failed error=%s", type(exc).__name__)
+        await asyncio.sleep(_PROVIDER_FLUSH_SECONDS)
+
+
+def _refusal_recorder(
+    credentials: dict[str, router_mod.Credential | None],
+) -> Callable[[ResolvedTier, int | None], None]:
+    """The ``on_refusal`` hook every serving route hands the chain walk.
+
+    🔴 **A BYOK refusal is NOT ours.** A customer's own DeepSeek account
+    running dry says nothing about the platform account, and an alert on it
+    would send us to top up an account we do not hold. So only a step that
+    ran on a PLATFORM credential is counted.
+
+    ⚠️ **Lock and counter only.** On a stream this runs on the serving event
+    loop, so it must not touch the database. See `provider_balance`.
+    """
+
+    def _note(step: ResolvedTier, status: int | None) -> None:
+        vendor = step.model.split("/", 1)[0]
+        cred = credentials.get(vendor)
+        if cred is None or cred.byok:
+            return
+        provider_balance.note_refusal(vendor, status)
+
+    return _note
+
+
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     hours = _feed_sync_hours()
     task = asyncio.create_task(_feed_autosync(hours)) if hours else None
     # Always on. An abandoned hold is a customer's credits held for nothing.
     sweeper = asyncio.create_task(_hold_sweeper())
+    watch = asyncio.create_task(_provider_watch(_provider_probe_minutes()))
     try:
         yield
     finally:
         if task is not None:
             task.cancel()
         sweeper.cancel()
+        watch.cancel()
 
 
 app = FastAPI(
@@ -3623,6 +3714,52 @@ def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict
             for r in rows
         ],
     }
+
+
+def _provider_health_body() -> dict[str, Any]:
+    """Flush this worker's refusal counts, then judge every provider.
+
+    ⚠️ **The flush first**, so a refusal this worker saw a second ago is in the
+    answer. Another worker's counts arrive with its own next flush, inside
+    `_PROVIDER_FLUSH_SECONDS`.
+    """
+    provider_balance.flush_refusals(get_engine())
+    with get_engine().begin() as conn:
+        report = provider_balance.health_report(conn)
+        provider_balance.refresh_alerts(conn, report)
+    return {
+        "providers": report,
+        "low_usd_default": str(provider_balance.low_line_usd()),
+        "probe_minutes": _provider_probe_minutes(),
+    }
+
+
+@app.get("/providers/health")
+def provider_health(staff: Operator) -> dict[str, Any]:
+    """Can each vendor account we call on serve? **Operator-only. No secret.**
+
+    🔴 Owner request, 2026-09-28. One row per LIVE PLATFORM credential, judged
+    by `provider_balance.assess`: `out`, `refusing`, `low`, `probe_failed`,
+    `unknown` (the vendor exposes no balance) or `ok`. Money is a string.
+
+    ⚠️ A BYOK credential never appears. It is the customer's account, and its
+    balance is theirs to watch.
+    """
+    return _provider_health_body()
+
+
+@app.post("/providers/health/check")
+def provider_health_check(staff: Operator) -> dict[str, Any]:
+    """Probe every vendor NOW, then answer as `GET /providers/health` does.
+
+    ⚠️ Sends each key to its own vendor's fixed host, once. That is the same
+    key on the same host the Router uses on every call, so this reveals it to
+    nobody new. It writes an audit row, because it spends a vendor request.
+    """
+    probed = provider_balance.probe_all(get_engine())
+    with get_engine().begin() as conn:
+        _audit(conn, None, "provider.health.check", {"probed": probed}, actor=staff.actor)
+    return _provider_health_body()
 
 
 @app.post("/providers/credentials")
@@ -7062,6 +7199,7 @@ def _open_stream_or_release(
     *,
     org_id: str,
     request_id: str,
+    on_refusal: Any = None,
 ) -> tuple[list[Any], Any, ResolvedTier] | None:
     """Open the stream, or give the call's hold back. ``None`` = every step failed.
 
@@ -7074,7 +7212,7 @@ def _open_stream_or_release(
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
     """
     try:
-        return _open_stream_chain(attempts, kwargs_for, on_failover)
+        return _open_stream_chain(attempts, kwargs_for, on_failover, on_refusal)
     except router_mod.UpstreamFailed as failed:
         _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
         _release_call_hold(org_id, request_id)
@@ -7088,6 +7226,7 @@ def _open_stream_chain(
     attempts: list[ResolvedTier],
     kwargs_for: Any,
     on_failover: Any,
+    on_refusal: Any = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Walk the chain and open the winning stream ON THE SERVING LOOP.
 
@@ -7105,7 +7244,9 @@ def _open_stream_chain(
     time a body iterator runs the 200 status line has gone out and no failover
     is expressible any more.
     """
-    return anyio.from_thread.run(router_mod.open_stream_chain, attempts, kwargs_for, on_failover)
+    return anyio.from_thread.run(
+        router_mod.open_stream_chain, attempts, kwargs_for, on_failover, on_refusal
+    )
 
 
 async def _stream_closed() -> AsyncIterator[bytes]:
@@ -7495,6 +7636,7 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         opened = _open_stream_or_release(
             attempts, _stream_kwargs_for, _note_failover,
             org_id=org_id, request_id=request_id,
+            on_refusal=_refusal_recorder(credentials),
         )
         if opened is None:
             # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
@@ -7529,7 +7671,9 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
 
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except BaseException as exc:
         # 🔴 The call failed, so it will never settle. Give the hold back
@@ -7881,7 +8025,9 @@ def audio_transcriptions(
 
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except HTTPException:
         raise
@@ -8243,7 +8389,9 @@ def images_generations(req: ImageRequest, caller: ServingCaller) -> Any:
 
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except HTTPException:
         raise
@@ -8367,7 +8515,9 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
 
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except HTTPException:
         raise
@@ -8529,7 +8679,9 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
     started_at = datetime.now(UTC)
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except HTTPException:
         raise
@@ -8706,7 +8858,9 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
     clock = time.perf_counter()
     try:
         response, resolved = asyncio.run(
-            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+            router_mod.call_chain(
+                attempts, _kwargs_for, _note_failover, _refusal_recorder(credentials)
+            )
         )
     except router_mod.UpstreamFailed as failed:
         # 🔴 The vendor was reached, and it may have charged us. So the

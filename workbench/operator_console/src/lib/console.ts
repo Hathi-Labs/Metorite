@@ -440,6 +440,17 @@ export const listProviderCreds = (includeRevoked: boolean, d?: Deps) =>
 export const providerSpend = (d?: Deps) =>
   callConsole("/providers/spend", { method: "GET" }, d ?? {});
 
+/** Can each vendor account serve? The balance each vendor reported, and the
+ * refusals the Router saw (owner request, 2026-09-28). No secret in it: the
+ * Console builds every row from `provider_health`, which holds none. */
+export const providerHealth = (d?: Deps) =>
+  callConsole("/providers/health", { method: "GET" }, d ?? {});
+
+// `editor`. Spends one read-only request per vendor, and answers the same
+// body `providerHealth` does.
+export const checkProviderHealth = (d?: Deps) =>
+  callConsole("/providers/health/check", { method: "POST" }, d ?? {});
+
 // 🔴 `admin` AND a live elevation window. The Console enforces it; this does
 // not. Installing the PLATFORM credential arms every AI call we serve.
 export const installProviderCred = (body: unknown, d?: Deps) =>
