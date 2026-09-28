@@ -709,7 +709,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S11 · Outlook schedules** — ✅ **BUILT 2026-09-26** | The outlook's capacity reads each person's schedule. Absences apply only for an admin viewer. The report section passes the reader's grant. The panel says when it does not count leave (§17) | AGENT-SAFE |
 | **S12 · Follow-ups** — ✅ **BUILT 2026-09-28** | The end-date count follows the grant (H-188) · one broken panel does not blank Analytics · an @name turn keeps the agent that ran (§18) | AGENT-SAFE |
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
-| **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · no migration (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
+| **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -2924,8 +2924,9 @@ stream.
    run member and before the seal. §19.4 rules 1 to 3 are unchanged.
 4. **A decline is not an error.** The status is 200, and `ok` is true. The
    id is in `unchanged`.
-5. **No migration, no flag and no route.** S14 changes one SQL statement and
-   adds one call on an existing route.
+5. **One data migration, no flag and no route.** S14 changes SQL
+   statements and adds one call on an existing route. Round 4 adds one data
+   migration, 221 (§20.3 rule 14). It adds no column and no table.
 6. **No change in Next.** The Next chat already sends the id that the
    gateway mints, as `assistant_message_id`. The only Next edit is the
    LiteLLM comment in `sessions.ts` `saveMessages`.
@@ -2955,6 +2956,29 @@ stream.
     the room has no participant row. `_thread_owner_ok` and the cancel
     check go through `resolve_room_access`, so they follow it with no
     change.
+14. **Migration 221 makes rule 11 safe to ship** (round 4). Before S14,
+    every creator was an owner with no row. Live sessions can hold rows for
+    guests and none for the creator:
+    - a chat shared before its first fold, because the old
+      `_add_participant` inserted only the guest
+    - a LiteLLM chat that never folds, which the creator then shared
+    - a session whose fold failed, which the creator then shared
+
+    Rule 11 alone would lock each of those creators out on the deploy.
+    `infra/postgres/221_chat_session_creator_owner_backfill.sql` inserts
+    (session, creator, `owner`) for every session whose `user_id` is an
+    email, with `ON CONFLICT DO NOTHING`. The deploy applies it before the
+    restart (R6). So every creator keeps the access that main gives today.
+    That includes a creator whom an owner "removed", because main never
+    enforced a removal. From the deploy on, a removal holds. A demoted
+    creator keeps her role, and a `user_id` that is not an email gets no
+    row. Under FORCE RLS the file binds each tenant in turn and copies the
+    `organization_id` of the session.
+15. **`isOwner` is the caller's own role** (round 4). The session list sets
+    it when the caller's participant row says `owner`, or when the caller
+    created a session that has no participant row. One `LEFT JOIN` on the
+    participant key gives the role, so the list makes no query for each
+    row.
 
 ### 20.5 What stops working (D-PM-39)
 
@@ -3065,6 +3089,24 @@ later slice give these rows a server writer.
    - no creator owner row before the first add
    - `_attribute` treats an `assistant` row with the kind `human` as human
 
+   Round 4 adds these R8 tests:
+   - A session holds a row for Bob and none for Alice, its creator. After
+     221, Alice resolves as owner and sees the session in her list.
+   - A creator demoted to `member` stays `member`.
+   - A `user_id` that is not an email gets no row.
+   - 221 runs twice with no error and no change. The ladder applies it too,
+     and `test_migration_prefixes.py` passes.
+   - `test_chat_creator_owner_backfill.py` builds the four `generated/`
+     phases and runs 221 as a role that cannot bypass RLS. Two orgs each
+     get their creator row, with the right `organization_id`.
+   - `isOwner` is false for a demoted creator, true for an owner who did not
+     create the room, and true for the creator of a room with no rows.
+
+   Round 4 adds three mutations, and each turns a test red:
+   - 221 inserts no creator row
+   - 221 does not bind the tenant
+   - `isOwner` goes back to `r.user_id == user_id`
+
 ### 20.7 What S14 does not do
 
 - The run member can still write any content in her own reply until the
@@ -3077,9 +3119,9 @@ later slice give these rows a server writer.
 - Two members can start their first runs at the same instant on a session
   with no `primary` agent. Each run can then insert a `primary` row. The
   reviewer accepted this (round 2, P3).
-- The session list still sets `isOwner` from `chat_session.user_id`. It
-  is a display flag only. Every act that it offers goes through
-  `resolve_room_access` or a creator arm from rule 13.
+- `isOwner` reads the caller's own participant row. An owner role that
+  comes only through a group subject does not set it. It is a display flag,
+  and the server checks every act.
 - A mint that times out can still finish later in its thread. It only
   inserts, so it changes no row that the fold wrote first.
 - A run that `SupersedeRefused` stops inside the stream leaves an empty
@@ -3092,7 +3134,9 @@ The §19.7 set, with both database variables, plus these:
 
 ```bash
 uv run pytest tests/unit/test_run_agent_stream_e2e.py \
-  tests/unit/test_agent_run_identity.py -q -rs
+  tests/unit/test_agent_run_identity.py \
+  tests/unit/test_org_access_control.py \
+  tests/unit/test_chat_creator_owner_backfill.py -q -rs
 G=apps/services/gateway/gateway
 uv run ruff check $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
 uv run mypy $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
