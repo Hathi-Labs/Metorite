@@ -559,6 +559,9 @@ def organization_from_key_or_deployment(
     x_cc_agent: Annotated[str | None, Header()] = None,
     x_cc_module: Annotated[str | None, Header()] = None,
     x_cc_run: Annotated[str | None, Header()] = None,
+    #: "1" when the gateway VERIFIED the member's signed proof (H-73). The
+    #: deployment arm requires it. The org arm ignores it.
+    x_cc_member_proven: Annotated[str | None, Header()] = None,
 ) -> Caller:
     """The Router's door, opened by an ORG key or a DEPLOYMENT key (H-152).
 
@@ -637,6 +640,24 @@ def organization_from_key_or_deployment(
             detail=(
                 "a deployment key must send X-CC-Member; the organization is "
                 "derived from it, never inferred"
+            ),
+        )
+    # 🔴 **Only a PROVEN member may pick the organization (2026-09-28).** On
+    # this arm the member IS the tenant decision, and `X-CC-Member` is a claim
+    # any holder of the gateway's LLM key can make: every agent, and the
+    # mutation sandbox. Without this check one tenant's code could name another
+    # tenant's member and bill that tenant. The gateway sets the flag only
+    # after `member_proof.verify_member` accepts a signature minted for a
+    # session-verified or server-derived member (H-73), and it refuses to send
+    # an unproven member on this arm too. This is the second of the two locks.
+    # The org arm needs neither: its organization is fixed by the key.
+    if (x_cc_member_proven or "").strip() != "1":
+        _log.warning("deployment_key.member_unproven", extra={"key_prefix": prefix})
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "a deployment key must send a PROVEN member; an unsigned "
+                "X-CC-Member cannot choose the organization"
             ),
         )
 

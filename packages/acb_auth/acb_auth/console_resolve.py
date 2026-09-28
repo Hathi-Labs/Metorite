@@ -2197,6 +2197,37 @@ def _attribution_headers(
     return {name: value for name, value in pairs if value}
 
 
+def _require_proven_member_on_deployment(
+    kind: str, member: str | None, member_proven: bool
+) -> None:
+    """Refuse, locally, a deployment-key call whose member is not PROVEN.
+
+    ⚠️ **A deployment key CANNOT resolve a tenant without the member**, and
+    the Console answers 400 to say so. Refusing here turns a remote 400 that
+    reads as "the Router is broken" into a local message naming the input.
+
+    🔴 **And the member must be PROVEN (2026-09-28).** On this arm the member
+    decides which organization pays. `X-CC-Member` reaches `/v1` from any
+    holder of the gateway's LLM key, so an unsigned one could bill another
+    tenant. Only a member `member_proof.verify_member` accepted, or one the
+    run context bound as verified, may travel. The Console refuses the rest
+    too (`auth.organization_from_key_or_deployment`), so neither lock alone
+    carries the rule. The org arm needs no member: its key fixes the tenant.
+    """
+    if kind != "deployment":
+        return
+    if not (member or "").strip():
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, which needs the acting "
+            "member to resolve a tenant, and none was supplied"
+        )
+    if not member_proven:
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, and the acting member is not "
+            "proven; an unsigned member cannot choose the organization"
+        )
+
+
 async def chat_completion_on_console(
     payload: dict[str, Any],
     *,
@@ -2241,11 +2272,7 @@ async def chat_completion_on_console(
     # 400 that reads as "the Router is broken" into a local message naming the
     # one missing input. The org arm needs no member — its organization is a
     # property of the credential — so this is asked of one arm only.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
 
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
@@ -2340,11 +2367,7 @@ async def decide_on_console(
     # ⚠️ The same local refusal the chat client makes. A deployment key cannot
     # resolve a tenant without the member, and the Console answers 400 to say
     # so. Refusing here costs no request and names the missing input.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
 
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
@@ -2443,11 +2466,7 @@ async def stream_completion_on_console(
     # 400 that reads as "the Router is broken" into a local message naming the
     # one missing input. The org arm needs no member — its organization is a
     # property of the credential — so this is asked of one arm only.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
         _attribution_headers(
