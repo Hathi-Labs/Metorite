@@ -142,7 +142,15 @@ def _upsert_session(user_id: str, req: SessionUpsertRequest) -> None:
                     last_preview  = COALESCE(EXCLUDED.last_preview, chat_session.last_preview),
                     message_count = EXCLUDED.message_count,
                     updated_at    = now()
-                WHERE chat_session.user_id = :uid
+                WHERE (
+                       chat_session.user_id = :uid
+                       -- S14 round 3: the creator only while the room has no
+                       -- membership. An owner may have removed her.
+                       AND NOT EXISTS (
+                           SELECT 1 FROM chat_session_participant p0
+                           WHERE p0.session_id = chat_session.id
+                       )
+                   )
                    OR EXISTS (
                        SELECT 1 FROM chat_session_participant p
                        WHERE p.session_id = chat_session.id
@@ -273,7 +281,11 @@ def _delete_session(session_id: str, user_id: str) -> bool:
             text(
                 "DELETE FROM chat_session s "
                 "WHERE s.id = :id AND ("
-                "    s.user_id = :uid"
+                # S14 round 3: the creator only while the room has no
+                # membership, the same rule as resolve_room_access.
+                "    (s.user_id = :uid AND NOT EXISTS ("
+                "        SELECT 1 FROM chat_session_participant p0"
+                "        WHERE p0.session_id = s.id))"
                 "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
                 "               WHERE p.session_id = s.id AND p.subject = :uid"
                 "                 AND p.role = 'owner')"
