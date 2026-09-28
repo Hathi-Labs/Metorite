@@ -57,6 +57,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from acb_common.priority import (
+    CELL_FLAGS,
+    IMPORTANT_AT,
+    cell_for_name,
+    cell_label,
+    importance_write,
+    level_names,
+    task_cell,
+)
 
 try:
     # MCP-style risk annotations (HH-2): the risk-aware permission handler and
@@ -450,22 +459,14 @@ _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
                               "importance": "importance",
                               "leveraged": "leveraged"}
 
-#: The shared priority at which a task is Important (D78). The gateway's twin
-#: is `routes/tasks/priority.py::IMPORTANT_AT`, and `test_priority_shared.py`
-#: holds the two equal.
-IMPORTANT_AT = 2
-
-
-def _importance_for(important: bool, current: Any) -> int | None:
-    """The `importance` value an Important flag writes, or None for no write.
-
-    True raises the task to High (2), and leaves a Highest (3) as it is.
-    False lowers it to 0. A task already on the right side is not written.
-    """
-    level = int(current) if current is not None else None
-    if important:
-        return None if level is not None and level >= IMPORTANT_AT else IMPORTANT_AT
-    return None if level == 0 else 0
+#: The Important threshold and the write rule come from `acb_common.priority`,
+#: the one server-side source (H-173). `IMPORTANT_AT` is imported here for
+#: the readers that name it on this module.
+#:
+#: The `importance` value an Important flag writes, or None for no write.
+#: True raises the task to 2 and leaves a stored 3 as it is. False lowers it
+#: to 0. A task already on the right side is not written.
+_importance_for = importance_write
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.
 _OVERLAY_KEYS: frozenset[str] = frozenset({
@@ -524,6 +525,11 @@ def _fmt_item(i: dict[str, Any], mine: set[str] | None = None) -> str:
         bits.append(f"waiting on {waiting.get('name') or waiting.get('email')}")
     if i.get("due_at"):
         bits.append(f"due {i['due_at'][:10]}")
+    # D78 (H-173): the level the app draws. Low Priority draws no chip, so
+    # the line names none either.
+    cell = task_cell(i)
+    if cell != "low-priority":
+        bits.append(f"priority {cell_label(cell)}")
     if i.get("defer_until"):
         bits.append(f"deferred until {str(i['defer_until'])[:10]}")
     if i.get("workflow_stage"):
@@ -965,12 +971,45 @@ def _flag(v: str) -> bool | None:
     return None
 
 
+def _matrix_flags(
+    priority: str, important: str, leveraged: str
+) -> tuple[bool | None, bool | None] | str:
+    """``(important, leveraged)`` from the tool's arguments, or a refusal.
+
+    A level NAME sets both flags the level implies (``CELL_FLAGS``, from
+    ``acb_common.priority``). It cannot be combined with either flag.
+    """
+    imp = _flag(important)
+    lev = _flag(leveraged)
+    if not priority.strip():
+        return imp, lev
+    if imp is not None or lev is not None:
+        return "Pass priority, or important and leveraged. Not both."
+    cell = cell_for_name(priority)
+    if cell is None:
+        return f"priority is one of: {level_names()}. Not {priority!r}."
+    return CELL_FLAGS[cell]
+
+
+async def _importance_patch(item_id: str, important: bool | None) -> int | None:
+    """The `importance` an Important answer writes, or None for no write.
+
+    D78: Important is the SHARED `importance`. A True reads the current value
+    first, so a stored 3 is not lowered to 2.
+    """
+    if important is None:
+        return None
+    current = (await _my_task(item_id)).get("importance") if important else None
+    return _importance_for(important, current)
+
+
 @_annotate_risk(idempotent=True)
 async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
                      energy: str = "", time_estimate_mins: int = 0,
                      due_at: str = "", important: str = "",
-                     leveraged: str = "", deep_work: str = "") -> str:
+                     leveraged: str = "", deep_work: str = "",
+                     priority: str = "") -> str:
     """Edit a task's fields — rename, note, snooze, context, energy, estimate,
     due date, and the priority/work-mode flags. Only the fields you pass
     change. Title, notes, due date, estimate, important and leveraged are
@@ -987,10 +1026,13 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
             ONE estimate, shared with the board (D77).
         due_at: ISO date/datetime deadline; "clear" removes it.
         important: "true"/"false" — significant downside if it slips
-            (empty = unchanged). SHARED: true sets the task's priority to
-            High, false sets it to Low (D78).
+            (empty = unchanged). SHARED with everyone on the task (D78).
         leveraged: "true"/"false" — outsized upside / 100x bet
             (empty = unchanged). SHARED with everyone on the task (D78).
+        priority: a priority level name, with no regard to case (empty =
+            unchanged). It sets that level's important and leveraged flags.
+            The due date sets urgency. Do not pass it with important or
+            leveraged.
         deep_work: "true"/"false" — needs an unbroken FLOW state (creative,
             design, writing, building, strategy); the planner protects a long
             peak-energy block for it (empty = unchanged).
@@ -1011,18 +1053,16 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    for key, raw in (("leveraged", leveraged), ("deep_work", deep_work)):
-        val = _flag(raw)
+    flags = _matrix_flags(priority, important, leveraged)
+    if isinstance(flags, str):
+        return flags
+    imp, lev = flags
+    for key, val in (("leveraged", lev), ("deep_work", _flag(deep_work))):
         if val is not None:
             patch[key] = val
-    # D78: Important is the SHARED `importance`. Read the current value so a
-    # Highest (3) is not lowered to High.
-    imp = _flag(important)
-    if imp is not None:
-        current = (await _my_task(item_id)).get("importance") if imp else None
-        level = _importance_for(imp, current)
-        if level is not None:
-            patch["importance"] = level
+    level = await _importance_patch(item_id, imp)
+    if level is not None:
+        patch["importance"] = level
     if not patch:
         return "Nothing to update."
     task, personal = _split_patch(patch)
@@ -1134,7 +1174,9 @@ async def my_tasks_detail(item_id: str) -> str:
     mine = await _my_project_ids()
     lines = [_fmt_item(i, mine)]
     # D78: Important and Leveraged are SHARED facts on the task. Important is
-    # read from `importance`, and the raw 0-3 number is not printed.
+    # read from `importance`, and the raw 0-3 number is not printed. The
+    # level is the label the app draws (H-173).
+    lines.append(f"  priority: {cell_label(task_cell(i))}")
     important = (i.get("importance") or 0) >= IMPORTANT_AT
     flags = [name for name, on in (("important", important),
                                    ("leveraged", bool(i.get("leveraged"))),

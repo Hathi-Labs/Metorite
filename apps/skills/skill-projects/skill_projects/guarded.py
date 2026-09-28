@@ -39,16 +39,16 @@ from skill_projects.client import (
     post,
     uuid_of,
 )
+from skill_projects.priority import card_view, priority_fields, takes_priority
 from skill_projects.reads import _day, _task_line
 from skill_projects.writes import (
     CANCELLED,
     CARD_NOTE,
-    IMPORTANCE,
     MAX_BATCH,
+    _clears,
     _confirm,
     _field_of,
     _fields_block,
-    _importance,
     _int_or_none,
     _node,
     _one_named,
@@ -393,17 +393,31 @@ _CLEARABLE = {"due": "due_at", "start": "start_date", "estimate": "estimate_mins
 
 
 def _bulk_patch(
-    status: str, importance: int, due: str, start: str, estimate_mins: int, clear: str
+    status: str,
+    importance: Any,
+    due: str,
+    start: str,
+    estimate_mins: int,
+    clear: str,
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
 ) -> dict[str, Any] | str:
-    """The ``patch`` half of a bulk body, or the refusal."""
+    """The ``patch`` half of a bulk body, or the refusal.
+
+    A selection is mixed, so each passed flag is written as it stands (no
+    ``current``), and a flag not passed is left alone on every task. This is
+    the bulk bar's rule (``BULK_FLAG_OPTIONS``, review 2026-09-24).
+    """
     patch: dict[str, Any] = {}
     if status.strip():
         patch["status"] = status.strip()
-    imp = _importance(importance)
-    if imp is not None:
-        if imp not in IMPORTANCE:
-            return "importance is 0 to 4."
-        patch["importance"] = imp
+    judged = priority_fields(
+        priority=priority, important=important, leveraged=leveraged, importance=importance
+    )
+    if isinstance(judged, str):
+        return judged
+    patch.update(judged[0])
     if due.strip():
         patch["due_at"] = due.strip()
     if start.strip():
@@ -411,14 +425,10 @@ def _bulk_patch(
     est = _int_or_none(estimate_mins)
     if est is not None:
         patch["estimate_mins"] = est
-    for field in _split(clear):
-        key = {**_CLEARABLE, "priority": "importance"}.get(field.lower(), field.lower())
-        if key not in ("due_at", "start_date", "estimate_mins", "importance"):
-            return f"clear takes due, start, estimate or importance, not {data(field)}."
-        if key in patch:
-            return f"{key} is both set and cleared. Pass one or the other."
-        patch[key] = None
-    return patch
+    cleared = _clears(clear, _CLEARABLE, patch)
+    if isinstance(cleared, str):
+        return cleared
+    return {**patch, **cleared}
 
 
 async def _bulk_body(
@@ -460,7 +470,13 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
     verb = body.get("action")
     if verb:
         return f"{_plural(n, 'task')} {verb}d"
-    described = {**(body.get("patch") or {})}
+    described: dict[str, Any] = {}
+    for key, value in (body.get("patch") or {}).items():
+        # The flags as a member reads them, never the stored number (H-173).
+        if key in ("importance", "leveraged"):
+            described.update(card_view({key: value}))
+        else:
+            described[key] = value
     for key in ("assignees_add", "assignees_remove", "tags_add", "tags_remove"):
         if key in body:
             described[key] = ", ".join(body[key])
@@ -470,6 +486,7 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False)
+@takes_priority
 async def bulk_update(
     task_ids: str,
     status: str = "",
@@ -483,11 +500,15 @@ async def bulk_update(
     tags_add: str = "",
     tags_remove: str = "",
     action: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
-    task's project. importance 0 to 4, due and start YYYY-MM-DD, clear
-    empties due, start, estimate or importance. assignees_add/remove and
+    task's project. due and start YYYY-MM-DD, clear empties due, start,
+    estimate, important, leveraged or priority (both flags). A flag you do
+    not pass stays as it is on every task. assignees_add/remove and
     tags_add/remove take comma-separated values. action is archive or
     unarchive, on its own with no other change. Deleting is not offered.
     The card names every task and the exact change."""
@@ -496,7 +517,9 @@ async def bulk_update(
         return "Give at least one task id."
     if len(ids) > MAX_BATCH:
         return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
-    patch = _bulk_patch(status, importance, due, start, estimate_mins, clear)
+    patch = _bulk_patch(
+        status, importance, due, start, estimate_mins, clear, priority, important, leveraged
+    )
     if isinstance(patch, str):
         return patch
     body = await _bulk_body(

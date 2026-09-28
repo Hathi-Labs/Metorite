@@ -95,6 +95,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
+- **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
+  A hit means this is open.
+- **What happens.** H-173 moved the chat tools to the D78 level. The tools
+  now take `priority` (a level name), `important` and `leveraged`. They still
+  take the old `importance` number for one release, and map it through
+  `LEGACY_IMPORTANCE` in `acb_common/priority.py`. 2 or more reads as
+  Important, and each answer says that the number is deprecated.
+- **The intake gap.** `POST /projects/intake` (`IntakeIn` in
+  `routes/projects/intake.py`) has no `leveraged` field. Pydantic drops an
+  unknown key and says nothing. So `capture_intake` refuses a `leveraged` level
+  instead of sending it.
+- **Do.** After one release, remove the `importance` argument from
+  `create_task`, `update_task`, `bulk_update` and `capture_intake`, and remove
+  `LEGACY_IMPORTANCE`. Add `leveraged` to `IntakeIn` and to the insert, and
+  prove it on a real database (R8). Then remove the refusal in
+  `capture_intake`.
+- **Fence:** `tests/unit/test_chat_priority_levels.py`.
+- **Authority:** `work_plan.md` §3 D78.
+- **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -352,24 +373,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `DESIGN_SYSTEM.md` §7 · H-174 (PR "Theme: a readable
   warning text tone in light mode").
 - Added: 2026-09-28, found while fixing H-174.
-
-### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
-- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
-  Any hit means this is open.
-- **What happens.** D78 (2026-09-24) retired the Low-to-Highest scale.
-  Projects and My Tasks show the matrix level, from the shared Important
-  (`importance >= 2`) and `Leveraged` (`pm_tasks.leveraged`). The chat tools
-  in `skill_projects` (`writes.py`, `guarded.py`, `inbox.py`, `forms.py`)
-  still ask the model for an `importance` from 0 to 4. They cannot set
-  `Leveraged`. The chat cards (`genUITemplates.tsx`) and the CSV export
-  (`routes/projects/export.py`) print the raw number.
-- **Do.** Give the tools `important` and `leveraged` booleans, and show the
-  level in the cards and the export. `lib/matrix.ts` and
-  `routes/tasks/priority.py` own the level. Keep `importance` accepted for
-  one release, and read 2 or more as Important.
-- **Authority:** `work_plan.md` §3 D78.
-- Added: 2026-09-23, found while building D76. Rewritten 2026-09-24 for D78.
-
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
 - **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
