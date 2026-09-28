@@ -236,25 +236,21 @@ describe("the route surface", () => {
     //                the LiteLLM completions endpoint.
     //   githubToken  GitHub's own PAT, sent to api.github.com.
     //
-    //   CUSTOMER_CONSOLE_ORG_KEY
-    //                this deployment's OWN `cc_live_…` organization key, sent
-    //                to the Control Plane (WS-31). It justifies itself on the
-    //                same ground as the other two — a different secret going to
-    //                a different service — and on one more that matters:
-    //                the alternative was holding the Control Plane's OPERATOR
-    //                token, which is cross-organization. A tenant deployment
-    //                carrying that could read every customer's billing. This
-    //                key can read only its own org, because the key IS the org
-    //                (CP-3), so the narrow credential is the safe one here.
+    // `CUSTOMER_CONSOLE_ORG_KEY` was the third entry, and H-152 took it out
+    // (2026-09-28). `billing/summary/route.ts` built its bearer inline from
+    // that key; the billing reads now relay through the gateway, which holds
+    // the per-box deployment key. A route that builds a bearer from the
+    // organization key again is the shared-box leak coming back: that key
+    // names ONE tenant, and a box serves many.
     //
-    // Allow-listed by name rather than matched loosely, so a FOURTH inline
+    // Allow-listed by name rather than matched loosely, so a THIRD inline
     // bearer fails this test and has to justify itself.
     //
     // ⚠️ `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` is deliberately NOT here and must
     // never be added: that credential is read on the GATEWAY and never in
-    // Next. A fourth entry naming it would mean the deployment key had reached
+    // Next. An entry naming it would mean the deployment key had reached
     // the browser tier, and this test failing is the correct alarm (§6(f)).
-    const ALLOWED = /^(LITELLM_KEY|githubToken|CUSTOMER_CONSOLE_ORG_KEY)$/;
+    const ALLOWED = /^(LITELLM_KEY|githubToken)$/;
     const offenders: string[] = [];
     for (const r of BEARER_SWEEP) {
       for (const [, name] of r.src.matchAll(/Authorization:\s*`Bearer \$\{(\w+)/g)) {
@@ -348,6 +344,31 @@ describe("the route surface", () => {
         !/export const dynamic = "force-dynamic"/.test(r.src)
     );
     expect(offenders.map((r) => r.rel)).toEqual([]);
+  });
+
+  it("never reads the Console DEPLOYMENT key anywhere in the Next tier", () => {
+    // H-152 made the gateway the only holder of the per-box deployment key:
+    // the billing reads, the seat doors and the Router all reach the Console
+    // through it. This sweeps EVERY source file under `src/`, not just the
+    // route tree, because a helper that read the key would reach the browser
+    // tier by being imported, and no route file would name it.
+    const SRC_DIR = fileURLToPath(new URL("..", import.meta.url));
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+        } else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+          const src = readFileSync(full, "utf8");
+          if (/process\.env\.CUSTOMER_CONSOLE_DEPLOYMENT_KEY|process\.env\[["']CUSTOMER_CONSOLE_DEPLOYMENT_KEY/.test(src)) {
+            offenders.push(full);
+          }
+        }
+      }
+    };
+    walk(SRC_DIR);
+    expect(offenders).toEqual([]);
   });
 
   it("keeps every identity-free call to a written reason", () => {

@@ -1481,6 +1481,18 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # H-152, the billing half — the customer billing READS under the per-box
+    # deployment key, so a shared box serves every tenant's billing page with
+    # that tenant's own figures. Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES.
+    # Ships dark — `is_wired()` false, or a key without `billing_read`, ⇒ 503.
+    from gateway.routes.billing import router as _billing_router
+
+    app.include_router(_billing_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

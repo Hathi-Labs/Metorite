@@ -18,7 +18,9 @@ request input").
     ``POST /registry/resolve`` (CP-2b), ``provision`` opens the second arm
     of ``POST /orgs/provision`` (CP-2c slice 1, 2026-08-19), ``seat_admin``
     opens ``POST /registry/seats{,/release}`` (§6 item (h)) and
-    ``member_admin`` opens ``POST /registry/members`` (CP-2f, 2026-08-24). A
+    ``member_admin`` opens ``POST /registry/members`` (CP-2f, 2026-08-24),
+    ``serve`` opens the Router (H-152) and ``billing_read`` opens the
+    customer billing reads ``POST /registry/{billing,usage}/*`` (H-152). A
     key carrying only ``{resolve}`` — the column default, and the only set
     anything mints by accident — is refused at every one of the other three
     with a **403**, and the refusal is logged. Growing a REAL key's set is
@@ -95,6 +97,7 @@ from customer_console.lifecycle import OrgCapabilities, capabilities_of
 
 __all__ = [
     "AUTHENTICATING_DEPENDENCIES",
+    "BILLING_READ_CAPABILITY",
     "MEMBER_ADMIN_CAPABILITY",
     "ORGANIZATION_KEY_DEPENDENCIES",
     "PROVISION_CAPABILITY",
@@ -102,6 +105,7 @@ __all__ = [
     "SEAT_ADMIN_CAPABILITY",
     "SERVE_CAPABILITY",
     "SHARED_TOKEN_ACTOR",
+    "BillingReadCaller",
     "Caller",
     "CatalogCaller",
     "DeploymentCaller",
@@ -214,6 +218,27 @@ MEMBER_ADMIN_CAPABILITY = "member_admin"
 #: key is widened by hand under §8 gate 7, and there is no HTTP route that
 #: grants it.
 SERVE_CAPABILITY = "serve"
+
+#: **The SIXTH capability: a member reads their own organization's billing**
+#: (H-152, the billing half).
+#:
+#: 🔴 **Why it exists.** The customer billing pages read the Console through
+#: ``CUSTOMER_CONSOLE_ORG_KEY``, and that key names ONE tenant. On a shared box
+#: the pages were either dark for every tenant, or showed one tenant's balance
+#: to all of them. This capability opens the SAME reads under the per-box
+#: deployment key, and the Console derives the organization from placement ∩
+#: membership, as ``/registry/seats/overview`` does (D-SEAT-4).
+#:
+#: ⚠️ **Not a reuse of** :data:`SEAT_ADMIN_CAPABILITY` **or**
+#: :data:`MEMBER_ADMIN_CAPABILITY`. Those open admin WRITES. This one opens
+#: READS that any active member may make, and a balance is a different fact
+#: from a seat. Folding it into either would widen a credential that was argued
+#: for on a narrower basis.
+#:
+#: ⚠️ **Same three rules as the four before it.** A capability is not a scheme.
+#: No migration carries this string. No HTTP route grants it, so a box's key
+#: gains it by a hand edit under §8 gate 7, and the door ships dark until then.
+BILLING_READ_CAPABILITY = "billing_read"
 
 
 @dataclass(frozen=True)
@@ -963,6 +988,13 @@ _seat_admin_dependency = deployment_or_operator(SEAT_ADMIN_CAPABILITY)
 #: creates it so CP-2b clause 1's fence covers its route the day it lands.
 _member_admin_dependency = deployment_or_operator(MEMBER_ADMIN_CAPABILITY)
 
+#: The billing-read arm's dependency — H-152's billing half. A FIFTH closure
+#: from the same factory, registered in :data:`AUTHENTICATING_DEPENDENCIES` in
+#: the change that creates it. Its routes refuse the operator arm themselves
+#: (``main._billing_member_context``): the operator reads a customer's billing
+#: through its own cross-org doors, and these doors exist for the member.
+_billing_read_dependency = deployment_or_operator(BILLING_READ_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -992,6 +1024,13 @@ MemberAdminCaller = Annotated[
     DeploymentCaller | None, Depends(_member_admin_dependency)
 ]
 
+#: The billing READS under the deployment key (H-152). ``None`` is the operator
+#: arm, which these routes refuse; a :class:`DeploymentCaller` is the box, and
+#: the org is DERIVED from placement ∩ the acting member's membership (R11).
+BillingReadCaller = Annotated[
+    DeploymentCaller | None, Depends(_billing_read_dependency)
+]
+
 #: Every dependency in this module that authenticates somebody.
 #:
 #: This exists so CP-2b clause 1's fence
@@ -1018,6 +1057,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     _provision_dependency,
     _seat_admin_dependency,
     _member_admin_dependency,
+    _billing_read_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.

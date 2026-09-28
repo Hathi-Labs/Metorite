@@ -53,12 +53,12 @@ import os
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 import anyio
 from fastapi import (
@@ -92,6 +92,7 @@ from customer_console import (
 )
 from customer_console import router as router_mod
 from customer_console.auth import (
+    BillingReadCaller,
     Caller,
     CatalogCaller,
     DeploymentCaller,
@@ -5695,11 +5696,9 @@ def seat_overview_admin(
         org_id, _actor = _admin_scheme_context(
             conn, req, caller, roles=_SEAT_ADMIN_ROLES, request=request
         )
-        rows = store.org_members(conn, org_id=org_id)
-        seats = store.live_seats_by_email(conn, org_id=org_id)
         return SeatOverviewView(
             plans=_seat_grid(conn, org_id),
-            members=[MemberView(**row, seats=seats.get(row["email"], [])) for row in rows],
+            members=_member_rows(conn, org_id),
         )
 
 
@@ -5787,6 +5786,157 @@ def add_member_admin(
         )
 
     return {"created": created, "status": status_now}
+
+
+# ── H-152 · the customer billing READS under the deployment key ─────────────
+#
+# 🔴 **The defect these doors close.** The customer billing pages
+# (`settings/billing`) read `/me/billing`, `/me/seats`, `/me/members`,
+# `/billing/catalog` and `/my/usage/*` through the workbench's
+# `CUSTOMER_CONSOLE_ORG_KEY`. A `cc_live_` key IS one organization (CP-3), so a
+# SHARED box has no correct value for it. Unset, the pages are dark for every
+# tenant. Set, they show ONE tenant's balance, roster and spend to all of them.
+#
+# **The fix is D-SEAT-4's move, applied to billing.** Each door below is the
+# same read as its organization-key twin, under the per-box deployment key.
+# The organization is DERIVED from placement ∩ the acting member's membership
+# (`_admin_scheme_for_deployment`), never named (R11). Each door calls the SAME
+# body its twin calls, so the two doors can never report two answers.
+#
+# ⚠️ **Any ACTIVE member may read, and that is the twins' rule, not a new
+# one.** The organization key reaches no member, so the org-key reads were
+# "any signed-in member" at the workbench. Who may read WHICH figures (a
+# non-admin sees only their own spend, and never the per-person table) is the
+# TENANT plane's decision (`is_admin`), made at the gateway. The registry role
+# is billing vocabulary (D12) and is not mapped onto the tenant's roles, so a
+# gate here keyed on it would refuse a tenant admin who is a registry `member`.
+#
+# ⚠️ **The operator arm is refused.** `deployment_or_operator` hands an
+# operator token through as `None`. These doors exist for the member, and the
+# operator already reads every customer through `/billing/summary` and
+# `/admin/usage/*`. A second operator door onto the same facts would be a
+# second answer to one question.
+
+#: The registry roles the billing doors accept of the acting member: ANY. See
+#: the block comment above for why the tenant plane, not this set, decides
+#: which figures a member may see.
+_BILLING_MEMBER_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
+
+#: The refusal for an operator token at a member's door. Written once.
+_BILLING_OPERATOR_REFUSAL = (
+    "this door serves a deployment key on behalf of a member; the operator "
+    "reads a customer's billing through its own cross-organization doors"
+)
+
+
+class BillingReadRequest(AdminSchemeRequest):
+    """A billing read's body: the acting member, and nothing else (R11).
+
+    ``extra: forbid``, because a field this door ignored would be a caller who
+    believes it scoped the read.
+    """
+
+    model_config = {"extra": "forbid"}
+
+
+class UsageReadRequest(AdminSchemeRequest):
+    """A spend read's body: the acting member and the SCOPE of the read.
+
+    ``scope`` is not a member email, on purpose. ``self`` reads the actor's own
+    spend and ``org`` reads the whole organization. The only person this body
+    can name is the actor the box vouched for, so no caller can ask for a
+    colleague's figures by email. The gateway picks ``org`` for a tenant admin
+    and ``self`` for everybody else. The default is the NARROW reading, so a
+    caller that forgets the field fails closed.
+    """
+
+    scope: Literal["self", "org"] = "self"
+
+    model_config = {"extra": "forbid"}
+
+
+def _billing_member_context(
+    conn,
+    req: AdminSchemeRequest,
+    caller: DeploymentCaller | None,
+    *,
+    permits: Callable[[Any], bool],
+) -> tuple[str, str]:
+    """``(org_id, actor)`` for a member's billing door, or the refusal.
+
+    The derivation is ``_admin_scheme_for_deployment``'s, verbatim: placement ∩
+    membership, exactly one admissible organization, an ACTIVE membership. The
+    one thing added is the LIFECYCLE question the organization-key twin asks,
+    because ``can_sign_in`` alone would let a ``cancelled`` organization reach a
+    read its own key cannot. ``permits`` is that question, never a local set of
+    state names.
+    """
+    if caller is None:
+        raise HTTPException(status_code=403, detail=_BILLING_OPERATOR_REFUSAL)
+    org_id, actor = _admin_scheme_for_deployment(
+        conn, req, caller, roles=_BILLING_MEMBER_ROLES
+    )
+    state = conn.execute(
+        text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+    ).scalar_one()
+    if not permits(capabilities_of(state)):
+        raise HTTPException(status_code=403, detail=f"organization is {state}")
+    return org_id, actor
+
+
+def _can_pay(caps: Any) -> bool:
+    """``PayingCaller``'s question: a suspended customer may still see the bill."""
+    return bool(caps.can_pay)
+
+
+def _can_use_ai(caps: Any) -> bool:
+    """``KeyCaller``'s question, which the org-key spend reads ask."""
+    return bool(caps.can_use_ai)
+
+
+@app.post("/registry/billing/summary")
+def billing_summary_for_member(
+    req: BillingReadRequest, caller: BillingReadCaller
+) -> dict[str, Any]:
+    """``GET /me/billing`` under the deployment key (H-152). Read-only."""
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+    return _billing_summary(org_id)
+
+
+@app.post("/registry/billing/seats")
+def billing_seats_for_member(
+    req: BillingReadRequest, caller: BillingReadCaller
+) -> SeatsView:
+    """``GET /me/seats`` under the deployment key (H-152). The ONE seat grid."""
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+        return SeatsView(plans=_seat_grid(conn, org_id))
+
+
+@app.post("/registry/billing/members")
+def billing_members_for_member(
+    req: BillingReadRequest, caller: BillingReadCaller
+) -> MembersView:
+    """``GET /me/members`` under the deployment key (H-152). The ONE roster."""
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+        return MembersView(members=_member_rows(conn, org_id))
+
+
+@app.post("/registry/billing/catalog")
+def billing_catalog_for_member(
+    req: BillingReadRequest, caller: BillingReadCaller
+) -> CatalogView:
+    """``GET /billing/catalog`` under the deployment key (H-152).
+
+    The ladder is the same for every customer, so the derived organization is
+    used for the gate alone — the same ``can_pay`` question the org-key door
+    asks — and never reaches the body.
+    """
+    with get_engine().begin() as conn:
+        _billing_member_context(conn, req, caller, permits=_can_pay)
+    return _catalog_view()
 
 
 def _require_credit_privilege(staff: StaffIdentity, credits: Decimal) -> None:
@@ -8569,7 +8719,17 @@ def my_billing(caller: PayingCaller) -> dict[str, Any]:
     Balance is `SUM(credit_ledger)` computed here, once. The browser renders it
     and never recomputes it.
     """
-    org_id = caller.organization_id
+    return _billing_summary(caller.organization_id)
+
+
+def _billing_summary(org_id: str) -> dict[str, Any]:
+    """One organization's billing summary — the ONE body both doors serve.
+
+    ``GET /me/billing`` (the organization key) and
+    ``POST /registry/billing/summary`` (the deployment key, H-152) differ only
+    in how they learn ``org_id``. The figures come from here for both, so the
+    two doors can never report two balances for one organization.
+    """
     with get_engine().begin() as conn:
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
 
@@ -8978,10 +9138,15 @@ def my_usage_by_activity(
     ledger stores `NUMERIC(14,4)`, and `float` is the standard way to make a
     total disagree with the sum of its rows.
     """
+    return _activity_spend_view(caller.organization_id, member)
+
+
+def _activity_spend_view(org_id: str, member: str | None) -> ActivitySpendView:
+    """The activity read's body, shared by the org-key and deployment-key doors."""
     with get_engine().begin() as conn:
         rows = store.usage_by_activity(
             conn,
-            org_id=caller.organization_id,
+            org_id=org_id,
             member=member,
         )
     return ActivitySpendView(
@@ -9007,8 +9172,13 @@ def my_usage_by_member(caller: KeyCaller) -> MemberSpendView:
     (H-73). A number that looks like a control and is not one is worse than an
     absent number.
     """
+    return _member_spend_view(caller.organization_id)
+
+
+def _member_spend_view(org_id: str) -> MemberSpendView:
+    """The per-member spend read's body, shared by both customer doors."""
     with get_engine().begin() as conn:
-        rows = store.usage_by_member(conn, org_id=caller.organization_id)
+        rows = store.usage_by_member(conn, org_id=org_id)
     return MemberSpendView(
         rows=[
             MemberSpendRow(
@@ -9036,8 +9206,13 @@ def my_usage_by_app(
     ⚠️ **Credits only.** `usage_by_app` selects no cost, no model and no tier,
     and the spend-reads fence checks its SQL.
     """
+    return _app_spend_view(caller.organization_id, member)
+
+
+def _app_spend_view(org_id: str, member: str | None) -> AppSpendView:
+    """The by-app read's body, shared by both customer doors. Credits only."""
     with get_engine().begin() as conn:
-        rows = store.usage_by_app(conn, org_id=caller.organization_id, member=member)
+        rows = store.usage_by_app(conn, org_id=org_id, member=member)
     return AppSpendView(
         rows=[
             AppSpendRow(
@@ -9054,6 +9229,52 @@ def my_usage_by_app(
         windowDays=store.SPEND_WINDOW_DAYS,
         member=member,
     )
+
+
+def _usage_member(req: UsageReadRequest, actor: str) -> str | None:
+    """The member filter a spend read applies: the actor, or nobody (whole org)."""
+    return None if req.scope == "org" else actor
+
+
+@app.post("/registry/usage/activity")
+def usage_activity_for_member(
+    req: UsageReadRequest, caller: BillingReadCaller
+) -> ActivitySpendView:
+    """``GET /my/usage/activity`` under the deployment key (H-152). D66 (a)."""
+    with get_engine().begin() as conn:
+        org_id, actor = _billing_member_context(
+            conn, req, caller, permits=_can_use_ai
+        )
+    return _activity_spend_view(org_id, _usage_member(req, actor))
+
+
+@app.post("/registry/usage/apps")
+def usage_apps_for_member(
+    req: UsageReadRequest, caller: BillingReadCaller
+) -> AppSpendView:
+    """``GET /my/usage/apps`` under the deployment key (H-152). Credits only."""
+    with get_engine().begin() as conn:
+        org_id, actor = _billing_member_context(
+            conn, req, caller, permits=_can_use_ai
+        )
+    return _app_spend_view(org_id, _usage_member(req, actor))
+
+
+@app.post("/registry/usage/members")
+def usage_members_for_member(
+    req: BillingReadRequest, caller: BillingReadCaller
+) -> MemberSpendView:
+    """``GET /my/usage/members`` under the deployment key (H-152). D66 (b).
+
+    ⚠️ **Takes no scope, because it has only one reading: the whole company.**
+    The gateway refuses it to a non-admin before it gets here, exactly as the
+    workbench refused the org-key twin.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(
+            conn, req, caller, permits=_can_use_ai
+        )
+    return _member_spend_view(org_id)
 
 
 @app.get("/admin/usage/breakdown")
@@ -9254,6 +9475,16 @@ def billing_catalog(_: CatalogCaller) -> CatalogView:
     the same call ``_priced_basket`` makes, so what the ladder quotes and what
     an order charges cannot drift into two denominations.
     """
+    return _catalog_view()
+
+
+def _catalog_view() -> CatalogView:
+    """The priced ladder's body. It takes NO organization, by construction.
+
+    Shared by ``GET /billing/catalog`` and the deployment-key
+    ``POST /registry/billing/catalog`` (H-152), so the two doors quote one
+    price list.
+    """
     with get_engine().begin() as conn:
         return CatalogView(
             plans=[
@@ -9342,11 +9573,20 @@ def my_members(caller: PayingCaller) -> MembersView:
     surface as a member holding a seat that no longer exists, or the reverse.
     """
     with get_engine().begin() as conn:
-        rows = store.org_members(conn, org_id=caller.organization_id)
-        seats = store.live_seats_by_email(conn, org_id=caller.organization_id)
-        return MembersView(
-            members=[MemberView(**row, seats=seats.get(row["email"], [])) for row in rows]
-        )
+        return MembersView(members=_member_rows(conn, caller.organization_id))
+
+
+def _member_rows(conn, org_id: str) -> list[MemberView]:
+    """The roster zipped with each member's live seat slugs — ONE body.
+
+    ``GET /me/members``, ``POST /registry/seats/overview`` and
+    ``POST /registry/billing/members`` all serve these rows. Two queries for
+    any roster size, run on the caller's connection so the roster and the
+    seats are one snapshot.
+    """
+    rows = store.org_members(conn, org_id=org_id)
+    seats = store.live_seats_by_email(conn, org_id=org_id)
+    return [MemberView(**row, seats=seats.get(row["email"], [])) for row in rows]
 
 
 def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:

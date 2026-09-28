@@ -169,8 +169,11 @@ _log = get_logger("acb_auth.console_resolve")
 
 __all__ = [
     "ACCESS_DENIED",
+    "BILLING_READ_DOORS",
+    "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
+    "ConsoleBillingUnavailable",
     "ConsoleMemberWriteUnavailable",
     "ConsoleProvisionUnavailable",
     "ConsoleRouterUnavailable",
@@ -178,6 +181,7 @@ __all__ = [
     "ReconcileSummary",
     "ResolveDecision",
     "assign_seat_on_console",
+    "billing_read_on_console",
     "chat_completion_on_console",
     "decide_on_console",
     "invalidate",
@@ -697,6 +701,25 @@ async def _post_seat_call(
     ``deployment_visible_orgs(deployment_id, actor_email)`` (R11), and the Console
     400s a deployment key that names one.
     """
+    return await _post_deployment_door(
+        endpoint, payload, unavailable=ConsoleSeatWriteUnavailable
+    )
+
+
+async def _post_deployment_door(
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    unavailable: type[Exception],
+) -> tuple[int, dict[str, Any]]:
+    """The ONE deployment-key door transport: bearer, timeout, verdict policy.
+
+    Extracted from ``_post_seat_call`` when the billing reads (H-152) needed the
+    identical hop. The seat arms and the billing arms differ only in which
+    exception names an outage, so the caller passes it. A second copy of this
+    body would be a second verdict-vs-outage policy, and the copy is the one
+    that drifts.
+    """
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
     key = settings.customer_console_deployment_key.strip()
@@ -710,7 +733,7 @@ async def _post_seat_call(
                 json=payload,
             )
     except Exception as exc:
-        raise ConsoleSeatWriteUnavailable(str(exc)[:200]) from exc
+        raise unavailable(str(exc)[:200]) from exc
 
     # A status that proves we got no ANSWER is an outage, not a verdict — the
     # same line `_post_resolve` draws (finding P1-1): 5xx (the Console is broken),
@@ -718,7 +741,7 @@ async def _post_seat_call(
     # member), 408/429 (no answer produced). Everything else (200, and the
     # 400/403/404/409 the door issues) is an answer the caller may act on.
     if response.status_code >= 500 or response.status_code in (401, 408, 429):
-        raise ConsoleSeatWriteUnavailable(f"HTTP {response.status_code}")
+        raise unavailable(f"HTTP {response.status_code}")
 
     try:
         body = response.json()
@@ -936,6 +959,91 @@ async def invite_member_on_console(
     if not isinstance(body, dict):
         body = {}
     return response.status_code, body
+
+
+# ── The customer BILLING client (H-152, the billing half) ───────────────────
+#
+# ⚠️ **Still the ONE Console httpx client.** These functions are the gateway's
+# path to the Console's deployment-key `billing_read` doors, and they reuse
+# `_post_deployment_door` — the seat arms' transport — rather than a second
+# client. `gateway/routes/billing.py` holds no client, no URL and no key.
+#
+# **Why they exist.** The customer billing pages read the Console with
+# `CUSTOMER_CONSOLE_ORG_KEY`, which names ONE tenant. The deployment key is
+# per-BOX, so these reads work for every tenant on a shared box, and the
+# Console derives the organization from placement ∩ membership.
+#
+# ⚠️ **The body carries `actor_email` and NO `org_slug`** (R11), exactly as the
+# seat overview's does. A spend read adds `scope` — `self` or `org` — and never
+# a member email: the only person the wire can name is the actor.
+#
+# **Non-allocating.** Every door here is a READ. None touches
+# `resolve_for_signin`, so nothing here can burn a seat.
+
+
+class ConsoleBillingUnavailable(Exception):
+    """The Customer Console produced no billing answer we could relay.
+
+    Transport-only, the line ``_post_resolve`` draws: the box is not wired, the
+    network failed, or the Console answered 5xx / 401 / 408 / 429. A verdict —
+    200, or the 400/403/409 a billing door issues — is returned as
+    ``(status_code, body)`` for the route to relay.
+    """
+
+
+#: The billing READ doors, by the name the gateway route uses. A closed map:
+#: the route cannot reach a Console path that is not listed here.
+BILLING_READ_DOORS: dict[str, str] = {
+    "summary": "/registry/billing/summary",
+    "seats": "/registry/billing/seats",
+    "members": "/registry/billing/members",
+    "catalog": "/registry/billing/catalog",
+    "usage_activity": "/registry/usage/activity",
+    "usage_apps": "/registry/usage/apps",
+    "usage_members": "/registry/usage/members",
+}
+
+#: The two doors that take a ``scope``. Every other door refuses the field
+#: (``extra: forbid`` on the Console), so it is sent to these two alone.
+_SCOPED_BILLING_DOORS = frozenset({"usage_activity", "usage_apps"})
+
+#: The words the Console's ``deployment_or_operator`` opens a capability
+#: refusal with. The gateway reads a 403 that starts with them as "this box is
+#: not configured for billing", never as "you may not". Fence:
+#: ``test_billing_proxy_route.py`` asserts the Console still says it.
+CAPABILITY_REFUSAL_PREFIX = "deployment key lacks the "
+
+
+async def billing_read_on_console(
+    door: str,
+    *,
+    actor_email: str,
+    scope: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Read one billing door for the acting member's organization.
+
+    ``door`` is a key of :data:`BILLING_READ_DOORS`. ``scope`` is ``"self"`` or
+    ``"org"`` and is sent only to the two spend doors that take it; the
+    gateway route decides it from the TENANT plane's ``is_admin``.
+
+    Returns the Console's ``(status_code, body)`` verbatim. Raises
+    :class:`ConsoleBillingUnavailable` on an unwired box or a no-answer status.
+
+    Raises:
+        KeyError: ``door`` is not a billing read door. A programming error,
+            raised before any hop.
+    """
+    endpoint = BILLING_READ_DOORS[door]
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    payload: dict[str, Any] = {"actor_email": actor_email}
+    if door in _SCOPED_BILLING_DOORS:
+        # The narrow reading unless the caller asked for the wide one. The
+        # Console defaults the same way, so a dropped field fails closed.
+        payload["scope"] = "org" if scope == "org" else "self"
+    return await _post_deployment_door(
+        endpoint, payload, unavailable=ConsoleBillingUnavailable
+    )
 
 
 # ── The signup Console-mirror reconciler (CP-2e slice) ───────────────────────
