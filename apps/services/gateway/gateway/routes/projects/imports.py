@@ -37,10 +37,10 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user, require_permission
-from fastapi import Depends, HTTPException, UploadFile
+from fastapi import Depends, File, Form, HTTPException, UploadFile
 from gateway.routes.projects import import_discard
 from gateway.routes.projects.core import (
     _TRUTHY,
@@ -196,10 +196,21 @@ def import_dir() -> Path:
 # ── the routes ──────────────────────────────────────────────────────────────
 
 
+#: The refusal when the body arrived shorter than the browser sent it.
+CUT_SHORT = (
+    "The upload arrived incomplete, so nothing was read. Upload the file again. "
+    "If it is larger than 9.5 MB, export one space at a time."
+)
+
+
 @router.post("/import/runs", status_code=201, dependencies=_GATES)
 async def create_import_run(
-    files: list[UploadFile],
+    # Optional so that a body cut short reaches THIS route's refusal, and not
+    # FastAPI's bare "Field required": a cut single file loses its part.
+    files: Annotated[list[UploadFile] | None, File()] = None,
     user: UserContext = Depends(get_current_user),
+    expected_files: Annotated[int | None, Form()] = None,
+    expected_bytes: Annotated[int | None, Form()] = None,
 ) -> dict[str, Any]:
     """Upload one or more export files. Parse them, plan with the proposals,
     and store the run. Writes no ``pm_*`` row.
@@ -211,7 +222,10 @@ async def create_import_run(
     # otherwise turn every upload into a 500 (watchers.py does the same).
     email = actor(user).strip().lower()
     if not files:
-        raise HTTPException(status_code=400, detail="Choose at least one export file.")
+        # No file and no trailing fields is a body the proxy cut before the
+        # first part ended. No file WITH the fields is a request with none.
+        detail = CUT_SHORT if expected_files is None else "Choose at least one export file."
+        raise HTTPException(status_code=400, detail=detail)
     if len(files) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"Upload at most {MAX_FILES} files at once.")
 
@@ -227,6 +241,19 @@ async def create_import_run(
                 "Export one space at a time.",
             )
         uploads.append((_safe_name(upload.filename), raw))
+
+    # The Next proxy in front of this route cuts a body at 10 MiB with only a
+    # log line, and the multipart parser drops a part with no closing
+    # boundary in silence. So the wizard sends these two fields AFTER the
+    # files: a cut body loses them, and a run from part of an export is
+    # refused instead of planned (§7.4, the I-7 review).
+    if (
+        expected_files is None
+        or expected_bytes is None
+        or expected_files != len(uploads)
+        or expected_bytes != sum(len(raw) for _, raw in uploads)
+    ):
+        raise HTTPException(status_code=400, detail=CUT_SHORT)
 
     source = detect_source(uploads)
     bundle = await _parse(source, uploads)

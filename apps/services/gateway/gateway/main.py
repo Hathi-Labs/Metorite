@@ -294,6 +294,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.tasks_rollover_skipped", error=str(exc))
 
+    # WS-41 I-7: delete import uploads nobody finished, after 14 days (§7.2).
+    try:
+        from gateway.routes.projects.import_sweep import start_sweep
+        await start_sweep()
+    except Exception as exc:
+        _log.warning("gateway.import_sweep_skipped", error=str(exc))
+
     # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
     # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
     # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
@@ -379,6 +386,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.tasks.calendar import stop_auto_rollover
         await stop_auto_rollover()
+    except Exception:
+        pass
+
+    try:
+        from gateway.routes.projects.import_sweep import stop_sweep
+        await stop_sweep()
     except Exception:
         pass
 
@@ -762,6 +775,13 @@ class TenantScopeMiddleware:
 
 
 app.add_middleware(TenantScopeMiddleware)
+
+# WS-41 I-7: cap an import upload BEFORE it is read. FastAPI spools a whole
+# multipart body to disk ahead of every dependency, sign-in included, so the
+# route's own checks come too late to protect the disk.
+from gateway.routes.projects.import_body_limit import ImportBodyLimit  # noqa: E402
+
+app.add_middleware(ImportBodyLimit)
 
 # ── CORS ── allow workbench dev server (port 3001) and production origin
 app.add_middleware(

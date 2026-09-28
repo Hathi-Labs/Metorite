@@ -144,6 +144,16 @@ def db(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> RecordingDB:
     return fake
 
 
+async def _create(files: list[UploadFile], user: Any) -> dict[str, Any]:
+    """The route as the wizard calls it: the two trailing fields match."""
+    return await imports.create_import_run(
+        files,
+        user,
+        expected_files=len(files),
+        expected_bytes=sum(len(f.file.getvalue()) for f in files),
+    )
+
+
 def _user() -> Any:
     return SimpleNamespace(email=ADMIN, has_permission=lambda p: True)
 
@@ -221,7 +231,7 @@ async def test_an_upload_stores_the_file_and_plans_without_writing_pm_rows(
     tmp_path: pathlib.Path,
 ) -> None:
     raw = FIXTURE.read_bytes()
-    view = await imports.create_import_run([_upload(raw, "../../etc/clickup.csv")], _user())
+    view = await _create([_upload(raw, "../../etc/clickup.csv")], _user())
 
     assert view["state"] == "planned" and view["source"] == "clickup"
     assert view["plan"]["summary"]["tasks"] == 2423 and view["plan"]["ready"]
@@ -243,14 +253,14 @@ async def test_an_upload_stores_the_file_and_plans_without_writing_pm_rows(
 
 
 async def test_the_directory_proposal_reaches_the_plan(db: RecordingDB) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     matched = [p for p in view["plan"]["people"] if p["member"]]
     assert [(p["display_name"], p["member"]) for p in matched] == [("Person 1", "ann@acme.test")]
 
 
 async def test_a_file_that_is_not_an_export_is_422(db: RecordingDB) -> None:
     with pytest.raises(HTTPException) as err:
-        await imports.create_import_run([_upload(b"Name,Owner\nA,B\n", "people.csv")], _user())
+        await _create([_upload(b"Name,Owner\nA,B\n", "people.csv")], _user())
     assert err.value.status_code == 422
     assert db.statements == []
 
@@ -258,21 +268,21 @@ async def test_a_file_that_is_not_an_export_is_422(db: RecordingDB) -> None:
 async def test_a_file_over_the_cap_is_413(db: RecordingDB, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(imports, "MAX_FILE_BYTES", 100)
     with pytest.raises(HTTPException) as err:
-        await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+        await _create([_upload(FIXTURE.read_bytes())], _user())
     assert err.value.status_code == 413
 
 
 async def test_too_many_tasks_is_413(db: RecordingDB, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(imports, "MAX_TASKS", 100)
     with pytest.raises(HTTPException) as err:
-        await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+        await _create([_upload(FIXTURE.read_bytes())], _user())
     assert err.value.status_code == 413
 
 
 async def test_too_many_files_is_400(db: RecordingDB) -> None:
     files = [_upload(b"x") for _ in range(imports.MAX_FILES + 1)]
     with pytest.raises(HTTPException) as err:
-        await imports.create_import_run(files, _user())
+        await _create(files, _user())
     assert err.value.status_code == 400
 
 
@@ -289,7 +299,7 @@ async def test_a_failed_insert_leaves_no_file(db: RecordingDB, tmp_path: pathlib
 
     db.execute = execute  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
-        await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+        await _create([_upload(FIXTURE.read_bytes())], _user())
     assert list(tmp_path.rglob("*.csv")) == []
 
 
@@ -297,7 +307,7 @@ async def test_a_failed_insert_leaves_no_file(db: RecordingDB, tmp_path: pathlib
 
 
 async def test_a_saved_mapping_replans_from_the_stored_file(db: RecordingDB) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     mapping = ImportMapping(people={"name:person 1": None}, target=Target(name="From ClickUp"))
     again = await imports.save_import_mapping(view["id"], mapping, _user())
     assert again["mapping"]["target"]["name"] == "From ClickUp"
@@ -305,7 +315,7 @@ async def test_a_saved_mapping_replans_from_the_stored_file(db: RecordingDB) -> 
 
 
 async def test_another_organizations_run_is_404(db: RecordingDB) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["organization_id"] = "22222222-2222-2222-2222-222222222222"
     with pytest.raises(HTTPException) as err:
         await imports.get_import_run(view["id"], _user())
@@ -313,7 +323,7 @@ async def test_another_organizations_run_is_404(db: RecordingDB) -> None:
 
 
 async def test_a_run_past_planning_cannot_change(db: RecordingDB) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["state"] = "applying"
     with pytest.raises(HTTPException) as err:
         await imports.save_import_mapping(view["id"], ImportMapping(), _user())
@@ -321,7 +331,7 @@ async def test_a_run_past_planning_cannot_change(db: RecordingDB) -> None:
 
 
 async def test_a_changed_file_on_disk_is_refused(db: RecordingDB, tmp_path: pathlib.Path) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     stored = next(tmp_path.rglob("*.csv"))
     stored.write_bytes(stored.read_bytes() + b"\n")
     with pytest.raises(HTTPException) as err:
@@ -330,7 +340,7 @@ async def test_a_changed_file_on_disk_is_refused(db: RecordingDB, tmp_path: path
 
 
 async def test_a_missing_file_is_410(db: RecordingDB, tmp_path: pathlib.Path) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     next(tmp_path.rglob("*.csv")).unlink()
     with pytest.raises(HTTPException) as err:
         await imports.save_import_mapping(view["id"], ImportMapping(), _user())
@@ -374,7 +384,7 @@ def test_the_migration_forces_rls_and_keys_the_import_origin() -> None:
 async def test_a_mixed_case_session_email_is_stored_lowercased(db: RecordingDB) -> None:
     """The column CHECKs lowercase. A mixed-case email was a 500."""
     user = SimpleNamespace(email="Admin@Acme.TEST", has_permission=lambda p: True)
-    await imports.create_import_run([_upload(FIXTURE.read_bytes())], user)
+    await _create([_upload(FIXTURE.read_bytes())], user)
     insert = next(p for s, p in db.statements if s.startswith("INSERT INTO pm_import_runs"))
     assert insert["who"] == "admin@acme.test"
 
@@ -385,8 +395,8 @@ async def test_a_new_upload_discards_the_open_run_and_its_files(
 ) -> None:
     """§7.4 — one open run per organization, so the disk holds one upload per
     organization at most."""
-    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
-    second = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    first = await _create([_upload(FIXTURE.read_bytes())], _user())
+    second = await _create([_upload(FIXTURE.read_bytes())], _user())
     assert db.runs[first["id"]]["state"] == "discarded"
     assert db.runs[second["id"]]["state"] == "planned"
     folders = {p.parent.name for p in tmp_path.rglob("*.csv")}
@@ -394,9 +404,9 @@ async def test_a_new_upload_discards_the_open_run_and_its_files(
 
 
 async def test_another_organizations_open_run_is_not_discarded(db: RecordingDB) -> None:
-    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    first = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[first["id"]]["organization_id"] = "22222222-2222-2222-2222-222222222222"
-    await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    await _create([_upload(FIXTURE.read_bytes())], _user())
     assert db.runs[first["id"]]["state"] == "planned"
 
 
@@ -406,7 +416,7 @@ async def test_a_run_that_moves_on_during_the_parse_is_not_dragged_back(
 ) -> None:
     """The load sees `planned`, the parse takes seconds, and in that window the
     run moves on. The guarded UPDATE must refuse, never write `planned`."""
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     real_parse = imports._parse
 
     async def slow_parse(source: str, uploads: Any) -> Any:
@@ -425,7 +435,7 @@ async def test_the_parse_runs_with_no_session_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A large parse inside a transaction pins a pooled connection."""
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     open_sessions = 0
 
     @asynccontextmanager
@@ -462,7 +472,7 @@ async def test_a_failed_commit_leaves_no_file(
 
     monkeypatch.setattr(imports, "_tenant_session", failing_commit)
     with pytest.raises(RuntimeError):
-        await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+        await _create([_upload(FIXTURE.read_bytes())], _user())
     assert list(tmp_path.rglob("*.csv")) == []
 
 
@@ -482,7 +492,7 @@ async def test_apply_starts_the_writer_for_the_callers_organization(
     db: RecordingDB,
     started: list[tuple[str, str]],
 ) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     applied = await imports.apply_import_run(view["id"], _user())
     assert applied["state"] == "applying"
     assert started == [(ORG, view["id"])]
@@ -495,7 +505,7 @@ async def test_apply_refuses_a_plan_that_is_not_ready(
     db: RecordingDB,
     started: list[tuple[str, str]],
 ) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["plan"] = json.dumps({"ready": False, "errors": ["x"]})
     with pytest.raises(HTTPException) as err:
         await imports.apply_import_run(view["id"], _user())
@@ -506,9 +516,9 @@ async def test_apply_refuses_while_another_run_writes(
     db: RecordingDB,
     started: list[tuple[str, str]],
 ) -> None:
-    first = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    first = await _create([_upload(FIXTURE.read_bytes())], _user())
     await imports.apply_import_run(first["id"], _user())
-    second = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    second = await _create([_upload(FIXTURE.read_bytes())], _user())
     with pytest.raises(HTTPException) as err:
         await imports.apply_import_run(second["id"], _user())
     assert err.value.status_code == 409
@@ -519,7 +529,7 @@ async def test_apply_refuses_a_group_this_organization_does_not_have(
     db: RecordingDB,
     started: list[tuple[str, str]],
 ) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["mapping"] = json.dumps({"grant": "group:eng"})
     with pytest.raises(HTTPException) as err:
         await imports.apply_import_run(view["id"], _user())
@@ -532,7 +542,7 @@ async def test_a_finished_run_cannot_apply_again(
     db: RecordingDB,
     started: list[tuple[str, str]],
 ) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["state"] = "done"
     with pytest.raises(HTTPException) as err:
         await imports.apply_import_run(view["id"], _user())
@@ -564,7 +574,7 @@ async def test_the_plan_asks_the_writer_whether_it_continues(
 
     monkeypatch.setattr(import_writer, "continues_earlier", continues)
     raw = FIXTURE.read_bytes()
-    view = await imports.create_import_run([_upload(raw)], _user())
+    view = await _create([_upload(raw)], _user())
     assert view["plan"]["continues"] is True
     db.runs[view["id"]]["plan"] = json.dumps({**view["plan"], "inherited_from": "r0"})
     moved = await imports.save_import_mapping(
@@ -603,7 +613,7 @@ def test_the_view_carries_progress_and_report_but_not_the_lease() -> None:
 
 
 async def test_an_open_run_discards_with_nothing_to_undo(db: RecordingDB) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     out = await imports.discard_import_run(view["id"], _user())
     assert out["discarded"] == {}
     assert any(
@@ -613,7 +623,7 @@ async def test_an_open_run_discards_with_nothing_to_undo(db: RecordingDB) -> Non
 
 @pytest.mark.parametrize("state", ["applying", "discarded"])
 async def test_a_running_or_discarded_run_is_409(db: RecordingDB, state: str) -> None:
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["state"] = state
     with pytest.raises(HTTPException) as err:
         await imports.discard_import_run(view["id"], _user())
@@ -629,7 +639,7 @@ async def test_a_refused_discard_is_409_and_names_what_stops_it(
         raise import_discard.DiscardRefused("A member edited it.", [{"id": "t1", "title": "T"}])
 
     monkeypatch.setattr(import_discard, "discard_written_run", refuse)
-    view = await imports.create_import_run([_upload(FIXTURE.read_bytes())], _user())
+    view = await _create([_upload(FIXTURE.read_bytes())], _user())
     db.runs[view["id"]]["state"] = "done"
     with pytest.raises(HTTPException) as err:
         await imports.discard_import_run(view["id"], _user())
@@ -638,3 +648,37 @@ async def test_a_refused_discard_is_409_and_names_what_stops_it(
         "message": "A member edited it.",
         "blocking": [{"id": "t1", "title": "T"}],
     }
+
+
+# ── a body cut short (I-7) ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        {},
+        {"expected_files": 2, "expected_bytes": None},
+        {"expected_files": 1, "expected_bytes": 1},
+        {"expected_files": 2, "expected_bytes": 0},
+    ],
+)
+async def test_a_body_cut_short_is_refused_and_writes_nothing(
+    db: RecordingDB, trailer: dict[str, Any]
+) -> None:
+    """The Next proxy cuts a body at 10 MiB, and the parser drops the cut part
+    in silence. The trailing fields are how the route knows."""
+    raw = FIXTURE.read_bytes()
+    if trailer.get("expected_bytes") == 0:
+        trailer = {"expected_files": 2, "expected_bytes": len(raw)}
+    with pytest.raises(HTTPException) as err:
+        await imports.create_import_run([_upload(raw)], _user(), **trailer)
+    assert err.value.status_code == 400 and err.value.detail == imports.CUT_SHORT
+    assert not any(sql.startswith("INSERT") for sql, _ in db.statements)
+
+
+async def test_a_body_cut_before_its_first_file_ended_gets_the_same_reason(db: RecordingDB) -> None:
+    """Measured through the real Next proxy: a 12 MB single file loses its
+    whole part and the trailer, and FastAPI used to answer a bare 422."""
+    with pytest.raises(HTTPException) as err:
+        await imports.create_import_run(None, _user())
+    assert err.value.status_code == 400 and err.value.detail == imports.CUT_SHORT
