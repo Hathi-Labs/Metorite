@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-194 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
+### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
 - **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
   A hit means this is open.
 - **What happens.** H-173 moved the chat tools to the D78 level. The tools
@@ -114,7 +114,7 @@ line — never reclaim a number by deleting the other entry.
   `capture_intake`.
 - **Fence:** `tests/unit/test_chat_priority_levels.py`.
 - **Authority:** `work_plan.md` §3 D78.
-- **Added:** 2026-09-28 · the H-173 build
+- **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
 
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`

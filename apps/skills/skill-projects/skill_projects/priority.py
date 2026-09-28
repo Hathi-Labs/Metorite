@@ -73,7 +73,7 @@ PRIORITY_ARGS_DOC = (
     "reads as Important."
 )
 
-#: `capture_intake`'s version: it takes Important only (H-194).
+#: `capture_intake`'s version: it takes Important only (H-196).
 INTAKE_PRIORITY_DOC = (
     f"priority is a level name that is not leveraged: {_labels(_UNLEVERAGED_CELLS)}. "
     "Or set important directly (true or false). importance (a number) is "
