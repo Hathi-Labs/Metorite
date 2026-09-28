@@ -38,6 +38,22 @@ WRITING_SQL = (
     "SELECT id FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) AND state = 'applying'"
 )
+
+
+def _outside_imports(column: str) -> str:
+    """True when ``column`` falls outside every OTHER import's run, discarded
+    ones included. A later import writes lanes, types, tags and watchers into
+    this run's nodes, and its discard leaves them (§6.9). Without this, those
+    rows would read as a member's work and refuse this run for ever. The window
+    runs from the other run's upload to its end, so member work made inside it
+    is not seen either; the spec says so."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM pm_import_runs o "
+        " WHERE o.organization_id = CAST(:org AS uuid) AND o.id <> CAST(:run AS uuid) "
+        f"   AND {column} BETWEEN o.created_at AND coalesce(o.finished_at, 'infinity'::timestamptz))"
+    )
+
+
 #: Rule 1a — a later run that is not discarded continued this run's nodes.
 LATER_RUNS_SQL = (
     "SELECT id, created_at FROM pm_import_runs "
@@ -79,11 +95,15 @@ EDITED_SQL = (
     "                    WHERE a.task_id = t.id AND a.meta->'import' IS NULL) "
     "        OR EXISTS (SELECT 1 FROM pm_task_personal x WHERE x.task_id = t.id) "
     "        OR EXISTS (SELECT 1 FROM pm_task_watchers x WHERE x.task_id = t.id "
-    "                    AND x.created_at > CAST(:finished AS timestamptz)) "
+    "                    AND x.created_at > CAST(:finished AS timestamptz) AND "
+    + _outside_imports("x.created_at")
+    + ") "
     "        OR EXISTS (SELECT 1 FROM pm_task_attachments x WHERE x.task_id = t.id) "
     "        OR EXISTS (SELECT 1 FROM pm_task_links x "
     "                    WHERE (x.source_task_id = t.id OR x.target_task_id = t.id) "
-    "                      AND x.created_at > CAST(:finished AS timestamptz)) "
+    "                      AND x.created_at > CAST(:finished AS timestamptz) AND "
+    + _outside_imports("x.created_at")
+    + ") "
     "        OR EXISTS (SELECT 1 FROM pm_view_task_positions x WHERE x.task_id = t.id)) "
     " LIMIT :n"
 )
@@ -122,6 +142,21 @@ NODE_TABLES: dict[str, str] = {
 }
 #: `pm_task_counters` holds no member work: it is the task-number counter.
 NODE_TABLES_IGNORED = ("pm_task_counters",)
+#: The tables that CASCADE with a task, and what rule 2 does with each. The
+#: live test reads the catalog and fails on one that is in neither list.
+TASK_TABLES_CHECKED = (
+    "pm_activities",
+    "pm_task_personal",
+    "pm_task_watchers",
+    "pm_task_attachments",
+    "pm_task_links",
+    "pm_view_task_positions",
+)
+TASK_TABLES_IGNORED: dict[str, str] = {
+    "pm_task_assignees": "an assignment by a member writes an activity, which rule 2 reads",
+    "pm_notifications": "a notification is a message to a member, not their work",
+    "pm_intake": "an intake item a member converted names a task the member made",
+}
 
 
 def _node_work_sql() -> str:
@@ -129,14 +164,16 @@ def _node_work_sql() -> str:
         f"SELECT p.id, p.name || ': ' || '{label}' AS title FROM {table} x "
         "  JOIN pm_projects p ON p.id = x.project_id "
         " WHERE x.project_id = ANY(CAST(:nodes AS uuid[])) "
-        "   AND x.created_at > CAST(:finished AS timestamptz)"
+        "   AND x.created_at > CAST(:finished AS timestamptz) AND "
+        + _outside_imports("x.created_at")
         + (" AND x.meta->'import' IS NULL" if table == "pm_activities" else "")
         for table, label in NODE_TABLES.items()
     ]
     # A member renamed or moved a node the run made.
     parts.append(
         "SELECT id, name || ': renamed or changed' AS title FROM pm_projects "
-        " WHERE id = ANY(CAST(:nodes AS uuid[])) AND updated_at > CAST(:finished AS timestamptz)"
+        " WHERE id = ANY(CAST(:nodes AS uuid[])) AND updated_at > CAST(:finished AS timestamptz) AND "
+        + _outside_imports("updated_at")
     )
     return "(" + ") UNION ALL (".join(parts) + ") LIMIT :n"
 

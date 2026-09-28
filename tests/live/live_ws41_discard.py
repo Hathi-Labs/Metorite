@@ -107,6 +107,11 @@ def edited_export(raw: bytes) -> tuple[bytes, str, str]:
     for row in table[1:]:
         if row[col["Task ID"]] == a:
             row[col["Task Name"]] = "Renamed in ClickUp"
+            # A status its list lacks, and a tag the space lacks: the later run
+            # adds a lane and a tag to the EARLIER run's nodes, after that run
+            # ended. The review's P1: they must not read as a member's work.
+            row[col["Status"]] = "waiting on vendor"
+            row[col["Tags"]] = "[vendor hold]"
         elif row[col["Task ID"]] == b:
             row[col["Comments"]] = json.dumps(
                 [
@@ -339,6 +344,19 @@ async def catalog_fence() -> None:
         found <= known,
         str(sorted(found - known)),
     )
+    task_rows = await rows(
+        str(uuid.UUID(int=0)),
+        "SELECT DISTINCT cl.relname AS tbl FROM pg_constraint con "
+        "  JOIN pg_class cl ON cl.oid = con.conrelid JOIN pg_class rt ON rt.oid = con.confrelid "
+        " WHERE con.contype = 'f' AND rt.relname = 'pm_tasks' AND con.confdeltype = 'c'",
+    )
+    found = {r.tbl for r in task_rows} - {"pm_tasks"}
+    known = set(import_discard.TASK_TABLES_CHECKED) | set(import_discard.TASK_TABLES_IGNORED)
+    check(
+        "0.2 every table that cascades with a task is checked",
+        found <= known,
+        str(sorted(found - known)),
+    )
 
 
 async def update_chain(org: str, bundle: object, raw: bytes) -> None:
@@ -380,6 +398,14 @@ async def update_chain(org: str, bundle: object, raw: bytes) -> None:
         "4.4 the kept update stays on the earlier task", title == "Renamed in ClickUp", str(title)
     )
     check("4.5 the earlier run's tasks survive", await run_tasks(org, first) == 2423)
+    residue = await one(
+        org,
+        "SELECT (SELECT count(*) FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+        "         WHERE p.organization_id = CAST(:org AS uuid) AND s.name = 'waiting on vendor') "
+        "     + (SELECT count(*) FROM pm_tags WHERE organization_id = CAST(:org AS uuid) "
+        "         AND lower(name) = 'vendor hold')",
+    )
+    check("4.5b the later run's lane and tag stay in the earlier nodes", residue == 2, str(residue))
     counts, refused = await discard(org, first)
     check(
         "4.6 then the earlier run discards cleanly",
