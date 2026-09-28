@@ -27,6 +27,7 @@ import {
   gatewayHeaders,
   requireIdentity,
   unauthenticated,
+  gatewayFetch,
 } from "@/lib/gateway";
 import { isSafeColor } from "@/lib/theme/css";
 import { DENSITY_SCALE } from "@/lib/theme/types";
@@ -82,7 +83,7 @@ export async function GET(): Promise<NextResponse> {
   if (me instanceof NextResponse) return me;
 
   try {
-    const res = await fetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(8_000),
       cache: "no-store",
@@ -145,7 +146,7 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   // question, and authorization is resolved from the org tables at the
   // gateway — not from anything this request could assert.
   try {
-    const res = await fetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}${GATEWAY_PATH}`, {
       method: "PUT",
       headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),

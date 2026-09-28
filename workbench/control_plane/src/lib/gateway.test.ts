@@ -371,6 +371,47 @@ describe("the route surface", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("reaches the gateway only through gatewayFetch (H-194)", () => {
+    // The workbench server calls the gateway on 127.0.0.1:8080, not through
+    // Caddy, so Caddy's restart hold does not cover it. `gatewayFetch` is
+    // what keeps a member's request alive while the gateway restarts. A bare
+    // `fetch` to the gateway fails for the 10 s or more of each deploy.
+    //
+    // A module "reaches the gateway" when it imports GATEWAY_URL from
+    // lib/gateway or reads GATEWAY_BASE_URL itself. Such a module may not
+    // call the bare `fetch` at all. The one exception is named with its
+    // count, so a NEW bare fetch in that file also fails:
+    //
+    //   lib/memory.ts  4 calls to the legacy Mem0 server (MEM0_API_URL),
+    //                  which is not the gateway.
+    const ALLOWED: Record<string, number> = { "lib/memory.ts": 4 };
+    const SRC_DIR = fileURLToPath(new URL("..", import.meta.url));
+    const IMPORTS_URL = /import\s*\{[^}]*\bGATEWAY_URL\b[^}]*\}\s*from\s*["']@\/lib\/gateway["']/;
+    const offenders: string[] = [];
+    let swept = 0;
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry) || /\.test\.tsx?$/.test(entry)) continue;
+        const rel = full.slice(SRC_DIR.length).replace(/\\/g, "/").replace(/^\//, "");
+        if (rel === "lib/gateway.ts" || rel === "lib/gatewayFetch.ts") continue;
+        const src = readFileSync(full, "utf8");
+        if (!IMPORTS_URL.test(src) && !/process\.env\.GATEWAY_BASE_URL/.test(src)) continue;
+        swept += 1;
+        const bare = (src.match(/(?<![\w.$])fetch\(/g) ?? []).length;
+        if (bare !== (ALLOWED[rel] ?? 0)) offenders.push(`${rel}: ${bare} bare fetch call(s)`);
+      }
+    };
+    walk(SRC_DIR);
+    // Guards the sweep itself: a broken walk would pass with nothing checked.
+    expect(swept).toBeGreaterThan(90);
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps every identity-free call to a written reason", () => {
     // serviceHeaders() takes a reason precisely so this is reviewable. An
     // empty string would satisfy the type and defeat the point.

@@ -8,7 +8,7 @@
  * this proxy buffers response bodies.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -53,10 +53,10 @@ async function forward(
     // reuse it (undici vs uvicorn) — GETs are idempotent, retry once.
     let res: Response;
     try {
-      res = await fetch(upstream, init);
+      res = await gatewayFetch(upstream, init);
     } catch (err) {
       if (method !== "GET") throw err;
-      res = await fetch(upstream, {
+      res = await gatewayFetch(upstream, {
         ...init,
         signal: AbortSignal.timeout(60_000),
       });

@@ -55,7 +55,7 @@ import {
   emailOtpAdapterOver,
   reserveOtpSendVia,
 } from "@/lib/emailOtp";
-import { GATEWAY_URL, headersActingAs } from "@/lib/gateway";
+import { GATEWAY_URL, headersActingAs, gatewayFetch } from "@/lib/gateway";
 import type { Adapter } from "next-auth/adapters";
 
 /**
@@ -67,7 +67,7 @@ import type { Adapter } from "next-auth/adapters";
  * thing both fences exist to catch.
  */
 const call: OtpGatewayCall = (path, identifier, body) =>
-  fetch(`${GATEWAY_URL}${path}`, {
+  gatewayFetch(`${GATEWAY_URL}${path}`, {
     method: "POST",
     headers: headersActingAs(identifier, {
       "Content-Type": "application/json",

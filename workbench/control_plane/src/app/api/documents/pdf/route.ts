@@ -16,7 +16,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const body = await readCapped(req);
     if (body === null) return NextResponse.json(TOO_LARGE, { status: 413 });
 
-    const res = await fetch(upstream.toString(), {
+    const res = await gatewayFetch(upstream.toString(), {
       method: "POST",
       headers: {
         ...(await gatewayHeaders()),

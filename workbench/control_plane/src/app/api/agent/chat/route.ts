@@ -37,7 +37,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { auth, isAuthEnabled } from "@/auth";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 import {
   foldForToolStart,
   unfoldTrailingAnswer,
@@ -114,7 +114,7 @@ async function persistAssistantMessage(
     const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
     // even if the Next.js process restarts mid-stream.
-    await fetch(
+    await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${threadId}/messages`,
       {
         method: "POST",
@@ -590,7 +590,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const since = lastEventId || "0-0";
     let reconRes: Response;
     try {
-      reconRes = await fetch(
+      reconRes = await gatewayFetch(
         `${GATEWAY_URL}/agent/run/${encodeURIComponent(threadId)}/reconnect?since=${encodeURIComponent(since)}`,
         {
           method: "GET",
@@ -656,7 +656,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     // /agent/run/stream returns the same AG-UI event format as /copilot/chat.
     let streamRes: Response;
     try {
-      streamRes = await fetch(`${GATEWAY_URL}/agent/run/stream`, {
+      streamRes = await gatewayFetch(`${GATEWAY_URL}/agent/run/stream`, {
         method: "POST",
         headers: await buildGatewayHeaders(),
         body: JSON.stringify({
@@ -734,7 +734,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const gatewayRes = await fetch(`${GATEWAY_URL}/agent/run`, {
+        const gatewayRes = await gatewayFetch(`${GATEWAY_URL}/agent/run`, {
           method: "POST",
           headers: await buildGatewayHeaders(),
           body: JSON.stringify({
@@ -792,7 +792,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           content = content.replace(/<<<SETUP:[^>]+>>>/g, "").trim();
           const vars = rawMatches.filter((x) => x.value).map((x) => ({ key: x.key, value: x.value }));
           if (vars.length > 0) {
-            fetch(`${GATEWAY_URL}/integrations/configure`, {
+            gatewayFetch(`${GATEWAY_URL}/integrations/configure`, {
               method: "POST",
               headers: await buildGatewayHeaders(),
               body: JSON.stringify({ vars }),
@@ -853,7 +853,7 @@ function streamLiteLLM({
         chatMessages.push(...history);
         if (!hasCurrent) chatMessages.push({ role: "user", content: message });
 
-        const upstream = await fetch(`${LITELLM_BASE_URL}/chat/completions`, {
+        const upstream = await gatewayFetch(`${LITELLM_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

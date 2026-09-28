@@ -8,7 +8,7 @@
  * disconnect signal tears down the gateway stream.
  */
 import { NextRequest } from "next/server";
-import { GATEWAY_URL, currentIdentity, gatewayHeaders } from "@/lib/gateway";
+import { GATEWAY_URL, currentIdentity, gatewayHeaders, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,7 +28,7 @@ export async function GET(
   const { runId } = await ctx.params;
   let upstream: Response;
   try {
-    upstream = await fetch(
+    upstream = await gatewayFetch(
       `${GATEWAY_URL}/workflows/runs/${encodeURIComponent(runId)}/stream`,
       {
         headers: await gatewayHeaders(),

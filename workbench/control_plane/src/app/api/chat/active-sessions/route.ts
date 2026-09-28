@@ -9,7 +9,7 @@
  * browser refresh.
  */
 import { NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,7 @@ export async function GET(): Promise<NextResponse> {
   // Gate when auth is enabled (no-op in dev).  Returns an empty list rather
   // than 401 so the sidebar degrades gracefully for unauthenticated polls.
   try {
-    const res = await fetch(`${GATEWAY_URL}/chat/active-sessions`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/chat/active-sessions`, {
       headers: await gatewayHeaders(),
       signal: AbortSignal.timeout(5_000),
     });

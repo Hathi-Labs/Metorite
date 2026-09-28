@@ -1606,10 +1606,38 @@ line — never reclaim a number by deleting the other entry.
   `127.0.0.1:8080`, not through Caddy. So the Caddy `lb_try_duration` hold
   (H-60, closed 2026-09-28) does not cover it. The gateway is cold for 10 to
   23 s on each deploy, and the workbench API routes fail in that time.
-- **Options, in order.** A bounded retry in the workbench's gateway client,
-  for idempotent reads and for connection-refused only. Or two gateway units
-  behind a swapped port. Do NOT skip the gateway restart: `build_sha()` is
-  cached per process, and `deploy.yml` verifies `/version`.
+- **Measured on 2026-09-27 21:06.** The old gateway stopped at 21:06:18.48.
+  The new one listened on `:8080` at 21:06:28.77, so connects failed for
+  10.3 s. The browser polls `/chat/active-sessions` each 6 s, and the gateway
+  log lost the polls at about :19 and :25. The workbench journal showed
+  nothing, because the routes catch the error and log nothing.
+- **The fix (PR "Workbench: retry a refused gateway connection during a
+  restart").** `src/lib/gatewayFetch.ts` is now the one fetch from the
+  workbench server to the gateway. It tries a connection again for up to
+  25 s, which is less than the 30 s Caddy hold. The rules:
+  - A response of any status goes back to the caller. A 503 is an answer.
+  - GET, HEAD and OPTIONS retry on `ECONNREFUSED`, `ECONNRESET` and
+    `UND_ERR_SOCKET`.
+  - Other methods retry on `ECONNREFUSED` only, because only a refusal
+    proves that the gateway did not get the request.
+  - A stream body is not retried. A streamed response is not retried after
+    its headers arrive.
+  - Each try sends the same headers, so the identity does not change (R5).
+  The six catch-all proxies lost their own "retry once" code. Fences:
+  `gatewayFetch.test.ts`, and the bare-fetch sweep in `gateway.test.ts`.
+- **Verify after the merge, then delete this entry.** Do the two checks
+  during the next deploy that restarts the gateway.
+  1. Loop a signed-in GET from the moment of `==> Restarting gateway`:
+     `while :; do curl -s -o /dev/null -w '%{http_code} %{time_total}\n'
+     -b "$COOKIE" https://app.metorite.com/api/auth/me; sleep 1; done`.
+     Expect only 200. Expect some answers to take 1 to 12 s.
+  2. Read `journalctl -u acb-workbench --since <restart time> | grep
+     '\[gateway\]'`. Expect `retry` lines, then `recovered` lines, and no
+     `gave up` line.
+  If a `gave up` line shows, the gateway was cold for more than 25 s. Then
+  the second option applies: two gateway units behind a swapped port.
+  Do NOT skip the gateway restart: `build_sha()` is cached per process, and
+  `deploy.yml` verifies `/version`.
 - **Authority:** `deploy_delivery_path.md` · PR #498
 - **Added:** 2026-09-28 · the H-60 close-out
 

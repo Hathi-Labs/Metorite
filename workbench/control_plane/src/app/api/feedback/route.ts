@@ -7,7 +7,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 
 // These handlers resolve the signed-in member, so they can never be
 // statically evaluated. Without this, `next build`'s page-data collection
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const r = await fetch(`${GATEWAY_URL}/chat/feedback`, {
+    const r = await gatewayFetch(`${GATEWAY_URL}/chat/feedback`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),

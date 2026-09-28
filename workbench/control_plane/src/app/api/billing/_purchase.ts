@@ -25,7 +25,7 @@
  */
 import { NextResponse } from "next/server";
 
-import { GATEWAY_URL, currentIdentity, headersActingAs, proxyToGateway } from "@/lib/gateway";
+import { GATEWAY_URL, currentIdentity, headersActingAs, proxyToGateway, gatewayFetch } from "@/lib/gateway";
 import { hasCapability, type Access } from "@/lib/access";
 
 /**
@@ -64,7 +64,7 @@ export async function requirePurchaser(): Promise<Purchaser | NextResponse> {
 
   let access: Partial<Access> | null = null;
   try {
-    const res = await fetch(`${GATEWAY_URL}/auth/me`, {
+    const res = await gatewayFetch(`${GATEWAY_URL}/auth/me`, {
       headers: headersActingAs(identity.email),
       cache: "no-store",
       signal: AbortSignal.timeout(8000),
