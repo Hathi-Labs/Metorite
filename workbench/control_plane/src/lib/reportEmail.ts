@@ -290,10 +290,29 @@ function hiddenNotes(n: number | null | undefined): string[] {
  * WS-27bn R3d and R5a. "This report hides N other people", or null when
  * the report hides nobody. The panels, the email and the chat card
  * (`reads.py` `hidden_people_line`) print these words.
+ *
+ * `noun` fits the surface. The email and the report table say "report".
+ * The panels say "view", because the Analytics app mounts them too. The
+ * rest of the words have this one source.
  */
-export function hiddenPeopleLine(n: number | null | undefined): string | null {
+export function hiddenPeopleLine(
+  n: number | null | undefined,
+  noun: "report" | "view" = "report",
+): string | null {
   if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) return null;
-  return `This report hides ${n} other ${n === 1 ? "person" : "people"}`;
+  return `This ${noun} hides ${n} other ${n === 1 ? "person" : "people"}`;
+}
+
+/**
+ * WS-27bn R5a repair. What an empty panel says. When the server removed
+ * every row that a reader may not see, the scope is NOT empty, so the panel
+ * says that the reader can see no rows, and the hidden line counts the rest.
+ */
+export function emptyPanelLine(
+  n: number | null | undefined,
+  empty: string,
+): string {
+  return hiddenPeopleLine(n) ? "You can see no rows here." : empty;
 }
 
 /** How many project lines a message carries before it stops being readable. */

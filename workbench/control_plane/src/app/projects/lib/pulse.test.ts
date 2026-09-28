@@ -67,6 +67,7 @@ describe("the words are one set", () => {
   it("says the hidden line in the chat's words", () => {
     expect(hiddenPeopleLine(2)).toBe("This report hides 2 other people");
     expect(hiddenPeopleLine(1)).toBe("This report hides 1 other person");
+    expect(hiddenPeopleLine(2, "view")).toBe("This view hides 2 other people");
     expect(hiddenPeopleLine(0)).toBeNull();
     expect(hiddenPeopleLine(undefined)).toBeNull();
   });
