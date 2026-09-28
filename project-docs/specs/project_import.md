@@ -687,7 +687,7 @@ themselves, uploaded as a ZIP.
   member's write can land between the check and the delete.
 
   **Rows another import wrote are not a member's.** A later import adds
-  lanes, types, tags and watchers to this run's nodes, and its own discard
+  lanes, types, tags and watchers to this run's nodes. Its own discard
   leaves them. So "after the run" also excludes any row made while ANOTHER
   import of this organization ran, discarded ones included. Without that,
   discarding the later run first would still leave this run refused for
