@@ -19,7 +19,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { arrowFor } from "./SelectButton";
+import { arrowFor, filterOptions } from "./SelectButton";
 
 describe("arrowFor", () => {
   it("draws TWO heads at the default", () => {
@@ -63,5 +63,24 @@ describe("the task body's Status list paints above the focused task", () => {
     );
     const status = body.match(/<SelectButton\s+label="Status"[\s\S]*?\/>/)?.[0] ?? "";
     expect(status).toContain('layer="top"');
+  });
+});
+
+describe("filterOptions (WS-27bn R5b)", () => {
+  const options = [
+    { value: "", label: "Everyone", group: "Everyone" },
+    { value: "person:a@x.test", label: "Ana Shah", hint: "a@x.test", group: "People" },
+    { value: "team:hw", label: "Hardware team", group: "Teams" },
+  ];
+
+  it("keeps every option for an empty query", () => {
+    expect(filterOptions(options, "  ")).toEqual(options);
+  });
+
+  it("matches the label or the hint, in any case", () => {
+    expect(filterOptions(options, "SHAH").map((o) => o.value)).toEqual(["person:a@x.test"]);
+    expect(filterOptions(options, "a@x").map((o) => o.value)).toEqual(["person:a@x.test"]);
+    expect(filterOptions(options, "hard").map((o) => o.group)).toEqual(["Teams"]);
+    expect(filterOptions(options, "zzz")).toEqual([]);
   });
 });

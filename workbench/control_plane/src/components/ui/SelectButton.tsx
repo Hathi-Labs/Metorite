@@ -45,10 +45,11 @@
  * it does not hand-roll a second containment check — the walker is what makes
  * a portalled child not count as "outside".
  */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
+import Input from "@/components/ui/Input";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 /**
@@ -80,6 +81,26 @@ export function arrowFor(value: string, defaultValue: string): string {
  */
 export const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 
+/**
+ * The options a filter query keeps, with their group headings (WS-27bn R5b).
+ *
+ * A case-insensitive match on the label or the hint, so a member finds a
+ * person by name or by address. An empty query keeps every option. A pure
+ * function, for the reason `arrowFor` is one.
+ */
+export function filterOptions(
+  options: readonly SelectOption[],
+  query: string
+): SelectOption[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...options];
+  return options.filter(
+    (o) =>
+      o.label.toLowerCase().includes(q) ||
+      (o.hint ?? "").toLowerCase().includes(q)
+  );
+}
+
 export interface SelectOption {
   value: string;
   label: string;
@@ -103,6 +124,11 @@ export interface SelectOption {
    * into a list that no longer says what contains what.
    */
   disabled?: boolean;
+  /**
+   * WS-27bn R5b. A heading drawn above the first option of each group. The
+   * list keeps the caller's order, so the caller keeps each group together.
+   */
+  group?: string;
 }
 
 export interface SelectButtonProps {
@@ -147,6 +173,21 @@ export interface SelectButtonProps {
    * body inside My Tasks' `TaskFocusModal` (`z-[80]`).
    */
   layer?: PanelLayer;
+  /**
+   * WS-27bn R5b. A muted word before the value on the trigger, so a chip
+   * reads as words: "About: Me". It also joins the accessible name.
+   */
+  prefix?: string;
+  /**
+   * WS-27bn R5b. What the trigger says, muted, when no option has the
+   * value. A chip that asks for a choice says so, and does not look set.
+   */
+  prompt?: string;
+  /**
+   * WS-27bn R5b. Show a filter box when the list has MORE options than
+   * this. Absent: no filter box.
+   */
+  filterAbove?: number;
 }
 
 export function SelectButton({
@@ -161,8 +202,14 @@ export function SelectButton({
   autoOpen = false,
   onClose,
   layer,
+  prefix,
+  prompt,
+  filterAbove,
 }: SelectButtonProps) {
   const [open, setOpen] = useState(autoOpen);
+  const [query, setQuery] = useState("");
+  const filtering = filterAbove !== undefined && options.length > filterAbove;
+  const shown = filtering ? filterOptions(options, query) : options;
   const root = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   /**
@@ -201,6 +248,7 @@ export function SelectButton({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOpen(false);
+        setQuery("");
         root.current?.querySelector("button")?.focus();
       }
     };
@@ -216,6 +264,7 @@ export function SelectButton({
     (next: string) => {
       onChange(next);
       setOpen(false);
+      setQuery("");
       root.current?.querySelector("button")?.focus();
     },
     [onChange]
@@ -226,7 +275,7 @@ export function SelectButton({
       <button
         ref={setTrigger}
         type="button"
-        aria-label={label}
+        aria-label={prefix ? `${prefix} ${current?.label ?? prompt ?? label}` : label}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
@@ -235,7 +284,16 @@ export function SelectButton({
         className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
       >
         <span className="min-w-0 flex-1 truncate pr-px">
-          {current?.label ?? label}
+          {prefix ? (
+            <span className="text-muted-foreground">{prefix} </span>
+          ) : null}
+          {current ? (
+            current.label
+          ) : prompt ? (
+            <span className="italic text-muted-foreground">{prompt}</span>
+          ) : (
+            label
+          )}
         </span>
         {/* ⚠️ Two heads at the default, one off it. See the header. */}
         <Icon
@@ -252,33 +310,60 @@ export function SelectButton({
         className="max-h-64 w-max p-1"
         panelProps={{ id: listId, role: "listbox", "aria-label": label }}
       >
-          {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="option"
-              aria-selected={option.value === value}
-              aria-disabled={option.disabled || undefined}
-              disabled={option.disabled}
-              onClick={() => pick(option.value)}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
-                option.disabled
-                  ? "cursor-not-allowed text-muted-foreground"
-                  : "hover:bg-muted"
-              } ${option.value === value ? "bg-muted font-medium" : ""}`}
-              // A tree's indent, in `rem` so it follows the member's density.
-              // `px` here would stop matching the text beside it at compact.
-              style={
-                option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
-              }
-            >
-              <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
-              {option.hint ? (
-                <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {option.hint}
-                </span>
+          {filtering ? (
+            <div className="p-1">
+              <Input
+                inputSize="sm"
+                autoFocus
+                className="w-full"
+                placeholder="Type to filter"
+                aria-label={`Filter ${label}`}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+          ) : null}
+          {filtering && shown.length === 0 ? (
+            <p className="px-2 py-1 text-[11px] text-muted-foreground">
+              Nothing matches.
+            </p>
+          ) : null}
+          {shown.map((option, i) => (
+            <Fragment key={option.value}>
+              {option.group && option.group !== shown[i - 1]?.group ? (
+                <p
+                  role="presentation"
+                  className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold text-muted-foreground"
+                >
+                  {option.group}
+                </p>
               ) : null}
-            </button>
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                aria-disabled={option.disabled || undefined}
+                disabled={option.disabled}
+                onClick={() => pick(option.value)}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                  option.disabled
+                    ? "cursor-not-allowed text-muted-foreground"
+                    : "hover:bg-muted"
+                } ${option.value === value ? "bg-muted font-medium" : ""}`}
+                // A tree's indent, in `rem` so it follows the member's density.
+                // `px` here would stop matching the text beside it at compact.
+                style={
+                  option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
+                }
+              >
+                <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+                {option.hint ? (
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {option.hint}
+                  </span>
+                ) : null}
+              </button>
+            </Fragment>
           ))}
       </AnchoredPanel>
     </div>

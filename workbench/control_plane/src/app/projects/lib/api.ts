@@ -936,6 +936,31 @@ export interface ReportConfig {
    * unknown key and a coming-soon key with 422.
    */
   template?: string;
+  /**
+   * WS-27bn R5a. Who the report is about: one person or one team. Absent
+   * means everyone in the scope. `project_id` stays the scope, and the two
+   * combine. ⚠️ PATCH replaces the config, so an edit that leaves this out
+   * removes the subject.
+   */
+  subject?: ReportSubject;
+}
+
+/** WS-27bn R5a — `config.subject`. The server checks it on each save. */
+export type ReportSubject =
+  | { kind: "person"; email: string }
+  | { kind: "team"; slug: string };
+
+/**
+ * WS-27bn R5a — `GET /projects/reports/subjects`: the people and the teams
+ * that §7.1 lets the caller report on. The subject chip reads only this.
+ */
+export interface ReportSubjects {
+  /** True for an admin, who may report on everybody. */
+  everyone: boolean;
+  /** WS-27bn R5b. The caller's own address. The chip names it "Me". */
+  me: string;
+  people: { email: string; name: string | null }[];
+  teams: { slug: string; name: string }[];
 }
 
 /**
@@ -957,6 +982,12 @@ export interface ReportTemplate {
   skip_current_week?: boolean;
   /** Only on a coming-soon template: what it waits for. */
   waits_for?: string;
+  /**
+   * WS-27bn R5b. `self`: the subject is the reader (T2). `person`: the
+   * subject is one person (T6). The server refuses a config with no person
+   * subject for either.
+   */
+  requires_subject?: "self" | "person";
 }
 
 /**
@@ -1583,6 +1614,8 @@ export const projectsApi = {
   /** WS-27bn R2. The template catalogue, in the server's order. */
   reportTemplates: () =>
     call<{ templates: ReportTemplate[] }>("reports/templates"),
+  /** WS-27bn R5b. Who the caller may report on (§7.1). The subject chip. */
+  reportSubjects: () => call<ReportSubjects>("reports/subjects"),
   createReport: (body: {
     name: string;
     project_id?: string | null;
