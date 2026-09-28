@@ -31,6 +31,7 @@ import re
 from typing import Any
 
 from skill_projects.client import data, get, uuid_of
+from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
     _MISSING,
     HIDDEN_LINE_SECTIONS,
@@ -100,13 +101,15 @@ def _change_text(meta: dict[str, Any]) -> tuple[str, str, str]:
     changes = meta.get("changes") or []
     if isinstance(changes, list) and changes:
         first = changes[0] if isinstance(changes[0], dict) else {}
-        return (
+        field, was, now = change_view(
             str(first.get("field") or ""),
-            _plain(first.get("old_label", first.get("old"))),
-            _plain(first.get("new_label", first.get("new"))),
+            first.get("old_label", first.get("old")),
+            first.get("new_label", first.get("new")),
         )
+        return field, _plain(was), _plain(now)
     if meta.get("field"):
-        return str(meta.get("field")), _plain(meta.get("before")), _plain(meta.get("after"))
+        field, was, now = change_view(str(meta.get("field")), meta.get("before"), meta.get("after"))
+        return field, _plain(was), _plain(now)
     return "", "", ""
 
 
@@ -180,7 +183,11 @@ def _task_cell(task: dict[str, Any]) -> dict[str, Any]:
         "title": _plain(task.get("title")),
         "assignees": [_plain(a) for a in task.get("assignees") or []],
         "due": _day(task.get("due_at")),
+        # D78 (H-173): the card derives the level with `projects/lib/matrix`
+        # `taskCell`, the one client rule, from the three stored inputs.
+        "due_at": task.get("due_at"),
         "importance": task.get("importance"),
+        "leveraged": bool(task.get("leveraged")),
         "done": bool(task.get("completed_at")),
     }
 
@@ -252,7 +259,7 @@ async def render_tasks(
     query: str = "",
 ) -> str:
     """Draw a task list as a table card: number, title, status, assignees,
-    due, importance. The same filters as list_tasks. Each row opens the
+    due, priority level. The same filters as list_tasks. Each row opens the
     task in the app. Use it when the member wants to SEE a list, not read
     one."""
     params = _list_params(
@@ -281,7 +288,7 @@ async def render_tasks(
                 _plain(names.get(str(t.get("status_id")), "")),
                 ", ".join(_plain(a) for a in t.get("assignees") or []) or "unassigned",
                 _day(t.get("due_at")),
-                t.get("importance") or "",
+                level_label(t),
             ],
         }
         for t in tasks
@@ -294,7 +301,7 @@ async def render_tasks(
             "dataGrid",
             {
                 "title": f"Tasks ({total})",
-                "columns": ["#", "Title", "Status", "Assignees", "Due", "Importance"],
+                "columns": ["#", "Title", "Status", "Assignees", "Due", "Priority"],
                 "rows": rows,
                 "openBase": "/projects?task=",
             },

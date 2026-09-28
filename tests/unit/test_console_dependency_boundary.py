@@ -348,6 +348,25 @@ _THE_DECIDE_CALLER = "packages/acb_llm/acb_llm/decide.py"
 #: ``admin.email`` from the authenticated context (R11), and the member is a
 #: row already in ``access_request``, never a caller-supplied body field.
 _THE_APPROVE_CALLER = "apps/services/gateway/gateway/routes/admin/access_requests.py"
+#: ⚠️ **The TENTH entry — the customer billing proxy, H-152, 2026-09-28 — and
+#: the argument, because this list's own rule is that a new entry states one.**
+#:
+#: It reads the customer's own billing: the balance, the seat grid, the roster,
+#: the price list and the spend. It calls ``billing_read_on_console`` and
+#: **allocates no seat**. Every door it reaches is a READ, and none of them
+#: touches ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The billing pages read the Console with
+#: ``CUSTOMER_CONSOLE_ORG_KEY``, which names ONE tenant, so a shared box showed
+#: one tenant's balance to all of them. The per-box deployment key lives in the
+#: gateway alone (§6(f)), so the read has to travel through here, exactly as
+#: the seat overview does.
+#:
+#: 📌 It is a **session-email-only** route like the seat proxy: the actor is
+#: ``user.email`` from the authenticated context (R11), and no route in it reads
+#: a body, a query parameter or a path segment. The entry is NARROWED by
+#: ``test_the_billing_proxy_touches_only_the_billing_read_client`` below.
+_THE_BILLING_CALLER = "apps/services/gateway/gateway/routes/billing.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -358,10 +377,31 @@ _ALLOWED_CALLERS = (
     _THE_LIFESPAN_CALLER,
     _THE_DECIDE_CALLER,
     _THE_APPROVE_CALLER,
+    _THE_BILLING_CALLER,
 )
 
 #: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
+
+#: The ONLY names ``routes/billing.py`` may read from ``console_resolve``: the
+#: billing READ client, the three CHECKOUT clients (H-152's second half), their
+#: outage type, the wiring question and the refusal prefix it reads a
+#: capability 403 by. No seat write, no resolve.
+#:
+#: ⚠️ The checkout clients allocate no seat through ``resolve_for_signin``. A
+#: redeemed code can grant seats through the Console's ``payments.fulfil``;
+#: that is the ONE edge the Console's own transitive fence permits
+#: (``test_the_checkout_doors_reach_no_grant_writer_but_redeem``), and the
+#: code is the operator's pre-authorization, not this box's.
+_BILLING_ALLOWED_NAMES = frozenset({
+    "billing_read_on_console",
+    "create_order_on_console",
+    "read_order_on_console",
+    "redeem_code_on_console",
+    "ConsoleBillingUnavailable",
+    "CAPABILITY_REFUSAL_PREFIX",
+    "is_wired",
+})
 
 
 def _console_resolve_names(tree: ast.AST) -> tuple[set[str], set[str]]:
@@ -437,6 +477,21 @@ def test_the_decide_facade_touches_only_the_decide_client() -> None:
         f"acb_llm/decide.py reads {sorted((used | imported) - _DECIDE_ALLOWED_NAMES)} "
         "from console_resolve. It may read only the decide client and its "
         "outage exception."
+    )
+
+
+def test_the_billing_proxy_touches_only_the_billing_read_client() -> None:
+    """``routes/billing.py`` is on the list for SEVEN names, and this pins them.
+
+    The list admits the FILE. This admits only the read client and what it
+    needs to relay an answer, so a later edit cannot call
+    ``resolve_for_signin`` or a seat write from the billing proxy.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_BILLING_CALLER))
+    assert used or imported, "the billing proxy no longer reaches console_resolve"
+    assert (used | imported) <= _BILLING_ALLOWED_NAMES, (
+        f"routes/billing.py reads {sorted((used | imported) - _BILLING_ALLOWED_NAMES)} "
+        "from console_resolve. It may read only the billing read client."
     )
 
 
@@ -603,6 +658,7 @@ _CP2B_TENANT_MODULES: tuple[str, ...] = (
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
+    _THE_BILLING_CALLER,
 )
 
 

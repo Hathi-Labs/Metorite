@@ -6,6 +6,9 @@ Env vars (set by orchestrator.mutation._run_mutation_sandbox):
     GATEWAY_API_KEY         API key for the gateway's /v1 endpoint.
     GATEWAY_BASE_URL        Gateway base URL (e.g. http://host.docker.internal:8080).
     GATEWAY_MODEL           Model name (e.g. openai/tier-powerful).
+    MUTATION_ROUTER_HEADERS JSON object of the failed run's ``X-CC-*`` headers
+                            (member, proof, app, run, agent). H-152: the
+                            Router derives the organization from the member.
 
 The agent repo is expected to be mounted at /workspace/repo (read-write).
 
@@ -30,6 +33,33 @@ _COMMIT_SHA_RE = re.compile(r"COMMIT_SHA:\s*([a-f0-9]{7,40})", re.IGNORECASE)
 _TEST_SUMMARY_RE = re.compile(r"TEST_SUMMARY:\s*(.+)$", re.IGNORECASE)
 # Also detect PR URLs (legacy — some agents may still create PRs)
 _GITHUB_PR_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+")
+
+
+def router_headers(raw: str) -> dict[str, str]:
+    """The ``X-CC-*`` headers the orchestrator handed in, and nothing else.
+
+    🔴 **H-152.** This container has no ``acb_llm`` and no run context, so it
+    cannot name a member by itself. Before this, every model call it made
+    reached the Router with no member, which the per-box deployment key
+    refuses with a 400.
+
+    ⚠️ **Only ``X-CC-*`` names pass, and only string values.** The value comes
+    from the orchestrator, but a filter costs nothing and keeps a stray
+    ``Authorization`` from ever riding along.
+
+    Never raises. A missing or malformed value gives an empty dict, which is
+    the behaviour this runner had before.
+    """
+    try:
+        parsed = json.loads(raw) if raw.strip() else {}
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(k): v for k, v in parsed.items()
+        if str(k).lower().startswith("x-cc-") and isinstance(v, str) and v.strip()
+    }
 
 
 async def main() -> None:
@@ -61,11 +91,17 @@ async def main() -> None:
         client_options["working_directory"] = repo_dir
 
     if gateway_key and gateway_url:
-        session_config_kwargs["provider"] = {
+        provider: dict = {
             "type": "openai",
             "base_url": f"{gateway_url.rstrip('/')}/v1",
             "api_key": gateway_key,
         }
+        headers = router_headers(os.environ.get("MUTATION_ROUTER_HEADERS", ""))
+        if headers:
+            # SDK 1.0 sends a provider's ``headers`` on every model call
+            # (H-181), so each call names the member the Router bills.
+            provider["headers"] = headers
+        session_config_kwargs["provider"] = provider
     else:
         client_options["github_token"] = github_token
 

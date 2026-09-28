@@ -68,7 +68,8 @@ class AgentRunRequest(BaseModel):
     """Frontend-minted id of this turn's assistant message row.  The gateway's
     fold-and-persist at run end (core_loop_unification Phase 1, P0-3) upserts
     the SAME row the live translator checkpoints, keeping the two writers
-    idempotent.  Falls back to ``assistant-{thread}-{run_id}`` when absent."""
+    idempotent.  When absent, ``fold_message_id`` mints a server-only id
+    (WS-27bm S13, ``projects_ai_chat.md`` §19.4 rule 8)."""
     think_mode: str = "auto"
     """Reasoning depth the chat UI selected: ``auto`` | ``thinking`` | ``max``.
 
@@ -1775,6 +1776,19 @@ async def patch_agent(
     return result
 
 
+def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
+    """The chat_message id that the run's fold writes (WS-27bm S13, §19.4).
+
+    The caller's own ``assistant_message_id`` wins, because the translator
+    checkpoints that same row. Without one, the id is server-only: a fresh
+    uuid4 that no event and no response carries. The old fallback was
+    ``assistant-{thread}-{run_id}``, and RUN_STARTED publishes ``runId`` to
+    every room reader. So a member could insert that id first, become its
+    run member, and make S13's WHERE decline the real fold for good.
+    """
+    return assistant_message_id or f"assistant-{thread_id}-{uuid.uuid4().hex}"
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -2055,10 +2069,9 @@ async def run_agent_stream_endpoint(
     # Authoritative persistence at run end (core_loop_unification Phase 1):
     # the detached task folds the run's Redis event log into the chat_message
     # row this turn renders as — the tail survives even when the browser and
-    # the Next translator are long gone (P0-3).
-    _persist_message_id = (
-        req.assistant_message_id or f"assistant-{thread_id}-{run_id}"
-    )
+    # the Next translator are long gone (P0-3). Minted ONCE here: the
+    # closure below holds it, so the fold always writes this one id.
+    _persist_message_id = fold_message_id(req.assistant_message_id, thread_id)
     _mem_user = (user.email or "").strip()
     # Which compartment the run's turns are extracted into. What several people
     # said in a room is the room's, so it files under `room:<thread_id>` and

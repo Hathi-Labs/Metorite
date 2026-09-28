@@ -55,6 +55,43 @@ MAX_MUTATION_ATTEMPTS: int = 1  # ADR-021: exactly one commit per failure event
 _MUTATION_ATTEMPTS: dict[str, int] = {}
 _MUTATION_ATTEMPTS_MAX_KEYS = 10_000  # crude unbounded-growth guard (rare path)
 
+#: The env var that carries the failed run's ``X-CC-*`` headers into the
+#: sandbox. ``mutation_runner.py`` reads the same name.
+ROUTER_HEADERS_ENV = "MUTATION_ROUTER_HEADERS"
+
+
+def _router_headers() -> dict[str, str]:
+    """The ``X-CC-*`` headers of the run that failed, for the sandbox (H-152).
+
+    🔴 **The sandbox reached the Router with no member.** It runs in a
+    container with no ``acb_llm`` and no run context, and it called gateway
+    ``/v1`` with only the LLM key. Under the per-box deployment key the Console
+    derives the organization from ``X-CC-Member``, so every sandbox call would
+    be refused with a 400.
+
+    ⚠️ **Computed HERE, from the run context of the run that failed**, which
+    the executor bound server-side. The container runs model-authored code, so
+    it must never choose these itself. A member the session verified travels
+    with its signed proof. A member a request body claimed travels unsigned,
+    as it does on every other path (H-73).
+
+    ⚠️ **On the deployment key an expired or missing proof is REFUSED.** The
+    deployment arm serves only a proven member (PR #511), so a claimed
+    member, which crosses unsigned, gets no answer there. The proof lives
+    ``member_proof.PROOF_TTL_SECONDS`` (3600 s), which is longer than the
+    sandbox's ``mutation_timeout_seconds`` (600 s by default). A sandbox
+    that runs past the TTL is refused from that call on.
+
+    Never raises. Headers that cannot be computed are an empty dict, which
+    leaves the sandbox exactly as it was before this change.
+    """
+    try:
+        from acb_llm.attribution import attribution_headers
+
+        return dict(attribution_headers())
+    except Exception:
+        return {}
+
 
 def _mutation_limit_reached(run_id: str, explicit_prior: int = 0) -> bool:
     """Pure peek at the per-run tally — no increment, no side effects."""
@@ -858,6 +895,7 @@ async def _run_mutation_sandbox(
         "-e", f"GATEWAY_API_KEY={gateway_key or ''}",
         "-e", f"GATEWAY_BASE_URL={gateway_url}",
         "-e", f"GATEWAY_MODEL={mutation_model}",
+        "-e", f"{ROUTER_HEADERS_ENV}={json.dumps(_router_headers())}",
         "--add-host", "host.docker.internal:host-gateway",
     ]
 

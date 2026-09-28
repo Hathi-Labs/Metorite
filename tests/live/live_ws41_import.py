@@ -258,9 +258,9 @@ async def _run(db) -> None:
 
     plan = build_plan(bundle, ImportMapping(), directory, existing, legacy)
     check(
-        "2.5 the plan skips both and writes the rest",
-        plan["skip"]["total"] == 2 and plan["to_write"]["tasks"] == 2421,
-        json.dumps(plan["skip"]),
+        "2.5 the plan updates the imported task, skips the old importer's, writes the rest",
+        plan["skip"]["total"] == 1 and plan["to_update"] == 1 and plan["to_write"]["tasks"] == 2421,
+        json.dumps({"skip": plan["skip"], "to_update": plan["to_update"]}),
     )
 
     # ── 3. the run row round-trips through the module's SQL ─────────────

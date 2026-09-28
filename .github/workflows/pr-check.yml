@@ -310,6 +310,14 @@ jobs:
       # capability and role gates, and that a `deleted` org is refused while a
       # `suspended` one can still see what it holds.
       #
+      # ⚠️ H-152's billing half (2026-09-28) adds
+      # `test_customer_console_billing_reads.py` — the `billing_read` doors
+      # (`POST /registry/billing/*`, `/registry/usage/*`) that serve the
+      # customer billing pages under the per-box deployment key. It reads this
+      # file AND `customer_console.md` §7, like its siblings.
+      # `test_customer_console_billing_checkout.py` joins it for the checkout
+      # (`POST /registry/billing/orders*`, the `billing_purchase` doors).
+      #
       # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
       # `test_customer_console_member_write.py` — the member-add door and
       # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
@@ -342,6 +350,8 @@ jobs:
             tests/unit/test_customer_console_operator_list.py \
             tests/unit/test_customer_console_member_write.py \
             tests/unit/test_customer_console_seat_overview.py \
+            tests/unit/test_customer_console_billing_reads.py \
+            tests/unit/test_customer_console_billing_checkout.py \
             tests/unit/test_customer_console_tasks.py \
             tests/unit/test_customer_console_catalog.py \
             tests/unit/test_customer_console_decide.py \
@@ -357,6 +367,7 @@ jobs:
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
             tests/unit/test_seat_admin_proxy_route.py \
+            tests/unit/test_billing_proxy_route.py \
             tests/unit/test_invite_console_mirror.py \
             tests/unit/test_signup_provision_route.py \
             tests/unit/test_signup_reconciler.py \
@@ -446,7 +457,9 @@ jobs:
           # is the transport's R7 fence (the seat WRITE carries the deployment
           # key + the session actor, no org on the wire) and drives a
           # MockTransport Console — no database, and it must never skip.
-          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route|test_seat_admin_proxy_route)" /tmp/platform.txt; then
+          # test_billing_proxy_route.py (H-152) joins for the same reason: it
+          # is the billing transport's R7 fence and takes no database.
+          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route|test_seat_admin_proxy_route|test_billing_proxy_route)" /tmp/platform.txt; then
             echo "::error::A no-database fence skipped — the dependency-boundary, signin-route and seat-proxy fences must always run."
             exit 1
           fi

@@ -95,6 +95,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
+- **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
+  A hit means this is open.
+- **What happens.** H-173 moved the chat tools to the D78 level. The tools
+  now take `priority` (a level name), `important` and `leveraged`. They still
+  take the old `importance` number for one release, and map it through
+  `LEGACY_IMPORTANCE` in `acb_common/priority.py`. 2 or more reads as
+  Important, and each answer says that the number is deprecated.
+- **The intake gap.** `POST /projects/intake` (`IntakeIn` in
+  `routes/projects/intake.py`) has no `leveraged` field. Pydantic drops an
+  unknown key and says nothing. So `capture_intake` refuses a `leveraged` level
+  instead of sending it.
+- **Do.** After one release, remove the `importance` argument from
+  `create_task`, `update_task`, `bulk_update` and `capture_intake`, and remove
+  `LEGACY_IMPORTANCE`. Add `leveraged` to `IntakeIn` and to the insert, and
+  prove it on a real database (R8). Then remove the refusal in
+  `capture_intake`.
+- **Fence:** `tests/unit/test_chat_priority_levels.py`.
+- **Authority:** `work_plan.md` §3 D78.
+- **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -180,15 +201,18 @@ line — never reclaim a number by deleting the other entry.
   `python -m copilot download-runtime` as the service user after `uv sync`,
   and a failure fails the deploy. Measured 2026-09-26: the box reaches GitHub
   releases as `acb`.
-- ⚠️ **A signed member proof lives 300 s, and a Copilot session reuses it.**
-  After 300 s in one long turn, `_member_for` reads the member as unproven,
-  so the member's cap stops applying for the rest of that turn. Billing still
-  names the member. The per-request seam is `CopilotClient(request_handler=)`.
-- ⚠️ **Memberless runs will be refused under the deployment key (H-152).**
-  The 2.0 wrapper now routes batch runs and sub-agents through gateway `/v1`.
-  A run with no member, such as the workflow node in `workflows/service.py`
-  or `mutation_runner.py`, gets a 400 once the box serves on the deployment
-  key. Give each one a member, or an org, before that flip.
+- ⚠️ **A signed member proof lives 3600 s, and a Copilot session reuses it.**
+  After 3600 s in one long turn, `_member_for` reads the member as unproven.
+  On the deployment key the Router then REFUSES the rest of that turn
+  (PR #511). The per-request seam is `CopilotClient(request_handler=)`.
+- 📌 **Background runs now name a member (2026-09-28).** A workflow agent
+  node runs as the member who pressed Run, or else as the workflow owner.
+  The email loop, the WhatsApp summaries and graphiti run as the owner of the
+  mailbox or account. The mutation sandbox gets the headers of the run that
+  failed, in `MUTATION_ROUTER_HEADERS`. The fence is
+  `tests/unit/test_background_ai_member.py`.
+- ⚠️ **Two paths still reach the Router with no member.** H-152 names them.
+  The deployment key refuses both with a 400.
 - ⚠️ **Rebuild two images.** `Dockerfile.copilot-sandbox` and
   `Dockerfile.mutation` now pin the SDK and download the CLI at build time.
 - ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
@@ -352,24 +376,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `DESIGN_SYSTEM.md` §7 · H-174 (PR "Theme: a readable
   warning text tone in light mode").
 - Added: 2026-09-28, found while fixing H-174.
-
-### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
-- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
-  Any hit means this is open.
-- **What happens.** D78 (2026-09-24) retired the Low-to-Highest scale.
-  Projects and My Tasks show the matrix level, from the shared Important
-  (`importance >= 2`) and `Leveraged` (`pm_tasks.leveraged`). The chat tools
-  in `skill_projects` (`writes.py`, `guarded.py`, `inbox.py`, `forms.py`)
-  still ask the model for an `importance` from 0 to 4. They cannot set
-  `Leveraged`. The chat cards (`genUITemplates.tsx`) and the CSV export
-  (`routes/projects/export.py`) print the raw number.
-- **Do.** Give the tools `important` and `leveraged` booleans, and show the
-  level in the cards and the export. `lib/matrix.ts` and
-  `routes/tasks/priority.py` own the level. Keep `importance` accepted for
-  one release, and read 2 or more as Important.
-- **Authority:** `work_plan.md` §3 D78.
-- Added: 2026-09-23, found while building D76. Rewritten 2026-09-24 for D78.
-
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
 - **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
@@ -3218,19 +3224,63 @@ line — never reclaim a number by deleting the other entry.
   gate 7 because no route grants a capability. Unset
   `CUSTOMER_CONSOLE_ORG_KEY`. Set the new flag. The third alone changes
   nothing, by design.
-- ⚠️ **The per-org billing pages still read the org key**, so retiring that
-  variable entirely is a separate move. `seats.py` records which reads stay.
-- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
-  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
-  and nothing calls `member_proof.sign_member`. So on a box with
-  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
-  `chat_completion_on_console` refuses every agent completion. The CP-13c
-  audit found this on 2026-09-24.
+- 📌 **The billing READS left the org key, 2026-09-28.** The summary, seats,
+  members, catalog and usage reads travel this path: browser → Next →
+  gateway `GET /billing/*` → the Console's `POST /registry/{billing,usage}/*`.
+  The gateway holds the deployment key, and the Console derives the org from
+  the session member. Fences: `test_customer_console_billing_reads.py` (R8),
+  `test_billing_proxy_route.py`, `billing/reads.test.ts`.
+- 📌 **The box's key holds `billing_read` and `billing_purchase`.** Granted
+  2026-09-28 by a hand edit to `deployment_key.capabilities` on the Console
+  database, before the reads merged. Without them every billing door answers
+  503 "not configured", and it never falls back to the org key.
+- 📌 **The checkout left the org key too.** `api/billing/orders`,
+  `orders/[id]` and `orders/[id]/redeem` go through the gateway's
+  `/billing/orders*` to `POST /registry/billing/orders*`, on the
+  `billing_purchase` capability. The gateway checks the tenant's
+  `billing:purchase` before any hop. `_console.ts` is deleted, and no file in
+  `api/billing` reads `CUSTOMER_CONSOLE_*` (`checkout.test.ts`). Fence:
+  `test_customer_console_billing_checkout.py` (R8). The Next tier no longer
+  reads `CUSTOMER_CONSOLE_ORG_KEY`, so the three box acts above can run.
+- 📌 **Every background job now names a member (2026-09-28).** Agent
+  completions stamp the run's member through `attributed_openai`. A job with
+  no session binds the member who OWNS its row, through
+  `acb_common.job_member_scope`: the workflow owner, the mailbox owner, the
+  WhatsApp account owner. The Console then derives the organization from that
+  member, so the job bills the organization it belongs to. The fence is
+  `tests/unit/test_background_ai_member.py`, and it refuses a new
+  `run_agent()` call with no `session_user` and no recorded reason.
+- ⚠️ **The owner reads stop working under FORCE RLS.** The reads of
+  `app_user`, `email_accounts` and `wa_accounts` decide which organization
+  pays, so they run on an unbound session. H4 resolvers such as
+  `_workflow_organization` have the same limit. Once FORCE RLS covers these
+  tables, each read returns zero rows. The job then fails CLOSED: it runs
+  memberless, and the deployment key refuses it with a 400. It never bills
+  a guessed member. `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names
+  the two new reads. Move them to an RLS-EXEMPT read before FORCE RLS
+  reaches these tables.
+- ⚠️ **Two paths still send no member. Close them before the flip.**
+  1. The HMAC-signed `/agent/webhook` route (`routes/agent.py`). No owner row
+     or organization exists for it. It runs memberless, or on a body claim.
+  2. mem0 (`acb_memory/mem0_client.py`). mem0 builds its own OpenAI client
+     and calls it on its own threads, so no run context reaches the call.
+     `MEM0_ENABLED` is off by default.
+- 📌 **The deployment arm serves only a PROVEN member (PR #511).** An
+  expired or missing proof is refused. The proof lives 3600 s. So every
+  background job above binds its owner VERIFIED, and a body claim, which
+  is never signed, is refused on that arm. The email specialist run keeps
+  its proof because `_run_member` keeps a claim verified when it names the
+  member the task already holds verified.
+- ⚠️ **The Notes pipeline bills the viewer, not the meeting owner.** A
+  recording found by poll-on-read runs in the request of whoever opened the
+  list. It names a member of the right organization, so the Console serves
+  it. The per-person report is wrong.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
-  `tests/unit/test_console_router_client.py` (5 new).
+  `tests/unit/test_console_router_client.py` (5 new) ·
+  `tests/unit/test_background_ai_member.py` (37).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
   creating the connections for when they sign up"*
-- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
+- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-28.
 
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`

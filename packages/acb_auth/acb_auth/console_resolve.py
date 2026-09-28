@@ -169,8 +169,11 @@ _log = get_logger("acb_auth.console_resolve")
 
 __all__ = [
     "ACCESS_DENIED",
+    "BILLING_READ_DOORS",
+    "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
+    "ConsoleBillingUnavailable",
     "ConsoleMemberWriteUnavailable",
     "ConsoleProvisionUnavailable",
     "ConsoleRouterUnavailable",
@@ -178,13 +181,17 @@ __all__ = [
     "ReconcileSummary",
     "ResolveDecision",
     "assign_seat_on_console",
+    "billing_read_on_console",
     "chat_completion_on_console",
+    "create_order_on_console",
     "decide_on_console",
     "invalidate",
     "invite_member_on_console",
     "is_wired",
     "provision_org_on_console",
+    "read_order_on_console",
     "reconcile",
+    "redeem_code_on_console",
     "release_seat_on_console",
     "resolve_for_signin",
     "router_is_wired",
@@ -697,6 +704,25 @@ async def _post_seat_call(
     ``deployment_visible_orgs(deployment_id, actor_email)`` (R11), and the Console
     400s a deployment key that names one.
     """
+    return await _post_deployment_door(
+        endpoint, payload, unavailable=ConsoleSeatWriteUnavailable
+    )
+
+
+async def _post_deployment_door(
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    unavailable: type[Exception],
+) -> tuple[int, dict[str, Any]]:
+    """The ONE deployment-key door transport: bearer, timeout, verdict policy.
+
+    Extracted from ``_post_seat_call`` when the billing reads (H-152) needed the
+    identical hop. The seat arms and the billing arms differ only in which
+    exception names an outage, so the caller passes it. A second copy of this
+    body would be a second verdict-vs-outage policy, and the copy is the one
+    that drifts.
+    """
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
     key = settings.customer_console_deployment_key.strip()
@@ -710,7 +736,7 @@ async def _post_seat_call(
                 json=payload,
             )
     except Exception as exc:
-        raise ConsoleSeatWriteUnavailable(str(exc)[:200]) from exc
+        raise unavailable(str(exc)[:200]) from exc
 
     # A status that proves we got no ANSWER is an outage, not a verdict — the
     # same line `_post_resolve` draws (finding P1-1): 5xx (the Console is broken),
@@ -718,7 +744,7 @@ async def _post_seat_call(
     # member), 408/429 (no answer produced). Everything else (200, and the
     # 400/403/404/409 the door issues) is an answer the caller may act on.
     if response.status_code >= 500 or response.status_code in (401, 408, 429):
-        raise ConsoleSeatWriteUnavailable(f"HTTP {response.status_code}")
+        raise unavailable(f"HTTP {response.status_code}")
 
     try:
         body = response.json()
@@ -936,6 +962,163 @@ async def invite_member_on_console(
     if not isinstance(body, dict):
         body = {}
     return response.status_code, body
+
+
+# ── The customer BILLING client (H-152, the billing half) ───────────────────
+#
+# ⚠️ **Still the ONE Console httpx client.** These functions are the gateway's
+# path to the Console's deployment-key `billing_read` doors, and they reuse
+# `_post_deployment_door` — the seat arms' transport — rather than a second
+# client. `gateway/routes/billing.py` holds no client, no URL and no key.
+#
+# **Why they exist.** The customer billing pages read the Console with
+# `CUSTOMER_CONSOLE_ORG_KEY`, which names ONE tenant. The deployment key is
+# per-BOX, so these reads work for every tenant on a shared box, and the
+# Console derives the organization from placement ∩ membership.
+#
+# ⚠️ **The body carries `actor_email` and NO `org_slug`** (R11), exactly as the
+# seat overview's does. A spend read adds `scope` — `self` or `org` — and never
+# a member email: the only person the wire can name is the actor.
+#
+# **Non-allocating.** Every door here is a READ. None touches
+# `resolve_for_signin`, so nothing here can burn a seat.
+
+
+class ConsoleBillingUnavailable(Exception):
+    """The Customer Console produced no billing answer we could relay.
+
+    Transport-only, the line ``_post_resolve`` draws: the box is not wired, the
+    network failed, or the Console answered 5xx / 401 / 408 / 429. A verdict —
+    200, or the 400/403/409 a billing door issues — is returned as
+    ``(status_code, body)`` for the route to relay.
+    """
+
+
+#: The billing READ doors, by the name the gateway route uses. A closed map:
+#: the route cannot reach a Console path that is not listed here.
+BILLING_READ_DOORS: dict[str, str] = {
+    "summary": "/registry/billing/summary",
+    "seats": "/registry/billing/seats",
+    "members": "/registry/billing/members",
+    "catalog": "/registry/billing/catalog",
+    "usage_activity": "/registry/usage/activity",
+    "usage_apps": "/registry/usage/apps",
+    "usage_members": "/registry/usage/members",
+}
+
+#: The two doors that take a ``scope``. Every other door refuses the field
+#: (``extra: forbid`` on the Console), so it is sent to these two alone.
+_SCOPED_BILLING_DOORS = frozenset({"usage_activity", "usage_apps"})
+
+#: The words the Console's ``deployment_or_operator`` opens a capability
+#: refusal with. The gateway reads a 403 that starts with them as "this box is
+#: not configured for billing", never as "you may not". Fence:
+#: ``test_billing_proxy_route.py`` asserts the Console still says it.
+CAPABILITY_REFUSAL_PREFIX = "deployment key lacks the "
+
+
+async def billing_read_on_console(
+    door: str,
+    *,
+    actor_email: str,
+    scope: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Read one billing door for the acting member's organization.
+
+    ``door`` is a key of :data:`BILLING_READ_DOORS`. ``scope`` is ``"self"`` or
+    ``"org"`` and is sent only to the two spend doors that take it; the
+    gateway route decides it from the TENANT plane's ``is_admin``.
+
+    Returns the Console's ``(status_code, body)`` verbatim. Raises
+    :class:`ConsoleBillingUnavailable` on an unwired box or a no-answer status.
+
+    Raises:
+        KeyError: ``door`` is not a billing read door. A programming error,
+            raised before any hop.
+    """
+    endpoint = BILLING_READ_DOORS[door]
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    payload: dict[str, Any] = {"actor_email": actor_email}
+    if door in _SCOPED_BILLING_DOORS:
+        # The narrow reading unless the caller asked for the wide one. The
+        # Console defaults the same way, so a dropped field fails closed.
+        payload["scope"] = "org" if scope == "org" else "self"
+    return await _post_deployment_door(
+        endpoint, payload, unavailable=ConsoleBillingUnavailable
+    )
+
+
+# ── The customer CHECKOUT client (H-152, the checkout half) ─────────────────
+#
+# The same transport and the same R11 shape as the reads above, on the
+# Console's `billing_purchase` doors. The body names the actor and the basket
+# or the code — never an organization and never an amount. The price is the
+# catalog's, Console-side.
+#
+# **Non-allocating.** None of these doors touches `resolve_for_signin`. A
+# redeemed code can grant seats through `payments.fulfil`, which is the one
+# edge the Console's transitive fence permits, and the code is the operator's
+# pre-authorization, not this box's.
+
+#: The Console path of the order doors. The order id is quoted into the path,
+#: and the Console validates it as a UUID.
+_ORDERS_PATH = "/registry/billing/orders"
+
+
+def _order_path(order_id: str, suffix: str = "") -> str:
+    from urllib.parse import quote
+
+    return f"{_ORDERS_PATH}/{quote(order_id, safe='')}{suffix}"
+
+
+async def create_order_on_console(
+    *, actor_email: str, lines: list[dict[str, Any]]
+) -> tuple[int, dict[str, Any]]:
+    """Create a pending order for the acting member's organization.
+
+    ``lines`` is ``[{plan_slug, quantity}]`` and nothing else; the gateway
+    route rebuilds it from the browser body. Returns the Console's
+    ``(status_code, body)``. Raises :class:`ConsoleBillingUnavailable` on an
+    unwired box or a no-answer status.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _ORDERS_PATH,
+        {"actor_email": actor_email, "lines": lines},
+        unavailable=ConsoleBillingUnavailable,
+    )
+
+
+async def read_order_on_console(
+    *, actor_email: str, order_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Read one order of the acting member's organization back."""
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _order_path(order_id),
+        {"actor_email": actor_email},
+        unavailable=ConsoleBillingUnavailable,
+    )
+
+
+async def redeem_code_on_console(
+    *, actor_email: str, order_id: str, code: str
+) -> tuple[int, dict[str, Any]]:
+    """Present a discount code against one order of the member's organization.
+
+    ⚠️ The code is a bearer secret. This function never logs it; the
+    transport logs nothing about a body.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        _order_path(order_id, "/redeem"),
+        {"actor_email": actor_email, "code": code},
+        unavailable=ConsoleBillingUnavailable,
+    )
 
 
 # ── The signup Console-mirror reconciler (CP-2e slice) ───────────────────────
@@ -2197,6 +2380,37 @@ def _attribution_headers(
     return {name: value for name, value in pairs if value}
 
 
+def _require_proven_member_on_deployment(
+    kind: str, member: str | None, member_proven: bool
+) -> None:
+    """Refuse, locally, a deployment-key call whose member is not PROVEN.
+
+    ⚠️ **A deployment key CANNOT resolve a tenant without the member**, and
+    the Console answers 400 to say so. Refusing here turns a remote 400 that
+    reads as "the Router is broken" into a local message naming the input.
+
+    🔴 **And the member must be PROVEN (2026-09-28).** On this arm the member
+    decides which organization pays. `X-CC-Member` reaches `/v1` from any
+    holder of the gateway's LLM key, so an unsigned one could bill another
+    tenant. Only a member `member_proof.verify_member` accepted, or one the
+    run context bound as verified, may travel. The Console refuses the rest
+    too (`auth.organization_from_key_or_deployment`), so neither lock alone
+    carries the rule. The org arm needs no member: its key fixes the tenant.
+    """
+    if kind != "deployment":
+        return
+    if not (member or "").strip():
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, which needs the acting "
+            "member to resolve a tenant, and none was supplied"
+        )
+    if not member_proven:
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, and the acting member is not "
+            "proven; an unsigned member cannot choose the organization"
+        )
+
+
 async def chat_completion_on_console(
     payload: dict[str, Any],
     *,
@@ -2241,11 +2455,7 @@ async def chat_completion_on_console(
     # 400 that reads as "the Router is broken" into a local message naming the
     # one missing input. The org arm needs no member — its organization is a
     # property of the credential — so this is asked of one arm only.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
 
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
@@ -2340,11 +2550,7 @@ async def decide_on_console(
     # ⚠️ The same local refusal the chat client makes. A deployment key cannot
     # resolve a tenant without the member, and the Console answers 400 to say
     # so. Refusing here costs no request and names the missing input.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
 
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
@@ -2443,11 +2649,7 @@ async def stream_completion_on_console(
     # 400 that reads as "the Router is broken" into a local message naming the
     # one missing input. The org arm needs no member — its organization is a
     # property of the credential — so this is asked of one arm only.
-    if kind == "deployment" and not (member or "").strip():
-        raise ConsoleRouterUnavailable(
-            "this box presents a deployment key, which needs the acting "
-            "member to resolve a tenant, and none was supplied"
-        )
+    _require_proven_member_on_deployment(kind, member, member_proven)
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
         _attribution_headers(

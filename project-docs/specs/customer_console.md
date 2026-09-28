@@ -10531,7 +10531,13 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_seat_overview.py \
               tests/unit/test_customer_console_tasks.py \
               tests/unit/test_customer_console_catalog.py \
-              tests/unit/test_customer_console_decide.py
+              tests/unit/test_customer_console_decide.py \
+              tests/unit/test_customer_console_billing_reads.py \
+              tests/unit/test_customer_console_billing_checkout.py
+# The `_billing_reads.py` line is H-152's billing suite, added 2026-09-28 in
+# the PR that created it. It proves each `billing_read` door answers what its
+# organization-key twin answers, and that org A never reads org B.
+# The `_billing_checkout.py` line is its checkout twin, on `billing_purchase`.
 # The `_decide.py` line is CP-13a's suite (§6A.14), added 2026-09-23 in the PR
 # that created it, with its `pr-check.yml` entry.
 # ⚠️ The `_tasks.py` and `_catalog.py` lines joined this block on 2026-08-30.

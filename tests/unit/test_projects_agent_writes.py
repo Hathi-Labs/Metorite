@@ -372,7 +372,8 @@ PLAN_TASKS = (
 )
 FORM_ANSWERS: dict[str, str] = {
     "Edit #7": 'Review changes — {"title": "Fix the extruder", "description": "", "status": "Done", '
-    '"due": "2026-10-01", "start": "", "importance": 2, "estimate_mins": 30, "tags": ""}',
+    '"due": "2026-10-01", "start": "", "important": true, "leveraged": false, '
+    '"estimate_mins": 30, "tags": ""}',
     "Edit Ops": 'Review changes — {"name": "Ops v2", "description": "", "status": "paused", "lead": ""}',
     "Plan": 'Review plan — {"project": {"name": "Q4 launch"}, "tasks": ' + PLAN_TASKS + "}",
 }
@@ -1682,11 +1683,13 @@ async def test_edit_task_draws_the_form_then_confirms_only_the_changes(monkeypat
         "status",
         "due",
         "start",
-        "importance",
+        "important",
+        "leveraged",
         "estimate_mins",
         "tags",
     ]
-    # Title unchanged, status Done, due set, importance 2, estimate 30.
+    # Title unchanged, status Done, due set, Important on (stored as 2, D78),
+    # Leveraged unchanged, estimate 30.
     patched = [c for c in writes(calls) if c["method"] == "PATCH"]
     assert patched[0]["json"] == {
         "status_id": S3,

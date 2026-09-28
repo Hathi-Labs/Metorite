@@ -1,57 +1,40 @@
 /**
  * SC-4a done-when 8 / B7 clause 4 — the gate on the checkout proxies.
  *
- * Spec: `project-docs/specs/subscription_console.md` SC-4a, the B7 block.
+ * Spec: `project-docs/specs/subscription_console.md` SC-4a, the B7 block ·
+ * `project-docs/HANDOFF.md` H-152 (the checkout moved to the gateway).
  *
  * ## Why this file RUNS the handlers instead of reading them
  *
  * B7's subject is *"does the refusal happen **before** the money route is
  * hit"*, and a source regex cannot decide that — it can see that a check
- * exists, never that it runs first. A 403 issued after the Customer Console
- * was already called is a different and worse bug than no 403 at all, so the
+ * exists, never that it runs first. A 403 issued after the money route was
+ * already called is a different and worse bug than no 403 at all, so the
  * assertion has to be over a real invocation.
  *
- * The pattern is `src/lib/export.test.ts`, named by the ticket: import the real
- * handler through the same `@/` specifier the app uses, `vi.mock("@/auth")`
- * rather than importing it, `vi.stubGlobal("fetch", …)`, and build requests
- * from `NextRequest` out of `next/server`. ⚠️ **Do not fall back to a source
- * regex out of caution about `signin.test.ts`'s recorded import warning** —
- * that warning is about importing `@/auth`, which this pattern mocks.
+ * The pattern is `src/lib/export.test.ts`: import the real handler through
+ * the `@/` specifier the app uses, `vi.mock("@/auth")`, stub `fetch`, and
+ * build requests from `NextRequest`.
  *
- * ## The parametrisation is an EXPLICIT LIST, and a directory sweep is banned
+ * ## The money route is the GATEWAY now (H-152)
  *
- * The house sweep idiom (`routeFiles(API_DIR).filter(…)`, `signin.test.ts:60-69`)
- * pointed at `src/app/api/billing/**` would go RED immediately on
- * `summary/route.ts` — a **known-open board finding**, recorded at the foot of
- * the B7 block: that route is reachable by any signed-in member and returns the
- * org's credit balance, burn and BYOK status while its own header claims
- * otherwise. It is a live gap in merged code (`f1fcca4f`) and is deliberately
- * **not** fixed by a checkout slice. An implementer meeting a red sweep has two
- * moves and both are wrong — fix the shipped read proxy (scope creep, in a
- * checkout PR), or narrow the sweep to make it pass, which is the CP-6 failure
- * mode: a fence quietly re-shaped around the thing it caught.
+ * Until 2026-09-28 the checkout called the Customer Console from this tier with
+ * `CUSTOMER_CONSOLE_ORG_KEY`, a key that names ONE tenant. It now relays
+ * through the gateway's `/billing/orders*`, which holds the per-box deployment
+ * key; the Console derives the organization from the signed-in member. So the
+ * "money route" below is `${GATEWAY_URL}/billing/orders…`, and the org-binding
+ * block that compared the caller's org with the key's is gone: there is no
+ * key here to disagree with. The gateway checks `billing:purchase` again
+ * (`test_billing_proxy_route.py`).
  *
- * So the list below is explicit, and `summary/route.ts` is excluded **by name**
- * with the finding cited. A named exclusion is visible in a diff and dies when
- * the finding is fixed; a narrowed sweep is invisible and outlives it. The cost
- * is stated rather than hidden: **"a third proxy is covered without anyone
- * remembering" does NOT hold** under an explicit list.
+ * ## The list is explicit; its COMPLETENESS is swept
  *
- * ⚠️ **The list is explicit; its COMPLETENESS is swept** *(repair round
- * 2026-08-19, P2)*. An explicit list with nothing checking it is a list that
- * silently stops being complete — a fifth billing route lands, nobody adds an
- * entry, and the gate fence reports green about routes it has never invoked.
- * So `the gated list is complete` below walks `src/app/api/billing/**` for
- * `route.ts`, subtracts the two exclusions **by name and with their reasons**,
- * and asserts the remainder IS the gated set. That buys back the "a third proxy
- * is covered without anyone remembering" property in the only form an explicit
- * list can have it: the new route does not gate itself, but it cannot arrive
- * unnoticed. Red-first evidence: a transient `src/app/api/billing/probe/route.ts`
- * failed with *`expected [ …3 items ] to deeply equal [ …4 items ]`* naming
- * `probe/route.ts`.
+ * `the gated list is complete` walks `src/app/api/billing/**` for `route.ts`,
+ * subtracts the exclusions **by name and with their reasons**, and asserts the
+ * remainder IS the gated set. A new billing route cannot arrive unnoticed.
  */
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,93 +42,46 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { redeemRefusal } from "@/app/settings/billing/lib/checkout";
 
-import { resetKeyOrgCache } from "./_console";
-
-// The handlers resolve the session through `currentIdentity()`. Who is signed
-// in is this file's subject, so the mock is reassigned per case rather than
-// fixed the way `export.test.ts` fixes it.
+// Who is signed in is this file's subject, so the mock is reassigned per case.
 const session = vi.hoisted(() => ({ email: null as string | null }));
 
 vi.mock("@/auth", () => ({
-  auth: async () =>
-    session.email ? { user: { email: session.email } } : null,
+  auth: async () => (session.email ? { user: { email: session.email } } : null),
   isAuthEnabled: true,
 }));
 
-const CONSOLE_URL = "https://console.invalid";
 const GATEWAY_URL = "http://127.0.0.1:8000";
 
-/** The Console's read-only whoami — the route that says whose key this is. */
-const WHOAMI = `${CONSOLE_URL}/me`;
-
-/** The organization the deployment's `cc_live_` key belongs to. */
-const KEY_ORG = "fracktal";
+/** The gateway's checkout routes — the money route this file guards. */
+const MONEY_PREFIX = `${GATEWAY_URL}/billing/orders`;
 
 /** Every request the stub saw, in order. */
-let calls: string[] = [];
+let calls: { url: string; init?: RequestInit }[] = [];
 
-interface Orgs {
-  /** The slug the gateway's `/auth/me` reports for the CALLER. */
-  caller?: string | null;
-  /** What the Console's whoami answers — or a transport failure. */
-  whoami?: Response | "unreachable";
-}
+const urls = () => calls.map((c) => c.url);
+const moneyCalls = () => calls.filter((c) => c.url.startsWith(MONEY_PREFIX));
 
 /**
- * A `fetch` that answers the gateway's `/auth/me` with the given capabilities
- * and **fails loudly** for anything else it is asked to reach.
- *
- * The Console is not scripted at all in the refusal cases: if a handler ever
- * calls it, the URL lands in `calls` and the assertion below fails. That is the
- * assertion — not the status code.
- *
- * Two organizations are in play and by default they AGREE (`KEY_ORG`): the
- * caller's, resolved from `/auth/me`, and the key's, resolved from the Console's
- * whoami. `orgs` is how a case makes them disagree.
+ * A `fetch` that answers the gateway's `/auth/me` with the given capabilities,
+ * answers the money route with `moneyAnswer`, and **fails loudly** for anything
+ * else — a Console URL in particular, which no billing route may reach now.
  */
-function stubFetch(
-  capabilities: string[] | null,
-  consoleAnswer?: Response,
-  orgs: Orgs = {},
-) {
+function stubFetch(capabilities: string[] | null, moneyAnswer?: Response) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      calls.push(url);
+      calls.push({ url, init });
       if (url.startsWith(`${GATEWAY_URL}/auth/me`)) {
         if (capabilities === null) return new Response("nope", { status: 503 });
-        const caller = orgs.caller === undefined ? KEY_ORG : orgs.caller;
-        return new Response(
-          JSON.stringify({
-            capabilities,
-            // The shape `admin/me.py:129-133` returns: the CALLER's org, not
-            // the deployment's.
-            organization: caller ? { id: "org-uuid", slug: caller } : {},
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ capabilities }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }
-      if (url === WHOAMI) {
-        if (orgs.whoami === "unreachable") throw new TypeError("fetch failed");
+      if (url.startsWith(MONEY_PREFIX)) {
         return (
-          orgs.whoami ??
-          // `main.py:1228-1234`'s shape, verbatim.
-          new Response(
-            JSON.stringify({
-              organization_id: "org-uuid",
-              slug: KEY_ORG,
-              status: "active",
-              credit_balance: "1000.00",
-              key_prefix: "cc_live_fixture",
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          )
-        );
-      }
-      if (url.startsWith(CONSOLE_URL)) {
-        return (
-          consoleAnswer ??
+          moneyAnswer ??
           new Response(JSON.stringify({ id: "order-1" }), {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -157,104 +93,43 @@ function stubFetch(
   );
 }
 
-/** Every call that reached the Customer Console, whoami included. */
-const consoleCalls = () => calls.filter((u) => u.startsWith(CONSOLE_URL));
-
-/**
- * The MONEY routes — every Console call that is not the read-only whoami.
- *
- * The whoami moves nothing and grants nothing (`main.py:1211-1234`, "Read-only"),
- * and the gate has to reach it to learn which organization it is about to spend
- * for. What must never be reached before a refusal is a route that creates or
- * redeems an order, and that is what this filter names.
- */
-const moneyCalls = () => consoleCalls().filter((u) => u !== WHOAMI);
-
 type Invoke = () => Promise<Response>;
 
 /**
- * The two routes excluded from the gated set, each BY NAME with its reason.
- *
- * Keys are paths relative to this directory — the same shape the completeness
- * sweep produces, so an exclusion that stops matching a real file shows up as a
- * red sweep rather than as silence.
+ * The reason every billing READ shares (H-152): it is not a money route. It
+ * relays through `_gateway.ts` to the gateway's `/billing/*`. Fenced by
+ * `reads.test.ts` and `test_billing_proxy_route.py`.
  */
+const READ_HOP = "NOT a money route (H-152): a gateway-tier READ with no Console key. ";
+
+/** The routes excluded from the gated set, each BY NAME with its reason. */
 const EXCLUDED: Record<string, string> = {
-  "summary/route.ts":
-    "the known-open board finding (B7's foot): reachable by any signed-in " +
-    "member today. Fixing it is its own small ticket, and narrowing this " +
-    "sweep to hide it would be the CP-6 failure mode.",
+  "summary/route.ts": READ_HOP + "The balance, burn and BYOK status of the member's OWN org.",
   "catalog/route.ts":
-    "session-gated on purpose: it returns the price list, identical for every " +
-    "customer, so requiring `billing:purchase` would stop a member seeing " +
-    "what things cost before being handed the right to buy them.",
-  "seats/route.ts":
-    "session-gated on purpose (SC-1a's seats block): a READ of the caller's " +
-    "own seat counts (`GET /me/seats`) that mints nothing and moves no money, " +
-    "so requiring `billing:purchase` would stop a member seeing their seats " +
-    "before being handed the right to buy more — the catalog read's argument.",
+    READ_HOP +
+    "The price list, identical for every customer, so requiring " +
+    "`billing:purchase` would stop a member seeing what things cost.",
+  "seats/route.ts": READ_HOP + "The caller's own seat counts. It mints nothing and moves no money.",
   "members/route.ts":
-    "session-gated on purpose (SC-2b's manage-seats roster): a READ of the " +
-    "caller's own membership list (`GET /me/members`, {email, role, status}) " +
-    "that mints nothing and moves no money — the exact sibling of `seats/route.ts`. " +
-    "The per-member WRITE controls it feeds ARE `billing:purchase`-gated at the " +
-    "surface, but the roster read itself takes the seats read's session gate. " +
-    "Covered by `members/members.test.ts`.",
+    READ_HOP + "The caller's own roster, for the manage-seats panel. It mints nothing.",
   "usage/activity/route.ts":
-    "NOT a money route (D66 (a), H-134): a READ of what this organization ran " +
-    "and what it cost, which mints nothing and moves nothing. It is gated, " +
-    "just not by `billing:purchase` — `requireSpendReader` resolves the " +
-    "session server-side and SCOPES a non-admin to their own member address, " +
-    "because the upstream takes a `member` parameter the workbench must fill " +
-    "'from the signed-in session, never from the browser'. Requiring the " +
-    "purchase capability would stop a member seeing their own usage, which is " +
-    "the catalog read's argument. Fenced by `usage/usage.test.ts`.",
-  "usage/apps/route.ts":
-    "NOT a money route (usage slice 3): the activity read grouped by APP, " +
-    "with the agents inside each app. It mints nothing and moves nothing. " +
-    "Gated exactly as `usage/activity/route.ts` is: `requireSpendReader` " +
-    "resolves the session server-side and SCOPES a non-admin to their own " +
-    "member address, so a member sees their own apps and an admin sees the " +
-    "organization. Fenced by `usage/usage.test.ts`.",
+    READ_HOP + "D66 (a). The GATEWAY scopes a non-admin to their own spend.",
+  "usage/apps/route.ts": READ_HOP + "Usage slice 3. Scoped at the gateway as the activity read is.",
   "usage/members/route.ts":
-    "NOT a money route (D66 (b), H-134), and the one read here that is " +
-    "ADMIN-ONLY: the row names a colleague and what they cost. " +
-    "`requireSpendReader` refuses a non-admin with 403 BEFORE the Console is " +
-    "touched — `billing:purchase` would be the wrong gate, because reading " +
-    "what was spent and spending are two different acts and an organization " +
-    "may grant one without the other. Fenced by `usage/usage.test.ts`, which " +
-    "asserts the refusal AND that no Console call was made.",
+    READ_HOP +
+    "D66 (b), ADMIN-ONLY: the gateway refuses a non-admin with 403 before the " +
+    "Console is asked. Reading what was spent and spending are two different acts.",
   "seats/assign/route.ts":
-    "NOT an org-key money route (SC-2a): a gateway-tier seat WRITE proxy that " +
-    "presents NO `cc_live_` org key and never touches `_console.ts` — it " +
-    "forwards through `lib/gateway.ts` (internal bearer + session `X-User-Email`) " +
-    "to the gateway's `/seats/assign`, where the deployment-key `seat_admin` " +
-    "door lives. So `requirePurchaser`/`WHOAMI` is the wrong gate entirely; the " +
-    "admin authorization is CONSOLE-side (`_seat_admin_for_deployment`). Fenced " +
-    "by `seats/manage.test.ts` + `test_seat_admin_proxy_route.py`.",
+    "NOT a checkout route (SC-2a): a gateway-tier seat WRITE proxy to the " +
+    "deployment-key `seat_admin` door, gated Console-side on the admin role. " +
+    "Fenced by `seats/manage.test.ts` + `test_seat_admin_proxy_route.py`.",
   "seats/release/route.ts":
-    "NOT an org-key money route (SC-2a): the release twin of `seats/assign` — " +
-    "a gateway-tier proxy with no org key, gated Console-side. Same reason as " +
-    "`seats/assign/route.ts`.",
+    "NOT a checkout route (SC-2a): the release twin of `seats/assign`.",
 };
 
 /**
  * The TWO write proxies B7 gates, plus the order read that carries the same
- * gate (see `orders/[id]/route.ts`'s header for the argument — it exposes an
- * order's state and the prefix of a code somebody was issued, which is not the
- * summary's data).
- *
- * ⚠️ EXCLUDED BY NAME: `src/app/api/billing/summary/route.ts` — the known-open
- * board finding recorded in `subscription_console.md`'s B7 block. It is
- * reachable by any signed-in member today; fixing it is its own small ticket
- * and NOT this slice's, and narrowing this list to hide it would be the CP-6
- * failure mode.
- *
- * ⚠️ ALSO EXCLUDED BY NAME: `src/app/api/billing/catalog/route.ts` — session-
- * gated on purpose. It returns the price list, which is the same for every
- * customer (the Console's own handler binds its caller to `_` to make that
- * structural), so requiring `billing:purchase` would mean a member could not
- * see what things cost before being handed the right to buy them.
+ * gate (see `orders/[id]/route.ts`'s header for the argument).
  */
 const GATED: { name: string; file: string; invoke: Invoke }[] = [
   {
@@ -277,18 +152,13 @@ const GATED: { name: string; file: string; invoke: Invoke }[] = [
     file: "orders/[id]/redeem/route.ts",
     invoke: async () => {
       const { NextRequest } = await import("next/server");
-      const { POST } = await import(
-        "@/app/api/billing/orders/[id]/redeem/route"
-      );
+      const { POST } = await import("@/app/api/billing/orders/[id]/redeem/route");
       return POST(
-        new NextRequest(
-          "http://localhost:3001/api/billing/orders/order-1/redeem",
-          {
-            method: "POST",
-            body: JSON.stringify({ code: "cc_disc_abc_secret" }),
-            headers: { "content-type": "application/json" },
-          },
-        ),
+        new NextRequest("http://localhost:3001/api/billing/orders/order-1/redeem", {
+          method: "POST",
+          body: JSON.stringify({ code: "cc_disc_abc_secret" }),
+          headers: { "content-type": "application/json" },
+        }),
         { params: Promise.resolve({ id: "order-1" }) },
       );
     },
@@ -308,18 +178,10 @@ const GATED: { name: string; file: string; invoke: Invoke }[] = [
 beforeEach(() => {
   calls = [];
   session.email = "priya@fracktal.in";
-  process.env.CUSTOMER_CONSOLE_URL = CONSOLE_URL;
-  process.env.CUSTOMER_CONSOLE_ORG_KEY = "cc_live_fixture_notarealsecret";
-  // The key→organization resolution is cached module-level (the key is fixed
-  // by process env in production). Each case scripts its own whoami, so the
-  // cache has to start empty or case two reads case one's answer.
-  resetKeyOrgCache();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  delete process.env.CUSTOMER_CONSOLE_URL;
-  delete process.env.CUSTOMER_CONSOLE_ORG_KEY;
 });
 
 describe.each(GATED)("$name", ({ invoke }) => {
@@ -330,8 +192,6 @@ describe.each(GATED)("$name", ({ invoke }) => {
     const res = await invoke();
 
     expect(res.status).toBe(401);
-    // Nothing at all — not even the identity hop, because there is no identity
-    // to resolve.
     expect(calls).toEqual([]);
   });
 
@@ -342,182 +202,88 @@ describe.each(GATED)("$name", ({ invoke }) => {
 
     expect(res.status).toBe(403);
     // ⚠️ THE assertion in this file. The gate resolves the caller through the
-    // gateway's `/auth/me` — so `fetch` IS called once, and asserting "the
-    // fetch mock was never called" literally would fence the wrong thing.
-    // What must never happen is a call to the Customer Console: a 403 issued
-    // after the money route was hit is a different and worse bug.
-    expect(consoleCalls()).toEqual([]);
+    // gateway's `/auth/me`, so `fetch` IS called once. What must never happen
+    // is a call to the money route.
+    expect(moneyCalls()).toEqual([]);
   });
 
   it("403s when the capability cannot be resolved at all — fails CLOSED", async () => {
-    // A gateway that is down is not permission to buy. The read path's habit
-    // of degrading to NO_ACCESS and rendering is right for deciding what to
-    // draw and wrong for deciding whether to spend.
     stubFetch(null);
 
     const res = await invoke();
 
     expect(res.status).toBe(403);
-    expect(consoleCalls()).toEqual([]);
+    expect(moneyCalls()).toEqual([]);
   });
 
-  it("lets a HOLDER of the KEY's own organization through", async () => {
+  it("lets a HOLDER through to the gateway's money route, once", async () => {
     stubFetch(["billing:purchase"]);
 
     const res = await invoke();
 
     expect(res.status).toBe(200);
     expect(moneyCalls()).toHaveLength(1);
-    expect(moneyCalls()[0]).toContain(CONSOLE_URL);
-    // The org binding was actually resolved rather than assumed.
-    expect(consoleCalls()).toContain(WHOAMI);
   });
 
-  it("carries the deployment's own organization key, never a gateway token", async () => {
+  it("acts as the SESSION member and carries no Console key", async () => {
     stubFetch(["billing:purchase"]);
     await invoke();
 
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    const consoleCall = fetchMock.mock.calls.find(
-      (c: unknown[]) =>
-        String(c[0]).startsWith(CONSOLE_URL) && String(c[0]) !== WHOAMI,
-    );
-    const headers = (consoleCall?.[1] as RequestInit)?.headers as Record<
-      string,
-      string
-    >;
-    expect(headers.Authorization).toBe("Bearer cc_live_fixture_notarealsecret");
-    // Attribution only — it refines within the organization the key pinned and
-    // can never move the call to another one.
-    expect(headers["X-CC-Member"]).toBe("priya@fracktal.in");
+    const headers = moneyCalls()[0].init?.headers as Record<string, string>;
+    expect(headers["X-User-Email"]).toBe("priya@fracktal.in");
+    expect(headers.Authorization).not.toMatch(/cc_(live|depl)_/);
+    // Nothing but the gateway was reached: no Console URL at all.
+    expect(urls().every((u) => u.startsWith(GATEWAY_URL))).toBe(true);
   });
 
-  it("refuses without a Console configured — and only AFTER the capability check", async () => {
-    // Order matters: a member without the capability must not be able to learn
-    // whether this deployment is wired to a Console.
-    delete process.env.CUSTOMER_CONSOLE_URL;
-    stubFetch(["admin:members:read"]);
-
-    const res = await invoke();
-    expect(res.status).toBe(403);
-
-    calls = [];
-    stubFetch(["billing:purchase"]);
-    const configured = await invoke();
-    expect(configured.status).toBe(503);
-    expect(consoleCalls()).toEqual([]);
-  });
-});
-
-// ── The org binding: the caller's organization IS the key's ─────────────────
-//
-// `org_placement` is N organizations to ONE deployment. The capability gate
-// answers *"may this person buy?"* about the CALLER, while the credential
-// binds *"whose account is charged"* to the DEPLOYMENT's key — and until this
-// round nothing compared the two. Once capability seeding parameterizes (the
-// org-provisioning ticket named in B7 clause 2), an admin of org B passes
-// `requirePurchaser` and buys INTO org A: seats granted to the key's
-// organization, paid attention nowhere. The fence is that the money route is
-// never reached when the two disagree.
-
-describe.each(GATED)("$name — the org binding", ({ invoke }) => {
-  it("403s when the caller's organization is not the KEY's, before the money route", async () => {
-    stubFetch(["billing:purchase"], undefined, { caller: "other-company" });
-
-    const res = await invoke();
-
-    expect(res.status).toBe(403);
-    expect(moneyCalls()).toEqual([]);
-  });
-
-  it("names the mismatch honestly — the caller's org, never the key's", async () => {
-    stubFetch(["billing:purchase"], undefined, { caller: "other-company" });
-
-    const body = (await (await invoke()).json()) as { detail?: string };
-
-    // Honest: it says which organization the refusal is about, so an admin can
-    // act on it instead of filing "billing is broken".
-    expect(body.detail).toContain("other-company");
-    expect(body.detail).toMatch(/organization/i);
-    // ⚠️ And it must NOT name the key's organization: which tenant owns this
-    // deployment's billing account is a cross-tenant fact the caller has no
-    // need for, and a refusal that leaks it is a membership oracle with better
-    // manners.
-    expect(body.detail).not.toContain(KEY_ORG);
-  });
-
-  it("403s when the caller's own organization cannot be resolved", async () => {
-    // `admin/me.py:135-140` degrades to `organization: {}` when the tenant
-    // lookup fails. That is right for rendering the app and wrong for spending:
-    // an unresolvable org is not permission to buy into whichever one the key
-    // happens to hold.
-    stubFetch(["billing:purchase"], undefined, { caller: null });
-
-    const res = await invoke();
-
-    expect(res.status).toBe(403);
-    expect(moneyCalls()).toEqual([]);
-  });
-
-  it("refuses when the whoami answers anything but 200 — never a pass", async () => {
-    stubFetch(["billing:purchase"], undefined, {
-      whoami: new Response(JSON.stringify({ detail: "Invalid API key" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
+  it("answers 503 when the gateway's money route cannot be reached", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        calls.push({ url });
+        if (url.startsWith(`${GATEWAY_URL}/auth/me`)) {
+          return new Response(JSON.stringify({ capabilities: ["billing:purchase"] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new TypeError("fetch failed");
       }),
-    });
+    );
 
     const res = await invoke();
 
     expect(res.status).toBe(503);
-    expect(moneyCalls()).toEqual([]);
-    // The upstream's words are this deployment's problem, not the customer's.
-    expect(JSON.stringify(await res.json())).not.toContain("Invalid API key");
-  });
-
-  it("refuses when the whoami is unreachable — never a pass", async () => {
-    stubFetch(["billing:purchase"], undefined, { whoami: "unreachable" });
-
-    const res = await invoke();
-
-    expect(res.status).toBe(503);
-    expect(moneyCalls()).toEqual([]);
-  });
-
-  it("does not cache a FAILED resolution — one blip is not a dead deployment", async () => {
-    stubFetch(["billing:purchase"], undefined, { whoami: "unreachable" });
-    expect((await invoke()).status).toBe(503);
-
-    calls = [];
-    stubFetch(["billing:purchase"]);
-    const second = await invoke();
-
-    expect(second.status).toBe(200);
-    expect(consoleCalls()).toContain(WHOAMI);
+    expect(redeemRefusal(res.status, await res.json()).kind).toBe("unavailable");
   });
 });
 
-// ── The relay policy, which the page's refusal copy depends on ──────────────
+// ── The relay, which the page's refusal copy depends on ────────────────────
+
+async function redeem(code = "cc_disc_abc_secret"): Promise<Response> {
+  const { NextRequest } = await import("next/server");
+  const { POST } = await import("@/app/api/billing/orders/[id]/redeem/route");
+  return POST(
+    new NextRequest("http://localhost:3001/api/billing/orders/o/redeem", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+      headers: { "content-type": "application/json" },
+    }),
+    { params: Promise.resolve({ id: "o" }) },
+  );
+}
+
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 describe("the refusal partition survives the proxy", () => {
   it("relays a 409 reason verbatim", async () => {
-    stubFetch(
-      ["billing:purchase"],
-      new Response(JSON.stringify({ detail: { reason: "exhausted" } }), {
-        status: 409,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const { NextRequest } = await import("next/server");
-    const { POST } = await import("@/app/api/billing/orders/[id]/redeem/route");
-    const res = await POST(
-      new NextRequest("http://localhost:3001/api/billing/orders/o/redeem", {
-        method: "POST",
-        body: JSON.stringify({ code: "cc_disc_abc_secret" }),
-        headers: { "content-type": "application/json" },
-      }),
-      { params: Promise.resolve({ id: "o" }) },
-    );
+    stubFetch(["billing:purchase"], json(409, { detail: { reason: "exhausted" } }));
+    const res = await redeem();
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ detail: { reason: "exhausted" } });
@@ -527,52 +293,42 @@ describe("the refusal partition survives the proxy", () => {
     const body = JSON.stringify({ detail: "no such discount code" });
     stubFetch(
       ["billing:purchase"],
-      new Response(body, {
-        status: 404,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(body, { status: 404, headers: { "content-type": "application/json" } }),
     );
-    const { NextRequest } = await import("next/server");
-    const { POST } = await import("@/app/api/billing/orders/[id]/redeem/route");
-    const res = await POST(
-      new NextRequest("http://localhost:3001/api/billing/orders/o/redeem", {
-        method: "POST",
-        body: JSON.stringify({ code: "cc_disc_abc_secret" }),
-        headers: { "content-type": "application/json" },
-      }),
-      { params: Promise.resolve({ id: "o" }) },
-    );
+    const res = await redeem();
 
     expect(res.status).toBe(404);
     expect(await res.text()).toBe(body);
   });
 
-  it("does NOT relay a 503 — that body names this deployment's missing variables", async () => {
+  it("reads the gateway's 503 as unavailable, never as sign in", async () => {
+    // The gateway turns a Console 401 (this box's own key), an outage and a
+    // missing capability into 503. The page must not tell a signed-in
+    // purchaser to sign in for a fault they cannot see.
     stubFetch(
       ["billing:purchase"],
-      new Response(
-        JSON.stringify({ detail: "CUSTOMER_CONSOLE_RAZORPAY_KEY_ID unset" }),
-        { status: 503, headers: { "content-type": "application/json" } },
-      ),
+      json(503, { detail: "Billing is temporarily unavailable." }),
     );
-    const { NextRequest } = await import("next/server");
-    const { POST } = await import("@/app/api/billing/orders/route");
-    const res = await POST(
-      new NextRequest("http://localhost:3001/api/billing/orders", {
-        method: "POST",
-        body: JSON.stringify({ lines: [{ plan_slug: "core", quantity: 1 }] }),
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    const res = await redeem();
 
     expect(res.status).toBe(503);
-    expect(JSON.stringify(await res.json())).not.toContain("RAZORPAY");
+    const refusal = redeemRefusal(res.status, await res.json());
+    expect(refusal.kind).toBe("unavailable");
+    expect(refusal.message).not.toMatch(/sign in/i);
+  });
+
+  it("keeps the BFF's own 401 meaning what it says", async () => {
+    session.email = null;
+    stubFetch(["billing:purchase"]);
+    const res = await redeem();
+
+    expect(res.status).toBe(401);
+    expect(redeemRefusal(res.status, await res.json()).kind).toBe("unauthenticated");
   });
 
   it("never forwards a price the browser named", async () => {
-    // `CreateOrderRequest` carries no amount by design (§9.2): every paisa
-    // comes from `plan_catalog`. The proxy rebuilds the basket rather than
-    // passing the body through, so a page field cannot become a wire field.
+    // Every paisa comes from `plan_catalog` (§9.2). The proxy rebuilds the
+    // basket rather than passing the body through.
     stubFetch(["billing:purchase"]);
     const { NextRequest } = await import("next/server");
     const { POST } = await import("@/app/api/billing/orders/route");
@@ -582,181 +338,110 @@ describe("the refusal partition survives the proxy", () => {
         body: JSON.stringify({
           lines: [{ plan_slug: "core", quantity: 2, unit_price_paise: 1 }],
           total_paise: 1,
+          org_slug: "someone-else",
         }),
         headers: { "content-type": "application/json" },
       }),
     );
 
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    const consoleCall = fetchMock.mock.calls.find(
-      (c: unknown[]) =>
-        String(c[0]).startsWith(CONSOLE_URL) && String(c[0]) !== WHOAMI,
-    );
-    const sent = JSON.parse(String((consoleCall?.[1] as RequestInit)?.body));
+    const sent = JSON.parse(String(moneyCalls()[0].init?.body));
     expect(sent).toEqual({ lines: [{ plan_slug: "core", quantity: 2 }] });
   });
-});
 
-// ── An upstream 401 is the DEPLOYMENT's key, never the customer's session ───
-
-describe("a Console 401 does not become the browser's 401", () => {
-  /** The 401 the Console issues for a missing, malformed, unknown or revoked key. */
-  const invalidKey = () =>
-    new Response(JSON.stringify({ detail: "Invalid API key" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
-
-  it("relays it as 502, and the page reads it as unavailable — not as sign in", async () => {
-    stubFetch(["billing:purchase"], invalidKey());
-    const { NextRequest } = await import("next/server");
-    const { POST } = await import("@/app/api/billing/orders/route");
-    const res = await POST(
-      new NextRequest("http://localhost:3001/api/billing/orders", {
-        method: "POST",
-        body: JSON.stringify({ lines: [{ plan_slug: "core", quantity: 1 }] }),
-        headers: { "content-type": "application/json" },
-      }),
-    );
-
-    // 401 relayed as 401 tells a signed-in purchaser to sign in — for a fault
-    // in a credential they do not hold and cannot fix.
-    expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(JSON.stringify(body)).not.toContain("Invalid API key");
-
-    // The other half, and the half that matters: what the surface then SAYS.
-    const refusal = redeemRefusal(res.status, body);
-    expect(refusal.kind).toBe("unavailable");
-    expect(refusal.message).not.toMatch(/sign in/i);
-    expect(refusal.message).toBe("Billing is temporarily unavailable.");
-  });
-
-  it("keeps the BFF's own 401 meaning what it says", async () => {
-    // The signed-out caller still gets 401 and still reads "Sign in to
-    // continue" — the two 401s were the problem and telling them apart is the
-    // fix, not suppressing both.
-    session.email = null;
+  it("puts the code in the BODY only, never in a URL", async () => {
     stubFetch(["billing:purchase"]);
-    const { NextRequest } = await import("next/server");
-    const { POST } = await import("@/app/api/billing/orders/route");
-    const res = await POST(
-      new NextRequest("http://localhost:3001/api/billing/orders", {
-        method: "POST",
-        body: JSON.stringify({ lines: [{ plan_slug: "core", quantity: 1 }] }),
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    await redeem("cc_disc_abc_secret");
 
-    expect(res.status).toBe(401);
-    expect(redeemRefusal(res.status, await res.json()).kind).toBe(
-      "unauthenticated",
-    );
-  });
-
-  it("agrees with the sibling read proxy's policy, which it mirrors", async () => {
-    // Two relays, ONE policy. `summary/route.ts` reached the same conclusion
-    // first and carries the argument; this asserts it has not since changed its
-    // mind, because a mirror that goes stale is how two hops start contradicting
-    // each other about the same upstream fact.
-    const { readFileSync } = await import("node:fs");
-    const summary = readFileSync(
-      fileURLToPath(new URL("./summary/route.ts", import.meta.url)),
-      "utf-8",
-    );
-    expect(summary).toContain("401 || res.status === 403 ? 502");
+    expect(urls().some((u) => u.includes("cc_disc_abc_secret"))).toBe(false);
+    expect(JSON.parse(String(moneyCalls()[0].init?.body))).toEqual({
+      code: "cc_disc_abc_secret",
+    });
   });
 });
 
 // ── The exclusions, asserted rather than only commented ─────────────────────
 
-describe("the gated list is complete", () => {
-  const BILLING_DIR = fileURLToPath(new URL(".", import.meta.url));
+const BILLING_DIR = fileURLToPath(new URL(".", import.meta.url));
 
-  /** Every `route.ts` under this directory, relative and slash-separated. */
-  function routeFiles(dir: string, out: string[] = []): string[] {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) routeFiles(full, out);
-      else if (entry === "route.ts") out.push(full);
-    }
-    return out;
+/** Every file under this directory, relative and slash-separated. */
+function filesUnder(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) filesUnder(full, out);
+    else out.push(full);
   }
+  return out;
+}
 
-  it("is every billing route minus the two excluded BY NAME", () => {
-    const onDisk = routeFiles(BILLING_DIR)
+describe("the gated list is complete", () => {
+  it("is every billing route minus the ones excluded BY NAME", () => {
+    const onDisk = filesUnder(BILLING_DIR)
+      .filter((p) => p.endsWith(`${sep}route.ts`))
       .map((p) => relative(BILLING_DIR, p).split(sep).join("/"))
       .sort();
 
-    // The exclusions have to still BE routes, or the reasons above are about
-    // files that no longer exist and the sweep is quietly wider than it reads.
     for (const excluded of Object.keys(EXCLUDED)) {
-      expect(onDisk, `${excluded} is excluded by name but is not a route`).toContain(
-        excluded,
-      );
+      expect(onDisk, `${excluded} is excluded by name but is not a route`).toContain(excluded);
     }
 
     const owed = onDisk.filter((f) => !(f in EXCLUDED));
     expect(GATED.map((g) => g.file).sort()).toEqual(owed);
   });
+
+  it("no billing module reads a Console credential or address (H-152)", () => {
+    // The organization key is how one tenant's purchases were billed to
+    // another's account on a shared box. No file here may read it again, nor
+    // the Console's address: every billing call goes through the gateway.
+    const offenders = filesUnder(BILLING_DIR)
+      .filter((p) => /\.ts$/.test(p) && !/\.test\.ts$/.test(p))
+      .filter((p) => {
+        const code = readFileSync(p, "utf-8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/^\s*\/\/.*$/gm, "");
+        return /CUSTOMER_CONSOLE_|cc_live_|X-CC-Member/.test(code);
+      })
+      .map((p) => relative(BILLING_DIR, p));
+    expect(offenders).toEqual([]);
+  });
 });
 
-describe("the excluded routes", () => {
-  it("names the read proxy's board finding rather than sweeping it up", async () => {
-    // The summary read is reachable by any signed-in member. This test does not
-    // assert that is CORRECT — it asserts the exclusion is DELIBERATE and
-    // visible, so the day the finding is fixed this case goes red and the entry
-    // moves into GATED where it belongs.
-    stubFetch([]);
-    const { GET } = await import("@/app/api/billing/summary/route");
+describe("the excluded READ routes go to the gateway, never the Console (H-152)", () => {
+  function stubGateway() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        calls.push({ url });
+        if (url.startsWith(`${GATEWAY_URL}/billing/`)) {
+          return json(200, { plans: [] });
+        }
+        throw new Error(`unexpected fetch to ${url}`);
+      }),
+    );
+  }
+
+  const READS: [string, () => Promise<{ GET: () => Promise<Response> }>][] = [
+    ["/billing/summary", () => import("@/app/api/billing/summary/route")],
+    ["/billing/catalog", () => import("@/app/api/billing/catalog/route")],
+    ["/billing/seats", () => import("@/app/api/billing/seats/route")],
+  ];
+
+  it.each(READS)("%s reaches the gateway alone, with no query string", async (path, load) => {
+    stubGateway();
+    const { GET } = await load();
     const res = await GET();
 
     expect(res.status).toBe(200);
-    expect(consoleCalls()).toHaveLength(1);
+    expect(urls()).toEqual([`${GATEWAY_URL}${path}`]);
   });
 
-  it("keeps the catalog read on the session gate", async () => {
-    stubFetch([], new Response(JSON.stringify({ plans: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-    const { GET } = await import("@/app/api/billing/catalog/route");
+  it.each(READS)("%s reaches nothing for a signed-out caller", async (_path, load) => {
+    session.email = null;
+    stubGateway();
+    const { GET } = await load();
     const res = await GET();
 
-    expect(res.status).toBe(200);
-
-    session.email = null;
-    calls = [];
-    stubFetch([]);
-    const signedOut = await GET();
-    expect(signedOut.status).toBe(401);
-    expect(calls).toEqual([]);
-  });
-
-  it("keeps the seats read on the session gate, and names no org on the wire", async () => {
-    // SC-1a's seats block: a signed-in member reads their own seats; a
-    // signed-out one reaches nothing. The organization is the deployment key's
-    // — never a query parameter the browser sent — so the whole read is a bare
-    // GET with no request input.
-    stubFetch([], new Response(JSON.stringify({ plans: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-    const { GET } = await import("@/app/api/billing/seats/route");
-    const res = await GET();
-
-    expect(res.status).toBe(200);
-    // It reached the Console's own seats read on the deployment's key, and no
-    // caller-named organization could have moved it elsewhere.
-    const seatsCall = consoleCalls().find((u) => u.endsWith("/me/seats"));
-    expect(seatsCall).toBeDefined();
-    expect(seatsCall).not.toMatch(/[?&]/); // no query string, no org param
-
-    session.email = null;
-    calls = [];
-    stubFetch([]);
-    const signedOut = await GET();
-    expect(signedOut.status).toBe(401);
+    expect(res.status).toBe(401);
     expect(calls).toEqual([]);
   });
 });

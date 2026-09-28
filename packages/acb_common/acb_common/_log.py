@@ -176,6 +176,40 @@ def run_context_scope() -> Iterator[None]:
             structlog.contextvars.bind_contextvars(**before)
 
 
+@contextlib.contextmanager
+def job_member_scope(owner: str | None, *, app: str | None = None) -> Iterator[None]:
+    """Run a BACKGROUND job as the member it belongs to. H-152.
+
+    🔴 **A job with no session reached the Router with no member.** Under the
+    per-box deployment key the Console derives the organization from
+    ``X-CC-Member``, and a call without one is a 400. A schedule, a sync loop
+    or a webhook has no signed-in person, so the job binds the member who OWNS
+    the thing it works on: the mailbox, the workflow, the WhatsApp account.
+
+    ⚠️ **``owner`` must come from OUR tables, never from a request body.**
+    The member decides which organization pays, so it is bound VERIFIED
+    (H-73) and the Router may cap on it. A caller that holds only a claim must
+    use :func:`bind_run_context` without ``member_verified``.
+
+    ⚠️ **An inherited member is DROPPED first.** A sync loop started inside a
+    request copies that request's context for its whole life, so without this
+    every mailbox would bill whoever last pressed Save. An owner that is not
+    an address (``None``, ``anonymous``) therefore leaves the job memberless,
+    never billed to a bystander.
+
+    Scoped like :func:`run_context_scope`, so the caller's fields come back
+    exactly on exit.
+    """
+    with run_context_scope():
+        structlog.contextvars.unbind_contextvars("user", "member_verified")
+        member = str(owner or "").strip()
+        if "@" in member:
+            bind_run_context(user=member, app=app, member_verified=True)
+        elif app:
+            bind_run_context(app=app)
+        yield
+
+
 def clear_run_context() -> None:
     """Unbind the run-correlation fields bound by :func:`bind_run_context`."""
     structlog.contextvars.unbind_contextvars(*_RUN_CONTEXT_KEYS)

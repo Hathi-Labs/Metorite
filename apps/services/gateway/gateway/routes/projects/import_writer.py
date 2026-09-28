@@ -56,6 +56,7 @@ from gateway.routes.projects.core import (
     reserve_task_numbers,
     resolve_visibility_for,
     status_owner_id,
+    update_row,
     vocabulary_scope,
 )
 from gateway.routes.projects.importer.bundle import ImportBundle, Task
@@ -64,12 +65,16 @@ from gateway.routes.projects.importer.layout import (
     STAGE_COLOR,
     STAGE_ORDER,
     build_nodes,
+    comment_key,
     completed_estimate,
     description,
     due_instant,
+    merge_fields,
     order_tasks,
     origin,
     project_statuses,
+    snapshot,
+    source_values,
 )
 from gateway.routes.projects.importer.plan import (
     ImportMapping,
@@ -161,20 +166,40 @@ FAIL_SQL = (
 #: The tasks of this batch that already exist in this organization: written by
 #: an earlier run of this file, or by the pre-D52 importer (§11 Q-7).
 EXISTING_IN_BATCH_SQL = (
-    "SELECT origin->>'external_id' AS ref, id, root_project_id FROM pm_tasks "
+    "SELECT origin->>'external_id' AS ref, id, root_project_id, 'import' AS kind FROM pm_tasks "
     " WHERE organization_id = CAST(:org AS uuid) AND origin->>'kind' = 'import' "
     "   AND origin->>'source' = :source AND origin->>'external_id' = ANY(:refs) "
     "UNION ALL "
-    "SELECT clickup_id AS ref, id, root_project_id FROM pm_tasks "
+    "SELECT clickup_id AS ref, id, root_project_id, 'legacy' AS kind FROM pm_tasks "
     " WHERE organization_id = CAST(:org AS uuid) AND :source = 'clickup' "
     "   AND clickup_id = ANY(:refs)"
+)
+#: The state of the imported tasks a batch may update (I-3b, §6.9).
+EXISTING_ROWS_SQL = (
+    "SELECT t.id, t.project_id, t.root_project_id, t.title, t.description, t.status_id, "
+    "       t.due_at, t.start_date, t.importance, t.estimate_mins, t.tags, t.completed_at, "
+    "       t.origin, (p.personal_owner IS NOT NULL) AS in_personal "
+    "  FROM pm_tasks t JOIN pm_projects p ON p.id = t.project_id "
+    " WHERE t.organization_id = CAST(:org AS uuid) AND t.id = ANY(CAST(:ids AS uuid[]))"
+)
+EXISTING_ASSIGNEES_SQL = (
+    "SELECT task_id, assignee FROM pm_task_assignees WHERE task_id = ANY(CAST(:ids AS uuid[]))"
+)
+#: The source comments already imported, by key, so a re-import adds each once.
+EXISTING_COMMENT_KEYS_SQL = (
+    "SELECT task_id, meta->'import'->>'comment_key' AS comment_key, created_at, body "
+    "  FROM pm_activities "
+    " WHERE task_id = ANY(CAST(:ids AS uuid[])) AND type = 'comment' AND meta ? 'import'"
+)
+REMOVE_ASSIGNEES_SQL = (
+    "DELETE FROM pm_task_assignees  WHERE task_id = CAST(:tid AS uuid) AND assignee = ANY(:who)"
 )
 #: The node maps of earlier runs of the same source in this organization,
 #: newest first. Batch 0 reuses a node only when this run CONTINUES one of
 #: them (see :func:`_earlier_nodes`).
 EARLIER_NODES_SQL = (
     "SELECT id, files, mapping->'target' AS target, mapping->>'grant' AS grant_subject, "
-    "       progress->'node_ids' AS node_ids "
+    "       progress->'node_ids' AS node_ids, progress->'statuses' AS statuses "
     "  FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) AND source = :source "
     "   AND id <> CAST(:id AS uuid) AND progress ? 'node_ids' "
@@ -183,9 +208,11 @@ EARLIER_NODES_SQL = (
 #: The runs that already wrote a task of THIS file: the proof that this run
 #: continues them rather than importing a different workspace.
 CONTINUED_RUNS_SQL = (
-    "SELECT DISTINCT origin->>'run_id' AS run_id FROM pm_tasks "
-    " WHERE organization_id = CAST(:org AS uuid) AND origin->>'kind' = 'import' "
-    "   AND origin->>'source' = :source AND origin->>'external_id' = ANY(:refs)"
+    "SELECT DISTINCT r.run_id FROM pm_tasks t, "
+    "       LATERAL (VALUES (t.origin->>'run_id'), (t.origin->>'updated_by_run')) AS r(run_id) "
+    " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'kind' = 'import' "
+    "   AND t.origin->>'source' = :source AND t.origin->>'external_id' = ANY(:refs) "
+    "   AND r.run_id IS NOT NULL"
 )
 #: A node is reused only where it still stands: alive, not archived, and
 #: under the same parent (a move re-stamps the roots, so the old map is stale).
@@ -391,7 +418,7 @@ async def _write_nodes(
     label = SOURCE_LABEL.get(bundle.source, bundle.source)
 
     async with _tenant_session(organization_id) as db:
-        reusable, continued = await _earlier_nodes(
+        reusable, continued, earlier_status = await _earlier_nodes(
             db, organization_id, run_id, bundle, mapping, file_hashes
         )
         grant_checked = False
@@ -411,7 +438,10 @@ async def _write_nodes(
                 counts["reused"] += 1
                 if spec.kind == "project":
                     status_ids[spec.ref] = await _reuse_statuses(
-                        db, node_ids[spec.ref], statuses.get(spec.ref, [])
+                        db,
+                        node_ids[spec.ref],
+                        statuses.get(spec.ref, []),
+                        earlier_status.get(spec.ref),
                     )
                 continue
             if spec.kind == "space" and not grant_checked:
@@ -497,9 +527,11 @@ async def _earlier_nodes(
     bundle: ImportBundle,
     mapping: ImportMapping,
     file_hashes: list[str],
-) -> tuple[dict[str, tuple[str, str | None]], set[str]]:
+) -> tuple[dict[str, tuple[str, str | None]], set[str], dict[str, dict[str, str]]]:
     """``spec ref → (node id, its parent now)`` for the nodes this run may
-    reuse, and the ids of the runs it continues.
+    reuse, the ids of the runs it continues, and ``project ref → {status name
+    → status id}`` as those runs recorded it. The last lets a status a member
+    RENAMED since keep its tasks, instead of coming back as a new lane.
 
     A run CONTINUES an earlier one only when all of these hold:
 
@@ -534,6 +566,7 @@ async def _earlier_nodes(
     }
     found: dict[str, str] = {}
     continued: set[str] = set()
+    earlier_status: dict[str, dict[str, str]] = {}
     for row in (
         await db.execute(
             text(EARLIER_NODES_SQL),
@@ -556,8 +589,12 @@ async def _earlier_nodes(
         continued.add(str(row.id))
         for ref, node in (_json(row.node_ids) or {}).items():
             found.setdefault(ref, str(node))
+        for ref, entries in (_json(row.statuses) or {}).items():
+            names = earlier_status.setdefault(ref, {})
+            for entry in entries:
+                names.setdefault(str(entry[0]), str(entry[1]))
     if not found:
-        return {}, continued
+        return {}, continued, earlier_status
     alive = {
         str(r.id): (str(r.parent_project_id) if r.parent_project_id else None)
         for r in (
@@ -567,11 +604,15 @@ async def _earlier_nodes(
             )
         ).fetchall()
     }
-    return {ref: (node, alive[node]) for ref, node in found.items() if node in alive}, continued
+    reusable = {ref: (node, alive[node]) for ref, node in found.items() if node in alive}
+    return reusable, continued, earlier_status
 
 
 async def _reuse_statuses(
-    db: Any, project_id: str, wanted: list[tuple[str, Any]]
+    db: Any,
+    project_id: str,
+    wanted: list[tuple[str, Any]],
+    earlier: dict[str, str] | None = None,
 ) -> list[list[str]]:
     """The status set a reused project uses, plus any name this run needs that
     it lacks. The set is the one its status OWNER holds (migration 196), which
@@ -584,8 +625,15 @@ async def _reuse_statuses(
     rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
     have = [[str(r.name).lower(), str(r.id), str(r.category)] for r in rows]
     positions = [(STAGE_ORDER.get(str(r.category), 2), int(r.position or 0)) for r in rows]
+    by_id = {status_id: (n, c) for n, status_id, c in have}
     for name, category in sorted(wanted, key=lambda nc: STAGE_ORDER[nc[1]]):
         if name.lower() in {n for n, _, _ in have}:
+            continue
+        # A member renamed the lane an earlier run made for this name: keep
+        # using that lane, under the source's name, with its own stage.
+        renamed = (earlier or {}).get(name.lower())
+        if renamed in by_id:
+            have.append([name.lower(), renamed, by_id[renamed][1]])
             continue
         stage = STAGE_ORDER[category]
         position = max((pos for st, pos in positions if st <= stage), default=0) + 1
@@ -660,25 +708,33 @@ async def _write_tasks(
     comments: dict[str, list[Any]],
     admin: str,
 ) -> tuple[dict[str, int], dict[str, int]]:
-    """One batch, in the caller's transaction."""
-    now = dt.datetime.now(dt.UTC)
+    """One batch, in the caller's transaction. A task new to this
+    organization is inserted. A task an earlier import wrote is UPDATED by
+    the three-way rule (§6.9, owner decision 2026-09-28). A task the pre-D52
+    importer wrote is skipped: it holds no snapshot to merge against."""
     source = bundle.source
-    system_actor = f"system:import:{source}"
     refs = [t.ref for t in chunk] + [t.parent_ref for t in chunk if t.parent_ref]
-    known = {
-        str(r.ref): (str(r.id), str(r.root_project_id))
-        for r in (
-            await db.execute(
-                text(EXISTING_IN_BATCH_SQL),
-                {"org": organization_id, "source": source, "refs": refs},
-            )
-        ).fetchall()
-    }
+    found = (
+        await db.execute(
+            text(EXISTING_IN_BATCH_SQL),
+            {"org": organization_id, "source": source, "refs": refs},
+        )
+    ).fetchall()
+    known = {str(r.ref): (str(r.id), str(r.root_project_id)) for r in found}
+    kinds = {str(r.ref): str(r.kind) for r in found}
+    existing = await _existing_state(
+        db, organization_id, [known[t.ref][0] for t in chunk if kinds.get(t.ref) == "import"]
+    )
     types = await _types_by_root(db, set(progress["roots"].values()))
-    counts = Counter(
+    counts: Counter[str] = Counter(
         {
             "written": 0,
             "skipped": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "fields_updated": 0,
+            "conflicts": 0,
+            "moved": 0,
             "comments": 0,
             "detached": 0,
             "completed_estimated": 0,
@@ -689,98 +745,405 @@ async def _write_tasks(
     by_root: Counter[str] = Counter()
 
     for task in chunk:
-        if task.ref in known:
+        kind = kinds.get(task.ref)
+        if kind == "legacy":
             counts["skipped"] += 1
             continue
-        project_id = progress["nodes"][task.container_ref]
-        root = progress["roots"][task.container_ref]
-        status_id, stage = _status_for(task, progress["statuses"][task.container_ref], final)
-
-        parent_id = None
-        if task.parent_ref:
-            parent = known.get(task.parent_ref)
-            # A parent in another tree (the old importer's rows) is not a
-            # parent here: the task lands at the top and the report counts it.
-            if parent is not None and parent[1] == root:
-                parent_id = parent[0]
-            else:
-                counts["detached"] += 1
-
-        type_id, epic = await _type_id(db, types, root, task.task_type)
-        if epic and parent_id:
-            # §3.4: an Epic has no parent. Keep the parent, drop the type.
-            type_id = None
-            counts["epic_demoted"] += 1
-
-        members = [m for r in task.assignee_refs if (m := people.get(r))]
-        unassigned = [names.get(r, r) for r in task.assignee_refs if not people.get(r)]
-        # The stage of the status the task LANDS in, not of the mapping: in a
-        # reused set, an existing name keeps its own stage.
-        closed = stage in ("done", "cancelled")
-        completed_at = (
-            completed_estimate(task, comments.get(task.ref, []), bundle.utc_offset, now)
-            if closed
-            else None
+        incoming, extras = await _incoming(
+            db,
+            task,
+            bundle,
+            progress,
+            known,
+            types,
+            people,
+            names,
+            final,
+            comments,
+            admin,
+            counts,
+            for_update=kind == "import",
         )
-        counts["completed_estimated"] += 1 if closed else 0
-
-        values: dict[str, Any] = {
-            "project_id": project_id,
-            "root_project_id": root,
-            "status_id": status_id,
-            "parent_task_id": parent_id,
-            "type_id": type_id,
-            "title": task.title[:500],
-            "description": description(task, unassigned, source),
-            "estimate_mins": task.estimate_mins,
-            "start_date": task.start_date,
-            "due_at": due_instant(task, bundle.utc_offset),
-            "completed_at": completed_at,
-            "created_by": system_actor,
-            "source": "import",
-            "origin": origin(
+        if kind == "import":
+            task_id = known[task.ref][0]
+            await _update_task(
+                db,
+                task_id,
                 task,
-                source,
+                incoming,
+                extras,
+                existing,
+                comments,
+                bundle,
                 run_id,
-                completed_at_estimated=True if closed else None,
-                assignee_names=unassigned,
-            ),
+                admin,
+                counts,
+                people,
+                names,
+            )
+            continue
+        root = progress["roots"][task.container_ref]
+        values = {
+            **{k: v for k, v in incoming.items() if k != "assignees"},
+            "project_id": progress["nodes"][task.container_ref],
+            "root_project_id": root,
+            "parent_task_id": extras["parent_id"],
+            "type_id": extras["type_id"],
+            "completed_at": extras["completed_at"],
+            "created_by": f"system:import:{source}",
+            "source": "import",
+            "origin": {
+                **extras["origin"],
+                "run_id": run_id,
+                "import_values": snapshot(incoming),
+                "import_source": snapshot(extras["source"]),
+            },
             "task_number": await _next_number(db, numbers, root),
         }
         if task.created_at is not None:
             values["created_at"] = task.created_at
-        if task.importance is not None:
-            values["importance"] = task.importance
-        if task.tags:
-            fitted, dropped = await _fit_tags(db, root, task.tags)
-            counts["tags_dropped"] += dropped
-            if fitted:
-                values["tags"] = await apply_task_tags(db, root, fitted, by=admin)
-
+        if values.get("importance") is None:
+            values.pop("importance", None)
+        if not values.get("tags"):
+            values.pop("tags", None)
         row = await insert_row(db, "pm_tasks", values)
         task_id = str(row.id)
         known[task.ref] = (task_id, root)
         counts["written"] += 1
+        counts["completed_estimated"] += 1 if extras["closed"] else 0
         by_root[root] += 1
+        members = incoming["assignees"]
         if members:
             await insert_assignees(db, task_id, members, by=admin)
             await ensure_watchers(db, task_id, members, by=admin)
-        for comment in comments.get(task.ref, []):
-            author = people.get(comment.author_ref or "") if comment.author_ref else None
-            await record_activity(
-                db,
-                activity_type="comment",
-                created_by=author or system_actor,
-                task_id=task_id,
-                body=comment.body_md,
-                meta={
-                    "import": {"run_id": run_id, "source": source},
-                    "author_name": names.get(comment.author_ref or "", comment.author_ref),
-                },
-                created_at=comment.created_at,
-            )
-            counts["comments"] += 1
+        counts["comments"] += await _add_comments(
+            db, task_id, task, comments, set(), bundle, run_id, people, names
+        )
     return dict(counts), dict(by_root)
+
+
+async def _incoming(
+    db: Any,
+    task: Task,
+    bundle: ImportBundle,
+    progress: dict[str, Any],
+    known: dict[str, tuple[str, str]],
+    types: dict[str, dict[str, tuple[str, bool]]],
+    people: dict[str, str | None],
+    names: dict[str, str],
+    final: dict[str, Any],
+    comments: dict[str, list[Any]],
+    admin: str,
+    counts: Counter[str],
+    *,
+    for_update: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """What the source says this task is now: the UPDATABLE fields, and the
+    structure an insert needs as well. One place, so an insert and an update
+    can never read the file two ways.
+
+    ``for_update`` touches nothing: an update never re-parents or re-types a
+    task, never registers a tag it may not write, and never counts a
+    detach, a demotion or a dropped tag (§6.9). The caller registers the tags
+    only when the merge writes them."""
+    if for_update:
+        counts = Counter()
+    now = dt.datetime.now(dt.UTC)
+    source = bundle.source
+    root = progress["roots"][task.container_ref]
+    status_id, stage = _status_for(task, progress["statuses"][task.container_ref], final)
+
+    parent_id = None
+    if task.parent_ref:
+        parent = known.get(task.parent_ref)
+        # A parent in another tree (the old importer's rows) is not a
+        # parent here: the task lands at the top and the report counts it.
+        if parent is not None and parent[1] == root:
+            parent_id = parent[0]
+        else:
+            counts["detached"] += 1
+
+    type_id, epic = (None, False) if for_update else await _type_id(db, types, root, task.task_type)
+    if epic and parent_id:
+        # §3.4: an Epic has no parent. Keep the parent, drop the type.
+        type_id = None
+        counts["epic_demoted"] += 1
+
+    members = [m for r in task.assignee_refs if (m := people.get(r))]
+    unassigned = [names.get(r, r) for r in task.assignee_refs if not people.get(r)]
+    # The stage of the status the task LANDS in, not of the mapping: in a
+    # reused set, an existing name keeps its own stage.
+    closed = stage in ("done", "cancelled")
+    tags: list[str] = []
+    fitted: list[str] = []
+    if task.tags:
+        fitted, dropped = await _fit_tags(db, root, task.tags)
+        counts["tags_dropped"] += dropped
+        if fitted and not for_update:
+            tags = await apply_task_tags(db, root, fitted, by=admin)
+        elif fitted:
+            # The registry's spelling, WITHOUT registering: the merge may keep
+            # the member's tags, and then nothing enters the registry.
+            registry = await load_registry(db, root)
+            tags = [registry.get(t.lower(), t) for t in fitted]
+    incoming = {
+        "title": task.title[:500],
+        "description": description(task, unassigned, source),
+        "status_id": status_id,
+        "due_at": due_instant(task, bundle.utc_offset),
+        "start_date": task.start_date,
+        "importance": task.importance,
+        "estimate_mins": task.estimate_mins,
+        "tags": tags,
+        "assignees": sorted(set(members)),
+    }
+    extras = {
+        "parent_id": parent_id,
+        "type_id": type_id,
+        "closed": closed,
+        "completed_at": (
+            completed_estimate(task, comments.get(task.ref, []), bundle.utc_offset, now)
+            if closed
+            else None
+        ),
+        "origin": origin(
+            task,
+            source,
+            "",
+            completed_at_estimated=True if closed else None,
+            assignee_names=unassigned,
+        ),
+        "project_id": progress["nodes"][task.container_ref],
+        "root": root,
+        "fitted_tags": fitted,
+        "source": source_values(task, source, bundle.utc_offset),
+    }
+    return incoming, extras
+
+
+async def _existing_state(
+    db: Any, organization_id: str, ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The current state of the imported tasks a batch may update."""
+    if not ids:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for r in (
+        await db.execute(text(EXISTING_ROWS_SQL), {"org": organization_id, "ids": ids})
+    ).fetchall():
+        out[str(r.id)] = {
+            "row": r,
+            "assignees": [],
+            "comment_keys": set(),
+            "origin": _json(r.origin) or {},
+        }
+    for r in (await db.execute(text(EXISTING_ASSIGNEES_SQL), {"ids": ids})).fetchall():
+        if str(r.task_id) in out:
+            out[str(r.task_id)]["assignees"].append(str(r.assignee))
+    for r in (await db.execute(text(EXISTING_COMMENT_KEYS_SQL), {"ids": ids})).fetchall():
+        if str(r.task_id) in out:
+            # A comment written before comment keys existed (I-3) is matched
+            # on its date and text, so a re-run never writes it twice.
+            keys = out[str(r.task_id)]["comment_keys"]
+            if r.comment_key:
+                keys.add(str(r.comment_key))
+            else:
+                keys.add(_legacy_key(r.created_at, r.body))
+                # An undated source comment was stamped with the import time,
+                # so its text is the only thing that can match it again.
+                keys.add(_legacy_key(None, r.body))
+    return out
+
+
+async def _update_task(
+    db: Any,
+    task_id: str,
+    task: Task,
+    incoming: dict[str, Any],
+    extras: dict[str, Any],
+    existing: dict[str, dict[str, Any]],
+    comments: dict[str, list[Any]],
+    bundle: ImportBundle,
+    run_id: str,
+    admin: str,
+    counts: Counter[str],
+    people: dict[str, str | None],
+    names: dict[str, str],
+) -> None:
+    """The three-way update of one task this import wrote before (§6.9)."""
+    state = existing.get(task_id)
+    if state is None:
+        counts["skipped"] += 1
+        return
+    row = state["row"]
+    current = {
+        "title": row.title,
+        "description": row.description,
+        "status_id": str(row.status_id) if row.status_id else None,
+        "due_at": row.due_at,
+        "start_date": row.start_date,
+        "importance": row.importance,
+        "estimate_mins": row.estimate_mins,
+        "tags": list(row.tags or []),
+        "assignees": state["assignees"],
+    }
+    # A task a member moved to another project, or that sits in another List
+    # in the new file, keeps its status: the status set it would take is not
+    # the set it lives in.
+    # Its assignees stay too: a member may have moved it into a PERSONAL
+    # project, and adding a person there would widen who can read it
+    # (`assert_assignable_here`, core.py). So a moved task keeps its status
+    # and its people.
+    frozen: list[str] = []
+    if str(row.project_id) != extras["project_id"]:
+        # The status set it would take is not the set it lives in.
+        frozen.append("status_id")
+        counts["moved"] += 1
+    if str(row.root_project_id) != extras["root"] or bool(row.in_personal):
+        # It left the imported space, or sits in a PERSONAL project: a new
+        # assignee there would widen who can read it (`assert_assignable_here`).
+        frozen.append("assignees")
+    merge = merge_fields(
+        current,
+        state["origin"].get("import_values"),
+        incoming,
+        last_source=state["origin"].get("import_source"),
+        incoming_source=extras["source"],
+        frozen=tuple(frozen),
+    )
+
+    values: dict[str, Any] = {k: v for k, v in merge.changes.items() if k != "assignees"}
+    if "tags" in values and extras["fitted_tags"]:
+        # Registered only now that the merge writes them.
+        values["tags"] = await apply_task_tags(
+            db, str(row.root_project_id), extras["fitted_tags"], by=admin
+        )
+    if "status_id" in values:
+        # The completion date follows the status, as a status move in the app does.
+        if extras["closed"] and row.completed_at is None:
+            values["completed_at"] = extras["completed_at"]
+            counts["completed_estimated"] += 1
+        elif not extras["closed"]:
+            values["completed_at"] = None
+    # `run_id` stays the run that CREATED the task (I-6 discards by it). The
+    # last run that looked at it is `updated_by_run`.
+    new_origin = {
+        **state["origin"],
+        "updated_by_run": run_id,
+        "import_values": merge.new_snapshot,
+        "import_source": merge.new_source,
+    }
+    for key in ("custom_id", "url", "time_spent_mins", "assignee_names"):
+        if key in extras["origin"]:
+            new_origin[key] = extras["origin"][key]
+    if values:
+        values["origin"] = new_origin
+        await update_row(db, "pm_tasks", task_id, values)
+    elif new_origin != state["origin"]:
+        # Bookkeeping only, so no touch: `updated_at` is the If-Match token
+        # (D-PM-20) and the delta feed's cursor, so a task that did not change
+        # must keep it.
+        await update_row(db, "pm_tasks", task_id, {"origin": new_origin}, touch=False)
+
+    if "assignees" in merge.changes:
+        await _sync_assignees(
+            db, task_id, set(incoming["assignees"]), set(state["assignees"]), admin
+        )
+
+    changed = sorted(merge.changes)
+    if changed:
+        counts["updated"] += 1
+        counts["fields_updated"] += len(changed)
+    else:
+        counts["unchanged"] += 1
+    counts["conflicts"] += len(merge.conflicts)
+    if changed or merge.conflicts:
+        await _record_update(
+            db, task_id, changed, list(merge.conflicts), bundle.source, run_id, admin
+        )
+    counts["comments"] += await _add_comments(
+        db, task_id, task, comments, state["comment_keys"], bundle, run_id, people, names
+    )
+
+
+async def _sync_assignees(
+    db: Any, task_id: str, wanted: set[str], have: set[str], admin: str
+) -> None:
+    """Make the assignee set ``wanted``. Only called when the merge decided
+    the whole set changes, so a member's own additions are never removed."""
+    if wanted - have:
+        await insert_assignees(db, task_id, sorted(wanted - have), by=admin)
+        await ensure_watchers(db, task_id, sorted(wanted - have), by=admin)
+    if have - wanted:
+        await db.execute(text(REMOVE_ASSIGNEES_SQL), {"tid": task_id, "who": sorted(have - wanted)})
+
+
+async def _record_update(
+    db: Any, task_id: str, changed: list[str], kept: list[str], source: str, run_id: str, admin: str
+) -> None:
+    """One timeline row per updated task, naming the fields. It notifies nobody."""
+    label = SOURCE_LABEL.get(source, source)
+    await record_activity(
+        db,
+        activity_type="system",
+        created_by=admin,
+        task_id=task_id,
+        body=(
+            f"Updated from {label}: {', '.join(changed)}"
+            if changed
+            else f"Kept member edits over {label}: {', '.join(kept)}"
+        ),
+        meta={
+            "import": {
+                "run_id": run_id,
+                "source": source,
+                "updated": changed,
+                "kept_member_edits": kept,
+            }
+        },
+    )
+
+
+async def _add_comments(
+    db: Any,
+    task_id: str,
+    task: Task,
+    comments: dict[str, list[Any]],
+    seen: set[str],
+    bundle: ImportBundle,
+    run_id: str,
+    people: dict[str, str | None],
+    names: dict[str, str],
+) -> int:
+    """Write the task's source comments that are not imported yet."""
+    source = bundle.source
+    written = 0
+    for comment in comments.get(task.ref, []):
+        key = comment_key(comment)
+        legacy = _legacy_key(comment.created_at, comment.body_md)
+        if key in seen or legacy in seen:
+            continue
+        author = people.get(comment.author_ref or "") if comment.author_ref else None
+        await record_activity(
+            db,
+            activity_type="comment",
+            created_by=author or f"system:import:{source}",
+            task_id=task_id,
+            body=comment.body_md,
+            meta={
+                "import": {"run_id": run_id, "source": source, "comment_key": key},
+                "author_name": names.get(comment.author_ref or "", comment.author_ref),
+            },
+            created_at=comment.created_at,
+        )
+        seen.add(key)
+        written += 1
+    return written
+
+
+def _legacy_key(created_at: Any, body: Any) -> str:
+    stamp = created_at.astimezone(dt.UTC).replace(microsecond=0).isoformat() if created_at else ""
+    return f"legacy|{stamp}|{str(body or '').strip()}"
 
 
 async def _next_number(db: Any, numbers: dict[str, list[int]], root: str) -> int:
@@ -910,6 +1273,12 @@ async def _finish(
         "created": progress.get("created", {}),
         "tasks_written": progress.get("written", 0),
         "tasks_skipped": progress.get("skipped", 0),
+        # Update mode (§6.9): a task an earlier import wrote.
+        "tasks_updated": progress.get("updated", 0),
+        "tasks_unchanged": progress.get("unchanged", 0),
+        "fields_updated": progress.get("fields_updated", 0),
+        "conflicts_kept": progress.get("conflicts", 0),
+        "tasks_moved": progress.get("moved", 0),
         "subtasks_detached": progress.get("detached", 0),
         "comments_written": progress.get("comments", 0),
         "completed_at_estimated": progress.get("completed_estimated", 0),

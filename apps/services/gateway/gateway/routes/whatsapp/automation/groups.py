@@ -200,27 +200,45 @@ async def summarize_stale_groups(account_id: str) -> int:
     # request, no ambient tenant; H4 threads an explicit one per account.
     db = await _get_db()
     try:
-        rows = (await db.execute(
-            text("""SELECT c.id FROM wa_chats c
-                    LEFT JOIN wa_group_summaries s
-                      ON s.account_id = c.account_id AND s.chat_id = c.id
-                    WHERE c.account_id = :aid AND c.kind = 'group'
-                      AND (s.covered_through IS NULL
-                           OR c.last_message_at > s.covered_through)
-                    ORDER BY c.last_message_at DESC NULLS LAST
-                    LIMIT :lim"""),
-            {"aid": account_id, "lim": _MAX_GROUPS_PER_PASS},
-        )).fetchall()
-        n = 0
-        for r in rows:
-            if await summarize_group(db, account_id, str(r.id)) is not None:
-                n += 1
-        await db.commit()
-        _log.info("whatsapp.summarize_stale_groups.done",
-                  account_id=account_id, summarized=n)
-        return n
+        # H-152: the summaries are model calls with no session behind them,
+        # so they run AS the account's owner, read from `wa_accounts`. The
+        # Router derives the paying organization from that member. This read
+        # rides the pass's EXISTING unbound session (no new H2 site). Once
+        # FORCE RLS covers `wa_accounts` it finds no row, and the pass fails
+        # CLOSED to memberless, like every H4 resolver.
+        from acb_common import job_member_scope
+
+        owner = (await db.execute(
+            text("SELECT user_id FROM wa_accounts WHERE id = :aid"),
+            {"aid": account_id},
+        )).scalar()
+        with job_member_scope(str(owner) if owner else None, app="whatsapp"):
+            return await _summarize_stale_groups(db, account_id)
     finally:
         await db.close()
+
+
+async def _summarize_stale_groups(db: Any, account_id: str) -> int:
+    """The pass itself, on the caller's session. See :func:`summarize_stale_groups`."""
+    rows = (await db.execute(
+        text("""SELECT c.id FROM wa_chats c
+                LEFT JOIN wa_group_summaries s
+                  ON s.account_id = c.account_id AND s.chat_id = c.id
+                WHERE c.account_id = :aid AND c.kind = 'group'
+                  AND (s.covered_through IS NULL
+                       OR c.last_message_at > s.covered_through)
+                ORDER BY c.last_message_at DESC NULLS LAST
+                LIMIT :lim"""),
+        {"aid": account_id, "lim": _MAX_GROUPS_PER_PASS},
+    )).fetchall()
+    n = 0
+    for r in rows:
+        if await summarize_group(db, account_id, str(r.id)) is not None:
+            n += 1
+    await db.commit()
+    _log.info("whatsapp.summarize_stale_groups.done",
+              account_id=account_id, summarized=n)
+    return n
 
 
 # ── routes ────────────────────────────────────────────────────────────────────

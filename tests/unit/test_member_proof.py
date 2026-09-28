@@ -202,3 +202,54 @@ class TestTheGatewayPrefersTheProof:
 
     def test_no_headers_at_all_is_no_member(self, monkeypatch):
         assert self._member_for(monkeypatch, {}) == (None, False)
+
+
+# ── A public secret proves nothing (2026-09-28, review of PR #511) ─────────
+
+def test_the_settings_default_secret_is_on_the_public_list():
+    """If the settings default ever changes, this list must follow it, or a
+    box that never set the secret signs under a string anyone can read."""
+    from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
+    from acb_common.settings import Settings
+
+    default = Settings.model_fields["gateway_session_secret"].default
+    assert default in PUBLIC_DEFAULT_SECRETS
+
+
+def test_a_proof_under_the_public_default_never_verifies():
+    """Anyone can compute an HMAC under a public string. Under the deployment
+    key a proof chooses who PAYS, so it must fail closed."""
+    import hashlib
+    import hmac as _hmac
+    import base64
+    import time as _time
+
+    from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS, verify_member
+
+    secret = next(iter(PUBLIC_DEFAULT_SECRETS))
+    exp = str(int(_time.time()) + 60)
+    msg = f"victim@other.test:n:{exp}"
+    digest = base64.urlsafe_b64encode(
+        _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    assert verify_member(f"{msg}:{digest}", secret) is None
+
+
+def test_nothing_is_signed_under_the_public_default():
+    import pytest as _pytest
+
+    from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS, sign_member
+
+    with _pytest.raises(ValueError):
+        sign_member("a@x.test", next(iter(PUBLIC_DEFAULT_SECRETS)))
+
+
+def test_a_proof_outlives_a_long_copilot_turn():
+    """A Copilot session stamps one proof per turn and the HITL wait is 3600 s.
+    A proof that expired mid-turn would refuse the rest of it on the
+    deployment key."""
+    from acb_auth.member_proof import PROOF_TTL_SECONDS, sign_member, verify_member
+
+    assert PROOF_TTL_SECONDS >= 3600
+    p = sign_member("a@x.test", "a-real-secret", now=1_000_000)
+    assert verify_member(p, "a-real-secret", now=1_000_000 + 3500) == "a@x.test"

@@ -112,7 +112,10 @@ def build_plan(
     tree = _tree(bundle)
 
     closed = [t for t in bundle.tasks if t.status_name and final[t.status_name][1] in CLOSED]
-    skipped = {t.ref for t in bundle.tasks if t.ref in existing_refs or t.ref in legacy_refs}
+    refs = {t.ref for t in bundle.tasks}
+    legacy = refs & legacy_refs
+    already = (refs & existing_refs) - legacy
+    skipped = legacy | already
 
     # D79: every status set keeps a Done status. Each imported project owns
     # its set (§6.3), so count the projects whose mapped set has none.
@@ -149,13 +152,19 @@ def build_plan(
         # gets an estimated one. Never the import time.
         "completed_at_estimated": sum(1 for t in closed if t.completed_at is None),
         "done_status_added": done_added,
+        # Owner decision 2026-09-28 (§11 Q-5): a task an earlier import wrote
+        # is UPDATED by the three-way rule, not skipped. Only the pre-D52
+        # importer's rows are skipped: they hold no snapshot to merge with.
         "skip": {
-            "already_imported": len(existing_refs & {t.ref for t in bundle.tasks}),
-            "written_by_old_importer": len(legacy_refs & {t.ref for t in bundle.tasks}),
-            "total": len(skipped),
+            "written_by_old_importer": len(legacy),
+            "total": len(legacy),
         },
+        "to_update": len(already),
+        # Comments on tasks to update are checked one by one; each one not
+        # imported yet is added (§6.9). An upper bound, not a promise.
+        "existing_comments_checked": sum(1 for c in bundle.comments if c.task_ref in already),
         "to_write": {
-            "tasks": len(bundle.tasks) - len(skipped),
+            "tasks": len(bundle.tasks) - len(already) - len(legacy),
             "comments": sum(1 for c in bundle.comments if c.task_ref not in skipped),
         },
         "target": target.model_dump(),

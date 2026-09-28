@@ -425,51 +425,64 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: ⚠️ **One exception: the run's fold may set the author of an AGENT turn
 #: again** (WS-27bm S12, ``projects_ai_chat.md`` §18). An ``@name`` turn's
 #: checkpoint lands first, with the room's agent. Only the fold knows which
-#: agent ran, so ``:author_from_run`` lets it replace ``author_email`` when the
-#: stored row is an agent turn. A stored NULL kind counts as an agent turn
-#: only when its ``role`` is ``assistant``. Only ``chat_fold`` passes True.
-#: Every client write keeps the COALESCE, and ``authority`` keeps it for every
+#: agent ran, so ``:author_from_run`` lets it replace ``author_email``. The
+#: ``WHERE`` below lets the fold reach an agent row only, so the ``CASE`` has
+#: no kind test of its own (S13). Only ``chat_fold`` passes True. Every
+#: client write keeps the COALESCE, and ``authority`` keeps it for every
 #: writer.
 #:
-#: 🔴 **A human turn changes only when its own author writes it** (S12 fix
-#: round 1). The row id comes from the client — the browser names it, and the
-#: fold's ``_persist_message_id`` is the client's ``assistant_message_id`` —
-#: so without the ``WHERE`` below, any room sender could put their own words
-#: in another member's turn and keep that member's name on it. The ``WHERE``
-#: lets an update touch a human row only when the write is a HUMAN write by
-#: the SAME member. ``_attribute`` stamps a human write's ``author_email``
-#: from the authenticated caller, never from the body, and the check also
-#: requires ``EXCLUDED.author_kind = 'human'``: a body that claims an agent
-#: turn can name any ``author_email``, so it must not pass. The fold never
-#: writes a human row. A NULL-kind row whose ``role`` is not ``assistant`` or
-#: ``system`` is a legacy human turn and gets the same protection. A conflict
-#: that fails the ``WHERE`` leaves the row alone and raises nothing.
+#: 🔴 **The ``WHERE`` decides who may update a row, by its stored kind** (S12
+#: fix round 1, S13 ``projects_ai_chat.md`` §19). The row id comes from the
+#: client — the browser names it, and the fold's ``_persist_message_id`` is
+#: the client's ``assistant_message_id`` — so without it, any room sender
+#: could put their own words in another member's turn. The stored kind is
+#: ``author_kind``. A NULL kind is an agent row when ``role`` is
+#: ``assistant``, a system row when ``role`` is ``system``, and a human row
+#: for every other role.
 #:
-#: ⚠️ **Residual, recorded in §18.4:** an agent row is still writable by any
-#: room sender, because the translator checkpoints as the sending member.
+#: * **Human row:** only a human write by the SAME member. ``_attribute``
+#:   stamps a human write's ``author_email`` from the authenticated caller,
+#:   never from the body. The check also requires
+#:   ``EXCLUDED.author_kind = 'human'``, because a body that claims an agent
+#:   turn can name any ``author_email``. The fold never writes a human row.
+#: * **Agent row, the fold:** only when the stored ``run_member_email`` is
+#:   NULL or is the member who started this run. The fold sets
+#:   ``run_final_at``, which seals the row for clients.
+#: * **Agent row, a client:** only an agent write by the member who started
+#:   the run (``run_member_email``), and only before the seal. A NULL run
+#:   member means that only the fold may update the row. That covers legacy
+#:   rows and rows written by old code during the deploy.
+#: * **System row:** no write updates it. A client may still INSERT one.
+#:
+#: ``run_member_email`` is set once, by the first writer of an agent row.
+#: A conflict that fails the ``WHERE`` leaves the row alone and raises
+#: nothing. ``RETURNING id`` then gives no row, and ``_upsert_messages``
+#: reports that id as unchanged.
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
          tool_events, progress_lines, reasoning, agent_state, custom_events,
-         author_email, author_kind, authority)
+         author_email, author_kind, authority,
+         run_member_email, run_final_at)
     VALUES
         (:id, :sid, :role, :content, :ts,
          CAST(:tool_events AS jsonb), CAST(:progress_lines AS jsonb),
          :reasoning, CAST(:agent_state AS jsonb), CAST(:custom_events AS jsonb),
-         :author_email, :author_kind, CAST(:authority AS jsonb))
+         :author_email, :author_kind, CAST(:authority AS jsonb),
+         :run_member_email,
+         CASE WHEN CAST(:author_from_run AS boolean) THEN now() END)
     ON CONFLICT (session_id, id) DO UPDATE SET
         content        = EXCLUDED.content,
         author_email   = CASE
             WHEN CAST(:author_from_run AS boolean)
-                 AND COALESCE(
-                     chat_message.author_kind,
-                     CASE WHEN chat_message.role = 'assistant' THEN 'agent' END
-                 ) = 'agent'
                  AND EXCLUDED.author_email IS NOT NULL
             THEN EXCLUDED.author_email
             ELSE COALESCE(chat_message.author_email, EXCLUDED.author_email) END,
         author_kind    = COALESCE(chat_message.author_kind,  EXCLUDED.author_kind),
         authority      = COALESCE(chat_message.authority,    EXCLUDED.authority),
+        run_member_email = COALESCE(
+            chat_message.run_member_email, EXCLUDED.run_member_email),
+        run_final_at   = COALESCE(EXCLUDED.run_final_at, chat_message.run_final_at),
         tool_events    = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.tool_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.tool_events ELSE chat_message.tool_events END,
@@ -481,14 +494,30 @@ _MESSAGE_UPSERT_SQL = """
         custom_events  = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.custom_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.custom_events ELSE chat_message.custom_events END
-    WHERE COALESCE(
+    WHERE CASE COALESCE(
             chat_message.author_kind,
-            CASE WHEN chat_message.role IN ('assistant', 'system')
-                 THEN chat_message.role ELSE 'human' END
-          ) IS DISTINCT FROM 'human'
-       OR (NOT CAST(:author_from_run AS boolean)
-           AND EXCLUDED.author_kind = 'human'
-           AND lower(chat_message.author_email) = lower(EXCLUDED.author_email))
+            CASE chat_message.role
+                WHEN 'assistant' THEN 'agent'
+                WHEN 'system'    THEN 'system'
+                ELSE 'human' END)
+        WHEN 'human' THEN
+            NOT CAST(:author_from_run AS boolean)
+            AND EXCLUDED.author_kind = 'human'
+            AND lower(chat_message.author_email) = lower(EXCLUDED.author_email)
+        WHEN 'agent' THEN
+            CASE WHEN CAST(:author_from_run AS boolean) THEN
+                chat_message.run_member_email IS NULL
+                OR lower(chat_message.run_member_email)
+                   = lower(EXCLUDED.run_member_email)
+            ELSE
+                EXCLUDED.author_kind = 'agent'
+                AND chat_message.run_final_at IS NULL
+                AND lower(chat_message.run_member_email)
+                    = lower(EXCLUDED.run_member_email)
+            END
+        ELSE false
+        END
+    RETURNING id
 """
 
 
@@ -500,7 +529,7 @@ def _upsert_messages(
     agent_name: str | None = None,
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
-) -> None:
+) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
 
     Attribution is derived here, not trusted from the client: a human turn is
@@ -510,22 +539,30 @@ def _upsert_messages(
 
     ``author_from_run`` is for ``chat_fold.persist_final_assistant_message``
     ONLY (WS-27bm S12). With it, the write may replace the author of a stored
-    agent or NULL-kind turn with the agent that ran. It never changes a human
-    turn. A route handler must never pass it, and ``test_rooms.py`` checks
-    the source of both callers.
+    agent turn with the agent that ran, and it seals the row (S13). It never
+    changes a human turn. A route handler must never pass it, and
+    ``test_rooms.py`` checks the source of both callers.
+
+    ``actor_email`` is also the run member of an agent row (S13): the caller
+    for a client write, and the member who started the run for the fold.
+
+    Returns the ids whose write the ``WHERE`` declined, in request order.
     """
     from acb_graph import get_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     if not messages:
-        return
+        return []
 
     authority_json = json.dumps(authority) if authority else None
+    # An empty member is no member: store NULL, so only the fold may update.
+    run_member = (actor_email or "").strip().lower() or None
+    declined: list[str] = []
 
     with get_session() as s:
         for m in messages:
             kind, author = _attribute(m, actor_email, agent_name)
-            s.execute(
+            result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
                     "id": m.id,
@@ -544,8 +581,14 @@ def _upsert_messages(
                     # words are theirs regardless of what the run could reach.
                     "authority": authority_json if kind == "agent" else None,
                     "author_from_run": bool(author_from_run),
+                    # Only an agent row belongs to a run (S13).
+                    "run_member_email": run_member if kind == "agent" else None,
                 },
             )
+            # RETURNING gives no row when the WHERE declined the update.
+            if result.first() is None:
+                declined.append(m.id)
+    return declined
 
 
 def _attribute(
@@ -677,6 +720,9 @@ async def save_messages(
     write turns into any session id, which in a single-owner world was invisible
     and in a shared one is forgery. It now requires the ability to send in the
     room, and stamps the authenticated caller as the author of every human turn.
+
+    The answer is ``{"ok": true, "saved": n, "unchanged": [ids]}``. An id in
+    ``unchanged`` is a row that the caller may not update (S13, §19).
     """
     if len(messages) > 500:
         raise HTTPException(status_code=400, detail="Maximum 500 messages per upsert")
@@ -686,11 +732,17 @@ async def save_messages(
     if not room.can_send:
         raise HTTPException(status_code=403, detail=room.denied("save messages"))
 
-    await asyncio.to_thread(
+    # A declined write is not an error (S13, §19.4 rule 5). The row stays as
+    # it was, and ``unchanged`` names it so the caller can tell.
+    unchanged = await asyncio.to_thread(
         _upsert_messages, session_id, messages,
         actor_email=email, agent_name=room.agent_name,
     )
-    return {"ok": True, "saved": len(messages)}
+    return {
+        "ok": True,
+        "saved": len(messages) - len(unchanged),
+        "unchanged": unchanged,
+    }
 
 
 class MessageFeedbackRequest(BaseModel):

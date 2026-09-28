@@ -18,7 +18,11 @@ request input").
     ``POST /registry/resolve`` (CP-2b), ``provision`` opens the second arm
     of ``POST /orgs/provision`` (CP-2c slice 1, 2026-08-19), ``seat_admin``
     opens ``POST /registry/seats{,/release}`` (§6 item (h)) and
-    ``member_admin`` opens ``POST /registry/members`` (CP-2f, 2026-08-24). A
+    ``member_admin`` opens ``POST /registry/members`` (CP-2f, 2026-08-24),
+    ``serve`` opens the Router (H-152), ``billing_read`` opens the
+    customer billing reads ``POST /registry/{billing,usage}/*`` and
+    ``billing_purchase`` the checkout ``POST /registry/billing/orders*``
+    (both H-152). A
     key carrying only ``{resolve}`` — the column default, and the only set
     anything mints by accident — is refused at every one of the other three
     with a **403**, and the refusal is logged. Growing a REAL key's set is
@@ -95,6 +99,8 @@ from customer_console.lifecycle import OrgCapabilities, capabilities_of
 
 __all__ = [
     "AUTHENTICATING_DEPENDENCIES",
+    "BILLING_PURCHASE_CAPABILITY",
+    "BILLING_READ_CAPABILITY",
     "MEMBER_ADMIN_CAPABILITY",
     "ORGANIZATION_KEY_DEPENDENCIES",
     "PROVISION_CAPABILITY",
@@ -102,6 +108,8 @@ __all__ = [
     "SEAT_ADMIN_CAPABILITY",
     "SERVE_CAPABILITY",
     "SHARED_TOKEN_ACTOR",
+    "BillingPurchaseCaller",
+    "BillingReadCaller",
     "Caller",
     "CatalogCaller",
     "DeploymentCaller",
@@ -214,6 +222,42 @@ MEMBER_ADMIN_CAPABILITY = "member_admin"
 #: key is widened by hand under §8 gate 7, and there is no HTTP route that
 #: grants it.
 SERVE_CAPABILITY = "serve"
+
+#: **The SIXTH capability: a member reads their own organization's billing**
+#: (H-152, the billing half).
+#:
+#: 🔴 **Why it exists.** The customer billing pages read the Console through
+#: ``CUSTOMER_CONSOLE_ORG_KEY``, and that key names ONE tenant. On a shared box
+#: the pages were either dark for every tenant, or showed one tenant's balance
+#: to all of them. This capability opens the SAME reads under the per-box
+#: deployment key, and the Console derives the organization from placement ∩
+#: membership, as ``/registry/seats/overview`` does (D-SEAT-4).
+#:
+#: ⚠️ **Not a reuse of** :data:`SEAT_ADMIN_CAPABILITY` **or**
+#: :data:`MEMBER_ADMIN_CAPABILITY`. Those open admin WRITES. This one opens
+#: READS that any active member may make, and a balance is a different fact
+#: from a seat. Folding it into either would widen a credential that was argued
+#: for on a narrower basis.
+#:
+#: ⚠️ **Same three rules as the four before it.** A capability is not a scheme.
+#: No migration carries this string. No HTTP route grants it, so a box's key
+#: gains it by a hand edit under §8 gate 7, and the door ships dark until then.
+BILLING_READ_CAPABILITY = "billing_read"
+
+#: **The SEVENTH capability: a member buys for their own organization** (H-152,
+#: the checkout half). It opens order creation, the order read-back and code
+#: redemption under the deployment key — the three checkout doors the
+#: organization key opened before.
+#:
+#: ⚠️ **Deliberately NOT folded into** :data:`BILLING_READ_CAPABILITY`. Reading
+#: what was spent and spending are two different acts, and a key argued for on
+#: "may read the bill" must not silently gain "may start a payment".
+#:
+#: ⚠️ **The Console asks only for an ACTIVE membership.** WHO may spend is the
+#: tenant plane's ``billing:purchase``, checked at the gateway, exactly as the
+#: workbench checked it for the organization key. The same three rules as the
+#: capabilities above apply: no migration, no granting route, a hand edit.
+BILLING_PURCHASE_CAPABILITY = "billing_purchase"
 
 
 @dataclass(frozen=True)
@@ -559,6 +603,9 @@ def organization_from_key_or_deployment(
     x_cc_agent: Annotated[str | None, Header()] = None,
     x_cc_module: Annotated[str | None, Header()] = None,
     x_cc_run: Annotated[str | None, Header()] = None,
+    #: "1" when the gateway VERIFIED the member's signed proof (H-73). The
+    #: deployment arm requires it. The org arm ignores it.
+    x_cc_member_proven: Annotated[str | None, Header()] = None,
 ) -> Caller:
     """The Router's door, opened by an ORG key or a DEPLOYMENT key (H-152).
 
@@ -637,6 +684,24 @@ def organization_from_key_or_deployment(
             detail=(
                 "a deployment key must send X-CC-Member; the organization is "
                 "derived from it, never inferred"
+            ),
+        )
+    # 🔴 **Only a PROVEN member may pick the organization (2026-09-28).** On
+    # this arm the member IS the tenant decision, and `X-CC-Member` is a claim
+    # any holder of the gateway's LLM key can make: every agent, and the
+    # mutation sandbox. Without this check one tenant's code could name another
+    # tenant's member and bill that tenant. The gateway sets the flag only
+    # after `member_proof.verify_member` accepts a signature minted for a
+    # session-verified or server-derived member (H-73), and it refuses to send
+    # an unproven member on this arm too. This is the second of the two locks.
+    # The org arm needs neither: its organization is fixed by the key.
+    if (x_cc_member_proven or "").strip() != "1":
+        _log.warning("deployment_key.member_unproven", extra={"key_prefix": prefix})
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "a deployment key must send a PROVEN member; an unsigned "
+                "X-CC-Member cannot choose the organization"
             ),
         )
 
@@ -963,6 +1028,18 @@ _seat_admin_dependency = deployment_or_operator(SEAT_ADMIN_CAPABILITY)
 #: creates it so CP-2b clause 1's fence covers its route the day it lands.
 _member_admin_dependency = deployment_or_operator(MEMBER_ADMIN_CAPABILITY)
 
+#: The billing-read arm's dependency — H-152's billing half. A FIFTH closure
+#: from the same factory, registered in :data:`AUTHENTICATING_DEPENDENCIES` in
+#: the change that creates it. Its routes refuse the operator arm themselves
+#: (``main._billing_member_context``): the operator reads a customer's billing
+#: through its own cross-org doors, and these doors exist for the member.
+_billing_read_dependency = deployment_or_operator(BILLING_READ_CAPABILITY)
+
+#: The checkout arm's dependency — H-152's checkout half. A SIXTH closure from
+#: the same factory, registered below in the change that creates it. Its routes
+#: refuse the operator arm, as the billing reads do.
+_billing_purchase_dependency = deployment_or_operator(BILLING_PURCHASE_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -992,6 +1069,19 @@ MemberAdminCaller = Annotated[
     DeploymentCaller | None, Depends(_member_admin_dependency)
 ]
 
+#: The billing READS under the deployment key (H-152). ``None`` is the operator
+#: arm, which these routes refuse; a :class:`DeploymentCaller` is the box, and
+#: the org is DERIVED from placement ∩ the acting member's membership (R11).
+BillingReadCaller = Annotated[
+    DeploymentCaller | None, Depends(_billing_read_dependency)
+]
+
+#: The checkout under the deployment key (H-152). The same two-arm shape; the
+#: routes refuse ``None`` and derive the org from the acting member.
+BillingPurchaseCaller = Annotated[
+    DeploymentCaller | None, Depends(_billing_purchase_dependency)
+]
+
 #: Every dependency in this module that authenticates somebody.
 #:
 #: This exists so CP-2b clause 1's fence
@@ -1018,6 +1108,8 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     _provision_dependency,
     _seat_admin_dependency,
     _member_admin_dependency,
+    _billing_read_dependency,
+    _billing_purchase_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.
