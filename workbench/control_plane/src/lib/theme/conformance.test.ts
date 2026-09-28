@@ -146,6 +146,36 @@ const PALETTE_CLASS = new RegExp(
     `(?:50|100|200|300|400|500|600|700|800|900|950)\\b`,
   "g",
 );
+/**
+ * Amber and yellow with ANY utility prefix (H-193). Wider than PALETTE_CLASS
+ * on purpose: `border-l-`, `border-s-`, `placeholder-`, `divide-` and
+ * `ring-offset-` all take a palette colour, and COLOR_UTILITY names none of
+ * them. The lookbehind keeps `x-amber-500` inside a longer word out.
+ */
+const RAW_AMBER_CLASS =
+  /(?<![\w-])[a-z]+(?:-[a-z]+)*-(?:amber|yellow)-(?:50|100|200|300|400|500|600|700|800|900|950)\b/g;
+/** A hex inside a class bracket: `bg-[#f59e0b]`, `[color:#facc15]`. */
+const ARBITRARY_HEX = /\[(?:[a-z-]+:)?#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\]/g;
+/** Tailwind's own amber and yellow steps, as hex. */
+const TAILWIND_AMBER_HEX = new RegExp(
+  "#(?:fffbeb|fef3c7|fde68a|fcd34d|fbbf24|f59e0b|d97706|b45309|92400e|78350f|451a03|" +
+    "fefce8|fef9c3|fef08a|fde047|facc15|eab308|ca8a04|a16207|854d0e|713f12|422006)\\b",
+  "gi",
+);
+/** True for a saturated hex whose hue is amber or yellow (about 36° to 62°). */
+function isAmberHue(hex: string): boolean {
+  const full = hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return false;
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  return h >= 36 && h <= 62 && s >= 0.5 && l >= 0.2 && l <= 0.92;
+}
 const BUTTON_TAG = /<button\b(?:[^>]|\n)*?>/g;
 /**
  * A SOLID fill — `bg-primary`, and nothing else that merely contains it.
@@ -209,7 +239,6 @@ const COLOR_DEBT: Record<string, number> = {
   "app/calendar/components/TimeGrid.tsx": 2,
   "app/whatsapp/numbers/page.tsx": 1,
   "app/whatsapp/page.tsx": 4,
-  "components/ThinkingContainer.tsx": 4,
 };
 
 /** A key ending in `/` is a directory prefix; anything else is an exact path. */
@@ -292,7 +321,6 @@ describe("icons are a theme choice", () => {
 
 describe("no arbitrary Tailwind colour values", () => {
   const ARBITRARY_DEBT: Record<string, number> = {
-    "components/ThinkingContainer.tsx": 4,
     "app/whatsapp/connect/page.tsx": 1,
   };
 
@@ -443,7 +471,7 @@ describe("no raw Tailwind palette colours", () => {
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "components/MarkdownMessage.tsx": 8, // S9: the link lost its palette blue
-    "components/ThinkingContainer.tsx": 40,
+    "components/ThinkingContainer.tsx": 31,
     "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
@@ -485,16 +513,13 @@ describe("no raw Tailwind palette colours", () => {
     // a star, a caution) or `cat-12` (the amber slot of the ramp, for an
     // identity). A PALETTE_DEBT budget does NOT cover this hue: a baselined
     // file that swaps one of its old classes for an amber one still fails.
-    // `border-l-*` and the other side borders count too, because rule 5's
-    // regex does not see them.
-    const RAW_AMBER = new RegExp(
-      `\\b(?:${COLOR_UTILITY}|border-[xytrbl])-(?:amber|yellow)-` +
-        `(?:50|100|200|300|400|500|600|700|800|900|950)\\b`,
-      "g",
-    );
+    //
+    // Any utility prefix counts, not only COLOR_UTILITY: `border-l-`,
+    // `border-s-`, `placeholder-`, `divide-`, `ring-offset-`, `inset-ring-`
+    // and the rest all take a palette colour (PR #514 review).
     const offenders = sourceFiles()
       .filter((f) => !paletteExcepted(f))
-      .map((f) => [f, count(read(f), RAW_AMBER)] as const)
+      .map((f) => [f, count(read(f), RAW_AMBER_CLASS)] as const)
       .filter(([, n]) => n > 0);
     expect(
       offenders,
@@ -502,6 +527,50 @@ describe("no raw Tailwind palette colours", () => {
         "`bg-warning/10` / `border-warning/40`. For an identity use the ramp's " +
         "amber slot, `text-cat-12`.",
     ).toEqual([]);
+  });
+
+  it("no file draws amber or yellow as an arbitrary hex, budget or not (H-193)", () => {
+    // `text-[#f59e0b]` is `text-amber-500` with the name taken off. Two
+    // checks, with no budget. A hex inside a class bracket (`bg-[#…]`,
+    // `[color:#…]`) is refused when its hue is amber or yellow. Tailwind's
+    // own amber and yellow hex values are refused anywhere, except in a
+    // COLOR_EXCEPTIONS file (a sun glyph, a sprite's shirt).
+    const offenders: string[] = [];
+    for (const f of sourceFiles()) {
+      const text = strip(read(f));
+      for (const m of text.matchAll(ARBITRARY_HEX)) {
+        if (isAmberHue(m[1])) offenders.push(`${f}: ${m[0]}`);
+      }
+      if (!matches(f, Object.keys(COLOR_EXCEPTIONS))) {
+        for (const m of text.matchAll(TAILWIND_AMBER_HEX)) offenders.push(`${f}: ${m[0]}`);
+      }
+    }
+    expect(offenders, "Amber as a hex. Use `warning` or `cat-12`.").toEqual([]);
+  });
+
+  it("the amber fences see every prefix and every hex form (mutation check)", () => {
+    // The two fences above pass on a clean tree. This proves they would fail.
+    for (const bad of [
+      "text-amber-500", "border-l-amber-400", "border-s-yellow-300", "border-e-amber-50",
+      "placeholder-amber-400", "divide-yellow-200", "caret-amber-500", "accent-amber-600",
+      "outline-yellow-500", "decoration-amber-300", "ring-offset-amber-500",
+      "hover:bg-amber-500/10", "dark:text-yellow-400",
+    ]) {
+      expect(count(`<i className="${bad}" />`, RAW_AMBER_CLASS), bad).toBe(1);
+    }
+    for (const ok of ["text-warning", "bg-cat-12/10", "border-l-warning", "text-cat-8"]) {
+      expect(count(`<i className="${ok}" />`, RAW_AMBER_CLASS), ok).toBe(0);
+    }
+    for (const bad of ["text-[#f59e0b]", "bg-[#facc15]", "[color:#eab308]", "border-[#fc3]"]) {
+      const m = [...bad.matchAll(ARBITRARY_HEX)];
+      expect(m.length, bad).toBe(1);
+      expect(isAmberHue(m[0][1]), bad).toBe(true);
+    }
+    for (const ok of ["bg-[#0c0c0c]", "text-[#4ec9b0]", "bg-[#1877F2]", "text-[#ef4444]"]) {
+      const m = [...ok.matchAll(ARBITRARY_HEX)];
+      expect(m.length === 1 && isAmberHue(m[0][1]), ok).toBe(false);
+    }
+    expect(`const X = "#FBBF24";`.match(TAILWIND_AMBER_HEX)?.length).toBe(1);
   });
 
   it("every exception names a file that still needs one", () => {

@@ -124,6 +124,18 @@ describe("globals.css is the source, and the manifest mirrors it", () => {
     }
   });
 
+  it("mirrors the terminal ink in :root, and .light never redefines it", () => {
+    // The shell block is black in both modes, so its ink must not flip. A
+    // `.light` copy of any `--term-*` is how it would flip again.
+    const root = declarationsIn(GLOBALS, ":root");
+    const light = declarationsIn(GLOBALS, ".light");
+    for (const [key, value] of Object.entries(THEME.terminal)) {
+      expect.soft(root[`--term-${key}`], `:root --term-${key}`).toBe(value);
+      expect.soft(GLOBALS, `--color-term-${key}`).toContain(`--color-term-${key}: var(--term-${key});`);
+    }
+    expect(Object.keys(light).filter((k) => k.startsWith("--term-"))).toEqual([]);
+  });
+
   it("mirrors the shape, effect and typography tokens in :root", () => {
     const root = declarationsIn(GLOBALS, ":root");
     expect.soft(root["--radius"]).toBe(THEME.shape.radius);

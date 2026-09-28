@@ -1386,7 +1386,7 @@ export default function AgentChat({
     return [{
       label: "MAF",
       title: "Microsoft Agent Framework agent",
-      cls: "border-warning/30 bg-warning/10 text-warning",
+      cls: "border-cat-12/30 bg-cat-12/10 text-cat-12",
     }];
   }
 
@@ -2123,7 +2123,7 @@ export default function AgentChat({
               />
 
               {isRunActive && sendMode !== "send" && (
-                <span className="text-warning text-[10px] font-medium">
+                <span className="text-cat-12 text-[10px] font-medium">
                   {sendMode === "queue" ? "⏱ Queued" : "⤳ Steering"}
                 </span>
               )}

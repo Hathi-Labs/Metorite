@@ -30,7 +30,7 @@ import {
   parseColor,
 } from "./contrast";
 import { THEME } from "./themes";
-import { CATEGORICAL_TOKENS } from "./types";
+import { CATEGORICAL_TOKENS, TERMINAL_INKS } from "./types";
 import type { ColorTokens } from "./types";
 
 type Pair = {
@@ -236,6 +236,22 @@ describe("theme contrast", () => {
       for (const m of [...text, ...ink]) {
         expect(m.ratio, `${m.id} is ${m.ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
       }
+    },
+  );
+
+  it.each(TERMINAL_INKS)(
+    "terminal ink %s clears AA on the black shell block, which does not change with the mode",
+    (ink) => {
+      // The shell block in ThinkingContainer is black in BOTH modes. Its ink
+      // was the mode-aware `text-cat-12` and `text-cat-8`, which went dark on
+      // black in light mode (3.7 : 1, PR #514 review). The `--term-*` set has
+      // one value for both modes, so one measurement covers both. themes.test
+      // refuses a `.light` copy, which is what would make it flip again.
+      const ratio = contrast(THEME.terminal[ink], THEME.terminal.bg);
+      expect(ratio, `--term-${ink}`).not.toBeNull();
+      expect(ratio!, `--term-${ink} on --term-bg is ${ratio!.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        AA_NORMAL_TEXT,
+      );
     },
   );
 

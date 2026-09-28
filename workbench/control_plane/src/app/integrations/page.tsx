@@ -1817,7 +1817,7 @@ function PluginsTab() {
                       <span className="text-[10px] font-mono text-muted">{p.name}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">v{p.version}</span>
                       {p.auth_type !== "none" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-cat-12/10 text-cat-12 border border-cat-12/20">
                           {p.auth_type}
                         </span>
                       )}
@@ -1871,8 +1871,8 @@ function PluginsTab() {
       </div>
 
       {/* Plugin vs MCP */}
-      <div className="p-5 rounded-2xl border border-warning/20 bg-warning/5 space-y-2">
-        <div className="text-[10px] text-warning uppercase tracking-wider font-semibold">Plugins vs MCPs — when to use which</div>
+      <div className="p-5 rounded-2xl border border-info/20 bg-info/5 space-y-2">
+        <div className="text-[10px] text-info uppercase tracking-wider font-semibold">Plugins vs MCPs — when to use which</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-muted-foreground">
           <div>
             <div className="text-foreground font-medium mb-1">Use a Plugin when…</div>
@@ -2011,7 +2011,7 @@ function SkillFamilyCard({ family }: { family: SkillFamily }) {
                 </span>
               )}
               {family.dynamic && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-warning/15 text-warning border-warning/25">
+                <span className="text-[10px] px-1.5 py-0.5 rounded border bg-cat-12/15 text-cat-12 border-cat-12/25">
                   Dynamic
                 </span>
               )}

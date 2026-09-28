@@ -155,8 +155,11 @@ export function UnscheduledRail({
                   "group cursor-grab rounded-md border p-2 active:cursor-grabbing",
                   t.id === oneThingId
                     ? "border-warning/70 bg-warning/10"
-                    : t.leveraged
-                      ? "border-warning/40 bg-background/60 hover:border-warning/60"
+                    : // Leveraged wears a solid left edge on a plain card,
+                      // as its block does in TimeGrid. "Due soon" below is a
+                      // tinted card with no edge, so the two stay apart.
+                      t.leveraged
+                      ? "border-border border-l-2 border-l-warning bg-background/60 hover:border-warning/60"
                       : dueDays.has(t.id)
                         ? "border-warning/40 bg-warning/5 hover:border-warning/70"
                         : "border-border bg-background/60 hover:border-primary/40",

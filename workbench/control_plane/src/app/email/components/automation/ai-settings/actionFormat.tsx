@@ -81,7 +81,7 @@ export const ACTION_COLOR: Record<RuleActionType, string> = {
   ARCHIVE: "bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20",
   LABEL: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
   MARK_READ: "bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20",
-  STAR: "bg-warning/10 text-warning border-warning/20",
+  STAR: "bg-cat-12/10 text-cat-12 border-cat-12/20",
   MARK_SPAM: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
   TRASH: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
   MOVE_FOLDER: "bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/20",

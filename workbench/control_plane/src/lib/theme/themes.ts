@@ -116,6 +116,21 @@ const rapidtool: Theme = {
     monaco: { dark: "vs-dark", light: "vs" },
     shiki: { dark: "github-dark", light: "github-light" },
   },
+  // One set for both modes — see `--term-*` in globals.css.
+  terminal: {
+    bg: "hsl(0 0% 5%)",
+    fg: "hsl(240 5% 96%)",
+    muted: "hsl(240 5% 65%)",
+    prompt: "hsl(158 64% 52%)",
+    running: "hsl(198 93% 60%)",
+    command: "hsl(46 97% 65%)",
+    number: "hsl(53 98% 77%)",
+    string: "hsl(31 97% 72%)",
+    flag: "hsl(187 92% 69%)",
+    path: "hsl(156 72% 67%)",
+    keyword: "hsl(199 95% 74%)",
+    output: "hsl(168 53% 55%)",
+  },
   colors: {
     dark: {
       background: "hsl(220 13% 8%)",

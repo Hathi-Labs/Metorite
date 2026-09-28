@@ -271,6 +271,29 @@ export type SurfaceTokens = {
 };
 
 /**
+ * The ink of the chat's shell block, which is black in BOTH modes.
+ *
+ * Not part of `ColorTokens`, because these do not flip: `globals.css`
+ * declares them in `:root` only. A mode-aware token on a fixed-black surface
+ * turns dark on black in light mode (PR #514 review). Keys map to
+ * `--term-<key>`.
+ */
+export const TERMINAL_INKS = [
+  "fg",
+  "muted",
+  "prompt",
+  "running",
+  "command",
+  "number",
+  "string",
+  "flag",
+  "path",
+  "keyword",
+  "output",
+] as const;
+export type TerminalTokens = { bg: string } & Record<(typeof TERMINAL_INKS)[number], string>;
+
+/**
  * The theme definition.
  *
  * ⚠️ Singular since 2026-08-31. `IconPackId` and the `iconPack` field went
@@ -292,6 +315,7 @@ export type Theme = {
   effects: EffectTokens;
   controls: ControlTokens;
   surfaces: SurfaceTokens;
+  terminal: TerminalTokens;
   colors: {
     dark: ColorTokens;
     light: ColorTokens;

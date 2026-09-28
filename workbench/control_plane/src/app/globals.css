@@ -132,6 +132,24 @@
   --cat-11: hsl(292 85% 64%);
   --cat-12: hsl(46 85% 38%);
 
+  /* Terminal ink — the chat's shell block. Declared HERE ONLY, never in
+     .light, because the block is black in both modes (--term-bg). An ink that
+     flipped with the mode would turn dark on black: the command name went to
+     3.7 : 1 that way (PR #514 review). contrast.test.ts measures each ink on
+     --term-bg, and themes.test.ts refuses a .light copy. */
+  --term-bg: hsl(0 0% 5%);
+  --term-fg: hsl(240 5% 96%);
+  --term-muted: hsl(240 5% 65%);
+  --term-prompt: hsl(158 64% 52%);
+  --term-running: hsl(198 93% 60%);
+  --term-command: hsl(46 97% 65%);
+  --term-number: hsl(53 98% 77%);
+  --term-string: hsl(31 97% 72%);
+  --term-flag: hsl(187 92% 69%);
+  --term-path: hsl(156 72% 67%);
+  --term-keyword: hsl(199 95% 74%);
+  --term-output: hsl(168 53% 55%);
+
   --radius: 0.75rem;
 
   /* Sidebar-specific tokens */
@@ -274,6 +292,19 @@
   --color-cat-10: var(--cat-10);
   --color-cat-11: var(--cat-11);
   --color-cat-12: var(--cat-12);
+  /* Terminal ink → `bg-term-bg`, `text-term-command`. One set, both modes. */
+  --color-term-bg: var(--term-bg);
+  --color-term-fg: var(--term-fg);
+  --color-term-muted: var(--term-muted);
+  --color-term-prompt: var(--term-prompt);
+  --color-term-running: var(--term-running);
+  --color-term-command: var(--term-command);
+  --color-term-number: var(--term-number);
+  --color-term-string: var(--term-string);
+  --color-term-flag: var(--term-flag);
+  --color-term-path: var(--term-path);
+  --color-term-keyword: var(--term-keyword);
+  --color-term-output: var(--term-output);
   --color-sidebar: var(--sidebar-background);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);

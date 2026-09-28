@@ -467,7 +467,15 @@ In dark mode, every status fill carries the dark ink. The dark
 state, a caution or a highlight, such as the Calendar's star. Use `cat-12`,
 the amber slot of the ramp, for an identity, such as a workflow category or
 a provider. `conformance.test.ts` refuses a raw amber or yellow class in
-every file, and a `PALETTE_DEBT` budget does not excuse it.
+every file, with any utility prefix. It also refuses an amber or yellow hex
+in a class bracket, such as `text-[#f59e0b]`. A `PALETTE_DEBT` budget does
+not excuse either one.
+
+**A surface that is black in both modes takes ink that does not flip.** The
+chat's shell block is one. Its colours are the `--term-*` tokens, which
+`globals.css` declares in `:root` only. A mode token such as `text-cat-12`
+goes dark on black in light mode. `contrast.test.ts` measures each
+`--term-*` ink on `--term-bg`, and `themes.test.ts` refuses a `.light` copy.
 
 If you change a colour, run that test. Never signal state with colour alone —
 pair it with an icon or a label.
