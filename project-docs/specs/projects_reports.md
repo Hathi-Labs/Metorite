@@ -17,7 +17,8 @@ server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
 chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13).
 
 **R5b-1 BUILT 2026-09-29** (the subject chip in the builder, T2 and T6 live,
-T1 takes a team, and the link contract). R5b-2 is next. R5c is blocked. R4,
+T1 takes a team, and the link contract). Repair round 1 on 2026-09-29 keeps a
+T2 about its author on an edit. R5b-2 is next. R5c is blocked. R4,
 R4b, R5b-2, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
@@ -1191,7 +1192,8 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - `one_on_one` (T6) goes live: `finished`, `throughput`, `pulse`, `weeks` 4, `skip_current_week` true, `scope_kinds` `["person"]`, `requires_subject` `"person"`.
 - `team_pulse` (T1) takes `scope_kinds` `["team", "project", "org"]`.
 - `normalise_report_config` gives 422 to a T2 or T6 config with no person subject. This rule reads only the shape, so it needs no database.
-- Create, patch and preview give 422 to a T2 config whose subject is not the reader. This check runs before the §7.1 check. A render does not run it.
+- A T2 is always about its AUTHOR. Create and preview give 422 to a T2 config whose subject is not the reader. PATCH gives 422 to a T2 config whose subject is not the stored `created_by`, with the reason "My day is always about its author". So an admin can rename a member's T2 (Q13), and the report stays about the member. This check runs before the §7.1 check. A render does not run it.
+- The builder derives the T2 subject from the reader only for a new report. An edit keeps the stored subject. The locked chip names the author, with the note "My day is always about its author".
 - `pulse_body` does not change. The waiting items show only on the reader's own row (Q6).
 
 **The link contract:** `/projects?app=reports&template=<key>&subject=<kind>:<value>&report_node=<id>`. Each key after `app` is optional. The key is `report_node` and not `project`, because the page consumes `?project=` and closes the app pane. `reportLink` in `lib/reportBuilder.ts` builds each link. A second builder of this address is a defect. `ReportsView` reads the keys once and then removes them from the address.
@@ -1221,14 +1223,18 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - (q) The sentence reads "[Template] About: [subject] In: [scope] Over: [period]". At 390 px each chip has the full width.
 - (r) Vitest and review: the subject chip shows a skeleton while it loads. It shows a line when the list is empty, and a retry line when the read fails. A 403 or a 422 shows as one sentence under the chip that caused it.
 - (s) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect.
+- (t) Real database: an admin renames member A's T2 and gets 200. The stored subject stays A, and A still lists and renders it. An admin PATCH that sets the subject to the admin gets 422. A PATCH by the author gets 200. Vitest: `builderSubject` keeps the stored subject of a T2 under edit.
+- (u) Real database: a stored T2 row with no subject does not make `GET /projects/reports` answer 422. The list answers 200 without that row, and an admin can delete it.
 
 **Done when, R5b-2:**
 - (k) Vitest: the link of each control equals `reportLink` with the expected template, subject and node.
 - (l) Vitest: `PersonPanel` shows no "1:1 prep" when the subjects answer omits the person, or when the read fails.
 - (m) A review at 390 px shows that each link opens Reports with the builder filled in. If it does, the PR closes H-184 item 5.
 
-**As built, R5b-1 (2026-09-29).** `test_projects_report_scope_r5b.py` proves (e) to (j) on a real database. `reportBuilderSubject.test.ts` proves (a) to (d), (o), (p) and (r).
+**As built, R5b-1 (2026-09-29).** `test_projects_report_scope_r5b.py` proves (e) to (j) on a real database. `reportBuilderSubject.test.ts` proves (a) to (d), (o) and (p).
 A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
+
+⚠️ **Correction, repair round 1.** The first note said the tests proved (r). They did not. No test covered the skeleton, the empty line or the retry line. The (a) test also covered the pure functions and not the component. The component put the reader in as the subject of an edited T2.
 
 - `normalise_report_config` calls `_config_template`, which gives 422 to T2 or T6 with no person subject. `require_template_subject` gives 422 to a T2 whose subject is not the reader. Create, patch and preview call it before the §7.1 check.
 - The subjects answer carries `me`, the address of the reader. The chip names that row "Me", and T2 takes it as its subject.
@@ -1237,7 +1243,19 @@ A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
 - `ReportsView` reads the link keys once, after the catalogue loads, and removes them from the address.
 - `NO_SUBJECT_SECTIONS` in `reportBuilder.ts` mirrors `report_scope.py`. `test_projects_report_sections_lockstep.py` fails when the two differ.
 
-⚠️ **The hazard.** `_report_dict` runs `normalise_report_config` on each read, and the list reads every row. So a stricter shape rule added later can make a saved row answer 422, and the list with it. Put a rule that needs the reader or the database in `require_template_subject`, which a read never calls.
+⚠️ **The hazard.** `_report_dict` runs `normalise_report_config` on each read, and the list reads every row. So a stricter shape rule added later can make a saved row answer 422. Put a rule that needs the reader or the database in `require_template_subject`, which a read never calls.
+
+**As built, repair round 1 (2026-09-29).** Each item names its fence.
+
+1. **The T2 author rule.** `require_template_subject` takes `author` on a PATCH, and `update_report` passes the stored `created_by`. The builder calls `builderSubject`, which derives the reader only when `editing` is null. `subjectChipNote` names the author for an admin. Fence: (t), and a mutation that puts the override back turns the vitest red. Before the fix, the real-database test got 422 "must be you" for the admin's rename.
+2. **The list hazard.** `list_reports` runs `_report_dict` inside the `try`, so a bad row is left out and the list answers 200. Fence: (u). Before the fix, the list answered 422.
+3. **The link node.** `parseReportLink` keeps `report_node` only when it is a UUID in the reader's tree, and `ReportsView` waits for the tree. A link with only a bad node opens the home. Fence: vitest (3), and a mutation that keeps any node turns it red.
+4. **The filter query.** `selectPanelReducer` holds the open state and the query together, and every close clears the query. Fence: vitest (4), and a mutation that keeps the query on a trigger close turns it red.
+5. **The listbox.** `SelectList` puts the filter box above `role="listbox"`, and each group is `role="group"` with the group name as its label. A list with no filter and no group keeps the old markup, so the callers from before R5b render unchanged. Fence: vitest (5), with a server render of `SelectList`.
+6. **The fallback sections.** `withSubject` writes the default sections into `state.sections` when the subject turns off every chosen section. So the checkboxes show what the preview shows. Fence: vitest (6), and a mutation that removes the fallback turns it red.
+7. **The "as saved" hint.** `subjectOptions` takes `editing`. A subject from a link that the answer omits reads "not in your list". Fence: vitest (7).
+8. **The builder text.** The template name, or "Custom report", is the title above the chips. A T2 does not show "Started from a template". A custom report starts as "Untitled report". When the subjects read fails, the T2 preview line says so and offers Retry. Fence: vitest (8).
+9. **(r).** `subjectChipStatus` decides the skeleton, the retry line and the ready chip, and `subjectChipNote` decides the empty line. Vitest (9) pins the pure functions. No test renders the chip, because the vitest environment has no DOM.
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
