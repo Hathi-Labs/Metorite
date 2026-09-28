@@ -2889,6 +2889,28 @@ stream.
 6. **An empty row stays hidden.** `_get_messages` omits an agent row with no
    content, no tool events, no custom events and no reasoning. The filter is
    in the SQL, so a `LIMIT` does not count the hidden row.
+7. **Three roles only** (fix round 1). `MessageRecord.role` is
+   `Literal["user", "assistant", "system"]`, so the route answers 422 for
+   any other value. `_attribute` treats only the role `user` as a human
+   turn. The browser draws every other role as an agent reply. So a role
+   such as `tool` or `Assistant` would pass as one. The
+   `chat_message` CHECK already refused these values, but as a 500 for the
+   whole batch.
+8. **`_ensure_session` raises no role** (fix round 1). The mint calls it at
+   every run start. It adds the owner row only when the caller is the
+   creator of the session (`chat_session.user_id`). It adds the `primary`
+   agent row only when the room has no `primary` agent. A browser-created
+   session
+   still gets both on its first run, because `_upsert_session` makes
+   neither. The fold calls the same helper, so the fix covers it too.
+9. **The first content sets the time** (fix round 1). The mint stamps the
+   server clock at request time, and the prompt carries the browser clock.
+   While the stored content is empty, a write that passes the `WHERE` moves
+   `timestamp_ms` forward to its own value. The first checkpoint then sets
+   the time, as it did before S14.
+10. **The mint is bounded** (fix round 1). `_mint_run_row_bounded` waits
+    `_MINT_TIMEOUT_S` (2 seconds) at most. On a timeout it logs
+    `agent.mint_failed` with the reason `timeout`, and the run goes on.
 
 ### 20.4 Rules
 
@@ -2912,6 +2934,10 @@ stream.
    `apps/services/gateway/AGENTS.md`, `groups_sessions_authority.md` §4, the
    comment above `_MESSAGE_UPSERT_SQL`, and the `MessageRecord` and
    `_attribute` docstrings.
+10. **A run start never changes the roles of the room.** Only the creator of
+    a session gets an owner row from `_ensure_session`, and a room keeps one
+    `primary` agent. A member who reaches the room through a group or an org
+    grant stays at that role when she starts a run.
 
 ### 20.5 What stops working (D-PM-39)
 
@@ -2923,7 +2949,8 @@ later slice give these rows a server writer.
    of it is now declined. The default model, `auto`, runs through
    `/agent/run/stream`, so it is not affected.
 2. **A compaction summary stays in the browser.** It is a system row, and
-   the browser save of it is now declined.
+   the browser save of it is now declined. So a second device has no
+   compaction checkpoint, and it compacts the conversation again.
 3. **A reconnect with no local row writes no duplicate.** `useAgentChat.ts`
    makes a new placeholder id when no agent row survived a reload. Before
    S14 the browser saved that row beside the row of the fold. Now the
@@ -2958,6 +2985,19 @@ later slice give these rows a server writer.
      checkpoint.
    - A new human row still inserts, and Alice still updates her own human
      row.
+   - Fix round 1: the roles `tool`, `Assistant`, `system ` and `developer`
+     each get 422 and no row, through the real handler behind FastAPI. A
+     `user` row still inserts.
+   - Fix round 1: a member who reaches the room through a group starts a
+     run and gets no owner row. The fold gives none either. A run of a
+     second agent adds no second `primary` agent row.
+   - Fix round 1: the mint on a new session id creates the session, the
+     owner row and the `primary` agent row. A checkpoint by the starter
+     lands. A browser-created session gets both rows on its first run.
+   - Fix round 1: a prompt at T, with the server clock two seconds behind,
+     sorts before its reply after the first checkpoint.
+   - Fix round 1: a slow mint returns after the timeout and logs the reason
+     `timeout`.
 2. The S13 tests pass, with the seeding moved to the mint.
    `test_no_client_inserts_or_updates_a_system_row` replaces
    `test_a_client_inserts_a_system_row_and_never_updates_one`.
@@ -2975,17 +3015,27 @@ later slice give these rows a server writer.
    - the mint comes before the steer or refusal check
    - the reader sees an empty minted row
 
+   Fix round 1 adds six more, and each turns a test red:
+   - `role` goes back to `str`
+   - the owner row goes in on an existing session
+   - a second `primary` agent row goes in
+   - the timestamp rule is removed
+   - the mint has no timeout
+   - the mint does not call `_ensure_session`
+
 ### 20.7 What S14 does not do
 
 - The run member can still write any content in her own reply until the
   seal. A per-run token for the translator is a later slice.
 - No server writer exists for a LiteLLM reply or a compaction summary yet.
-- The mint takes its timestamp from the server clock. The user turn takes
-  its timestamp from the browser clock, so a skewed browser clock can sort
-  the reply before its prompt.
+- The first checkpoint takes its timestamp from the clock of the Next
+  server, and the prompt takes the browser clock. A browser clock that runs
+  more than the time to the first checkpoint fast can still sort the reply
+  before its prompt. That was also true before S14.
+- A mint that times out can still finish later in its thread. It only
+  inserts, so it changes no row that the fold wrote first.
 - A run that `SupersedeRefused` stops inside the stream leaves an empty
   minted row. The reader does not see it.
-- There is no allowlist of roles.
 - Nothing in the browser reads `unchanged` yet.
 
 ### 20.8 Verification
