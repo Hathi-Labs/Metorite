@@ -1,4 +1,10 @@
-"""The customer billing proxy: ``GET /billing/*`` under the deployment key.
+"""The customer billing proxy: ``/billing/*`` under the deployment key.
+
+Seven READS (``GET /billing/{summary,seats,members,catalog}``,
+``GET /billing/usage/{activity,apps,members}``) and the CHECKOUT
+(``POST /billing/orders``, ``GET /billing/orders/{id}``,
+``POST /billing/orders/{id}/redeem``). The checkout is gated on the tenant
+plane's ``billing:purchase`` here, before any hop.
 
 Spec: ``project-docs/HANDOFF.md`` **H-152** (the billing half) ·
 ``customer_console.md`` §6 CP-2h (**D-SEAT-4**, the pattern) ·
@@ -57,6 +63,7 @@ figures reach another tenant's screen. Fence:
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
@@ -64,10 +71,13 @@ from acb_auth.console_resolve import (
     CAPABILITY_REFUSAL_PREFIX,
     ConsoleBillingUnavailable,
     billing_read_on_console,
+    create_order_on_console,
     is_wired,
+    read_order_on_console,
+    redeem_code_on_console,
 )
 from acb_common import get_logger
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 _log = get_logger("gateway.billing")
@@ -108,13 +118,36 @@ def _detail_text(payload: dict[str, Any]) -> str:
 async def _relay(
     door: str, user: UserContext | None, *, scope: str | None = None
 ) -> JSONResponse:
-    """Ask one billing door for the session member, and relay the answer."""
+    """Ask one billing READ door for the session member, and relay it."""
+    return await _ask(
+        door,
+        lambda actor: billing_read_on_console(door, actor_email=actor, scope=scope),
+        user,
+        write=False,
+    )
+
+
+async def _ask(
+    door: str,
+    call: Callable[[str], Awaitable[tuple[int, dict[str, Any]]]],
+    user: UserContext | None,
+    *,
+    write: bool,
+) -> JSONResponse:
+    """The ONE relay for every billing door: unwired, outage, capability, verdict.
+
+    ``call`` receives the SESSION email and nothing else, so no door can be
+    handed an actor from anywhere but the authenticated context (R11).
+    ``write`` only sets the log level of the unwired refusal: a checkout that
+    reaches an unwired box is an ERROR, a read is the ordinary dark state.
+    """
     if not is_wired():
-        _log.warning(
-            "billing.read_unwired",
+        log = _log.error if write else _log.warning
+        log(
+            "billing.write_unwired" if write else "billing.read_unwired",
             door=door,
             detail=(
-                "a billing read reached a box with no Console configured — "
+                "a billing call reached a box with no Console configured — "
                 "CUSTOMER_CONSOLE_URL and CUSTOMER_CONSOLE_DEPLOYMENT_KEY are "
                 "not both set on the gateway (H-152)."
             ),
@@ -123,11 +156,9 @@ async def _relay(
 
     actor_email = (user.email or "") if user else ""
     try:
-        status_code, payload = await billing_read_on_console(
-            door, actor_email=actor_email, scope=scope
-        )
+        status_code, payload = await call(actor_email)
     except ConsoleBillingUnavailable as exc:
-        _log.warning("billing.read_unavailable", door=door, error=str(exc)[:200])
+        _log.warning("billing.unavailable", door=door, error=str(exc)[:200])
         return JSONResponse(status_code=503, content=dict(_UNAVAILABLE))
 
     if status_code == 403 and _detail_text(payload).startswith(
@@ -142,6 +173,14 @@ async def _relay(
             detail=_detail_text(payload)[:200],
         )
         return JSONResponse(status_code=503, content=dict(_NOT_CONFIGURED))
+
+    if status_code == 422:
+        # A shape the Console refused. Its validation body echoes the input,
+        # and a redeem body carries a bearer code, so the words stay here.
+        _log.warning("billing.console_refused_shape", door=door)
+        return JSONResponse(
+            status_code=400, content={"detail": "The request was not valid."}
+        )
 
     return JSONResponse(status_code=status_code, content=payload)
 
@@ -206,3 +245,142 @@ async def billing_usage_members(
     if not _is_admin(user):
         return JSONResponse(status_code=403, content=dict(_NOT_ADMIN))
     return await _relay("usage_members", user)
+
+
+# ── The checkout (H-152, the checkout half) ─────────────────────────────────
+#
+# Three doors that start or finish a payment. The tenant plane's
+# `billing:purchase` decides WHO may spend, here, before any hop — the rule
+# the workbench applied to the organization-key checkout, kept exactly. The
+# Console then derives the organization from the member and asks only that
+# they are an ACTIVE member of it.
+
+#: The tenant capability that lets a member spend the company's money. The
+#: same slug `acb_auth.permissions.CAPABILITIES` names and the workbench read.
+_PURCHASE_PERMISSION = "billing:purchase"
+
+#: R11: a checkout body may not name a tenant or a person. Refused with 400,
+#: never ignored — `routes/seats.py`'s set.
+_FORBIDDEN_BODY_KEYS = frozenset({"org", "org_slug", "actor_email", "email"})
+
+_NOT_PURCHASER = {
+    "detail": "You do not have permission to make purchases for this organization."
+}
+
+
+def _is_purchaser(user: UserContext | None) -> bool:
+    """The tenant plane's answer. No access resolved means no."""
+    return bool(user is not None and user.access.has(_PURCHASE_PERMISSION))
+
+
+async def _checkout_body(request: Request) -> dict[str, Any] | JSONResponse:
+    """The browser body, or the R11 refusal. Never a price: callers rebuild."""
+    try:
+        raw = await request.json()
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    named = _FORBIDDEN_BODY_KEYS & set(raw)
+    if named:
+        _log.warning("billing.body_claims_identity", keys=sorted(named))
+        return JSONResponse(
+            status_code=400,
+            content={
+                "code": "InvalidBody",
+                "detail": (
+                    "the buyer is the authenticated session and the "
+                    "organization is derived from it; a body org/actor/email "
+                    "is refused (R11)"
+                ),
+            },
+        )
+    return raw
+
+
+@router.post("/orders")
+async def billing_create_order(
+    request: Request,
+    user: Annotated[UserContext, Depends(get_current_user)] = None,  # type: ignore[assignment]
+) -> Any:
+    """Create a pending order. It moves no value; a webhook or a code does.
+
+    The basket is REBUILT to ``[{plan_slug, quantity}]``: a price, a total or
+    any other field the browser sends is dropped, because the Console prices
+    from the catalog and a checkout that trusts the browser about cost is the
+    oldest bug in e-commerce.
+    """
+    if not _is_purchaser(user):
+        return JSONResponse(status_code=403, content=dict(_NOT_PURCHASER))
+    body = await _checkout_body(request)
+    if isinstance(body, JSONResponse):
+        return body
+    raw_lines = body.get("lines")
+    lines = [
+        {
+            "plan_slug": str(line.get("plan_slug") or ""),
+            "quantity": line.get("quantity"),
+        }
+        for line in (raw_lines if isinstance(raw_lines, list) else [])
+        if isinstance(line, dict)
+    ]
+    if not lines:
+        return JSONResponse(
+            status_code=400, content={"detail": "Choose at least one package."}
+        )
+    return await _ask(
+        "orders",
+        lambda actor: create_order_on_console(actor_email=actor, lines=lines),
+        user,
+        write=True,
+    )
+
+
+@router.get("/orders/{order_id}")
+async def billing_read_order(
+    order_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)] = None,  # type: ignore[assignment]
+) -> Any:
+    """Read one order back. Gated like the writes: it shows what was bought.
+
+    ``order_id`` names an ORDER, never a tenant. The Console looks it up
+    inside the member's own organization, and a foreign order answers the
+    same 404 as an unknown one.
+    """
+    if not _is_purchaser(user):
+        return JSONResponse(status_code=403, content=dict(_NOT_PURCHASER))
+    return await _ask(
+        "order_read",
+        lambda actor: read_order_on_console(actor_email=actor, order_id=order_id),
+        user,
+        write=False,
+    )
+
+
+@router.post("/orders/{order_id}/redeem")
+async def billing_redeem_code(
+    order_id: str,
+    request: Request,
+    user: Annotated[UserContext, Depends(get_current_user)] = None,  # type: ignore[assignment]
+) -> Any:
+    """Present a discount code against one order.
+
+    ⚠️ The code is a bearer secret. It is forwarded and never logged here.
+    Idempotency is the Console's: the same code on the same order redeems once.
+    """
+    if not _is_purchaser(user):
+        return JSONResponse(status_code=403, content=dict(_NOT_PURCHASER))
+    body = await _checkout_body(request)
+    if isinstance(body, JSONResponse):
+        return body
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return JSONResponse(status_code=400, content={"detail": "Enter a code."})
+    return await _ask(
+        "order_redeem",
+        lambda actor: redeem_code_on_console(
+            actor_email=actor, order_id=order_id, code=code
+        ),
+        user,
+        write=True,
+    )

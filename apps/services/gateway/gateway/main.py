@@ -1486,7 +1486,9 @@ try:
     # deployment key, so a shared box serves every tenant's billing page with
     # that tenant's own figures. Authenticated by the app-wide
     # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES.
-    # Ships dark — `is_wired()` false, or a key without `billing_read`, ⇒ 503.
+    # The checkout (`/billing/orders*`) is here too, gated on the tenant's
+    # `billing:purchase` before any hop. Ships dark — `is_wired()` false, or
+    # a key without `billing_read` / `billing_purchase`, ⇒ 503.
     from gateway.routes.billing import router as _billing_router
 
     app.include_router(_billing_router)

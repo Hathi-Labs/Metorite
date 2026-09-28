@@ -3338,12 +3338,20 @@ line — never reclaim a number by deleting the other entry.
   because no route grants a capability. Without it every billing read answers
   503 "Billing is not configured for this deployment". It never falls back to
   the org key, so no tenant sees another tenant's figures.
-- ⚠️ **What is LEFT for the org key: the three checkout routes.**
-  `api/billing/orders`, `orders/[id]` and `orders/[id]/redeem` still use
-  `_console.ts` and `CUSTOMER_CONSOLE_ORG_KEY`. The second PR moves them onto
-  a `billing_purchase` capability. Until it merges, do NOT unset the org key
-  on a box that sells, or checkout goes dark. The seat writes and the invite
-  mirror already use the gateway and need nothing.
+- 📌 **The checkout left the org key too** (the second PR). `api/billing/
+  orders`, `orders/[id]` and `orders/[id]/redeem` go through the gateway's
+  `/billing/orders*` to `POST /registry/billing/orders*`, on a new
+  `billing_purchase` capability. The gateway checks the tenant's
+  `billing:purchase` before any hop. That PR deletes `_console.ts`, and no file in
+  `api/billing` reads `CUSTOMER_CONSOLE_*` (`checkout.test.ts`). Fence:
+  `test_customer_console_billing_checkout.py` (R8).
+- 🔴 **Before the second PR merges, widen the key again: `billing_purchase`.**
+  Until then checkout answers 503 "not configured". The seat writes and the
+  invite mirror already use the gateway and need nothing new.
+- ⚠️ **What is LEFT after both merge:** grant `billing_read` and
+  `billing_purchase` on the box's key, deploy, and check a billing page for
+  two tenants. Then the Next tier no longer reads `CUSTOMER_CONSOLE_ORG_KEY`,
+  and the three box acts above can run.
 - ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
   `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
   and nothing calls `member_proof.sign_member`. So on a box with

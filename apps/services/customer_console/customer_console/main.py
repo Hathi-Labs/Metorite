@@ -92,6 +92,7 @@ from customer_console import (
 )
 from customer_console import router as router_mod
 from customer_console.auth import (
+    BillingPurchaseCaller,
     BillingReadCaller,
     Caller,
     CatalogCaller,
@@ -9689,14 +9690,29 @@ def create_order(req: CreateOrderRequest, caller: PayingCaller) -> OrderView:
     discounted would collect the pre-discount amount — the customer would be
     overcharged and the capture would fail our own amount check.
     """
+    return _create_order_for(
+        caller.organization_id, req.lines, actor="organization"
+    )
+
+
+def _create_order_for(
+    org_id: str, lines: list[OrderLineRequest], *, actor: str
+) -> OrderView:
+    """Create one pending order — the ONE body both checkout doors serve.
+
+    ``POST /billing/orders`` (the organization key) and
+    ``POST /registry/billing/orders`` (the deployment key, H-152) differ only
+    in how they learn ``org_id`` and who the audit row names. ``actor`` is
+    ``"organization"`` for the org key, which reaches no person, and the
+    vouched member's email for the deployment key.
+    """
     try:
         provider = payments.provider()
     except payments.ProviderUnconfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
-    org_id = caller.organization_id
     with get_engine().begin() as conn:
-        priced, gross = _priced_basket(conn, req.lines)
+        priced, gross = _priced_basket(conn, lines)
         billing = conn.execute(
             text("SELECT gstin, billing_state FROM organization WHERE id = :i"),
             {"i": org_id},
@@ -9751,7 +9767,7 @@ def create_order(req: CreateOrderRequest, caller: PayingCaller) -> OrderView:
                 "total_paise": total,
                 "lines": [line["plan_slug"] for line in priced],
             },
-            actor="organization",
+            actor=actor,
         )
         order = store.order_for_update(conn, order_id=order_id, org_id=org_id)
         assert order is not None
@@ -9766,11 +9782,16 @@ def read_order(order_id: str, caller: PayingCaller) -> OrderView:
     body or a header (R11). A foreign order and an unknown one answer one
     byte-identical 404.
     """
+    return _read_order_for(caller.organization_id, order_id)
+
+
+def _read_order_for(org_id: str, order_id: str) -> OrderView:
+    """One order of ``org_id``, or the ONE collapsed 404. Both doors' body."""
     with get_engine().begin() as conn:
         order = store.order_row(
             conn,
             order_id=_valid_uuid(order_id),
-            org_id=caller.organization_id,
+            org_id=org_id,
         )
         if order is None:
             raise _no_such_order()
@@ -9856,7 +9877,19 @@ def redeem_discount_code(
     a ``max_redemptions = 1`` code yields one success and one refusal under
     ``store.lock_discount_capacity``.
     """
-    org_id = caller.organization_id
+    return _redeem_for(
+        caller.organization_id, order_id, req.code, actor="organization"
+    )
+
+
+def _redeem_for(org_id: str, order_id: str, code_text: str, *, actor: str) -> OrderView:
+    """Present a code against one order of ``org_id`` — both doors' ONE body.
+
+    The org-key door and the deployment-key door (H-152) share every line of
+    the partition, the lock and the idempotency. ``actor`` names who the audit
+    row credits: ``"organization"`` for the org key, the member for the
+    deployment key.
+    """
     order_id = _valid_uuid(order_id)
 
     # Expiry runs in its OWN transaction, ahead of the work: a refusal below
@@ -9868,7 +9901,7 @@ def redeem_discount_code(
         if stale is not None:
             payments.abandon_if_expired(conn, order=stale)
 
-    parsed = split_key(req.code.strip())
+    parsed = split_key(code_text.strip())
 
     with get_engine().begin() as conn:
         order = store.order_for_update(conn, order_id=order_id, org_id=org_id)
@@ -9913,7 +9946,9 @@ def redeem_discount_code(
         if store.count_redemptions(conn, code_id=code["id"]) >= code["max_redemptions"]:
             raise HTTPException(409, detail={"reason": "exhausted"})
 
-        return _apply_redemption(conn, order=order, code=code, org_id=org_id)
+        return _apply_redemption(
+            conn, order=order, code=code, org_id=org_id, actor=actor
+        )
 
 
 def _verified_code(conn, *, parsed, org_id: str) -> dict[str, Any]:
@@ -9967,6 +10002,7 @@ def _apply_redemption(
     order: dict[str, Any],
     code: dict[str, Any],
     org_id: str,
+    actor: str = "organization",
 ) -> OrderView:
     """Recompute the order's money, record the redemption, and — at zero — grant.
 
@@ -10017,7 +10053,7 @@ def _apply_redemption(
             "discount_paise": discount,
             "net_paise": total,
         },
-        actor="organization",
+        actor=actor,
     )
 
     if total == 0:
@@ -10060,6 +10096,79 @@ def _replace_provider_order(conn, *, order_id: str, total_paise: int, org_id: st
         order_id=order_id,
         provider_order_id=created.provider_order_id,
     )
+
+
+# ── H-152 · the checkout under the deployment key ──────────────────────────
+#
+# The three org-key checkout doors above, reached by the per-box deployment
+# key instead. The organization is DERIVED from placement ∩ the acting
+# member's membership (`_billing_member_context`), never named (R11), and
+# each door calls the SAME body its org-key twin calls — the basket pricing,
+# the collapsed 404, the redemption partition, the lock and the idempotency
+# are one code path. What differs is the audit row: it names the member,
+# because this credential reaches one, where the org key reached nobody.
+#
+# ⚠️ **WHO may spend is the tenant plane's `billing:purchase`, checked at the
+# gateway**, exactly as the workbench checked it for the org key. The Console
+# asks for an ACTIVE membership in the derived organization and the
+# `can_pay` lifecycle question the twins ask.
+
+
+class DeploymentOrderRequest(AdminSchemeRequest):
+    """A basket under the deployment key: the actor and the lines. No amount."""
+
+    lines: list[OrderLineRequest] = Field(min_length=1)
+
+    model_config = {"extra": "forbid"}
+
+
+class DeploymentRedeemRequest(AdminSchemeRequest):
+    """A code under the deployment key: the actor and the code, whole."""
+
+    code: str
+
+    model_config = {"extra": "forbid"}
+
+
+@app.post("/registry/billing/orders")
+def create_order_for_member(
+    req: DeploymentOrderRequest, caller: BillingPurchaseCaller
+) -> OrderView:
+    """``POST /billing/orders`` under the deployment key (H-152).
+
+    Writes ``payment_order`` and its lines and nothing else — the twin's body.
+    """
+    with get_engine().begin() as conn:
+        org_id, actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+    return _create_order_for(org_id, req.lines, actor=actor)
+
+
+@app.post("/registry/billing/orders/{order_id}")
+def read_order_for_member(
+    order_id: str, req: BillingReadRequest, caller: BillingPurchaseCaller
+) -> OrderView:
+    """``GET /billing/orders/{id}`` under the deployment key (H-152).
+
+    A POST because the actor travels in the body, as on every deployment-key
+    door. A foreign order and an unknown one answer the ONE collapsed 404.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+    return _read_order_for(org_id, order_id)
+
+
+@app.post("/registry/billing/orders/{order_id}/redeem")
+def redeem_code_for_member(
+    order_id: str, req: DeploymentRedeemRequest, caller: BillingPurchaseCaller
+) -> OrderView:
+    """``POST /billing/orders/{id}/redeem`` under the deployment key (H-152).
+
+    The same partition, lock and idempotency as the twin, because it is the
+    same body. The code is never logged; only its prefix is.
+    """
+    with get_engine().begin() as conn:
+        org_id, actor = _billing_member_context(conn, req, caller, permits=_can_pay)
+    return _redeem_for(org_id, order_id, req.code, actor=actor)
 
 
 @app.post("/billing/webhooks/razorpay")
