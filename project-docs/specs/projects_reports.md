@@ -14,8 +14,12 @@ and T1 live).
 
 **R5a BUILT 2026-09-28** (the role rule of §7.1 and `config.subject`, on the
 server, in `report_scope.py`). **R5d BUILT 2026-09-28** (the role rule in the
-chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13). R5b is next. R5c is
-blocked. R4, R4b, R5b, R6 to R9 and Phases 2 and 3 are not built.
+chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13).
+
+**R5b-1 BUILT 2026-09-29** (the subject chip in the builder, T2 and T6 live,
+T1 takes a team, and the link contract). Repair round 1 on 2026-09-29 keeps a
+T2 about its author on an edit. R5b-2 is next. R5c is blocked. R4,
+R4b, R5b-2, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -162,17 +166,19 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:201`). The create control is "New report" (`:946`).
+  `RenderedBody` (`:252`). The create control is "New report" (`:1359`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
-- `lib/api.ts:1275` to `:1313`. The client can list, create, patch, preview,
-  render and delete a report, and read the templates. It has no call for
-  recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:486`).
+- `lib/api.ts:1613` to `:1653`. The client can list, create, patch, preview,
+  render and delete a report, and read the templates and the subjects. It has
+  no call for recipients or schedule.
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:721`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
-- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:758`)
-  and the template card (`TemplateCard`, `:701`).
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1117`)
+  and the template card (`TemplateCard`, `:1060`).
+- **Since R5b-1:** the builder has the subject chip. `lib/reportBuilder.ts`
+  holds `subjectOptions`, `reportLink` and `parseReportLink`.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -240,18 +246,18 @@ the default period. A member picks a template, then changes any of it. The
 saved report keeps the template key in `config.template`, so the home screen
 can group reports and the chat can name them.
 
-**Status key:** ✅ live (T4 since R2, T5 since R3a, T13 since R3c). ◐ waits
+**Status key:** ✅ live (T4 since R2, T5 since R3a, T13 since R3c, T1 since R3d, T2 and T6 since R5b). ◐ waits
 for a section, a scope, a period or a filter that §8 adds. The gallery shows
 a ◐ template as "coming soon".
 
 | # | Key | Template | The question | Scope | Period | Sections | Status |
 |---|---|---|---|---|---|---|---|
-| T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ◐ |
-| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` for one person, `waiting` | ◐ |
+| T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ✅ (since R3d) |
+| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | person (the reader) | today | `pulse` (its waiting items show on the reader's own row, Q6) | ✅ (since R5b) |
 | T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
 | T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `finished`, `outlook`, `stuck`, `conflicts` | ✅ (since R3a) |
-| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` (waiting items show only when the reader is the subject, Q6) | ◐ (§7.1 limits who may open it) |
+| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse` (its waiting items show on the reader's own row, Q6) | ✅ (since R5b, §7.1 limits who may open it) |
 | T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
 | T9 | `stakeholder_update` | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
@@ -1173,11 +1179,83 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - An admin or the creator can delete a report whose stored subject has a bad shape. Get and render still answer 422.
 
 ### R5b — The picker, the entry points, T2 and T6 · AGENT-SAFE
-The scope chip reads `GET /projects/reports/subjects`. "1:1 prep" opens T6 with the person filled in.
-"My day" opens T2 for the reader.
 
-T2 is `pulse` with `weeks` 1 and `skip_current_week` false. T6 is `finished`, `throughput` and `pulse` with `weeks` 4.
-A T2 or T6 config with no subject gets 422. T1 gains the `team` scope.
+**What:** the builder chooses a subject. T2 and T6 go live, and T1 takes a team. Four controls open the builder. R5b is two PRs, R5b-1 and R5b-2.
+
+**Rules, R5b-1 (the server and the builder):**
+- The builder has two chips: "about [subject]" and "in [scope]". R5a lets `config.subject` and `project_id` combine, and one picker cannot hold both. This replaces the one picker of §6.2.
+- The subject chip lists "Everyone", then the people, then the teams. It reads `GET /projects/reports/subjects` only. The reader's own row reads "Me".
+- The scope chip stays the project tree and "Whole organization". `scopeOptions` does not change.
+- `builderStateFrom`, `configFor`, `createPayload` and `patchPayload` carry `subject`. PATCH replaces the config, so an edit that drops the subject is a defect.
+- With a subject set, the builder removes `outlook` and `hygiene`. A template with no `person` or `team` in `scope_kinds` hides the subject chip.
+- `my_day` (T2) goes live: `pulse`, `weeks` 1, `skip_current_week` false, `scope_kinds` `["person"]`, `requires_subject` `"self"`.
+- `one_on_one` (T6) goes live: `finished`, `throughput`, `pulse`, `weeks` 4, `skip_current_week` true, `scope_kinds` `["person"]`, `requires_subject` `"person"`.
+- `team_pulse` (T1) takes `scope_kinds` `["team", "project", "org"]`.
+- `normalise_report_config` gives 422 to a T2 or T6 config with no person subject. This rule reads only the shape, so it needs no database.
+- A T2 is always about its AUTHOR. Create and preview give 422 to a T2 config whose subject is not the reader. PATCH gives 422 to a T2 config whose subject is not the stored `created_by`, with the reason "My day is always about its author". So an admin can rename a member's T2 (Q13), and the report stays about the member. This check runs before the §7.1 check. A render does not run it.
+- The builder derives the T2 subject from the reader only for a new report. An edit keeps the stored subject. The locked chip names the author, with the note "My day is always about its author".
+- `pulse_body` does not change. The waiting items show only on the reader's own row (Q6).
+
+**The link contract:** `/projects?app=reports&template=<key>&subject=<kind>:<value>&report_node=<id>`. Each key after `app` is optional. The key is `report_node` and not `project`, because the page consumes `?project=` and closes the app pane. `reportLink` in `lib/reportBuilder.ts` builds each link. A second builder of this address is a defect. `ReportsView` reads the keys once and then removes them from the address.
+
+**Rules, R5b-2 (the entry points):**
+- `NodeDashboard` shows "Report on this". It opens the builder with the node as the scope.
+- `PersonPanel` in the People app shows "1:1 prep". It opens T6 with the person as the subject.
+- "1:1 prep" shows only when the subjects route lists that person. When the read fails, the control is absent. It is never disabled.
+- The top bar of My Tasks shows "My day". It opens T2 with the reader as the subject.
+
+**Non-goals:** the chat (R8), the member setting (R5c), a "today" period, a `waiting` section, and a control on a task's assignee. The assignee chip has no menu, and a new menu is a design choice for a later slice.
+
+**Done when, R5b-1:**
+- (a) Vitest: a row with a subject goes through `builderStateFrom` and then `patchPayload`, and the subject stays the same.
+- (b) Vitest: `subjectOptions` for a member lists "Everyone" and "Me" only. For a lead it lists the lead, the team members and the teams they lead. For an admin it lists every person and team in the answer.
+- (c) Vitest: `configFor` of a state with a subject holds no `outlook` and no `hygiene`.
+- (d) Vitest: `reportLink` and its parser keep the template, the subject and the node. An unknown template or a bad subject opens the home screen.
+- (e) Real database: create, patch and preview of T2 or T6 with no subject each get 422. A team subject also gets 422.
+- (f) Real database: a member creates T2 on themselves and gets 201. An admin creates T2 on another person and gets 422.
+- (g) Real database: lead L creates T6 on M and gets 201. L creates T6 on N and gets 403 with the §7.1 reason.
+- (h) Real database: T1 with the subject team A renders for L. A member gets 403 for team A.
+- (i) The live templates are exactly `team_pulse`, `my_day`, `weekly_delivery`, `project_status`, `one_on_one` and `data_hygiene`.
+- (j) Real database: the subject of a saved T2 renders it and sees their waiting items. An admin renders the same row and sees none.
+- (n) The subject chip reads as words, for example "About: Me" or "About: Hardware team". The menu has the headings Everyone, People and Teams. A person shows the name, with the address muted beside it. A menu of more than 8 entries has a filter box. The chip is `SelectButton` from `src/components/ui`.
+- (o) Vitest: T2 locks the chip to the reader, with the note "My day is always about you." T6 shows "About: choose a person". Until a person is set, the preview shows one line that says what to do, and no error.
+- (p) Vitest: with a subject set, one muted line under the sections says why Forecast and Data hygiene are off. The two checkboxes stay in the list.
+- (q) The sentence reads "[Template] About: [subject] In: [scope] Over: [period]". At 390 px each chip has the full width.
+- (r) Vitest and review: the subject chip shows a skeleton while it loads. It shows a line when the list is empty, and a retry line when the read fails. A 403 or a 422 shows as one sentence under the chip that caused it.
+- (s) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect.
+- (t) Real database: an admin renames member A's T2 and gets 200. The stored subject stays A, and A still lists and renders it. An admin PATCH that sets the subject to the admin gets 422. A PATCH by the author gets 200. Vitest: `builderSubject` keeps the stored subject of a T2 under edit.
+- (u) Real database: a stored T2 row with no subject does not make `GET /projects/reports` answer 422. The list answers 200 without that row, and an admin can delete it.
+
+**Done when, R5b-2:**
+- (k) Vitest: the link of each control equals `reportLink` with the expected template, subject and node.
+- (l) Vitest: `PersonPanel` shows no "1:1 prep" when the subjects answer omits the person, or when the read fails.
+- (m) A review at 390 px shows that each link opens Reports with the builder filled in. If it does, the PR closes H-184 item 5.
+
+**As built, R5b-1 (2026-09-29).** `test_projects_report_scope_r5b.py` proves (e) to (j) on a real database. `reportBuilderSubject.test.ts` proves (a) to (d), (o) and (p).
+A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
+
+⚠️ **Correction, repair round 1.** The first note said the tests proved (r). They did not. No test covered the skeleton, the empty line or the retry line. The (a) test also covered the pure functions and not the component. The component put the reader in as the subject of an edited T2.
+
+- `normalise_report_config` calls `_config_template`, which gives 422 to T2 or T6 with no person subject. `require_template_subject` gives 422 to a T2 whose subject is not the reader. Create, patch and preview call it before the §7.1 check.
+- The subjects answer carries `me`, the address of the reader. The chip names that row "Me", and T2 takes it as its subject.
+- The builder derives the T2 subject from `me` and never stores a typed value. A template about one person asks the server for no preview until a person is set.
+- `SelectButton` has four new optional props: `group` on an option, `prefix`, `prompt` and `filterAbove`. `filterOptions` is the filter, and `SelectButton.test.ts` holds it.
+- `ReportsView` reads the link keys once, after the catalogue loads, and removes them from the address.
+- `NO_SUBJECT_SECTIONS` in `reportBuilder.ts` mirrors `report_scope.py`. `test_projects_report_sections_lockstep.py` fails when the two differ.
+
+⚠️ **The hazard.** `_report_dict` runs `normalise_report_config` on each read, and the list reads every row. So a stricter shape rule added later can make a saved row answer 422. Put a rule that needs the reader or the database in `require_template_subject`, which a read never calls.
+
+**As built, repair round 1 (2026-09-29).** Each item names its fence.
+
+1. **The T2 author rule.** `require_template_subject` takes `author` on a PATCH, and `update_report` passes the stored `created_by`. The builder calls `builderSubject`, which derives the reader only when `editing` is null. `subjectChipNote` names the author for an admin. Fence: (t), and a mutation that puts the override back turns the vitest red. Before the fix, the real-database test got 422 "must be you" for the admin's rename.
+2. **The list hazard.** `list_reports` runs `_report_dict` inside the `try`, so a bad row is left out and the list answers 200. Fence: (u). Before the fix, the list answered 422.
+3. **The link node.** `parseReportLink` keeps `report_node` only when it is a UUID in the reader's tree, and `ReportsView` waits for the tree. A link with only a bad node opens the home. Fence: vitest (3), and a mutation that keeps any node turns it red.
+4. **The filter query.** `selectPanelReducer` holds the open state and the query together, and every close clears the query. Fence: vitest (4), and a mutation that keeps the query on a trigger close turns it red.
+5. **The listbox.** `SelectList` puts the filter box above `role="listbox"`, and each group is `role="group"` with the group name as its label. A list with no filter and no group keeps the old markup, so the callers from before R5b render unchanged. Fence: vitest (5), with a server render of `SelectList`.
+6. **The fallback sections.** `withSubject` writes the default sections into `state.sections` when the subject turns off every chosen section. So the checkboxes show what the preview shows. Fence: vitest (6), and a mutation that removes the fallback turns it red.
+7. **The "as saved" hint.** `subjectOptions` takes `editing`. A subject from a link that the answer omits reads "not in your list". Fence: vitest (7).
+8. **The builder text.** The template name, or "Custom report", is the title above the chips. A T2 does not show "Started from a template". A custom report starts as "Untitled report". When the subjects read fails, the T2 preview line says so and offers Retry. Fence: vitest (8).
+9. **(r).** `subjectChipStatus` decides the skeleton, the retry line and the ready chip, and `subjectChipNote` decides the empty line. Vitest (9) pins the pure functions. No test renders the chip, because the vitest environment has no DOM.
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
@@ -1448,6 +1526,7 @@ hides the file that hung.
 
 ```bash
 uv run pytest tests/unit/test_projects_report_scope_r5.py \
+  tests/unit/test_projects_report_scope_r5b.py \
   tests/unit/test_projects_report_sections_r3d.py \
   tests/unit/test_projects_report_sections_r3.py \
   tests/unit/test_projects_report_sections_r3b.py \
@@ -1481,11 +1560,12 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_sections_r3d.py` is R3d's file.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
+- `test_projects_report_scope_r5b.py` is R5b's file.
 
 Client, in `workbench/control_plane`:
 
 ```bash
-npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts src/components/genUITemplates.test.ts
+npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts src/components/genUITemplates.test.ts src/components/ui/SelectButton.test.ts
 ```
 
 Each slice adds its own test file and names it in its PR. A UI slice also runs

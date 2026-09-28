@@ -28,7 +28,13 @@
  * WS-27bn R2 (§6.1) adds the home screen: "Your reports" and the template
  * gallery, "Start from a question". The catalogue comes from
  * `GET /projects/reports/templates`, and this file holds no copy of it.
+ *
+ * WS-27bn R5b-1 (§8 R5b) adds the subject chip, "About: [subject]", beside
+ * the scope chip. It reads `GET /projects/reports/subjects` only. A link
+ * from `reportLink` opens the builder filled in, and this file removes the
+ * link's keys from the address after it reads them once.
  */
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -38,6 +44,7 @@ import Checkbox from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import Input from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
+import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -92,22 +99,40 @@ import {
 import {
   type BuilderState,
   MAX_REPORT_NAME,
+  REPORT_LINK_KEYS,
   REPORT_SECTIONS,
   SAVED_PERIOD,
+  SUBJECTS_FAILED,
   WHOLE_ORGANIZATION,
   builderStateFrom,
+  builderStateFromLink,
   builderStateFromTemplate,
+  builderSubject,
   configFor,
   createPayload,
+  errorChip,
   newBuilderState,
+  parseReportLink,
+  parseSubjectValue,
   patchPayload,
   periodKey,
   periodOptions,
+  requiredSubject,
   saveRefusal,
   scopeOptions,
+  sectionBlockedBySubject,
+  selfSubject,
+  subjectChipNote,
+  subjectChipShown,
+  subjectChipStatus,
+  subjectOptions,
+  subjectPrompt,
+  subjectSectionNote,
+  subjectValue,
   templateLabel,
   toggleSection,
   withPeriod,
+  withSubject,
   yourReports,
 } from "../lib/reportBuilder";
 import {
@@ -649,6 +674,34 @@ function message(e: unknown, fallback: string): string {
 }
 
 /**
+ * One chip with the sentence that belongs to it. An error from the server
+ * shows under the chip that caused it, in plain words.
+ */
+function ChipSlot({
+  children,
+  error,
+  note,
+}: {
+  children: React.ReactNode;
+  error?: string | null;
+  note?: string | null;
+}) {
+  return (
+    <div className="flex w-full flex-col gap-1 sm:w-auto">
+      {children}
+      {note ? (
+        <p className="text-[11px] text-muted-foreground">{note}</p>
+      ) : null}
+      {error ? (
+        <p className="text-[11px] text-destructive sm:max-w-[16rem]" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * WS-27bn R1 — the builder, one sentence of chips (§6.2).
  *
  * ⚠️ **The preview is the server's.** Each change asks
@@ -656,15 +709,23 @@ function message(e: unknown, fallback: string): string {
  * no figure, so the preview and the saved render are one computation.
  *
  * ⚠️ **An edit sends the WHOLE config.** PATCH replaces `config` on the
- * server, so a partial one would reset the fields it left out.
+ * server, so a partial one would reset the fields it left out. Since R5b
+ * that includes the subject.
  *
  * ⚠️ **The scope of a saved report is fixed.** PATCH takes a name and a
  * config, and no `project_id`. So the scope chip is off while editing.
+ *
+ * WS-27bn R5b-1. The sentence reads "[Template] About: [subject] In:
+ * [scope] Over: [period]". The subject chip lists what
+ * `GET /projects/reports/subjects` answers, and nothing else. "My day" is
+ * locked to the reader. "1:1 prep" asks for a person, and the preview says
+ * what to do until one is chosen.
  */
 function ReportBuilder({
   initial,
   editing,
   roots,
+  templates,
   onSaved,
   onCancel,
 }: {
@@ -672,31 +733,60 @@ function ReportBuilder({
   /** The saved report under edit, or `null` for a new one. */
   editing: ReportRow | null;
   roots: Parameters<typeof scopeOptions>[0];
+  /** The server's catalogue, or `undefined` while it loads. */
+  templates: ReportTemplate[] | undefined;
   onSaved: (row: ReportRow) => void;
   onCancel: () => void;
 }) {
-  const [state, setState] = useState<BuilderState>(initial);
+  const [draft, setState] = useState<BuilderState>(initial);
   const [preview, setPreview] = useState<PreviewReportBody | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // WS-27bn R5b. Who the reader may report on, through the one read cache.
+  const subjects = useCachedResource(projectsKey("reports/subjects"), () =>
+    projectsApi.reportSubjects()
+  );
+  const template = templates?.find((t) => t.key === draft.template) ?? null;
+  const needs = requiredSubject(template);
+  const chipShown = subjectChipShown(template) || draft.subject !== null;
+
+  // "My day" is always about its AUTHOR. A new one takes the reader, derived
+  // here and never typed. An edit keeps the stored subject, so an admin who
+  // edits a member's day leaves it about the member (R5b-1 repair).
+  const self = selfSubject(subjects.data);
+  const state = builderSubject(draft, needs, self, editing !== null);
+  const chipStatus = subjectChipStatus(subjects.data, Boolean(subjects.error));
+
   const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  // "1:1 prep" is about one person: no "Everyone" and no team.
+  const allSubjects = subjectOptions(subjects.data, state.subject, editing !== null);
+  const people =
+    needs === "person"
+      ? allSubjects.filter((o) => o.group === "People")
+      : allSubjects;
   const refusal = saveRefusal(state);
+  const prompt = subjectPrompt(state, template, chipStatus === "failed");
 
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
   const previewKey = JSON.stringify({
     project_id: state.projectId,
     config: configFor(state),
+    blocked: prompt !== null,
   });
 
   useEffect(() => {
     let off = false;
-    const { project_id, config } = JSON.parse(previewKey) as {
+    const { project_id, config, blocked } = JSON.parse(previewKey) as {
       project_id: string | null;
       config: ReturnType<typeof configFor>;
+      blocked: boolean;
     };
+    // A template about one person with no person yet: the server would
+    // answer 422, so the preview asks for nothing and says what to do.
+    if (blocked) return;
     const timer = setTimeout(() => {
       projectsApi.previewReport({ project_id, name: "", config }).then(
         (body) => {
@@ -706,6 +796,7 @@ function ReportBuilder({
         },
         (e) => {
           if (off) return;
+          setPreview(null);
           setPreviewError(message(e, "The preview could not be rendered."));
         }
       );
@@ -717,7 +808,7 @@ function ReportBuilder({
   }, [previewKey]);
 
   async function save() {
-    if (refusal) return;
+    if (refusal || prompt) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -733,37 +824,102 @@ function ReportBuilder({
   }
 
   const shownName = state.name.trim() || "Untitled report";
+  // Each error from the server shows next to the chip that caused it.
+  const serverError = saveError ?? (prompt ? null : previewError);
+  const errorAt = serverError ? errorChip(serverError) : null;
+  const subjectError = errorAt === "subject" ? serverError : null;
+  const scopeError = errorAt === "scope" ? serverError : null;
+  const otherSaveError = errorAt === "other" ? saveError : null;
+  const otherPreviewError =
+    errorAt === "other" && !saveError ? previewError : null;
+  const sectionNote = subjectSectionNote(state);
+  const answer = subjects.data;
+
+  let subjectChip: React.ReactNode = null;
+  if (chipShown) {
+    if (chipStatus === "failed") {
+      subjectChip = (
+        <ChipSlot>
+          <p className="flex items-center gap-2 text-[11px] text-muted-foreground" role="alert">
+            {SUBJECTS_FAILED}
+            <Button variant="text" size="sm" onClick={subjects.refresh}>
+              Retry
+            </Button>
+          </p>
+        </ChipSlot>
+      );
+    } else if (chipStatus === "loading" || !answer) {
+      subjectChip = (
+        <ChipSlot>
+          <Skeleton className="h-7 w-full sm:w-[16rem]" />
+        </ChipSlot>
+      );
+    } else {
+      subjectChip = (
+        <ChipSlot
+          error={subjectError}
+          note={subjectChipNote(needs, answer, state.subject, editing !== null)}
+        >
+          <SelectButton
+            label="Subject"
+            prefix="About:"
+            prompt={needs === "person" ? "choose a person" : undefined}
+            widthClass="w-full sm:w-[16rem]"
+            value={subjectValue(state.subject)}
+            defaultValue={needs === "person" ? "" : subjectValue(null)}
+            options={people}
+            filterAbove={8}
+            disabled={needs === "self"}
+            onChange={(value) => {
+              const subject = parseSubjectValue(value);
+              if (subject === undefined) return;
+              setState((s) => withSubject(s, subject));
+            }}
+          />
+        </ChipSlot>
+      );
+    }
+  }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-muted-foreground">Report on</span>
-        <SelectButton
-          label="Scope"
-          widthClass="w-full sm:w-[16rem]"
-          value={state.projectId ?? WHOLE_ORGANIZATION}
-          defaultValue={WHOLE_ORGANIZATION}
-          options={scopes}
-          disabled={editing !== null}
-          onChange={(value) =>
-            setState((s) => ({
-              ...s,
-              projectId: value === WHOLE_ORGANIZATION ? null : value,
-            }))
-          }
-        />
-        <span className="text-muted-foreground">over</span>
-        <SelectButton
-          label="Period"
-          widthClass="w-full sm:w-[14rem]"
-          value={periodKey(state) ?? SAVED_PERIOD}
-          defaultValue="last_week"
-          options={periodOptions(state)}
-          onChange={(value) => setState((s) => withPeriod(s, value))}
-        />
+      <h3 className="text-sm font-semibold text-foreground">
+        {template?.name ?? "Custom report"}
+      </h3>
+      <div className="flex flex-wrap items-start gap-2 text-xs">
+        {subjectChip}
+        <ChipSlot error={scopeError}>
+          <SelectButton
+            label="Scope"
+            prefix="In:"
+            widthClass="w-full sm:w-[16rem]"
+            value={state.projectId ?? WHOLE_ORGANIZATION}
+            defaultValue={WHOLE_ORGANIZATION}
+            options={scopes}
+            disabled={editing !== null}
+            onChange={(value) =>
+              setState((s) => ({
+                ...s,
+                projectId: value === WHOLE_ORGANIZATION ? null : value,
+              }))
+            }
+          />
+        </ChipSlot>
+        <ChipSlot>
+          <SelectButton
+            label="Period"
+            prefix="Over:"
+            widthClass="w-full sm:w-[14rem]"
+            value={periodKey(state) ?? SAVED_PERIOD}
+            defaultValue="last_week"
+            options={periodOptions(state)}
+            onChange={(value) => setState((s) => withPeriod(s, value))}
+          />
+        </ChipSlot>
       </div>
 
-      {state.template && (
+      {/* A template that locks the subject does not let each choice change. */}
+      {state.template && needs !== "self" && (
         <p className="text-[11px] text-muted-foreground">
           Started from a template. You can change each choice.
         </p>
@@ -795,21 +951,30 @@ function ReportBuilder({
         </legend>
         <div className="flex flex-wrap gap-x-4 gap-y-1">
           {REPORT_SECTIONS.map((section) => {
-            const on = state.sections.includes(section.key);
+            const blocked = sectionBlockedBySubject(state, section.key);
+            const on = !blocked && state.sections.includes(section.key);
+            const last =
+              on &&
+              state.sections.filter((k) => !sectionBlockedBySubject(state, k))
+                .length === 1;
             return (
               <label
                 key={section.key}
-                className="flex items-center gap-1.5 text-[11px]"
+                className={`flex items-center gap-1.5 text-[11px] ${
+                  blocked ? "text-muted-foreground" : ""
+                }`}
                 title={
-                  on && state.sections.length === 1
-                    ? "A report needs at least one section."
-                    : undefined
+                  blocked
+                    ? "Off for a person or team."
+                    : last
+                      ? "A report needs at least one section."
+                      : undefined
                 }
               >
                 <Checkbox
                   size="sm"
                   checked={on}
-                  disabled={on && state.sections.length === 1}
+                  disabled={blocked || last}
                   onChange={() =>
                     setState((s) => ({
                       ...s,
@@ -822,6 +987,9 @@ function ReportBuilder({
             );
           })}
         </div>
+        {sectionNote && (
+          <p className="mt-1 text-[11px] text-muted-foreground">{sectionNote}</p>
+        )}
       </fieldset>
 
       <label className="block text-[11px]">
@@ -840,7 +1008,7 @@ function ReportBuilder({
           variant="primary"
           size="sm"
           loading={saving}
-          disabled={refusal !== null}
+          disabled={refusal !== null || prompt !== null}
           onClick={save}
         >
           {editing ? "Save changes" : "Save report"}
@@ -848,9 +1016,9 @@ function ReportBuilder({
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        {(refusal || saveError) && (
+        {(refusal || otherSaveError) && (
           <p className="text-[11px] text-destructive" role="alert">
-            {saveError ?? refusal}
+            {otherSaveError ?? refusal}
           </p>
         )}
       </div>
@@ -859,16 +1027,31 @@ function ReportBuilder({
         <p className="mb-2 text-[11px] text-muted-foreground">
           Preview. The server computes each number, and nothing is saved.
         </p>
-        {previewError ? (
-          <p className="text-[11px] text-destructive" role="alert">
-            {previewError}
+        {prompt ? (
+          <p className="flex items-center gap-2 text-xs text-foreground">
+            <Icon name="User" className="h-3.5 w-3.5 shrink-0 text-primary" />
+            {prompt}
+            {chipStatus === "failed" && (
+              <Button variant="text" size="sm" onClick={subjects.refresh}>
+                Retry
+              </Button>
+            )}
+          </p>
+        ) : previewError ? (
+          <p
+            className={`text-[11px] ${
+              otherPreviewError ? "text-destructive" : "text-muted-foreground"
+            }`}
+            role={otherPreviewError ? "alert" : undefined}
+          >
+            {otherPreviewError ?? "Change the choice marked above to see the preview."}
           </p>
         ) : preview ? (
           <RenderedBody
             body={{ ...preview, report: { ...preview.report, name: shownName } }}
           />
         ) : (
-          <p className="text-[11px] text-muted-foreground">Rendering…</p>
+          <SkeletonRows count={3} />
         )}
       </section>
     </div>
@@ -1093,6 +1276,31 @@ export default function ReportsView({
     return scopes.find((s) => s.value === row.project_id)?.label ?? "Project";
   }
 
+  // WS-27bn R5b. A link from `reportLink` opens the builder filled in. The
+  // keys are read ONCE, when the catalogue has arrived, and then removed
+  // from the address, so a reload does not open the builder again. The page
+  // already removed `app`.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const linkQuery = REPORT_LINK_KEYS.some((k) => searchParams.has(k))
+    ? searchParams.toString()
+    : "";
+  useEffect(() => {
+    // The tree must arrive too: the node is kept only when it is in it.
+    if (!linkQuery || templates === undefined) return;
+    if (tree.data === undefined && !tree.error) return;
+    const params = new URLSearchParams(linkQuery);
+    const intent = parseReportLink(params, templates, roots);
+    // A link is consumed by setting state once, as the page's `?app=` does.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (intent) setPane({ kind: "new", initial: builderStateFromLink(intent) });
+    /* eslint-enable react-hooks/set-state-in-effect */
+    for (const k of REPORT_LINK_KEYS) params.delete(k);
+    const qs = params.toString();
+    router.replace(qs ? `/projects?${qs}` : "/projects");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkQuery, templates, roots, tree.error]);
+
   /** Open the builder from a template. A coming-soon one opens nothing. */
   function start(template: ReportTemplate) {
     const initial = builderStateFromTemplate(template);
@@ -1217,10 +1425,11 @@ export default function ReportsView({
         <div className="min-w-0 rounded-lg border border-border bg-card p-3">
           {pane.kind === "new" ? (
             <ReportBuilder
-              key={`new:${pane.initial.template ?? "blank"}`}
+              key={`new:${pane.initial.template ?? "blank"}:${subjectValue(pane.initial.subject)}:${pane.initial.projectId ?? ""}`}
               initial={pane.initial}
               editing={null}
               roots={roots}
+              templates={templates}
               onSaved={saved}
               onCancel={() => setPane({ kind: "view" })}
             />
@@ -1230,6 +1439,7 @@ export default function ReportsView({
               initial={builderStateFrom(pane.row)}
               editing={pane.row}
               roots={roots}
+              templates={templates}
               onSaved={saved}
               onCancel={() => setPane({ kind: "view" })}
             />

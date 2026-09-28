@@ -88,9 +88,13 @@ def test_rebalance_is_an_opt_in_section_and_the_last() -> None:
 
 def test_no_template_goes_live_and_team_pulse_is_live_since_r3d() -> None:
     # R3b made no template live. R3c made `data_hygiene` live after it,
-    # and R3d made `team_pulse` live, with `rebalance` in it.
+    # and R3d made `team_pulse` live, with `rebalance` in it. R5b made
+    # `my_day` and `one_on_one` live.
     live = [k for k, t in rep.TEMPLATES.items() if t["available"]]
-    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    assert live == [
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
+    ]
     t1 = rep.TEMPLATES["team_pulse"]
     assert "waits_for" not in t1
     assert t1["sections"] == ["pulse", "conflicts", "rebalance"]
