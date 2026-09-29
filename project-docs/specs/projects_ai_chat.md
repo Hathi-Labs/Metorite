@@ -3466,6 +3466,12 @@ Then it runs `scripts/smoke_chat_persist.py`.
   red at once, with no retry. An ssh blip retries, 3 attempts in total.
 - The run has no rollback. R6 says we only roll forward, so a red run means
   "the release is live, and chat does not save".
+- The wait and the smoke hold a SHARED lock on `/opt/acb/acb-deploy.lock`.
+  Every apply takes that file EXCLUSIVE, on both delivery paths. So a second
+  deploy cannot restart the services in the middle of a smoke. When another
+  deploy holds the lock for 240 s, the script exits 75, and the job gives a
+  warning, not a red. That deploy runs its own smoke. A failure prints the
+  commit that the box holds.
 - The cookie goes to each child through the environment only. The script
   never writes it to a file, never puts it on a command line, and never
   prints it.
