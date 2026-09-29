@@ -1560,7 +1560,7 @@ _REPORT_ROW_FACTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
 #: The line a section prints when the reader lacks the HR grant, in the
 #: Reports app's words. The section then carries no rows to print.
 _REPORT_HINTS: dict[str, str] = {
-    "rebalance": "Rebalancing needs HR read access. An admin can see it.",
+    "rebalance": "This part shows people's skills and hours, so only admins see it. Ask an admin if you need it.",
 }
 
 #: Row keys the chat never prints as a fact. An id is not a fact a member

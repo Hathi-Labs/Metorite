@@ -23,9 +23,11 @@ import { shortDate } from "./outlook";
 /** How many helpers one task names. The route sends three at most. */
 export const HELPERS_SHOWN = 3;
 
-/** The line the panel, the email and the chat card print without the grant. */
-export const REBALANCE_HR_HINT =
-  "Rebalancing needs HR read access. An admin can see it.";
+/**
+ * The line the panel, the email and the chat card print without the grant.
+ * Since R5f round 2 it lives in `hrHints.ts` with the other two lines.
+ */
+export { REBALANCE_HR_HINT } from "./hrHints";
 
 /** The at-risk tasks the server sent, in its order. */
 export function rebalanceTasks(data: RebalanceReport | null | undefined): RebalanceTask[] {

@@ -44,8 +44,11 @@ import { shortDate } from "./outlook";
 import { flatten } from "./tree";
 
 /**
- * The sections, in the server's `SECTIONS` order, with the heading
- * `RenderedBody` draws for each.
+ * The sections, in the server's `SECTIONS` order, with the ONE name of each.
+ *
+ * WS-27bn R5f round 2 (§6.6 C). The builder tile, the card title of the
+ * panel, the clear row, the all-clear list and the email heading all say this
+ * name, so a member can join a tile to its card. `sectionName` reads it.
  *
  * ⚠️ A mirror of `reports.py` `SECTIONS`. `test_projects_report_sections_lockstep.py`
  * reads this list as text and fails when the two differ in name or order.
@@ -57,11 +60,16 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "load", label: "Open work" },
   { key: "capacity", label: "Who has the hours" },
   { key: "pulse", label: "Team pulse" },
-  { key: "stuck", label: "Overdue" },
+  { key: "stuck", label: "Stuck work" },
   { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
   { key: "rebalance", label: "Who could help" },
 ];
+
+/** The one name of a section (§6.6 C). An unknown key names itself. */
+export function sectionName(key: string): string {
+  return REPORT_SECTIONS.find((s) => s.key === key)?.label ?? key;
+}
 
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.

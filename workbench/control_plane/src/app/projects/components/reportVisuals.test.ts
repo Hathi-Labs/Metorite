@@ -60,6 +60,7 @@ import {
   ThroughputPanel,
 } from "./AnalyticsPanels";
 import { RenderedBody } from "./ReportsView";
+import { REBALANCE_HR_HINT } from "../lib/hrHints";
 
 type Sections = RenderedReportBody["sections"];
 
@@ -447,15 +448,15 @@ function panelAndTable(markup: string): { panel: string; table: string } {
 
 const PANEL_TITLE: Record<keyof Sections, string> = {
   finished: "What we finished",
-  throughput: "Are we getting faster",
-  outlook: "Will this land",
-  stuck: "Where work is stuck",
-  load: "Who is overloaded",
+  throughput: "How long it took",
+  outlook: "Forecast",
+  stuck: "Stuck work",
+  load: "Open work",
   capacity: "Who has the hours",
   conflicts: "Where the plan conflicts",
   rebalance: "Who could help",
-  hygiene: "What open tasks are missing",
-  pulse: "Who needs help today",
+  hygiene: "Data hygiene",
+  pulse: "Team pulse",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
@@ -599,7 +600,8 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
   it("rebalance without the HR grant shows the hint and no zero rows", () => {
     const html = draw({ rebalance: REBALANCE_HIDDEN });
     const { panel, table } = panelAndTable(html);
-    const hint = "Rebalancing needs HR read access. An admin can see it.";
+    // React escapes the apostrophe in the markup.
+    const hint = REBALANCE_HR_HINT.replace("'", "&#x27;");
     expect(panel).toContain(hint);
     expect(table).toContain(hint);
     for (const word of ["0 at risk", "Could help", "Could take", "Nobody", "undefined"]) {
@@ -1121,7 +1123,7 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
     const html = renderToStaticMarkup(
       createElement(PulsePanel, { data: pulsePanelData(PULSE) })
     );
-    expect(html).toContain("Who needs help today");
+    expect(html).toContain("Team pulse");
   });
 
   describe("the browser counts nothing", () => {

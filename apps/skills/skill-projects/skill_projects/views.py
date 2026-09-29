@@ -346,7 +346,7 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         ],
     },
     "stuck": {
-        "title": "Overdue",
+        "title": "Stuck work",
         "stats": [("overdue_total", "Overdue")],
         "rows": "overdue",
         "columns": [("name", "Project"), ("overdue", "Overdue")],
@@ -418,7 +418,7 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         ],
         # Without the HR grant the section has no rows. The card says why,
         # in the Reports app's words, and draws no zero.
-        "hr_hint": "Rebalancing needs HR read access. An admin can see it.",
+        "hr_hint": "This part shows people's skills and hours, so only admins see it. Ask an admin if you need it.",
     },
 }
 

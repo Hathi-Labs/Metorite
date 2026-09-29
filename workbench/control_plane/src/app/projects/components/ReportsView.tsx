@@ -576,12 +576,12 @@ export function RenderedBody({
 
       {sections.stuck &&
         (sectionIsClear("stuck", sections.stuck) ? (
-          <ClearRow sectionKey="stuck" title="Overdue" />
+          <ClearRow sectionKey="stuck" title="Stuck work" />
         ) : (
           <SectionFrame
             sectionKey="stuck"
             table={
-              <Table title="Overdue" count={sections.stuck.overdue.length}>
+              <Table title="Stuck work" count={sections.stuck.overdue.length}>
                 <p
                   className={`mb-1 text-xs font-medium tabular-nums ${late.text}`}
                   title={`${sections.stuck.overdue_total} open tasks are past their due date`}

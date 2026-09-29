@@ -52,7 +52,7 @@ _needs_db = pytest.mark.skipif(
     ),
 )
 
-HR_HINT = "Rebalancing needs HR read access. An admin can see it."
+HR_HINT = "This part shows people's skills and hours, so only admins see it. Ask an admin if you need it."
 
 
 # ── Hermetic: the source says one computation ───────────────────────────────

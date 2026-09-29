@@ -17,12 +17,14 @@ import { describe, expect, it } from "vitest";
 import { reportLayout } from "@/lib/reportEmail";
 
 import type { RenderedReportBody } from "../lib/api";
+import { REBALANCE_HR_HINT } from "../lib/hrHints";
 import {
   MAX_REPORT_NAME,
   REPORT_SECTIONS,
   linkPending,
   previewNeeded,
   reportsPane,
+  sectionName,
 } from "../lib/reportBuilder";
 import { SECTION_CLEAR_LINES, allClear, clearNote, sectionIsClear } from "../lib/sectionEmpty";
 import { SECTION_ICONS } from "../lib/sectionIcons";
@@ -323,5 +325,53 @@ describe("the rebalance line tells the truth about idle people", () => {
     const markup = html(createElement(RenderedBody, { body: teamPulse({ rebalance: { ...REBALANCE_CLEAR, idle_total: 1 } }) }));
     expect(markup).not.toContain("nobody is idle");
     expect(markup).toContain("1 idle person has no task that fits.");
+  });
+});
+
+describe("round 2, item 2: no all-clear for conflicts the reader cannot see", () => {
+  it("conflicts without the HR grant are not clear", () => {
+    expect(sectionIsClear("conflicts", { ...CONFLICTS_CLEAR, hr_visible: false })).toBe(false);
+    const markup = html(
+      createElement(RenderedBody, {
+        body: teamPulse({ conflicts: { ...CONFLICTS_CLEAR, hr_visible: false } }),
+      })
+    );
+    expect(markup).not.toContain("All clear");
+    expect(markup).not.toContain("No conflicts. The plan lines up.");
+    expect(markup).toContain("No conflicts in the kinds you can see.");
+  });
+});
+
+describe("round 2, item 8: one name for each section", () => {
+  const PANELS = readFileSync(join(__dirname, "AnalyticsPanels.tsx"), "utf-8");
+
+  it("each panel takes its card title from sectionName", () => {
+    for (const { key } of REPORT_SECTIONS) {
+      expect(PANELS, key).toContain(`title={sectionName("${key}")}`);
+    }
+  });
+
+  it("each clear row and each table in RenderedBody says the same name", () => {
+    for (const { key, label } of REPORT_SECTIONS) {
+      expect(VIEW, key).toContain(`<ClearRow sectionKey="${key}" title="${label}" />`);
+      expect(sectionName(key)).toBe(label);
+    }
+    for (const title of VIEW.matchAll(/<Table title="([^"]+)"/g)) {
+      expect(REPORT_SECTIONS.map((s) => s.label)).toContain(title[1]);
+    }
+  });
+});
+
+describe("round 2, item 9: the chat says the same HR line", () => {
+  it("views.py and reads.py carry REBALANCE_HR_HINT", () => {
+    const root = join(__dirname, "../../../../../../apps/skills/skill-projects/skill_projects");
+    for (const file of ["views.py", "reads.py"]) {
+      expect(readFileSync(join(root, file), "utf-8"), file).toContain(REBALANCE_HR_HINT);
+    }
+  });
+
+  it("no report surface names the HR permission", () => {
+    const PANELS = readFileSync(join(__dirname, "AnalyticsPanels.tsx"), "utf-8");
+    for (const src of [VIEW, PANELS]) expect(src).not.toMatch(/HR read access/);
   });
 });

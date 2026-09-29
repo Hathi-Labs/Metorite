@@ -83,7 +83,10 @@ export function sectionIsClear(key: string, section: unknown): boolean {
       return kinds.every((n) => n === 0) && count(s.rows) === 0;
     }
     case "conflicts":
-      return s.total === 0 && count(s.rows) === 0;
+      // R5f round 2 (item 2). Without the HR grant the server sends only the
+      // task kinds, so "No conflicts" would be a claim about kinds it held
+      // back. The section draws its panel, which says why.
+      return s.hr_visible !== false && s.total === 0 && count(s.rows) === 0;
     case "rebalance":
       return (
         s.hr_visible !== false &&

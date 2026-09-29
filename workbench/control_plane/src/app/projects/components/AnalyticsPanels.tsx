@@ -99,6 +99,8 @@ import {
   velocityLine,
 } from "../lib/outlook";
 import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
+import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT } from "../lib/hrHints";
+import { sectionName } from "../lib/reportBuilder";
 import { SECTION_CLEAR_LINES } from "../lib/sectionEmpty";
 import {
   focusMore,
@@ -415,7 +417,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
 
   return (
     <Panel
-      title="Where work is stuck"
+      title={sectionName("stuck")}
       hint={
         // WS-27bn R3a. A report sends the bands and no blocked list, so its
         // hint does not name what the panel cannot show.
@@ -578,7 +580,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
 
   return (
     <Panel
-      title="Who is overloaded"
+      title={sectionName("load")}
       hint={PANEL_HINTS.load}
     >
       {people.length === 0 ? (
@@ -714,7 +716,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
 
   return (
     <Panel
-      title="Who has the hours"
+      title={sectionName("capacity")}
       hint={PANEL_HINTS.capacity}
     >
       {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
@@ -816,7 +818,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
           beside hours. Without the grant there are none to explain. */}
       {data?.hr_visible === false ? (
         <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          Hours, absences and skills need HR read access. An admin can see them.
+          {CAPACITY_HR_HINT}
         </p>
       ) : (
         <p
@@ -851,12 +853,19 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
 
   return (
     <Panel
-      title="Where the plan conflicts"
+      title={sectionName("conflicts")}
       hint={PANEL_HINTS.conflicts}
     >
       {drawn.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.conflicts)}
+          {emptyPanelLine(
+            data?.hidden_people,
+            // R5f round 2 (item 2). Without the grant the server holds four
+            // kinds back, so "The plan lines up" would be a claim about them.
+            data?.hr_visible === false
+              ? "No conflicts in the kinds you can see."
+              : SECTION_CLEAR_LINES.conflicts,
+          )}
         </p>
       ) : (
         <>
@@ -919,8 +928,7 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
       )}
       {data?.hr_visible === false ? (
         <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          Overcommitment, absences, leaving dates and work over a ceiling need
-          HR read access. An admin can see them.
+          {CONFLICTS_HR_HINT}
         </p>
       ) : (
         span &&
@@ -962,7 +970,7 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
 
   return (
     <Panel
-      title="Who could help"
+      title={sectionName("rebalance")}
       hint={PANEL_HINTS.rebalance}
     >
       {hidden ? (
@@ -1081,7 +1089,7 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
 
   return (
     <Panel
-      title="What open tasks are missing"
+      title={sectionName("hygiene")}
       hint={PANEL_HINTS.hygiene}
     >
       {typeof open !== "number" || open <= 0 ? (
@@ -1184,7 +1192,7 @@ export function PulsePanel({
 
   return (
     <Panel
-      title="Who needs help today"
+      title={sectionName("pulse")}
       hint={PANEL_HINTS.pulse}
       // §6.5 item 17. The note sits in the hint's tooltip, not as a
       // line of its own under the cards.
@@ -1416,7 +1424,7 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
 
   return (
     <Panel
-      title="Are we getting faster"
+      title={sectionName("throughput")}
       hint={PANEL_HINTS.throughput}
     >
       {/* ⚠️ A CHART WITH NO AXIS IS A PICTURE. Photographed 2026-09-17: six
@@ -1559,7 +1567,7 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
 
   return (
     <Panel
-      title="What we finished"
+      title={sectionName("finished")}
       hint={`${FINISHED_HINT_LEAD}, ${period(data?.period_start, data?.period_end)}.`}
     >
       {projects.length === 0 ? (
@@ -1755,7 +1763,7 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
 
   return (
     <Panel
-      title="Will this land"
+      title={sectionName("outlook")}
       hint={PANEL_HINTS.outlook}
     >
       {/* ⚠️ THE ANSWER FIRST, and at a size nothing else on the page reaches.

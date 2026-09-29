@@ -23,7 +23,8 @@
  * one that starts bouncing.
  */
 import { shortDate } from "@/app/projects/lib/outlook";
-import { asOfDay, periodFree } from "@/app/projects/lib/reportBuilder";
+import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT, REBALANCE_HR_HINT } from "@/app/projects/lib/hrHints";
+import { asOfDay, periodFree, sectionName } from "@/app/projects/lib/reportBuilder";
 import { clearNote } from "@/app/projects/lib/sectionEmpty";
 import {
   type EmailOtpEnv,
@@ -90,6 +91,8 @@ export interface RenderedReport {
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
+      /** WS-27bn R5f: every person, before the server's cap of the rows. */
+      people_total?: number;
       /** WS-27bn R5a. Sent for a reader who is not an admin only. */
       hidden_people?: number;
     };
@@ -144,6 +147,11 @@ export interface RenderedReport {
     stuck?: {
       overdue: { name: string; overdue: number }[];
       overdue_total: number;
+      /** WS-27bn R3a. The ageing bands, as `{band, n}`. */
+      stale?: { band: string; n: number }[];
+      /** WS-27bn R5f round 2: the route's blocked list, from `blocked_body`. */
+      blocked?: { title: string; task_number: number | null }[];
+      blocked_total?: number;
     };
     /**
      * WS-27bn R3c. Opt-in. `hygiene_body`, read now. A task counts in each
@@ -386,6 +394,15 @@ export interface ReportLayout {
 }
 
 /**
+ * The line under a list that the email cut, or none (R5f round 2, item 6).
+ * `total` is every row, and `shown` is the rows printed.
+ */
+function moreNote(total: number, shown: number, noun: string): string[] {
+  const more = total - shown;
+  return more > 0 && shown > 0 ? [`…and ${more} more ${noun}`] : [];
+}
+
+/**
  * The words of one rendered report, in order. It formats and never computes:
  * every number is the render route's.
  *
@@ -415,9 +432,10 @@ export function reportLayout(
     if (rows.length && fin.projects.length > rows.length) {
       notes.push(`…and ${fin.projects.length - rows.length} more projects`);
     }
+    notes.push(...clearNote("finished", fin));
     parts.push({
       head: {
-        lead: `Finished: ${fin.total_completed}`,
+        lead: `${sectionName("finished")}: ${fin.total_completed}`,
         strong: true,
         extra: fin.total_cancelled ? `${fin.total_cancelled} cancelled` : undefined,
       },
@@ -439,7 +457,7 @@ export function reportLayout(
     parts.push({
       head: {
         lead:
-          `Median time to finish: ${duration(thr.median_hours)}` +
+          `${sectionName("throughput")}: median ${duration(thr.median_hours)}` +
           ` (over ${thr.measured} measured)`,
       },
       // One bar a week, scaled to the busiest week, with no "of": a week's
@@ -452,7 +470,7 @@ export function reportLayout(
             `Week of ${day(w.week_start)}: ${textBar(w.completed, peak)} ${w.completed}`,
         );
       })(),
-      notes: [],
+      notes: clearNote("throughput", thr),
     });
   }
 
@@ -494,7 +512,7 @@ export function reportLayout(
     }
     parts.push({
       head: {
-        lead: `Forecast: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
+        lead: `${sectionName("outlook")}: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
         strong: true,
         extra:
           typeof v.remaining_tasks === "number"
@@ -502,29 +520,47 @@ export function reportLayout(
             : undefined,
       },
       items,
-      notes: [],
+      notes: clearNote("outlook", out),
     });
   }
 
   const stuck = sections.stuck;
-  if (stuck && stuck.overdue_total > 0) {
+  if (stuck) {
+    // R5f round 2 (item 5). The section prints whenever the report holds it:
+    // blocked work with nothing overdue is still stuck work. The blocked list
+    // is the route's, from `blocked_body`.
+    const overdue = stuck.overdue.slice(0, maxRows);
+    const blocked = (stuck.blocked ?? []).slice(0, maxRows);
+    const blockedTotal = stuck.blocked_total ?? blocked.length;
     parts.push({
-      head: { lead: `Overdue: ${stuck.overdue_total}`, strong: true },
-      items: stuck.overdue
-        .slice(0, maxRows)
-        .map(
+      head: {
+        lead: `${sectionName("stuck")}: ${stuck.overdue_total} overdue`,
+        strong: true,
+        extra: blockedTotal > 0 ? `${blockedTotal} blocked` : undefined,
+      },
+      items: [
+        ...overdue.map(
           (o) =>
             `${o.name}: ${o.overdue} · ${textBar(o.overdue, stuck.overdue_total)}` +
             ` ${o.overdue} of ${stuck.overdue_total}`,
         ),
-      notes: [],
+        ...blocked.map(
+          (b) => `Blocked: ${b.task_number ? `#${b.task_number} ` : ""}${b.title}`,
+        ),
+      ],
+      notes: [
+        ...moreNote(stuck.overdue.length, overdue.length, "projects"),
+        ...moreNote(blockedTotal, blocked.length, "blocked tasks"),
+        ...clearNote("stuck", stuck),
+      ],
     });
   }
 
   const load = sections.load;
   if (load) {
+    const shownLoad = Math.min(load.people.length, maxRows);
     parts.push({
-      head: { lead: `Open work: ${load.total_tasks}` },
+      head: { lead: `${sectionName("load")}: ${load.total_tasks}` },
       items: load.people
         .slice(0, maxRows)
         // ⚠️ The bar is "overdue of open_tasks", never "of total_tasks". The
@@ -539,7 +575,16 @@ export function reportLayout(
         ),
       // WS-27bn R5a. The rows this reader may not see, counted. R5f round 1:
       // a clear section says so in the words of the screen.
-      notes: [...hiddenNotes(load.hidden_people), ...clearNote("load", load)],
+      notes: [
+        // The email's cut, or the server's cut of the rows when it is larger.
+        ...moreNote(
+          Math.max(load.people.length, (load.people_total ?? 0) - (load.hidden_people ?? 0)),
+          shownLoad,
+          "people",
+        ),
+        ...hiddenNotes(load.hidden_people),
+        ...clearNote("load", load),
+      ],
     });
   }
 
@@ -547,7 +592,7 @@ export function reportLayout(
   if (cap) {
     parts.push({
       head: {
-        lead: `Who has the hours (next ${cap.horizon_days} days): ${cap.total_tasks} open`,
+        lead: `${sectionName("capacity")} (next ${cap.horizon_days} days): ${cap.total_tasks} open`,
       },
       items: cap.people.slice(0, maxRows).map((p) => {
         const who =
@@ -575,7 +620,8 @@ export function reportLayout(
         return `${who}: ${p.open_tasks} open${hoursPart}${barPart}`;
       }),
       notes: [
-        ...(cap.hr_visible ? [] : ["Hours need HR read access."]),
+        ...moreNote(cap.people.length, Math.min(cap.people.length, maxRows), "people"),
+        ...(cap.hr_visible ? [] : [CAPACITY_HR_HINT]),
         ...hiddenNotes(cap.hidden_people),
         ...clearNote("capacity", cap),
       ],
@@ -626,7 +672,7 @@ export function reportLayout(
     if (pulse.help_note) notes.push(pulse.help_note);
     notes.push(...clearNote("pulse", pulse));
     parts.push({
-      head: { lead: `Team pulse: ${pulse.people_total} people`, strong: true },
+      head: { lead: `${sectionName("pulse")}: ${pulse.people_total} people`, strong: true },
       items,
       notes,
     });
@@ -658,7 +704,7 @@ export function reportLayout(
     }
     parts.push({
       head: {
-        lead: `Data hygiene: ${hyg.open_total} open`,
+        lead: `${sectionName("hygiene")}: ${hyg.open_total} open`,
         strong: true,
         extra:
           typeof hyg.stale_days === "number"
@@ -675,12 +721,13 @@ export function reportLayout(
     // ⚠️ The sentence is the server's, verbatim, and it carries task titles
     // a member typed. Every renderer escapes it like any other member string.
     parts.push({
-      head: { lead: `Where the plan conflicts: ${conf.total}` },
+      head: { lead: `${sectionName("conflicts")}: ${conf.total}` },
       items: conf.rows
         .slice(0, maxRows)
         .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
       notes: [
-        ...(conf.hr_visible ? [] : ["Four kinds need HR read access."]),
+        ...moreNote(conf.rows.length, Math.min(conf.rows.length, maxRows), "conflicts"),
+        ...(conf.hr_visible ? [] : [CONFLICTS_HR_HINT]),
         ...hiddenNotes(conf.hidden_people),
         ...clearNote("conflicts", conf),
       ],
@@ -693,9 +740,9 @@ export function reportLayout(
     // skill, and a zero here would read as "nobody is at risk". H-186 item 3:
     // the part keeps its title, as every other part does.
     parts.push({
-      head: { lead: "Who could help", strong: true },
+      head: { lead: sectionName("rebalance"), strong: true },
       items: [],
-      notes: ["Rebalancing needs HR read access. An admin can see it."],
+      notes: [REBALANCE_HR_HINT],
     });
   } else if (reb) {
     // Words and the server's names only. No colour and no bar: a helper is
@@ -712,7 +759,7 @@ export function reportLayout(
     notes.push(...clearNote("rebalance", reb));
     parts.push({
       head: {
-        lead: `Who could help: ${reb.at_risk_total ?? tasks.length} at risk`,
+        lead: `${sectionName("rebalance")}: ${reb.at_risk_total ?? tasks.length} at risk`,
         strong: true,
         extra:
           typeof reb.idle_total === "number" ? `${reb.idle_total} idle` : undefined,

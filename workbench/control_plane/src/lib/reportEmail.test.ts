@@ -94,8 +94,8 @@ describe("reportEmail", () => {
         },
       },
     });
-    expect(odd.text).toContain("Finished: 99");
-    expect(odd.text).not.toContain("Finished: 12");
+    expect(odd.text).toContain("What we finished: 99");
+    expect(odd.text).not.toContain("What we finished: 12");
   });
 
   it("keeps the denominator beside the median", () => {
@@ -161,7 +161,7 @@ describe("reportEmail", () => {
       ...rendered,
       sections: { finished: rendered.sections.finished },
     });
-    expect(only.text).toContain("Finished: 17");
+    expect(only.text).toContain("What we finished: 17");
     expect(only.text).not.toContain("Overdue");
     expect(only.text).not.toContain("Open work");
   });
@@ -305,7 +305,7 @@ describe("reportEmail · capacity", () => {
     const { text } = reportEmail(hidden);
     expect(text).toContain("Ana: 3 open");
     expect(text).not.toContain("spare");
-    expect(text).toContain("Hours need HR read access.");
+    expect(text).toContain("People's hours, leave and skills are private, so only admins see them. Ask an admin if you need them.");
   });
 });
 
@@ -355,7 +355,7 @@ describe("reportEmail · conflicts", () => {
         conflicts: { ...withConflicts.sections.conflicts!, hr_visible: false },
       },
     };
-    expect(reportEmail(hidden).text).toContain("Four kinds need HR read access.");
+    expect(reportEmail(hidden).text).toContain("Some conflicts use people's hours and leave, so only admins see them. Ask an admin if you need them.");
   });
 });
 
@@ -408,7 +408,7 @@ describe("reportEmail · rebalance", () => {
     };
     const { text } = reportEmail(hidden);
     expect(text).toContain(
-      "Who could help\n  Rebalancing needs HR read access. An admin can see it.",
+      "Who could help\n  This part shows people's skills and hours, so only admins see it. Ask an admin if you need it.",
     );
     expect(text).not.toContain("at risk");
     expect(text).not.toContain("could take");
@@ -417,7 +417,7 @@ describe("reportEmail · rebalance", () => {
     expect(part.head).toEqual({ lead: "Who could help", strong: true });
     expect(part.items).toEqual([]);
     expect(part.notes).toEqual([
-      "Rebalancing needs HR read access. An admin can see it.",
+      "This part shows people's skills and hours, so only admins see it. Ask an admin if you need it.",
     ]);
   });
 });
@@ -608,14 +608,14 @@ describe("reportDocument", () => {
         "",
         "7 – 13 Sep 2026 · Whole organization",
         "",
-        "**Finished: 17** · 1 cancelled",
+        "**What we finished: 17** · 1 cancelled",
         "",
         "- Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17",
         "- Billing: 5 · ███░░░░░░░ 5 of 17",
         "",
-        "Median time to finish: 27 hours (over 15 measured)",
+        "How long it took: median 27 hours (over 15 measured)",
         "",
-        "**Overdue: 4**",
+        "**Stuck work: 4 overdue**",
         "",
         "- Mobile App: 4 · ██████████ 4 of 4",
         "",
@@ -756,10 +756,10 @@ describe("reportEmail · the exact HTML", () => {
       [
       "<div><h2>Weekly delivery</h2>",
       "<p>7 – 13 Sep 2026 · Whole organization</p>",
-      "<p><strong>Finished: 17</strong> · 1 cancelled</p>",
+      "<p><strong>What we finished: 17</strong> · 1 cancelled</p>",
       "<ul><li>Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17</li><li>Billing: 5 · ███░░░░░░░ 5 of 17</li></ul>",
-      "<p>Median time to finish: 27 hours (over 15 measured)</p>",
-      "<p><strong>Overdue: 4</strong></p>",
+      "<p>How long it took: median 27 hours (over 15 measured)</p>",
+      "<p><strong>Stuck work: 4 overdue</strong></p>",
       "<ul><li>Mobile App: 4 · ██████████ 4 of 4</li></ul>",
       "<p>Open work: 15</p>",
       "<ul><li>Unassigned: 9 (2 overdue) · ██░░░░░░░░ 2 of 9 overdue</li><li>ana@example.test: 6 · ░░░░░░░░░░ 0 of 6 overdue</li></ul>",
@@ -773,7 +773,7 @@ describe("reportEmail · the exact HTML", () => {
       [
       "<div><h2>R&amp;D &lt;core&gt;</h2>",
       "<p>29 Dec 2025 – 4 Jan 2026 · This project</p>",
-      "<p><strong>Finished: 66</strong></p>",
+      "<p><strong>What we finished: 66</strong></p>",
       "<ul>" +
         [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
           .map((i) => `<li>P${i}: ${i} · ${i === 0 ? "░░░░░░░░░░" : "█░░░░░░░░░"} ${i} of 66</li>`)
@@ -782,10 +782,10 @@ describe("reportEmail · the exact HTML", () => {
       "<p>…and 2 more projects</p>",
       "<p>Who has the hours (next 14 days): 6 open</p>",
       "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo@example.test: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
-      "<p>Hours need HR read access.</p>",
+      "<p>People's hours, leave and skills are private, so only admins see them. Ask an admin if you need them.</p>",
       "<p>Where the plan conflicts: 2</p>",
       "<ul><li>High: &quot;Order &lt;steel&gt;&quot; is late.</li><li>Medium: Bo holds 3.</li></ul>",
-      "<p>Four kinds need HR read access.</p>",
+      "<p>Some conflicts use people's hours and leave, so only admins see them. Ask an admin if you need them.</p>",
       "</div>",
       ].join(""),
     );
