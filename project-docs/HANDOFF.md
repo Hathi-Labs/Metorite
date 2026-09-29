@@ -758,45 +758,6 @@ line — never reclaim a number by deleting the other entry.
   H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
   `test_handoff_ids_are_unique` caught the collision.
 
-### H-200 · The deploy trusts any ssh host key · [AGENT]
-
-- 🟢 **2026-09-29 — the pin-host-key PR fixes the code. Keep this entry
-  until a real run proves it.**
-  - **What the PR changes.** `deploy/hostinger/known_hosts` holds the box's
-    three public host keys. `scripts/ci_ssh_host_key.sh` writes them out
-    with the host field, and holds the one option set,
-    `StrictHostKeyChecking=yes`. The deploy, `vps-health` and
-    `vps-forensics` use it. A changed key goes red at once, with no retry
-    and no hand-off. `deploy_delivery_path.md` §8.5 has the re-pin
-    procedure.
-  - **What proves it.** The first deploy after the merge. Read its run
-    log. (1) The `deploy` job connects and goes green. (2) The log holds
-    `ssh host key pinned: 3 key(s)`. (3) The log holds NO line
-    `Warning: Permanently added`. Then dispatch `vps-health` with
-    `diagnose=true`, and `vps-forensics` with `attempts=2`. Each must
-    collect its output. When all of that holds, delete this entry.
-  - **The Check below now finds no line.** It proves the code only. The
-    run log above proves the fix.
-- **What is wrong.** The deploy connects with `StrictHostKeyChecking=no`
-  and `UserKnownHostsFile=/dev/null`. So ssh accepts ANY host key. A host
-  that pretends to be the box at its address gets the deploy session, and
-  the apply script runs there. The setting is older than H-142. The
-  deploy-ssh-resilience PR moved it into `scripts/ci_deploy_reach.sh`, and
-  did not change it.
-- **What it costs.** The deploy cannot fail on a changed host key. The
-  H-142 red path for ssh that is not a network fault covers an auth failure
-  only.
-- **What to do.** Record the box's host key. Put a `known_hosts` line in a
-  repo secret, or put the key fingerprint in the workflow. Then set
-  `StrictHostKeyChecking=yes` and point `UserKnownHostsFile` at that line.
-  Read the key from the box with `ssh-keyscan`, and compare its fingerprint
-  with `ssh-keygen -lf` on the box before you trust it. The same options
-  serve the probe and the apply, so change `CI_SSH_OPTS` in one place.
-  Check `vps-health.yml` and `vps-forensics.yml` for the same options.
-- **Check:** `grep StrictHostKeyChecking=no .github/workflows/deploy.yml
-  scripts/ci_deploy_reach.sh`. Any line means the deploy still trusts any
-  host key.
-
 ### H-142 · The deploy goes red on a 30-second ssh blip, and the retry cannot outlast it · [AGENT]
 
 - 🟢 **2026-09-29 — the deploy-ssh-resilience PR changes the deploy. Keep
