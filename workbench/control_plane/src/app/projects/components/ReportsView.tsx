@@ -1791,10 +1791,10 @@ export default function ReportsView({
   return (
     <div className="flex-1 overflow-y-auto p-4">
       <div className="mb-3 flex flex-wrap items-baseline gap-2">
+        {/* R5f visual review. The page header above already says "Reports ·
+            Look now, or save to deliver", so this row adds no second
+            subtitle. */}
         <h2 className="text-sm font-semibold">Reports</h2>
-        <p className="text-xs text-muted-foreground">
-          Look at your work now, or save a report to deliver.
-        </p>
         <Button
           className="ml-auto"
           variant="secondary"
