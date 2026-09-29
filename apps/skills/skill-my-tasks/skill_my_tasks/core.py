@@ -63,6 +63,7 @@ from acb_common.priority import (
     IMPORTANT_AT,
     cell_for_name,
     cell_label,
+    flag,
     importance_write,
     level_names,
     task_cell,
@@ -963,36 +964,28 @@ async def my_tasks_plan_project(
             f"project_id={res.get('project_id')}\n\n" + summary)
 
 
-def _flag(v: str) -> bool | None:
-    """Parse a tri-state string flag: "" = unchanged, truthy/falsy words set it."""
-    s = v.strip().lower()
-    if not s:
-        return None
-    if s in ("true", "yes", "on", "1"):
-        return True
-    if s in ("false", "no", "off", "0"):
-        return False
-    return None
+def _flag_args(
+    priority: str, important: str, leveraged: str, deep_work: str
+) -> tuple[bool | None, bool | None, bool | None] | str:
+    """``(important, leveraged, deep_work)`` from the tool's arguments, or a
+    refusal.
 
-
-def _matrix_flags(
-    priority: str, important: str, leveraged: str
-) -> tuple[bool | None, bool | None] | str:
-    """``(important, leveraged)`` from the tool's arguments, or a refusal.
-
-    A level NAME sets both flags the level implies (``CELL_FLAGS``, from
+    Each flag reads through the shared ``flag``, which refuses a digit. A
+    level NAME sets both flags the level implies (``CELL_FLAGS``, from
     ``acb_common.priority``). It cannot be combined with either flag.
     """
-    imp = _flag(important)
-    lev = _flag(leveraged)
+    imp, lev, deep = flag(important), flag(leveraged), flag(deep_work)
+    for bad in (imp, lev, deep):
+        if isinstance(bad, str):
+            return bad
     if not priority.strip():
-        return imp, lev
+        return imp, lev, deep
     if imp is not None or lev is not None:
         return "Pass priority, or important and leveraged. Not both."
     cell = cell_for_name(priority)
     if cell is None:
         return f"priority is one of: {level_names()}. Not {priority!r}."
-    return CELL_FLAGS[cell]
+    return (*CELL_FLAGS[cell], deep)
 
 
 async def _importance_patch(item_id: str, important: bool | None) -> int | None:
@@ -1057,11 +1050,11 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    flags = _matrix_flags(priority, important, leveraged)
+    flags = _flag_args(priority, important, leveraged, deep_work)
     if isinstance(flags, str):
         return flags
-    imp, lev = flags
-    for key, val in (("leveraged", lev), ("deep_work", _flag(deep_work))):
+    imp, lev, deep = flags
+    for key, val in (("leveraged", lev), ("deep_work", deep)):
         if val is not None:
             patch[key] = val
     level = await _importance_patch(item_id, imp)

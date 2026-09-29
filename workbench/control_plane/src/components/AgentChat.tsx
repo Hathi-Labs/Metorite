@@ -1365,31 +1365,6 @@ export default function AgentChat({
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [showSendMenu]);
 
-  /** Display labels + styling for an agent_runtime value. */
-  function agentRuntimeMeta(rt: string): { label: string; title: string; cls: string }[] {
-    if (rt === "github-copilot") {
-      return [
-        {
-          label: "Copilot SDK",
-          title: "GitHub Copilot SDK — native shell, file r/w, MCP servers, BYOK provider support",
-          cls: "border-sky-700/50 bg-sky-900/30 text-sky-300",
-        },
-      ];
-    }
-    if (rt === "langgraph") {
-      return [{
-        label: "LangGraph",
-        title: "Legacy LangGraph agent runner",
-        cls: "border-violet-700/50 bg-violet-900/30 text-violet-300",
-      }];
-    }
-    return [{
-      label: "MAF",
-      title: "Microsoft Agent Framework agent",
-      cls: "border-cat-12/30 bg-cat-12/10 text-cat-12",
-    }];
-  }
-
   const THINK_MODES: { mode: ThinkMode; label: string; title: string }[] = [
     { mode: "auto", label: "Auto", title: "Let the model decide" },
     { mode: "thinking", label: "Thinking", title: "Enable chain-of-thought reasoning" },
