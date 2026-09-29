@@ -3672,6 +3672,8 @@ takes one path segment: a letter or digit first, then letters, digits, `.`,
 | the rule removed from `_canonical_workspace_dir` | 1 |
 | the rule removed from `agent_state_dir` | 1 |
 | the rule widened to any string | 5 |
+| `_safe_resolve` back to `str.startswith` (verifier) | 1 |
+| the relay applier passes the owner, not its channel (verifier) | 1 |
 
 **Verification.**
 
