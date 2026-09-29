@@ -624,3 +624,54 @@ def test_an_EXISTING_organization_is_never_granted_retroactively(client, db, mon
         "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
     assert again.status_code == 200, again.text
     assert _starter_rows(db, org_id) == [], "an existing org was granted retroactively"
+
+
+# ── Starter-grant limits (owner-approved 2026-09-29) ───────────────────────
+
+def _provision_as(client, db, slug, owner):
+    r = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "N", "owner_email": owner,
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    assert r.status_code == 200, r.text
+    with db.begin() as c:
+        return str(c.execute(
+            text("SELECT id FROM organization WHERE slug = :s"), {"s": slug}).scalar_one())
+
+
+def test_one_starter_grant_per_OWNER_EMAIL_ever(client, db, monkeypatch):
+    """Deleting an org and signing up again with the same address must not
+    earn a second 500. A second org for one owner is created, without it."""
+    monkeypatch.delenv("CUSTOMER_CONSOLE_STARTER_CREDITS", raising=False)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
+    run = uuid.uuid4().hex[:8]
+    owner = f"Repeat-{run}@Example.com"
+    first = _provision_as(client, db, f"rep-a-{run}", owner)
+    second = _provision_as(client, db, f"rep-b-{run}", owner.lower())
+    assert [r.delta for r in _starter_rows(db, first)] == [Decimal("500")]
+    assert _starter_rows(db, second) == [], "the same owner was granted twice"
+    with db.begin() as c:
+        skipped = c.execute(text(
+            "SELECT detail->>'reason' FROM control_audit "
+            "WHERE organization_id = CAST(:o AS uuid) AND action = 'credits.starter_skipped'"),
+            {"o": second}).scalar_one()
+    assert skipped == "owner_already_granted"
+
+
+def test_the_DAILY_CAP_stops_grants_but_never_signups(client, db, monkeypatch):
+    monkeypatch.delenv("CUSTOMER_CONSOLE_STARTER_CREDITS", raising=False)
+    with db.begin() as c:
+        already = c.execute(text(
+            "SELECT count(*) FROM control_audit WHERE action = 'credits.starter' "
+            "AND created_at > now() - interval '24 hours'")).scalar_one()
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", str(already + 1))
+    run = uuid.uuid4().hex[:8]
+    granted = _provision_as(client, db, f"cap-a-{run}", f"a-{run}@cap.example")
+    capped = _provision_as(client, db, f"cap-b-{run}", f"b-{run}@cap.example")
+    assert [r.delta for r in _starter_rows(db, granted)] == [Decimal("500")]
+    assert _starter_rows(db, capped) == [], "the cap was not enforced"
+    with db.begin() as c:
+        skipped = c.execute(text(
+            "SELECT detail->>'reason' FROM control_audit "
+            "WHERE organization_id = CAST(:o AS uuid) AND action = 'credits.starter_skipped'"),
+            {"o": capped}).scalar_one()
+    assert skipped == "daily_cap"

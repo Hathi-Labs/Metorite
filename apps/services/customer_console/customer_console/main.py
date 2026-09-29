@@ -1291,7 +1291,22 @@ def _starter_credits() -> Decimal:
 STARTER_CREDITS_MAX = Decimal("1000000")
 
 
-def _grant_starter_credits(conn, *, org_id: str, actor: str = "operator") -> None:
+def _starter_daily_cap() -> int:
+    """Most starter grants in any 24 hours. Default 20; 0 means no cap.
+
+    A value that does not parse falls back to 20, never to "no cap".
+    """
+    raw = os.environ.get("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "").strip()
+    try:
+        value = int(raw) if raw else 20
+        return value if value >= 0 else 20
+    except ValueError:
+        return 20
+
+
+def _grant_starter_credits(
+    conn, *, org_id: str, actor: str = "operator", owner_email: str | None = None
+) -> None:
     """Grant a new organization its starter credits, once, as a free lot.
 
     ⚠️ `LEDGER_REASON_GRANT` makes it a free lot, and free lots burn before
@@ -1301,6 +1316,16 @@ def _grant_starter_credits(conn, *, org_id: str, actor: str = "operator") -> Non
     ⚠️ Checked, then written, inside the provisioning transaction. A second
     grant would also be refused by the ledger's unique (org, reason, ref)
     index, which would roll the whole provision back, so the check comes first.
+
+    🔴 **Two limits, owner-approved 2026-09-29.** Each grant is real AI spend,
+    and a signup needs only a verified email.
+    1. **One grant per owner email, ever.** Deleting an organization and
+       signing up again with the same address earns nothing more.
+    2. **At most `CUSTOMER_CONSOLE_STARTER_DAILY_CAP` grants in 24 hours**
+       (default 20). Past it the organization is still created, without the
+       gift, and a loud log line plus an audit row tell an operator to look.
+    Both read the `credits.starter` audit rows, which are the record of every
+    grant. Neither refuses a signup: a new customer is never turned away here.
     """
     credits = _starter_credits()
     if credits <= 0:
@@ -1314,6 +1339,35 @@ def _grant_starter_credits(conn, *, org_id: str, actor: str = "operator") -> Non
     ).first()
     if already is not None:
         return
+
+    owner = (owner_email or "").strip().lower()
+    if owner and conn.execute(
+        text(
+            "SELECT 1 FROM control_audit WHERE action = 'credits.starter' "
+            "AND lower(detail->>'owner') = :owner LIMIT 1"
+        ),
+        {"owner": owner},
+    ).first():
+        _log.warning("console.starter_credits_skipped reason=owner_already_granted")
+        _audit(conn, org_id, "credits.starter_skipped",
+               {"reason": "owner_already_granted"}, actor=actor)
+        return
+
+    cap = _starter_daily_cap()
+    if cap:
+        granted_today = conn.execute(
+            text(
+                "SELECT count(*) FROM control_audit WHERE action = 'credits.starter' "
+                "AND created_at > now() - interval '24 hours'"
+            )
+        ).scalar_one()
+        if granted_today >= cap:
+            _log.warning(
+                "console.starter_credits_skipped reason=daily_cap cap=%s", cap
+            )
+            _audit(conn, org_id, "credits.starter_skipped",
+                   {"reason": "daily_cap", "cap": cap}, actor=actor)
+            return
     store.add_credit(
         conn,
         org_id=org_id,
@@ -1323,7 +1377,14 @@ def _grant_starter_credits(conn, *, org_id: str, actor: str = "operator") -> Non
     )
     # The actor of the provision that created the org, never a default: a
     # self-serve signup must not read as a staff member minting money.
-    _audit(conn, org_id, "credits.starter", {"credits": str(credits)}, actor=actor)
+    # `owner` is what the one-grant-per-email limit reads back.
+    _audit(
+        conn,
+        org_id,
+        "credits.starter",
+        {"credits": str(credits), "owner": owner or None},
+        actor=actor,
+    )
 
 
 def _audit(
@@ -4276,6 +4337,8 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) 
                     if caller is None
                     else "deployment"
                 ),
+                # The one-grant-per-email limit keys on the verified owner.
+                owner_email=req.owner_email,
             )
 
         # Resumability, recorded rather than assumed. Provisioning is a
