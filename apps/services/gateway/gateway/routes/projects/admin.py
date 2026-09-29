@@ -878,6 +878,32 @@ async def _refuse_taken_type_name(db: Any, root: str, name: str, own_id: str = _
         )
 
 
+#: A shared type renamed onto a name ANY space already holds (PS-3 review).
+#: `list_types` collapses rows by exact name and the space's own row wins, so
+#: tasks there that carry the shared type would lose their chip, silently. The
+#: same rule `patch_tag` holds for tags, at the scope the row actually has.
+ORG_TYPE_NAME_TAKEN_SQL = (
+    "SELECT 1 FROM pm_task_types "
+    " WHERE organization_id = CAST(:org AS uuid) AND name = :name "
+    "   AND id <> CAST(:id AS uuid)"
+)
+
+
+async def _refuse_org_type_name(db: Any, row: Any, name: str) -> None:
+    taken = (
+        await db.execute(
+            text(ORG_TYPE_NAME_TAKEN_SQL),
+            {"org": str(row.organization_id), "name": name, "id": str(row.id)},
+        )
+    ).fetchone()
+    if taken is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A task type called '{name}' already exists in this organization, "
+                   "shared or in a space. Pick another name.",
+        )
+
+
 @router.get("/nodes/{project_id}/types")
 async def list_types(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -1009,6 +1035,11 @@ async def patch_type(
             )
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "task type")
+            if "name" in values:
+                values["name"] = str(values["name"] or "").strip()
+                if not values["name"]:
+                    raise HTTPException(status_code=422, detail="A task type needs a name.")
+                await _refuse_org_type_name(db, existing, values["name"])
         else:
             refuse_org_wide_write(existing, "task type")
             vis = await resolve_visibility(db, user)

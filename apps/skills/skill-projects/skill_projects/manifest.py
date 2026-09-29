@@ -333,6 +333,15 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/import/runs/{run_id}/mapping", "", "X", _IMPORT_REASON),
     Route("POST", "/projects/import/runs/{run_id}/apply", "", "X", _IMPORT_REASON),
     Route("POST", "/projects/import/runs/{run_id}/discard", "", "X", _IMPORT_REASON),
+    # ── vocabulary.py (WS-42 PS-3) ───────────────────────────────────────
+    Route(
+        "GET",
+        "/projects/vocabulary",
+        "",
+        "X",
+        "A settings list for people. The chat reads a space's effective tags, "
+        "fields and types through the per-space reads, which include these rows.",
+    ),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),

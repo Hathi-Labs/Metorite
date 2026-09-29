@@ -1248,9 +1248,9 @@ line — never reclaim a number by deleting the other entry.
 - **2026-09-29 — the surface this entry waited for is built (WS-42 PS-3).**
   Projects, Settings, Shared vocabulary lists every org-wide tag, field and
   type, with rename and a tag colour. Two things stay true after a flip. No
-  screen creates an org-wide row yet, so the flip opens the API only, and a
-  create in Shared vocabulary is the next slice. A row still cannot be retired
-  (H-204).
+  settings screen creates an org-wide row yet. The flip opens the API and the
+  Projects chat, whose create writes send `scope: "org"`. A create in Shared
+  vocabulary is the next slice. A row still cannot be retired (H-204).
 - **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
   The flip waits for the admin surface (H-4). Creating an org-wide row is
   easy and un-creating it is the hard part, so a member could mint rows

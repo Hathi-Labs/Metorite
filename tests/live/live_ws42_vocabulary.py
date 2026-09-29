@@ -33,6 +33,8 @@ sys.path.insert(0, os.environ.get("LIVE_GATEWAY_PATH", "apps/services/gateway"))
 from acb_auth import UserContext, UserRole, build_access
 from acb_common.db import bind_tenant, release_tenant
 from gateway.db import get_db
+from fastapi import HTTPException
+from gateway.routes.projects import admin as pm_admin
 from gateway.routes.projects import vocabulary as pm_vocab
 from sqlalchemy import text
 
@@ -120,6 +122,11 @@ async def seed() -> tuple[str, str]:
         "INSERT INTO pm_tags (project_id, organization_id, name, color, created_by) "
         "VALUES (NULL, CAST(:o AS uuid), 'theirs', 'red', :me)", o=org_b, me=THEM,
     )
+    # A space's OWN type, whose name a shared type must not be renamed onto.
+    await run(
+        "INSERT INTO pm_task_types (project_id, organization_id, name, is_system) "
+        "VALUES (CAST(:p AS uuid), CAST(:o AS uuid), 'Defect', false)", p=SPACE_A, o=org_a,
+    )
     # A space's OWN tag, which the organization list must not show.
     await run(
         "INSERT INTO pm_tags (project_id, organization_id, name, color, created_by) "
@@ -179,6 +186,22 @@ async def main() -> None:
         check("a member gets no field count", "task_count" in member["fields"][0], False)
         check("a member may not rename", member["can_edit"], False)
         check("a member may not create", member["can_create"], False)
+
+        # The PS-3 review: renaming a shared type onto a space's own name would
+        # hide it in that space. It is a 409, and a free name still works.
+        spike = mine["types"][0]["id"]
+        token = bind_tenant(org_a)
+        try:
+            try:
+                await pm_admin.patch_type(spike, pm_admin.TypeIn(name="Defect"), user=user(OWNER))
+                clash = 200
+            except HTTPException as exc:
+                clash = exc.status_code
+            check("a shared type cannot take a space's type name", clash, 409)
+            done = await pm_admin.patch_type(spike, pm_admin.TypeIn(name="Spike 2"), user=user(OWNER))
+            check("a shared type takes a free name", done["name"], "Spike 2")
+        finally:
+            release_tenant(token)
 
         theirs = await as_tenant(org_b, user(THEM))
         check("the other tenant sees only its own", [t["name"] for t in theirs["tags"]], ["theirs"])
