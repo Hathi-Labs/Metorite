@@ -22,7 +22,9 @@ Mutations this suite catches (R7):
 * ``rooms._load_room`` unbound: a member of org A who is not in room X reads
   no row, gets ``_unsaved_thread()``, and so gets owner access. The security
   case goes red;
-* ``run_trace`` unbound: no ``agent_run`` row.
+* ``run_trace`` unbound: no ``agent_run`` row;
+* the existence check removed from ``_load_room`` (fix round 1): a member of
+  org A gets owner on org B's session id, and the cross-tenant cases go red.
 
 Run::
 
@@ -48,6 +50,7 @@ from sqlalchemy.pool import NullPool
 # Resolved by name as fixtures, so ruff sees them as unused (F401) and the
 # test signatures as redefinitions (F811). The imports are load-bearing.
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _APP_ROLE,
     _DB_GATE,
     app_engine,
     promoted,
@@ -70,6 +73,10 @@ def members(promoted):  # noqa: F811
                 "INSERT INTO app_user (email, display_name, role, status, "
                 "organization_id) VALUES (:e, :e, 'employee', 'active', :o) "
                 "ON CONFLICT DO NOTHING"), {"e": email, "o": org})
+        # Migration 222 grants the function to `acb_app` only. The rehearsal
+        # role has a suite-private name, so it gets the same grant here.
+        c.execute(text(
+            f"GRANT EXECUTE ON FUNCTION public.chat_session_exists(text) TO {_APP_ROLE}"))
     return promoted
 
 
@@ -406,3 +413,164 @@ def test_a_blob_put_lands_and_reads_back(graph_as_app):
                      "SELECT organization_id::text AS o FROM agent_blob "
                      "WHERE agent_name = :n", n=agent)
     assert row is not None and row.o == a
+
+
+# ── Fix round 1: a session of another tenant is not a new thread ────────────
+
+def _org_b_session(promoted) -> str:  # noqa: F811
+    """Carol, in org B, makes a session and saves one turn in it."""
+    sid = _sid()
+    carol = _client(_user(_CAROL, promoted.org_b))
+    _new_session(carol, sid)
+    assert carol.post(f"/chat/sessions/{sid}/messages",
+                      json=_browser_rows("u-carol")).json()["saved"] == 1
+    return sid
+
+
+def _rows_of_org(promoted, sid: str, org: str) -> dict[str, int]:  # noqa: F811
+    counts = {}
+    with promoted.admin_engine.connect() as c:
+        for table, col in (("chat_message", "session_id"),
+                           ("chat_session_participant", "session_id"),
+                           ("chat_session_agent", "session_id"),
+                           ("chat_session", "id")):
+            counts[table] = c.execute(text(
+                f"SELECT count(*) FROM {table} WHERE {col} = :s "
+                "AND organization_id = CAST(:o AS uuid)"), {"s": sid, "o": org}).scalar()
+    return counts
+
+
+_NONE = {"chat_message": 0, "chat_session_participant": 0,
+         "chat_session_agent": 0, "chat_session": 0}
+
+
+def test_the_existence_function_answers_one_bit_to_the_app_role_only(graph_as_app):
+    with graph_as_app.admin_engine.connect() as c:
+        acl = c.execute(text(
+            "SELECT proacl::text FROM pg_proc WHERE proname = 'chat_session_exists'"
+        )).scalar()
+        definer = c.execute(text(
+            "SELECT prosecdef FROM pg_proc WHERE proname = 'chat_session_exists'"
+        )).scalar()
+    assert definer is True
+    # PUBLIC is the entry with no grantee name, `=X/owner`. None may exist.
+    entries = (acl or "").strip("{}").split(",")
+    assert not [e for e in entries if e.startswith("=")], acl
+    assert f"{_APP_ROLE}=X/" in acl
+    sid = _org_b_session(graph_as_app)
+    from acb_graph import tenant_session
+    with tenant_session(graph_as_app.org_a) as s:
+        assert s.execute(text("SELECT public.chat_session_exists(:i)"),
+                         {"i": sid}).scalar() is True
+        assert s.execute(text("SELECT public.chat_session_exists(:i)"),
+                         {"i": _sid()}).scalar() is False
+
+
+def test_a_member_of_org_a_gets_nothing_on_an_org_b_session(graph_as_app):
+    """🔴 The P0. Bound, org A reads no row for org B's id. That used to
+    resolve to an unsaved thread, which is owner access."""
+    from gateway.rooms import resolve_room_access
+
+    sid = _org_b_session(graph_as_app)
+    access = resolve_room_access(sid, _ALICE, organization_id=graph_as_app.org_a)
+    assert access.role is None
+    assert (access.can_read, access.can_send, access.can_cancel,
+            access.can_invite, access.can_manage) == (False,) * 5
+    assert access.unknown_session is False
+
+    from gateway.routes.agent import _thread_control_ok, _thread_owner_ok
+    assert _thread_owner_ok(sid, _ALICE, graph_as_app.org_a) is False
+    assert _thread_control_ok(sid, _ALICE, graph_as_app.org_a) is False
+
+
+def test_a_save_under_an_org_b_session_writes_nothing(graph_as_app):
+    sid = _org_b_session(graph_as_app)
+    alice = _client(_user(_ALICE, graph_as_app.org_a))
+    refused = alice.post(f"/chat/sessions/{sid}/messages",
+                         json=_browser_rows("u-alice-in-b"))
+    assert refused.status_code == 403, refused.text
+    assert alice.get(f"/chat/sessions/{sid}/messages").json() == []
+    upsert = alice.post("/chat/sessions", json={
+        "id": sid, "agent_name": "orchestrator", "title": "taken",
+        "message_count": 9,
+    })
+    assert upsert.status_code == 404, upsert.text
+    assert _rows_of_org(graph_as_app, sid, graph_as_app.org_a) == _NONE
+    title = _admin_one(graph_as_app, "SELECT title FROM chat_session WHERE id = :s", s=sid)
+    assert title.title == "S15"
+
+
+def test_the_helpers_write_nothing_under_an_org_b_session(graph_as_app, monkeypatch):
+    """The mint, ``_ensure_session``, ``_upsert_messages`` and the fold, each
+    called straight, as org A on org B's id. None of them may attach a row."""
+    from gateway import chat_fold
+    from gateway.rooms import SessionOfAnotherTenant
+    from gateway.routes.agent import _mint_run_row
+    from gateway.routes.chat import MessageRecord, _ensure_session, _upsert_messages
+    from orchestrator import stream_relay
+
+    a = graph_as_app.org_a
+    sid = _org_b_session(graph_as_app)
+
+    with pytest.raises(SessionOfAnotherTenant):
+        _ensure_session(sid, _ALICE, "orchestrator", organization_id=a)
+    declined = _upsert_messages(
+        sid, [MessageRecord(id="u-a", role="user", content="x", timestamp=1)],
+        actor_email=_ALICE, organization_id=a,
+    )
+    assert declined == ["u-a"]
+    _mint_run_row(sid, "assistant-a", member=_ALICE, agent_name="orchestrator",
+                  organization_id=a)
+
+    async def _replay(*_a, **_k):
+        return [{"type": "RUN_STARTED"},
+                {"type": "TEXT_MESSAGE_START", "messageId": "assistant-f"},
+                {"type": "TEXT_MESSAGE_CONTENT", "messageId": "assistant-f",
+                 "delta": "forged"},
+                {"type": "RUN_FINISHED"}]
+
+    async def _solo(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(stream_relay, "replay_events", _replay)
+    monkeypatch.setattr(chat_fold, "_run_authority", _solo)
+    asyncio.run(chat_fold.persist_final_assistant_message(
+        sid, "assistant-f", user_id=_ALICE, agent_name="orchestrator",
+        run_id="run-f", organization_id=a,
+    ))
+    assert _rows_of_org(graph_as_app, sid, a) == _NONE
+    # Org B's own rows are untouched.
+    with graph_as_app.admin_engine.connect() as c:
+        ids = [r.id for r in c.execute(text(
+            "SELECT id FROM chat_message WHERE session_id = :s ORDER BY id"), {"s": sid})]
+    assert ids == ["u-carol"]
+
+
+def test_a_truly_new_id_is_still_the_members_own_thread(graph_as_app):
+    from gateway.rooms import resolve_room_access
+
+    sid = _sid()
+    access = resolve_room_access(sid, _ALICE, organization_id=graph_as_app.org_a)
+    assert (access.role, access.can_send, access.unknown_session) == ("owner", True, True)
+    assert access.resolve_failed is False
+
+
+def test_a_function_that_cannot_see_through_rls_denies(graph_as_app):
+    """Owned by a role that cannot bypass RLS, the function answers NULL.
+    NULL is "cannot tell", so even a new id is refused. It fails closed."""
+    from gateway.rooms import resolve_room_access
+
+    admin = graph_as_app.admin_engine
+    with admin.begin() as c:
+        owner = c.execute(text(
+            "SELECT pg_get_userbyid(proowner) FROM pg_proc "
+            "WHERE proname = 'chat_session_exists'")).scalar()
+        c.execute(text(
+            f"ALTER FUNCTION public.chat_session_exists(text) OWNER TO {_APP_ROLE}"))
+    try:
+        access = resolve_room_access(_sid(), _ALICE, organization_id=graph_as_app.org_a)
+        assert (access.role, access.can_send) == (None, False)
+    finally:
+        with admin.begin() as c:
+            c.execute(text(
+                f'ALTER FUNCTION public.chat_session_exists(text) OWNER TO "{owner}"'))

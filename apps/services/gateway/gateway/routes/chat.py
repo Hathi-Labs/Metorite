@@ -24,6 +24,12 @@ refused on every save, so ``chat_message`` held no row. The tenant comes from
 ``UserContext.organization_id``, never from the request. With no tenant the
 helper raises ``TenantUnbound``, and nothing falls back to an unbound session.
 ``tests/unit/test_chat_write_under_rls.py`` is the fence.
+
+🔴 A bound read that finds no ``chat_session`` row is not yet a new session
+(S15 fix round 1). A session of another tenant reads the same way, and its
+unique index and the ``chat_message`` foreign key both ignore RLS. So a write
+helper that sees no row asks ``rooms.session_exists_elsewhere`` first, and it
+writes nothing under an id that exists in another tenant.
 """
 from __future__ import annotations
 
@@ -34,7 +40,13 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
 from fastapi import APIRouter, Depends, HTTPException, status
-from gateway.rooms import SESSION_VISIBLE_SQL, RoomAccess, resolve_room_access
+from gateway.rooms import (
+    SESSION_VISIBLE_SQL,
+    RoomAccess,
+    SessionOfAnotherTenant,
+    resolve_room_access,
+    session_exists_elsewhere,
+)
 from pydantic import BaseModel
 
 _log = get_logger("gateway.chat")
@@ -151,6 +163,26 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     ]
 
 
+def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
+    """Raise when ``session_id`` exists in another tenant. For a bound session.
+
+    Returns True when the caller's tenant can see the session row, and False
+    when the id exists nowhere. Raises ``SessionOfAnotherTenant`` otherwise,
+    before any write.
+    """
+    from sqlalchemy import text
+
+    visible = s.execute(
+        text("SELECT 1 FROM chat_session WHERE id = :id"), {"id": session_id},
+    ).first()
+    if visible:
+        return True
+    if session_exists_elsewhere(s, session_id):
+        _log.warning("chat.session_of_another_tenant", session_id=session_id[:12])
+        raise SessionOfAnotherTenant(session_id[:12])
+    return False
+
+
 def _upsert_session(
     user_id: str, req: SessionUpsertRequest, *, organization_id: str | None,
 ) -> None:
@@ -158,6 +190,7 @@ def _upsert_session(
     from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
+        _refuse_if_elsewhere(s, req.id)
         s.execute(
             text(
                 """
@@ -232,6 +265,10 @@ def _ensure_session(
     from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
+        # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
+        # another tenant's row, and the two inserts below would then attach
+        # rows of this tenant to it. So refuse first.
+        _refuse_if_elsewhere(s, session_id)
         s.execute(
             text(
                 """
@@ -692,6 +729,13 @@ def _upsert_messages(
     declined: list[str] = []
 
     with tenant_session(organization_id) as s:
+        # S15 fix round 1: the `chat_message` foreign key ignores RLS, so a
+        # row would attach to another tenant's session. Decline every id.
+        # An id that exists nowhere keeps the old answer, a foreign-key error.
+        try:
+            _refuse_if_elsewhere(s, session_id)
+        except SessionOfAnotherTenant:
+            return [m.id for m in messages]
         for m in messages:
             kind, author = _attribute(m, actor_email, agent_name)
             # S14: a client inserts a human row only. The fold and the mint
@@ -771,10 +815,14 @@ async def upsert_session(
     req: SessionUpsertRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    await asyncio.to_thread(
-        _upsert_session, user.email or "default", req,
-        organization_id=user.organization_id,
-    )
+    try:
+        await asyncio.to_thread(
+            _upsert_session, user.email or "default", req,
+            organization_id=user.organization_id,
+        )
+    except SessionOfAnotherTenant:
+        # The same answer as a session that does not exist for this caller.
+        raise HTTPException(status_code=404, detail="Session not found") from None
     return {"ok": True, "id": req.id}
 
 
