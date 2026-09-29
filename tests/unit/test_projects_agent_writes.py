@@ -877,9 +877,11 @@ async def test_a_fuzzy_person_match_is_a_refusal(monkeypatch) -> None:
 
 
 async def test_importance_zero_is_a_real_value(monkeypatch) -> None:
+    """Not important is a stored 0, which is not NULL (unjudged). H-196
+    removed the number argument, so `important=false` is how it is said."""
     approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
-    await skill_projects.update_task(UUID, importance=0)
+    await skill_projects.update_task(UUID, important="false")
     patched = [c for c in writes(calls) if c["method"] == "PATCH"]
     assert patched and patched[0]["json"] == {"importance": 0}
     calls.clear()

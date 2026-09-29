@@ -186,6 +186,46 @@ async def test_capture_requires_a_title_and_a_project(
     assert exc.value.status_code == 422
 
 
+@pytest.mark.parametrize("leveraged", [True, False])
+async def test_a_capture_writes_leveraged(
+    db: FakeProjectsDB, events: list, leveraged: bool,
+) -> None:
+    """H-196. `IntakeIn` had no `leveraged`, and pydantic drops an unknown key
+    without a word, so a capture could not be High-Leverage. It is written
+    the way create writes it, and the answer carries it back."""
+    project, _ = _workspace(db)
+    result = await pm_intake.capture_intake(
+        pm_intake.IntakeIn(project_id=str(project.id), title="Big bet",
+                           importance=2, leveraged=leveraged),
+        user=USER,
+    )
+    row = db.rows("pm_tasks")[0]
+    assert row["leveraged"] is leveraged
+    assert row["importance"] == 2
+    assert result["task"]["leveraged"] is leveraged
+
+
+async def test_a_capture_that_states_no_leveraged_writes_none(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """The create rule: an unstated flag is not written, so the column
+    default holds (migration 218, `DEFAULT false`)."""
+    project, _ = _workspace(db)
+    result = await pm_intake.capture_intake(
+        pm_intake.IntakeIn(project_id=str(project.id), title="Plain"), user=USER,
+    )
+    assert "leveraged" not in db.rows("pm_tasks")[0]
+    assert result["task"]["leveraged"] is False
+
+
+def test_intake_takes_the_priority_fields_create_takes() -> None:
+    """A priority field on `TaskIn` and not on `IntakeIn` is the H-196 gap
+    again: the chat would send it and the route would drop it."""
+    wanted = {"importance", "leveraged", "due_at"}
+    assert wanted <= set(pm_core.TaskIn.model_fields)
+    assert wanted <= set(pm_intake.IntakeIn.model_fields)
+
+
 # ── The default-list exclusion — every surface, one predicate ───────────────
 
 async def test_triage_tasks_are_invisible_to_the_task_list_by_default(

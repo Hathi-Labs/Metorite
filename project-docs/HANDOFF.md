@@ -108,27 +108,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_settings.md` §7 row PS-2, and the PS-2 review
 - **Added:** 2026-09-29 · WS-42 PS-2
 
-### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
-- **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
-  A hit means this is open.
-- **What happens.** H-173 moved the chat tools to the D78 level. The tools
-  now take `priority` (a level name), `important` and `leveraged`. They still
-  take the old `importance` number for one release, and map it through
-  `LEGACY_IMPORTANCE` in `acb_common/priority.py`. 2 or more reads as
-  Important, and each answer says that the number is deprecated.
-- **The intake gap.** `POST /projects/intake` (`IntakeIn` in
-  `routes/projects/intake.py`) has no `leveraged` field. Pydantic drops an
-  unknown key and says nothing. So `capture_intake` refuses a `leveraged` level
-  instead of sending it.
-- **Do.** After one release, remove the `importance` argument from
-  `create_task`, `update_task`, `bulk_update` and `capture_intake`, and remove
-  `LEGACY_IMPORTANCE`. Add `leveraged` to `IntakeIn` and to the insert, and
-  prove it on a real database (R8). Then remove the refusal in
-  `capture_intake`.
-- **Fence:** `tests/unit/test_chat_priority_levels.py`.
-- **Authority:** `work_plan.md` §3 D78.
-- **Added:** 2026-09-28 · the H-173 build. Minted as H-194 and renumbered the same day, because another branch merged H-194 first.
-
 ### H-198 · 🟡 DEFERRED — agent webhooks need an owner before they can use AI · [OWNER+AGENT]
 - **Check:** `rg -n "^AGENT_WEBHOOK_SECRET" /opt/acb/app/.env` on the box. No
   hit means the door is still closed, and this stays deferred.
