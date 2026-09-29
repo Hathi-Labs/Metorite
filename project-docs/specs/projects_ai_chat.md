@@ -15,7 +15,8 @@ schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 2026-09-28. S13 (message integrity, §19) was built 2026-09-28. S14 (no
 forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
 production, §21) was built 2026-09-29. S16 (every deploy proves that chat
-saves, §21.10) was built 2026-09-29.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+saves, §21.10) was built 2026-09-29. The owner answered the three
+questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -84,6 +85,8 @@ the weekly report, a stuck review, and "my work" triage.
 - A second chat surface. The main chat app at `/chat` sees the same sessions,
   because the session store is shared by agent name.
 - Hard delete of a project or a task. D-PM-35, until WS-40.
+- A grant write. The chat may propose a grant, and a person applies it in
+  the app. D-PM-40.
 - Sending a report by email from the chat. Recipients and the schedule stay
   in the Reports app, and arming the schedule is owner-gated (§9.12.8).
 - Assign-to-AI as a product feature. Parked by the owner (§9.12.10). This spec
@@ -566,8 +569,9 @@ stopped matching the wire"). A class C card starts with the counts.
 
 ### 5.4 D-PM-35 — the chat cannot hard-delete until WS-40 answers who may
 
-**Decision (agent-proposed, owner may overrule).** `delete_project` and
-`delete_task` are class X. The chat's remove verb is archive.
+**Decision (owner, 2026-09-29).** `delete_project` and `delete_task` are
+class X. The chat's remove verb is archive. The agent proposed this rule, and
+the owner accepted it on 2026-09-29 (§12, question 1).
 
 **Why.** H-121 measured that no Projects route carries a permission check, and
 that `DELETE /projects/nodes/{id}` cascades over a subtree on read visibility
@@ -580,10 +584,11 @@ authority, and §8d.3 says it must never be described as authority.
 tools move from class X to class C in `manifest.py`, and their cards carry the
 counts the route already reads. Nothing else changes.
 
-**The interim the owner may choose instead.** Gate the two tools on
-`projects:settings:write`, the one permission Projects already has. This spec
-does not recommend it, because that permission means "may edit the
-vocabulary", and reusing it for delete is the near-miss §8d.1 warns about.
+**The interim the owner declined (2026-09-29).** The option was to gate the
+two tools on `projects:settings:write`, the one permission Projects already
+has. The owner did not take it. That permission means "may edit the
+vocabulary", and to use it for delete is the near-miss §8d.1 warns about.
+Until WS-40, a person deletes in the app.
 
 ---
 
@@ -668,6 +673,10 @@ apply without a change here. ⚠️ `ROUTER_SERVING_ENABLED` is off, and H-42 sa
 the rate card is unpriced. So the chat spends no credits today, and a customer
 sees no AI usage for it. This spec does not change that.
 
+**The owner kept `tier-balanced` on 2026-09-29** (§12, question 3). The
+default is `PROJECTS_AGENT_MODEL` in `apps/agents/agent-projects/agents.py`.
+Review the default again after H-42 prices the rate card.
+
 ---
 
 ## 9. Decisions
@@ -679,10 +688,14 @@ sees no AI usage for it. This spec does not change that.
 - **D-PM-39** — only the server creates an agent row or a system row. A
   LiteLLM reply and a compaction summary stay in the browser until a later
   slice gives them a server writer. §20.5.
+- **D-PM-40** — the chat does not write grants. The two grant writes in
+  `manifest.py` stay class X. The chat may propose a grant in words, and a
+  person applies it in the app. §12, question 2.
 
-D-PM-35, D-PM-36 and D-PM-37 are agent-proposed. The owner may overrule any
-of them. The owner decided D-PM-39 on 2026-09-28, with the option "Accept it
-now, fix later".
+D-PM-36 and D-PM-37 are agent-proposed. The owner may overrule either of
+them. The owner decided D-PM-39 on 2026-09-28, with the option "Accept it
+now, fix later". The owner accepted D-PM-35 and decided D-PM-40 on
+2026-09-29, in chat, when the owner took the agent's recommendations.
 
 ---
 
@@ -1071,16 +1084,33 @@ light mode, at compact density, under a changed accent, and beside the board.
 
 ---
 
-## 12. Open questions for the owner
+## 12. Questions for the owner — answered 2026-09-29
+
+The owner answered all three in chat on 2026-09-29, and took the agent's
+recommendation each time. The manifest already matched each answer, so no
+tool changed class.
 
 1. **Delete.** Accept D-PM-35, or take the interim gate on
    `projects:settings:write`. §5.4 gives the case against the interim.
+
+   **Answer (owner, 2026-09-29).** Accept D-PM-35. Hard delete stays off the
+   chat until WS-40. There is no interim gate on `projects:settings:write`.
+   The chat may archive where the manifest already lets it, and a person
+   deletes in the app.
 2. **Grants.** `POST /projects/nodes/{id}/grants` writes visibility. CLAUDE.md
    §3a rule 3 stops an agent from writing a live organization's membership.
    A grant is narrower than membership, and this spec puts it in class X
    until the owner says otherwise.
+
+   **Answer (owner, 2026-09-29).** The chat does not write grants. `POST
+   /projects/nodes/{id}/grants` stays class X, and so does the grant
+   `DELETE`. The chat may propose a grant in words, and a person applies it
+   in the app. §9 records this as D-PM-40.
 3. **The tier.** `tier-balanced` by default, or `tier-powerful` as the Tasks
    rail chose. The cost difference is real once H-42 prices the card.
+
+   **Answer (owner, 2026-09-29).** `tier-balanced` stays the default. Review
+   it after H-42 prices the rate card.
 
 ---
 
