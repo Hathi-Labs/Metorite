@@ -54,10 +54,15 @@ async def seed() -> dict:
         if org is None:
             raise SystemExit("no organization in this database")
         org_id, pid = str(org.id), str(uuid.uuid4())
-        await db.execute(text("DELETE FROM app_user WHERE email = :me"), {"me": ME})
+        # Remove only a row an earlier run of THIS script left behind. A real
+        # member row with the same email is kept as it is, and cleanup() only
+        # deletes the marked row, so the script never destroys a real user.
+        await db.execute(text(
+            "DELETE FROM app_user WHERE email = :me AND display_name = :n"),
+            {"me": ME, "n": f"{MARK} runner"})
         await db.execute(text(
             "INSERT INTO app_user (email, organization_id, display_name) "
-            "VALUES (:me, CAST(:o AS uuid), :n)"),
+            "VALUES (:me, CAST(:o AS uuid), :n) ON CONFLICT DO NOTHING"),
             {"me": ME, "o": org_id, "n": f"{MARK} runner"})
         await db.execute(text(
             "INSERT INTO pm_projects (id, organization_id, name, source, "
