@@ -463,6 +463,8 @@ if [ "$mode" = blip ] && [ "$n" = 1 ]; then
   echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255
 fi
 case "$mode" in
+  faildrop) echo "ok   1 create session"; echo "FAIL 2 save one row: HTTP 500"
+            echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   hang) exit 124 ;;
   drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   nopass) echo "ok   1 create session"; exit 0 ;;
@@ -564,6 +566,13 @@ class TestTheWorkflowStep:
     def test_exit_0_without_the_pass_line_is_red(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="nopass")
         assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
+
+    def test_a_fail_line_then_a_drop_is_red_and_does_not_retry(self, runner, jobs) -> None:
+        """Fix round 2: a drop after a FAIL line is not a blip."""
+        r = runner.run(jobs, SMOKE_MODE="faildrop")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "a step failed before ssh dropped" in r.stdout
         assert _runs(runner) == 1
 
     def test_a_timeout_has_its_own_label_and_no_retry(self, runner, jobs) -> None:

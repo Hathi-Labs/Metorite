@@ -825,6 +825,14 @@ jobs:
               echo "✅ Chat saves on production."
               exit 0
             fi
+            # ⚠️ A STEP FAILED, and then ssh dropped. The log holds the smoke's
+            # own lines too, so a drop after a FAIL line must not read as a
+            # blip. Red at once, before the retry and the no-verdict tests.
+            if grep -q '^FAIL ' /tmp/smoke.log; then
+              echo "❌ Chat smoke FAILED: a step failed before ssh dropped (exit $rc). Chat does not save on production."
+              echo "   The release is live. Fix forward (R6). Read the step line above."
+              exit 1
+            fi
             case "$rc" in
               1)
                 echo "❌ Chat smoke FAILED: a step failed. Chat does not save on production."
