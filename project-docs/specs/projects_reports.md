@@ -24,6 +24,9 @@ points "Report on this", "1:1 prep" and "My day"). **The UX pass BUILT
 the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
 Phases 2 and 3 are not built.
 
+**R5f (2026-09-29) is not built.** It joins the Analytics app into Reports,
+and Overview becomes the landing screen (§9 Q14).
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -187,6 +190,8 @@ flag that applies, and a reason for each.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
+- **Since R5f:** Reports is `live`, and the Analytics app is gone. Its
+  Overview shows what Analytics showed (§9 Q14).
 
 ### 3.3 The chat
 
@@ -348,6 +353,13 @@ rail is absent on the home screen, because the cards list your reports.
 
 **In R2, the saved list has no filter.** The filter for scope, template and
 owner waits for a later slice.
+
+**Since R5f (§9 Q14)**, the home screen has three areas, top to bottom.
+1. **Overview.** The builder with no name field, over the whole organization. It shows the KPI strip, the space table and seven sections. It saves nothing, and "Save as report" keeps its choices.
+2. **Start from a question.** The template gallery from §4.
+3. **Your reports.** The saved reports, as cards.
+
+The rail is absent on Overview. It shows when a member opens a saved report.
 
 ### 6.2 The builder — one sentence
 
@@ -1507,6 +1519,49 @@ Six mutations each turn a test red (v). They remove the filter, its 403, the aut
 Six mutations each turn a test red (ac). Three change the server: no PATCH check, a pass for every change, or no author path for a change.
 Three change a client: `can_edit` always true, no chat check, or Edit always.
 
+### R5f — One Reports app · AGENT-SAFE
+
+**What:** the Analytics app joins the Reports app (§9 Q14). Reports opens on Overview. Overview is the builder with no name field and no Save. It starts with the seven sections that the Analytics app showed, for the whole organization. The gallery and the saved reports come under it. "Save as report" opens the builder with the same choices.
+
+**Rules:**
+1. `PROJECT_APP_SECTIONS` holds no `analytics` entry, and `ProjectAppId` loses `"analytics"`. The Reports entry keeps its id, its icon and `live`.
+2. Overview renders through `POST /projects/reports/preview`, so `render_body` computes every section. Overview adds no second fetch of a section.
+3. `overviewState()` in `lib/reportBuilder.ts` is the start of Overview. It holds the whole organization, no subject, `weeks` 12, `skip_current_week` false and the subtree.
+4. Its sections are `finished`, `throughput`, `outlook`, `load`, `capacity`, `stuck` and `conflicts`. The Analytics app drew these seven with these defaults, so Overview shows the same numbers.
+5. `PERIODS` gains "The last 12 weeks", with `weeks` 12 and `skip_current_week` false. So the period chip names the Overview period, and a saved report keeps it.
+6. The KPI strip and the space table move out of `AnalyticsView.tsx` into one component. Overview draws them above the sections. Do not copy them.
+7. The strip and the table read `GET /projects/summary` for the whole organization, and `GET /projects/nodes/{id}/summary` for a node.
+8. They show only when the subject is "Everyone" and `include_subtree` is true. The summary routes take no subject, so their counts would disagree with the sections.
+9. In Overview the strip has no Overdue tile. The report tiles show Overdue from `stuck`, and one screen shows one Overdue tile.
+10. "Save as report" opens the builder with `saveAsReportState(state)`. It keeps the scope, the subject, the period, the subtree and the sections.
+11. The template of that state is `null`, and `builderName` names it. Overview itself writes no row.
+12. `resolveAppLink` in `lib/projectApps.ts` maps `analytics` to `reports`. The `?app=` link and the `projects.open_app` handler both call it. A second map is a defect.
+13. The chat tool `open_in_app` accepts `analytics` and opens `reports`. Its link is `/projects?app=reports`, and its docstring names Reports only.
+14. `OPENS_APP` in `ProjectToolCards.tsx` sends each analytics read to `reports`, with the label "Open Reports".
+15. Each panel in `RenderedBody` is the only child of its own `LayoutBoundary`. The Analytics app had this rule (WS-27bm S12), and Overview must keep it.
+16. The saved-reports rail is absent on Overview. It shows when a member opens a saved report.
+17. The code names the mode `reportsOverview`. `page.tsx` already uses `overview` for the overview of a project.
+
+**Non-goals:**
+- No server change. If the slice needs one, stop and change this spec first.
+- `NodeDashboard` does not change. Each dashboard keeps its own reads.
+- The analytics routes stay. The dashboards and the chat read them.
+- No new section and no new template. Overview is not a template, so the gallery does not list it.
+- `pulse`, `hygiene` and `rebalance` start off in Overview. A reader turns them on in "More".
+- No link to an Overview state. A link opens the builder, as R5b says.
+
+**Done when:**
+- (a) Vitest: `PROJECT_APP_SECTIONS` holds no `analytics` entry, and the Reports entry is `live`.
+- (b) Vitest: `resolveAppLink` maps `analytics` and `reports` to `reports`. It maps a preview id and an unknown id to `null`.
+- (c) Vitest: `overviewState()` holds no project, no subject, `weeks` 12, `skip_current_week` false and the seven sections in `SECTIONS` order. Its `periodKey` is `last_12_weeks`.
+- (d) Vitest: `saveAsReportState` keeps the scope, the subject, the period, the subtree and the sections. Its template is `null`, and `nameTouched` is false.
+- (e) Vitest: `overviewTableShown` is true for "Everyone" with the subtree, and false with a subject or without the subtree.
+- (f) Vitest: `OPENS_APP` holds no `analytics` value. Pytest: `open_in_app` with `analytics` sends `reports`, and its link is `/projects?app=reports`.
+- (g) Real database: for one reader and one scope, the preview of `overviewState()` equals the analytics routes. The throughput series and the finished total are the same.
+- (h) Real database: a member previews `overviewState()`. The `load` rows hold the member only, and `hidden_people` counts the others (§7.1 rule 3).
+- (i) `layoutBoundary.test.ts` finds each panel of `RenderedBody` in its own boundary. A mutation that removes one boundary turns it red.
+- (j) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect. Do it as an admin, a lead and a member.
+
 ### R6 — The AI summary, on request · AGENT-SAFE
 
 **What:** a **Summarize with AI** control on a rendered report. When a person
@@ -1596,7 +1651,7 @@ item 6) and the chat's `send_report` both call it.
 ### Order
 
 **Phase 1, on request:** R1 → R2 → R2b → R3 (R3a → R3b → R3c → R3d) → R5 →
-R4 → R4b → R6 → R8 → R9.
+R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
 
 - R1 and R2 give a member control of what exists.
 - R2b draws each section as a chart or a progress bar.
@@ -1662,6 +1717,7 @@ that the render does not need a saved row.
 | Q11 (2026-09-28) | May a report show the address of its author? | The owner: "author email address is fine for people from the same org". Every reader is in the organization of the report. So `created_by` stays in the report, the list and the chat. Nothing changes. |
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
 | Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
+| Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
