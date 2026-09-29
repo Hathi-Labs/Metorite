@@ -145,6 +145,16 @@ def test_the_cookie_never_goes_to_a_file_or_a_command_line() -> None:
     assert "set -x" not in "\n".join(code)
 
 
+def test_every_child_reads_dev_null() -> None:
+    """The script arrives over `bash -s` stdin. The behavioural case below
+    proves it for node and python. This one covers the rest."""
+    for line in _code_lines(_read(SCRIPT)):
+        if "command -v" in line or "[ -x" in line:
+            continue
+        if re.search(r'(^|[\s(])(node|"\$PY"|git|flock|sleep|sed|seq) ', line):
+            assert "</dev/null" in line, f"a child without < /dev/null: {line!r}"
+
+
 # ── 3. Behaviour, against a fake node and a fake python ─────────────────────
 
 # Linux only, like test_deploy_reach.py: on Windows a fake on PATH loses to
@@ -156,6 +166,7 @@ needs_shell = pytest.mark.skipif(not _TOOLS, reason="needs Linux with bash and c
 
 FAKE_NODE = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/argv.log"
+got=$(timeout 1 cat 2>/dev/null); [ -n "$got" ] && echo "$0" >> "$FAKE/stdin.log"
 [ "$AUTH_SECRET" = "__SECRET__" ] || { echo "wrong secret" >&2; exit 3; }
 printf '%s' "__JWE__"
 """
@@ -163,6 +174,7 @@ printf '%s' "__JWE__"
 # One fake for both uses: `python -c <probe>` and `python <smoke.py>`.
 FAKE_PY = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/argv.log"
+got=$(timeout 1 cat 2>/dev/null); [ -n "$got" ] && echo "$0" >> "$FAKE/stdin.log"
 # Does the parent hold the deploy lock? A new EXCLUSIVE try must then fail.
 if flock -n -x "$DEPLOY_LOCK" true 2>/dev/null; then echo free >> "$FAKE/lock.log"
 else echo held >> "$FAKE/lock.log"; fi
@@ -202,15 +214,21 @@ def app(tmp_path: Path):
         f'AUTH_URL=https://app.metorite.com\nAUTH_SECRET="{SECRET}"\n',
         encoding="utf-8", newline="\n")
 
-    def run(**extra: str) -> subprocess.CompletedProcess:
+    def run(via_stdin: bool = False, **extra: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.pop("SMOKE_BASE_URL", None)
         env.update(PATH=f"{binr}{os.pathsep}{env.get('PATH', '')}",
                    FAKE=fake.as_posix(), APP_DIR=appd.as_posix(), HOME=tmp_path.as_posix(),
                    DEPLOY_LOCK=(tmp_path / "acb-deploy.lock").as_posix())
         env.update(extra)
+        if via_stdin:
+            # How deploy.yml runs it: `ssh ... "bash -s" < deploy/smoke_chat.sh`.
+            return subprocess.run(["bash", "-s"], input=_read(SCRIPT), cwd=tmp_path, env=env,
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  timeout=60)
         return subprocess.run(["bash", SCRIPT.as_posix()], cwd=tmp_path, env=env,
-                              capture_output=True, text=True, encoding="utf-8", timeout=60)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", timeout=60)
 
     class App:
         pass
@@ -290,6 +308,16 @@ class TestTheScript:
         r = app.run(SMOKE_RC="1")
         assert r.returncode == 1
         assert "the box holds" in r.stderr
+
+    def test_under_bash_s_no_child_reads_the_script(self, app) -> None:
+        """Fix round 1: the script arrives on stdin, as vps_apply.sh does. A
+        child that reads stdin eats the rest of the script. Every child gets
+        `< /dev/null`."""
+        r = app.run(via_stdin=True, PROBE_DOWN="1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert r.stdout.splitlines()[-1].startswith("PASS chat persistence on")
+        assert not (app.fake / "stdin.log").exists(), (
+            (app.fake / "stdin.log").read_text(encoding="utf-8"))
 
     def test_no_secret_exits_2(self, app) -> None:
         (app.root / "app" / "workbench" / "control_plane" / ".env.local").write_text(

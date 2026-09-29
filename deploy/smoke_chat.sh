@@ -27,6 +27,10 @@
 # and never printed. The same holds for AUTH_SECRET. The fence is
 # tests/unit/test_deploy_smoke_wiring.py.
 #
+# ⚠️ EVERY CHILD GETS `< /dev/null`. This file arrives on stdin over
+# `bash -s`, as vps_apply.sh does. A child that reads stdin eats the rest of
+# the script, and the smoke then ends early with no error.
+#
 # The static cookie at /home/acb/.smoke/cookie is NOT used. That file expires,
 # and a deploy check that expires on a date is a red run with no fault in it.
 #
@@ -75,7 +79,7 @@ SMOKE_PY="$APP_DIR/scripts/smoke_chat_persist.py"
 # The commit the box holds. A failure prints it, so an overlap with another
 # deploy is easy to see.
 served_sha() {
-  git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo unknown
+  git -C "$APP_DIR" rev-parse HEAD </dev/null 2>/dev/null || echo unknown
 }
 
 env_fail() {
@@ -92,7 +96,7 @@ command -v node >/dev/null 2>&1 || env_fail "node is not on PATH"
 
 # Read the secret. A command substitution prints nothing. The last line wins,
 # as it does for the dotenv loader, and one pair of quotes is removed.
-auth_secret="$(sed -n 's/^AUTH_SECRET=//p' "$WB_ENV" | tail -n 1 | tr -d '\r')"
+auth_secret="$(sed -n 's/^AUTH_SECRET=//p' "$WB_ENV" </dev/null | tail -n 1 | tr -d '\r')"
 auth_secret="${auth_secret#\"}"; auth_secret="${auth_secret%\"}"
 auth_secret="${auth_secret#\'}"; auth_secret="${auth_secret%\'}"
 [ -n "$auth_secret" ] || env_fail "AUTH_SECRET is not set in $WB_ENV"
@@ -113,7 +117,7 @@ process.stdout.write(jwe);
 '
 jwe="$(cd "$WB_DIR" && AUTH_SECRET="$auth_secret" SMOKE_MEMBER_EMAIL="$SMOKE_MEMBER_EMAIL" \
   SMOKE_COOKIE_NAME="$COOKIE_NAME" SMOKE_MAX_AGE_S="$MAX_AGE_S" \
-  node --input-type=module -e "$MINT_JS" 2>/dev/null)" || jwe=""
+  node --input-type=module -e "$MINT_JS" </dev/null 2>/dev/null)" || jwe=""
 unset auth_secret
 [ -n "$jwe" ] || env_fail "node could not mint a session (next-auth/jwt in $WB_DIR?)"
 SMOKE_COOKIE="$COOKIE_NAME=$jwe"
@@ -153,7 +157,7 @@ else:
 # The shared lock, on fd 9, until this script exits. `flock` ignores the
 # open mode, so a read-only open is enough (vps_pull.sh does the same).
 if [ -r "$DEPLOY_LOCK" ] && exec 9<"$DEPLOY_LOCK"; then
-  if ! flock -s -w "$SMOKE_LOCK_WAIT" 9; then
+  if ! flock -s -w "$SMOKE_LOCK_WAIT" 9 </dev/null; then
     echo "smoke_chat: BUSY. Another deploy held $DEPLOY_LOCK for ${SMOKE_LOCK_WAIT}s, so chat was not checked." >&2
     echo "smoke_chat: the box holds $(served_sha). That deploy runs its own smoke." >&2
     exit 75
@@ -164,15 +168,15 @@ fi
 
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
 state=""
-for try in $(seq 1 "$SMOKE_WAIT_TRIES"); do
-  state="$(SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" -c "$PROBE_PY" 2>/dev/null)" || state="down:000"
+for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do
+  state="$(SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" -c "$PROBE_PY" </dev/null 2>/dev/null)" || state="down:000"
   case "$state" in
     ok) break ;;
     org:*|who:*) break ;;
   esac
   if [ "$try" -lt "$SMOKE_WAIT_TRIES" ]; then
     echo "smoke_chat: waiting for $SMOKE_BASE_URL/api/auth/me ($state, try $try/$SMOKE_WAIT_TRIES)" >&2
-    sleep "$SMOKE_WAIT_NAP"
+    sleep "$SMOKE_WAIT_NAP" </dev/null
   fi
 done
 
@@ -190,7 +194,7 @@ esac
 
 # The smoke. Its step lines are the only lines on stdout.
 rc=0
-SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" "$SMOKE_PY" || rc=$?
+SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" "$SMOKE_PY" </dev/null || rc=$?
 unset SMOKE_COOKIE
 [ "$rc" = 0 ] || echo "smoke_chat: the box holds $(served_sha)" >&2
 case "$rc" in
