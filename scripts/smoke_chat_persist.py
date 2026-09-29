@@ -18,11 +18,25 @@ So a wrong cookie cannot write into a real member's history.
 
 Environment:
 
-    SMOKE_BASE_URL       the workbench origin, for example https://metorite.com
+    SMOKE_BASE_URL       the workbench origin, for example
+                         https://app.metorite.com (the AUTH_URL host)
     SMOKE_COOKIE         the Cookie header of a signed-in session of the smoke
-                         member (the ``authjs.session-token`` pair)
+                         member. On HTTPS, Auth.js v5 names the cookie
+                         ``__Secure-authjs.session-token``, and not
+                         ``authjs.session-token``.
     SMOKE_MEMBER_EMAIL   the smoke member's email
     SMOKE_ORG_SLUG       the slug of the smoke member's org
+
+Use the workbench host ``app.metorite.com``. The host ``metorite.com`` is a
+different site. Its ``/api/auth/me`` gives 404, so the script stops with
+"nobody in no org".
+
+Getting the cookie. The operator mints it on the box with ``encode`` from
+``next-auth/jwt``. The salt is the cookie name, and the secret is the
+workbench ``AUTH_SECRET``. The box keeps it at ``/home/acb/.smoke/cookie``
+(mode 600, owner acb), and it never leaves the box. It expires after 30
+days. An ``AUTH_SECRET`` rotation makes it invalid. Do not put a secret or a
+token in the repo.
 
 Exit 0 when all four steps pass, 1 when a step fails, 2 when the environment
 is wrong. Not wired into ``deploy.yml`` yet (§21).

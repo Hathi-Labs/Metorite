@@ -3451,11 +3451,30 @@ On the box, after a deploy:
 
 ```bash
 # The smoke member and org exist already. This script creates neither.
-SMOKE_BASE_URL=https://metorite.com SMOKE_COOKIE='authjs.session-token=...' \
-  SMOKE_MEMBER_EMAIL=<smoke member> SMOKE_ORG_SLUG=<smoke org> \
+SMOKE_BASE_URL=https://app.metorite.com \
+  SMOKE_COOKIE="$(cat /home/acb/.smoke/cookie)" \
+  SMOKE_MEMBER_EMAIL=smoke-chat@smoke.metorite.invalid SMOKE_ORG_SLUG=smoke-chat \
   python3 scripts/smoke_chat_persist.py
 bash scripts/alarm_chat_persist.sh     # exit 1 when a write failed in 10 min
 ```
 
 The smoke check reads `/api/auth/me` first. It stops, and writes nothing,
 when the cookie is not the smoke member in the smoke org.
+
+**The smoke org and member.** These are the facts of record:
+
+- The org slug is `smoke-chat`, and its id is
+  `2df62642-751d-4ddd-a079-f643ea544c74`. An operator made it on 2026-09-29
+  with `provision_local_organization`.
+- Its `console_mirrored_at` is set. So the Console mirror reconciler never
+  gives it a trial, seats or credits.
+- Its `first_party` is false on purpose. When it is true, the org opens self-mutation PRs.
+- The member is `smoke-chat@smoke.metorite.invalid`. The `.invalid` domain
+  never receives mail.
+- The script uses the host `app.metorite.com`, which is the `AUTH_URL` host.
+  The host `metorite.com` is a different site, and its `/api/auth/me` gives 404.
+- The cookie is `__Secure-authjs.session-token` at
+  `/home/acb/.smoke/cookie` on the box. The script docstring tells how to make it.
+
+The first production run PASSED on 2026-09-29, all four steps, on
+`https://app.metorite.com`.
