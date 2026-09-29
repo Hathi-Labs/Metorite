@@ -1276,9 +1276,15 @@ MAX_CHAIN_ATTEMPTS = 3
 #: whole thing. Paying three times to maybe fit is the wrong default.
 TERMINAL_STATUSES = frozenset({400, 404, 413, 422})
 
-#: Statuses that say OUR credential is bad. A second model from the SAME vendor
-#: uses the same key, so it fails the same way — skip that vendor entirely.
-CREDENTIAL_STATUSES = frozenset({401, 403})
+#: Statuses that say OUR ACCOUNT at this vendor cannot serve. A second model
+#: from the SAME vendor uses the same key and the same balance, so it fails the
+#: same way — skip that vendor entirely and try the next one in the chain.
+#:
+#: 🔴 **402 joined on 2026-09-29 (owner decision).** An empty account answers
+#: 402 to every call. It was not retryable, so one empty vendor stopped every
+#: tier bound to it, even a tier with a backup on another vendor. From
+#: 2026-09-26 to 09-28 an empty DeepSeek account stopped all AI on the box.
+CREDENTIAL_STATUSES = frozenset({401, 402, 403})
 
 
 def is_retryable(status: int | None) -> bool:

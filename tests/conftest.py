@@ -39,6 +39,9 @@ os.environ.setdefault(
 # against a start of zero. The starter-credit tests in
 # `test_customer_console_end_to_end.py` delete or set this themselves.
 os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
+# No daily cap under test either: suites provision many orgs in a run, and a
+# cap would make grant assertions depend on test order. The cap test sets it.
+os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
 
 
 @pytest.fixture(autouse=True)
