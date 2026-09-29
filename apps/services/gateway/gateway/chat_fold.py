@@ -420,6 +420,7 @@ async def persist_final_assistant_message(
     agent_name: str = "orchestrator",
     run_id: str = "",
     model: str | None = None,
+    organization_id: str | None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
 
@@ -431,6 +432,11 @@ async def persist_final_assistant_message(
     (owned by ``user_id``) so a first-turn client-death can't lose the message
     to the chat_message → chat_session foreign key — the exact failure P0-3
     persistence exists to prevent.
+
+    ``organization_id`` is the run's tenant, which the route resolved from the
+    server-side identity before it detached the run (WS-27bm S15, §21). Every
+    write below binds it. With no tenant the writes fail closed and log
+    ``chat_fold.persist_failed``, and nothing writes unbound.
 
     Best-effort: never raises. Returns the folded message dict on success
     (callers chain run-boundary work like memory extraction off it), else
@@ -480,6 +486,7 @@ async def persist_final_assistant_message(
                 events=events,
                 folded=folded,
                 ended_ms=_last_ms,
+                organization_id=organization_id,
             )
         except Exception:  # noqa: BLE001
             pass
@@ -497,6 +504,7 @@ async def persist_final_assistant_message(
         # Parent session must exist before the message FK insert.
         await asyncio.to_thread(
             _ensure_session, thread_id, user_id, agent_name,
+            organization_id=organization_id,
         )
 
         record = MessageRecord(
@@ -513,6 +521,7 @@ async def persist_final_assistant_message(
             # WS-27bm S12. The fold knows which agent ran, so it may set the
             # author of an agent turn again. It never changes a human turn.
             author_from_run=True,
+            organization_id=organization_id,
         )
         if declined:
             # S13: the row is a human or system turn, or another member's run.

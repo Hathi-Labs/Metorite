@@ -12,7 +12,7 @@
 
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import Modal from "@/components/ui/Modal";
+import ManagerFrame from "./ManagerFrame";
 import { useState } from "react";
 
 import { type ProjectRow, projectsApi } from "../lib/api";
@@ -23,9 +23,14 @@ interface Props {
   onClose: () => void;
   /** Fired with the fresh row after a save, so the tree's copy stays honest. */
   onSaved: (fresh: ProjectRow) => void;
+  /** Drawn as a section of Projects settings, not a dialog (WS-42). */
+  inline?: boolean;
 }
 
-export function LifecyclePolicy({ project, onClose, onSaved }: Props) {
+export function LifecyclePolicy({ project, onClose, onSaved, inline = false }: Props) {
+  // The values last saved inline, so "Saved." shows only while the form
+  // still holds them (an edit after a save is not saved).
+  const [savedAs, setSavedAs] = useState<string | null>(null);
   const [archiveMonths, setArchiveMonths] = useState(
     project.archive_after_months == null ? "" : String(project.archive_after_months)
   );
@@ -33,6 +38,7 @@ export function LifecyclePolicy({ project, onClose, onSaved }: Props) {
     project.close_after_months == null ? "" : String(project.close_after_months)
   );
   const [timezone, setTimezone] = useState(project.timezone ?? "UTC");
+  const current = `${archiveMonths}|${closeMonths}|${timezone}`;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +58,8 @@ export function LifecyclePolicy({ project, onClose, onSaved }: Props) {
       });
       onSaved(fresh);
       onClose();
+      // Inline, nothing closes, so the save must say itself (WS-42).
+      if (inline) setSavedAs(current);
     } catch (err) {
       setError(String((err as Error).message));
     } finally {
@@ -62,8 +70,8 @@ export function LifecyclePolicy({ project, onClose, onSaved }: Props) {
   return (
     // WS-27ak — same as FieldManager: no Escape, no outside press and no focus
     // trap before the primitive.
-    <Modal
-      open
+    <ManagerFrame
+      inline={inline}
       onClose={onClose}
       title="Lifecycle"
       description={`${project.name} and everything under it — swept on a schedule`}
@@ -122,13 +130,20 @@ export function LifecyclePolicy({ project, onClose, onSaved }: Props) {
       </div>
 
       <footer className="flex justify-end gap-2 border-t border-border px-3 py-2">
-        <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-          Cancel
-        </Button>
+        {savedAs === current ? (
+          <p role="status" className="mr-auto self-center text-xs text-muted-foreground">
+            Saved.
+          </p>
+        ) : null}
+        {inline ? null : (
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        )}
         <Button size="sm" onClick={() => void save()} disabled={busy}>
           Save
         </Button>
       </footer>
-    </Modal>
+    </ManagerFrame>
   );
 }

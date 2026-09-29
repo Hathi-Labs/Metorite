@@ -19,7 +19,7 @@ export async function POST(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/participants`,
       {
         method: "POST",
-        headers: await gatewayHeaders(),
+        headers: await gatewayHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
       },

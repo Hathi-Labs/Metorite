@@ -51,14 +51,19 @@ APPLY_START_LINE="==> Taking the deploy lock"
 # Nothing was applied in that round, and another deploy held the box.
 APPLY_LOCK_BUSY_LINE="and it is still busy. This round did NOTHING"
 
+# H-200: the host-key pin. It defines CI_SSH_HOST_KEY_OPTS, ci_pin_host_key,
+# ssh_host_key_fault and host_key_red. The step must call ci_pin_host_key
+# before the first ssh. Without the file, ssh fails closed.
+# shellcheck source=scripts/ci_ssh_host_key.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci_ssh_host_key.sh"
+
 # One set of ssh options for the probe AND the apply, so the two cannot drift.
 # ServerAlive keeps a held session alive through NAT and idle culling.
-# ⚠️ StrictHostKeyChecking=no with UserKnownHostsFile=/dev/null accepts ANY
-# host key, so a host-key mismatch never fails here. It predates H-142, and
-# its own HANDOFF entry tracks the fix ("The deploy trusts any ssh host key").
+# The host key must match deploy/hostinger/known_hosts (H-200). A mismatch goes
+# red at once. It is never a network blip, and it is never handed off.
 CI_SSH_OPTS=(
   -i "$SSH_KEY_FILE" -p "$SSH_PORT"
-  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  "${CI_SSH_HOST_KEY_OPTS[@]}"
   -o ConnectTimeout="$CONNECT_TIMEOUT" -o ServerAliveInterval=15
   -o ServerAliveCountMax=8 -o BatchMode=yes
 )
@@ -93,6 +98,7 @@ connect_budget_left() { [ "$CONNECT_SPENT" -lt "$CONNECT_BUDGET" ]; }
 #   0  ssh works now
 #   1  the budget ran out, and every failure was a network fault
 #   2  ssh failed for a reason that is NOT the network (the key, the shell)
+#   4  the box's HOST key did not match the pin (H-200). Never retried.
 # The probe always runs once, even with no budget left, so a job that spent
 # its budget early can still connect for a later round.
 wait_for_ssh() {
@@ -116,6 +122,12 @@ wait_for_ssh() {
     # prints nothing then. It is still the network, not the key.
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
       err="probe stalled and was killed after $((CONNECT_TIMEOUT + 15))s: operation timed out"
+    fi
+    # H-200: FIRST, and on ssh's whole output. The changed-key banner is long,
+    # and a host-key failure must never be read as a blip or handed off.
+    if printf '%s' "$err" | ssh_host_key_fault; then
+      host_key_red "$err"
+      return 4
     fi
     err=$(printf '%s' "$err" | tail -n 3)
     if ! printf '%s' "$err" | ssh_network_fault; then

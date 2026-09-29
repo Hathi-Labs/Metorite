@@ -528,3 +528,99 @@ def test_the_console_runs_the_hold_sweeper():
     assert "_hold_sweeper()" in inspect.getsource(main._lifespan)
     assert main.HOLD_SWEEP_OLDER_THAN_SECONDS > 120 * 3, (
         "the sweeper would release holds of calls still in flight")
+
+
+# ── Starter credits (owner decision, 2026-09-29) ───────────────────────────
+
+def _provision_new(client, db, run):
+    slug = f"start-{run}"
+    r = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "New Co", "owner_email": f"o@{slug}.example",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    assert r.status_code == 200, r.text
+    with db.begin() as c:
+        org_id = str(c.execute(
+            text("SELECT id FROM organization WHERE slug = :s"), {"s": slug}).scalar_one())
+    return slug, org_id
+
+
+def _starter_rows(db, org_id):
+    with db.begin() as c:
+        return c.execute(
+            text("SELECT delta FROM credit_ledger WHERE organization_id = CAST(:o AS uuid) "
+                 "AND reason = 'grant' AND ref = 'starter-credits'"),
+            {"o": org_id}).all()
+
+
+def test_a_NEW_organization_starts_with_500_credits(client, db, monkeypatch):
+    monkeypatch.delenv("CUSTOMER_CONSOLE_STARTER_CREDITS", raising=False)
+    _slug, org_id = _provision_new(client, db, uuid.uuid4().hex[:8])
+    rows = _starter_rows(db, org_id)
+    assert [r.delta for r in rows] == [Decimal("500")]
+    assert _balance(db, org_id) == Decimal("500")
+    with db.begin() as c:
+        source = c.execute(
+            text("SELECT source FROM credit_lot WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org_id}).scalar_one()
+    assert source == "grant", "the gift must be a FREE lot, burned before paid ones"
+
+
+def test_a_REPEATED_provision_never_grants_twice(client, db, monkeypatch):
+    """A retried signup re-runs provisioning. It must not mint 500 more."""
+    monkeypatch.delenv("CUSTOMER_CONSOLE_STARTER_CREDITS", raising=False)
+    run = uuid.uuid4().hex[:8]
+    slug, org_id = _provision_new(client, db, run)
+    again = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "New Co", "owner_email": f"o@{slug}.example",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    assert again.status_code == 200, again.text
+    assert len(_starter_rows(db, org_id)) == 1
+    assert _balance(db, org_id) == Decimal("500")
+
+
+def test_the_amount_is_configurable_and_zero_turns_it_off(client, db, monkeypatch):
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
+    _slug, org_id = _provision_new(client, db, uuid.uuid4().hex[:8])
+    assert _starter_rows(db, org_id) == []
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_CREDITS", "250")
+    _slug, org_id = _provision_new(client, db, uuid.uuid4().hex[:8])
+    assert [r.delta for r in _starter_rows(db, org_id)] == [Decimal("250")]
+
+
+@pytest.mark.parametrize("bad", ["five hundred", "nan", "sNaN", "Infinity", "1e12"])
+def test_a_bad_setting_still_grants_500_and_never_breaks_signup(client, db, monkeypatch, bad):
+    """Review of PR #532: `nan` and `Infinity` parse, and each failed EVERY
+    new signup with a 500. A bad value must behave like the default."""
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_CREDITS", bad)
+    _slug, org_id = _provision_new(client, db, uuid.uuid4().hex[:8])
+    assert [r.delta for r in _starter_rows(db, org_id)] == [Decimal("500")]
+
+
+def test_the_grant_is_audited_under_the_PROVISIONING_actor(client, db, monkeypatch):
+    """A starter grant is money. Its audit row names who created the org,
+    exactly as the `org.provision` row does, never a default."""
+    monkeypatch.delenv("CUSTOMER_CONSOLE_STARTER_CREDITS", raising=False)
+    _slug, org_id = _provision_new(client, db, uuid.uuid4().hex[:8])
+    with db.begin() as c:
+        actors = dict(c.execute(text(
+            "SELECT action, actor FROM control_audit "
+            "WHERE organization_id = CAST(:o AS uuid) "
+            "  AND action IN ('credits.starter', 'org.provision')"),
+            {"o": org_id}).all())
+    assert actors["credits.starter"] == actors["org.provision"], actors
+
+
+def test_an_EXISTING_organization_is_never_granted_retroactively(client, db, monkeypatch):
+    """Hathi Labs and Fracktal Works existed before the grant. A later
+    re-provision must not hand them 500 credits they were never promised."""
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
+    run = uuid.uuid4().hex[:8]
+    slug, org_id = _provision_new(client, db, run)
+    assert _starter_rows(db, org_id) == []
+
+    monkeypatch.setenv("CUSTOMER_CONSOLE_STARTER_CREDITS", "500")
+    again = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "New Co", "owner_email": f"o@{slug}.example",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    assert again.status_code == 200, again.text
+    assert _starter_rows(db, org_id) == [], "an existing org was granted retroactively"

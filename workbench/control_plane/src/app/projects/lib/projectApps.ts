@@ -19,7 +19,7 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "analytics" | "reports" | "ai-chat";
+export type ProjectAppId = "analytics" | "reports" | "ai-chat" | "settings";
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -72,6 +72,15 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
         // `NEXT_PUBLIC_PROJECTS_CHAT` is on. Off, it renders and says so —
         // see the `preview` note above.
         launch: "preview",
+      },
+      {
+        // WS-42 (D81) — every setting of the Projects app in one pane, in two
+        // named scopes. The row menus stay as shortcuts to the same bodies.
+        id: "settings",
+        label: "Settings",
+        icon: "Settings",
+        note: "Statuses, fields, tags and import",
+        launch: "live",
       },
     ],
   },

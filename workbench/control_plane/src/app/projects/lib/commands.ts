@@ -132,6 +132,8 @@ export interface CommandActions {
   clearFilters(): void;
   toggleRail(): void;
   manage(what: "fields" | "tags" | "statuses" | "lifecycle"): void;
+  /** WS-42 — open Projects settings, at the selected project's space. */
+  openSettings(): void;
   showShortcuts(): void;
 }
 
@@ -255,6 +257,16 @@ const PROJECT_COMMANDS: Command[] = [
     icon: "PanelLeftClose",
     when: (ctx) => ctx.canToggleRail,
     run: (actions) => actions.toggleRail(),
+  },
+  {
+    // WS-42 (D81) — every setting of the Projects app in one pane.
+    id: "projects.settings",
+    label: "Projects settings",
+    section: "Project",
+    keywords: ["settings", "preferences", "configure", "import", "export", "clickup"],
+    icon: "Settings",
+    when: () => true,
+    run: (actions) => actions.openSettings(),
   },
   {
     id: "project.fields",

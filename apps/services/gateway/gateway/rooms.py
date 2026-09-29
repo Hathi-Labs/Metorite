@@ -44,6 +44,7 @@ actually about a person's own work:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from acb_common import get_logger
 
@@ -173,17 +174,63 @@ MY_GROUPS_SQL = """
 """
 
 
-def _load_room(session_id: str, email: str) -> dict | None:
+class SessionOfAnotherTenant(Exception):
+    """The session id exists, and it belongs to another tenant.
+
+    Raised by a write helper that must not attach a row to that id (WS-27bm
+    S15 fix round 1, ``projects_ai_chat.md`` §21.11). It carries no org id.
+    """
+
+
+#: What ``_load_room`` returns for a session id that exists in another
+#: tenant. Distinct from ``None`` (no row anywhere), which is the caller's
+#: own new thread.
+_ELSEWHERE = object()
+
+
+def session_exists_elsewhere(s: Any, session_id: str) -> bool:
+    """True when this id may belong to another tenant. For a bound session only.
+
+    Call it after the bound read of ``chat_session`` found no row. Under FORCE
+    RLS that read cannot tell "no row anywhere" from "a row in another
+    tenant". Migration 222's ``chat_session_exists`` can, and it returns one
+    bit and never the row. ``NULL`` means the function cannot tell, and that
+    counts as "elsewhere", so the caller denies. Only ``false`` is a new id.
+    """
+    from sqlalchemy import text
+
+    exists = s.execute(
+        text("SELECT public.chat_session_exists(:sid)"), {"sid": session_id},
+    ).scalar()
+    return exists is not False
+
+
+def _load_room(
+    session_id: str, email: str, organization_id: str | None,
+) -> dict | object | None:
     """Read the session row and everything about this person's place in it.
 
     One round trip per concern, all inside one transaction, because a room's
     membership changing between the two reads would produce an access answer
     that was never true.
+
+    🔴 **The read is bound to the caller's tenant** (WS-27bm S15,
+    ``projects_ai_chat.md`` §21). ``chat_session`` is FORCE RLS in
+    production. An unbound read sees no row, and "no row" resolves to
+    ``_unsaved_thread()``, which is owner access. So an unbound read here
+    gives every member owner access to every room. With no tenant,
+    ``tenant_session`` raises ``TenantUnbound``, and the caller denies.
+
+    🔴 **A bound "no row" is not yet "a new thread"** (S15 fix round 1). A
+    session of ANOTHER tenant also reads as no row. So when the bound read
+    finds nothing, this asks ``session_exists_elsewhere``. An id that exists
+    elsewhere returns ``_ELSEWHERE``, and the caller denies. Only an id that
+    exists nowhere returns ``None``.
     """
-    from acb_graph import get_session
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         row = s.execute(
             text(
                 "SELECT user_id, agent_name, "
@@ -195,7 +242,7 @@ def _load_room(session_id: str, email: str) -> dict | None:
             {"sid": session_id},
         ).first()
         if row is None:
-            return None
+            return _ELSEWHERE if session_exists_elsewhere(s, session_id) else None
 
         parts = s.execute(
             text(
@@ -260,13 +307,20 @@ def _expand_members(participants, session_user_id: str) -> list[str]:
     return sorted(seen)
 
 
-def resolve_room_access(session_id: str, email: str) -> RoomAccess:
+def resolve_room_access(
+    session_id: str, email: str, *, organization_id: str | None,
+) -> RoomAccess:
     """What ``email`` may do in room ``session_id``. Never raises.
 
     This is the single source of truth for room authorization. Callers get a
     graded answer rather than a boolean so that "may read but not send" — a
     viewer watching a run — is expressible, which is the whole point of
     read-only multiplayer.
+
+    ``organization_id`` is the caller's tenant, from the server-side identity
+    (``UserContext.organization_id``), never from the request. It is required
+    and has no default (S15, §21). ``None`` fails closed: the lookup raises,
+    and the answer is ``_undecidable()``.
     """
     email = (email or "").strip()
 
@@ -304,14 +358,31 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
             unknown_session=True, resolve_failed=True,
         )
 
+    def _elsewhere() -> RoomAccess:
+        """The id exists, in another tenant. No role and no capability.
+
+        The answer says nothing about that tenant. It is the same answer as
+        a private room that the caller is not in (S15 fix round 1).
+        """
+        return RoomAccess(
+            session_id=session_id, email=email, role=None,
+            can_read=False, can_send=False, can_cancel=False,
+            can_invite=False, can_manage=False,
+            is_shared=False, members=[],
+        )
+
     if not session_id:
         return _unsaved_thread()
 
     try:
-        loaded = _load_room(session_id, email)
+        loaded = _load_room(session_id, email, organization_id)
     except Exception:
         _log.warning("rooms.resolve_failed", session_id=session_id, exc_info=True)
         return _undecidable()
+
+    if loaded is _ELSEWHERE:
+        _log.warning("rooms.session_of_another_tenant", session_id=session_id[:12])
+        return _elsewhere()
 
     if loaded is None:
         # Ephemeral thread with no session row yet: the run path creates the
@@ -319,6 +390,8 @@ def resolve_room_access(session_id: str, email: str) -> RoomAccess:
         # brand-new conversation.
         return _unsaved_thread()
 
+    if not isinstance(loaded, dict):
+        return _undecidable()
     row = loaded["session"]
     parts = loaded["participants"]
     visibility = row.visibility or "private"

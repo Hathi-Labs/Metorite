@@ -23,6 +23,13 @@ Design notes:
     returns empty, so agents keep working off the local disk cache.
   • The underlying acb_graph session is sync; the public API is async (wrapped in
     asyncio.to_thread), matching mem0_client.
+  • Every read and write binds a tenant (WS-27bm S15, ``projects_ai_chat.md``
+    §21). ``agent_blob`` and ``agent_file_history`` are FORCE RLS in production,
+    so an unbound write was refused and the store held no row. A caller may pass
+    ``organization_id``. Otherwise :func:`_caller_tenant` reads the tenant bound
+    on the caller's frame, BEFORE the worker-thread hop. With no tenant the sync
+    helper raises ``TenantUnbound``, and the public function logs and returns
+    its empty answer. Nothing falls back to an unbound session.
 """
 from __future__ import annotations
 
@@ -73,6 +80,25 @@ class BlobMeta:
     mime_type: str
 
 
+def _caller_tenant(organization_id: str | None) -> str | None:
+    """The tenant for one blob call: the explicit one, else the bound one.
+
+    The bound one is the async seam's tenant (``acb_common.db.current_tenant``).
+    A gateway request binds it from the authenticated identity, and a run binds
+    it at run start. Call this on the event-loop frame, because a ContextVar
+    does not cross ``asyncio.to_thread``. It never reads a tenant from request
+    input. ``None`` means no tenant, and the sync helper then refuses.
+    """
+    if organization_id:
+        return organization_id
+    try:
+        from acb_common.db import current_tenant
+    except ImportError:
+        return None
+    bound = current_tenant()
+    return str(bound) if bound else None
+
+
 # ---------------------------------------------------------------------------
 # Internal sync core (runs in a thread; each helper opens its own session)
 # ---------------------------------------------------------------------------
@@ -89,8 +115,9 @@ def _sync_put(
     session_id: str | None,
     actor: str,
     instance: str = "",
+    organization_id: str | None = None,
 ) -> BlobMeta | None:
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     folder = folder_of(path)
@@ -98,7 +125,7 @@ def _sync_put(
         return None
     sha = _sha256(data)
     size = len(data)
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         # Upsert current content.
         s.execute(
             text(
@@ -132,11 +159,14 @@ def _sync_put(
     return BlobMeta(agent_name, path, folder, sha, size, mime_type)
 
 
-def _sync_get(agent_name: str, path: str, instance: str = "") -> bytes | None:
-    from acb_graph import get_session  # noqa: PLC0415
+def _sync_get(
+    agent_name: str, path: str, instance: str = "",
+    organization_id: str | None = None,
+) -> bytes | None:
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         row = s.execute(
             text(
                 "SELECT content FROM agent_blob "
@@ -152,8 +182,9 @@ def _sync_get(agent_name: str, path: str, instance: str = "") -> bytes | None:
 
 def _sync_list(
     agent_name: str, prefix: str | None, instance: str = "",
+    organization_id: str | None = None,
 ) -> list[BlobMeta]:
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     sql = (
@@ -165,7 +196,7 @@ def _sync_list(
         sql += " AND path LIKE :pfx"
         params["pfx"] = prefix.rstrip("/") + "/%"
     sql += " ORDER BY path"
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         rows = s.execute(text(sql), params).fetchall()
     return [
         BlobMeta(agent_name, r[0], r[1], r[2], int(r[3]), r[4]) for r in rows
@@ -174,15 +205,15 @@ def _sync_list(
 
 def _sync_delete(
     agent_name: str, path: str, *, run_id: str | None, session_id: str | None,
-    actor: str, instance: str = "",
+    actor: str, instance: str = "", organization_id: str | None = None,
 ) -> None:
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     folder = folder_of(path)
     if folder is None:
         return
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text(
                 "DELETE FROM agent_blob "
@@ -206,8 +237,9 @@ def _sync_delete(
 
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
+    organization_id: str | None = None,
 ) -> list[dict]:
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     sql = (
@@ -221,7 +253,7 @@ def _sync_history(
         params["p"] = path
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         rows = s.execute(text(sql), params).fetchall()
     return [
         {
@@ -249,6 +281,7 @@ async def put_file(
     session_id: str | None = None,
     actor: str = "agent",
     instance: str = "",
+    organization_id: str | None = None,
 ) -> BlobMeta | None:
     """Write-through: store *data* at (agent, instance, path) + a history version.
 
@@ -266,7 +299,7 @@ async def put_file(
         return await asyncio.to_thread(
             _sync_put, agent_name, path, data, mime_type,
             action=action, run_id=run_id, session_id=session_id, actor=actor,
-            instance=instance,
+            instance=instance, organization_id=_caller_tenant(organization_id),
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("blob_store.put_failed", agent=agent_name, path=path, error=str(exc)[:200])
@@ -275,12 +308,16 @@ async def put_file(
 
 async def get_file(
     agent_name: str, path: str, *, instance: str = "",
+    organization_id: str | None = None,
 ) -> bytes | None:
     """Fault-in read: return stored bytes for (agent, instance, path), or None."""
     if not agent_name or not is_stored_path(path):
         return None
     try:
-        return await asyncio.to_thread(_sync_get, agent_name, path, instance)
+        return await asyncio.to_thread(
+            _sync_get, agent_name, path, instance,
+            _caller_tenant(organization_id),
+        )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.get_failed", agent=agent_name, path=path, error=str(exc)[:120])
         return None
@@ -288,12 +325,16 @@ async def get_file(
 
 async def list_files(
     agent_name: str, prefix: str | None = None, *, instance: str = "",
+    organization_id: str | None = None,
 ) -> list[BlobMeta]:
     """All stored files for one agent instance (optionally under *prefix*)."""
     if not agent_name:
         return []
     try:
-        return await asyncio.to_thread(_sync_list, agent_name, prefix, instance)
+        return await asyncio.to_thread(
+            _sync_list, agent_name, prefix, instance,
+            _caller_tenant(organization_id),
+        )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.list_failed", agent=agent_name, error=str(exc)[:120])
         return []
@@ -307,6 +348,7 @@ async def delete_file(
     session_id: str | None = None,
     actor: str = "agent",
     instance: str = "",
+    organization_id: str | None = None,
 ) -> None:
     """Write-through delete: drop the current blob + record a delete version."""
     if not agent_name or not is_stored_path(path):
@@ -315,7 +357,7 @@ async def delete_file(
         await asyncio.to_thread(
             _sync_delete, agent_name, path,
             run_id=run_id, session_id=session_id, actor=actor,
-            instance=instance,
+            instance=instance, organization_id=_caller_tenant(organization_id),
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("blob_store.delete_failed", agent=agent_name, path=path, error=str(exc)[:200])
@@ -323,7 +365,7 @@ async def delete_file(
 
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
-    *, instance: str = "",
+    *, instance: str = "", organization_id: str | None = None,
 ) -> list[dict]:
     """Version history for one agent instance, newest first."""
     if not agent_name:
@@ -331,6 +373,7 @@ async def file_history(
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
+            _caller_tenant(organization_id),
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
@@ -344,6 +387,7 @@ async def file_history(
 
 async def rehydrate_workspace(
     agent_name: str, workspace_root: str, *, instance: str = "",
+    organization_id: str | None = None,
 ) -> int:
     """Restore agent-data/inputs/outputs from the store into *workspace_root*.
 
@@ -365,7 +409,10 @@ async def rehydrate_workspace(
     if not agent_name or not workspace_root:
         return 0
     try:
-        metas = await list_files(agent_name, instance=instance)
+        org = _caller_tenant(organization_id)
+        metas = await list_files(
+            agent_name, instance=instance, organization_id=org,
+        )
         if not metas:
             return 0
         root = Path(workspace_root)
@@ -379,7 +426,9 @@ async def rehydrate_workspace(
                         continue
                 except Exception:  # noqa: BLE001
                     pass
-            data = await get_file(agent_name, meta.path, instance=instance)
+            data = await get_file(
+                agent_name, meta.path, instance=instance, organization_id=org,
+            )
             if data is None:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)

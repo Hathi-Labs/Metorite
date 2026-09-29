@@ -36,6 +36,27 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 LIB = ROOT / "scripts" / "ci_deploy_reach.sh"
 APPLY = ROOT / "scripts" / "vps_apply.sh"
+HOST_KEY_LIB = ROOT / "scripts" / "ci_ssh_host_key.sh"
+PINNED = ROOT / "deploy" / "hostinger" / "known_hosts"
+
+# What OpenSSH 9.6 printed on 2026-09-29 when a real sshd showed a key that the
+# pinned file did not hold. Measured against sshd in ubuntu:24.04.
+CHANGED_BANNER = """@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+Someone could be eavesdropping on you right now (man-in-the-middle attack)!
+It is also possible that a host key has just been changed.
+The fingerprint for the ED25519 key sent by the remote host is
+SHA256:wyfJnNKB8PYd3m1hrvXFOtNhzrCu38ycyfphBqkR5n4.
+Please contact your system administrator.
+Add correct host key in /home/runner/.ssh/metorite_known_hosts to get rid of this message.
+Offending ED25519 key in /home/runner/.ssh/metorite_known_hosts:1
+  remove with:
+  ssh-keygen -f '/home/runner/.ssh/metorite_known_hosts' -R '10.0.0.1'
+Host key for 10.0.0.1 has changed and you have requested strict checking.
+Host key verification failed.
+"""
 
 
 def _read(p: Path) -> str:
@@ -240,6 +261,18 @@ if [ "$last" = "true" ]; then
   fi
   [ "$mode" = first_ok ] && exit 0
   if [ "$mode" = auth ]; then echo "acb@host: Permission denied (publickey)." >&2; exit 255; fi
+  # H-200: what OpenSSH prints when the host key does not match the pin.
+  if [ "$mode" = hostkey ]; then cat "$FAKE/changed_banner" >&2; exit 255; fi
+  if [ "$mode" = unknown_key ]; then
+    echo "No ED25519 host key is known for 10.0.0.1 and you have requested strict checking." >&2
+    echo "Host key verification failed." >&2; exit 255
+  fi
+  # A host-key failure whose last lines ALSO name a network phrase. The
+  # host-key check must come first, or this reads as a blip.
+  if [ "$mode" = hostkey_then_net ]; then
+    echo "Host key verification failed." >&2
+    echo "kex_exchange_identification: Connection closed by remote host" >&2; exit 255
+  fi
   if [ "$mode" = down ] || [ "$p" -le "${PROBE_FAILS:-0}" ]; then
     echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
   fi
@@ -249,6 +282,10 @@ echo apply >> "$FAKE/calls"
 cat > /dev/null
 if [ "${APPLY_MODE:-ok}" = drop ]; then
   echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255
+fi
+if [ "${APPLY_MODE:-ok}" = hostkey ]; then
+  # The probe passed, and then the apply met ANOTHER host key.
+  cat "$FAKE/changed_banner" >&2; exit 255
 fi
 if [ "${APPLY_MODE:-ok}" = start_drop ]; then
   # The apply STARTED, maybe ran the migrations, and then lost its session.
@@ -302,6 +339,11 @@ def box(tmp_path: Path):
     (repo / "scripts").mkdir(parents=True)
     shutil.copy(LIB, repo / "scripts" / LIB.name)
     shutil.copy(APPLY, repo / "scripts" / APPLY.name)
+    # H-200: the lib sources the host-key helper, and the step pins the key.
+    shutil.copy(HOST_KEY_LIB, repo / "scripts" / HOST_KEY_LIB.name)
+    (repo / "deploy" / "hostinger").mkdir(parents=True)
+    shutil.copy(PINNED, repo / "deploy" / "hostinger" / PINNED.name)
+    (fake / "changed_banner").write_text(CHANGED_BANNER, encoding="utf-8", newline="\n")
     git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     shas = {}
@@ -393,6 +435,18 @@ class TestWaitForSshBehaviour:
         assert "rc=2" in r.stdout, r.stdout + r.stderr
         assert _count(box, "calls") == ["probe"], "waiting cannot fix a bad key"
 
+    @pytest.mark.parametrize("mode", ["hostkey", "unknown_key", "hostkey_then_net"])
+    def test_a_host_key_mismatch_is_red_and_never_retried(self, box, mode) -> None:
+        """H-200: its own code, 4. Not 1 (a blip, which hands off) and not a
+        retry. `hostkey_then_net` proves the host-key check runs FIRST."""
+        r = _lib(box, 'wait_for_ssh; echo "rc=$?"', PROBE_MODE=mode)
+        assert "rc=4" in r.stdout, r.stdout + r.stderr
+        assert _count(box, "calls") == ["probe"], "a changed host key must not be retried"
+        assert _count(box, "slept") == []
+        assert "HOST KEY CHANGED, OR SOMETHING ELSE ANSWERED AT THIS ADDRESS" in r.stdout
+        assert "NEVER disable the check" in r.stdout
+        assert "H-200" in r.stdout
+
 
 @needs_shell
 class TestTheDeployStepBehaviour:
@@ -447,6 +501,36 @@ class TestTheDeployStepBehaviour:
         r = _step(box, jobs, PROBE_MODE="auth")
         assert r.returncode == 1, r.stdout + r.stderr
         assert "reach=unreachable" not in box.out.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("mode", ["hostkey", "unknown_key"])
+    def test_a_changed_host_key_goes_red_at_once(self, box, jobs, mode) -> None:
+        """H-200: no round, no apply, no hand-off to the pull path."""
+        r = _step(box, jobs, PROBE_MODE=mode)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "reach=unreachable" not in box.out.read_text(encoding="utf-8")
+        assert "apply" not in _count(box, "calls")
+        assert "Deploy round" not in r.stdout
+        assert "::error title=ssh host key did not verify (H-200)::" in r.stdout
+
+    def test_a_host_key_change_between_probe_and_apply_is_red(self, box, jobs) -> None:
+        """The probe met the pinned key, and the apply met another one. That
+        is not a dropped connect, so it gets no refund and no second round."""
+        r = _step(box, jobs, APPLY_MODE="hostkey")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert _count(box, "calls").count("apply") == 1
+        assert "Deploy round 2/3" not in r.stdout
+        assert "Not counted as a round" not in r.stdout
+        assert "reach=unreachable" not in box.out.read_text(encoding="utf-8")
+        assert "HOST KEY CHANGED, OR SOMETHING ELSE ANSWERED" in r.stdout
+
+    def test_the_step_pins_the_key_for_the_port_it_connects_to(self, box, jobs) -> None:
+        box.version(1, box.shas["want"], box.shas["want"])
+        r = _step(box, jobs, SSH_PORT="2222")
+        assert r.returncode == 0, r.stdout + r.stderr
+        kh = (Path(box.env()["HOME"]) / ".ssh" / "metorite_known_hosts").read_text(encoding="utf-8")
+        lines = kh.splitlines()
+        assert len(lines) == 3
+        assert all(ln.startswith("[10.0.0.1]:2222 ") for ln in lines), kh
 
 
 @needs_shell

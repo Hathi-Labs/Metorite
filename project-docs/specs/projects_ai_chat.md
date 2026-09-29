@@ -13,7 +13,8 @@ was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
 S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
 schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 2026-09-28. S13 (message integrity, §19) was built 2026-09-28. S14 (no
-forged agent rows, §20) was built 2026-09-28.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
+production, §21) was built 2026-09-29.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -710,6 +711,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S12 · Follow-ups** — ✅ **BUILT 2026-09-28** | The end-date count follows the grant (H-188) · one broken panel does not blank Analytics · an @name turn keeps the agent that ran (§18) | AGENT-SAFE |
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
+| **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -3170,3 +3172,290 @@ uv run mypy $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
 ```
 
 The `-rs` output must show no R8 skip.
+
+## 21. Chat is saved on production (S15)
+
+**Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12).** This slice
+repairs a live defect in production.
+A read-only diagnosis of production on 2026-09-29 is the audit
+(GO-NARROWED). `chat_message` had never held a row in production, so every
+member's chat history lived only in one browser.
+
+### 21.1 The answer
+
+Three defects stopped every chat save. Each one alone was enough.
+
+1. The BFF sent a JSON body as `text/plain`, and the gateway answered 422.
+2. Every chat write opened an unbound session, and FORCE RLS refused it.
+3. The browser then wrote the empty server answer over its own cache.
+
+S15 repairs all three. The tenant bind also closes a hole in room access,
+so the bind of `_load_room` ships in the same change as the write fix.
+
+### 21.2 Defect 1 — the 422 on every browser save
+
+- **What.** The nine BFF routes below sent `headers: await gatewayHeaders()`
+  with a string body and no content type. For a string body, Node's `fetch`
+  sends `text/plain;charset=UTF-8`. FastAPI does not parse that body as
+  JSON. An endpoint that takes a list answers 422 with `list_type`.
+- **Evidence.** On production, `POST /chat/sessions` answered 422 twelve
+  times in twelve. The messages save answered 422 on every call.
+- **The routes.** `api/chat/sessions/route.ts`, and under
+  `api/chat/sessions/[sessionId]/` the routes `messages`, `agents`,
+  `participants`, `participants/[subject]`, `presence` and `room`. Also
+  `api/observability/avatars/generate` and `api/observability/avatars/[name]`.
+- **Since when.** Commit `e92d0620` (2026-07-30, "A bearer never leaves
+  without an identity") removed the local `"Content-Type": "application/json"`
+  from these routes.
+- **The repair.** `gatewayFetch` now supplies `Content-Type:
+  application/json` for a string body that names no content type
+  (`withJsonContentType`, rule 10 in `lib/gatewayFetch.ts`). An explicit
+  content type always wins. A FormData body stays as it was, so `fetch` still
+  sets the multipart boundary. The nine routes also set the header
+  themselves.
+
+### 21.3 Defect 2 — an unbound tenant on every chat read and write
+
+- **What.** Every helper in `gateway/routes/chat.py` opened
+  `acb_graph.get_session()`. `acb_graph/db.py` documents it as "Unbound —
+  binds NO `app.tenant_id`". `gateway/rooms.py` `_load_room`, the room
+  routes, the fold, the mint, `run_trace.record_run_trace` and
+  `blob_store.put_file` did the same.
+- **Why it fails.** In production the chat tables are FORCE RLS, and
+  `organization_id` is `NOT NULL DEFAULT
+  current_setting('app.tenant_id', true)::uuid`. A fresh backend has no
+  setting, so the default is NULL and the row is refused. A pooled backend
+  that once ran `set_config(..., true)` keeps `''`, and the write fails with
+  `invalid input syntax for type uuid: ""`.
+- **Evidence.** `chat_message` held zero rows, so every GET answered `[]`.
+  `run_trace.record_failed` fired 52 times and `agent_run` held zero rows.
+  `agent_blob` held zero rows. `ACB_GRAPH_TENANT_BIND=true` was set on the
+  box, but no chat path read it.
+- **The repair.** Each helper takes an `organization_id` argument and opens
+  `acb_graph.tenant_session(organization_id)`. A route handler passes
+  `user.organization_id`, which the server resolves from the authenticated
+  identity. `routes/agent.py` passes the tenant that it already resolves for
+  the detached run to the mint, the fold, the room checks and the history
+  loader. `main.py` passes it to its fold. `blob_store` takes an explicit
+  tenant, or else the tenant bound on the caller's frame.
+
+### 21.4 The security case — the room answer
+
+Under the unbound read, `_load_room` found no row for any session id. "No
+row" resolves to `_unsaved_thread()`, and that is owner access. So once the
+writes worked, any member could read and write any room in their own org.
+
+So the bind of `_load_room` is part of this slice and not a
+follow-up. Every caller of `resolve_room_access` passes the tenant. The
+callers are `routes/chat.py`, `routes/rooms.py`, `routes/memory.py` and, in
+`routes/agent.py`, `_resolve_room`, `_thread_owner_ok` and
+`_thread_control_ok`.
+
+### 21.5 Defect 3 — the browser cache is wiped
+
+`fetchMessagesFromDb` in `lib/sessions.ts` wrote the server answer over the
+localStorage cache on every full fetch. The server answered `[]`, so each
+page load erased the member's only copy. An empty server answer no longer
+replaces a non-empty cache. The function then gives back the cache.
+
+### 21.6 Why no test caught it
+
+- The test database is the ladder only. It has no generated tenancy phases,
+  so it has no RLS, and an unbound write succeeds there. The R8 suites for
+  chat ran green against a shape that production does not have.
+- Both clients hide every error. `sessions.ts` sends each save with
+  `.catch(() => {})` and never reads the status, so a 422 looks like
+  success. The fold, the mint and the run trace log a warning and go on.
+- No check read production after a deploy. Nothing asked "is there a row".
+
+### 21.7 Rules
+
+1. A chat, room, run or blob helper opens `acb_graph.tenant_session`. It
+   never opens `get_session()`. The fence is
+   `test_rooms.py::test_no_chat_or_room_path_opens_an_unbound_session`, which
+   reads the source and cannot skip.
+2. The tenant is a required argument with no default. Seven functions
+   take it so: `resolve_room_access`, `_upsert_messages`, `_ensure_session`,
+   `_get_messages`, `persist_final_assistant_message`, `record_run_trace`
+   and `_mint_run_row`. The same test checks each signature.
+3. The tenant comes from the server-side identity or from the run. It never
+   comes from the request body, a header or a query (R5).
+4. With no tenant a helper fails closed. `tenant_session` raises
+   `TenantUnbound`. The room answer is then `_undecidable()`, which denies.
+   Nothing falls back to an unbound session.
+5. A string body to the gateway goes out as JSON. The fences are
+   `gatewayFetch.test.ts` (rule 10) and `gatewayBodies.test.ts`. The second
+   one reads every `app/api/**/route.ts`. It fails on a call that sends
+   `body: JSON.stringify(...)` with no JSON content type.
+6. An empty server answer never replaces a non-empty chat cache. The fence
+   is `lib/sessions.test.ts`.
+
+### 21.8 Acceptance — S15
+
+1. R8, in `tests/unit/test_chat_write_under_rls.py`, on the H3 phase-4
+   catalog as its NOSUPERUSER NOBYPASSRLS role, with one fresh backend per
+   session. It reuses the `promoted` and `app_engine` fixtures. It does not
+   patch `get_session`.
+   - An unbound write is refused, on a fresh backend and on a pooled one
+     with the production error. These two tests record the cause.
+   - A new session from `_upsert_session` and from `_ensure_session` lands,
+     stamped with the member's org. No tenant raises and writes nothing.
+   - The browser save through the real handlers lands and reads back.
+   - The `sessions.ts` body sent as `text/plain` gets 422, and as JSON 200.
+   - Org B does not see org A's session or message.
+   - 🔴 Bob is in org A and is not in Alice's private room. He gets no role,
+     cannot read, gets 403 on a save, and no row lands. Alice is the owner.
+   - No tenant gives a refusal, never the owner answer.
+   - The mint lands. The fold lands, seals the row and writes the
+     `agent_run` row. A run trace lands. A blob put lands and reads back.
+2. The ladder-shape suites still pass: `test_rooms.py`, the S13 and S14
+   tests in it, `test_chat_message_upsert.py`,
+   `test_resolve_agent_for_run.py` and the blob store suites.
+3. Mutations. Each one fails at least one test:
+   - one chat helper back to `get_session()`
+   - `_load_room` back to `get_session()` (Bob becomes the owner)
+   - the content-type default removed from `gatewayFetch`
+   - the cache overwrite restored
+4. The smoke check `scripts/smoke_chat_persist.py` and the alarm
+   `scripts/alarm_chat_persist.sh` exist and are documented (§21.10).
+
+### 21.9 What S15 does not do
+
+- **The other unbound readers.** Some modules still open `get_session()` on
+  a FORCE-RLS table outside the chat save path. They are `routes/workspace.py`,
+  `acb_skills/history_tools.py`, the `dynamic_agents` and `pending_commit`
+  reads in `routes/agent.py`, `routes/observability.py`,
+  `routes/integrations.py`, `routes/integrations_skills.py`,
+  `routes/debug.py`, `action_broker/broker.py` and `acb_skills/loader.py`.
+  H-201 carries each one with its verdict.
+- **The access-request knock.** `acb_auth.access` records an unprovisioned
+  sign-in into `access_request`. It resolves the org from the email domain
+  and has no tenant yet, so it is not the same one-line pattern. H-201 names
+  it.
+- **The save race.** Fix round 1 added one retry (§21.12). The upsert and
+  the first save still leave the browser in parallel.
+- **`/chat/active-sessions`.** Its Redis scan is not tenant-prefixed. A
+  thread of another org has no visible row, so it can appear as "unknown".
+  H-201 names it.
+- **`record_message_feedback`.** Its audit event carries no organization,
+  so `acb_audit` files it under the operator org.
+- **`write_artifact`.** The agent's own blob mirror takes the tenant bound by
+  the run. It passes no explicit one. The executor's shared
+  `_WRITE_ARTIFACT_CONTEXT` dict is not per run, so it is the wrong place for
+  a tenant.
+- **Deploy wiring.** Neither the smoke check nor the alarm runs from
+  `deploy.yml` or a timer yet. A later change wires them after a first manual
+  run on the box.
+- **A member with no organization.** Such a member now gets no chat
+  persistence and no room access, where before the ladder shape let the
+  write through. That is the fail-closed rule.
+
+### 21.11 Fix round 1 — a session of another tenant is not a new thread
+
+The reviewer found a P0 in the first build of S15. Under FORCE RLS, a
+session of ANOTHER tenant reads as "no row". `_load_room` returned `None`
+for it, and `resolve_room_access` turned `None` into `_unsaved_thread()`,
+which is owner access.
+
+The stream relay keys a run by the bare thread id
+(`orchestrator/stream_relay.py`). So a member of org A who held an id of
+org B could follow B's run, cancel it and steer it. That member could also
+attach rows to B's session id. The unique index on `chat_session.id` and the
+`chat_message` foreign key both ignore RLS.
+
+**The repair.**
+
+1. Migration 222 adds `public.chat_session_exists(p_id text) RETURNS
+   boolean`. It is the first SECURITY DEFINER function in the ladder. It
+   returns one bit across tenants and never a row or an org id. It sets
+   `search_path = pg_catalog, pg_temp`, and it names `public.chat_session`
+   in full.
+2. FORCE RLS binds the owner too, unless the owner is a superuser or
+   BYPASSRLS. So the function returns NULL when its owner cannot see through
+   RLS on a table with RLS. The gateway reads NULL as "cannot tell" and
+   denies. Measured on production on 2026-09-29: `postgres` owns
+   `chat_session` with `rolbypassrls = t`.
+3. The migration revokes EXECUTE from PUBLIC, and from `anon`,
+   `authenticated` and `service_role` by name. Supabase gives a new function
+   to those three, and PostgREST publishes it as an RPC. It grants EXECUTE to
+   `acb_app` only.
+4. `rooms.session_exists_elsewhere` calls the function in the caller's
+   bound session. `_load_room` asks it when the bound read finds no row. An
+   id that exists elsewhere, or that the function cannot place, gets no role
+   and no capability. Only an id that exists nowhere is the caller's new
+   thread.
+5. `_ensure_session` and `_upsert_session` raise `SessionOfAnotherTenant`
+   before any write. `POST /chat/sessions` then answers 404.
+   `_upsert_messages` declines every id. So the mint and the fold also write
+   nothing under the id.
+
+**Acceptance, added to §21.8.** On the phase-4 catalog, as the app role:
+
+- Org A's member gets `can_read`, `can_send` and `can_cancel` all false on
+  an org B session. `_thread_owner_ok` and `_thread_control_ok` are false.
+- A's save under B's id gets 403, and A's session upsert gets 404. No row
+  of org A lands, and B's title does not change.
+- `_ensure_session` raises, `_upsert_messages` declines, and the mint and
+  the fold write no row of org A. B's rows stay as they were.
+- A truly new id is still the member's own thread, with the owner role.
+- With the function owned by a role that cannot bypass RLS, even a new id
+  is refused. The check fails closed.
+- The ACL of the function has no PUBLIC entry, and it names the app role.
+- Mutation: `_load_room` without the check gives Alice owner on B's id and
+  fails 3 tests. The write guard off fails 2 tests.
+
+**Not in this round: the relay prefix.** Prefixing the stream relay keys
+with the tenant is defence in depth. It reaches 10 importing modules and 16
+client sites, and it moves the `stream_relay.py`, `steer.py` and
+`room_stream.py` entries in the `test_tenant_redis.py` ratchet. That is not
+small, so H-201 carries it. The room check above is the boundary, and every
+reconnect, cancel and steer path goes through it.
+
+### 21.12 Fix round 1 — the first save survives the race
+
+The session upsert and the first save leave the browser at the same time.
+When the save lands first, the `chat_message` foreign key refuses it, and the
+answer is a 5xx. A member who closed the tab then lost the first prompt.
+`postMessagesWithRetry` in `lib/sessions.ts` sends the save again once, after
+about 1 s, on a 5xx or a network failure. It does not retry a 4xx, and it
+never throws. The fence is `lib/sessions.test.ts`.
+
+### 21.10 Verification
+
+R8 needs a tenancy-shaped database: the ladder, and the four generated
+phases, and a NOSUPERUSER NOBYPASSRLS role. The `promoted` fixture builds all
+three from `TENANT_LADDER_DATABASE_URL`.
+
+```bash
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/acb_tenant
+export DATABASE_URL=$TENANT_LADDER_DATABASE_URL
+uv run pytest tests/unit/test_chat_write_under_rls.py \
+  tests/unit/test_h3_rls_promotion_rehearsal.py \
+  tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py \
+  tests/unit/test_tenancy_insert_fence.py -q -rs
+uv run pytest tests/unit/test_rooms.py tests/unit/test_chat_message_upsert.py \
+  tests/unit/test_resolve_agent_for_run.py tests/unit/test_chat_hardening.py \
+  tests/unit/test_run_agent_stream_e2e.py tests/unit/test_org_access_control.py \
+  tests/unit/test_chat_creator_owner_backfill.py \
+  tests/unit/test_blob_store_durability.py tests/unit/test_blob_store_instance.py -q -rs
+G=apps/services/gateway/gateway
+uv run ruff check $G/routes/chat.py $G/rooms.py $G/routes/rooms.py $G/chat_fold.py \
+  $G/run_trace.py packages/acb_memory/acb_memory/blob_store.py
+uv run mypy $G/routes/chat.py $G/rooms.py $G/chat_fold.py $G/run_trace.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+The `-rs` output must show no R8 skip.
+
+On the box, after a deploy:
+
+```bash
+# The smoke member and org exist already. This script creates neither.
+SMOKE_BASE_URL=https://metorite.com SMOKE_COOKIE='authjs.session-token=...' \
+  SMOKE_MEMBER_EMAIL=<smoke member> SMOKE_ORG_SLUG=<smoke org> \
+  python3 scripts/smoke_chat_persist.py
+bash scripts/alarm_chat_persist.sh     # exit 1 when a write failed in 10 min
+```
+
+The smoke check reads `/api/auth/me` first. It stops, and writes nothing,
+when the cookie is not the smoke member in the smoke org.

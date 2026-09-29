@@ -33,6 +33,13 @@ os.environ.setdefault(
     os.environ.get("TENANT_LADDER_DATABASE_URL", ""),
 )
 
+# Starter credits OFF by default under test (owner decision 2026-09-29 grants
+# 500 to every new organization in production). Hundreds of Console tests
+# provision an organization and assert on its balance, and they were written
+# against a start of zero. The starter-credit tests in
+# `test_customer_console_end_to_end.py` delete or set this themselves.
+os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
+
 
 @pytest.fixture(autouse=True)
 def _isolate_write_artifact_context():

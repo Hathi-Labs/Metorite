@@ -1168,9 +1168,10 @@ describe("the headless substrate is wrapped, not imported", () => {
     "app/projects/components/ImportDialog.tsx",
     "app/projects/components/ShortcutsSheet.tsx",
     "app/projects/components/SearchPalette.tsx",
-    "app/projects/components/FieldManager.tsx",
-    "app/projects/components/TagManager.tsx",
-    "app/projects/components/LifecyclePolicy.tsx",
+    // WS-42 (D81): the Projects managers draw their dialog through ONE frame,
+    // so the frame is what imports Modal. `projectsSettings.test.ts` holds
+    // each manager to it.
+    "app/projects/components/ManagerFrame.tsx",
     // 2026-09-24 — the one delete confirmation, for Projects and My Tasks. It
     // replaced `window.confirm` and a hand-rolled `fixed inset-0` overlay.
     "components/ui/ConfirmDialog.tsx",
