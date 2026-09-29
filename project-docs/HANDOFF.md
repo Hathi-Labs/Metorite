@@ -95,6 +95,19 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-203 · Decide whether a new task takes its space's default type · [OWNER]
+- **Check:** `rg -n "is_default" apps/services/gateway/gateway/routes/projects/tasks.py`
+  → no match means a new task still gets no type, whatever a space marks default.
+- **Why:** `pm_task_types.is_default` exists and every space seeds one default,
+  but `create_task` never reads it, so every new task is untyped. PS-2 dropped
+  its "make default" star, because the star promised "New tasks now start as
+  Bug" and nothing happened. Applying the default would put a type chip on
+  every new task in every organization, which is a product change and the
+  owner's to make. If yes, `create_task` fills `type_id` from the root's
+  default when the payload has none, and the star comes back.
+- **Authority:** `specs/projects_settings.md` §7 row PS-2, and the PS-2 review
+- **Added:** 2026-09-29 · WS-42 PS-2
+
 ### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
 - **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
   A hit means this is open.

@@ -19,6 +19,7 @@ const MANAGERS = [
   "TagManager.tsx",
   "LifecyclePolicy.tsx",
   "SpaceSettings.tsx",
+  "TypeManager.tsx",
 ];
 
 describe("one body per setting (D81.3)", () => {
@@ -31,7 +32,7 @@ describe("one body per setting (D81.3)", () => {
   });
   it("the pane renders the same managers, inline", () => {
     const pane = read("ProjectsSettings.tsx");
-    for (const name of ["StatusManager", "FieldManager", "TagManager", "LifecyclePolicy", "SpaceSettings"]) {
+    for (const name of ["StatusManager", "FieldManager", "TagManager", "TypeManager", "LifecyclePolicy", "SpaceSettings"]) {
       expect(pane).toMatch(new RegExp(`<${name}\\b[\\s\\S]*?\\binline\\b`));
     }
   });
@@ -50,9 +51,9 @@ describe("a pane inside Projects, never a nav entry (D81.1)", () => {
   });
 });
 
-describe("the space scope is named, and holds the five sections", () => {
+describe("the space scope is named, and holds its six sections", () => {
   it("lists the sections in the spec's order", () => {
-    expect(SPACE_SECTIONS.map((s) => s.id)).toEqual(["general", "statuses", "fields", "tags", "lifecycle"]);
+    expect(SPACE_SECTIONS.map((s) => s.id)).toEqual(["general", "statuses", "fields", "tags", "types", "lifecycle"]);
   });
   it("says how roll-ups read the statuses, since no roll-up setting exists", () => {
     const statuses = SPACE_SECTIONS.find((s) => s.id === "statuses");
