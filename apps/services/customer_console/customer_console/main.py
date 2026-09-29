@@ -112,6 +112,7 @@ from customer_console.auth import (
 )
 from customer_console.credits import (
     CREDIT_QUANTUM,
+    LEDGER_REASON_GRANT,
     LEDGER_REASON_MANUAL,
     LEDGER_REASON_PURCHASE,
     LEDGER_REASONS,
@@ -1258,6 +1259,59 @@ async def _audit_refusals(request: Request, exc: HTTPException) -> JSONResponse:
                 _log.warning("console.refusal_audit_failed", exc_info=True)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail},
                         headers=getattr(exc, "headers", None))
+
+
+#: The ledger `ref` of the starter grant. Fixed, so the unique
+#: (organization, reason, ref) index can hold a second grant out.
+STARTER_CREDITS_REF = "starter-credits"
+
+
+def _starter_credits() -> Decimal:
+    """How many credits a new organization starts with. Owner decision
+    2026-09-29: 500. `CUSTOMER_CONSOLE_STARTER_CREDITS` overrides it, and 0
+    turns the grant off. A value that does not parse falls back to 500 rather
+    than to 0, so a typo cannot silently leave every new customer with nothing.
+    """
+    raw = os.environ.get("CUSTOMER_CONSOLE_STARTER_CREDITS", "").strip()
+    try:
+        value = Decimal(raw) if raw else Decimal("500")
+    except Exception:
+        _log.warning("console.starter_credits_unparseable value=%r", raw)
+        value = Decimal("500")
+    return value if value > 0 else Decimal(0)
+
+
+def _grant_starter_credits(conn, *, org_id: str) -> None:
+    """Grant a new organization its starter credits, once, as a free lot.
+
+    ⚠️ `LEDGER_REASON_GRANT` makes it a free lot, and free lots burn before
+    paid ones (`store._LOT_FREE_FIRST`), so a customer who later buys credits
+    spends the gift first and never loses money they paid.
+
+    ⚠️ Checked, then written, inside the provisioning transaction. A second
+    grant would also be refused by the ledger's unique (org, reason, ref)
+    index, which would roll the whole provision back, so the check comes first.
+    """
+    credits = _starter_credits()
+    if credits <= 0:
+        return
+    already = conn.execute(
+        text(
+            "SELECT 1 FROM credit_ledger WHERE organization_id = CAST(:o AS uuid) "
+            "AND reason = :r AND ref = :ref"
+        ),
+        {"o": org_id, "r": LEDGER_REASON_GRANT, "ref": STARTER_CREDITS_REF},
+    ).first()
+    if already is not None:
+        return
+    store.add_credit(
+        conn,
+        org_id=org_id,
+        delta=credits,
+        reason=LEDGER_REASON_GRANT,
+        ref=STARTER_CREDITS_REF,
+    )
+    _audit(conn, org_id, "credits.starter", {"credits": str(credits)})
 
 
 def _audit(
@@ -4177,17 +4231,30 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) 
         # commercial state at all, and every billing surface has to invent a
         # default — which is how two surfaces come to disagree about whether a
         # customer is in trial.
-        conn.execute(
+        new_subscription = conn.execute(
             text(
                 """
                 INSERT INTO org_subscription (organization_id, status,
                                               trial_ends_at)
                 VALUES (:org, 'trial', now() + interval '14 days')
                 ON CONFLICT (organization_id) DO NOTHING
+                RETURNING organization_id
                 """
             ),
             {"org": org_id},
-        )
+        ).first()
+
+        # 🔴 **Starter credits for every NEW organization** (owner decision,
+        # 2026-09-29: "assign about 500 credits as starting credits for every
+        # organization that newly joins"). Without them the spend gate refuses
+        # a new customer's first AI call until an operator grants by hand.
+        #
+        # ⚠️ **Keyed to the trial row being CREATED, never to the org existing.**
+        # A retried signup, a replayed provision and an existing customer all
+        # find their subscription row already there, so none of them is granted
+        # again or retroactively. The fixed `ref` backs that up.
+        if new_subscription is not None:
+            _grant_starter_credits(conn, org_id=org_id)
 
         # Resumability, recorded rather than assumed. Provisioning is a
         # multi-step distributed action that WILL fail halfway; this row is what
