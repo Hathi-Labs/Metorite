@@ -10,7 +10,7 @@
 #
 # It does three things:
 #
-#   1. It mints a SHORT-LIVED Auth.js session for the smoke member (600 s).
+#   1. It mints a SHORT-LIVED Auth.js session for the smoke member (900 s).
 #      The secret is the workbench AUTH_SECRET from .env.local.
 #   2. It waits for the workbench to answer /api/auth/me as that member in the
 #      smoke org. A restart gives a short 502 window (H-60), so it retries.
@@ -76,7 +76,9 @@ SMOKE_ORG_ID="${SMOKE_ORG_ID:-2df62642-751d-4ddd-a079-f643ea544c74}"
 # On HTTPS, Auth.js v5 names the cookie with the __Secure- prefix, and the
 # cookie name is also the salt of the JWE.
 COOKIE_NAME="__Secure-authjs.session-token"
-MAX_AGE_S=600
+# The session must outlive everything after the mint: the mint 35 s, the
+# identity wait 410 s and the persist run 250 s, so 695 s. 900 s is the margin.
+MAX_AGE_S=900
 # The time bound of the persist run: the sweep (one list and at most five
 # deletes) plus the four steps, each call at most 15 s. 11 calls = 165 s.
 SMOKE_RUN_S="${SMOKE_RUN_S:-240}"
@@ -103,6 +105,19 @@ cd "$APP_DIR" || env_fail "no app checkout at $APP_DIR"
 [ -x "$PY" ] || env_fail "no python at $PY"
 [ -f "$SMOKE_PY" ] || env_fail "no $SMOKE_PY in this checkout"
 command -v node >/dev/null 2>&1 || env_fail "node is not on PATH"
+
+# The shared lock, on fd 9, until this script exits. It comes BEFORE the
+# mint, so a long lock wait cannot use up the life of the session. `flock` ignores the
+# open mode, so a read-only open is enough (vps_pull.sh does the same).
+if [ -r "$DEPLOY_LOCK" ] && exec 9<"$DEPLOY_LOCK"; then
+  if ! flock -s -w "$SMOKE_LOCK_WAIT" 9 </dev/null; then
+    echo "smoke_chat: BUSY. Another deploy held $DEPLOY_LOCK for ${SMOKE_LOCK_WAIT}s, so chat was not checked." >&2
+    echo "smoke_chat: the box holds $(served_sha). That deploy runs its own smoke." >&2
+    exit 75
+  fi
+else
+  echo "smoke_chat: no deploy lock at $DEPLOY_LOCK. The smoke runs without it." >&2
+fi
 
 # Read the secret. A command substitution prints nothing. The last line wins,
 # as it does for the dotenv loader, and one pair of quotes is removed.
@@ -164,18 +179,6 @@ elif org != os.environ["SMOKE_ORG_SLUG"]:
 else:
     print("ok")
 '
-# The shared lock, on fd 9, until this script exits. `flock` ignores the
-# open mode, so a read-only open is enough (vps_pull.sh does the same).
-if [ -r "$DEPLOY_LOCK" ] && exec 9<"$DEPLOY_LOCK"; then
-  if ! flock -s -w "$SMOKE_LOCK_WAIT" 9 </dev/null; then
-    echo "smoke_chat: BUSY. Another deploy held $DEPLOY_LOCK for ${SMOKE_LOCK_WAIT}s, so chat was not checked." >&2
-    echo "smoke_chat: the box holds $(served_sha). That deploy runs its own smoke." >&2
-    exit 75
-  fi
-else
-  echo "smoke_chat: no deploy lock at $DEPLOY_LOCK. The smoke runs without it." >&2
-fi
-
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
 state=""
 for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do

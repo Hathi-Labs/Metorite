@@ -3457,9 +3457,10 @@ bash scripts/alarm_chat_persist.sh     # exit 1 when a write failed in 10 min
 
 **Every deploy runs the smoke (S16).** The `chat-smoke` job in `deploy.yml`
 runs after the deploy is verified, on the push path and on the pull path. It
-sends `deploy/smoke_chat.sh` to the box over ssh. The script mints a session
-of 600 s in memory from the workbench `AUTH_SECRET`. It waits for
-`/api/auth/me` to name the smoke member in the smoke org, 12 tries 10 s apart.
+sends `deploy/smoke_chat.sh` to the box over ssh. The script takes the lock,
+and then mints a session of 900 s in memory from the workbench `AUTH_SECRET`.
+It waits for `/api/auth/me` to name the smoke member in the smoke org, 12
+tries 10 s apart.
 Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run

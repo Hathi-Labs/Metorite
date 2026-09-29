@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/projects_ai_chat.md`` §21.10.
 
 For two months every chat save on production failed, and every deploy went
 green. ``deploy/smoke_chat.sh`` now runs on the box after each verified
-deploy. It mints a 600 s session IN MEMORY and runs
+deploy. It mints a 900 s session IN MEMORY and runs
 ``scripts/smoke_chat_persist.py``. This file is the fence (R7) for three
 claims:
 
@@ -168,6 +168,13 @@ def test_the_time_bounds_add_up(jobs: dict) -> None:
     assert 'timeout -k 10 "$SMOKE_SSH_TIMEOUT" ssh' in step
     job_s = jobs["chat-smoke"]["timeout-minutes"] * 60
     assert job_s >= 3 * (ssh_t + 10) + 300 + 90 + 20 + 40, job_s
+    # Fix round 2: the session is minted AFTER the lock, and it outlives
+    # everything that comes after the mint.
+    after_mint = 35 + tries * 25 + (tries - 1) * nap + run + 10
+    max_age = int(re.search(r"^MAX_AGE_S=(\d+)$", text, re.M).group(1))
+    assert max_age >= after_mint, (max_age, after_mint)
+    assert text.index('flock -s -w "$SMOKE_LOCK_WAIT" 9') < text.index("timeout -k 5 30 node "), (
+        "mint the session after the lock, or a long wait uses up its life")
 
 
 # ── 2. The script's text ────────────────────────────────────────────────────

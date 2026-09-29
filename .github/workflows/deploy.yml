@@ -726,7 +726,7 @@ jobs:
   #
   # It runs after the deploy is verified, on either path: the push apply, or
   # the pull path that `pull-delivery` confirmed. `deploy/smoke_chat.sh` runs
-  # on the box as the ssh user, mints a 600 s session in memory and runs
+  # on the box as the ssh user, mints a 900 s session in memory and runs
   # `scripts/smoke_chat_persist.py`. No cookie file and no GitHub secret.
   #
   # ⚠️ RED ON PURPOSE, and no rollback. R6 says we only roll forward. A red
