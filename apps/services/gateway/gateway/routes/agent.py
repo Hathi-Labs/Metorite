@@ -2714,7 +2714,7 @@ async def run_agent_async(
     return {"run_id": run_id, "status": "queued", "agent": agent}
 
 
-def _member_graph_session(user: UserContext):
+def _member_graph_session(user: UserContext) -> Any:
     """An ``acb_graph`` session bound to the caller's tenant. H-201.
 
     ``pending_commit`` and ``audit_event`` are FORCE RLS in production. An

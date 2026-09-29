@@ -48,7 +48,8 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "outputs" / "chart.png").write_bytes(b"\x89PNG\r\n")
     (root / ".env").write_text("SECRET=1", encoding="utf-8")
     (tmp_path / "outside.md").write_text("# outside", encoding="utf-8")
-    monkeypatch.setattr(workspace, "_get_workspace_path", lambda sid, email=None: root)
+    monkeypatch.setattr(workspace, "_get_workspace_path",
+                        lambda sid, email, organization_id: root)
 
     async def _no_store(*_a: object, **_k: object) -> bool:
         return False

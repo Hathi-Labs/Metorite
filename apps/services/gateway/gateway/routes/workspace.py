@@ -207,7 +207,7 @@ def _get_workspace_path(
        browser opens the viewer's own partition even before its first run.
     """
     from acb_graph import tenant_session
-    from acb_graph.db import TenantUnbound
+    from gateway.db import TenantUnbound
 
     try:
         from sqlalchemy import text
@@ -676,7 +676,7 @@ async def set_workspace_path(
     raises ``TenantUnbound``, and the app handler answers it.
     """
     from acb_graph import tenant_session
-    from acb_graph.db import TenantUnbound
+    from gateway.db import TenantUnbound
 
     organization_id = _user.organization_id
     try:
