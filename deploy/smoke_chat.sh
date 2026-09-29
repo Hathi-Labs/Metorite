@@ -16,6 +16,11 @@
 #      smoke org. A restart gives a short 502 window (H-60), so it retries.
 #   3. It runs scripts/smoke_chat_persist.py, and exits with its code.
 #
+# Steps 2 and 3 hold a SHARED lock on the deploy lock. `vps_apply.sh` takes
+# that same file EXCLUSIVE for the whole apply (`deploy_lock_acquire`), on the
+# push path and on the pull path. So no restart can land in the middle of the
+# smoke, and a second deploy cannot make a false "chat does not save" red.
+#
 # 🔴 THE COOKIE NEVER LEAVES THIS PROCESS. It lives in one shell variable. It
 # goes to each child through the ENVIRONMENT only. It is never written to a
 # file, never put on a command line (`ps` shows every argument to every user),
@@ -30,6 +35,8 @@
 #   1  a step failed. Chat does not save. Do NOT retry, look at the box.
 #   2  the environment is wrong: no AUTH_SECRET, no node, no smoke org, or a
 #      session that the workbench does not accept.
+#   75 BUSY. Another deploy held the lock for SMOKE_LOCK_WAIT seconds, so
+#      nothing was checked. That deploy runs its own smoke. Not a red.
 #
 # Overrides, all optional:
 #   APP_DIR              /opt/acb/app
@@ -39,6 +46,8 @@
 #   SMOKE_ORG_SLUG       smoke-chat
 #   SMOKE_WAIT_TRIES     12
 #   SMOKE_WAIT_NAP       10 (seconds)
+#   DEPLOY_LOCK          /opt/acb/acb-deploy.lock (the file vps_apply.sh locks)
+#   SMOKE_LOCK_WAIT      240 (seconds)
 set -uo pipefail
 set +x   # never trace. A trace prints the secret and the cookie.
 
@@ -48,6 +57,9 @@ SMOKE_MEMBER_EMAIL="${SMOKE_MEMBER_EMAIL:-smoke-chat@smoke.metorite.invalid}"
 SMOKE_ORG_SLUG="${SMOKE_ORG_SLUG:-smoke-chat}"
 SMOKE_WAIT_TRIES="${SMOKE_WAIT_TRIES:-12}"
 SMOKE_WAIT_NAP="${SMOKE_WAIT_NAP:-10}"
+# The same default as vps_apply.sh: the lock sits beside the checkout.
+DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
+SMOKE_LOCK_WAIT="${SMOKE_LOCK_WAIT:-240}"
 # The org id of record, for the message only. The check is by slug.
 SMOKE_ORG_ID="${SMOKE_ORG_ID:-2df62642-751d-4ddd-a079-f643ea544c74}"
 # On HTTPS, Auth.js v5 names the cookie with the __Secure- prefix, and the
@@ -60,8 +72,15 @@ WB_ENV="$WB_DIR/.env.local"
 PY="$APP_DIR/.venv/bin/python"
 SMOKE_PY="$APP_DIR/scripts/smoke_chat_persist.py"
 
+# The commit the box holds. A failure prints it, so an overlap with another
+# deploy is easy to see.
+served_sha() {
+  git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo unknown
+}
+
 env_fail() {
   echo "smoke_chat: $*" >&2
+  echo "smoke_chat: the box holds $(served_sha)" >&2
   exit 2
 }
 
@@ -131,6 +150,18 @@ elif org != os.environ["SMOKE_ORG_SLUG"]:
 else:
     print("ok")
 '
+# The shared lock, on fd 9, until this script exits. `flock` ignores the
+# open mode, so a read-only open is enough (vps_pull.sh does the same).
+if [ -r "$DEPLOY_LOCK" ] && exec 9<"$DEPLOY_LOCK"; then
+  if ! flock -s -w "$SMOKE_LOCK_WAIT" 9; then
+    echo "smoke_chat: BUSY. Another deploy held $DEPLOY_LOCK for ${SMOKE_LOCK_WAIT}s, so chat was not checked." >&2
+    echo "smoke_chat: the box holds $(served_sha). That deploy runs its own smoke." >&2
+    exit 75
+  fi
+else
+  echo "smoke_chat: no deploy lock at $DEPLOY_LOCK. The smoke runs without it." >&2
+fi
+
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
 state=""
 for try in $(seq 1 "$SMOKE_WAIT_TRIES"); do
@@ -161,6 +192,7 @@ esac
 rc=0
 SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" "$SMOKE_PY" || rc=$?
 unset SMOKE_COOKIE
+[ "$rc" = 0 ] || echo "smoke_chat: the box holds $(served_sha)" >&2
 case "$rc" in
   0|1|2) exit "$rc" ;;
   *) echo "smoke_chat: the smoke exited $rc" >&2; exit 1 ;;

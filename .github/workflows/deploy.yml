@@ -733,6 +733,11 @@ jobs:
   # here means "the release is live and chat does not save". Fix forward.
   # Exit 1 (a step failed) and exit 2 (the environment is wrong) are both red
   # at once, with no retry. Only an ssh blip retries, as H-142 does it.
+  #
+  # ⚠️ No concurrency group here. The `deploy-production` group covers only
+  # the `deploy` job. The smoke holds a SHARED lock on the box's deploy lock
+  # instead, which every apply takes EXCLUSIVE, on both delivery paths. Exit 75
+  # means another deploy held it for the whole wait. That is a warning.
   chat-smoke:
     name: "Chat saves (smoke)"
     runs-on: ubuntu-latest
@@ -799,6 +804,12 @@ jobs:
               2)
                 echo "❌ Chat smoke FAILED: the environment is wrong (exit 2). See the line above."
                 exit 1 ;;
+              75)
+                # BUSY. A later deploy held the box's deploy lock for the whole
+                # wait, so the smoke checked nothing. That deploy runs its own
+                # chat-smoke. A red here would blame this release for nothing.
+                echo "::warning title=Chat smoke did not run::Another deploy held the box's deploy lock, so chat was not checked on this run. The later deploy's own chat-smoke checks it."
+                exit 0 ;;
             esac
             # Any other code is ssh's own (255) or a timeout. Retry only when
             # ssh names a network fault, the same test the deploy job uses.

@@ -163,6 +163,9 @@ printf '%s' "__JWE__"
 # One fake for both uses: `python -c <probe>` and `python <smoke.py>`.
 FAKE_PY = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/argv.log"
+# Does the parent hold the deploy lock? A new EXCLUSIVE try must then fail.
+if flock -n -x "$DEPLOY_LOCK" true 2>/dev/null; then echo free >> "$FAKE/lock.log"
+else echo held >> "$FAKE/lock.log"; fi
 [ "$SMOKE_COOKIE" = "__Secure-authjs.session-token=__JWE__" ] || { echo "down:401"; exit 0; }
 if [ "$1" = "-c" ]; then
   n=$(cat "$FAKE/probe_n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE/probe_n"
@@ -194,6 +197,7 @@ def app(tmp_path: Path):
     (binr / "sleep").write_text("#!/usr/bin/env bash\n:\n", encoding="utf-8", newline="\n")
     (binr / "sleep").chmod(0o755)
     (appd / "scripts" / "smoke_chat_persist.py").write_text("# fake\n", encoding="utf-8")
+    (tmp_path / "acb-deploy.lock").write_text("", encoding="utf-8")
     (appd / "workbench" / "control_plane" / ".env.local").write_text(
         f'AUTH_URL=https://app.metorite.com\nAUTH_SECRET="{SECRET}"\n',
         encoding="utf-8", newline="\n")
@@ -202,7 +206,8 @@ def app(tmp_path: Path):
         env = dict(os.environ)
         env.pop("SMOKE_BASE_URL", None)
         env.update(PATH=f"{binr}{os.pathsep}{env.get('PATH', '')}",
-                   FAKE=fake.as_posix(), APP_DIR=appd.as_posix(), HOME=tmp_path.as_posix())
+                   FAKE=fake.as_posix(), APP_DIR=appd.as_posix(), HOME=tmp_path.as_posix(),
+                   DEPLOY_LOCK=(tmp_path / "acb-deploy.lock").as_posix())
         env.update(extra)
         return subprocess.run(["bash", SCRIPT.as_posix()], cwd=tmp_path, env=env,
                               capture_output=True, text=True, encoding="utf-8", timeout=60)
@@ -263,6 +268,29 @@ class TestTheScript:
         assert r.returncode == 2
         assert "did not answer 200 after 3 tries" in r.stderr
 
+    def test_the_wait_and_the_smoke_hold_the_deploy_lock(self, app) -> None:
+        """Fix round 1, P2: a second deploy's restart must not land mid-smoke."""
+        r = app.run(PROBE_DOWN="1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        seen = (app.fake / "lock.log").read_text(encoding="utf-8").split()
+        assert seen and set(seen) == {"held"}, seen
+
+    def test_a_busy_lock_exits_75_and_checks_nothing(self, app) -> None:
+        import fcntl
+
+        with open(app.root / "acb-deploy.lock", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            r = app.run(SMOKE_LOCK_WAIT="1")
+        assert r.returncode == 75, r.stdout + r.stderr
+        assert "BUSY" in r.stderr and "the box holds" in r.stderr
+        assert r.stdout == ""
+        assert not (app.fake / "lock.log").exists(), "nothing may run without the lock"
+
+    def test_a_failure_names_the_served_sha(self, app) -> None:
+        r = app.run(SMOKE_RC="1")
+        assert r.returncode == 1
+        assert "the box holds" in r.stderr
+
     def test_no_secret_exits_2(self, app) -> None:
         (app.root / "app" / "workbench" / "control_plane" / ".env.local").write_text(
             "AUTH_URL=https://app.metorite.com\n", encoding="utf-8")
@@ -283,6 +311,7 @@ if [ "$mode" = blip ] && [ "$n" = 1 ]; then
   echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255
 fi
 case "$mode" in
+  busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
   fail) echo "FAIL 2 save one row: HTTP 500"; exit 1 ;;
   env)  echo "smoke_chat: the smoke org is missing." >&2; exit 2 ;;
   auth) echo "acb@10.0.0.1: Permission denied (publickey)." >&2; exit 255 ;;
@@ -350,6 +379,12 @@ class TestTheWorkflowStep:
     def test_a_wrong_environment_is_red_and_does_not_retry(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="env")
         assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
+
+    def test_a_busy_lock_is_a_warning_and_not_a_red(self, runner, jobs) -> None:
+        r = runner.run(jobs, SMOKE_MODE="busy")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "::warning title=Chat smoke did not run::" in r.stdout
         assert _runs(runner) == 1
 
     def test_an_ssh_blip_retries_and_then_passes(self, runner, jobs) -> None:
