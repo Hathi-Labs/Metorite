@@ -136,7 +136,10 @@ def test_blocked_is_one_predicate_in_analytics() -> None:
     module = inspect.getsource(ana)
     assert module.count("link_type = 'blocks'") == 1
     assert "link_type = 'blocks'" in inspect.getsource(ana.blocked_clause)
-    assert "blocked_clause()" in _code(inspect.getsource(ana.stuck))
+    # WS-27bn R5f. `blocked_body` holds the read, and the route and the
+    # report section `stuck` both call it.
+    assert "blocked_clause()" in _code(inspect.getsource(ana.blocked_body))
+    assert "blocked_body(" in _code(inspect.getsource(ana.stuck))
     assert "blocked_clause()" in _code(inspect.getsource(pul.pulse_counts_sql))
     assert "pm_task_links" not in _code(inspect.getsource(pul))
 

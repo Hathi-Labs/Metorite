@@ -101,19 +101,52 @@ def _clear_spine(seeded: dict[str, Any]) -> None:  # noqa: F811
     )
 
 
-def _pairs(series: list[dict[str, Any]]) -> list[tuple[str, int]]:
-    return [(w["week_start"], w["completed"]) for w in series]
+#: More than ``MAX_PEOPLE`` (20), so a cap on the rows shows as a difference.
+CROWD = 23
+
+
+def _crowd(seeded: dict[str, Any]) -> None:
+    """Seed ``CROWD`` people, each with one overdue task that blocks ``m1``.
+
+    Each person gives a Load and a Capacity row, and each overdue blocker
+    gives a ``blocker_late`` conflict row. So each list holds more than 20
+    rows. The fixture deletes the tasks and their links by root project.
+    """
+    for i in range(CROWD):
+        _sql(
+            seeded,
+            "WITH st AS (SELECT id FROM pm_task_statuses"
+            "  WHERE project_id = CAST(:p AS uuid) AND category = 'todo'),"
+            " t AS (INSERT INTO pm_tasks (title, project_id, root_project_id,"
+            "  status_id, created_by, organization_id, task_number,"
+            "  estimate_mins, due_at)"
+            "  SELECT :title, CAST(:p AS uuid), CAST(:p AS uuid), st.id, :me,"
+            "   CAST(:o AS uuid), 1000 + :i, 30 + :i, now() - interval '2 days'"
+            "  FROM st RETURNING id),"
+            " a AS (INSERT INTO pm_task_assignees (task_id, assignee, assigned_by)"
+            "  SELECT t.id, :who, :me FROM t)"
+            " INSERT INTO pm_task_links (source_task_id, target_task_id, link_type,"
+            "  created_by) SELECT t.id, CAST(:m1 AS uuid), 'blocks', :me FROM t",
+            p=seeded["project"], title=f"crowd {i} {seeded['tag']}",
+            me=seeded["who"]["boss"], o=seeded["org"], i=i,
+            who=f"crowd{i:02d}-{seeded['tag']}@example.test", m1=seeded["m1"],
+        )
 
 
 @_needs_db
 @pytest.mark.parametrize("scope_key", ["project", None])
 def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> None:  # noqa: F811
-    """(g) One reader, one scope: the numbers the Analytics app drew."""
+    """(g) One reader, one scope: the numbers the Analytics app drew.
+
+    Repair round 1. Each section equals its route row for row, with the
+    fields each panel draws. No list is cut short of the route's own list.
+    """
     who = seeded["who"]
     project = seeded[scope_key] if scope_key else None
     admin = _user(who["boss"], admin=True)
     _finish(seeded, "m1", 3)
     _finish(seeded, "l1", 20)
+    _crowd(seeded)
     try:
         body = _overview(seeded, "boss", admin=True, project=project)
         sections = body["sections"]
@@ -122,10 +155,12 @@ def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> Non
         thr = asyncio.run(ana.throughput(
             project_id=project, include_subtree=True, weeks=12, user=admin,
         ))
-        assert _pairs(sections["throughput"]["series"]) == _pairs(thr["series"])
+        assert sections["throughput"]["series"] == thr["series"]
         assert sum(w["completed"] for w in thr["series"]) == 2
-        assert sections["throughput"]["median_hours"] == thr["summary"]["median_hours"]
-        assert sections["throughput"]["measured"] == thr["summary"]["measured"] == 2
+        for key in ("completed", "cancelled", "measured", "no_start",
+                    "median_hours", "p90_hours"):
+            assert sections["throughput"][key] == thr["summary"][key], key
+        assert sections["throughput"]["measured"] == 2
 
         fin = asyncio.run(ana.finished(
             project_id=project, include_subtree=True, weeks=12,
@@ -141,26 +176,31 @@ def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> Non
             fin["period_start"], fin["period_end"],
         )
 
+        # The Load route caps its rows at 20 too, so both lists are 20 long.
         load = asyncio.run(ana.load(project_id=project, include_subtree=True, user=admin))
-        assert [(p["assignee"], p["open_tasks"], p["overdue"])
-                for p in sections["load"]["people"]] == [
-            (p["assignee"], p["open_tasks"], p["overdue"]) for p in load["people"]
-        ]
-        assert sections["load"]["total_tasks"] == load["total_tasks"]
+        assert load["people_total"] > 20
+        assert sections["load"]["people"] == load["people"]
+        for key in ("total_tasks", "people_total", "effort"):
+            assert sections["load"][key] == load[key], key
+        assert sections["load"]["effort"]["left_mins"] > 0
 
         stuck = asyncio.run(ana.stuck(project_id=project, include_subtree=True, user=admin))
         assert sections["stuck"]["stale"] == stuck["stale"]
         assert sections["stuck"]["overdue_total"] == stuck["overdue_total"] >= 1
         assert sections["stuck"]["overdue"] == stuck["overdue"]
+        assert stuck["blocked_total"] >= 1
+        assert sections["stuck"]["blocked"] == stuck["blocked"]
+        assert sections["stuck"]["blocked_total"] == stuck["blocked_total"]
 
         cap = asyncio.run(cap_mod.capacity(project_id=project, user=admin))
+        assert len(cap["rows"]) > 20
+        assert sections["capacity"]["people"] == cap["rows"]
         assert sections["capacity"]["total_tasks"] == cap["total_tasks"]
         assert sections["capacity"]["people_total"] == cap["people_total"]
-        assert {r["assignee"] for r in sections["capacity"]["people"]} == {
-            r["assignee"] for r in cap["rows"]
-        }
 
         conf = asyncio.run(conf_mod.conflicts(project_id=project, user=admin))
+        assert len(conf["rows"]) > 20
+        assert sections["conflicts"]["rows"] == conf["rows"]
         assert sections["conflicts"]["total"] == conf["total"]
         assert sections["conflicts"]["by_kind"] == conf["by_kind"]
 

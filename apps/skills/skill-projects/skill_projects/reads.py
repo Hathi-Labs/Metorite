@@ -1433,8 +1433,8 @@ async def report_list() -> str:
 
 @_annotate(read_only=True, idempotent=True)
 async def report_render(report_id: str) -> str:
-    """Render one saved report now, from the same numbers the Analytics app
-    shows. The member's own visibility applies. This never sends anything;
+    """Render one saved report now, from the same numbers that the Overview
+    of the Reports app shows. The member's own visibility applies. This never sends anything;
     delivery lives in the Reports app."""
     rid = uuid_of(report_id, "report_id")
     definition = await get(f"/projects/reports/{rid}")

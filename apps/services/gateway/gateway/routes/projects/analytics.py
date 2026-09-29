@@ -296,58 +296,13 @@ async def stuck(
 
         # ── What is blocked by something unfinished? ────────────────────────
         #
-        # The predicate is `blocked_clause()`, which the `pulse` report
-        # section calls too (WS-27bn R3d).
-        blocker_join = blocked_clause()
-        blocked_total = int((await db.execute(
-            text(
-                f"SELECT count(*) FROM pm_tasks t"
-                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-                f" WHERE {open_where} AND {blocker_join}"
-            ),
-            params,
-        )).scalar() or 0)
-
-        blocked_rows = (await db.execute(
-            text(
-                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id,"
-                f"       t.parent_task_id"
-                f"  FROM pm_tasks t"
-                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-                f" WHERE {open_where} AND {blocker_join}"
-                # Oldest first: the thing blocked longest is the thing to ask
-                # about, and a dashboard that led with the newest would show a
-                # different list every day while the real problem sat below.
-                f" ORDER BY t.created_at ASC, t.id ASC"
-                f" LIMIT {MAX_NAMED}"
-            ),
-            params,
-        )).fetchall()
+        # `blocked_body` holds the read. The report section `stuck` calls it
+        # too (WS-27bn R5f), so the panel and the report are one computation.
+        blocked_total, blocked = await blocked_body(db, vis, open_where, params)
 
         overdue_rows = (await db.execute(
             text(overdue_by_project_sql(open_where)), params,
         )).fetchall()
-
-        blocked = [
-            {
-                "id": str(row.id),
-                "title": row.title,
-                "task_number": row.task_number,
-                "due_at": row.due_at.isoformat() if row.due_at else None,
-                # WS-27bm S4: the status report flags the PROJECT a
-                # blocked task lives in. Without this the flag was
-                # unreachable, and a fake that invented the key hid it.
-                "project_id": str(row.project_id),
-                "parent_task_id": (
-                    str(row.parent_task_id)
-                    if getattr(row, "parent_task_id", None) else None
-                ),
-            }
-            for row in blocked_rows
-        ]
-        # D-PM-38 — a blocked subtask names its parent, under the reader's
-        # grants.
-        await attach_parent_context(db, vis, blocked)
 
         return {
             "project_id": project_id,
@@ -375,6 +330,65 @@ async def stuck(
             # mistaken for the list.
             "overdue_total": sum(int(r.overdue) for r in overdue_rows),
         }
+
+
+async def blocked_body(
+    db: Any, vis: Any, open_where: str, params: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]]:
+    """The open tasks with an open blocker: a count and the oldest rows.
+
+    WS-27bn R5f. The ``stuck`` route and the report section ``stuck`` both
+    call it, so the Overdue panel draws one blocked list for both. The
+    predicate is `blocked_clause()`, which the ``pulse`` section calls too.
+    ``open_where`` and ``params`` are the caller's open-work predicate.
+    """
+    blocker_join = blocked_clause()
+    blocked_total = int((await db.execute(
+        text(
+            f"SELECT count(*) FROM pm_tasks t"
+            f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+            f" WHERE {open_where} AND {blocker_join}"
+        ),
+        params,
+    )).scalar() or 0)
+
+    blocked_rows = (await db.execute(
+        text(
+            f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id,"
+            f"       t.parent_task_id"
+            f"  FROM pm_tasks t"
+            f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+            f" WHERE {open_where} AND {blocker_join}"
+            # Oldest first: the thing blocked longest is the thing to ask
+            # about, and a dashboard that led with the newest would show a
+            # different list every day while the real problem sat below.
+            f" ORDER BY t.created_at ASC, t.id ASC"
+            f" LIMIT {MAX_NAMED}"
+        ),
+        params,
+    )).fetchall()
+
+    blocked = [
+        {
+            "id": str(row.id),
+            "title": row.title,
+            "task_number": row.task_number,
+            "due_at": row.due_at.isoformat() if row.due_at else None,
+            # WS-27bm S4: the status report flags the PROJECT a
+            # blocked task lives in. Without this the flag was
+            # unreachable, and a fake that invented the key hid it.
+            "project_id": str(row.project_id),
+            "parent_task_id": (
+                str(row.parent_task_id)
+                if getattr(row, "parent_task_id", None) else None
+            ),
+        }
+        for row in blocked_rows
+    ]
+    # D-PM-38 — a blocked subtask names its parent, under the reader's
+    # grants.
+    await attach_parent_context(db, vis, blocked)
+    return blocked_total, blocked
 
 
 def overdue_by_project_sql(open_where: str) -> str:

@@ -834,7 +834,11 @@ def test_j_a_saved_row_with_no_subject_renders_as_before(seeded, wired) -> None:
     body = asyncio.run(rep.render_report(old["id"], user=admin))
     for name in ("load", "capacity", "conflicts"):
         assert "hidden_people" not in body["sections"][name], name
-    assert set(body["sections"]["load"]) == {"people", "total_tasks"}
+    # WS-27bn R5f adds the effort figures of the Load route. An admin still
+    # gets no `hidden_people` key.
+    assert set(body["sections"]["load"]) == {
+        "people", "total_tasks", "people_total", "effort",
+    }
 
     async def direct() -> list[Any]:
         async with wired["engine"].connect() as db:
@@ -849,7 +853,8 @@ def test_j_a_saved_row_with_no_subject_renders_as_before(seeded, wired) -> None:
     want = [
         {"assignee": r.who or None, "open_tasks": int(r.open_tasks),
          "overdue": int(r.overdue), "due_next_7d": int(r.due_next_7d),
-         "later": int(r.later)}
+         "later": int(r.later), "est_mins": int(r.est_mins or 0),
+         "estimated": int(r.estimated or 0)}
         for r in rows
     ][:ana.MAX_PEOPLE]
     assert body["sections"]["load"]["people"] == want
