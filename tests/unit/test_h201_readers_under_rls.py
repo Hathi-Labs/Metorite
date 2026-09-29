@@ -346,9 +346,12 @@ def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_cl
 
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────
 
-def _history(org: str | None, **criteria) -> str:
-    """``query_history`` on a run frame that carries *org*, the way the
-    executor sets it: ``_RUN_ORG`` keyed by the run's thread id."""
+def _history(org: str | None, user: str | None = None, *, verified: bool = True,
+             **criteria) -> str:
+    """``query_history`` on a run frame that carries *org* and *user*, the
+    way the executor sets them: ``_RUN_ORG`` keyed by the run's thread id,
+    and the run context with the member that the session verified."""
+    from acb_common import bind_run_context
     from acb_skills.history_tools import query_history
     from orchestrator import executor
 
@@ -356,6 +359,7 @@ def _history(org: str | None, **criteria) -> str:
 
     async def _go() -> str:
         executor._stream_relay_thread_id.set(tid)
+        bind_run_context(thread_id=tid, user=user, member_verified=verified)
         if org:
             executor._RUN_ORG[tid] = org
         try:
@@ -364,6 +368,33 @@ def _history(org: str | None, **criteria) -> str:
             executor._RUN_ORG.pop(tid, None)
 
     return asyncio.run(_go())
+
+
+def _seed_room(promoted, org: str, owner: str, messages: list[tuple[str, int]], *,  # noqa: F811
+               participants: tuple[tuple[str, str, int | None], ...] = (),
+               history: str = "full") -> str:
+    """A session with its messages, and participant rows when given. The
+    owner row is written only when a participant is named, as S14 does."""
+    sid = _sid()
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, history_visibility, "
+            "organization_id) VALUES (:s, :u, 'orchestrator', :h, CAST(:o AS uuid))"),
+            {"s": sid, "u": owner, "h": history, "o": org})
+        rows = ((owner, "owner", None), *participants) if participants else ()
+        for subject, role, join_ts in rows:
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "join_message_ts, organization_id) VALUES (:s, :p, :r, :j, "
+                "CAST(:o AS uuid))"),
+                {"s": sid, "p": subject, "r": role, "j": join_ts, "o": org})
+        for content, ts in messages:
+            c.execute(text(
+                "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+                "organization_id) VALUES (:i, :s, 'user', :c, :t, CAST(:o AS uuid))"),
+                {"i": f"m-{uuid.uuid4().hex[:8]}", "s": sid, "c": content, "t": ts,
+                 "o": org})
+    return sid
 
 
 @_DB_GATE
@@ -378,14 +409,48 @@ def test_query_history_reads_in_the_runs_tenant(graph_as_app, monkeypatch):  # n
     rows[0]["content"] = f"Recall {term} please"
     assert alice.post(f"/chat/sessions/{sid}/messages", json=rows).json()["saved"] == 1
 
-    mine = json.loads(_history(a, search=term))
+    mine = json.loads(_history(a, _ALICE, search=term))
     assert [(r["thread_id"], r["role"]) for r in mine] == [(sid, "user")]
     assert term in mine[0]["content"]
 
-    assert _history(b, search=term) == "[]"
+    assert _history(b, _CAROL, search=term) == "[]"
     # With the bind ON and no tenant, the opener is None and the tool answers
     # empty. It never opens an unbound session.
-    assert _history(None, search=term) == "[]"
+    assert _history(None, _ALICE, search=term) == "[]"
+
+
+@_DB_GATE
+def test_query_history_reads_only_rooms_the_member_may_read(graph_as_app, monkeypatch):  # noqa: F811
+    """🔴 H-201 fix round 1, P1 (D12). A cron, webhook or email run has no
+    member. Before, the member criterion dropped out and the tool gave every
+    private chat of the org, and injected email text could ask for it."""
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "true")
+    a = graph_as_app.org_a
+    term = f"h201-{uuid.uuid4().hex[:8]}"
+    own = _seed_room(graph_as_app, a, _ALICE, [(f"alice {term}", 100)])
+    bobs = _seed_room(graph_as_app, a, _BOB, [(f"bob private {term}", 200)])
+    shared = _seed_room(graph_as_app, a, _BOB, [(f"bob shared {term}", 300)],
+                        participants=((_ALICE, "member", None),))
+    late = _seed_room(graph_as_app, a, _BOB,
+                      [(f"before join {term}", 400), (f"after join {term}", 600)],
+                      participants=((_ALICE, "member", 500),), history="since_join")
+
+    def _seen(user, **kw) -> set[tuple[str, str]]:
+        out = _history(a, user, search=term, limit=20, **kw)
+        return {(r["thread_id"], r["content"]) for r in json.loads(out)}
+
+    assert _seen(_ALICE) == {
+        (own, f"alice {term}"), (shared, f"bob shared {term}"),
+        (late, f"after join {term}"),
+    }
+    assert (bobs, f"bob private {term}") not in _seen(_ALICE)
+    # Bob sees his own rooms, and not Alice's private one.
+    assert own not in {sid for sid, _ in _seen(_BOB)}
+    # No member, and a member that no session verified, see nothing.
+    assert _history(a, None, search=term) == "[]"
+    assert _history(a, _ALICE, verified=False, search=term) == "[]"
+    # A thread criterion cannot reach past the rule.
+    assert _seen(_ALICE, thread_id=bobs) == set()
 
 
 # ── routes/agent.py — pending_commit and audit_event ────────────────────────
