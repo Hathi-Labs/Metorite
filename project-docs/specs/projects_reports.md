@@ -19,8 +19,10 @@ chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13).
 **R5b-1 BUILT 2026-09-29** (the subject chip in the builder, T2 and T6 live,
 T1 takes a team, and the link contract). Repair round 1 on 2026-09-29 keeps a
 T2 about its author on an edit. **R5b-2 BUILT 2026-09-29** (the entry
-points "Report on this", "1:1 prep" and "My day"). R5c is blocked. R4,
-R4b, R6 to R9 and Phases 2 and 3 are not built.
+points "Report on this", "1:1 prep" and "My day"). **The UX pass BUILT
+2026-09-29** (§6.5: the builder beside its preview, the header, the gallery,
+the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
+Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -333,8 +335,16 @@ authenticated caller.
 
 **No card renders when the home screen loads.** A click opens the report, and
 the render runs then. The headline and the change mark wait for stored runs
-(R4). Pins wait for a later slice. The empty state offers the live templates,
-and in R2 that is T4 only.
+(R4). Pins wait for a later slice.
+
+**Since the UX pass (§6.5)**, the empty state is one line: "You have not
+saved a report yet. Pick a question below." A card shows the name, then the
+subject and the scope. It shows the template name only when the name differs
+from it.
+
+**The rail** lists the saved reports in two groups, "Yours" and "Shared with
+you", by the server's `mine`. A shared row names its author. On a phone the
+rail is absent on the home screen, because the cards list your reports.
 
 **In R2, the saved list has no filter.** The filter for scope, template and
 owner waits for a later slice.
@@ -371,6 +381,14 @@ The builder is one sentence of chips, with a live preview beside it:
 On a phone, the preview moves under the sentence, and each chip takes the full
 width.
 
+**Since the UX pass (§6.5).** At `xl` and wider, the chips and the other
+controls are a sticky column on the left, and the preview is on the right.
+Below `xl` the two stack. The rail leaves while a member builds a report.
+
+When every chosen section ignores the period, "As of today" replaces the
+period chip. The sections sit under three labels. The name follows the chips
+until the member types one. Edit mode offers "Delete report".
+
 ### 6.3 Entry points
 
 A member reaches a report from where they already are, with the scope filled
@@ -389,6 +407,12 @@ in.
 
 One layout for every template. The top answers the question, and the detail
 comes after.
+
+**The line under the title** (the UX pass, §6.5) names the subject, the scope
+and the period, in the words of the chips. An example is "About Meera Iyer ·
+In Printer X2 · 31 Aug – 27 Sep 2026". A report whose sections all ignore the
+period says "As of 29 Sep 2026" in place of the period. The word for the
+organization is "Whole organization" on every surface, the email too.
 
 1. **The headline.** A fixed sentence built from the counts, which costs
    nothing. Beside it, a **Summarize with AI** control (R6). When the member
@@ -423,6 +447,100 @@ An email carries no colour (§9.12.8).
 
 **Pictures first.** Each section shows a chart, a progress bar or a tile
 first, and its table second. Slice R2b sets the rules.
+
+### 6.5 The UX pass (2026-09-29)
+
+The owner asked for report creation that is intuitive, easy and pleasant to
+look at (directive, 2026-09-29). A design review ranked 18 changes, and this
+pass applies all of them. Each rule below changes what the UI shows or says.
+The one look binds each rule (`DESIGN_SYSTEM.md`).
+
+**The builder.**
+1. **The preview sits beside the controls.** At `xl`, the controls are a
+   sticky column of 18rem, and the preview is on the right. Below `xl` the
+   two stack. The saved-reports rail leaves while the member builds or edits.
+2. **A project-only template asks for a project.** T3, "Project status", has
+   the `scope_kinds` `["project"]` and nothing else. Its scope chip says
+   "choose a project" and offers no "Whole organization". Save is off. The
+   preview says "Choose a project in the In chip to see this report."
+3. **The period chip says "As of today" when no section reads the period.**
+   `render_body` reads the period only in `finished` and `throughput`. When
+   every chosen section is one of the other eight, "As of today" replaces
+   the chip.
+4. **The sections sit under three labels**, each in `SECTIONS` order.
+   "What happened" holds `finished` and `throughput`. "Where we stand" holds
+   `outlook`, `load`, `capacity`, `stuck` and `hygiene`. "Who needs help"
+   holds `pulse`, `conflicts` and `rebalance`. A checkbox's tooltip is its
+   panel's own sentence.
+5. **The name follows the chips** until the member types one. Examples are
+   "1:1 prep: Meera Iyer" and "Team pulse: Hardware team". "My day" stays "My
+   day". A saved report keeps its saved name.
+6. **The subject menu** shows "Everyone" with no heading, then "Teams", then
+   "People". The address shows only on "Me", and on two people with one name.
+7. **Team pulse starts on the reader's team** when the reader is not an admin
+   and leads exactly one team.
+8. **One Retry.** When the subjects read fails, the subject chip is off and
+   says "People did not load". Retry sits beside it. The preview line says
+   what failed, with no second Retry.
+9. **The preview does not blank.** On a change, the last preview stays,
+   dimmed, with "Updating…". A skeleton shows only on the first load. A failed
+   preview says "The preview could not be drawn." with "Try again".
+10. **Edit mode** has the title "Edit: [name]", and no "Started from a
+    template" line. A reader whose row has `can_delete` sees "Delete report".
+    It asks through the shared `ConfirmDialog`, and the words say that the
+    delete is for good, for every reader.
+
+**The home and the report.**
+11. **The gallery** shows the live templates first, in one grid. The
+    coming-soon templates fold under "Coming later (N)". What a template
+    waits for is a tooltip, not a line on the card.
+12. **The rail and the cards** follow §6.1: "Yours" and "Shared with you",
+    the author on a shared row, and one empty line.
+13. **The header line** follows §6.4: the subject and the scope in the chips'
+    words, then the period or "As of [day]".
+14. **A failed render stays in the pane**, with its sentence, "Try again",
+    and Home and Edit. The page has no error line above the pane.
+15. **Text follows the density.** `ReportsView.tsx` uses rem sizes only, so
+    `--ui-scale` reaches every line. A card title is never smaller than its
+    question.
+16. **The hidden line says what to do** where a team choice changes the
+    report. A lead who reports on "Everyone" reads "This report hides N other
+    people. Choose a team in About to report on that team only." §7.1 hides
+    those people on any subject, so the words do not promise to show them.
+
+**The panels and the entry points.**
+17. The `pulse` note is the tooltip of the panel's sentence. The conflicts
+    window reads as dates ("29 Sep 2026"). "Who is overloaded" shows a name
+    when the payload carries one.
+18. The person header wraps at 390 px, so the name keeps its width. "1:1
+    prep" is absent on the reader's own page, because "My day" covers it. The
+    chat's report card links through `reportLink`.
+
+**As built (2026-09-29).**
+- `lib/reportBuilder.ts` holds each rule as a pure function: `scopePrompt`,
+  `scopeChoices`, `startingTeam`, `hiddenTeamHint`, `PERIOD_FREE_SECTIONS`,
+  `periodFree`, `asOfDay`, `reportHeaderLine`, `scopePhrase`, `subjectLabel`,
+  `sectionGroups`, `builderName`, `reportCardLine`, `railGroups`,
+  `deleteShown` and `editTitle`. `BuilderState` gains `nameTouched` and
+  `subjectTouched`.
+- `lib/panelHints.ts` is the one source of each panel's sentence. The panels
+  and the builder's checkboxes read it.
+- `hiddenPeopleLine` in `reportEmail.ts` takes an optional `hint`. The email
+  and the chat pass none, so their words stay the same.
+- `deleteReportCopy` in `lib/deleteCopy.ts` holds the delete words.
+- Fences: `reportBuilderUx.test.ts`, `reportsUx.test.ts`,
+  `panelHints.test.ts`, `reportEntry.test.ts` (items 16 to 18) and
+  `deleteCopy.test.ts`. In `test_projects_report_sections_lockstep.py`, a
+  test reads the branches of `render_body` and pins `PERIOD_FREE_SECTIONS`
+  to them. A mutation that drops `stuck` from the list turns it red.
+- ⚠️ **The review's list of period-free sections was short.** It named five.
+  `render_body` shows eight: `load`, `outlook` and `stuck` read the state now
+  too. The lockstep test holds the eight.
+- ⚠️ **No server sends a name on a `load` row yet.** `LoadRow.name` is
+  optional, and "Who is overloaded" shows the address until one does.
+- ⚠️ **The "As of" day.** The server sends a day only in `pulse` (`today`).
+  Another period-free report reads the reader's own date, because the render
+  ran now.
 
 ---
 

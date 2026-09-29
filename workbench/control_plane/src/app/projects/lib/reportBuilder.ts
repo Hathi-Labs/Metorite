@@ -1006,8 +1006,9 @@ export function builderName(
 }
 
 /**
- * Item 11. The muted line on a "Your reports" card. The template name
- * shows only when it adds to the name. Then the subject and the scope.
+ * Item 11. The muted line on a "Your reports" card. The template and the
+ * subject show only when the name does not say them already, as a derived
+ * name ("1:1 prep: Meera Iyer") does. The scope always shows.
  */
 export function reportCardLine(
   row: ReportRow,
@@ -1015,8 +1016,9 @@ export function reportCardLine(
   subject: string | null,
   scope: string
 ): string {
-  const same = template.trim().toLowerCase() === row.name.trim().toLowerCase();
-  return [same ? null : template, subject ? `About ${subject}` : null, scope]
+  const name = row.name.trim().toLowerCase();
+  const said = (part: string | null) => !!part && name.includes(part.trim().toLowerCase());
+  return [said(template) ? null : template, subject && !said(subject) ? `About ${subject}` : null, scope]
     .filter(Boolean)
     .join(" · ");
 }

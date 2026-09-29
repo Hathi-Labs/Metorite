@@ -415,6 +415,10 @@ describe("(11) the name follows the chips until the member types one", () => {
     expect(reportCardLine(row(), "Custom", "Meera Iyer", "Printer X2")).toBe(
       "Custom · About Meera Iyer · Printer X2"
     );
+    // A derived name says the template and the subject, so the line does not.
+    expect(
+      reportCardLine(row({ name: "1:1 prep: Meera Iyer" }), "1:1 prep", "Meera Iyer", "Whole organization")
+    ).toBe("Whole organization");
   });
 });
 

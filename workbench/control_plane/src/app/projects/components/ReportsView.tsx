@@ -1426,22 +1426,22 @@ export function RenderFailed({
   onEdit: () => void;
 }) {
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
-          Try again
-        </Button>
-        {row ? (
-          <ReportActions row={row} onHome={onHome} onEdit={onEdit} />
-        ) : (
-          <Button variant="ghost" size="sm" icon="LayoutGrid" onClick={onHome}>
-            Home
-          </Button>
-        )}
-      </div>
-      <p className="text-xs text-destructive" role="alert">
+    // The sentence first, then what to do about it: Try again beside it,
+    // and the way home or to Edit on the right (visual review, 2026-09-29).
+    <div className="flex flex-wrap items-center gap-2">
+      <p className="min-w-0 text-xs text-destructive" role="alert">
         {error}
       </p>
+      <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+        Try again
+      </Button>
+      {row ? (
+        <ReportActions row={row} onHome={onHome} onEdit={onEdit} />
+      ) : (
+        <Button className="ml-auto" variant="ghost" size="sm" icon="LayoutGrid" onClick={onHome}>
+          Home
+        </Button>
+      )}
     </div>
   );
 }
