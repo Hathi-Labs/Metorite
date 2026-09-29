@@ -591,6 +591,23 @@ async def test_my_tasks_update_refuses_a_level_with_a_flag(monkeypatch) -> None:
     assert store.patches == []
 
 
+
+@pytest.mark.parametrize("field", ["important", "leveraged", "deep_work"])
+@pytest.mark.parametrize("value", ["1", "0"])
+async def test_my_tasks_update_refuses_a_digit_flag(monkeypatch, field, value) -> None:
+    """The My Tasks door reads a flag through the shared ``flag``, so "1" is
+    refused there too. Before, its own parser read "1" as true and wrote it."""
+    store = MyStore()
+    monkeypatch.setattr(core, "_request", store)
+    out = await core.my_tasks_update(item_id=TID, **{field: value})
+    assert "is a number" in out
+    assert store.patches == []
+
+
+def test_my_tasks_has_no_second_flag_parser() -> None:
+    src = Path(core.__file__).read_text(encoding="utf-8")
+    assert "def _flag(" not in src
+
 # ── 4. The readers print the level ──────────────────────────────────────────
 
 

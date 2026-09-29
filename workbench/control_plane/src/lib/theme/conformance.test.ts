@@ -460,7 +460,7 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/components/ModuleStudio.tsx": 1,
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
-    "components/AgentChat.tsx": 20,
+    "components/AgentChat.tsx": 14,
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,

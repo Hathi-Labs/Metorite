@@ -109,6 +109,8 @@ def test_every_feature_module_is_actually_mounted() -> None:
         "/projects/import/runs/{run_id}/mapping",
         "/projects/import/runs/{run_id}/apply",
         "/projects/import/runs/{run_id}/discard",
+        # WS-42 PS-3 — the organization's own vocabulary.
+        "/projects/vocabulary",
     ):
         assert expected in paths, f"{expected} is not mounted"
 
