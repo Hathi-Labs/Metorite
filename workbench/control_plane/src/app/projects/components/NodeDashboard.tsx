@@ -32,6 +32,7 @@
  * disclosure channel wearing a summary's clothes.
  */
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { statusAccent } from "@/lib/statusAccent";
 
 import type {
@@ -57,6 +58,7 @@ import {
   emptyCopy,
   rowsReconcile,
 } from "../lib/dashboardRows";
+import { REPORT_ON_THIS, nodeReportLink } from "../lib/reportEntry";
 import {
   closableCount,
   completion,
@@ -353,6 +355,7 @@ export default function NodeDashboard({
   throughput,
   finished,
   outlook,
+  onReport,
 }: {
   summary: NodeSummary;
   /** Drill into a child. The tree selection and this view stay in step. */
@@ -370,6 +373,12 @@ export default function NodeDashboard({
   finished?: FinishedReport | null;
   /** Wave 7 — will this land, and when. Its own refusals are findings. */
   outlook?: OutlookReport | null;
+  /**
+   * WS-27bn R5b-2. "Report on this" opens the report builder with this node
+   * as the scope. The page navigates to the address, which `reportLink`
+   * builds. No prop, no control.
+   */
+  onReport?: (href: string) => void;
 }) {
   const level = summary.level;
   // ⚠️ `by_category` is typed as present and is not guaranteed to be. A summary
@@ -404,9 +413,23 @@ export default function NodeDashboard({
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      <p className="mb-3 text-[11px] font-medium text-muted-foreground">
-        {LEVEL_TITLES[level]}
-      </p>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <p className="text-[11px] font-medium text-muted-foreground">
+          {LEVEL_TITLES[level]}
+        </p>
+        {onReport ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="FileText"
+            className="shrink-0"
+            aria-label={`${REPORT_ON_THIS}: ${summary.name}`}
+            onClick={() => onReport(nodeReportLink(summary.id))}
+          >
+            {REPORT_ON_THIS}
+          </Button>
+        ) : null}
+      </div>
 
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row

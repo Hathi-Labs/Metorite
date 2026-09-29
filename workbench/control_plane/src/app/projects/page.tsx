@@ -3727,6 +3727,7 @@ function ProjectsWorkspace() {
           throughput={throughput}
           finished={finished}
           outlook={outlook}
+          onReport={(href) => router.push(href)}
         />
       ) : (
         renderState("loading", "Counting the work below…")
@@ -3916,6 +3917,7 @@ function ProjectsWorkspace() {
                 throughput={throughput}
                 finished={finished}
                 outlook={outlook}
+                onReport={(href) => router.push(href)}
               />
             ) : (
               renderState("loading", "Counting the work below…")

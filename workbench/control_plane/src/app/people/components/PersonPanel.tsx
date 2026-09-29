@@ -15,9 +15,13 @@
  * is a different set than on your own.
  */
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { projectsApi, projectsKey } from "@/app/projects/lib/api";
+import { ONE_ON_ONE_PREP, oneOnOneLink } from "@/app/projects/lib/reportEntry";
 import Button from "@/components/ui/Button";
+import { useCachedResource } from "@/lib/useCachedResource";
 
 import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials, loadBar, skillOrigin, statusTone } from "../lib/directory";
@@ -69,6 +73,13 @@ export function PersonPanel({
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const [work, setWork] = useState<{ rows: WorkRow[]; available: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  // WS-27bn R5b-2. Who the reader may report on, from the one read cache and
+  // under the key the report builder reads. It runs before the early
+  // returns below, because a hook may not follow a return.
+  const subjects = useCachedResource(projectsKey("reports/subjects"), () =>
+    projectsApi.reportSubjects()
+  );
 
   useEffect(() => {
     let live = true;
@@ -116,6 +127,11 @@ export function PersonPanel({
   }
 
   const bar = loadBar(person);
+  const prepLink = oneOnOneLink(
+    subjects.data,
+    subjects.error !== null,
+    person.email
+  );
 
   return (
     <Frame
@@ -152,6 +168,20 @@ export function PersonPanel({
                 Assign work
               </Button>
             </Link>
+          ) : null}
+          {/* WS-27bn R5b-2 — "1:1 prep" opens T6 about this person. It is
+              ABSENT, never disabled, unless the subjects answer lists the
+              person. A failed read, a 403 among them, hides it. */}
+          {prepLink ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="FileText"
+              aria-label={`${ONE_ON_ONE_PREP} with ${person.name}`}
+              onClick={() => router.push(prepLink)}
+            >
+              {ONE_ON_ONE_PREP}
+            </Button>
           ) : null}
           {/* Absent without `admin:members:manage`, never disabled (§3.2). */}
           {person.can_manage && onEdit ? (
