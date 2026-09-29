@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -448,3 +449,54 @@ class TestTheWorkflowStep:
         r = runner.run(jobs, SMOKE_MODE="auth")
         assert r.returncode == 1, r.stdout + r.stderr
         assert _runs(runner) == 1
+
+
+# ── 5. The sweep of leftover sessions (fix round 1) ─────────────────────────
+
+
+def _smoke_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "smoke_chat_persist", ROOT / "scripts" / "smoke_chat_persist.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_sweep_deletes_only_old_sessions_and_is_bounded(monkeypatch, capsys) -> None:
+    mod = _smoke_module()
+    now = 1_800_000_000.0
+    iso = lambda age: datetime.fromtimestamp(now - age, UTC).isoformat()  # noqa: E731
+    rows = [{"id": f"old{i}", "updatedAt": iso(7200)} for i in range(7)]
+    rows += [{"id": "new", "updatedAt": iso(60)}]
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(base, cookie, method, path, body=None):
+        calls.append((method, path))
+        return (200, rows) if method == "GET" else (204, None)
+
+    monkeypatch.setattr(mod, "_call", fake_call)
+    mod._sweep("https://x", "c", now=now)
+    deleted = [p for m, p in calls if m == "DELETE"]
+    assert len(deleted) == mod.SWEEP_MAX == 5
+    assert all("/old" in p for p in deleted), deleted
+    assert "ok   0 swept 5 old session(s), 2 left" in capsys.readouterr().out
+
+
+def test_a_failed_sweep_never_fails_the_smoke(monkeypatch, capsys) -> None:
+    mod = _smoke_module()
+
+    def down(*_a, **_k):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(mod, "_call", down)
+    mod._sweep("https://x", "c")
+    assert "WARN 0 sweep" in capsys.readouterr().out
+
+
+def test_the_sweep_runs_after_the_identity_check_and_before_step_1() -> None:
+    text = _read(ROOT / "scripts" / "smoke_chat_persist.py")
+    main = text[text.index("def main()"):]
+    assert main.index("REFUSED") < main.index("_sweep(base, cookie)") < main.index(
+        "1 create session")

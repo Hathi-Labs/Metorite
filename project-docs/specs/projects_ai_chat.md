@@ -3480,6 +3480,10 @@ Then it runs `scripts/smoke_chat_persist.py`.
 - The cookie goes to each child through the environment only. The script
   never writes it to a file, never puts it on a command line, and never
   prints it.
+- Before step 1, the smoke deletes each session of the smoke member that is
+  older than one hour, at most five a run. It uses the BFF list and the BFF
+  delete, and no database access. A failed sweep prints `WARN 0` and does
+  not fail the smoke.
 - The fence is `tests/unit/test_deploy_smoke_wiring.py`.
 
 **The alarm stays manual.** `alarm_chat_persist.sh` counts write failures in

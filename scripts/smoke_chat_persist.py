@@ -11,6 +11,12 @@ It goes through the Next BFF, the same path as the browser, in four steps:
 3. ``GET /api/chat/sessions/<id>/messages`` must give back that id and text.
 4. ``DELETE /api/chat/sessions/<id>`` removes the session.
 
+Before step 1 it sweeps, best effort (S16). ``GET /api/chat/sessions`` lists
+the smoke member's sessions, and each one older than one hour is deleted
+through the same ``DELETE``, at most five a run. So a run that died before
+step 4 leaves no row for long. A failed sweep prints ``WARN 0`` and never
+fails the smoke.
+
 It runs as a DEDICATED smoke member in a DEDICATED smoke org. It creates no
 org and no member. Before step 1 it reads ``/api/auth/me`` and stops when the
 cookie belongs to anyone other than ``SMOKE_MEMBER_EMAIL`` in ``SMOKE_ORG_SLUG``.
@@ -51,8 +57,11 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import UTC, datetime
 
 TIMEOUT_S = 15
+SWEEP_AGE_S = 3600   # a session older than this is a leftover
+SWEEP_MAX = 5        # deletes per run, so the sweep has a time bound
 
 
 def _env(name: str) -> str:
@@ -90,6 +99,40 @@ def _fail(step: str, status, body) -> None:
     sys.exit(1)
 
 
+def _age_s(row: dict, now: float) -> float:
+    raw = row.get("updatedAt") or row.get("createdAt") or ""
+    try:
+        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return now - at.timestamp()
+
+
+def _sweep(base: str, cookie: str, now: float | None = None) -> None:
+    """Delete the smoke member's sessions older than SWEEP_AGE_S. Best effort:
+    it prints one line and never fails the smoke."""
+    now = time.time() if now is None else now
+    try:
+        status, rows = _call(base, cookie, "GET", "/api/chat/sessions")
+        if status != 200 or not isinstance(rows, list):
+            print(f"WARN 0 sweep: HTTP {status}")
+            return
+        old = [r["id"] for r in rows
+               if isinstance(r, dict) and r.get("id") and _age_s(r, now) > SWEEP_AGE_S]
+        deleted = 0
+        for sid in old[:SWEEP_MAX]:
+            status, _ = _call(base, cookie, "DELETE", f"/api/chat/sessions/{sid}")
+            if status in (200, 204):
+                deleted += 1
+    except SystemExit:
+        print("WARN 0 sweep: the box did not answer")
+        return
+    left = len(old) - deleted
+    print(f"ok   0 swept {deleted} old session(s)" + (f", {left} left" if left else ""))
+
+
 def main() -> int:
     base = _env("SMOKE_BASE_URL").rstrip("/")
     cookie = _env("SMOKE_COOKIE")
@@ -103,6 +146,8 @@ def main() -> int:
         print(f"REFUSED: the cookie is {who or 'nobody'} in {org or 'no org'}, "
               f"not {email} in {org_slug}. Nothing was written.")
         return 2
+
+    _sweep(base, cookie)
 
     sid = str(uuid.uuid4())
     mid = f"smoke-{uuid.uuid4().hex[:12]}"
