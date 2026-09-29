@@ -1,0 +1,33 @@
+[Unit]
+# H-204 — prove that chat saves when GitHub cannot reach the box.
+# Spec: project-docs/specs/projects_ai_chat.md §21.10.
+#
+# The `chat-smoke` job in deploy.yml runs deploy/smoke_chat.sh over ssh. When
+# ssh from GitHub stays blocked, that job only gives a warning, and no run
+# proves that chat saves. This unit runs the same script ON the box, so the
+# proof does not need GitHub to reach it. acb-smoke-chat.timer drives it.
+Description=Metorite chat smoke (prove that chat saves)
+Documentation=file:///opt/acb/app/deploy/smoke_chat.sh
+After=network-online.target acb-workbench.service acb-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The app user. The script reads the workbench .env.local, which only acb can
+# read. The script exits 2 when it cannot read that file.
+User=acb
+Group=acb
+# node is /usr/bin/node. The same PATH as acb-workbench.service.
+Environment=PATH=/home/acb/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/opt/acb/app
+# Invoked through bash on purpose, as acb-health-watchdog.service is. A
+# checkout that loses the executable bit must not stop the smoke.
+ExecStart=/bin/bash /opt/acb/app/deploy/smoke_chat.sh
+# Exit 75 is BUSY: a deploy held /opt/acb/acb-deploy.lock, so nothing was
+# checked, and that deploy runs its own smoke. It is not a failure.
+# Exit 1 (chat does not save) and exit 2 (the environment is wrong) leave the
+# unit FAILED. vps-health.yml reads `systemctl is-failed` for it and goes red.
+SuccessExitStatus=75
+# The script bounds itself at 935 s (its header gives the sum). This is a
+# backstop above that bound.
+TimeoutStartSec=1200

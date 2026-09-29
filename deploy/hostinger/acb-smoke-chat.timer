@@ -1,0 +1,16 @@
+[Unit]
+Description=Prove that chat saves, every 6 hours (H-204)
+Documentation=file:///opt/acb/app/project-docs/specs/projects_ai_chat.md
+
+[Timer]
+# Every 6 hours at :40, then up to 30 min later. 00:40, 06:40, 12:40, 18:40
+# UTC stay clear of acb-backup.timer at 02:30.
+OnCalendar=*-*-* 00/6:40:00
+RandomizedDelaySec=30min
+# A reboot that skips a run gets it on the next boot.
+Persistent=true
+AccuracySec=1min
+Unit=acb-smoke-chat.service
+
+[Install]
+WantedBy=timers.target

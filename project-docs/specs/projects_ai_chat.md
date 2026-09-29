@@ -15,7 +15,8 @@ schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 2026-09-28. S13 (message integrity, §19) was built 2026-09-28. S14 (no
 forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
 production, §21) was built 2026-09-29. S16 (every deploy proves that chat
-saves, §21.10) was built 2026-09-29. The owner answered the three
+saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
+§21.10) was built 2026-09-29. The owner answered the three
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -3482,6 +3483,8 @@ On the box, after a deploy:
 ```bash
 # The smoke member and org exist already. This script creates neither.
 cd /opt/acb/app && bash deploy/smoke_chat.sh   # as acb. Exit 0, 1 or 2.
+systemctl list-timers acb-smoke-chat.timer     # the box's own run (H-204)
+systemctl is-failed acb-smoke-chat.service     # "failed" means chat does not save
 bash scripts/alarm_chat_persist.sh     # exit 1 when a write failed in 10 min
 ```
 
@@ -3505,9 +3508,19 @@ Then it runs `scripts/smoke_chat_persist.py`.
   `pull-delivery` proved the SHA by HTTPS, and a runner that cannot reach
   the box must not turn it red.
 - A `FAIL` step line, followed by an ssh drop, is red at once, with no retry.
-- ⚠️ When ssh from GitHub stays blocked, every run gives that warning, and no
-  run proves that chat saves. No box timer and no `vps-health.yml` step runs
-  the smoke. **H-204** carries the fix.
+- When ssh from GitHub stays blocked, every run of this job gives that
+  warning. So the box also runs the smoke by itself (H-204, built
+  2026-09-29). `acb-smoke-chat.timer` starts `acb-smoke-chat.service` every
+  6 hours at :40 UTC, with up to 30 min of random delay. The service runs
+  `deploy/smoke_chat.sh` as acb.
+- The service counts exit 75 (the lock was busy) as a success. Exit 1 and
+  exit 2 leave it failed. The box has no alert path, so the
+  `chat-smoke-timer` job in `vps-health.yml` reads the unit every hour over
+  ssh. A failed service or a timer that is not active makes that run red.
+  systemd keeps the failed state until the next run passes, so a failure
+  while ssh is blocked is red on the first run that connects.
+- `vps_apply.sh` installs the two unit files and enables the timer on every
+  apply, through its glob over `deploy/hostinger/`.
 - The run has no rollback. R6 says we only roll forward, so a red run means
   "the release is live, and chat does not save".
 - The wait and the smoke hold a SHARED lock on `/opt/acb/acb-deploy.lock`.
@@ -3547,8 +3560,8 @@ when the cookie is not the smoke member in the smoke org.
 - The script uses the host `app.metorite.com`, which is the `AUTH_URL` host.
   The host `metorite.com` is a different site, and its `/api/auth/me` gives 404.
 - The cookie is `__Secure-authjs.session-token`. `deploy/smoke_chat.sh`
-  mints a new one for each run. The static file `/home/acb/.smoke/cookie`
-  was for the first manual run, and no step reads it now.
+  mints a short-lived one in memory for each run. No cookie file exists on
+  the box.
 
 The first production run PASSED on 2026-09-29, all four steps, on
 `https://app.metorite.com`.

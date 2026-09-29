@@ -31,8 +31,9 @@
 # `bash -s`, as vps_apply.sh does. A child that reads stdin eats the rest of
 # the script, and the smoke then ends early with no error.
 #
-# The static cookie at /home/acb/.smoke/cookie is NOT used. That file expires,
-# and a deploy check that expires on a date is a red run with no fault in it.
+# No cookie file exists on the box. The operator deleted the old static
+# cookie on 2026-09-29. A stored cookie expires, and a deploy check that
+# expires on a date is a red run with no fault in it.
 #
 # Exit codes are the smoke's own:
 #   0  all four steps passed
