@@ -93,6 +93,29 @@ describe("filterOptions (WS-27bn R5b)", () => {
     expect(filterOptions(options, "hard").map((o) => o.group)).toEqual(["Teams"]);
     expect(filterOptions(options, "zzz")).toEqual([]);
   });
+
+  it("matches a hidden search key, which the list never draws", () => {
+    const keyed = [
+      ...options,
+      { value: "person:b@x.test", label: "Bo Lin", keywords: "b@x.test", group: "People" },
+    ];
+    expect(filterOptions(keyed, "B@X").map((o) => o.value)).toEqual(["person:b@x.test"]);
+    const markup = renderToStaticMarkup(
+      createElement(SelectList, {
+        label: "Subject",
+        listId: "K",
+        value: "",
+        options: keyed,
+        filtering: true,
+        structured: true,
+        query: "",
+        onQuery: () => {},
+        onPick: () => {},
+      })
+    );
+    expect(markup).toContain("Bo Lin");
+    expect(markup).not.toContain("b@x.test");
+  });
 });
 
 describe("(4) every close clears the filter query (R5b-1 repair)", () => {

@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { NO_ACCESS } from "@/lib/access";
+
 import type { ProjectRow, ReportSubjects, ReportTemplate } from "./api";
 import {
   builderStateFromLink,
@@ -30,6 +32,7 @@ import {
   ONE_ON_ONE_TEMPLATE,
   REPORT_ON_THIS,
   myDayLink,
+  myDayShown,
   nodeReportLink,
   oneOnOneLink,
 } from "./reportEntry";
@@ -197,6 +200,18 @@ describe("the hosts render each control through reportEntry", () => {
   it("My Tasks draws 'My day' in the desktop bar and the phone bar", () => {
     expect(tasks).toContain("router.push(myDayLink())");
     expect(tasks.match(/\{myDay\}/g)?.length).toBe(2);
+  });
+
+  it("'My day' shows only to a member who can open Projects, and is absent otherwise", () => {
+    const member = { ...NO_ACCESS, authenticated: true, is_active: true };
+    expect(myDayShown({ ...member, features: ["tasks", "projects"] }, false)).toBe(true);
+    expect(myDayShown({ ...member, features: ["tasks"] }, false)).toBe(false);
+    // While access resolves, the control waits, as the nav does.
+    expect(myDayShown({ ...member, features: ["tasks", "projects"] }, true)).toBe(false);
+    // The page reads the one access check, and never draws a dead control.
+    expect(tasks).toMatch(/myDayShown\(access, accessLoading\) \?/);
+    const control = tasks.slice(tasks.indexOf("const myDay ="), tasks.indexOf("{MY_DAY}"));
+    expect(control).not.toMatch(/disabled/);
   });
 
   it("NodeDashboard draws 'Report on this', and both page renders pass onReport", () => {

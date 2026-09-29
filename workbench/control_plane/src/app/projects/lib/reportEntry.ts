@@ -13,6 +13,8 @@
  *
  * Pure, because the vitest environment has no DOM.
  */
+import { type Access, canSeePath } from "@/lib/access";
+
 import type { ReportSubjects } from "./api";
 import { reportLink } from "./reportBuilder";
 
@@ -40,6 +42,19 @@ export function nodeReportLink(nodeId: string): string {
  */
 export function myDayLink(): string {
   return reportLink({ template: MY_DAY_TEMPLATE });
+}
+
+/**
+ * True when My Tasks shows "My day" (repair round 1).
+ *
+ * The link opens Projects, so a member who cannot open Projects would reach
+ * a refusal. The control is ABSENT for that member, never disabled. The check
+ * is `canSeePath`, the one that `AccessGate` runs on the address, so the
+ * control and the page it opens cannot disagree. While access resolves, the
+ * control waits, as the nav does.
+ */
+export function myDayShown(access: Access, loading: boolean): boolean {
+  return !loading && canSeePath(access, "/projects");
 }
 
 /**
