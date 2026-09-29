@@ -211,3 +211,68 @@ def test_version_route_is_registered() -> None:
             f"/version touches the database (`{forbidden}`) — it must answer "
             "when the database is down, which is when it is most needed"
         )
+
+
+# ── H-142: the deploy marker, which speaks for the web app ─────────────────
+#
+# `deploy.yml` accepts a delivery by the pull path only when `/version` shows
+# BOTH the gateway's sha and `applied_sha`. `sha` alone stays true when the
+# workbench build fails, because the gateway restarts first. These pin the
+# reader: it returns the marker's sha only when the file holds a real one.
+
+_A = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_the_marker_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "acb-deploy.applied"
+    marker.write_text(f"{_A} 2026-09-28T18:48:32Z\n", encoding="utf-8")
+    monkeypatch.setenv("ACB_DEPLOY_MARKER", str(marker))
+    assert build_info.applied_marker() == (_A, "2026-09-28T18:48:32Z")
+
+
+def test_the_marker_is_not_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The marker moves at the END of an apply, long after the gateway
+    restarted. A cached value would lag by a whole deploy."""
+    marker = tmp_path / "acb-deploy.applied"
+    monkeypatch.setenv("ACB_DEPLOY_MARKER", str(marker))
+    marker.write_text(f"{_A} t1\n", encoding="utf-8")
+    assert build_info.applied_marker()[0] == _A
+    marker.write_text(f"{'f' * 40} t2\n", encoding="utf-8")
+    assert build_info.applied_marker()[0] == "f" * 40
+
+
+@pytest.mark.parametrize("body", ["", "unknown 2026-09-28", "abc 2026", f"{_A.upper()} t"])
+def test_a_malformed_marker_answers_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    marker = tmp_path / "acb-deploy.applied"
+    marker.write_text(body, encoding="utf-8")
+    monkeypatch.setenv("ACB_DEPLOY_MARKER", str(marker))
+    assert build_info.applied_marker() == (None, None)
+
+
+def test_a_missing_marker_answers_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACB_DEPLOY_MARKER", str(tmp_path / "absent"))
+    assert build_info.applied_marker() == (None, None)
+
+
+def test_the_default_marker_sits_beside_the_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`vps_apply.sh` writes `$(dirname "$APP_DIR")/acb-deploy.applied`."""
+    monkeypatch.delenv("ACB_DEPLOY_MARKER", raising=False)
+    root = build_info._repo_root()
+    if root is None:  # pragma: no cover
+        pytest.skip("not a git checkout")
+    assert build_info._marker_path() == root.parent / "acb-deploy.applied"
+
+
+def test_the_route_reports_the_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from gateway import main
+
+    marker = tmp_path / "acb-deploy.applied"
+    marker.write_text(f"{_A} 2026-09-28T18:48:32Z\n", encoding="utf-8")
+    monkeypatch.setenv("ACB_DEPLOY_MARKER", str(marker))
+    got = asyncio.run(main.version())
+    assert got.applied_sha == _A
+    assert got.applied_at == "2026-09-28T18:48:32Z"

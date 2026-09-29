@@ -149,7 +149,7 @@ def test_the_deploy_is_verified_by_the_SERVING_COMMIT(raw: str) -> None:
     YESTERDAY'S code answers yes. That is CLAUDE.md rule 8 in one line: "four
     deploys once reported success while shipping nothing."
     """
-    deploy_step = raw[raw.index("verify() {"):raw.index("for round in 1 2 3")]
+    deploy_step = raw[raw.index("verify() {"):raw.index("hand_off_to_pull_path() {")]
     assert "/version" in deploy_step, (
         "verify() no longer reads GET /version. Health alone cannot distinguish "
         "a successful deploy from a timeout-killed one that left the OLD build "
@@ -163,7 +163,7 @@ def test_the_deploy_is_verified_by_the_SERVING_COMMIT(raw: str) -> None:
 
 def test_a_wrong_commit_fails_rather_than_warns(raw: str) -> None:
     """A mismatch must end the round, not print a note and pass."""
-    verify = raw[raw.index("verify() {"):raw.index("for round in 1 2 3")]
+    verify = raw[raw.index("verify() {"):raw.index("hand_off_to_pull_path() {")]
     ok_line = [
         line for line in verify.splitlines()
         if 'got_sha" = "$GITHUB_SHA' in line

@@ -69,7 +69,7 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_the_route_answers_all_13_and_only_the_live_four_are_live(monkeypatch) -> None:
+def test_the_route_answers_all_13_and_only_the_live_six_are_live(monkeypatch) -> None:
     def _no_session(*_a: Any, **_k: Any) -> Any:
         # The id route opens a session. The catalogue route opens none.
         raise AssertionError("GET /reports/{report_id} captured 'templates'")
@@ -81,7 +81,8 @@ def test_the_route_answers_all_13_and_only_the_live_four_are_live(monkeypatch) -
     assert [t["key"] for t in templates] == list(rep.TEMPLATES)
     assert len(templates) == 13
     assert [t["key"] for t in templates if t["available"]] == [
-        "team_pulse", "weekly_delivery", "project_status", "data_hygiene",
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
     ]
     for t in templates:
         assert t["name"] and t["question"] and t["scope_kinds"], t["key"]

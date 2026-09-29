@@ -758,8 +758,64 @@ line — never reclaim a number by deleting the other entry.
   H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
   `test_handoff_ids_are_unique` caught the collision.
 
+### H-200 · The deploy trusts any ssh host key · [AGENT]
+
+- **What is wrong.** The deploy connects with `StrictHostKeyChecking=no`
+  and `UserKnownHostsFile=/dev/null`. So ssh accepts ANY host key. A host
+  that pretends to be the box at its address gets the deploy session, and
+  the apply script runs there. The setting is older than H-142. The
+  deploy-ssh-resilience PR moved it into `scripts/ci_deploy_reach.sh`, and
+  did not change it.
+- **What it costs.** The deploy cannot fail on a changed host key. The
+  H-142 red path for ssh that is not a network fault covers an auth failure
+  only.
+- **What to do.** Record the box's host key. Put a `known_hosts` line in a
+  repo secret, or put the key fingerprint in the workflow. Then set
+  `StrictHostKeyChecking=yes` and point `UserKnownHostsFile` at that line.
+  Read the key from the box with `ssh-keyscan`, and compare its fingerprint
+  with `ssh-keygen -lf` on the box before you trust it. The same options
+  serve the probe and the apply, so change `CI_SSH_OPTS` in one place.
+  Check `vps-health.yml` and `vps-forensics.yml` for the same options.
+- **Check:** `grep StrictHostKeyChecking=no .github/workflows/deploy.yml
+  scripts/ci_deploy_reach.sh`. Any line means the deploy still trusts any
+  host key.
+
 ### H-142 · The deploy goes red on a 30-second ssh blip, and the retry cannot outlast it · [AGENT]
 
+- 🟢 **2026-09-29 — the deploy-ssh-resilience PR changes the deploy. Keep
+  this entry until a real blip proves the change.**
+  - **What we measured.** 200 deploy runs from 2026-09-20 to 2026-09-28.
+    9 runs went red on `ssh exited 255`. Each one lost all three rounds,
+    so 27 of 27 connects failed. The 163 green runs hold no 255 round. A
+    different runner connected 10 s after the last failed round, twice.
+    The box served the commit in all 9 cases. The pull timer applied it 7
+    times, and an apply of a later commit carried the other 2.
+  - **What the PR changes.** A cheap `ssh … true` probe runs before each
+    round, with backoff, inside one connect budget of 300 s for the job. A
+    connect failure does not spend a round. When the budget runs out, the
+    `deploy` job hands off. It says whether an apply started from its runner
+    and then lost ssh. In that case the box can hold a half-done apply, and
+    the pull timer applies it again because the marker was not written. A
+    new job, `Confirm delivery by the pull path`, then runs on a fresh
+    runner. It reads `/version` over HTTPS for up to 1500 s. An auth failure
+    goes red at once and does not hand off.
+  - **The evidence it accepts.** `/version` now also reports `applied_sha`,
+    the box's deploy marker. `vps_apply.sh` writes that marker only at its
+    last line, after the web build. The job is green only when `sha` and
+    `applied_sha` both contain this commit and the web app answers. `sha`
+    alone speaks for the gateway only, because the gateway restarts before
+    the web build.
+  - **How the next blip reads in CI.** The `deploy` job is green with the
+    warning "Deploy runner could not reach the box". Then the confirm job
+    is green with the warning "Delivered, confirmed by the served SHA", or red with
+    "Not delivered" or "Box unreachable from GitHub". A forced rerun never
+    hands off, and it goes red.
+- **Check:** find the next deploy run that shows the warning "Deploy
+  runner could not reach the box". Use `gh run list --workflow deploy`,
+  then `gh run view <id> --log | grep -F "could not reach the box"`. If the
+  confirm job in that run shows the served SHA and no false red, delete
+  this entry. Also delete it if no such run occurs by 2026-11-30, because
+  the tests in `tests/unit/test_deploy_reach.py` then carry the fence.
 - **What happened, 2026-09-21.** The deploy for #344 failed. All three
   rounds ended `ssh: connect to host *** port ***: Connection timed out`,
   30 seconds each. A plain re-run minutes later succeeded with no change,
@@ -781,10 +837,9 @@ line — never reclaim a number by deleting the other entry.
   separate from an apply that started and stopped. Then widen the backoff,
   or raise `ConnectTimeout`, so a minutes-long blip does not read as a
   broken deploy.
-- **Check:** read the deploy step for a distinct message when ssh never
-  connects. If every failure still prints "THE APPLY DID NOT REACH ITS
-  FINAL LINE", this is open — that sentence is false when the apply never
-  started.
+- **The old Check, now passed:** the deploy step prints "THE APPLY NEVER
+  STARTED" when ssh never connects. It prints "NOTHING WAS APPLIED" when the
+  round waited for the lock and gave up.
 - 📌 **2026-09-26 — a third shape of the same sentence.** After the
   deploy-serialize PR, a CI round can connect, wait 900s for the box's
   deploy lock, and stop with nothing applied. The apply log then says
@@ -1580,81 +1635,6 @@ line — never reclaim a number by deleting the other entry.
   handler error on the customer app is its own entry.
 - **Authority:** run 35855523275 · `journalctl -u acb-workbench`
 - **Added:** 2026-09-23 · the H-152 gateway slice.
-
-### H-194 · Workbench API calls fail while the gateway restarts · [AGENT]
-- **Check:** do the two checks in "Verify after the merge" below, during a
-  deploy that restarts the gateway. A failed check means this is still real.
-- **What it is.** The workbench server calls the gateway directly on
-  `127.0.0.1:8080`, not through Caddy. So the Caddy `lb_try_duration` hold
-  (H-60, closed 2026-09-28) does not cover it. The gateway is cold for 10 to
-  23 s on each deploy, and the workbench API routes fail in that time.
-- **Measured on 2026-09-27 21:06.** The old gateway stopped at 21:06:18.48.
-  The new one listened on `:8080` at 21:06:28.77, so connects failed for
-  10.3 s. The browser polls `/chat/active-sessions` each 6 s, and the gateway
-  log lost the polls at about :19 and :25. The workbench journal showed
-  nothing, because the routes catch the error and log nothing.
-- **The fix (PR "Workbench: retry a refused gateway connection during a
-  restart").** `src/lib/gatewayFetch.ts` is now the one fetch from the
-  workbench server to the gateway. It tries a connection again for up to
-  25 s, which is less than the 30 s Caddy hold. The rules:
-  - A response of any status goes back to the caller. A 503 is an answer.
-  - GET, HEAD and OPTIONS retry on `ECONNREFUSED`, `ECONNRESET` and
-    `UND_ERR_SOCKET`.
-  - A write does not retry, unless its call site passes `{ retry: true }`.
-    Writes to one record can queue up during a restart and then land in any
-    order, so a draft auto-save would make duplicate drafts. A write that
-    opts in retries on `ECONNREFUSED` only, because only a refusal proves
-    that the gateway did not get the request.
-  - A stream body is not retried. A streamed response is not retried after
-    its headers arrive.
-  - Each try sends the same headers, so the identity does not change (R5).
-  - A caller's `AbortSignal.timeout` does not count the restart. Each try
-    after the gateway comes back gets the same timeout again.
-  - The final chat checkpoint is the one write that opts in today. A
-    periodic checkpoint passes `{ retry: false }`, because a stale copy
-    could land last and cut the stored reply short.
-  - A breaker stops the waits from stacking. When a request uses the full
-    window on refusals, the workbench marks the gateway down for 5 s. Each
-    request in that time gets one try and then fails at once. Each refusal
-    during the outage starts the 5 s again, so the breaker stays open for
-    the whole outage. A request that is still waiting stops when the
-    breaker opens. The first answer from the gateway closes the breaker.
-  - The log replaces each path segment that looks like an email or an id
-    with `<email>` or `<id>`.
-  The seven catch-all proxies lost their own "retry once" code. Fences:
-  `gatewayFetch.test.ts`, and four sweeps in `gateway.test.ts`.
-  ⚠️ **The costs.**
-  - While the gateway is down and not restarting, the first request waits
-    25 s before it fails. Later requests fail at once while the breaker is
-    open. The breaker closes only after 5 s with no request, and then the
-    next request pays the 25 s again.
-  - When a restart cuts a chat run, the member's chat stream stays open
-    for up to 25 s while the final checkpoint waits for the gateway. That
-    wait keeps the reply.
-  - To turn the retry off, set `GATEWAY_RETRY_DEADLINE_MS=0` in the
-    workbench env and restart `acb-workbench`. The code caps a larger value
-    at 25 s.
-- **Verify after the merge, then delete this entry.** Do the two checks
-  during the next deploy that restarts the gateway.
-  1. Loop a signed-in GET from the moment of `==> Restarting gateway`:
-     `while :; do curl -s -b "$COOKIE" -w ' %{time_total}\n'
-     https://app.metorite.com/api/auth/me | grep -o
-     '"authenticated":[a-z]*.* [0-9.]*$'; sleep 1; done`.
-     Expect `"authenticated":true` on each line. Expect some answers to take
-     1 to 12 s. ⚠️ Do not read the status code. This route answers 200 with
-     `NO_ACCESS` when the gateway call fails, so `false` is the failure.
-  2. Read `journalctl -u acb-workbench --since <restart time> | grep
-     '\[gateway\]'`. Expect `retry` lines, then `recovered` lines, and no
-     `gave up` line.
-  A `gave up` line names its cause. `ECONNREFUSED` means that the gateway
-  was cold for more than 25 s. Then the second option applies: two gateway
-  units behind a swapped port. `aborted` means that the browser left, and
-  is not a failure. A `[gateway] down` line comes after a `gave up
-  (ECONNREFUSED)` line and means the breaker opened.
-  Do NOT skip the gateway restart: `build_sha()` is cached per process, and
-  `deploy.yml` verifies `/version`.
-- **Authority:** `deploy_delivery_path.md` · PR #498
-- **Added:** 2026-09-28 · the H-60 close-out
 
 ### H-195 · Two Caddy follow-ups that only the owner can do · [OWNER]
 - **Check:** (1) GitHub branch protection on `main` lists

@@ -201,6 +201,14 @@ def test_the_builder_starts_from_the_routes_defaults() -> None:
     assert _ts_list("DEFAULT_REPORT_SECTIONS") == list(reports.DEFAULT_SECTIONS)
 
 
+def test_the_builder_turns_off_the_sections_the_route_refuses_with_a_subject() -> None:
+    """WS-27bn R5b. The builder leaves these out when a subject is set. A
+    section missing here is a save that the server refuses with 422."""
+    from gateway.routes.projects.report_scope import NO_SUBJECT_SECTIONS
+
+    assert _ts_list("NO_SUBJECT_SECTIONS") == list(NO_SUBJECT_SECTIONS)
+
+
 # ── WS-27bn R2: the template catalogue ───────────────────────────────────────
 
 #: The 13 keys of `projects_reports.md` §4. APPEND-ONLY: a saved report keeps
@@ -261,10 +269,14 @@ def test_project_status_is_live_in_sections_order() -> None:
     assert t5["scope_kinds"] == ["project"]
 
 
-def test_the_live_templates_are_exactly_the_pinned_four() -> None:
-    """WS-27bn R3d makes T1 `team_pulse` live."""
+def test_the_live_templates_are_exactly_the_pinned_six() -> None:
+    """WS-27bn R3d makes T1 `team_pulse` live. R5b makes T2 `my_day` and
+    T6 `one_on_one` live."""
     live = [k for k, t in reports.TEMPLATES.items() if t["available"]]
-    assert live == ["team_pulse", "weekly_delivery", "project_status", "data_hygiene"]
+    assert live == [
+        "team_pulse", "my_day", "weekly_delivery", "project_status",
+        "one_on_one", "data_hygiene",
+    ]
 
 
 def test_weekly_delivery_is_exactly_the_default_report() -> None:
