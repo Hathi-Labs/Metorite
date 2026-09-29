@@ -498,22 +498,79 @@ def _tee_sse_line(line: str) -> None:
 # message).  The handler emits a ``user_input_requested`` SSE frame to the
 # live stream and parks on an asyncio.Future until the frontend POSTs the
 # answer to ``/agent/respond-input`` (which calls :func:`resolve_user_input`).
-_pending_user_input: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
+class _PendingUserInput(dict):
+    """The parked HITL futures, keyed by request id, with each OWNER thread.
+
+    H-201 fix round 1 (P2). A request id travels in the run's own stream, so
+    a viewer of that room sees it. Before, the answer path resolved by the
+    request id alone, and such a viewer could answer the question from any
+    room. Now each park records the thread whose stream carries the card,
+    and :func:`resolve_user_input` answers only for that thread.
+
+    The owner is recorded here, at the one write point, so the seven parking
+    sites need no change. A plain ``d[rid] = fut`` records the thread from
+    :func:`resolve_relay_thread_id`, which is the resolver those sites use to
+    push their card. :meth:`park` takes the thread explicitly.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._owner: dict[str, str | None] = {}
+
+    def __setitem__(self, request_id: str, fut: Any) -> None:
+        self._owner[request_id] = resolve_relay_thread_id()
+        super().__setitem__(request_id, fut)
+
+    def park(self, request_id: str, fut: Any, thread_id: str | None) -> None:
+        super().__setitem__(request_id, fut)
+        self._owner[request_id] = thread_id or resolve_relay_thread_id()
+
+    def owner_of(self, request_id: str) -> str | None:
+        return self._owner.get(request_id)
+
+    def pop(self, request_id: Any, *default: Any) -> Any:
+        self._owner.pop(request_id, None)
+        return super().pop(request_id, *default)
+
+    def __delitem__(self, request_id: Any) -> None:
+        self._owner.pop(request_id, None)
+        super().__delitem__(request_id)
+
+    def clear(self) -> None:
+        self._owner.clear()
+        super().clear()
+
+
+_pending_user_input: _PendingUserInput = _PendingUserInput()
 
 # How long the agent waits for a human answer before giving up (seconds).
 _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 
 
 def resolve_user_input(
-    request_id: str, answer: str, was_freeform: bool = True
+    request_id: str, answer: str, was_freeform: bool = True,
+    *, thread_id: str | None,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
     Called by the gateway ``/agent/respond-input`` route.  Returns True when
     a matching pending request was found and resolved, False otherwise.
+
+    H-201 fix round 1 (P2): *thread_id* is required, and it must be the
+    thread that owns the request (:class:`_PendingUserInput`). A missing
+    thread, an unknown owner or another thread resolves nothing. The route
+    checks ``can_send`` in that thread's room first.
     """
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
+        return False
+    owner = _pending_user_input.owner_of(request_id)
+    if not thread_id or not owner or thread_id != owner:
+        _log.warning(
+            "executor.user_input_thread_mismatch",
+            request_id=request_id[:12], has_thread=bool(thread_id),
+            has_owner=bool(owner),
+        )
         return False
     payload = {"answer": answer, "wasFreeform": was_freeform}
     try:
@@ -608,7 +665,7 @@ def _make_user_input_handler(thread_id: str) -> Any:
 
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-        _pending_user_input[request_id] = fut
+        _pending_user_input.park(request_id, fut, thread_id)
 
         # Push to the relay so the live HTTP subscriber receives the prompt.
         await _push_sse_to_stream(thread_id, line)
@@ -2751,10 +2808,13 @@ async def run_agent_stream(
         )
 
         def _respond_input_apply(command: dict[str, Any]) -> bool:
+            # The bus delivered this command on THIS run's channel, so the
+            # run's thread is the only thread it may answer for (H-201).
             return resolve_user_input(
                 str(command.get("request_id", "")),
                 str(command.get("answer", "")),
                 bool(command.get("was_freeform", True)),
+                thread_id=thread_id,
             )
 
         _register_ctl(thread_id, "respond_input", _respond_input_apply)

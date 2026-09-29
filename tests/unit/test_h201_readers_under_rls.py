@@ -576,7 +576,7 @@ def relay_calls(monkeypatch):
     return calls
 
 
-def _answer(user, thread_id: str | None):
+def _answer(user, thread_id: str | None, request_id: str = "req-h201"):
     from acb_auth import get_current_user
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -586,7 +586,7 @@ def _answer(user, thread_id: str | None):
     app.post("/agent/respond-input")(respond_user_input)
     app.dependency_overrides[get_current_user] = lambda: user
     return TestClient(app).post("/agent/respond-input", json={
-        "request_id": "req-h201", "answer": "yes", "thread_id": thread_id,
+        "request_id": request_id, "answer": "yes", "thread_id": thread_id,
     })
 
 
@@ -605,11 +605,57 @@ def test_respond_input_needs_send_in_the_room(graph_as_app, relay_calls):  # noq
     assert _answer(_user(_CAROL, b), sid).status_code == 403
     # No tenant is no capability.
     assert _answer(_user(_ALICE, None), sid).status_code == 403
+    # A call that names no thread is refused before any delivery (fix round 1).
+    assert _answer(_user(_ALICE, a), None).status_code == 422
     assert relay_calls == []
 
     # Alice passes the check. No run is parked, so both paths say no: 409.
     assert _answer(_user(_ALICE, a), sid).status_code == 409
     assert relay_calls == ["fast:req-h201", f"relay:{sid}"]
+
+
+@_DB_GATE
+def test_respond_input_answers_only_for_the_thread_that_asked(graph_as_app, monkeypatch):  # noqa: F811
+    """🔴 H-201 fix round 1, P2. Bob is a VIEWER in Alice's room, so he saw
+    her request id in her stream. Before, the fast path resolved by the
+    request id alone. With no thread, or with the id of Bob's own room, his
+    answer reached Alice's parked run."""
+    from orchestrator import executor, stream_relay
+
+    async def _no_relay(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(stream_relay, "dispatch_control", _no_relay)
+    a = graph_as_app.org_a
+    alices = _seed_room(graph_as_app, a, _ALICE, [("q", 1)],
+                        participants=((_BOB, "viewer", None),))
+    bobs = _seed_room(graph_as_app, a, _BOB, [("mine", 1)])
+
+    async def _go() -> tuple[list[int], bool, dict | None]:
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park("req-h201-owner", fut, alices)
+        try:
+            codes = []
+            for tid in (None, alices, bobs):
+                r = await asyncio.to_thread(_answer, _user(_BOB, a), tid, "req-h201-owner")
+                codes.append(r.status_code)
+            await asyncio.sleep(0.05)
+            stolen = fut.done()
+            r = await asyncio.to_thread(_answer, _user(_ALICE, a), alices, "req-h201-owner")
+            codes.append(r.status_code)
+            await asyncio.sleep(0.05)
+            return codes, stolen, (fut.result() if fut.done() else None)
+        finally:
+            executor._pending_user_input.pop("req-h201-owner", None)
+
+    codes, stolen, answer = asyncio.run(_go())
+    assert stolen is False, "Bob's answer reached Alice's parked run"
+    # No thread: 422. Bob in Alice's room is a viewer: 403. Bob in his own
+    # room passes the room check, but his room does not own the request: 409.
+    assert codes[:3] == [422, 403, 409]
+    # Alice, in the room that asked, answers it.
+    assert codes[3] == 200
+    assert answer == {"answer": "yes", "wasFreeform": True}
 
 
 # ── The source fence. It reads the code, so it cannot skip. ─────────────────
@@ -638,3 +684,9 @@ def test_the_h201_readers_open_no_unbound_session() -> None:
     # The answer path checks the room before it relays.
     src = inspect.getsource(agent.respond_user_input)
     assert src.index("can_send") < src.index("dispatch_control(")
+    assert src.index("can_send") < src.index("resolve_user_input(")
+    assert "thread_id=req.thread_id" in src
+    # The executor answers only for the thread that owns the request.
+    from orchestrator import executor
+    param = inspect.signature(executor.resolve_user_input).parameters["thread_id"]
+    assert param.default is inspect.Parameter.empty

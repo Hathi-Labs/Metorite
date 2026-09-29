@@ -2360,30 +2360,35 @@ async def respond_user_input(
 
     from orchestrator.executor import resolve_user_input  # noqa: PLC0415
 
-    # H-201 (S15 review, P2): answering a run's question is a contributor's
-    # act, so a named thread needs ``can_send`` in that room. The check runs
-    # in the caller's tenant, so a thread of another tenant, or no tenant at
-    # all, gets no capability. It runs before BOTH the fast path and the
-    # relay. A call that names no thread keeps the request id as its only
-    # proof, and it never reaches the relay.
-    if req.thread_id:
-        room = await asyncio.to_thread(
-            _resolve_room, req.thread_id, getattr(user, "email", None) or "",
-            getattr(user, "organization_id", None),
+    # H-201 (S15 review, P2, and fix round 1): answering a run's question is
+    # a contributor's act. The call must name the thread, and the caller
+    # needs ``can_send`` in that room, in the caller's tenant. A thread of
+    # another tenant, or no tenant at all, gets no capability. Both checks
+    # come before the fast path and the relay. Then the executor answers
+    # only when that thread OWNS the request id, so a viewer who saw the id
+    # cannot answer it from a room of their own.
+    if not req.thread_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Name the conversation that asked the question (thread_id).",
         )
-        if room is None or not room.can_send:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You cannot answer a question in this conversation.",
-            )
+    room = await asyncio.to_thread(
+        _resolve_room, req.thread_id, getattr(user, "email", None) or "",
+        getattr(user, "organization_id", None),
+    )
+    if room is None or not room.can_send:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot answer a question in this conversation.",
+        )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
     delivered = resolve_user_input(
-        req.request_id, req.answer, req.was_freeform
+        req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
-    if not delivered and req.thread_id:
+    if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(
