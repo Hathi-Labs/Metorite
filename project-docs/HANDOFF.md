@@ -3565,6 +3565,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §21.9 · R5
 - **Added:** 2026-09-29 · the WS-27bm S15 session
 
+### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
+- **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
+  → a hit in `scopeName` means item 2 is still open.
+- **Why:** the verifier of the Reports UX pass found these. Neither blocks.
+  1. Four test titles sit under the wrong §6.5 item. `reportsUx.test.ts`
+     :179, :184 and :210 test the empty line and the rail scope, which are
+     item 12, under `describe("(11) the gallery")`. `reportBuilderUx.test.ts`
+     :444 tests `reportCardLine`, also item 12, under `describe("(5) …")`.
+  2. `scopeName` in `ReportsView.tsx` shows "Project" while the tree loads,
+     or when the tree does not hold the node. The chips never use that
+     word. Use the same words as `scopePhrase`, for example "In a project".
+- **Authority:** `specs/projects_reports.md` §6.5 · the UX pass verification, 2026-09-29
+- **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
