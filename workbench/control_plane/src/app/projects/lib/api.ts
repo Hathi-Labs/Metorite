@@ -1415,6 +1415,23 @@ export interface FieldRow {
   /** Migration 192. The move dialog asks for these before a task may enter. */
   required?: boolean;
   created_by?: string | null;
+  /** Open tasks holding a value. Only `vocabulary()` sends it, and only to an admin. */
+  task_count?: number;
+}
+
+/**
+ * WS-42 PS-3 — the organization's OWN tags, fields and types (`GET /vocabulary`).
+ *
+ * Only org-wide rows. `task_count` spans every space, so the gateway sends it
+ * only to somebody who may rename (`can_edit`). `can_create` is information:
+ * no screen creates an org-wide row yet (HANDOFF H-5).
+ */
+export interface OrgVocabulary {
+  tags: TagRow[];
+  fields: FieldRow[];
+  types: (TaskTypeRow & { task_count?: number })[];
+  can_edit: boolean;
+  can_create: boolean;
 }
 
 export interface GrantRow {
@@ -2231,6 +2248,9 @@ export const projectsApi = {
 
   fields: (projectId: string) =>
     call<{ rows: FieldRow[]; total: number }>(`nodes/${projectId}/fields`),
+
+  /** WS-42 PS-3 — the organization's shared vocabulary, for Projects settings. */
+  vocabulary: () => call<OrgVocabulary>("vocabulary"),
 
   createField: (projectId: string, payload: Record<string, unknown>) =>
     call<FieldRow>(`nodes/${projectId}/fields`, {

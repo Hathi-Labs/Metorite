@@ -41,7 +41,7 @@ interface Props {
   inline?: boolean;
 }
 
-const ORG_NOTE = "Shared by every space in the organization. Change it under Shared vocabulary.";
+const ORG_NOTE = "Shared by every space in the organization. Rename it under Settings, Shared vocabulary.";
 const EPIC_NOTE = "Epic is built in: it is the top level, so it cannot be renamed or deleted.";
 
 export function TypeManager({ projectId, projectName, onClose, onChanged, inline = false }: Props) {
