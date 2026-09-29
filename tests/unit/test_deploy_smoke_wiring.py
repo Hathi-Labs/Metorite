@@ -676,3 +676,165 @@ def test_the_sweep_runs_after_the_identity_check_and_before_step_1() -> None:
     main = text[text.index("def main()"):]
     assert main.index("REFUSED") < main.index("_sweep(base, cookie)") < main.index(
         "1 create session")
+
+
+# ── 6. The box runs the smoke by itself (H-204) ─────────────────────────────
+#
+# When ssh from GitHub stays blocked, the `chat-smoke` job only warns. So
+# acb-smoke-chat.timer runs the same script on the box every 6 hours, and
+# vps-health.yml goes red when the unit is failed.
+
+UNITS = ROOT / "deploy" / "hostinger"
+SMOKE_SERVICE = UNITS / "acb-smoke-chat.service"
+SMOKE_TIMER = UNITS / "acb-smoke-chat.timer"
+APPLY = ROOT / "scripts" / "vps_apply.sh"
+HEALTH = ROOT / ".github" / "workflows" / "vps-health.yml"
+
+
+def _unit_keys(p: Path) -> dict[str, list[str]]:
+    """Each `Key=value` line of a unit, without comments. A key can repeat."""
+    out: dict[str, list[str]] = {}
+    for line in _code_lines(_read(p)):
+        s = line.strip()
+        if s.startswith("[") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        out.setdefault(k.strip(), []).append(v.strip())
+    return out
+
+
+def test_the_box_unit_runs_the_smoke_as_acb() -> None:
+    keys = _unit_keys(SMOKE_SERVICE)
+    assert keys.get("User") == ["acb"], "the smoke reads acb's .env.local. Run it as acb."
+    assert keys.get("Type") == ["oneshot"]
+    assert keys.get("ExecStart") == ["/bin/bash /opt/acb/app/deploy/smoke_chat.sh"], keys
+    # The unit's backstop sits above the script's own bound.
+    worst = int(re.search(r"worst case\s+(\d+) s", _read(SCRIPT)).group(1))
+    assert int(keys["TimeoutStartSec"][0]) > worst
+
+
+def test_a_busy_lock_is_a_success_in_the_unit() -> None:
+    """Exit 75 means a deploy held the lock and nothing was checked. It must
+    not leave the unit failed. Exit 1 and exit 2 must."""
+    keys = _unit_keys(SMOKE_SERVICE)
+    codes = " ".join(keys.get("SuccessExitStatus", [])).split()
+    assert codes == ["75"], f"SuccessExitStatus must be 75 alone, not {codes}"
+    assert "Restart" not in keys, "a restart hides a failed smoke"
+
+
+def test_the_timer_drives_the_unit_every_6_hours() -> None:
+    keys = _unit_keys(SMOKE_TIMER)
+    assert keys.get("Unit") == ["acb-smoke-chat.service"]
+    assert keys.get("OnCalendar") == ["*-*-* 00/6:40:00"], keys.get("OnCalendar")
+    assert keys.get("RandomizedDelaySec"), "spread the runs"
+    assert keys.get("WantedBy") == ["timers.target"], "unenableable timer: no [Install]"
+
+
+def test_the_deploy_installs_the_unit_and_enables_the_timer() -> None:
+    """The unit rides vps_apply.sh's glob, which installs every unit file in
+    deploy/hostinger and enables every timer. So the files must live there,
+    and the loop must cover them."""
+    assert SMOKE_SERVICE.parent == SMOKE_TIMER.parent == UNITS
+    code = _code_lines(_read(APPLY))
+    assert any('for unit in "$APP_DIR"/deploy/hostinger/*.service '
+               '"$APP_DIR"/deploy/hostinger/*.timer' in ln for ln in code)
+    assert any('for timer in "$APP_DIR"/deploy/hostinger/*.timer' in ln for ln in code)
+    assert any("enable --now" in ln and '"$(basename "$timer")"' in ln for ln in code)
+
+
+def _unit_sync_block() -> str:
+    text = _read(APPLY)
+    start = text.index('echo "==> Syncing systemd units')
+    end = text.index('echo "==> Running infra health probe"')
+    return text[start:end]
+
+
+@needs_shell
+def test_the_unit_sync_installs_and_enables_the_smoke_timer(tmp_path: Path) -> None:
+    """Run vps_apply.sh's own unit-sync block against a fake sudo and a fake
+    systemctl, over a copy of the repo's unit files."""
+    appd, etc, binr = tmp_path / "app", tmp_path / "etc", tmp_path / "bin"
+    (appd / "deploy" / "hostinger").mkdir(parents=True)
+    etc.mkdir()
+    binr.mkdir()
+    for unit in list(UNITS.glob("*.service")) + list(UNITS.glob("*.timer")):
+        shutil.copy(unit, appd / "deploy" / "hostinger" / unit.name)
+    for name, body in (("sudo", 'exec "$@"\n'),
+                       ("systemctl", 'printf "%s\\n" "$*" >> "$FAKE_LOG"\n')):
+        (binr / name).write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8", newline="\n")
+        (binr / name).chmod(0o755)
+    block = _unit_sync_block().replace("/etc/systemd/system", etc.as_posix())
+    log = tmp_path / "systemctl.log"
+    env = dict(os.environ, PATH=f"{binr}{os.pathsep}{os.environ.get('PATH', '')}",
+               APP_DIR=appd.as_posix(), FAKE_LOG=log.as_posix())
+    r = subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True,
+                       encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for unit in (SMOKE_SERVICE, SMOKE_TIMER):
+        assert (etc / unit.name).read_text(encoding="utf-8") == _read(unit)
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "enable --now acb-smoke-chat.timer" in calls, calls
+    assert "daemon-reload" in calls
+
+
+def _health_step() -> str:
+    jobs = yaml.safe_load(_read(HEALTH))["jobs"]
+    job = jobs["chat-smoke-timer"]
+    assert not job.get("continue-on-error")
+    for s in job["steps"]:
+        assert not s.get("continue-on-error"), "a check that cannot fail is a comment"
+    return next(s["run"] for s in job["steps"] if "acb-smoke-chat" in s.get("run", ""))
+
+
+def test_vps_health_reads_the_failed_state_of_the_unit() -> None:
+    step = _health_step()
+    assert "systemctl is-failed acb-smoke-chat.service" in step
+    assert "systemctl is-active acb-smoke-chat.timer" in step
+    assert '"${CI_SSH_OPTS[@]}"' in step and "ci_pin_host_key" in step
+    assert "wait_for_ssh" in step
+
+
+FAKE_STATE_SSH = r"""#!/usr/bin/env bash
+last="${!#}"
+if [ "$last" = "true" ]; then
+  [ "${PROBE:-ok}" = down ] && { echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255; }
+  exit 0
+fi
+cat > "$FAKE/remote.sh"
+exit "${STATE_RC:-0}"
+"""
+
+
+@needs_shell
+@pytest.mark.parametrize(("state_rc", "probe", "step_rc", "marker"), [
+    ("0", "ok", 0, "OK      acb-smoke-chat.service is not failed"),
+    ("10", "ok", 1, "::error title=Chat does not save::"),
+    ("11", "ok", 1, "::error title=Chat smoke timer is off::"),
+    ("255", "ok", 0, "::warning title=Chat smoke timer not read::"),
+    ("0", "down", 0, "::warning title=Chat smoke timer not read::"),
+])
+def test_the_health_step_over_the_unit_states(tmp_path: Path, state_rc: str, probe: str,
+                                               step_rc: int, marker: str) -> None:
+    fake, binr, repo, home = (tmp_path / d for d in ("fake", "bin", "repo", "home"))
+    for d in (fake, binr, repo / "scripts", repo / "deploy" / "hostinger", home):
+        d.mkdir(parents=True)
+    for name, body in (("ssh", FAKE_STATE_SSH), ("sleep", "#!/usr/bin/env bash\n:\n")):
+        (binr / name).write_text(body, encoding="utf-8", newline="\n")
+        (binr / name).chmod(0o755)
+    for src, dst in ((LIB, repo / "scripts" / LIB.name),
+                     (HOST_KEY_LIB, repo / "scripts" / HOST_KEY_LIB.name),
+                     (PINNED, repo / "deploy" / "hostinger" / PINNED.name)):
+        shutil.copy(src, dst)
+    (repo / "step.sh").write_text(_health_step(), encoding="utf-8", newline="\n")
+    env = dict(os.environ, PATH=f"{binr}{os.pathsep}{os.environ.get('PATH', '')}",
+               FAKE=fake.as_posix(), HOME=home.as_posix(), SSH_HOST="10.0.0.1",
+               SSH_USER="acb", SSH_PORT="22", SSH_KEY="k", CONNECT_BUDGET="30",
+               STATE_RC=state_rc, PROBE=probe)
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "step.sh"],
+                       cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8",
+                       timeout=120)
+    assert r.returncode == step_rc, r.stdout + r.stderr
+    assert marker in r.stdout, r.stdout + r.stderr
+    if probe == "ok":
+        sent = (fake / "remote.sh").read_text(encoding="utf-8")
+        assert "systemctl is-failed acb-smoke-chat.service" in sent
