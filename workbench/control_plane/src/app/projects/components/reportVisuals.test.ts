@@ -643,7 +643,9 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*aria-label="Show as a table"/);
     // React 19 writes a boolean `hidden`. The panel's effect turns it into
     // `until-found` in the browser (reportsRedesign.test.ts, item 13).
-    expect(html).toMatch(/<div class="mt-3 border-t border-border pt-3" hidden=""><div role="group" aria-label="Open work, as a table/);
+    // The hidden div is BARE. `until-found` does not set display: none, so a
+    // border or padding on it would paint an empty band under a closed card.
+    expect(html).toMatch(/<div hidden=""><div class="mt-3 border-t border-border pt-3"><div role="group" aria-label="Open work, as a table/);
     expect(table).toContain("ana@example.test");
   });
 

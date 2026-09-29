@@ -1916,7 +1916,6 @@ names a built tool which never calls the route fails there.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
-- `test_projects_report_overview_r5f.py` is R5f's file.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 

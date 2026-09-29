@@ -402,6 +402,11 @@ describe("round 2, items 7, 10 and 12: one-line tiles", () => {
     expect(described).not.toBeNull();
     expect(markup).toContain(`<span id="${described![1]}" class="sr-only">Open tasks per person, by due date.</span>`);
     expect(markup).not.toContain("line-clamp-2");
+    // The hint is a SIBLING of the button. Inside it, the hint would join the
+    // accessible name, and a screen reader would read it twice.
+    const button = markup.slice(markup.indexOf("<button"), markup.indexOf("</button>"));
+    expect(button).not.toContain("sr-only");
+    expect(markup.indexOf('class="sr-only"')).toBeGreaterThan(markup.indexOf("</button>"));
   });
 
   it("the last chosen tile is aria-disabled and says why", () => {

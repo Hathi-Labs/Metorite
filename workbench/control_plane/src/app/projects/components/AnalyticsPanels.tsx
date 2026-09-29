@@ -295,9 +295,12 @@ function Panel({
       {children}
       {chrome?.table ? (
         // The server render writes `hidden=""`. The effect above turns it
-        // into `until-found` in the browser.
-        <div ref={tableRef} className="mt-3 border-t border-border pt-3" hidden={!tableOpen}>
-          {chrome.table}
+        // into `until-found` in the browser. ⚠️ Keep this div BARE:
+        // `until-found` does not set `display: none` (Tailwind's preflight
+        // excludes it), so a border, margin or padding here still paints
+        // while the table is closed. The box lives on the child.
+        <div ref={tableRef} hidden={!tableOpen}>
+          <div className="mt-3 border-t border-border pt-3">{chrome.table}</div>
         </div>
       ) : null}
     </section>

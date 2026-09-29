@@ -1725,7 +1725,11 @@ export function SectionTile({
     : last
       ? "A report needs at least one section."
       : PANEL_HINTS[sectionKey];
+  // The hint span is a SIBLING of the button, not a child. A visually hidden
+  // child still joins the accessible name, so a screen reader would read the
+  // hint twice: once in the name and once as the description.
   return (
+    <div className="min-w-0">
     <Button
       variant="secondary"
       size="none"
@@ -1747,14 +1751,15 @@ export function SectionTile({
       >
         {label}
       </span>
-      <span id={describedBy} className="sr-only">
-        {line}
-      </span>
       <Icon
         name="Check"
         className={`h-3.5 w-3.5 shrink-0 text-primary ${on ? "" : "invisible"}`}
       />
     </Button>
+    <span id={describedBy} className="sr-only">
+      {line}
+    </span>
+    </div>
   );
 }
 
