@@ -734,6 +734,12 @@ jobs:
   # Exit 1 (a step failed) and exit 2 (the environment is wrong) are both red
   # at once, with no retry. Only an ssh blip retries, as H-142 does it.
   #
+  # ⚠️ ONLY A SMOKE THAT RAN AND FAILED IS RED. When ssh cannot reach the box
+  # for the whole connect budget, or drops on all 3 attempts, the smoke has no
+  # verdict. The job is then green with a warning, which is H-142's contract
+  # for the pull path: `pull-delivery` proved the SHA by HTTPS, and the runner
+  # that cannot reach the box must not turn that into a red.
+  #
   # ⚠️ No concurrency group here. The `deploy-production` group covers only
   # the `deploy` job. The smoke holds a SHARED lock on the box's deploy lock
   # instead, which every apply takes EXCLUSIVE, on both delivery paths. Exit 75
@@ -775,6 +781,14 @@ jobs:
 
           # The smoke prints this line only when all four steps passed.
           SMOKE_DONE="PASS chat persistence on"
+
+          # The smoke did not run to an answer. Green with a warning: only a
+          # smoke that RAN and failed is red.
+          no_verdict() {
+            echo "⚠️  Chat smoke did not run: $1."
+            echo "::warning title=Chat smoke did not run::$1. Chat was not checked on this run. Run deploy/smoke_chat.sh on the box by hand."
+            exit 0
+          }
           for attempt in 1 2 3; do
             wrc=0
             wait_for_ssh || wrc=$?
@@ -782,8 +796,15 @@ jobs:
               echo "❌ Chat smoke FAILED: the box's ssh host key did not verify."
               exit 1
             fi
+            # H-142: the connect budget ran out on network faults. The smoke did
+            # not RUN, so it has no verdict. `pull-delivery` already proved the
+            # SHA by HTTPS, and H-142's contract for that case is green with a
+            # warning. A red here would reverse it.
+            if [ "$wrc" = 1 ]; then
+              no_verdict "ssh did not reach the box in ${CONNECT_SPENT}s of connect budget"
+            fi
             if [ "$wrc" != 0 ]; then
-              echo "❌ Chat smoke FAILED: ssh did not reach the box (exit $wrc). Nothing was checked."
+              echo "❌ Chat smoke FAILED: ssh fails for a reason that is not the network (exit $wrc)."
               exit 1
             fi
             echo "── Chat smoke, attempt $attempt/3 ──"
@@ -810,6 +831,10 @@ jobs:
                 # chat-smoke. A red here would blame this release for nothing.
                 echo "::warning title=Chat smoke did not run::Another deploy held the box's deploy lock, so chat was not checked on this run. The later deploy's own chat-smoke checks it."
                 exit 0 ;;
+              0)
+                # The script exits 0 only after the smoke printed PASS.
+                echo "❌ Chat smoke FAILED: exit 0 with no PASS line. The smoke did not prove a save."
+                exit 1 ;;
             esac
             # Any other code is ssh's own (255) or a timeout. Retry only when
             # ssh names a network fault, the same test the deploy job uses.
@@ -820,8 +845,7 @@ jobs:
             echo "↩  ssh dropped (exit $rc). Trying again."
             sleep $((attempt * 20))
           done
-          echo "❌ Chat smoke FAILED: ssh dropped on all 3 attempts. Nothing was proved."
-          exit 1
+          no_verdict "ssh dropped on all 3 attempts"
 
   # ── Post-deploy: Smoke test (hit /health endpoint) ─────────────────────
   smoke:

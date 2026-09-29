@@ -3463,7 +3463,12 @@ of 600 s in memory from the workbench `AUTH_SECRET`. It waits for
 Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
-  red at once, with no retry. An ssh blip retries, 3 attempts in total.
+  red at once, with no retry. An ssh blip retries, 3 tries in total.
+- Only a smoke that ran and failed is red. When ssh cannot reach the box for
+  the whole connect budget, or drops on all 3 tries, the job gives a
+  warning and stays green. That keeps the H-142 contract for the pull path:
+  `pull-delivery` proved the SHA by HTTPS, and a runner that cannot reach
+  the box must not turn it red.
 - The run has no rollback. R6 says we only roll forward, so a red run means
   "the release is live, and chat does not save".
 - The wait and the smoke hold a SHARED lock on `/opt/acb/acb-deploy.lock`.

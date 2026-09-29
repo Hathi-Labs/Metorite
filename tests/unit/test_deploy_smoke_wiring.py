@@ -303,7 +303,10 @@ class TestTheScript:
 
 FAKE_SSH = r"""#!/usr/bin/env bash
 last="${!#}"
-[ "$last" = "true" ] && exit 0
+if [ "$last" = "true" ]; then
+  [ "${PROBE:-ok}" = down ] && { echo "ssh: connect to host 10.0.0.1 port 22: Connection timed out" >&2; exit 255; }
+  exit 0
+fi
 cat > /dev/null
 n=$(cat "$FAKE/run_n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE/run_n"
 mode="${SMOKE_MODE:-pass}"
@@ -311,6 +314,8 @@ if [ "$mode" = blip ] && [ "$n" = 1 ]; then
   echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255
 fi
 case "$mode" in
+  drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
+  nopass) echo "ok   1 create session"; exit 0 ;;
   busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
   fail) echo "FAIL 2 save one row: HTTP 500"; exit 1 ;;
   env)  echo "smoke_chat: the smoke org is missing." >&2; exit 2 ;;
@@ -391,6 +396,25 @@ class TestTheWorkflowStep:
         r = runner.run(jobs, SMOKE_MODE="blip")
         assert r.returncode == 0, r.stdout + r.stderr
         assert _runs(runner) == 2
+
+    def test_an_unreachable_box_is_a_warning_and_not_a_red(self, runner, jobs) -> None:
+        """Fix round 1, P2: H-142's pull path is green with a warning. A runner
+        that cannot reach the box must not turn a proved delivery red."""
+        r = runner.run(jobs, PROBE="down")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "::warning title=Chat smoke did not run::" in r.stdout
+        assert _runs(runner) == 0
+
+    def test_three_drops_are_a_warning_and_not_a_red(self, runner, jobs) -> None:
+        r = runner.run(jobs, SMOKE_MODE="drop")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "::warning title=Chat smoke did not run::" in r.stdout
+        assert _runs(runner) == 3
+
+    def test_exit_0_without_the_pass_line_is_red(self, runner, jobs) -> None:
+        r = runner.run(jobs, SMOKE_MODE="nopass")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
 
     def test_an_auth_failure_is_red_without_a_retry(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="auth")
