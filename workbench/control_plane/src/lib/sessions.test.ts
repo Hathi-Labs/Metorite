@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchMessagesFromDb, getMessages } from "./sessions";
+import { fetchMessagesFromDb, getMessages, postMessagesWithRetry } from "./sessions";
 
 const KEY = "cc-msgs-";
 
@@ -87,5 +87,51 @@ describe("fetchMessagesFromDb and the local cache", () => {
     answer([]);
     expect(await fetchMessagesFromDb("s1", { limit: 10 })).toEqual([]);
     expect(getMessages("s1")).toHaveLength(2);
+  });
+});
+
+// Fix round 1, P3 (§21.12). The first save can reach the gateway before the
+// session row, and the foreign key answers 5xx. One retry lets the row land.
+describe("postMessagesWithRetry", () => {
+  function answers(...statuses: Array<number | "throw">) {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        calls.push(String(init.body));
+        const next = statuses.shift();
+        if (next === "throw") throw new TypeError("fetch failed");
+        return new Response("{}", { status: next ?? 200 });
+      }),
+    );
+    return calls;
+  }
+
+  it("retries once after a 5xx, with the same body", async () => {
+    const calls = answers(500, 200);
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBe(200);
+    expect(calls).toEqual(["[1]", "[1]"]);
+  });
+
+  it("retries once after a network failure", async () => {
+    const calls = answers("throw", 200);
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry a 2xx or a 4xx", async () => {
+    expect(answers(200)).toBeDefined();
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBe(200);
+    const calls = answers(403);
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBe(403);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("stops after one retry and never throws", async () => {
+    const calls = answers(502, 503, 200);
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBe(503);
+    expect(calls).toHaveLength(2);
+    answers("throw", "throw");
+    expect(await postMessagesWithRetry("s1", "[1]", 0)).toBeNull();
   });
 });
