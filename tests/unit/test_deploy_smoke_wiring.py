@@ -605,8 +605,11 @@ def test_the_sweep_deletes_only_old_sessions_and_is_bounded(monkeypatch, capsys)
     mod = _smoke_module()
     now = 1_800_000_000.0
     iso = lambda age: datetime.fromtimestamp(now - age, UTC).isoformat()  # noqa: E731
-    rows = [{"id": f"old{i}", "updatedAt": iso(7200)} for i in range(7)]
-    rows += [{"id": "new", "updatedAt": iso(60)}]
+    # Fix round 2: shared rooms come FIRST, so without the owner filter they
+    # would use up the budget of 5.
+    rows = [{"id": f"shared{i}", "updatedAt": iso(7200), "isOwner": False} for i in range(5)]
+    rows += [{"id": f"old{i}", "updatedAt": iso(7200), "isOwner": True} for i in range(7)]
+    rows += [{"id": "new", "updatedAt": iso(60), "isOwner": True}]
     calls: list[tuple[str, str]] = []
 
     def fake_call(base, cookie, method, path, body=None):

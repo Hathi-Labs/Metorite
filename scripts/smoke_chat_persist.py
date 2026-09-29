@@ -12,7 +12,7 @@ It goes through the Next BFF, the same path as the browser, in four steps:
 4. ``DELETE /api/chat/sessions/<id>`` removes the session.
 
 Before step 1 it sweeps, best effort (S16). ``GET /api/chat/sessions`` lists
-the smoke member's sessions, and each one older than one hour is deleted
+the smoke member's sessions, and each one it owns older than one hour is deleted
 through the same ``DELETE``, at most five a run. So a run that died before
 step 4 leaves no row for long. A failed sweep prints ``WARN 0`` and never
 fails the smoke.
@@ -119,8 +119,11 @@ def _sweep(base: str, cookie: str, now: float | None = None) -> None:
         if status != 200 or not isinstance(rows, list):
             print(f"WARN 0 sweep: HTTP {status}")
             return
+        # Only the member's OWN rooms. A room shared with the member is not
+        # its to delete, and it must not use up the budget of SWEEP_MAX.
         old = [r["id"] for r in rows
-               if isinstance(r, dict) and r.get("id") and _age_s(r, now) > SWEEP_AGE_S]
+               if isinstance(r, dict) and r.get("id") and r.get("isOwner") is True
+               and _age_s(r, now) > SWEEP_AGE_S]
         deleted = 0
         for sid in old[:SWEEP_MAX]:
             status, _ = _call(base, cookie, "DELETE", f"/api/chat/sessions/{sid}")
