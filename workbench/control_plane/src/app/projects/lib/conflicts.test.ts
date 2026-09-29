@@ -122,7 +122,8 @@ describe("the words", () => {
 
   it("says which rows the window binds", () => {
     expect(windowLine(report())).toBe(
-      "Dated kinds: 2026-09-24 to 2026-10-08 (14 days). Dependencies are checked whenever they fall.",
+      // The UX pass (item 15) reads the dates as a person does.
+      "Dated kinds: 24 Sep 2026 to 8 Oct 2026 (14 days). Dependencies are checked whenever they fall.",
     );
     expect(windowLine(report({ window: undefined as unknown as ConflictsReport["window"] }))).toBeNull();
   });

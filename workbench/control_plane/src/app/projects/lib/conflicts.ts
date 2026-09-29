@@ -24,6 +24,7 @@ import type { AccentHue } from "@/lib/statusAccent";
 
 import { asList } from "./analyticsRead";
 import type { ConflictKind, ConflictRow, ConflictsReport } from "./api";
+import { shortDate } from "./outlook";
 
 /** The seven kinds, in the order the server sorts them (§13.5 table). */
 export const CONFLICT_KINDS: readonly ConflictKind[] = [
@@ -104,7 +105,8 @@ export function windowLine(data: ConflictsReport): string | null {
   const w = data?.window;
   if (!w?.starts_on || !w?.ends_on) return null;
   return (
-    `Dated kinds: ${w.starts_on} to ${w.ends_on} (${w.days} days). ` +
+    // The UX pass, item 15: dates as a person reads them, one shape app-wide.
+    `Dated kinds: ${shortDate(w.starts_on)} to ${shortDate(w.ends_on)} (${w.days} days). ` +
     "Dependencies are checked whenever they fall."
   );
 }

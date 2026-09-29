@@ -33,6 +33,11 @@
  * the scope chip. It reads `GET /projects/reports/subjects` only. A link
  * from `reportLink` opens the builder filled in, and this file removes the
  * link's keys from the address after it reads them once.
+ *
+ * The Reports UX pass (2026-09-29, `projects_reports.md` §6.5) lays the
+ * builder out beside its preview, names the subject and the scope in the
+ * rendered header, folds the coming-soon templates, splits the rail into
+ * yours and shared, and offers Delete in edit mode.
  */
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -42,9 +47,11 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Input from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
+import { periodLabel } from "@/lib/reportEmail";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -59,6 +66,7 @@ import {
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import { deleteReportCopy } from "../lib/deleteCopy";
 import {
   HYGIENE_KINDS,
   OVERLAP_NOTE,
@@ -67,6 +75,7 @@ import {
   kindTitle,
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
+import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
   helpLine,
@@ -97,34 +106,51 @@ import {
   throughputPanelData,
 } from "../lib/reportPanels";
 import {
+  AS_OF_TODAY,
   type BuilderState,
   MAX_REPORT_NAME,
+  NEW_REPORT_NAME,
   REPORT_LINK_KEYS,
-  REPORT_SECTIONS,
   SAVED_PERIOD,
   SUBJECTS_FAILED,
   WHOLE_ORGANIZATION,
+  asOfDay,
+  builderName,
   builderStateFrom,
   builderStateFromLink,
   builderStateFromTemplate,
   builderSubject,
   configFor,
   createPayload,
+  deleteShown,
+  editTitle,
   errorChip,
+  hiddenTeamHint,
   newBuilderState,
   parseReportLink,
   parseSubjectValue,
   patchPayload,
+  periodFree,
   periodKey,
   periodOptions,
+  projectOnly,
+  railGroups,
+  reportCardLine,
+  reportHeaderLine,
   requiredSubject,
   saveRefusal,
+  scopeChoices,
   scopeOptions,
+  scopePhrase,
+  scopePrompt,
   sectionBlockedBySubject,
+  sectionGroups,
   selfSubject,
+  startingTeam,
   subjectChipNote,
   subjectChipShown,
   subjectChipStatus,
+  subjectLabel,
   subjectOptions,
   subjectPrompt,
   subjectSectionNote,
@@ -156,26 +182,6 @@ function duration(hours: number | null | undefined): string {
   if (hours < 1) return "under an hour";
   if (hours < 48) return `${Math.round(hours)}h`;
   return `${Math.round(hours / 24)}d`;
-}
-
-const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
-
-/**
- * "7 – 13 Sep 2026".
- *
- * ⚠️ Parsed by hand, never through `new Date()`. These are floating calendar
- * dates, and `new Date("2026-01-01")` is midnight UTC — a day west of
- * Greenwich, which would name the wrong week on the reader's screen.
- */
-function periodLabel(from: string, to: string): string {
-  const [fy, fm, fd] = from.split("-");
-  const [ty, tm, td] = to.split("-");
-  const tail = `${MONTHS[Number(tm) - 1]} ${ty}`;
-  if (fy === ty && fm === tm) return `${Number(fd)} – ${Number(td)} ${tail}`;
-  if (fy === ty) {
-    return `${Number(fd)} ${MONTHS[Number(fm) - 1]} – ${Number(td)} ${tail}`;
-  }
-  return `${Number(fd)} ${MONTHS[Number(fm) - 1]} ${fy} – ${Number(td)} ${tail}`;
 }
 
 /**
@@ -226,7 +232,7 @@ function Row({
   title: string;
 }) {
   return (
-    <li className="flex items-baseline gap-2 text-[11px]" title={title}>
+    <li className="flex items-baseline gap-2 text-xs" title={title}>
       <span className="min-w-0 truncate pr-px">{name}</span>
       <span className={`ml-auto font-medium tabular-nums ${tone ?? ""}`}>
         {value}
@@ -254,8 +260,18 @@ function Row({
  */
 export function RenderedBody({
   body,
+  headerLine,
+  hiddenHint,
 }: {
   body: RenderedReportBody | PreviewReportBody;
+  /**
+   * The line under the title (the UX pass, item 4): "About [subject] ·
+   * [scope] · [period]", from `reportHeaderLine`. The caller knows the
+   * names. Without it the line names the scope word and the period.
+   */
+  headerLine?: string;
+  /** Item 6. What the hidden-people line adds, in the builder only. */
+  hiddenHint?: string | null;
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
@@ -271,11 +287,9 @@ export function RenderedBody({
     <div className="max-w-2xl space-y-3">
       <header>
         <h3 className="text-sm font-semibold">{body.report.name}</h3>
-        <p className="text-[11px] text-muted-foreground">
-          {periodLabel(body.period_start, body.period_end)} ·{" "}
-          {body.report.scope === "portfolio"
-            ? "Every space you can see"
-            : "This project"}
+        <p className="text-xs text-muted-foreground">
+          {headerLine ??
+            `${body.report.scope === "portfolio" ? "Whole organization" : "This project"} · ${periodLabel(body.period_start, body.period_end)}`}
         </p>
       </header>
 
@@ -299,7 +313,7 @@ export function RenderedBody({
           <FinishedPanel data={finishedPanelData(sections.finished, body)} />
           <Table title="What we finished" count={sections.finished.projects.length}>
             <p
-              className={`mb-1 text-[11px] font-medium tabular-nums ${done.text}`}
+              className={`mb-1 text-xs font-medium tabular-nums ${done.text}`}
               title={`${sections.finished.total_completed} tasks reached a done status in this period`}
             >
               {sections.finished.total_completed} finished
@@ -320,7 +334,7 @@ export function RenderedBody({
             </ul>
             {sections.finished.total_cancelled > 0 && (
               <p
-                className="mt-1 text-[11px] text-muted-foreground"
+                className="mt-1 text-xs text-muted-foreground"
                 // ⚠️ Beside the finished count, never added to it. A team that
                 // cancelled nine did not finish nine.
                 title="Cancellations are never counted as finished work."
@@ -339,7 +353,7 @@ export function RenderedBody({
           />
           <Table title="How long it took" count={sections.throughput.series.length}>
             <p
-              className="text-[11px]"
+              className="text-xs"
               title={
                 sections.throughput.median_hours === null
                   ? "No task in this period recorded both a start and a finish."
@@ -374,7 +388,7 @@ export function RenderedBody({
         <div className="space-y-1">
           <OutlookPanel data={outlookPanelData(sections.outlook)} />
           <Table title="Forecast">
-            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
               <dt className="text-muted-foreground">Forecast</dt>
               <dd className="font-medium">
                 {headlineVerdict(sections.outlook).headline}
@@ -404,7 +418,7 @@ export function RenderedBody({
           <StuckPanel data={stuckPanelData(sections.stuck, body)} />
           <Table title="Overdue" count={sections.stuck.overdue.length}>
             <p
-              className={`mb-1 text-[11px] font-medium tabular-nums ${late.text}`}
+              className={`mb-1 text-xs font-medium tabular-nums ${late.text}`}
               title={`${sections.stuck.overdue_total} open tasks are past their due date`}
             >
               {sections.stuck.overdue_total} overdue
@@ -429,7 +443,7 @@ export function RenderedBody({
           <LoadPanel data={loadPanelData(sections.load, body)} />
           <Table title="Open work" count={sections.load.people.length}>
             <p
-              className="mb-1 text-[11px] text-muted-foreground"
+              className="mb-1 text-xs text-muted-foreground"
               // ⚠️ The rows sum past this. A task with two assignees sits on
               // both plates, so the total is counted over tasks.
               title="Counted over tasks. A task assigned to two people appears in both rows, so the rows add up to more than this."
@@ -461,7 +475,7 @@ export function RenderedBody({
           <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
           <Table title="Who has the hours" count={sections.capacity.people.length}>
             <p
-              className="mb-1 text-[11px] text-muted-foreground"
+              className="mb-1 text-xs text-muted-foreground"
               title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
             >
               {sections.capacity.total_tasks} open · next{" "}
@@ -487,17 +501,17 @@ export function RenderedBody({
           the table names each card and each focus task it sent. */}
       {sections.pulse && (
         <div className="space-y-1">
-          <PulsePanel data={pulsePanelData(sections.pulse)} />
+          <PulsePanel data={pulsePanelData(sections.pulse)} hiddenHint={hiddenHint} />
           <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
             <p
-              className="mb-1 text-[11px] text-muted-foreground"
+              className="mb-1 text-xs text-muted-foreground"
               title="Every person who holds open work in this scope, before the report hides any card."
             >
               {sections.pulse.people_total} people
             </p>
             <div className="space-y-1.5">
               {pulseRows(sections.pulse).map((r) => (
-                <div key={r.assignee} className="text-[11px]">
+                <div key={r.assignee} className="text-xs">
                   <ul>
                     <Row
                       name={pulseName(r)}
@@ -532,9 +546,9 @@ export function RenderedBody({
                 </div>
               ))}
             </div>
-            {hiddenPeopleLine(sections.pulse.hidden_people) && (
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {hiddenPeopleLine(sections.pulse.hidden_people)}
+            {hiddenPeopleLine(sections.pulse.hidden_people, "report", hiddenHint) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {hiddenPeopleLine(sections.pulse.hidden_people, "report", hiddenHint)}
               </p>
             )}
           </Table>
@@ -548,14 +562,14 @@ export function RenderedBody({
           <HygienePanel data={hygienePanelData(sections.hygiene)} />
           <Table title="Data hygiene" count={sections.hygiene.rows.length}>
             <p
-              className="mb-1 text-[11px] text-muted-foreground"
+              className="mb-1 text-xs text-muted-foreground"
               title={OVERLAP_NOTE}
             >
               {sections.hygiene.open_total} open
             </p>
             <ul className="space-y-1.5">
               {HYGIENE_KINDS.map(({ kind, label, title }) => (
-                <li key={kind} className="text-[11px]">
+                <li key={kind} className="text-xs">
                   <span
                     className="font-medium text-foreground"
                     title={kindTitle(title, sections.hygiene)}
@@ -598,14 +612,14 @@ export function RenderedBody({
           />
           <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
             <p
-              className="mb-1 text-[11px] text-muted-foreground"
+              className="mb-1 text-xs text-muted-foreground"
               title={`Counted by the server over every row. Dated kinds read the next ${sections.conflicts.horizon_days} days.`}
             >
               {sections.conflicts.total} conflicts
             </p>
             <ul className="space-y-1">
               {conflictsReportRows(sections.conflicts.rows).map((c) => (
-                <li key={c.key} className="text-[11px]" title={c.sentence}>
+                <li key={c.key} className="text-xs" title={c.sentence}>
                   {/* The dot carries the severity, as on the Analytics panel. */}
                   <span
                     className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
@@ -631,13 +645,13 @@ export function RenderedBody({
             rebalancePickups(sections.rebalance).length
           }>
             {sections.rebalance.hr_visible === false ? (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {REBALANCE_HR_HINT}
               </p>
             ) : (
               <ul className="space-y-1">
                 {rebalanceTasks(sections.rebalance).map((t) => (
-                  <li key={t.task_id} className="text-[11px]" title={t.title}>
+                  <li key={t.task_id} className="text-xs" title={t.title}>
                     <span className="font-medium text-foreground">{t.title}</span>
                     <span className="text-muted-foreground">
                       {" "}
@@ -648,7 +662,7 @@ export function RenderedBody({
                   </li>
                 ))}
                 {rebalancePickups(sections.rebalance).map((p) => (
-                  <li key={p.email} className="text-[11px]" title={p.name}>
+                  <li key={p.email} className="text-xs" title={p.name}>
                     <span className="font-medium text-foreground">{p.name}</span>
                     <span className="text-muted-foreground">
                       {" "}
@@ -687,17 +701,59 @@ function ChipSlot({
   note?: string | null;
 }) {
   return (
-    <div className="flex w-full flex-col gap-1 sm:w-auto">
+    <div className="flex w-full flex-col gap-1 sm:w-auto xl:w-full">
       {children}
-      {note ? (
-        <p className="text-[11px] text-muted-foreground">{note}</p>
-      ) : null}
+      {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
       {error ? (
-        <p className="text-[11px] text-destructive sm:max-w-[16rem]" role="alert">
+        <p className="text-xs text-destructive sm:max-w-[16rem] xl:max-w-none" role="alert">
           {error}
         </p>
       ) : null}
     </div>
+  );
+}
+
+/** A chip's width: the full column on a phone and in the builder's column. */
+const CHIP_WIDTH = "w-full sm:w-[16rem] xl:w-full";
+
+/**
+ * The subject chip when the subjects read failed (the UX pass, item 8).
+ *
+ * The chip keeps its shape: a disabled chip that says so, and the ONE Retry
+ * beside it. The preview line says what failed, and has no second Retry.
+ */
+export function SubjectChipFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex w-full items-center gap-1 sm:w-auto xl:w-full">
+      <div className="min-w-0 flex-1">
+        <SelectButton
+          label="Subject"
+          prefix="About:"
+          prompt={SUBJECTS_FAILED}
+          widthClass={CHIP_WIDTH}
+          value=""
+          options={[]}
+          disabled
+          onChange={() => undefined}
+        />
+      </div>
+      <Button variant="text" size="sm" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The preview's one line when the report cannot show yet: what to choose,
+ * with the icon of the chip to choose it in. It never carries a Retry.
+ */
+export function PreviewPrompt({ icon, text }: { icon: string; text: string }) {
+  return (
+    <p className="flex items-center gap-2 text-xs text-foreground">
+      <Icon name={icon} className="h-3.5 w-3.5 shrink-0 text-primary" />
+      {text}
+    </p>
   );
 }
 
@@ -720,6 +776,13 @@ function ChipSlot({
  * `GET /projects/reports/subjects` answers, and nothing else. "My day" is
  * locked to the reader. "1:1 prep" asks for a person, and the preview says
  * what to do until one is chosen.
+ *
+ * The UX pass (2026-09-29, §6.5). At `xl` the controls are a sticky column
+ * on the left and the preview sits beside them. Below `xl` the two stack.
+ * The name follows the chips until the member types one. A report whose
+ * sections all ignore the period says "As of today" in place of the period
+ * chip. Edit mode names the report and offers Delete to a reader the server
+ * lets delete it.
  */
 function ReportBuilder({
   initial,
@@ -727,6 +790,7 @@ function ReportBuilder({
   roots,
   templates,
   onSaved,
+  onDeleted,
   onCancel,
 }: {
   initial: BuilderState;
@@ -736,38 +800,62 @@ function ReportBuilder({
   /** The server's catalogue, or `undefined` while it loads. */
   templates: ReportTemplate[] | undefined;
   onSaved: (row: ReportRow) => void;
+  onDeleted: (id: string) => void;
   onCancel: () => void;
 }) {
   const [draft, setState] = useState<BuilderState>(initial);
-  const [preview, setPreview] = useState<PreviewReportBody | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ key: string; body: PreviewReportBody } | null>(
+    null
+  );
+  const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(
+    null
+  );
+  /** Moves on "Try again", so the same config asks the server once more. */
+  const [previewRound, setPreviewRound] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // WS-27bn R5b. Who the reader may report on, through the one read cache.
   const subjects = useCachedResource(projectsKey("reports/subjects"), () =>
     projectsApi.reportSubjects()
   );
+  const answer = subjects.data;
   const template = templates?.find((t) => t.key === draft.template) ?? null;
   const needs = requiredSubject(template);
   const chipShown = subjectChipShown(template) || draft.subject !== null;
+  const isEdit = editing !== null;
 
   // "My day" is always about its AUTHOR. A new one takes the reader, derived
   // here and never typed. An edit keeps the stored subject, so an admin who
-  // edits a member's day leaves it about the member (R5b-1 repair).
-  const self = selfSubject(subjects.data);
-  const state = builderSubject(draft, needs, self, editing !== null);
-  const chipStatus = subjectChipStatus(subjects.data, Boolean(subjects.error));
-
+  // edits a member's day leaves it about the member (R5b-1 repair). A lead
+  // of one team starts Team pulse on that team (the UX pass, item 6).
+  const self = selfSubject(answer);
   const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const derived = startingTeam(
+    builderSubject(draft, needs, self, isEdit),
+    template,
+    answer,
+    isEdit
+  );
+  // The name follows the chips until the member types one (item 11).
+  const state: BuilderState = {
+    ...derived,
+    name: builderName(derived, template, answer, scopes),
+  };
+  const chipStatus = subjectChipStatus(answer, Boolean(subjects.error));
+
   // "1:1 prep" is about one person: no "Everyone" and no team.
-  const allSubjects = subjectOptions(subjects.data, state.subject, editing !== null);
+  const allSubjects = subjectOptions(answer, state.subject, isEdit);
   const people =
-    needs === "person"
-      ? allSubjects.filter((o) => o.group === "People")
-      : allSubjects;
+    needs === "person" ? allSubjects.filter((o) => o.group === "People") : allSubjects;
   const refusal = saveRefusal(state);
-  const prompt = subjectPrompt(state, template, chipStatus === "failed");
+  const personPrompt = subjectPrompt(state, template, chipStatus === "failed");
+  const projectPrompt = scopePrompt(state, template);
+  const prompt = personPrompt ?? projectPrompt;
+  const noPeriod = periodFree(state);
 
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
@@ -775,6 +863,7 @@ function ReportBuilder({
     project_id: state.projectId,
     config: configFor(state),
     blocked: prompt !== null,
+    round: previewRound,
   });
 
   useEffect(() => {
@@ -784,20 +873,24 @@ function ReportBuilder({
       config: ReturnType<typeof configFor>;
       blocked: boolean;
     };
-    // A template about one person with no person yet: the server would
-    // answer 422, so the preview asks for nothing and says what to do.
+    // A template about one person with no person yet, or about one project
+    // with no project yet: the server would answer 422, so the preview asks
+    // for nothing and says what to do.
     if (blocked) return;
     const timer = setTimeout(() => {
       projectsApi.previewReport({ project_id, name: "", config }).then(
         (body) => {
           if (off) return;
-          setPreview(body);
+          setPreview({ key: previewKey, body });
           setPreviewError(null);
         },
         (e) => {
           if (off) return;
-          setPreview(null);
-          setPreviewError(message(e, "The preview could not be rendered."));
+          // The last preview stays, dimmed. The error line says what failed.
+          setPreviewError({
+            key: previewKey,
+            message: message(e, "The preview could not be drawn."),
+          });
         }
       );
     }, PREVIEW_DELAY_MS);
@@ -823,48 +916,55 @@ function ReportBuilder({
     }
   }
 
-  const shownName = state.name.trim() || "Untitled report";
+  async function remove() {
+    if (!editing) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await projectsApi.deleteReport(editing.id);
+      setConfirmDelete(false);
+      onDeleted(editing.id);
+    } catch (e) {
+      setConfirmDelete(false);
+      setDeleteError(message(e, "That report could not be deleted."));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   // Each error from the server shows next to the chip that caused it.
-  const serverError = saveError ?? (prompt ? null : previewError);
+  const currentError = previewError?.key === previewKey ? previewError.message : null;
+  const serverError = saveError ?? (prompt ? null : currentError);
   const errorAt = serverError ? errorChip(serverError) : null;
   const subjectError = errorAt === "subject" ? serverError : null;
   const scopeError = errorAt === "scope" ? serverError : null;
   const otherSaveError = errorAt === "other" ? saveError : null;
-  const otherPreviewError =
-    errorAt === "other" && !saveError ? previewError : null;
+  const chipPreviewError = currentError !== null && errorChip(currentError) !== "other";
+  const updating = !prompt && preview !== null && preview.key !== previewKey && !currentError;
   const sectionNote = subjectSectionNote(state);
-  const answer = subjects.data;
+  const onlyProjects = projectOnly(template);
 
   let subjectChip: React.ReactNode = null;
   if (chipShown) {
     if (chipStatus === "failed") {
-      subjectChip = (
-        <ChipSlot>
-          <p className="flex items-center gap-2 text-[11px] text-muted-foreground" role="alert">
-            {SUBJECTS_FAILED}
-            <Button variant="text" size="sm" onClick={subjects.refresh}>
-              Retry
-            </Button>
-          </p>
-        </ChipSlot>
-      );
+      subjectChip = <SubjectChipFailed onRetry={subjects.refresh} />;
     } else if (chipStatus === "loading" || !answer) {
       subjectChip = (
         <ChipSlot>
-          <Skeleton className="h-7 w-full sm:w-[16rem]" />
+          <Skeleton className="h-7 w-full sm:w-[16rem] xl:w-full" />
         </ChipSlot>
       );
     } else {
       subjectChip = (
         <ChipSlot
           error={subjectError}
-          note={subjectChipNote(needs, answer, state.subject, editing !== null)}
+          note={subjectChipNote(needs, answer, state.subject, isEdit)}
         >
           <SelectButton
             label="Subject"
             prefix="About:"
             prompt={needs === "person" ? "choose a person" : undefined}
-            widthClass="w-full sm:w-[16rem]"
+            widthClass={CHIP_WIDTH}
             value={subjectValue(state.subject)}
             defaultValue={needs === "person" ? "" : subjectValue(null)}
             options={people}
@@ -873,7 +973,7 @@ function ReportBuilder({
             onChange={(value) => {
               const subject = parseSubjectValue(value);
               if (subject === undefined) return;
-              setState((s) => withSubject(s, subject));
+              setState((s) => ({ ...withSubject(s, subject), subjectTouched: true }));
             }}
           />
         </ChipSlot>
@@ -881,179 +981,251 @@ function ReportBuilder({
     }
   }
 
+  const headerLine = preview
+    ? reportHeaderLine({
+        subject: subjectLabel(state.subject, answer),
+        scope: scopePhrase(state.projectId, state.includeSubtree, scopes),
+        periodStart: preview.body.period_start,
+        periodEnd: preview.body.period_end,
+        periodFree: noPeriod,
+        asOf: asOfDay(preview.body.sections.pulse?.today, new Date()),
+      })
+    : undefined;
+  const hiddenHint = hiddenTeamHint(answer, state.subject);
+
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-foreground">
-        {template?.name ?? "Custom report"}
+      <h3 className="min-w-0 truncate pr-px text-sm font-semibold text-foreground">
+        {editing ? editTitle(editing) : (template?.name ?? "Custom report")}
       </h3>
-      <div className="flex flex-wrap items-start gap-2 text-xs">
-        {subjectChip}
-        <ChipSlot error={scopeError}>
-          <SelectButton
-            label="Scope"
-            prefix="In:"
-            widthClass="w-full sm:w-[16rem]"
-            value={state.projectId ?? WHOLE_ORGANIZATION}
-            defaultValue={WHOLE_ORGANIZATION}
-            options={scopes}
-            disabled={editing !== null}
-            onChange={(value) =>
-              setState((s) => ({
-                ...s,
-                projectId: value === WHOLE_ORGANIZATION ? null : value,
-              }))
-            }
-          />
-        </ChipSlot>
-        <ChipSlot>
-          <SelectButton
-            label="Period"
-            prefix="Over:"
-            widthClass="w-full sm:w-[14rem]"
-            value={periodKey(state) ?? SAVED_PERIOD}
-            defaultValue="last_week"
-            options={periodOptions(state)}
-            onChange={(value) => setState((s) => withPeriod(s, value))}
-          />
-        </ChipSlot>
-      </div>
-
-      {/* A template that locks the subject does not let each choice change. */}
-      {state.template && needs !== "self" && (
-        <p className="text-[11px] text-muted-foreground">
-          Started from a template. You can change each choice.
-        </p>
-      )}
-
-      {editing !== null && (
-        <p className="text-[11px] text-muted-foreground">
-          The scope of a saved report stays as saved. To report on another
-          scope, start a new report.
-        </p>
-      )}
-
-      {state.projectId !== null && (
-        <label className="flex items-center gap-2 text-[11px]">
-          <Checkbox
-            size="sm"
-            checked={state.includeSubtree}
-            onChange={(e) =>
-              setState((s) => ({ ...s, includeSubtree: e.target.checked }))
-            }
-          />
-          Include the projects under it
-        </label>
-      )}
-
-      <fieldset>
-        <legend className="mb-1 text-[11px] font-semibold text-foreground">
-          Sections
-        </legend>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {REPORT_SECTIONS.map((section) => {
-            const blocked = sectionBlockedBySubject(state, section.key);
-            const on = !blocked && state.sections.includes(section.key);
-            const last =
-              on &&
-              state.sections.filter((k) => !sectionBlockedBySubject(state, k))
-                .length === 1;
-            return (
-              <label
-                key={section.key}
-                className={`flex items-center gap-1.5 text-[11px] ${
-                  blocked ? "text-muted-foreground" : ""
-                }`}
-                title={
-                  blocked
-                    ? "Off for a person or team."
-                    : last
-                      ? "A report needs at least one section."
-                      : undefined
+      <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
+        <div className="space-y-3 xl:sticky xl:top-0">
+          <div className="flex flex-wrap items-start gap-2 text-xs xl:flex-col">
+            {subjectChip}
+            <ChipSlot error={scopeError}>
+              <SelectButton
+                label="Scope"
+                prefix="In:"
+                prompt={onlyProjects ? "choose a project" : undefined}
+                widthClass={CHIP_WIDTH}
+                value={state.projectId ?? WHOLE_ORGANIZATION}
+                defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
+                options={scopeChoices(scopes, template)}
+                filterAbove={8}
+                disabled={isEdit}
+                onChange={(value) =>
+                  setState((s) => ({
+                    ...s,
+                    projectId: value === WHOLE_ORGANIZATION ? null : value,
+                  }))
                 }
-              >
-                <Checkbox
-                  size="sm"
-                  checked={on}
-                  disabled={blocked || last}
-                  onChange={() =>
-                    setState((s) => ({
-                      ...s,
-                      sections: toggleSection(s.sections, section.key),
-                    }))
-                  }
+              />
+            </ChipSlot>
+            <ChipSlot>
+              {noPeriod ? (
+                // The UX pass, item 7. Every chosen section reads the state
+                // now, so a period chip would change nothing.
+                <p
+                  className="flex h-7 items-center text-xs text-muted-foreground"
+                  title="Each section you chose reads the state now. The period does not change this report."
+                >
+                  {AS_OF_TODAY}
+                </p>
+              ) : (
+                <SelectButton
+                  label="Period"
+                  prefix="Over:"
+                  widthClass={CHIP_WIDTH}
+                  value={periodKey(state) ?? SAVED_PERIOD}
+                  defaultValue="last_week"
+                  options={periodOptions(state)}
+                  onChange={(value) => setState((s) => withPeriod(s, value))}
                 />
-                {section.label}
-              </label>
-            );
-          })}
-        </div>
-        {sectionNote && (
-          <p className="mt-1 text-[11px] text-muted-foreground">{sectionNote}</p>
-        )}
-      </fieldset>
+              )}
+            </ChipSlot>
+          </div>
 
-      <label className="block text-[11px]">
-        <span className="mb-1 block font-semibold text-foreground">Name</span>
-        <Input
-          inputSize="sm"
-          className="w-full sm:w-[20rem]"
-          value={state.name}
-          maxLength={MAX_REPORT_NAME}
-          onChange={(e) => setState((s) => ({ ...s, name: e.target.value }))}
-        />
-      </label>
+          {/* A template that locks the subject does not let each choice
+              change. An edit is not "started from a template". */}
+          {state.template && needs !== "self" && !isEdit && (
+            <p className="text-xs text-muted-foreground">
+              Started from a template. You can change each choice.
+            </p>
+          )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          size="sm"
-          loading={saving}
-          disabled={refusal !== null || prompt !== null}
-          onClick={save}
-        >
-          {editing ? "Save changes" : "Save report"}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-        {(refusal || otherSaveError) && (
-          <p className="text-[11px] text-destructive" role="alert">
-            {otherSaveError ?? refusal}
-          </p>
-        )}
-      </div>
+          {isEdit && (
+            <p className="text-xs text-muted-foreground">
+              The scope of a saved report stays as saved. To report on another
+              scope, start a new report.
+            </p>
+          )}
 
-      <section className="border-t border-border pt-3" aria-label="Preview">
-        <p className="mb-2 text-[11px] text-muted-foreground">
-          Preview. The server computes each number, and nothing is saved.
-        </p>
-        {prompt ? (
-          <p className="flex items-center gap-2 text-xs text-foreground">
-            <Icon name="User" className="h-3.5 w-3.5 shrink-0 text-primary" />
-            {prompt}
-            {chipStatus === "failed" && (
-              <Button variant="text" size="sm" onClick={subjects.refresh}>
-                Retry
+          {state.projectId !== null && (
+            <label className="flex items-center gap-2 text-xs">
+              <Checkbox
+                size="sm"
+                checked={state.includeSubtree}
+                onChange={(e) =>
+                  setState((s) => ({ ...s, includeSubtree: e.target.checked }))
+                }
+              />
+              Include the projects under it
+            </label>
+          )}
+
+          <fieldset className="space-y-2">
+            <legend className="mb-1 text-xs font-semibold text-foreground">Sections</legend>
+            {/* The UX pass, item 10: three small labels, each in SECTIONS
+                order. The tooltip is the panel's own sentence. */}
+            {sectionGroups().map((group) => (
+              <div key={group.label}>
+                <p className="mb-0.5 text-xs text-muted-foreground">{group.label}</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {group.sections.map((section) => {
+                    const blocked = sectionBlockedBySubject(state, section.key);
+                    const on = !blocked && state.sections.includes(section.key);
+                    const last =
+                      on &&
+                      state.sections.filter((k) => !sectionBlockedBySubject(state, k))
+                        .length === 1;
+                    return (
+                      <label
+                        key={section.key}
+                        className={`flex items-center gap-1.5 text-xs ${
+                          blocked ? "text-muted-foreground" : ""
+                        }`}
+                        title={
+                          blocked
+                            ? "Off for a person or team."
+                            : last
+                              ? "A report needs at least one section."
+                              : PANEL_HINTS[section.key]
+                        }
+                      >
+                        <Checkbox
+                          size="sm"
+                          checked={on}
+                          disabled={blocked || last}
+                          onChange={() =>
+                            setState((s) => ({
+                              ...s,
+                              sections: toggleSection(s.sections, section.key),
+                            }))
+                          }
+                        />
+                        {section.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
+          </fieldset>
+
+          <label className="block text-xs">
+            <span className="mb-1 block font-semibold text-foreground">Name</span>
+            <Input
+              inputSize="sm"
+              className="w-full sm:w-[20rem] xl:w-full"
+              value={state.name}
+              maxLength={MAX_REPORT_NAME}
+              onChange={(e) =>
+                setState((s) => ({ ...s, name: e.target.value, nameTouched: true }))
+              }
+            />
+          </label>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              loading={saving}
+              disabled={refusal !== null || prompt !== null}
+              onClick={save}
+            >
+              {editing ? "Save changes" : "Save report"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+            {/* The UX pass, item 15. Absent, never disabled, without the
+                server's can_delete (R5d). */}
+            {deleteShown(editing) && (
+              <Button
+                className="ml-auto"
+                variant="destructive"
+                size="sm"
+                icon="Trash2"
+                onClick={() => setConfirmDelete(true)}
+              >
+                Delete report
               </Button>
             )}
-          </p>
-        ) : previewError ? (
-          <p
-            className={`text-[11px] ${
-              otherPreviewError ? "text-destructive" : "text-muted-foreground"
-            }`}
-            role={otherPreviewError ? "alert" : undefined}
-          >
-            {otherPreviewError ?? "Change the choice marked above to see the preview."}
-          </p>
-        ) : preview ? (
-          <RenderedBody
-            body={{ ...preview, report: { ...preview.report, name: shownName } }}
-          />
-        ) : (
-          <SkeletonRows count={3} />
-        )}
-      </section>
+          </div>
+          {(refusal || otherSaveError || deleteError) && (
+            <p className="text-xs text-destructive" role="alert">
+              {deleteError ?? otherSaveError ?? refusal}
+            </p>
+          )}
+        </div>
+
+        <section
+          className="min-w-0 border-t border-border pt-3 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
+          aria-label="Preview"
+        >
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <p className="text-xs text-muted-foreground">
+              Preview. The server computes each number, and nothing is saved.
+            </p>
+            {updating && (
+              <span className="text-xs text-muted-foreground" role="status">
+                Updating…
+              </span>
+            )}
+          </div>
+          {prompt ? (
+            <PreviewPrompt icon={personPrompt ? "User" : "FolderKanban"} text={prompt} />
+          ) : currentError && chipPreviewError ? (
+            <p className="text-xs text-muted-foreground">
+              Change the choice marked above to see the preview.
+            </p>
+          ) : currentError ? (
+            <p className="flex items-center gap-2 text-xs text-destructive" role="alert">
+              <span title={currentError}>The preview could not be drawn.</span>
+              <Button variant="text" size="sm" onClick={() => setPreviewRound((n) => n + 1)}>
+                Try again
+              </Button>
+            </p>
+          ) : preview ? (
+            // The UX pass, item 13. During a change the last preview stays,
+            // dimmed, so the page does not jump. A skeleton only on the first
+            // load.
+            <div className={updating ? "opacity-60" : undefined} aria-busy={updating}>
+              <RenderedBody
+                body={{
+                  ...preview.body,
+                  report: { ...preview.body.report, name: state.name.trim() || NEW_REPORT_NAME },
+                }}
+                headerLine={headerLine}
+                hiddenHint={hiddenHint}
+              />
+            </div>
+          ) : (
+            <SkeletonRows count={3} />
+          )}
+        </section>
+      </div>
+
+      {editing && (
+        <ConfirmDialog
+          open={confirmDelete}
+          {...deleteReportCopy(editing.name)}
+          busy={deleting}
+          onConfirm={remove}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1067,23 +1239,20 @@ function TemplateCard({
   onStart: (template: ReportTemplate) => void;
 }) {
   if (!template.available) {
+    // The UX pass, item 5. What it waits for is a tooltip, not a line.
     return (
       <div
         aria-disabled="true"
+        title={template.waits_for ? `Waits for: ${template.waits_for}` : undefined}
         className="h-full rounded-lg border border-dashed border-border p-2 text-muted-foreground"
       >
         <div className="flex items-center gap-2">
-          <span className="min-w-0 truncate pr-px text-xs font-medium">
-            {template.name}
-          </span>
+          <span className="min-w-0 truncate pr-px text-sm font-medium">{template.name}</span>
           <Badge size="xs" className="ml-auto shrink-0">
             Coming soon
           </Badge>
         </div>
-        <p className="mt-1 text-[11px]">{template.question}</p>
-        {template.waits_for && (
-          <p className="mt-1 text-[10px]">Waits for: {template.waits_for}</p>
-        )}
+        <p className="mt-1 text-xs">{template.question}</p>
       </div>
     );
   }
@@ -1094,14 +1263,12 @@ function TemplateCard({
       className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
     >
       <span className="flex items-center gap-2">
-        <Icon name="FileText" className="h-3 w-3 shrink-0 text-primary" />
-        <span className="min-w-0 truncate pr-px text-xs font-medium text-foreground">
+        <Icon name="FileText" className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="min-w-0 truncate pr-px text-sm font-medium text-foreground">
           {template.name}
         </span>
       </span>
-      <span className="mt-1 block text-[11px] text-muted-foreground">
-        {template.question}
-      </span>
+      <span className="mt-1 block text-xs text-muted-foreground">{template.question}</span>
     </button>
   );
 }
@@ -1115,50 +1282,41 @@ function TemplateCard({
  *
  * ⚠️ **"Your reports" is the server's `mine`.** The browser does not compare
  * addresses. It filters the rows the server marked.
+ *
+ * The UX pass (item 5). The live templates come first, in one grid. The
+ * coming-soon ones fold under "Coming later (N)".
  */
-function ReportsHome({
+export function ReportsHome({
   rows,
   templates,
   templatesError,
-  scopeName,
+  cardLine,
   onOpen,
   onStart,
 }: {
   rows: ReportRow[] | null;
   templates: ReportTemplate[] | undefined;
   templatesError: string | null;
-  scopeName: (row: ReportRow) => string;
+  cardLine: (row: ReportRow) => string;
   onOpen: (id: string) => void;
   onStart: (template: ReportTemplate) => void;
 }) {
   const mine = yourReports(rows ?? []);
   const live = (templates ?? []).filter((t) => t.available);
+  const later = (templates ?? []).filter((t) => !t.available);
 
   return (
     <div className="space-y-4">
       <section aria-labelledby="reports-yours">
-        <h3
-          id="reports-yours"
-          className="mb-2 text-xs font-semibold text-foreground"
-        >
+        <h3 id="reports-yours" className="mb-2 text-xs font-semibold text-foreground">
           Your reports
         </h3>
         {rows === null ? (
-          <p className="text-[11px] text-muted-foreground">Loading…</p>
+          <SkeletonRows count={2} />
         ) : mine.length === 0 ? (
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <span>You have not saved a report yet. Start with:</span>
-            {live.map((t) => (
-              <Button
-                key={t.key}
-                variant="secondary"
-                size="sm"
-                onClick={() => onStart(t)}
-              >
-                {t.name}
-              </Button>
-            ))}
-          </div>
+          <p className="text-xs text-muted-foreground">
+            You have not saved a report yet. Pick a question below.
+          </p>
         ) : (
           <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {mine.map((r) => (
@@ -1168,11 +1326,11 @@ function ReportsHome({
                   onClick={() => onOpen(r.id)}
                   className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
                 >
-                  <span className="block truncate pr-px text-xs font-medium text-foreground">
+                  <span className="block truncate pr-px text-sm font-medium text-foreground">
                     {r.name}
                   </span>
-                  <span className="mt-1 block truncate pr-px text-[11px] text-muted-foreground">
-                    {templateLabel(r, templates ?? [])} · {scopeName(r)}
+                  <span className="mt-1 block truncate pr-px text-xs text-muted-foreground">
+                    {cardLine(r)}
                   </span>
                 </button>
               </li>
@@ -1182,26 +1340,36 @@ function ReportsHome({
       </section>
 
       <section aria-labelledby="reports-gallery">
-        <h3
-          id="reports-gallery"
-          className="mb-2 text-xs font-semibold text-foreground"
-        >
+        <h3 id="reports-gallery" className="mb-2 text-xs font-semibold text-foreground">
           Start from a question
         </h3>
         {templatesError && templates === undefined ? (
-          <p className="text-[11px] text-destructive" role="alert">
+          <p className="text-xs text-destructive" role="alert">
             {templatesError}
           </p>
         ) : templates === undefined ? (
-          <p className="text-[11px] text-muted-foreground">Loading…</p>
+          <SkeletonRows count={3} />
         ) : (
-          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            {templates.map((t) => (
-              <li key={t.key}>
-                <TemplateCard template={t} onStart={onStart} />
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-2">
+            <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {live.map((t) => (
+                <li key={t.key}>
+                  <TemplateCard template={t} onStart={onStart} />
+                </li>
+              ))}
+            </ul>
+            {later.length > 0 && (
+              <CollapsibleSection label={`Coming later (${later.length})`} defaultOpen={false}>
+                <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {later.map((t) => (
+                    <li key={t.key}>
+                      <TemplateCard template={t} onStart={onStart} />
+                    </li>
+                  ))}
+                </ul>
+              </CollapsibleSection>
+            )}
+          </div>
         )}
       </section>
     </div>
@@ -1239,6 +1407,103 @@ export function ReportActions({
   );
 }
 
+/**
+ * A render that failed, inside the pane (the UX pass, item 3). The sentence,
+ * one "Try again", and the way home or to Edit, so the reader is never stuck
+ * on an error with no control.
+ */
+export function RenderFailed({
+  error,
+  row,
+  onRetry,
+  onHome,
+  onEdit,
+}: {
+  error: string;
+  row: ReportRow | null;
+  onRetry: () => void;
+  onHome: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+          Try again
+        </Button>
+        {row ? (
+          <ReportActions row={row} onHome={onHome} onEdit={onEdit} />
+        ) : (
+          <Button variant="ghost" size="sm" icon="LayoutGrid" onClick={onHome}>
+            Home
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-destructive" role="alert">
+        {error}
+      </p>
+    </div>
+  );
+}
+
+/** One list of the rail: a small label, then a row for each report. */
+function RailList({
+  title,
+  rows,
+  selected,
+  author,
+  onOpen,
+}: {
+  title: string;
+  rows: ReportRow[];
+  selected: string | null;
+  /** The author's name, on a shared row. */
+  author?: (row: ReportRow) => string;
+  onOpen: (id: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <p className="px-2 pb-0.5 pt-1 text-xs font-semibold text-muted-foreground">{title}</p>
+      <ul className="space-y-0.5">
+        {rows.map((r) => (
+          <li key={r.id}>
+            <button
+              type="button"
+              onClick={() => onOpen(r.id)}
+              className={`flex w-full items-start gap-1.5 rounded px-2 py-1 text-left text-xs hover:bg-muted ${
+                selected === r.id ? "bg-muted font-medium" : ""
+              }`}
+            >
+              <Icon name="FileText" className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate pr-px">{r.name}</span>
+                {author ? (
+                  <span className="block truncate pr-px font-normal text-muted-foreground">
+                    by {author(r)}
+                  </span>
+                ) : null}
+              </span>
+              <span
+                className="shrink-0 font-normal text-muted-foreground"
+                title={
+                  r.scope === "portfolio"
+                    ? "Whole organization"
+                    : "One project and what is under it"
+                }
+              >
+                {/* ⚠️ "Project", not "Node". `node` is the table's word for a
+                    row in the tree and it reaches no other surface. */}
+                {r.scope === "portfolio" ? "All" : "Project"}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** What the right pane shows: a saved render, or the builder. */
 type Pane =
   | { kind: "view" }
@@ -1256,7 +1521,7 @@ export default function ReportsView({
   const [body, setBody] = useState<RenderedReportBody | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>({ kind: "view" });
-  /** Moves after a save, so the render of an edited report runs again. */
+  /** Moves after a save, and on "Try again", so the render runs again. */
   const [renderRound, setRenderRound] = useState(0);
 
   // The scope chip lists the tree the caller can see. One read cache, the
@@ -1271,9 +1536,29 @@ export default function ReportsView({
   );
   const templates = catalogue.data?.templates;
 
+  // The UX pass (items 4, 11 and 12). The names of subjects and authors,
+  // from the key the builder reads, so this adds no request once it ran.
+  const subjects = useCachedResource(projectsKey("reports/subjects"), () =>
+    projectsApi.reportSubjects()
+  );
+
   function scopeName(row: ReportRow): string {
     if (row.project_id === null) return "Whole organization";
     return scopes.find((s) => s.value === row.project_id)?.label ?? "Project";
+  }
+
+  function authorName(row: ReportRow): string {
+    const who = (row.created_by ?? "").trim().toLowerCase();
+    return subjects.data?.people.find((p) => p.email === who)?.name || row.created_by;
+  }
+
+  function cardLine(row: ReportRow): string {
+    return reportCardLine(
+      row,
+      templateLabel(row, templates ?? []),
+      subjectLabel(row.config.subject ?? null, subjects.data),
+      scopeName(row)
+    );
   }
 
   // WS-27bn R5b. A link from `reportLink` opens the builder filled in. The
@@ -1343,13 +1628,39 @@ export default function ReportsView({
     setRenderRound((n) => n + 1);
   }
 
+  function deleted(id: string) {
+    setRows((prev) => (prev ?? []).filter((r) => r.id !== id));
+    setPane({ kind: "view" });
+    setSelected(null);
+  }
+
   const selectedRow = rows?.find((r) => r.id === selected) ?? null;
+  const building = pane.kind !== "view";
+  const { yours, shared } = railGroups(rows ?? []);
+  const header =
+    body && selectedRow
+      ? reportHeaderLine({
+          subject: subjectLabel(selectedRow.config.subject ?? null, subjects.data),
+          scope: scopePhrase(
+            selectedRow.project_id,
+            selectedRow.config.include_subtree,
+            scopes
+          ),
+          periodStart: body.period_start,
+          periodEnd: body.period_end,
+          periodFree: periodFree({
+            sections: selectedRow.config.sections,
+            subject: selectedRow.config.subject ?? null,
+          }),
+          asOf: asOfDay(body.sections.pulse?.today, new Date()),
+        })
+      : undefined;
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
       <div className="mb-3 flex flex-wrap items-baseline gap-2">
         <h2 className="text-sm font-semibold">Reports</h2>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           A saved question, answered from the same numbers the dashboard shows.
         </p>
         <Button
@@ -1364,63 +1675,49 @@ export default function ReportsView({
         </Button>
       </div>
 
-      {error && (
-        <p className="mb-3 text-[11px] text-destructive" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
-        <aside className="rounded-lg border border-border bg-card p-2">
-          {rows === null ? (
-            <p className="text-[11px] text-muted-foreground">Loading…</p>
-          ) : rows.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">
-              No reports yet.{" "}
-              {finished
-                ? `There are ${finished.total_completed} finished tasks to report on.`
-                : ""}
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {rows.map((r) => (
-                <li key={r.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelected(r.id);
-                      setPane({ kind: "view" });
-                    }}
-                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[11px] hover:bg-muted ${
-                      selected === r.id && pane.kind === "view"
-                        ? "bg-muted font-medium"
-                        : ""
-                    }`}
-                  >
-                    <Icon name="FileText" className="h-3 w-3 shrink-0" />
-                    <span className="min-w-0 truncate pr-px">{r.name}</span>
-                    <span
-                      className="ml-auto shrink-0 text-muted-foreground"
-                      title={
-                        r.scope === "portfolio"
-                          ? "Every space you can see"
-                          : "One project and what is under it"
-                      }
-                    >
-                      {/* ⚠️ "Project", not "Node". `node` is the table's word
-                          for a row in the tree and it reaches no other
-                          surface — the nav, the tree and this component's own
-                          report body all say "space" and "project". A badge
-                          that said "Node" made the reader look up an idea the
-                          product does not have. */}
-                      {r.scope === "portfolio" ? "All" : "Project"}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
+      {/* The UX pass, item 1. While the member builds a report the rail
+          leaves, and the builder takes the width for its preview. */}
+      <div
+        className={
+          building ? "" : "grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]"
+        }
+      >
+        {!building && (
+          // Item 12. On a phone the rail is gone on Home, where the cards
+          // already list your reports.
+          <aside
+            className={`rounded-lg border border-border bg-card p-2 ${
+              selected ? "" : "hidden lg:block"
+            }`}
+          >
+            {rows === null ? (
+              <SkeletonRows count={3} />
+            ) : rows.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No reports yet.{" "}
+                {finished
+                  ? `There are ${finished.total_completed} finished tasks to report on.`
+                  : ""}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <RailList
+                  title="Yours"
+                  rows={yours}
+                  selected={selected}
+                  onOpen={(id) => setSelected(id)}
+                />
+                <RailList
+                  title="Shared with you"
+                  rows={shared}
+                  selected={selected}
+                  author={authorName}
+                  onOpen={(id) => setSelected(id)}
+                />
+              </div>
+            )}
+          </aside>
+        )}
 
         <div className="min-w-0 rounded-lg border border-border bg-card p-3">
           {pane.kind === "new" ? (
@@ -1431,6 +1728,7 @@ export default function ReportsView({
               roots={roots}
               templates={templates}
               onSaved={saved}
+              onDeleted={deleted}
               onCancel={() => setPane({ kind: "view" })}
             />
           ) : pane.kind === "edit" ? (
@@ -1441,6 +1739,7 @@ export default function ReportsView({
               roots={roots}
               templates={templates}
               onSaved={saved}
+              onDeleted={deleted}
               onCancel={() => setPane({ kind: "view" })}
             />
           ) : !selected ? (
@@ -1448,13 +1747,21 @@ export default function ReportsView({
               rows={rows}
               templates={templates}
               templatesError={catalogue.error}
-              scopeName={scopeName}
+              cardLine={cardLine}
               onOpen={(id) => setSelected(id)}
               onStart={start}
             />
-          ) : body === null && !error ? (
-            <p className="text-[11px] text-muted-foreground">Rendering…</p>
-          ) : body ? (
+          ) : error ? (
+            <RenderFailed
+              error={error}
+              row={selectedRow}
+              onRetry={() => setRenderRound((n) => n + 1)}
+              onHome={() => setSelected(null)}
+              onEdit={() => selectedRow && setPane({ kind: "edit", row: selectedRow })}
+            />
+          ) : body === null ? (
+            <SkeletonRows count={4} />
+          ) : (
             <div className="space-y-3">
               {/* WS-27bm S8: the report as a file, beside Edit. Rendered
                   again on the click, so the file carries the numbers of that
@@ -1469,9 +1776,9 @@ export default function ReportsView({
                   />
                 )}
               </div>
-              <RenderedBody body={body} />
+              <RenderedBody body={body} headerLine={header} />
             </div>
-          ) : null}
+          )}
         </div>
       </div>
     </div>

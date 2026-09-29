@@ -749,6 +749,12 @@ export interface StuckReport {
 export interface LoadRow {
   /** `null` is the UNASSIGNED bar — usually the real finding, never a gap. */
   assignee: string | null;
+  /**
+   * The person's name, when the payload carries one (the Reports UX pass,
+   * item 15). `LoadPanel` shows it in place of the address. Optional: no
+   * server sends it yet, and the panel then shows the address.
+   */
+  name?: string | null;
   open_tasks: number;
   overdue: number;
   /**

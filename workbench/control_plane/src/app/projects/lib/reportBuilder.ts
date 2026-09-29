@@ -354,8 +354,11 @@ export const SELF_SUBJECT_NOTE = "My day is always about you.";
  */
 export const AUTHOR_SUBJECT_NOTE = "My day is always about its author.";
 
-/** The subject chip's line when the subjects read fails. */
-export const SUBJECTS_FAILED = "People and teams did not load.";
+/**
+ * What the subject chip says when the subjects read fails. The UX pass
+ * (item 8) draws it as the prompt of a disabled chip, with Retry beside it.
+ */
+export const SUBJECTS_FAILED = "People did not load";
 
 /** The subject chip's line when the answer lists nobody. */
 export const NOBODY_TO_CHOOSE = "There is no person or team to choose yet.";
@@ -862,6 +865,20 @@ export const PERIOD_FREE_SECTIONS: readonly string[] = [
 
 /** Item 7. What the builder shows in place of the period chip. */
 export const AS_OF_TODAY = "As of today";
+
+/**
+ * Item 7. The day a period-free report is "as of", as `YYYY-MM-DD`.
+ *
+ * The server's day wins when the body names one: `pulse` reads one UTC day
+ * and sends it as `today`. Otherwise the reader's own date, because the
+ * render ran now. ⚠️ Never `toISOString()`, which is the UTC date and names
+ * yesterday for a reader east of Greenwich before dawn in UTC.
+ */
+export function asOfDay(serverDay: string | null | undefined, now: Date): string {
+  if (serverDay && /^\d{4}-\d{2}-\d{2}/.test(serverDay)) return serverDay.slice(0, 10);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
 
 /** Item 7. True when every section the config sends ignores the period. */
 export function periodFree(state: Pick<BuilderState, "sections" | "subject">): boolean {

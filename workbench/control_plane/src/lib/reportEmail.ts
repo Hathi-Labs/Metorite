@@ -726,7 +726,7 @@ export function reportLayout(
     title: report.name,
     period: periodLabel(rendered.period_start, rendered.period_end),
     scope:
-      report.scope === "portfolio" ? "Every space you can see" : "This project",
+      report.scope === "portfolio" ? "Whole organization" : "This project",
     parts,
   };
 }

@@ -577,7 +577,7 @@ describe("reportDocument", () => {
       [
         "# Weekly delivery",
         "",
-        "7 – 13 Sep 2026 · Every space you can see",
+        "7 – 13 Sep 2026 · Whole organization",
         "",
         "**Finished: 17** · 1 cancelled",
         "",
@@ -726,7 +726,7 @@ describe("reportEmail · the exact HTML", () => {
     expect(reportEmail(GOLDEN_A).html).toBe(
       [
       "<div><h2>Weekly delivery</h2>",
-      "<p>7 – 13 Sep 2026 · Every space you can see</p>",
+      "<p>7 – 13 Sep 2026 · Whole organization</p>",
       "<p><strong>Finished: 17</strong> · 1 cancelled</p>",
       "<ul><li>Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17</li><li>Billing: 5 · ███░░░░░░░ 5 of 17</li></ul>",
       "<p>Median time to finish: 27 hours (over 15 measured)</p>",
