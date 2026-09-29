@@ -79,44 +79,178 @@ def _seed_session(promoted, org: str, owner: str, workspace: str | None) -> str:
 
 # ── routes/workspace.py — chat_session.workspace_path ───────────────────────
 
+class _Roots:
+    """The server-derived roots, on a scratch disk, with one app per org."""
+
+    def __init__(self, base: Path, promoted) -> None:  # noqa: F811
+        self.base = base
+        self.apps = base / "agents" / "custom_apps"
+        self.app_a = self.apps / f"app-a-{uuid.uuid4().hex[:6]}"
+        self.app_b = self.apps / f"app-b-{uuid.uuid4().hex[:6]}"
+        self.outside = base / "outside"
+        for d in (self.app_a, self.app_b, self.outside):
+            d.mkdir(parents=True)
+        (self.outside / "secret.txt").write_text("DATABASE_URL=x", encoding="utf-8")
+        with promoted.admin_engine.begin() as c:
+            for slug, path, owner, org in (
+                (self.app_a.name, self.app_a, _ALICE, promoted.org_a),
+                (self.app_b.name, self.app_b, _CAROL, promoted.org_b),
+            ):
+                c.execute(text(
+                    "INSERT INTO apps (slug, name, owner_email, workspace_path, "
+                    "organization_id) VALUES (:s, :s, :o, :w, CAST(:g AS uuid))"),
+                    {"s": slug, "o": owner, "w": str(path), "g": org})
+
+
+def _link(link: Path, target: Path) -> None:
+    """A directory link. A junction on Windows, where a symlink needs a grant."""
+    import os
+
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        import _winapi  # type: ignore[import-not-found]
+
+        _winapi.CreateJunction(str(target), str(link))
+
+
+@pytest.fixture
+def roots(graph_as_app, tmp_path, monkeypatch):  # noqa: F811
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(settings, "custom_apps_root", str(tmp_path / "agents" / "custom_apps"))
+    return _Roots(tmp_path, graph_as_app)
+
+
 @_DB_GATE
-def test_the_workspace_path_reads_in_the_members_tenant(graph_as_app):  # noqa: F811
+def test_the_workspace_path_reads_in_the_members_tenant(graph_as_app, roots):  # noqa: F811
     from acb_graph.db import TenantUnbound
     from gateway.routes.workspace import _get_workspace_path
 
     a, b = graph_as_app.org_a, graph_as_app.org_b
-    sid = _seed_session(graph_as_app, a, _ALICE, "/srv/h201/ws-a")
+    sid = _seed_session(graph_as_app, a, _ALICE, str(roots.app_a))
 
-    assert _get_workspace_path(sid, _ALICE, a) == Path("/srv/h201/ws-a")
+    assert _get_workspace_path(sid, _ALICE, a) == roots.app_a.resolve()
     assert _get_workspace_path(sid, _CAROL, b) is None
     with pytest.raises(TenantUnbound):
         _get_workspace_path(sid, _ALICE, None)
 
 
-@_DB_GATE
-def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app):  # noqa: F811
-    from acb_graph.db import TenantUnbound
+def _patch(sid: str, user, path: str):
     from gateway.routes.workspace import WorkspacePatchRequest, set_workspace_path
+
+    return asyncio.run(set_workspace_path(
+        sid, WorkspacePatchRequest(workspace_path=path), _user=user))
+
+
+def _stored(promoted, sid: str) -> str | None:  # noqa: F811
+    return _admin_one(promoted, "SELECT workspace_path AS w FROM "
+                      "chat_session WHERE id = :s", s=sid).w
+
+
+@_DB_GATE
+def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app, roots):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+
+    a = graph_as_app.org_a
+    sid = _seed_session(graph_as_app, a, _ALICE, None)
+
+    with pytest.raises(TenantUnbound):
+        _patch(sid, _user(_ALICE, None), str(roots.app_a))
+    assert _stored(graph_as_app, sid) is None
+    _patch(sid, _user(_ALICE, a), str(roots.app_a))
+    assert _stored(graph_as_app, sid) == str(roots.app_a.resolve())
+
+
+@_DB_GATE
+def test_the_workspace_patch_refuses_every_path_outside_an_app_it_may_edit(
+    graph_as_app, roots,  # noqa: F811
+):
+    """🔴 H-201 fix round 1, P0. ``/`` made the whole disk readable through
+    ``GET /workspace/S/file?path=proc/self/environ``. Each shape below gets
+    422 and changes no row."""
+    from fastapi import HTTPException
 
     a, b = graph_as_app.org_a, graph_as_app.org_b
     sid = _seed_session(graph_as_app, a, _ALICE, None)
+    link = roots.app_a / "escape"
+    _link(link, roots.outside)
+    import os
 
-    def _patch(user, path: str) -> None:
-        asyncio.run(set_workspace_path(
-            sid, WorkspacePatchRequest(workspace_path=path), _user=user))
+    refused = {
+        "the root": os.path.abspath(os.sep),
+        "/etc": "/etc",
+        "a dir outside every root": str(roots.outside),
+        "a .. escape": str(roots.app_a / ".." / ".." / ".." / "outside"),
+        "a link that escapes": str(link),
+        "another tenant's app": str(roots.app_b),
+        "the apps root itself": str(roots.apps),
+        "a path that does not exist": str(roots.apps / "no-such-app"),
+    }
+    for why, path in refused.items():
+        with pytest.raises(HTTPException) as err:
+            _patch(sid, _user(_ALICE, a), path)
+        assert err.value.status_code == 422, why
+        assert _stored(graph_as_app, sid) is None, why
+    # Bob is in org A, but he may not edit Alice's app.
+    with pytest.raises(HTTPException) as err:
+        _patch(sid, _user(_BOB, a), str(roots.app_a))
+    assert err.value.status_code == 422
+    # Carol may edit her own app, but Alice's session is in org A.
+    with pytest.raises(HTTPException):
+        _patch(sid, _user(_CAROL, b), str(roots.app_a))
+    assert _stored(graph_as_app, sid) is None
+    # A subfolder of Alice's own app is legitimate.
+    (roots.app_a / "src").mkdir()
+    _patch(sid, _user(_ALICE, a), str(roots.app_a / "src"))
+    assert _stored(graph_as_app, sid) == str((roots.app_a / "src").resolve())
 
-    def _stored() -> str | None:
-        return _admin_one(graph_as_app, "SELECT workspace_path AS w FROM "
-                          "chat_session WHERE id = :s", s=sid).w
 
-    # Org B's member matches no row of org A, so nothing changes.
-    _patch(_user(_CAROL, b), "/srv/h201/from-b")
-    assert _stored() is None
-    with pytest.raises(TenantUnbound):
-        _patch(_user(_ALICE, None), "/srv/h201/no-tenant")
-    assert _stored() is None
-    _patch(_user(_ALICE, a), "/srv/h201/ws-a")
-    assert _stored() == "/srv/h201/ws-a"
+@_DB_GATE
+def test_a_stored_path_is_checked_again_on_every_read(graph_as_app, roots):  # noqa: F811
+    """A value stored before the fix is still attacker input. A value that
+    fails the check counts as absent. The session agent is ``orchestrator``,
+    so the fallback is no workspace at all."""
+    import os
+
+    from gateway.routes.workspace import _get_workspace_path
+
+    a = graph_as_app.org_a
+    link = roots.app_a / "escape"
+    _link(link, roots.outside)
+    for bad in (os.path.abspath(os.sep), str(roots.outside), str(link),
+                str(roots.app_b), str(roots.app_a / ".." / ".." / ".." / "outside")):
+        sid = _seed_session(graph_as_app, a, _ALICE, bad)
+        assert _get_workspace_path(sid, _ALICE, a) is None, bad
+    # A legacy write_artifact root, strictly below the clone root, still reads.
+    clone = roots.base / "agents" / "repos" / "agent-h201"
+    clone.mkdir(parents=True)
+    sid = _seed_session(graph_as_app, a, _ALICE, str(clone))
+    assert _get_workspace_path(sid, _ALICE, a) == clone.resolve()
+    # But the clone root itself does not.
+    sid = _seed_session(graph_as_app, a, _ALICE, str(clone.parent))
+    assert _get_workspace_path(sid, _ALICE, a) is None
+
+
+@_DB_GATE
+def test_the_file_route_cannot_read_outside_the_workspace(graph_as_app, roots):  # noqa: F811
+    """The attack end to end: a stored root outside every allowed root gives
+    404, never the file."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.workspace import get_workspace_file
+
+    a = graph_as_app.org_a
+    sid = _seed_session(graph_as_app, a, _ALICE, str(roots.outside))
+    app = FastAPI()
+    app.get("/workspace/{session_id}/file", response_model=None)(get_workspace_file)
+    app.dependency_overrides[get_current_user] = lambda: _user(_ALICE, a)
+    got = TestClient(app).get(f"/workspace/{sid}/file", params={"path": "secret.txt"})
+    assert got.status_code == 404, got.text
+    assert "DATABASE_URL" not in got.text
 
 
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────

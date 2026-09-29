@@ -186,6 +186,125 @@ async def _mirror_gateway_delete(
         _log.warning("workspace.blob_delete_mirror_failed", path=rel, error=str(exc)[:200])
 
 
+def _is_under(path: Path, root: Path, *, strictly: bool = False) -> bool:
+    """True when *path* is *root* or lies below it. Both are resolved."""
+    try:
+        if not path.is_relative_to(root):
+            return False
+    except ValueError:
+        return False
+    return path != root if strictly else True
+
+
+def _app_workspace_for(
+    resolved: Path, user_email: str | None, organization_id: str | None,
+    *, write: bool,
+) -> bool:
+    """True when *resolved* is inside the workspace of an app of this tenant.
+
+    The ``apps`` read runs in the caller's tenant, so an app of another
+    tenant is not found. A write also needs edit rights on that app, the
+    same rule the app routes use (``_common.can_edit``).
+    """
+    from acb_auth import UserContext as _UC
+    from acb_auth.roles import UserRole
+    from acb_graph import tenant_session
+    from gateway.routes.apps._common import can_edit
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        apps = s.execute(text(
+            "SELECT id, owner_email, workspace_path FROM apps "
+            "WHERE workspace_path IS NOT NULL")).fetchall()
+        for app in apps:
+            try:
+                ws = Path(str(app.workspace_path)).resolve(strict=True)
+            except OSError:
+                continue
+            if not _is_under(resolved, ws):
+                continue
+            if not write:
+                return True
+            grants = [(g.subject, g.role) for g in s.execute(
+                text("SELECT subject, role FROM app_grants WHERE app_id = :i"),
+                {"i": app.id}).fetchall()]
+            member = _UC(email=user_email, role=UserRole.EMPLOYEE,
+                         organization_id=organization_id)
+            if can_edit(app, member, grants):
+                return True
+    return False
+
+
+def _allowed_workspace(
+    raw: str, *, session_id: str, user_email: str | None,
+    organization_id: str | None, write: bool,
+) -> Path | None:
+    """The resolved workspace root, or ``None`` when *raw* is not allowed.
+
+    H-201 fix round 1 (P0). ``chat_session.workspace_path`` is the root that
+    every file route trusts, and ``_safe_resolve`` checks containment only
+    against it. So a PATCH of ``/`` made the whole disk readable. The path is
+    resolved with every symlink followed, and it must then lie under a root
+    that the server derives:
+
+    * **Write (the PATCH).** The browser is the only member writer. It binds
+      the Workshop session to the workspace of an app that the member may
+      edit, in the member's tenant. Nothing else is allowed.
+    * **Read.** A legacy writer (``write_artifact``) stored the run's own
+      directory. So a read also takes a directory strictly below an agent
+      clone root, the caller's own state directory for that agent, or this
+      session's scratch directory. Anything else counts as absent.
+    """
+    import tempfile
+
+    from acb_common import get_settings
+
+    try:
+        resolved = Path(raw).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not resolved.is_dir():
+        return None
+
+    from gateway.routes.apps._common import apps_root
+
+    if _is_under(resolved, apps_root().resolve(), strictly=True):
+        return resolved if _app_workspace_for(
+            resolved, user_email, organization_id, write=write) else None
+    if write:
+        return None
+
+    settings = get_settings()
+    clone_root = Path(getattr(
+        settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")))
+    for repos in (clone_root / "repos", Path("/tmp/acb_agents") / "repos"):
+        try:
+            if _is_under(resolved, repos.resolve(), strictly=True):
+                return resolved
+        except OSError:
+            continue
+
+    from acb_skills.agent_paths import agent_state_dir, state_root
+
+    try:
+        state = state_root().resolve()
+    except OSError:
+        state = None
+    if state is not None and _is_under(resolved, state, strictly=True):
+        agent = resolved.relative_to(state).parts[0]
+        instance = _agent_instance_for(agent, user_email)
+        if instance:
+            own = agent_state_dir(agent, instance).resolve()
+            if _is_under(resolved, own):
+                return resolved
+        return None
+
+    scratch = (Path(tempfile.gettempdir()) / "acb_artifacts" / session_id).resolve()
+    if _is_under(resolved, scratch):
+        return resolved
+    return None
+
+
 def _get_workspace_path(
     session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
@@ -222,8 +341,22 @@ def _get_workspace_path(
             return None
 
         # ── 1. Explicit workspace_path ──────────────────────────────────────
+        # H-201 fix round 1 (P0): a stored value is attacker input, because
+        # an earlier PATCH or a legacy writer put it there. A value that
+        # fails the allowed-root check counts as absent, so the chain goes on
+        # to step 2 and a warning is logged.
         if row.workspace_path:
-            return Path(row.workspace_path)
+            allowed = _allowed_workspace(
+                row.workspace_path, session_id=session_id,
+                user_email=user_email, organization_id=organization_id,
+                write=False,
+            )
+            if allowed is not None:
+                return allowed
+            _log.warning(
+                "workspace.stored_path_rejected", session_id=session_id,
+                workspace_path=str(row.workspace_path)[:200],
+            )
 
         # ── 2. Derive from agent clone directory ────────────────────────────
         agent_name: str = row.agent_name or ""
@@ -389,7 +522,9 @@ def _safe_resolve(root: Path, rel: str) -> Path:
     # Normalise separators and strip leading slashes/dots
     clean = rel.replace("\\", "/").lstrip("/.")
     resolved = (root / clean).resolve()
-    if not str(resolved).startswith(str(root.resolve())):
+    # H-201 fix round 1: a path check, not a string prefix. "/srv/app2" starts
+    # with "/srv/app", and the old check let it through.
+    if not _is_under(resolved, root.resolve()):
         raise HTTPException(status_code=400, detail="Path traversal not allowed")
     return resolved
 
@@ -669,31 +804,49 @@ async def set_workspace_path(
     body: WorkspacePatchRequest,
     _user: UserContext = Depends(get_current_user),
 ) -> None:
-    """Record the workspace_path for a session (called by write_artifact tool).
+    """Record the workspace_path for a session.
 
     H-201: the UPDATE runs in the caller's tenant. Under FORCE RLS an unbound
     UPDATE matches no row and changes nothing. With no tenant the write
     raises ``TenantUnbound``, and the app handler answers it.
+
+    H-201 fix round 1 (P0): the path must resolve, with symlinks followed,
+    inside the workspace of an app that the caller may edit in their tenant
+    (:func:`_allowed_workspace`). Anything else gets 422, and no row changes.
+    The stored value is the resolved path.
     """
+    import asyncio
+
     from acb_graph import tenant_session
     from gateway.db import TenantUnbound
 
     organization_id = _user.organization_id
+    allowed = await asyncio.to_thread(
+        _allowed_workspace, body.workspace_path, session_id=session_id,
+        user_email=_user.email, organization_id=organization_id, write=True,
+    )
+    if allowed is None:
+        _log.warning("workspace.patch_path_rejected", session_id=session_id,
+                     workspace_path=body.workspace_path[:200])
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="That workspace path is not an app workspace you may edit.",
+        )
     try:
         from sqlalchemy import text
 
-        def _write():
+        def _write() -> None:
+            # tenant_session commits when the block ends.
             with tenant_session(organization_id) as s:
                 s.execute(
                     text(
                         "UPDATE chat_session SET workspace_path = :path "
                         "WHERE id = :id"
                     ),
-                    {"path": body.workspace_path, "id": session_id},
+                    {"path": str(allowed), "id": session_id},
                 )
-                s.commit()
 
-        await __import__("asyncio").get_event_loop().run_in_executor(None, _write)
+        await asyncio.to_thread(_write)
     except TenantUnbound:
         raise
     except Exception as exc:
