@@ -25,7 +25,8 @@ the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
 Phases 2 and 3 are not built.
 
 **R5f BUILT 2026-09-30** (one Reports app: the Analytics app joins Reports,
-and Overview is the landing screen, §9 Q14).
+and Overview is the landing screen, §9 Q14). **R5f repair round 1 is in
+progress** (the pass-through fields and the builder redesign of §6.6).
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -571,6 +572,48 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
   ran now.
 
 ---
+
+### 6.6 Builder redesign (owner, 2026-09-30)
+
+The owner looked at the Team pulse builder and asked for a UI that is "easier to use and non-threatening". The builder and the report must feel calm, friendly and obvious. They use fewer words, less chrome and more visual guidance. The data, the seams and the one look do not change (`DESIGN_SYSTEM.md`).
+
+**A. One header row.**
+1. The row holds a back button "Reports", the report name as an inline title, Cancel and the Save button.
+2. The title looks like a heading, and it shows a pencil on hover and on focus. It is still a labelled input with `MAX_REPORT_NAME`, and the `nameTouched` rule stays.
+3. "Delete report" stays in the row as a quiet button. It shows only when the server's `can_delete` is true.
+4. In Overview the title is "Overview", and it does not change. The row holds "Save as report".
+5. The pane has no heading "Reports", because the page header names the app. Home keeps "New report".
+
+**B. Three steps.** The left column is one card, "Build your report", with three numbered steps. A plain label sits above each control.
+1. "Who is it about?" holds the subject chip. A locked "My day" shows "You", a lock icon and a short note.
+2. "Which work?" holds the scope chip, and "Include the projects under it" sits under it.
+3. "What time?" holds the period chip. With no period, a soft pill says "Today's snapshot", with a clock icon. Its tooltip gives the reason.
+
+A report from a template shows a small badge "From template: [name]" under the header. The line "Started from a template" goes.
+
+**C. What to include.** Section tiles replace the checkbox grid.
+1. Each tile shows the icon of its section, its label and one short line.
+2. A chosen tile has an accent border, a soft accent tint and a check mark.
+3. A tile that a subject turns off is muted, and it says why.
+4. The groups are "What happened", "Where things stand" and "Who needs help". A report still needs one section.
+5. One map in `lib/sectionIcons.ts` names the icon of each section.
+
+**D. The preview.**
+1. The preview sits on a soft surface, so the report reads like a page. A small "Live preview" label and a status dot replace the server sentence. A spinner shows while it updates.
+2. The report header shows the name. Under it, one line with small icons names the subject, the scope and the period. `reportHeaderLine` stays the one source of that text.
+3. An empty section is one compact row: a check mark, the section title and one friendly line. When every section is empty, one calm card says "All clear" and lists the sections.
+4. The friendly lines are short and active. `lib/sectionEmpty.ts` holds them, and the app, the email and the download read them.
+5. The table of a section opens from a small table button in the section header. An empty section has no table button.
+6. A footnote, such as the conflicts horizon, is one short line. It shows only when the section has rows.
+
+**E. Home.**
+1. One heading "Reports" shows.
+2. The space table takes the full width of the preview.
+3. A compact strip of the live templates sits above the Overview panels. The full gallery stays below.
+4. "Save as report" sits in the Overview header row.
+5. At 390 px a number shows before the controls. The controls sit behind "Change what you see".
+
+**F. Motion and density.** Only subtle transitions, such as a colour change. The type follows the density tokens. The review covers light, dark, compact, a changed accent and 390 px.
 
 ## 7. Data and privacy rules
 
@@ -1544,7 +1587,7 @@ Three change a client: `can_edit` always true, no chat check, or Edit always.
 17. The code names the mode `reportsOverview`. `page.tsx` already uses `overview` for the overview of a project.
 
 **Non-goals:**
-- No server change. If the slice needs one, stop and change this spec first.
+- No server change, except the pass-through of repair round 1 (below). If the slice needs another, stop and change this spec first.
 - `NodeDashboard` does not change. Each dashboard keeps its own reads.
 - The analytics routes stay. The dashboards and the chat read them.
 - No new section and no new template. Overview is not a template, so the gallery does not list it.
@@ -1575,11 +1618,9 @@ Three change a client: `can_edit` always true, no chat check, or Edit always.
 - `test_projects_report_overview_r5f.py` proves (g) and (h) on a real database. (g) runs for one project and for the whole organization. A wrong period and a missing row filter each turn it red.
 - (j) ran on 2026-09-30 with mocked routes, as an admin, a lead and a member. It found one defect: the pane repeated the page subtitle. The pane now has no second subtitle.
 
-⚠️ **Four differences from the Analytics app.** They need a server change, which the non-goals forbid.
-1. The Overdue panel draws no blocked list. The `stuck` section of `render_body` has no `blocked` key, and the route has one. The Conflicts panel still shows a late blocker.
-2. `capacity` and `conflicts` hold at most 20 rows (`MAX_PEOPLE`). The routes hold every row. `total` and `people_total` still count every row.
-3. The Overdue column of the space table comes from `/summary`, and the Overdue tile comes from `stuck`. The two use different open-work rules, so they can differ.
-4. `RenderedBody` draws Overdue before Open work. That order is older than R5f, and it is not the `SECTIONS` order.
+⚠️ **Two differences from the Analytics app stay.** Repair round 1 removed the other two (the blocked list and the 20-row cap).
+1. The Overdue column of the space table comes from `/summary`, and the Overdue tile comes from `stuck`. The two use different open-work rules, so they can differ.
+2. `RenderedBody` draws Overdue before Open work. That order is older than R5f, and it is not the `SECTIONS` order.
 
 **First paint (2026-09-30).** Three measurements:
 - The server answers the Overview preview in 345 to 416 ms on the seeded scratch database.
@@ -1587,6 +1628,31 @@ Three change a client: `can_edit` always true, no chat check, or Edit always.
 - In `next dev` with a mocked server, the first panel draws 2900 to 3800 ms after navigation. A server delay of 1500 ms adds about 1000 ms.
 
 The first preview asks at once. Only a later change waits for the delay.
+
+#### R5f repair round 1 (2026-09-30)
+
+The review of R5f found lost figures. The owner also asked for a calmer builder (§6.6). This round does both.
+
+**Rules, the server pass-through.** `render_body` calls the functions of the routes and adds no arithmetic.
+1. The `load` section carries `effort` and `people_total` from `load_body`. Each row carries `est_mins` and `estimated`. The rows keep the cap of 20, because the Load route caps them too.
+2. Each week of the `throughput` section carries `cancelled`, `measured`, `no_start`, `median_hours` and `p90_hours`. The section carries `completed`, as the route summary does.
+3. The `stuck` section carries `blocked` and `blocked_total`. `blocked_body` in `analytics.py` is the one read, and the route and the section both call it.
+4. `capacity` and `conflicts` keep every row, as their routes do. The email and the download cut each list to `MAX_EMAIL_ROWS` in `reportEmail.ts`, so this adds no length to an email.
+
+**Rules, the client.**
+5. The adapters in `reportPanels.ts` copy the new fields. An absent field stays absent.
+6. Home keeps the Overview state when a member opens the builder or a saved report and comes back. Overview asks the server again only when a choice changed.
+7. A builder link (`?template=`, `?subject=` or `?report_node=`) decides the pane before the first preview. Overview does not render first, and it sends no preview.
+8. The builder follows §6.6.
+
+**Done when:**
+- (k) Real database: test (g) compares each section with its route row for row. It seeds 23 people, so a list of more than 20 rows shows a cap. The load effort, the throughput weeks and the blocked list are equal.
+- (l) Vitest: each adapter copies the new fields, and the panel draws the effort line, the blocked list and the Finished cell.
+- (m) Vitest: a return to Home keeps the Overview state and asks for no second preview.
+- (n) Vitest: a builder link opens the builder, and Overview sends no preview.
+- (o) Vitest: the header row, the section tiles, the all-clear state and the table toggle follow §6.6.
+- (p) A mutation of each new test turns it red.
+- (q) A visual review finds no defect. It covers Team pulse (all clear and with data), Project status, My day and Overview. Each screen is seen in light, dark, compact, a changed accent and 390 px.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
