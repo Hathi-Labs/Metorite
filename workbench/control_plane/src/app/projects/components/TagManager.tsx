@@ -16,7 +16,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
-import Modal from "@/components/ui/Modal";
+import ManagerFrame from "./ManagerFrame";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
 /**
@@ -54,6 +54,8 @@ interface Props {
   onChanged: (tags: TagRow[]) => void;
   /** Fired when a rename, merge or delete rewrote tasks, so the board reloads. */
   onTasksTouched: () => void;
+  /** Drawn as a section of Projects settings, not a dialog (WS-42). */
+  inline?: boolean;
 }
 
 export function TagManager({
@@ -62,6 +64,7 @@ export function TagManager({
   onClose,
   onChanged,
   onTasksTouched,
+  inline = false,
 }: Props) {
   const [tags, setTags] = useState<TagRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,8 +126,8 @@ export function TagManager({
   return (
     // WS-27ak — same as FieldManager: no Escape, no outside press and no focus
     // trap before the primitive.
-    <Modal
-      open
+    <ManagerFrame
+      inline={inline}
       onClose={onClose}
       title="Tags"
       description={`Shared by ${projectName} and everything under it`}
@@ -389,6 +392,6 @@ export function TagManager({
           });
         }}
       />
-    </Modal>
+    </ManagerFrame>
   );
 }

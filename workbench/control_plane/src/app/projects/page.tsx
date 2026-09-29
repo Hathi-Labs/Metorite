@@ -58,6 +58,7 @@ import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
 import ImportDialog from "./components/ImportDialog";
+import ProjectsSettings, { type SettingsSection } from "./components/ProjectsSettings";
 import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
@@ -437,25 +438,6 @@ function ProjectNav({
         </div>
       ))}
 
-      {/* WS-41 I-7 — the import, LABELLED where an admin looks for work to
-          do. An icon beside the + was all it had in I-4, and the owner read
-          that as "no import UI". */}
-      {onImport && (
-        <div className="mb-3 flex flex-col gap-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              onImport();
-              onPicked?.();
-            }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-foreground tech-transition hover:bg-muted"
-          >
-            <Icon name="Upload" className="h-4 w-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">Import from ClickUp</span>
-          </button>
-        </div>
-      )}
-
       {/* The Spaces section — its own heading, with the + that creates one. */}
       <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
         <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -551,7 +533,7 @@ function ProjectNav({
               onPicked?.();
             }}
           >
-            Import from ClickUp
+            Import from another tool
           </Button>
         </div>
       )}
@@ -743,6 +725,25 @@ function ProjectsWorkspace() {
   // WS-41 I-4 — the file import. A courtesy gate: the gateway refuses anybody
   // without `admin:access:manage` whatever this shows.
   const [importing, setImporting] = useState(false);
+  // An earlier run the settings pane asked the wizard to open (WS-42).
+  const [importRunId, setImportRunId] = useState<string | null>(null);
+  // WS-42 (D81) — where Projects settings opens. The sidebar row and a
+  // `?app=settings` link clear it, so they start at the selected space.
+  const [settingsSeed, setSettingsSeed] = useState<{
+    section?: SettingsSection | null;
+    spaceId?: string | null;
+  }>({});
+  // Bumped when the wizard closes, so the pane's list of imports reads again.
+  const [importsVersion, setImportsVersion] = useState(0);
+  const openSettings = useCallback((section: SettingsSection | null, spaceId?: string | null) => {
+    setSettingsSeed({ section, spaceId: spaceId ?? null });
+    setApp("settings");
+  }, []);
+  /** The sidebar's app rows: a plain open of Settings starts afresh. */
+  const chooseApp = useCallback((id: ProjectAppId | null) => {
+    if (id === "settings") setSettingsSeed({});
+    setApp(id);
+  }, []);
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
   const [moving, setMoving] = useState(false);
@@ -1352,7 +1353,7 @@ function ProjectsWorkspace() {
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "analytics" || app === "reports" || app === "ai-chat";
+    dashboardOnly || app === "analytics" || app === "reports" || app === "ai-chat" || app === "settings";
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1534,7 +1535,7 @@ function ProjectsWorkspace() {
             roots={visibleRoots}
             selectedId={selected?.id ?? null}
             app={app}
-            onApp={setApp}
+            onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
               setSelected(project);
@@ -1551,7 +1552,7 @@ function ProjectsWorkspace() {
                 label: "New space", level: "space",
               });
             }}
-            onImport={mayImport ? () => setImporting(true) : undefined}
+            onImport={mayImport ? () => openSettings("import") : undefined}
             creating={treeDraft}
             onCommitCreate={(name) => void submitProject(name)}
             onCancelCreate={() => setCreating(undefined)}
@@ -2496,7 +2497,10 @@ function ProjectsWorkspace() {
     const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
       (i) => i.id === appLink && i.launch === "live",
     );
-    if (live) setApp(live.id);
+    if (live) {
+      if (live.id === "settings") setSettingsSeed({});
+      setApp(live.id);
+    }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
     const qs = rest.toString();
@@ -2640,9 +2644,14 @@ function ProjectsWorkspace() {
         else if (what === "statuses") setManagingStatuses(selected);
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
+      // Not while it is open: a re-seed remounts the pane and drops an edit.
+      openSettings: () => {
+        if (app === "settings") return;
+        openSettings(null, selected ? spaceOf(roots, selected).id : null);
+      },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected],
+    [router, setPanelMode, selected, openSettings, roots, app],
   );
 
   const commandCtx: CommandContext = {
@@ -3594,6 +3603,19 @@ function ProjectsWorkspace() {
                 Lifecycle policy
               </button>
             ) : null}
+            <div className="my-1 h-px bg-border" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+              onClick={() => {
+                setManageOpen(false);
+                openSettings("general", spaceOf(roots, selected).id);
+              }}
+            >
+              <Icon name="Settings" className="h-3.5 w-3.5 text-muted-foreground" />
+              All settings for this space
+            </button>
           </div>
         ) : null}
       </div>
@@ -3664,7 +3686,42 @@ function ProjectsWorkspace() {
     scopes: chatScopes,
   };
 
-  const workArea = app === "ai-chat" ? (
+  const workArea = app === "settings" ? (
+    // WS-42 (D81) — every setting of the Projects app in one pane.
+    <div className="min-w-0 flex-1 overflow-hidden">
+      <ProjectsSettings
+        key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
+        spaces={roots}
+        initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(roots, selected).id : null)}
+        initialSection={settingsSeed.section ?? null}
+        mayImport={mayImport}
+        onStartImport={() => {
+          setImportRunId(null);
+          setImporting(true);
+        }}
+        onOpenImportRun={(id) => {
+          setImportRunId(id);
+          setImporting(true);
+        }}
+        onTreeChanged={() => void refreshTree()}
+        onSaveSpace={(space, values) => void saveSpaceSettings(space, values)}
+        onLifecycleSaved={(fresh) => {
+          setSelected((current) =>
+            current && current.id === fresh.id ? { ...current, ...fresh } : current
+          );
+          setTreeKey((k) => k + 1);
+        }}
+        importsVersion={importsVersion}
+        // The pane edits ANY space, so it never writes the board's own lanes,
+        // fields or tags. It re-reads them from the server instead: the tree
+        // key drives fields and tags, and `loadProject` the lanes and tasks.
+        onBoardStale={() => {
+          setTreeKey((k) => k + 1);
+          if (selected) void loadProject(selected);
+        }}
+      />
+    </div>
+  ) : app === "ai-chat" ? (
     // WS-27bm — the AI chat, full width in its own slot. Reachable only when
     // `NEXT_PUBLIC_PROJECTS_CHAT` flips the entry to live; off, the sidebar
     // disables it and says so. The rail header names the node, because the
@@ -4146,9 +4203,16 @@ function ProjectsWorkspace() {
       {mayImport ? (
         <ImportDialog
           open={importing}
+          openRunId={importRunId}
           roots={roots}
-          onClose={() => setImporting(false)}
-          onDone={() => void refreshTree()}
+          onClose={() => {
+            setImporting(false);
+            setImportsVersion((v) => v + 1);
+          }}
+          onDone={() => {
+            void refreshTree();
+            setImportsVersion((v) => v + 1);
+          }}
           onOpenSpace={(id) => {
             const space = roots.find((r) => r.id === id);
             if (space) {
@@ -4461,7 +4525,7 @@ function ProjectsWorkspace() {
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
               app={app}
-              onApp={setApp}
+              onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
                 setSelected(project);
@@ -4478,7 +4542,7 @@ function ProjectsWorkspace() {
                   label: "New space", level: "space",
                 });
               }}
-              onImport={mayImport ? () => setImporting(true) : undefined}
+              onImport={mayImport ? () => openSettings("import") : undefined}
               creating={treeDraft}
               onCommitCreate={(name) => void submitProject(name)}
               onCancelCreate={() => setCreating(undefined)}

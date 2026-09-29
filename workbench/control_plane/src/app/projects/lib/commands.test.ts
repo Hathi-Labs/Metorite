@@ -57,6 +57,7 @@ function spyActions(): CommandActions & { calls: string[] } {
     clearFilters: () => calls.push("clearFilters"),
     toggleRail: () => calls.push("toggleRail"),
     manage: (what) => calls.push(`manage:${what}`),
+    openSettings: () => calls.push("openSettings"),
     showShortcuts: () => calls.push("showShortcuts"),
   };
 }
