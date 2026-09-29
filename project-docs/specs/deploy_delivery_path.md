@@ -521,6 +521,68 @@ workflow would have piped.
 Until `publish-release` runs once, `origin/release` does not exist and the poller
 exits 1 saying so. That is the intended first-run state, not a fault.
 
+### 8.5 The pin of the box's host key, and how to re-pin it (H-200)
+
+**Every CI ssh to the box checks the box's host key against a pin.** The pin is
+`deploy/hostinger/known_hosts`. It holds the box's three PUBLIC host keys, one
+per line, as `type base64`. The keys are public, so the repo holds them, not a
+secret. A reviewer can read the file and check its fingerprints.
+
+**How it works.**
+
+- `scripts/ci_ssh_host_key.sh` is the one helper. `ci_pin_host_key` writes
+  `~/.ssh/metorite_known_hosts` on the runner. It adds the host field from the
+  secret `HOSTINGER_HOST`: `HOST` for port 22, and `[HOST]:PORT` for any other
+  port. That is the name ssh looks up.
+- `CI_SSH_HOST_KEY_OPTS` is the one option set. It sets
+  `StrictHostKeyChecking=yes` and points `UserKnownHostsFile` at that file.
+  `deploy.yml` (through `CI_SSH_OPTS`), `vps-health.yml` and
+  `vps-forensics.yml` use it.
+- A key that does not match goes red at once. The deploy does not retry it, and
+  it does not hand it to the pull path. The message says: "the box's host key
+  changed, or something else answered at this address".
+- The fence is `tests/unit/test_ssh_host_key_pin.py`. It fails when a CI file
+  trusts any key, or when a fingerprint in the pin changes.
+
+**The fingerprints, recorded 2026-09-29.** Three sources agreed on them: the
+box's own `/etc/ssh/ssh_host_*_key.pub`, a long-trusted `known_hosts`, and a
+fresh `ssh-keyscan`.
+
+| Type | Fingerprint |
+|---|---|
+| ED25519 | `SHA256:p8ybBFTCC4BTM8FUCg71Sdk69gzNbJ1JB2PFh3A7D3M` |
+| ECDSA | `SHA256:kFOtIoSUTIGiqO2tv9ILNB9bnMVpw0fiElLQbcspYdc` |
+| RSA | `SHA256:xLH7+ggc9RnwiS7AINCFtWs/RQrKpxuILnPfsVoDUf4` |
+
+**When the deploy goes red on the host key.** Do not re-pin first. Find out why
+the key changed. A rebuilt box, a new address, or a changed `HOSTINGER_HOST`
+secret can explain it. If nothing explains it, treat it as an attack on the
+deploy path, and stop.
+
+⚠️ **Never disable the check.** `StrictHostKeyChecking=no` gives the deploy
+session, and the apply, to whatever answers at the box's address.
+
+**The re-pin procedure, for the day the box is rebuilt.**
+
+1. Read the new keys ON THE BOX, over a channel you trust. Use the Hostinger
+   console, or an ssh session whose host key you checked by hand:
+
+       for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done
+
+2. From a separate machine, scan the box:
+
+       ssh-keyscan -p 22 <box address> 2>/dev/null > /tmp/scan
+       ssh-keygen -lf /tmp/scan
+
+3. Compare the two lists. Each fingerprint must be in both. If one differs,
+   stop. Something between you and the box answers for it.
+4. Write the keys into `deploy/hostinger/known_hosts` as `type base64` lines,
+   with no host field. Update the fingerprints in the file's header, in the
+   table above, and in `FINGERPRINTS` in `tests/unit/test_ssh_host_key_pin.py`.
+5. Run `ssh-keygen -lf deploy/hostinger/known_hosts` and
+   `uv run pytest tests/unit/test_ssh_host_key_pin.py`. Then open a PR. The
+   reviewer compares the fingerprints in the PR with step 1.
+
 ---
 
 ## 9. Related

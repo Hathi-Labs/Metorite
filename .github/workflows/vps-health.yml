@@ -256,15 +256,28 @@ jobs:
     needs: probe
     if: ${{ inputs.diagnose }}
     steps:
+      # H-200: the pinned host key and its one helper live in the repo.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            scripts/ci_ssh_host_key.sh
+            deploy/hostinger/known_hosts
+          sparse-checkout-cone-mode: false
       - name: Collect on-box network + service state
         continue-on-error: true
         env:
           SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
           SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
           SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+
+          # H-200: check the box's host key against the pin, never trust any.
+          # shellcheck source=scripts/ci_ssh_host_key.sh
+          . scripts/ci_ssh_host_key.sh
+          ci_pin_host_key || exit 1
 
           # Reachability FLAPS minute to minute (observed: deploy SSH'd in at
           # 13:39, this job timed out at 13:43). One attempt proves nothing, so
@@ -286,10 +299,18 @@ jobs:
 
           for attempt in 1 2 3 4 5 6; do
             echo "───── SSH attempt ${attempt}/6 ─────"
-            if timeout 120 ssh -i ~/.ssh/k \
-                 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            rc=0
+            timeout 120 ssh -i ~/.ssh/k -p "$SSH_PORT" "${CI_SSH_HOST_KEY_OPTS[@]}" \
                  -o ConnectTimeout=20 -o BatchMode=yes \
-                 "${SSH_USER}@${SSH_HOST}" 'bash -s' < /tmp/remote.sh; then
+                 "${SSH_USER}@${SSH_HOST}" 'bash -s' < /tmp/remote.sh 2>/tmp/ssh.err || rc=$?
+            cat /tmp/ssh.err >&2
+            # H-200: a host key that does not match the pin is not a blip.
+            # Stop at once. A retry cannot fix it and must not hide it.
+            if [ "$rc" != 0 ] && ssh_host_key_fault < /tmp/ssh.err; then
+              host_key_red "$(cat /tmp/ssh.err)"
+              exit 1
+            fi
+            if [ "$rc" = 0 ]; then
               echo "───── diagnostics collected on attempt ${attempt} ─────"
               exit 0
             fi
