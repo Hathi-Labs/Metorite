@@ -6,3 +6,4 @@
 *.service       text eol=lf
 *.timer         text eol=lf
 deploy/hostinger/caddy/Caddyfile text eol=lf
+deploy/hostinger/known_hosts text eol=lf

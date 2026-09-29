@@ -287,6 +287,9 @@ jobs:
           # probe and the apply use one set of options.
           # shellcheck source=scripts/ci_deploy_reach.sh
           . scripts/ci_deploy_reach.sh
+          # H-200: write the pinned known_hosts BEFORE the first ssh. With no
+          # pin, stop here: StrictHostKeyChecking=yes would refuse every key.
+          ci_pin_host_key || exit 1
 
           ssh_deploy() {
             # 1800s, matched to the pull unit's TimeoutStartSec. 900 was fatal
@@ -313,7 +316,8 @@ jobs:
             # two CONCURRENT deploys produced. See H-50.
             #
             # CI_SSH_OPTS comes from ci_deploy_reach.sh: the key, the port,
-            # ConnectTimeout, the ServerAlive keepalive and BatchMode.
+            # the host-key pin (H-200), ConnectTimeout, the ServerAlive
+            # keepalive and BatchMode.
             timeout -k 30 1800 ssh "${CI_SSH_OPTS[@]}" \
               "$SSH_USER@$SSH_HOST" "DEPLOY_FORCE=${DEPLOY_FORCE:-0} DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s" < /tmp/deploy_remote.sh
           }
@@ -559,6 +563,12 @@ jobs:
           while [ "$round" -lt 3 ]; do
             wrc=0
             wait_for_ssh || wrc=$?
+            # H-200: a host key that does not match the pin. wait_for_ssh
+            # already printed why. Red at once: no retry and no hand-off.
+            if [ "$wrc" = 4 ]; then
+              echo "❌ Deploy FAILED: the box's ssh host key did not verify."
+              exit 1
+            fi
             if [ "$wrc" = 2 ]; then
               echo "❌ Deploy FAILED: ssh fails for a reason that is not the network."
               exit 1
@@ -577,6 +587,14 @@ jobs:
             if [ "$applied" = 1 ] && verify; then
               echo "✅ Deploy verified healthy on round $round."
               exit 0
+            fi
+            # H-200: the probe passed, and then the apply's ssh met another
+            # host key. That is never a blip, so it gets no refund.
+            if [ "$applied" != 1 ] && ! apply_started /tmp/apply.log \
+               && ssh_host_key_fault < /tmp/apply.log; then
+              host_key_red "$(tail -n 8 /tmp/apply.log)"
+              echo "❌ Deploy FAILED: the box's ssh host key did not verify."
+              exit 1
             fi
             if [ "$applied" != 1 ] && ! apply_started /tmp/apply.log \
                && ssh_network_fault < /tmp/apply.log; then
