@@ -50,8 +50,9 @@ design system.
    implementation of a manager is a defect.
 4. **The row menus stay.** They are shortcuts to the same bodies.
 5. **The import moves into the pane.** The sidebar row goes. The empty tree
-   keeps one link to it. An organization with no spaces is often moving in
-   from another tool.
+   had one link to it, and the owner removed it on 2026-09-30, because
+   Settings already holds the import. Settings, Import & export is now the
+   only entry.
 
 ## 3. Scope and non-goals
 
@@ -81,8 +82,6 @@ vocabulary (HANDOFF H-4), and the export (not designed).
 - The command palette: "Projects settings".
 - The header menu of a selected project: "All settings for this space", which
   opens the pane at the project's space.
-- The empty tree: "Import from another tool", which opens the pane at
-  Import & export.
 
 ### 4.2 The layout
 

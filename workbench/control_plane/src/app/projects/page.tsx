@@ -335,7 +335,6 @@ function ProjectNav({
   onMove,
   onDropNode,
   onNewSpace,
-  onImport,
   creating,
   onCommitCreate,
   onCancelCreate,
@@ -361,12 +360,6 @@ function ProjectNav({
   onDropNode: (movingId: string, target: TreeDropTarget) => void;
   /** The + on the Spaces heading. */
   onNewSpace: () => void;
-  /**
-   * WS-41 — the "Import from ClickUp" row above Spaces, and the button under
-   * an empty tree. Absent when the flag is off
-   * or the member may not import, and then nothing is drawn.
-   */
-  onImport?: () => void;
   /** The row being named, drawn in place by the tree. */
   creating?: CreatingDraft | null;
   onCommitCreate: (name: string) => void;
@@ -520,23 +513,6 @@ function ProjectNav({
           onPicked?.();
         }}
       />
-      {/* An organization with no spaces yet is the one most likely to be
-          moving in from another tool: offer the import beside the empty line. */}
-      {onImport && roots.length === 0 && (
-        <div className="px-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="Upload"
-            onClick={() => {
-              onImport();
-              onPicked?.();
-            }}
-          >
-            Import from another tool
-          </Button>
-        </div>
-      )}
     </>
   );
 }
@@ -1552,7 +1528,6 @@ function ProjectsWorkspace() {
                 label: "New space", level: "space",
               });
             }}
-            onImport={mayImport ? () => openSettings("import") : undefined}
             creating={treeDraft}
             onCommitCreate={(name) => void submitProject(name)}
             onCancelCreate={() => setCreating(undefined)}
@@ -4544,8 +4519,7 @@ function ProjectsWorkspace() {
                   label: "New space", level: "space",
                 });
               }}
-              onImport={mayImport ? () => openSettings("import") : undefined}
-              creating={treeDraft}
+                creating={treeDraft}
               onCommitCreate={(name) => void submitProject(name)}
               onCancelCreate={() => setCreating(undefined)}
               actions={projectMenuActions}
