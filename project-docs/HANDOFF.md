@@ -3531,13 +3531,18 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
-- **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** The
-  workspace read and PATCH, `query_history`, the `pending_commit` and
-  `audit_event` routes in `routes/agent.py`, and the room check on
-  `POST /agent/respond-input`. Do not do them again.
+- **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** Part 1
+  bound the workspace read and PATCH, `query_history`, and the
+  `pending_commit` and `audit_event` routes in `routes/agent.py`. It also
+  added the room check on `POST /agent/respond-input`. Fix round 1 added
+  four more. Do not do them again.
+  - The workspace path check.
+  - The room check on each workspace route.
+  - The member scope of `query_history`.
+  - The owner thread of each `ask_user` request.
 - **What happens.** These modules still open the unbound
   `acb_graph.get_session()` on a FORCE-RLS table. In production a read there
-  sees no row, and a write there is refused.
+  sees no row, and the database refuses a write there.
 - **Still open, one verdict per module.**
   - `routes/agent.py` `_load_dynamic_agents`, `_sync_file_into_db`,
     `_save_dynamic_agents` and `remove_agent` use `dynamic_agents`, which is
@@ -3545,6 +3550,10 @@ line — never reclaim a number by deleting the other entry.
     no request. First record whether the Agent Registry is per tenant or per
     deployment. Today an unbound read finds nothing, and the code falls back
     to `agents.json`.
+  - `routes/projects/assignees.py:269` reads `dynamic_agents` through the
+    bound `get_db`. The Agent Registry reads it unbound and so falls back to
+    `agents.json`. So the assignee picker and the registry can disagree
+    about which agents exist. Resolve both with the registry-scope decision.
   - `routes/observability.py` reads `agent_run`, `agent_avatars` and `apps`.
     Tenant-scoped. Its feed shows no run in production.
   - `routes/debug.py` reads `agent_run`. Tenant-scoped.
@@ -3569,10 +3578,14 @@ line — never reclaim a number by deleting the other entry.
   `access_request`. It has no tenant yet, so it needs its own design.
   `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread
   of another org can appear there as "unknown".
-- **Found in part 1.** The `routes/workspace.py` session routes check no
-  room. A member of the same org who has a session id can read, write and
-  delete that session's workspace files. `PATCH /agent/workspace/{id}` also
-  stores a path that the caller supplies.
+- **Found in part 1 fix round 1.** The `write_artifact` tool PATCHes the
+  session workspace with the internal token and no member. That call has no
+  tenant, so the room check refuses it. It was already a no-op in production under
+  FORCE RLS. Give it the run's tenant and member, or drop the PATCH.
+  `tests/integration/test_chat_features.py::test_resolve_user_input_endpoint`
+  posts with no `thread_id`, so it now gets 422. It is a live-only test.
+  `apps` slugs are unique across the deployment, but the lookup reads them
+  in one tenant, so two tenants can collide on one app folder.
 - **From the S15 fix-round review.** (P3) `chat_session_exists` fails
   closed with NULL if its owner loses BYPASSRLS. Then the gateway refuses
   every new chat. Add a startup self-check or a smoke-check step, which

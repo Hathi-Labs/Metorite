@@ -90,7 +90,9 @@ class _Roots:
         self.outside = base / "outside"
         for d in (self.app_a, self.app_b, self.outside):
             d.mkdir(parents=True)
-        (self.outside / "secret.txt").write_text("DATABASE_URL=x", encoding="utf-8")
+        # Named so the secret-name filter does not hide it. Only the root check
+        # may stop the read.
+        (self.outside / "notes.txt").write_text("DATABASE_URL=x", encoding="utf-8")
         with promoted.admin_engine.begin() as c:
             for slug, path, owner, org in (
                 (self.app_a.name, self.app_a, _ALICE, promoted.org_a),
@@ -262,7 +264,7 @@ def test_the_file_route_cannot_read_outside_the_workspace(graph_as_app, roots): 
     app = FastAPI()
     app.get("/workspace/{session_id}/file", response_model=None)(get_workspace_file)
     app.dependency_overrides[get_current_user] = lambda: _user(_ALICE, a)
-    got = TestClient(app).get(f"/workspace/{sid}/file", params={"path": "secret.txt"})
+    got = TestClient(app).get(f"/workspace/{sid}/file", params={"path": "notes.txt"})
     assert got.status_code == 404, got.text
     assert "DATABASE_URL" not in got.text
 

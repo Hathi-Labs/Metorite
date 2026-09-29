@@ -3525,7 +3525,7 @@ The first production run PASSED on 2026-09-29, all four steps, on
 
 ### 21.13 H-201 — the other readers bind the tenant
 
-**Status: BUILT 2026-09-30, part 1 of H-201.** This part binds the readers
+**Status: BUILT 2026-09-30, part 1 of H-201, with fix round 1.** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -3553,8 +3553,8 @@ policy on each table below.
    frame. That opener obeys `ACB_GRAPH_TENANT_BIND`, which is ON in
    production. With the flag ON and no tenant, the tool answers `[]`.
 4. `POST /agent/respond-input` checks `resolve_room_access(...).can_send`
-   in the caller's tenant before it resolves or relays an answer. A call
-   that names no thread keeps the request id as its only proof.
+   in the caller's tenant before it resolves or relays an answer. Fix round
+   1 made the thread required, and the thread must own the request.
 
 **Two faults that R8 found in `query_history`.** The join named a
 `thread_id` column that neither chat table has. Also, psycopg 3 sends a NULL
@@ -3591,6 +3591,50 @@ shows the following:
 | `_member_graph_session` back to `get_session()` | 4 |
 | the room check removed from `respond-input` | 1 |
 
+**Fix round 1.** The review found that the bind made three dormant holes
+live. Each one blocked the merge.
+
+1. **P0, path traversal.** `PATCH /agent/workspace/{id}` stored any string,
+   and every file route trusts that root. A PATCH of `/` made the gateway
+   environment readable. Now `_allowed_workspace` resolves the path, with
+   every symlink followed. A PATCH must land inside the workspace of an app
+   that the caller may edit, in the caller's tenant. Anything else gets
+   422. A read checks the stored value again, and a value that fails counts
+   as absent. A read also takes three legacy `write_artifact` roots. They
+   are a directory strictly below an agent clone root, the caller's own
+   state directory, and this session's scratch directory. `_safe_resolve`
+   now checks the path,
+   and not a string prefix.
+2. **P1, no room check.** No `/agent/workspace/{session_id}` route checked
+   the room. Each route now calls `resolve_room_access` in the caller's
+   tenant. A read needs `can_read`, and a refusal answers as a session with
+   no workspace does. A change needs `can_send`, and a refusal is 403. The
+   internal-token caller with no member skips the room on `POST .../events`
+   only.
+3. **P1, every private chat.** With no acting member, `query_history`
+   searched every private chat of the org. Now it needs a verified member
+   (H-73 `member_verified`), or it answers `[]`. With a member, it joins
+   `rooms.SESSION_VISIBLE_SQL`, the one visibility rule of the session
+   list, and it keeps the `since_join` waterline.
+4. **P2, the answer path.** The fast path resolved an `ask_user` future by
+   the request id alone. `_PendingUserInput` now records the owner thread
+   of each request, at the one write point. `resolve_user_input` takes a
+   required `thread_id` and answers only for the owner. The route refuses a
+   call with no thread with 422.
+
+**Fix round 1 mutations.** Each one fails at least one behaviour test.
+
+| Mutation | Tests that fail |
+|---|---|
+| the PATCH path check skipped | 1 |
+| the check on read removed | 2 |
+| symlinks and `..` not resolved | 2 |
+| the room check of the workspace routes removed | 3 |
+| the visibility rule of `query_history` dropped | 1 |
+| the `member_verified` check removed | 1 |
+| the owner check in `resolve_user_input` removed | 1 |
+| the `thread_id` requirement removed from the route | 2 |
+
 **Verification.**
 
 ```bash
@@ -3598,7 +3642,8 @@ export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/ac
 uv run pytest tests/unit/test_h201_readers_under_rls.py \
   tests/unit/test_chat_write_under_rls.py \
   tests/unit/test_mt0c1_no_raw_sql_agent_tools.py \
-  tests/unit/test_documents_pdf_route.py -q -rs
+  tests/unit/test_documents_pdf_route.py tests/unit/test_ask_user_hitl.py \
+  tests/unit/test_genui_hitl.py -q -rs
 ```
 
 The `-rs` output must show no skip in the first two files.
