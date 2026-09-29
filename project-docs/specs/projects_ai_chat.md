@@ -1198,8 +1198,8 @@ gone.
   node dashboards already lead with Load. The route lives in
   `routes/projects/analytics_capacity.py`, and Load's predicate is the named
   `analytics.load_open_where`, which both routes call. Since R5f, the
-  Overview of Reports draws the sections in `SECTIONS` order, and Load comes
-  after Forecast.
+  Overview of Reports draws the panels in the order of `RenderedBody`, and
+  Load comes after Forecast and Overdue.
 - **One dated bound for two callers.** `gateway/capacity.py` `dated_until`
   reaches this Sunday for the pill and includes the horizon's last day. The
   People dashboard and the capacity route both read it. Review round 1 found

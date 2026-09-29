@@ -24,8 +24,8 @@ points "Report on this", "1:1 prep" and "My day"). **The UX pass BUILT
 the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
 Phases 2 and 3 are not built.
 
-**R5f (2026-09-29) is not built.** It joins the Analytics app into Reports,
-and Overview becomes the landing screen (§9 Q14).
+**R5f BUILT 2026-09-30** (one Reports app: the Analytics app joins Reports,
+and Overview is the landing screen, §9 Q14).
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -172,17 +172,18 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:252`). The create control is "New report" (`:1359`).
+  `RenderedBody` (`:273`). The create control is "New report" (`:1806`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
 - `lib/api.ts:1613` to `:1653`. The client can list, create, patch, preview,
   render and delete a report, and read the templates and the subjects. It has
   no call for recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:721`).
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:829`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
-- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1117`)
-  and the template card (`TemplateCard`, `:1060`).
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1406`)
+  and the template card (`TemplateCard`, `:1352`). These anchors were
+  measured again on 2026-09-30, after R5f.
 - **Since R5b-1:** the builder has the subject chip. `lib/reportBuilder.ts`
   holds `subjectOptions`, `reportLink` and `parseReportLink`.
 - **Since R5b-2:** `lib/reportEntry.ts` holds the three entry points. It
@@ -1519,7 +1520,7 @@ Six mutations each turn a test red (v). They remove the filter, its 403, the aut
 Six mutations each turn a test red (ac). Three change the server: no PATCH check, a pass for every change, or no author path for a change.
 Three change a client: `can_edit` always true, no chat check, or Edit always.
 
-### R5f — One Reports app · AGENT-SAFE
+### R5f — One Reports app · AGENT-SAFE · BUILT 2026-09-30
 
 **What:** the Analytics app joins the Reports app (§9 Q14). Reports opens on Overview. Overview is the builder with no name field and no Save. It starts with the seven sections that the Analytics app showed, for the whole organization. The gallery and the saved reports come under it. "Save as report" opens the builder with the same choices.
 
@@ -1561,6 +1562,31 @@ Three change a client: `can_edit` always true, no chat check, or Edit always.
 - (h) Real database: a member previews `overviewState()`. The `load` rows hold the member only, and `hidden_people` counts the others (§7.1 rule 3).
 - (i) `layoutBoundary.test.ts` finds each panel of `RenderedBody` in its own boundary. A mutation that removes one boundary turns it red.
 - (j) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect. Do it as an admin, a lead and a member.
+
+**As built (2026-09-30).** Each rule has its fence. A mutation of each fence turns it red.
+
+- `projectApps.ts` holds `resolveAppLink` and `APP_ALIASES`. The page passes its own resolved list, so the flagged chat entry still opens. Fences: `projectApps.test.ts` (a), (b) and rule 12.
+- `reportBuilder.ts` holds `OVERVIEW_SECTIONS`, `overviewState`, `saveAsReportState` and `overviewTableShown`. Fence: `reportsOverview.test.ts` (c) to (e).
+- `ReportBuilder` takes `mode="reportsOverview"`. Overview has no name field and no Save. "Save as report" opens the builder, and the builder names the report "Untitled report".
+- `SpaceSummary.tsx` holds the KPI strip and the space table. For a node it adds the "Direct work" row, so the rows add up to the footer. `AnalyticsView.tsx` is deleted.
+- `RenderedBody` takes `lead`, and each of its ten panels is the only child of its own `LayoutBoundary`. Fence: `layoutBoundary.test.ts` (i).
+- `ReportsView` takes `onOpenNode` and no `finished`. The Home line takes its count from the Overview preview. The gallery is now above "Your reports", so the line says "Pick a question above".
+- `OPENS_APP` is exported, and each value is `reports`. `nav.py` holds `APP_ALIASES`. Fences: `ProjectToolCards.test.ts` and `test_projects_agent.py` (f).
+- `test_projects_report_overview_r5f.py` proves (g) and (h) on a real database. (g) runs for one project and for the whole organization. A wrong period and a missing row filter each turn it red.
+- (j) ran on 2026-09-30 with mocked routes, as an admin, a lead and a member. It found one defect: the pane repeated the page subtitle. The pane now has no second subtitle.
+
+⚠️ **Four differences from the Analytics app.** They need a server change, which the non-goals forbid.
+1. The Overdue panel draws no blocked list. The `stuck` section of `render_body` has no `blocked` key, and the route has one. The Conflicts panel still shows a late blocker.
+2. `capacity` and `conflicts` hold at most 20 rows (`MAX_PEOPLE`). The routes hold every row. `total` and `people_total` still count every row.
+3. The Overdue column of the space table comes from `/summary`, and the Overdue tile comes from `stuck`. The two use different open-work rules, so they can differ.
+4. `RenderedBody` draws Overdue before Open work. That order is older than R5f, and it is not the `SECTIONS` order.
+
+**First paint (2026-09-30).** Three measurements:
+- The server answers the Overview preview in 345 to 416 ms on the seeded scratch database.
+- One section alone takes 190 to 270 ms. Each request pays that cost once.
+- In `next dev` with a mocked server, the first panel draws 2900 to 3800 ms after navigation. A server delay of 1500 ms adds about 1000 ms.
+
+The first preview asks at once. Only a later change waits for the delay.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
@@ -1776,6 +1802,8 @@ names a built tool which never calls the route fails there.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
+- `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
+  `reportsOverview.test.ts`.
 
 Client, in `workbench/control_plane`:
 
