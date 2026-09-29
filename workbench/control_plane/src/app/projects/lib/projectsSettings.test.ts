@@ -66,9 +66,10 @@ describe("the import lives in settings (D81.5)", () => {
   it("has no sidebar row of its own", () => {
     expect(page).not.toContain('<span className="min-w-0 flex-1 truncate">Import from ClickUp</span>');
   });
-  it("opens from the settings pane and from the empty tree", () => {
+  it("opens from the settings pane only, not from the empty tree (owner, 2026-09-30)", () => {
     expect(read("ProjectsSettings.tsx")).toContain("Import from ClickUp");
-    expect(page).toContain("Import from another tool");
+    expect(page).not.toContain("Import from another tool");
+    expect(page).not.toContain('openSettings("import")');
   });
   it("the header menu of a space leads to its settings", () => {
     expect(page).toContain("All settings for this space");

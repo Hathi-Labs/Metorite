@@ -293,10 +293,11 @@ describe("the history list", () => {
 describe("an admin can find the import (I-7, then WS-42)", () => {
   // The owner looked for it, and an unlabelled icon beside the + read as "no
   // import UI". A labelled sidebar row followed, and the owner asked for it
-  // to live in Projects settings instead (D81). The empty tree keeps a link.
+  // to live in Projects settings instead (D81). The empty tree had a link
+  // too, and the owner removed it on 2026-09-30: Settings is the one entry.
   const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
-  it("is offered where an organization has no spaces yet, and leads to settings", () => {
-    expect(page).toMatch(/onImport && roots\.length === 0 &&/);
-    expect(page).toContain('onImport={mayImport ? () => openSettings("import") : undefined}');
+  it("is offered in settings only, and never under the empty tree", () => {
+    expect(page).not.toMatch(/onImport/);
+    expect(page).toMatch(/mayImport=\{mayImport\}/);
   });
 });
