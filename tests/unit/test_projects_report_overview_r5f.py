@@ -106,7 +106,8 @@ CROWD = 23
 
 
 def _crowd(seeded: dict[str, Any]) -> None:  # noqa: F811
-    """Seed ``CROWD`` people, each with one overdue task that blocks ``m1``.
+    """Seed ``CROWD`` people, each with one overdue task that blocks ``m1``,
+    and three crowd tasks that block the next one.
 
     Each person gives a Load and a Capacity row, and each overdue blocker
     gives a ``blocker_late`` conflict row. So each list holds more than 20
@@ -130,6 +131,21 @@ def _crowd(seeded: dict[str, Any]) -> None:  # noqa: F811
             p=seeded["project"], title=f"crowd {i} {seeded['tag']}",
             me=seeded["who"]["boss"], o=seeded["org"], i=i,
             who=f"crowd{i:02d}-{seeded['tag']}@example.test", m1=seeded["m1"],
+        )
+    # R5f round 2 (item 3). Three more blocked tasks: crowd 0 blocks crowd 1,
+    # 1 blocks 2, and 2 blocks 3. With `m1`, the blocked list holds four, so
+    # a cut of the list shows as a difference.
+    for i in range(3):
+        _sql(
+            seeded,
+            "INSERT INTO pm_task_links (source_task_id, target_task_id,"
+            " link_type, created_by)"
+            " SELECT a.id, b.id, 'blocks', :me FROM pm_tasks a, pm_tasks b"
+            " WHERE a.title = :src AND b.title = :dst"
+            " AND a.root_project_id = CAST(:p AS uuid)"
+            " AND b.root_project_id = CAST(:p AS uuid)",
+            me=seeded["who"]["boss"], p=seeded["project"],
+            src=f"crowd {i} {seeded['tag']}", dst=f"crowd {i + 1} {seeded['tag']}",
         )
 
 
@@ -188,7 +204,8 @@ def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> Non
         assert sections["stuck"]["stale"] == stuck["stale"]
         assert sections["stuck"]["overdue_total"] == stuck["overdue_total"] >= 1
         assert sections["stuck"]["overdue"] == stuck["overdue"]
-        assert stuck["blocked_total"] >= 1
+        assert stuck["blocked_total"] >= 4
+        assert len(stuck["blocked"]) >= 3
         assert sections["stuck"]["blocked"] == stuck["blocked"]
         assert sections["stuck"]["blocked_total"] == stuck["blocked_total"]
 
