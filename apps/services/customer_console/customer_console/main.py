@@ -46,6 +46,7 @@ threadpool worker.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -1340,13 +1341,31 @@ def _grant_starter_credits(
     if already is not None:
         return
 
+    # 🔴 **One writer at a time** (review of PR #539). Both limits read, then
+    # write, and under READ COMMITTED two signups would each miss the other's
+    # uncommitted grant. Signups are rare, so one transaction-scoped lock
+    # costs nothing and is released by COMMIT or ROLLBACK.
+    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('starter-credit-grant'))"))
+
     owner = (owner_email or "").strip().lower()
+    # 🔴 **A DIGEST, never the address** (review of PR #539). `/orgs/purge`
+    # scrubs email keys from audit detail, and the one-grant rule must survive
+    # a purge, because delete-and-sign-up-again is the case it exists for. A
+    # sha256 of the normalised address keeps the rule and holds no address.
+    owner_digest = hashlib.sha256(owner.encode()).hexdigest() if owner else None
     if owner and conn.execute(
         text(
-            "SELECT 1 FROM control_audit WHERE action = 'credits.starter' "
-            "AND lower(detail->>'owner') = :owner LIMIT 1"
+            "SELECT 1 FROM control_audit s WHERE s.action = 'credits.starter' AND ("
+            "  s.detail->>'owner_sha256' = :digest"
+            # Grants from before the digest existed (PR #532) carry no owner,
+            # so they are matched through their org's own provision row.
+            "  OR s.organization_id IN ("
+            "    SELECT p.organization_id FROM control_audit p "
+            "    WHERE p.action = 'org.provision' "
+            "      AND lower(trim(p.detail->>'owner_email')) = :owner)"
+            ") LIMIT 1"
         ),
-        {"owner": owner},
+        {"digest": owner_digest, "owner": owner},
     ).first():
         _log.warning("console.starter_credits_skipped reason=owner_already_granted")
         _audit(conn, org_id, "credits.starter_skipped",
@@ -1377,12 +1396,12 @@ def _grant_starter_credits(
     )
     # The actor of the provision that created the org, never a default: a
     # self-serve signup must not read as a staff member minting money.
-    # `owner` is what the one-grant-per-email limit reads back.
+    # `owner_sha256` is what the one-grant-per-email limit reads back.
     _audit(
         conn,
         org_id,
         "credits.starter",
-        {"credits": str(credits), "owner": owner or None},
+        {"credits": str(credits), "owner_sha256": owner_digest},
         actor=actor,
     )
 
