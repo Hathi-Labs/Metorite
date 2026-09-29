@@ -41,6 +41,7 @@ from acb_common.priority import (
     cell_for_inputs,
     cell_for_name,
     cell_label,
+    flag,
     importance_for,
     importance_write,
     important_from_importance,
@@ -105,34 +106,8 @@ CLEAR_PRIORITY: dict[str, dict[str, Any]] = {
     "leveraged": {"leveraged": False},
 }
 
-#: The words a flag reads as. ⚠️ "1" and "0" are NOT here, on purpose
-#: (review of PR #509). The retired ``importance`` scale read 1 as NOT
-#: important, and a flag would read "1" as true. One string must not mean two
-#: things, so a digit is refused and the model is told to say true or false.
-_TRUE = frozenset({"true", "yes", "y", "on"})
-_FALSE = frozenset({"false", "no", "n", "off"})
-
-
-def flag(value: Any) -> bool | str | None:
-    """"true"/"false" → a bool. Empty or None → None (not passed). Anything
-    else → a refusal string, because a flag the tool cannot read is not a
-    guess. A number, "1" and "0" included, is refused (see ``_TRUE``)."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return None
-    if isinstance(value, int | float):
-        return f"{value!r} is a number. Pass true or false."
-    raw = str(value).strip().lower()
-    if not raw:
-        return None
-    if raw in _TRUE:
-        return True
-    if raw in _FALSE:
-        return False
-    if raw.lstrip("-").replace(".", "", 1).isdigit():
-        return f"{value!r} is a number. Pass true or false."
-    return f"{value!r} is not true or false."
+#: ``flag`` lives in ``acb_common.priority``, so the My Tasks skill reads a
+#: flag by the same words. It refuses a digit (review of PR #509).
 
 
 def priority_fields(
