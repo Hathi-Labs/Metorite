@@ -459,10 +459,12 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
 1. **The preview sits beside the controls.** At `xl`, the controls are a
    sticky column of 18rem, and the preview is on the right. Below `xl` the
    two stack. The saved-reports rail leaves while the member builds or edits.
-2. **A project-only template asks for a project.** T3, "Project status", has
-   the `scope_kinds` `["project"]` and nothing else. Its scope chip says
-   "choose a project" and offers no "Whole organization". Save is off. The
-   preview says "Choose a project in the In chip to see this report."
+2. **A project-only template asks for a project.** T5, "Project status", has
+   the `scope_kinds` `["project"]` and nothing else. For a new report, its
+   scope chip says "choose a project" and offers no "Whole organization".
+   Save is off. The preview says "Choose a project in the In chip to see this
+   report." An edit does not ask, because PATCH cannot change the scope. So a
+   saved org-wide T5 keeps its scope, and Save stays on.
 3. **The period chip says "As of today" when no section reads the period.**
    `render_body` reads the period only in `finished` and `throughput`. When
    every chosen section is one of the other eight, "As of today" replaces
@@ -477,6 +479,8 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
    day". A saved report keeps its saved name.
 6. **The subject menu** shows "Everyone" with no heading, then "Teams", then
    "People". The address shows only on "Me", and on two people with one name.
+   The filter box also matches each address, so a search by name or by
+   address finds a person.
 7. **Team pulse starts on the reader's team** when the reader is not an admin
    and leads exactly one team.
 8. **One Retry.** When the subjects read fails, the subject chip is off and
@@ -492,21 +496,30 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
 
 **The home and the report.**
 11. **The gallery** shows the live templates first, in one grid. The
-    coming-soon templates fold under "Coming later (N)". What a template
-    waits for is a tooltip, not a line on the card.
+    coming-soon templates fold under "Coming later (N)", and their cards
+    carry no badge. What a template waits for is a tooltip, not a line on
+    the card.
 12. **The rail and the cards** follow §6.1: "Yours" and "Shared with you",
-    the author on a shared row, and one empty line.
+    the author on a shared row, and one empty line. The rail tag says the
+    scope in the chips' words: "Whole organization" or the project's name.
+    With no saved report the rail is absent, and Home shows the one empty
+    line. The line adds the finished count only when the count is a number.
 13. **The header line** follows §6.4: the subject and the scope in the chips'
-    words, then the period or "As of [day]".
+    words, then the period or "As of [day]". The email and the downloaded
+    file print the same "As of [day]", because `reportLayout` reads
+    `periodFree` and `asOfDay` from `reportBuilder.ts`.
 14. **A failed render stays in the pane**, with its sentence, "Try again",
     and Home and Edit. The page has no error line above the pane.
 15. **Text follows the density.** `ReportsView.tsx` uses rem sizes only, so
     `--ui-scale` reaches every line. A card title is never smaller than its
     question.
 16. **The hidden line says what to do** where a team choice changes the
-    report. A lead who reports on "Everyone" reads "This report hides N other
+    report. A lead who reports on "Everyone" reads "This view hides N other
     people. Choose a team in About to report on that team only." §7.1 hides
     those people on any subject, so the words do not promise to show them.
+    The line shows once, under the `pulse` panel. The table under it does
+    not count the same people again. A template with no About chip shows no
+    hint, because the words would name a control that is absent.
 
 **The panels and the entry points.**
 17. The `pulse` note is the tooltip of the panel's sentence. The conflicts
@@ -529,8 +542,9 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
   and the chat pass none, so their words stay the same.
 - `deleteReportCopy` in `lib/deleteCopy.ts` holds the delete words.
 - Fences: `reportBuilderUx.test.ts`, `reportsUx.test.ts`,
-  `panelHints.test.ts`, `reportEntry.test.ts` (items 16 to 18) and
-  `deleteCopy.test.ts`. In `test_projects_report_sections_lockstep.py`, a
+  `panelHints.test.ts`, `reportEntry.test.ts` (item 18) and
+  `deleteCopy.test.ts`. Each test title and code comment names its item by
+  the number in this list. In `test_projects_report_sections_lockstep.py`, a
   test reads the branches of `render_body` and pins `PERIOD_FREE_SECTIONS`
   to them. A mutation that drops `stuck` from the list turns it red.
 - ⚠️ **The review's list of period-free sections was short.** It named five.
@@ -1295,7 +1309,7 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 
 - The chat tools `status_report`, `analytics_load` and `team_capacity` print the hidden line. `status_report` prints no "most open work" when the view hides people.
 - The Load, Capacity and Conflicts panels print "You can see no rows here" when the server removed every row. They do not say that the scope is empty.
-- `hiddenPeopleLine` in `reportEmail.ts` is the one source of the words. A panel says "This view hides", and the email and the report table say "This report hides".
+- `hiddenPeopleLine` in `reportEmail.ts` is the one source of the words. A panel says "This view hides", and the email says "This report hides". ⚠️ Since §6.5 item 16, the `pulse` table prints no hidden line, because its panel prints it.
 - `hidden_people` counts people in `conflicts` too. Two rows of one person count as one person.
 - An admin or the creator can delete a report whose stored subject has a bad shape. Get and render still answer 422.
 
@@ -1305,7 +1319,7 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 
 **Rules, R5b-1 (the server and the builder):**
 - The builder has two chips: "about [subject]" and "in [scope]". R5a lets `config.subject` and `project_id` combine, and one picker cannot hold both. This replaces the one picker of §6.2.
-- The subject chip lists "Everyone", then the people, then the teams. It reads `GET /projects/reports/subjects` only. The reader's own row reads "Me".
+- The subject chip lists "Everyone", then the people, then the teams. It reads `GET /projects/reports/subjects` only. The reader's own row reads "Me". ⚠️ Superseded by §6.5 item 6: "Everyone" has no heading, and the teams come before the people.
 - The scope chip stays the project tree and "Whole organization". `scopeOptions` does not change.
 - `builderStateFrom`, `configFor`, `createPayload` and `patchPayload` carry `subject`. PATCH replaces the config, so an edit that drops the subject is a defect.
 - With a subject set, the builder removes `outlook` and `hygiene`. A template with no `person` or `team` in `scope_kinds` hides the subject chip.
@@ -1324,6 +1338,7 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - `PersonPanel` in the People app shows "1:1 prep". It opens T6 with the person as the subject.
 - "1:1 prep" shows only when the subjects route lists that person. When the read fails, the control is absent. It is never disabled.
 - The top bar of My Tasks shows "My day". It opens T2 with the reader as the subject.
+- "My day" shows only to a member who can open Projects (`canSeePath` on `/projects`, the check of `AccessGate`). For every other member the control is absent, never disabled, because the link would end in a refusal (repair round 1).
 
 **Non-goals:** the chat (R8), the member setting (R5c), a "today" period, a `waiting` section, and a control on a task's assignee. The assignee chip has no menu, and a new menu is a design choice for a later slice.
 
@@ -1338,7 +1353,7 @@ The chat's workload answers read the Load, Capacity and Conflicts routes, so a m
 - (h) Real database: T1 with the subject team A renders for L. A member gets 403 for team A.
 - (i) The live templates are exactly `team_pulse`, `my_day`, `weekly_delivery`, `project_status`, `one_on_one` and `data_hygiene`.
 - (j) Real database: the subject of a saved T2 renders it and sees their waiting items. An admin renders the same row and sees none.
-- (n) The subject chip reads as words, for example "About: Me" or "About: Hardware team". The menu has the headings Everyone, People and Teams. A person shows the name, with the address muted beside it. A menu of more than 8 entries has a filter box. The chip is `SelectButton` from `src/components/ui`.
+- (n) The subject chip reads as words, for example "About: Me" or "About: Hardware team". The menu has the headings People and Teams, in the order Teams, then People. "Everyone" has no heading. This sentence is superseded by §6.5 item 6. A person shows the name, with the address muted beside it. A menu of more than 8 entries has a filter box. The chip is `SelectButton` from `src/components/ui`.
 - (o) Vitest: T2 locks the chip to the reader, with the note "My day is always about you." T6 shows "About: choose a person". Until a person is set, the preview shows one line that says what to do, and no error.
 - (p) Vitest: with a subject set, one muted line under the sections says why Forecast and Data hygiene are off. The two checkboxes stay in the list.
 - (q) The sentence reads "[Template] About: [subject] In: [scope] Over: [period]". At 390 px each chip has the full width.
@@ -1390,6 +1405,15 @@ A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
   3. A failed read that shows "1:1 prep".
   4. An omitted person that shows "1:1 prep".
   5. A `PersonPanel` that ignores the read error.
+
+**As built, the review repair (2026-09-29).** Each fix has a vitest that was red before the fix.
+
+- `scopePrompt` and `scopeChoices` take `editing`. Fence: `reportBuilderUx.test.ts` (2).
+- `hiddenTeamHint` takes `chipShown`. Fence: `reportBuilderUx.test.ts` (16).
+- `SelectOption` gains `keywords`, which `filterOptions` matches and the list never draws. `subjectOptions` puts each address there. Fences: `SelectButton.test.ts` and `reportBuilderUx.test.ts` (6).
+- `myDayShown` in `reportEntry.ts` decides "My day". Fence: `reportEntry.test.ts`.
+- `renderAsOf` in `reportEmail.ts` decides "As of [day]" for the email and the file. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+- `homeEmptyLine` holds the one empty line of Home. Fence: `reportsUx.test.ts` (11).
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
