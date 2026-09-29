@@ -3402,19 +3402,6 @@ line — never reclaim a number by deleting the other entry.
   `skill_projects/manifest.py`
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-156 · Decide the three questions the Projects chat spec leaves to the owner · [OWNER]
-- **Check:** `grep -n "^## 12" -A 20 project-docs/specs/projects_ai_chat.md`
-  → three numbered questions with no answer under them means this is open.
-- **Why:** (1) **Delete.** D-PM-35 keeps hard delete off the chat until
-  WS-40. The interim is to gate the two tools on `projects:settings:write`.
-  The spec argues against it. (2) **Grants.** A grant write is
-  membership-shaped, and CLAUDE.md §3a rule 3 stops an agent there. The
-  spec parks it as class X. (3) **The tier.** `tier-balanced` now. The cost
-  is real once H-42 prices the card. Answer any of the three by editing the
-  manifest row and the spec, in one PR.
-- **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
 ### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
 - **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
   → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.

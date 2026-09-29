@@ -94,9 +94,12 @@ _TEMPLATES_REASON = (
 _SUBJECTS_REASON = (
     "The report builder's picker. The chat reaches subjects in WS-27bn R8."
 )
-#: Writing who can see a project is a membership-shaped act. Owner question
-#: 2 in the spec §12.
-_GRANT_REASON = "A grant write is membership-shaped. Spec §12 question 2 holds it for the owner."
+#: Writing who can see a project is a membership-shaped act. D-PM-40, the
+#: owner's answer of 2026-09-29 to spec §12 question 2.
+_GRANT_REASON = (
+    "D-PM-40 — the chat does not write grants. Propose the grant in words, "
+    "and a person applies it in the app."
+)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
