@@ -853,6 +853,9 @@ The import lives **inside Projects**. It adds no pane and no nav entry, so
 the nine-pane allowlist does not change (`launch_surface.md` §2). The entry is
 a labelled row, "Import from ClickUp", in the Projects sidebar above Spaces. An
 organization with no spaces also gets a button under the empty tree (I-7).
+⚠️ **Superseded.** WS-42 (D81) moved the import into Projects, Settings, Import
+& export. The owner removed the empty-tree button on 2026-09-30, so Settings is
+the only entry (`projectsSettings.test.ts`).
 
 An icon beside the + was the only entry in I-4, and the owner read it as "no
 import UI". The entry shows only to a member with `admin:access:manage`, only
