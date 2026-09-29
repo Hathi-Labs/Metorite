@@ -440,7 +440,7 @@ function draw(sections: Sections): string {
  * and its label is an `aria-label`.
  */
 function panelAndTable(markup: string): { panel: string; table: string } {
-  const at = markup.indexOf(', as a table"');
+  const at = markup.indexOf(', as a table');
   expect(at, "the section draws no table").toBeGreaterThan(-1);
   return { panel: markup.slice(0, at), table: markup.slice(at) };
 }
@@ -466,7 +466,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(', as a table"').length).toBe(11);
+    expect(html.split(', as a table').length).toBe(11);
     // §6.6 D item 5. Each card has one table button in its header.
     expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(10);
     // The panel names its region, so a screen reader announces the title.
@@ -555,7 +555,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(html).toContain("All clear");
     expect(html).toContain("The data looks tidy.");
     expect(html).not.toContain('role="img"');
-    expect(html).not.toContain(', as a table"');
+    expect(html).not.toContain(', as a table');
   });
 
   it("rebalance draws each task with its holder and helpers, then pickups, then the caps", () => {
@@ -590,7 +590,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect([tasks, pickups]).toEqual([1, 3]);
     const html = draw({ rebalance: data });
     const count = html.match(
-      /aria-label="Who could help, as a table"><p[^>]*>(\d+)(?:<!-- -->)? rows?</
+      /aria-label="Who could help, as a table, (\d+) rows?"/
     );
     expect(count, "the table title carries no count").not.toBeNull();
     expect(Number(count![1])).toBe(tasks + pickups);
@@ -639,7 +639,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     // R5f round 1 (§6.6 D item 5). The table button sits in the card header,
     // closed. The table is hidden, not removed, so find-in-page reaches it.
     expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*aria-label="Show as a table"/);
-    expect(html).toMatch(/<div[^>]*hidden="(?:until-found|)"[^>]*><div role="group" aria-label="Open work, as a table"/);
+    expect(html).toMatch(/<div[^>]*hidden="(?:until-found|)"[^>]*><div role="group" aria-label="Open work, as a table/);
     expect(table).toContain("ana@example.test");
   });
 

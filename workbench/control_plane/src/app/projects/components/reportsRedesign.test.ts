@@ -26,6 +26,7 @@ import {
 } from "../lib/reportBuilder";
 import { SECTION_CLEAR_LINES, allClear, clearNote, sectionIsClear } from "../lib/sectionEmpty";
 import { SECTION_ICONS } from "../lib/sectionIcons";
+import { idleLine } from "./AnalyticsPanels";
 import {
   AllClear,
   BuilderHeader,
@@ -236,7 +237,7 @@ describe("(o) the section tiles", () => {
     const off = tile({ on: false });
     expect(off).toContain('aria-pressed="false"');
     expect(off).toMatch(/invisible/);
-    expect(off).toContain("Open tasks per person, by when they are due.");
+    expect(off).toContain("Open tasks per person, by due date.");
   });
 
   it("a blocked tile is disabled and says why", () => {
@@ -306,5 +307,21 @@ describe("(n) a builder link skips Overview", () => {
   it("the pane mounts Overview only when reportsPane says overview", () => {
     expect(VIEW).toMatch(/shown === "overview" \? \(/);
     expect(VIEW).toMatch(/shown === "wait-for-link" \? \(/);
+  });
+});
+
+describe("the rebalance line tells the truth about idle people", () => {
+  it("says nobody is idle only when nobody is", () => {
+    expect(idleLine(0)).toBeNull();
+    expect(idleLine(undefined)).toBeNull();
+    expect(idleLine(1)).toBe("Nothing is at risk. 1 idle person has no task that fits.");
+    expect(idleLine(3)).toContain("3 idle people");
+  });
+
+  it("a section with an idle person is not all clear", () => {
+    expect(sectionIsClear("rebalance", { ...REBALANCE_CLEAR, idle_total: 1 })).toBe(false);
+    const markup = html(createElement(RenderedBody, { body: teamPulse({ rebalance: { ...REBALANCE_CLEAR, idle_total: 1 } }) }));
+    expect(markup).not.toContain("nobody is idle");
+    expect(markup).toContain("1 idle person has no task that fits.");
   });
 });

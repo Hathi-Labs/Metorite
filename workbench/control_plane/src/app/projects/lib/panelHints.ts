@@ -25,15 +25,15 @@ export const FINISHED_HINT_LEAD = "Completed by project";
  */
 export const PANEL_HINTS: Readonly<Record<string, string>> = {
   finished: `${FINISHED_HINT_LEAD}, in the period.`,
-  throughput: "Tasks finished each week, and how long they took.",
-  outlook: "When the open work should finish, at the real pace.",
-  load: "Open tasks per person, by when they are due.",
-  capacity: "Open work per person, and the hours they have spare.",
-  pulse: "Each person's open work today, and who needs help.",
-  stuck: "Work with no recent change, and work past due.",
-  hygiene: "Tasks with no owner, date or estimate, and stalled work.",
-  conflicts: "Late blockers, and people on too many projects.",
-  rebalance: "Tasks at risk, and people who could help.",
+  throughput: "Weekly finishes, and the time they took.",
+  outlook: "When the open work should finish.",
+  load: "Open tasks per person, by due date.",
+  capacity: "Open work, and the spare hours.",
+  pulse: "Each person today, and who needs help.",
+  stuck: "Stalled work, and work past due.",
+  hygiene: "Tasks with no owner, date or size.",
+  conflicts: "Late blockers, and people spread thin.",
+  rebalance: "Tasks at risk, and who could help.",
 };
 
 /**

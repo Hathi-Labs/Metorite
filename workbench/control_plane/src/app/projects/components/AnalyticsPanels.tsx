@@ -192,6 +192,18 @@ function duration(hours: number | null | undefined): string {
 }
 
 /**
+ * The line of a rebalance section with no task at risk and no pickup, when
+ * somebody is idle. "Nobody is idle" would then be false, so the panel says
+ * who is idle and why no pickup shows. `null` when nobody is idle.
+ */
+export function idleLine(idle: number | null | undefined): string | null {
+  if (typeof idle !== "number" || idle <= 0) return null;
+  return idle === 1
+    ? "Nothing is at risk. 1 idle person has no task that fits."
+    : `Nothing is at risk. ${idle} idle people have no task that fits.`;
+}
+
+/**
  * What a report adds to a panel's card (WS-27bn R5f round 1, §6.6 D).
  *
  * `RenderedBody` wraps each panel in a provider. The panel then shows the
@@ -956,7 +968,9 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
       {hidden ? (
         <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
       ) : tasks.length === 0 && pickups.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">{SECTION_CLEAR_LINES.rebalance}</p>
+        <p className="text-[11px] text-muted-foreground">
+          {idleLine(data?.idle_total) ?? SECTION_CLEAR_LINES.rebalance}
+        </p>
       ) : (
         <>
           {typeof data?.at_risk_total === "number" &&

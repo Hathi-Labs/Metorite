@@ -216,12 +216,12 @@ function Table({
   children: React.ReactNode;
 }) {
   return (
-    <div role="group" aria-label={`${title}, as a table`}>
-      {typeof count === "number" && (
-        <p className="mb-1 text-xs text-muted-foreground">
-          {count} {count === 1 ? "row" : "rows"}
-        </p>
-      )}
+    // The count is in the label (H-186 item 2). A visible "N rows" line
+    // was noise inside the card (the R5f round 1 visual review).
+    <div
+      role="group"
+      aria-label={`${title}, as a table${typeof count === "number" ? `, ${count} ${count === 1 ? "row" : "rows"}` : ""}`}
+    >
       {children}
     </div>
   );
@@ -1352,7 +1352,7 @@ export function ReportBuilder({
   const controls = (
     <div className="space-y-3 rounded-xl border border-border bg-card p-3">
       <p className="text-sm font-semibold text-foreground">
-        {inOverview ? "What you see" : "Build your report"}
+        {inOverview ? "Change what you see" : "Build your report"}
       </p>
       {chipShown && (
         <Step n={1} label="Who is it about?">
@@ -1419,8 +1419,11 @@ export function ReportBuilder({
         )}
       </Step>
 
-      <fieldset className="space-y-2 border-t border-border pt-3">
-        <legend className="mb-1 text-xs font-semibold text-foreground">
+      <div className="border-t border-border pt-3">
+      {/* `min-w-0`: a fieldset keeps a min-content width by default, and a
+          truncated tile then pushes the card wider than its column. */}
+      <fieldset className="min-w-0 space-y-2">
+        <legend className="mb-1 text-sm font-semibold text-foreground">
           What to include
         </legend>
         {/* §6.6 C. Tiles in three groups, each in SECTIONS order. The
@@ -1428,7 +1431,7 @@ export function ReportBuilder({
         {sectionGroups().map((group) => (
           <div key={group.label} className="space-y-1">
             <p className="text-xs text-muted-foreground">{group.label}</p>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 grid-cols-1 gap-1.5">
               {group.sections.map((section) => {
                 const blocked = sectionBlockedBySubject(state, section.key);
                 const on = !blocked && state.sections.includes(section.key);
@@ -1458,6 +1461,7 @@ export function ReportBuilder({
         ))}
         {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
       </fieldset>
+      </div>
       {(otherSaveError || deleteError) && (
         <p className="text-xs text-destructive" role="alert">
           {deleteError ?? otherSaveError}
@@ -1646,8 +1650,8 @@ export function BuilderHeader({
           Reports
         </Button>
       )}
-      <div className="min-w-0 flex-1">{title}</div>
-      <div className="flex flex-wrap items-center gap-2">{actions}</div>
+      <div className="min-w-[12rem] flex-1">{title}</div>
+      <div className="ml-auto flex flex-wrap items-center gap-2">{actions}</div>
     </div>
   );
 }
@@ -1709,7 +1713,7 @@ export function SectionTile({
       variant="secondary"
       size="none"
       layout="flex w-full items-start gap-2 text-left"
-      className="rounded-lg px-2.5 py-2 transition-colors"
+      className="min-w-0 rounded-lg px-2.5 py-1.5 transition-colors"
       selected={on}
       disabled={blocked}
       title={
@@ -1726,10 +1730,12 @@ export function SectionTile({
         className={`mt-0.5 h-4 w-4 shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`}
       />
       <span className="min-w-0 flex-1">
-        <span className={`block text-xs font-medium ${on ? "text-foreground" : ""}`}>
+        <span
+          className={`block truncate pr-px text-xs font-medium ${on ? "text-foreground" : "text-foreground/80"}`}
+        >
           {label}
         </span>
-        <span className="block text-xs text-muted-foreground">{line}</span>
+        <span className="line-clamp-2 block text-xs text-muted-foreground">{line}</span>
       </span>
       <Icon
         name="Check"
