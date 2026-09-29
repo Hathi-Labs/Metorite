@@ -51,6 +51,7 @@ All tools return compact plain-text summaries for the agent context window.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from datetime import UTC, datetime
@@ -217,6 +218,9 @@ _TASKS = "/projects/tasks"
 #: `lens.ts::lensMyTaskLanes`. Behind MEMBERSHIP, not the project grant: a board
 #: task I reach by assignment alone 404s on `/nodes/{id}/statuses` (D79).
 _MY_LANES = "/projects/my/tasks/{id}/lanes"
+#: `lens.ts::MY_ROUTES.steps`. The step door: the parent's lane, and NEXT
+#: under a stated-NEXT parent (D-PM-38, Subtasks S4). At most `MAX_BATCH`.
+_MY_STEPS = "/projects/my/tasks/{id}/subtasks"
 
 #: `MAX_PAGE_SIZE` in `routes/projects/core.py`. A larger ask is a 422.
 _PAGE_SIZE = 100
@@ -1354,6 +1358,8 @@ async def my_tasks_subtasks(item_id: str) -> str:
 async def my_tasks_add_subtasks(item_id: str, titles: str) -> str:
     """Break a task into steps — add subtasks under it. Each is an ordinary
     task in the parent's project, assigned to you, created in the order given.
+    A step lands in the parent's lane when that lane is open, and it is on
+    your Next list when the parent is. The reply names the lane.
 
     Args:
         item_id: The parent item's full UUID.
@@ -1362,22 +1368,69 @@ async def my_tasks_add_subtasks(item_id: str, titles: str) -> str:
     ts = [t.strip() for t in titles.splitlines() if t.strip()]
     if not ts:
         return "No subtask titles given."
-    parent = await _request("GET", f"{_TASKS}/{item_id}")
-    me = _current_user_email()
-    for title in ts:
-        child = await _request("POST", _TASKS, json={
-            "project_id": parent.get("project_id"),
-            "parent_task_id": item_id,
-            "title": title,
-        })
-        await _request("PUT", f"{_TASKS}/{child['id']}/assignees",
-                       json={"assignees": [me]})
-    subs = _rows(await _request(
-        "GET", _TASKS,
-        params={"parent_task_id": item_id, "sort": "created_at",
-                "direction": "asc", "page_size": _PAGE_SIZE}))
-    return f"Added {len(ts)} — now {len(subs)} subtask(s):\n" + "\n".join(
-        f"  • {_data(s.get('title', '?'))}" for s in subs)
+    # The door the checklist calls (`lens.ts::lensAddSubtasks`), so a chat
+    # step and a UI step agree: the parent's lane, self-assigned, and NEXT
+    # under a stated-NEXT parent (`personal.step_overlay`, D-PM-38). The
+    # gateway reads the actor off the session and the parent through
+    # `load_visible_task`. That gate is the only authorization, and the body
+    # carries no identity and no project (R5).
+    path = _MY_STEPS.format(id=item_id)
+    created: list[str] = []
+    for n in range(0, len(ts), _BATCH_SIZE):
+        try:
+            res = await _request("POST", path, json={"titles": ts[n:n + _BATCH_SIZE]})
+        except RuntimeError as exc:
+            if not created and "(404)" in str(exc):
+                return (f"No steps added: task {item_id} is not one you can "
+                        "see, so nothing was written.")
+            if not created:
+                raise
+            # The earlier batches are committed. Report them, never hide them.
+            return (_steps_receipt(created, ts, None, None)
+                    + f"\nThe other {len(ts) - len(created)} step(s) were NOT "
+                    f"added: {exc}")
+        created += [str(i) for i in ((res or {}).get("created") or [])]
+    # The writes are done. A failed read-back loses the lane, not the steps.
+    parent: dict[str, Any] | None = None
+    step: dict[str, Any] | None = None
+    with contextlib.suppress(Exception):
+        parent = await _request("GET", f"{_TASKS}/{item_id}")
+    if created:
+        with contextlib.suppress(Exception):
+            step = await _my_task(created[0])
+    return _steps_receipt(created, ts, parent, step)
+
+
+def _steps_receipt(
+    created: list[str], titles: list[str],
+    parent: dict[str, Any] | None, step: dict[str, Any] | None,
+) -> str:
+    """The D79 receipt: how many, which lane, under which parent, which list.
+
+    ``Added 2 steps to «In review» under #7 «Parent» · on your Next list``.
+    The lane and the list are read off a CREATED row, so the gateway's answer
+    is what the member reads. One request gives every step the same lane and
+    the same overlay (``personal._add_subtasks``), so one row speaks for all.
+    """
+    n = len(created)
+    head = f"Added {n} step{'' if n == 1 else 's'}"
+    lane = str((step or {}).get("workflow_stage") or "")
+    if lane:
+        head += f" to {_data(lane)}"
+    if parent:
+        number = parent.get("task_number")
+        ref = _data(parent.get("title", "?"))
+        head += f" under #{number} {ref}" if number is not None else f" under {ref}"
+    disp = str((step or {}).get("disposition") or "")
+    if disp == "NEXT":
+        head += " · on your Next list"
+    elif disp:
+        head += f" · on your list as {disp}"
+    lines = [head + ":"]
+    # The route answers the ids in the order given, with blanks dropped.
+    for tid, title in zip(created, titles, strict=False):
+        lines.append(f"  • {_data(title)}\n    full_id: {tid}")
+    return "\n".join(lines)
 
 
 @_annotate_risk(idempotent=True)

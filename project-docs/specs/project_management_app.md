@@ -8106,7 +8106,8 @@ muted steps follow them at the same indent.
 
 - The assistant's subtask tool (`skill-my-tasks`) still writes a step through
   `POST /projects/tasks`. It states nothing. **§11.42 closes the lane half:**
-  the step now takes the parent's open lane.
+  the step now takes the parent's open lane. **Closed by the §11.42
+  follow-up:** the tool now calls the My Tasks door, so it states NEXT too.
 - The Projects panel's "add subtask" took the first lane. **Closed by
   §11.42.**
 - A filed capture keeps its stated INBOX. It shows in the Inbox with its
@@ -8304,15 +8305,26 @@ no status.
 | My Tasks uses the same seam | `personal.step_status` | `test_subtasks_s4.py`, live (g) |
 | The chat receipt names the lane and sends no status | `skill_projects.writes.add_subtasks` | `test_projects_agent_writes.py`, live (f) |
 | The chat `create_task` card forecasts the parent's lane, and its receipt reads the created row | `skill_projects.writes.create_task`, `_parent_lane_label` | `test_projects_agent_writes.py` |
+| The My Tasks chat tool calls the My Tasks door, and its receipt names the lane and the list | `skill_my_tasks.core.my_tasks_add_subtasks`, `_steps_receipt` | `test_skill_task_lens.py`, live (h)–(j) |
 
 The live checks are `tests/live/live_subtask_parent_lane.py`, on a fresh
 database.
 
-**Known gaps, not fixed here.**
+**A follow-up closes the gap that this section left (2026-09-29).**
 
-- `skill-my-tasks` `my_tasks_add_subtasks` gets the lane now. It still states
-  no NEXT, and its reply does not name the lane. The door that states NEXT is
-  `POST /my/tasks/{id}/subtasks`, and the tool does not call it yet.
+- `skill-my-tasks` `my_tasks_add_subtasks` now calls
+  `POST /my/tasks/{id}/subtasks`, the door the checklist calls. So a chat step
+  lands in the parent's lane and states NEXT under a stated-NEXT parent, the
+  same as a UI step. The tool sends the titles only. The gateway reads the
+  actor from the session, and `load_visible_task` is the only gate (R5).
+- The tool sends at most `MAX_BATCH` titles in one request, and it sends a
+  longer list in more than one request. When a later request fails, the reply
+  names the steps that the earlier requests wrote.
+- The reply is a D79 receipt: "Added 2 steps to «In review» under #7 «…» · on
+  your Next list". The tool reads the lane and the list from a created row.
+  When that read fails, the reply still names every step.
+- A parent that the member cannot see gives the refusal "No steps added", and
+  the tool writes nothing.
 
 ---
 
