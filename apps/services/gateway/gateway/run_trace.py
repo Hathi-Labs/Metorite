@@ -138,12 +138,17 @@ def build_run_trace_row(
     }
 
 
-def _persist_row(row: dict[str, Any]) -> None:
-    """Upsert the agent_run row (sync — run off the event loop)."""
+def _persist_row(row: dict[str, Any], organization_id: str | None) -> None:
+    """Upsert the agent_run row (sync — run off the event loop).
+
+    ``agent_run`` is FORCE RLS in production, so the write binds the run's
+    tenant (WS-27bm S15, ``projects_ai_chat.md`` §21). With no tenant,
+    ``tenant_session`` raises ``TenantUnbound`` and no row is written.
+    """
     import json
     from datetime import datetime
 
-    from acb_graph import get_session
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
     ended_at = None
@@ -162,7 +167,7 @@ def _persist_row(row: dict[str, Any]) -> None:
             row["started_ms"] / 1000.0, tz=UTC,
         )
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text(
                 """
@@ -229,6 +234,7 @@ async def record_run_trace(
     started_ms: int | None = None,
     ended_ms: int | None = None,
     flagged: bool = False,
+    organization_id: str | None,
 ) -> None:
     """Build + persist the agent_run trace row at the run boundary. Never raises."""
     try:
@@ -239,7 +245,7 @@ async def record_run_trace(
             user_id=user_id, model=model, events=events, folded=folded,
             started_ms=started_ms, ended_ms=ended_ms, flagged=flagged,
         )
-        await asyncio.to_thread(_persist_row, row)
+        await asyncio.to_thread(_persist_row, row, organization_id)
         _log.info(
             "run_trace.recorded",
             run_id=run_id[:40],

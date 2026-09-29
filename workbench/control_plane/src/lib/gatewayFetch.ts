@@ -72,6 +72,8 @@
 //    closing the page, ends the request at once. After a timeout is deferred,
 //    a later abort of the caller's signal is not seen, and the deadline of
 //    rule 5 is what ends the retry.
+// 10. A string body with no content type goes out as JSON. See
+//    withJsonContentType. An explicit content type always wins.
 //
 // THE LOG
 // -------
@@ -254,6 +256,33 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
 }
 
 /**
+ * The init with `Content-Type: application/json` when the body is a string
+ * and the caller named no content type (WS-27bm S15, projects_ai_chat.md §21).
+ *
+ * Why: for a string body, Node's `fetch` sends `text/plain;charset=UTF-8`.
+ * FastAPI then does not parse the body as JSON, and a `list[...]` body answers
+ * 422. Nine routes lost their JSON header in e92d0620, and every chat save on
+ * production got 422 from then on. A string body to the gateway is JSON, so
+ * the seam supplies the header. An explicit content type always wins, and a
+ * FormData or other non-string body is left alone, so `fetch` still sets the
+ * multipart boundary. Fence: `gatewayFetch.test.ts` and `gatewayBodies.test.ts`.
+ */
+export function withJsonContentType(init: RequestInit): RequestInit {
+  if (typeof init.body !== "string") return init;
+  if (new Headers(init.headers).has("content-type")) return init;
+  const json: [string, string] = ["Content-Type", "application/json"];
+  const h = init.headers;
+  // Keep the caller's shape, so a reader of `init.headers` sees what it gave.
+  if (h instanceof Headers) {
+    const copy = new Headers(h);
+    copy.set(...json);
+    return { ...init, headers: copy };
+  }
+  if (Array.isArray(h)) return { ...init, headers: [...h, json] };
+  return { ...init, headers: { ...(h ?? {}), [json[0]]: json[1] } };
+}
+
+/**
  * `fetch` to the gateway, with a bounded retry while the gateway restarts.
  *
  * Use it wherever this app calls the gateway, with the same arguments you
@@ -261,9 +290,10 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
  */
 export async function gatewayFetch(
   input: string | URL,
-  init: RequestInit = {},
+  callerInit: RequestInit = {},
   opts: GatewayRetryOptions = {}
 ): Promise<Response> {
+  const init = withJsonContentType(callerInit);
   const { origin, route } = parse(input);
   // Rule 9: while the breaker is open, one try and no window.
   const failFast = opts.retry === false || breakerOpen(origin);

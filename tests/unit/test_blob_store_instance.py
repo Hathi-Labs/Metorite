@@ -25,6 +25,20 @@ import pytest
 from acb_memory import blob_store
 
 
+@pytest.fixture(autouse=True)
+def _bound_tenant():
+    """WS-27bm S15 (§21). The store binds the caller's tenant, and with none it
+    refuses. So each test runs inside a bound tenant, as a request or a run
+    does. This suite runs on the ladder-only shape, so any id binds."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant("5150aaaa-0000-4000-8000-000000000015")
+    try:
+        yield
+    finally:
+        release_tenant(token)
+
+
 def _db_reachable() -> bool:
     """True if a session opens AND agent_blob carries the instance column."""
     try:

@@ -87,7 +87,10 @@ def _authorize_room(scope: str, user: UserContext, *, write: bool) -> None:
     if not thread_id:
         raise _deny("Unknown memory scope", 404)
     from gateway.rooms import resolve_room_access
-    access = resolve_room_access(thread_id, user.email or "")
+    access = resolve_room_access(
+        thread_id, user.email or "",
+        organization_id=getattr(user, "organization_id", None),
+    )
     if not access.can_read or (write and not access.can_send):
         raise _deny("Forbidden: that is another conversation's memory.")
 

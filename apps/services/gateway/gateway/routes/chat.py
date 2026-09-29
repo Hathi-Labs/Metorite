@@ -16,6 +16,20 @@ in this room", which is the same question when the room has one member. Two
 paths were not gated at all before and are now: ``POST /chat/sessions`` could
 overwrite any session's metadata by id, and ``POST .../messages`` could write
 messages into any session id. Both were reachable by any authenticated user.
+
+🔴 Every helper here opens ``acb_graph.tenant_session(organization_id)``, and
+never the unbound ``get_session()`` (WS-27bm S15, ``projects_ai_chat.md``
+§21). The chat tables are FORCE RLS in production. An unbound write was
+refused on every save, so ``chat_message`` held no row. The tenant comes from
+``UserContext.organization_id``, never from the request. With no tenant the
+helper raises ``TenantUnbound``, and nothing falls back to an unbound session.
+``tests/unit/test_chat_write_under_rls.py`` is the fence.
+
+🔴 A bound read that finds no ``chat_session`` row is not yet a new session
+(S15 fix round 1). A session of another tenant reads the same way, and its
+unique index and the ``chat_message`` foreign key both ignore RLS. So a write
+helper that sees no row asks ``rooms.session_exists_elsewhere`` first, and it
+writes nothing under an id that exists in another tenant.
 """
 from __future__ import annotations
 
@@ -26,7 +40,13 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
 from fastapi import APIRouter, Depends, HTTPException, status
-from gateway.rooms import SESSION_VISIBLE_SQL, RoomAccess, resolve_room_access
+from gateway.rooms import (
+    SESSION_VISIBLE_SQL,
+    RoomAccess,
+    SessionOfAnotherTenant,
+    resolve_room_access,
+    session_exists_elsewhere,
+)
 from pydantic import BaseModel
 
 _log = get_logger("gateway.chat")
@@ -83,17 +103,17 @@ class MessageRecord(BaseModel):
 # Thin sync helpers (run in a thread to stay non-blocking)
 # ---------------------------------------------------------------------------
 
-def _get_sessions(user_id: str) -> list[dict]:
+def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
     """Every room this person can open, newest first.
 
     The list is the room list now, so it carries what the sidebar needs to
     distinguish "mine" from "shared with me" without a second round trip per
     row: the creator, the visibility, and how many people are in it.
     """
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         rows = s.execute(
             text(
                 "SELECT s.id, s.agent_name, s.title, s.last_preview, "
@@ -143,11 +163,34 @@ def _get_sessions(user_id: str) -> list[dict]:
     ]
 
 
-def _upsert_session(user_id: str, req: SessionUpsertRequest) -> None:
-    from acb_graph import get_session  # noqa: PLC0415
+def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
+    """Raise when ``session_id`` exists in another tenant. For a bound session.
+
+    Returns True when the caller's tenant can see the session row, and False
+    when the id exists nowhere. Raises ``SessionOfAnotherTenant`` otherwise,
+    before any write.
+    """
+    from sqlalchemy import text
+
+    visible = s.execute(
+        text("SELECT 1 FROM chat_session WHERE id = :id"), {"id": session_id},
+    ).first()
+    if visible:
+        return True
+    if session_exists_elsewhere(s, session_id):
+        _log.warning("chat.session_of_another_tenant", session_id=session_id[:12])
+        raise SessionOfAnotherTenant(session_id[:12])
+    return False
+
+
+def _upsert_session(
+    user_id: str, req: SessionUpsertRequest, *, organization_id: str | None,
+) -> None:
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
+        _refuse_if_elsewhere(s, req.id)
         s.execute(
             text(
                 """
@@ -195,6 +238,8 @@ def _ensure_session(
     session_id: str,
     user_id: str,
     agent_name: str = "orchestrator",
+    *,
+    organization_id: str | None,
 ) -> None:
     """Insert a minimal chat_session row IF one doesn't already exist.
 
@@ -216,10 +261,14 @@ def _ensure_session(
     A browser-created session (``_upsert_session``) still gets both on its
     first run, because that writer makes neither.
     """
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
+        # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
+        # another tenant's row, and the two inserts below would then attach
+        # rows of this tenant to it. So refuse first.
+        _refuse_if_elsewhere(s, session_id)
         s.execute(
             text(
                 """
@@ -262,9 +311,12 @@ def _ensure_session(
             )
 
 
-def _patch_session(session_id: str, user_id: str, req: SessionPatchRequest) -> bool:
+def _patch_session(
+    session_id: str, user_id: str, req: SessionPatchRequest,
+    *, organization_id: str | None,
+) -> bool:
     """Apply partial update; returns False if session not found."""
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     sets: list[str] = ["updated_at = now()"]
@@ -279,7 +331,7 @@ def _patch_session(session_id: str, user_id: str, req: SessionPatchRequest) -> b
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         result = s.execute(
             text(
                 f"UPDATE chat_session s SET {', '.join(sets)} "  # noqa: S608
@@ -290,11 +342,13 @@ def _patch_session(session_id: str, user_id: str, req: SessionPatchRequest) -> b
         return result.rowcount > 0
 
 
-def _delete_session(session_id: str, user_id: str) -> bool:
-    from acb_graph import get_session  # noqa: PLC0415
+def _delete_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> bool:
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         # Deliberately NOT the membership predicate: deleting takes the room
         # away from everyone in it, so it stays an owner's act. A member who
         # wants out leaves (DELETE /chat/sessions/{id}/participants/{me}).
@@ -325,6 +379,7 @@ def _get_messages(
     *,
     room: RoomAccess | None = None,
     held_permissions: frozenset[str] | None = None,
+    organization_id: str | None,
 ) -> list[dict]:
     """Fetch messages this person may read, always returned oldest→newest.
 
@@ -345,10 +400,10 @@ def _get_messages(
       the reader does not hold comes back as a redaction stub rather than
       content (``groups_sessions_authority.md`` §4).
     """
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         if room is None:
             visible = s.execute(
                 text(
@@ -633,6 +688,7 @@ def _upsert_messages(
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
     mint: bool = False,
+    organization_id: str | None,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
 
@@ -661,7 +717,7 @@ def _upsert_messages(
 
     Returns the ids whose write the SQL declined, in request order.
     """
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
     if not messages:
@@ -672,7 +728,14 @@ def _upsert_messages(
     run_member = (actor_email or "").strip().lower() or None
     declined: list[str] = []
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
+        # S15 fix round 1: the `chat_message` foreign key ignores RLS, so a
+        # row would attach to another tenant's session. Decline every id.
+        # An id that exists nowhere keeps the old answer, a foreign-key error.
+        try:
+            _refuse_if_elsewhere(s, session_id)
+        except SessionOfAnotherTenant:
+            return [m.id for m in messages]
         for m in messages:
             kind, author = _attribute(m, actor_email, agent_name)
             # S14: a client inserts a human row only. The fold and the mint
@@ -741,7 +804,10 @@ def _attribute(
 async def list_sessions(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
-    return await asyncio.to_thread(_get_sessions, user.email or "default")
+    return await asyncio.to_thread(
+        _get_sessions, user.email or "default",
+        organization_id=user.organization_id,
+    )
 
 
 @router.post("/sessions", status_code=status.HTTP_200_OK, summary="Upsert a chat session")
@@ -749,7 +815,14 @@ async def upsert_session(
     req: SessionUpsertRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    await asyncio.to_thread(_upsert_session, user.email or "default", req)
+    try:
+        await asyncio.to_thread(
+            _upsert_session, user.email or "default", req,
+            organization_id=user.organization_id,
+        )
+    except SessionOfAnotherTenant:
+        # The same answer as a session that does not exist for this caller.
+        raise HTTPException(status_code=404, detail="Session not found") from None
     return {"ok": True, "id": req.id}
 
 
@@ -759,7 +832,10 @@ async def patch_session(
     req: SessionPatchRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    found = await asyncio.to_thread(_patch_session, session_id, user.email or "default", req)
+    found = await asyncio.to_thread(
+        _patch_session, session_id, user.email or "default", req,
+        organization_id=user.organization_id,
+    )
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
@@ -770,7 +846,10 @@ async def delete_session(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> None:
-    found = await asyncio.to_thread(_delete_session, session_id, user.email or "default")
+    found = await asyncio.to_thread(
+        _delete_session, session_id, user.email or "default",
+        organization_id=user.organization_id,
+    )
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -790,7 +869,10 @@ async def get_messages(
       returned (used together with ``limit`` to page backwards on scroll-up).
     """
     email = user.email or "default"
-    room = await asyncio.to_thread(resolve_room_access, session_id, email)
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not room.can_read:
         # Historically a non-owner got [] rather than 403, and clients rely on
         # that: a session the browser knows locally but the server has never
@@ -801,6 +883,7 @@ async def get_messages(
     return await asyncio.to_thread(
         _get_messages, session_id, email, limit, before,
         room=room, held_permissions=held,
+        organization_id=user.organization_id,
     )
 
 
@@ -853,7 +936,10 @@ async def save_messages(
         raise HTTPException(status_code=400, detail="Maximum 500 messages per upsert")
 
     email = user.email or "default"
-    room = await asyncio.to_thread(resolve_room_access, session_id, email)
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not room.can_send:
         raise HTTPException(status_code=403, detail=room.denied("save messages"))
 
@@ -862,6 +948,7 @@ async def save_messages(
     unchanged = await asyncio.to_thread(
         _upsert_messages, session_id, messages,
         actor_email=email, agent_name=room.agent_name,
+        organization_id=user.organization_id,
     )
     return {
         "ok": True,
@@ -951,10 +1038,10 @@ async def list_active_sessions(
 
     # ── Cross-reference with Postgres for agent name + title ───────────
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as s:
+        with tenant_session(user.organization_id) as s:
             rows = s.execute(
                 text(
                     "SELECT s.id, s.agent_name, s.title "
@@ -978,7 +1065,7 @@ async def list_active_sessions(
         # the list. Threads that DO have a row and were filtered out belong to
         # someone else: including them leaked a live thread id to every user,
         # which the old `not in found_ids` fallback did on every poll.
-        with get_session() as s:
+        with tenant_session(user.organization_id) as s:
             known = {
                 row.id for row in s.execute(
                     text("SELECT id FROM chat_session WHERE id = ANY(:ids)"),

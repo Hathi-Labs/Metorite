@@ -439,11 +439,46 @@ export function saveMessages(sessionId: string, messages: PersistedMessage[]): v
       ? { author_kind: "agent", author_email: m.authorEmail ?? null }
       : {}),
   }));
-  fetch(`/api/chat/sessions/${sessionId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  }).catch(() => {});
+  void postMessagesWithRetry(sessionId, JSON.stringify(payload));
+}
+
+/** How long a failed save waits before its one retry (WS-27bm S15). */
+export const SAVE_RETRY_DELAY_MS = 1_000;
+
+/**
+ * POST one batch of messages, and retry ONCE on a 5xx (WS-27bm S15 fix round 1,
+ * projects_ai_chat.md §21.12).
+ *
+ * The session upsert and the first save leave the browser at the same time. If
+ * the save reaches the gateway first, the chat_message foreign key refuses it
+ * and the answer is a 5xx. Every later save resends the whole list, but a
+ * member who closes the tab first loses the first prompt. One retry after
+ * SAVE_RETRY_DELAY_MS lets the session row land first. A 4xx is an answer, so
+ * it is not retried. The call never throws.
+ */
+export async function postMessagesWithRetry(
+  sessionId: string,
+  body: string,
+  delayMs: number = SAVE_RETRY_DELAY_MS,
+): Promise<number | null> {
+  const send = () =>
+    fetch(`/api/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  try {
+    const first = await send();
+    if (first.status < 500) return first.status;
+  } catch {
+    // A network failure is retried the same way as a 5xx.
+  }
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  try {
+    return (await send()).status;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -519,6 +554,16 @@ export async function fetchMessagesFromDb(
     // Update localStorage cache with authoritative Postgres data — only on a
     // full (unpaginated) fetch.  A windowed/paginated fetch must not shrink or
     // clobber the cache.
+    //
+    // An EMPTY server answer never replaces a non-empty cache (WS-27bm S15,
+    // projects_ai_chat.md §21). On production the server held no row, so every
+    // full fetch answered [] and this line erased the member's local history.
+    // An empty answer can also mean a save that has not landed yet. The cache
+    // is the only copy then, so it stays, and the caller gets it back.
+    if (!paginated && mapped.length === 0) {
+      const cached = getMessages(sessionId);
+      if (cached.length > 0) return cached;
+    }
     if (!paginated) {
       try {
         localStorage.setItem(MESSAGES_PREFIX + sessionId, JSON.stringify(mapped));

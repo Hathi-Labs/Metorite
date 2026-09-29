@@ -37,7 +37,7 @@ export async function PATCH(
     const body = await req.json();
     const res = await gatewayFetch(`${GATEWAY_URL}/chat/sessions/${sessionId}/room`, {
       method: "PATCH",
-      headers: await gatewayHeaders(),
+      headers: await gatewayHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(5_000),
     });

@@ -27,6 +27,12 @@ intersection of its participants' access, which means a room can silently lose
 an integration when somebody joins. §3 of the spec calls that failure mode
 "mystery" and requires the cap be stated. ``_capability_cap`` answers "what does
 this room NOT have, and who is the reason" so the header can say it in words.
+
+**Every read and write here binds the caller's tenant** (WS-27bm S15,
+``projects_ai_chat.md`` §21). Each helper opens
+``acb_graph.tenant_session(organization_id)`` with ``user.organization_id``,
+because the room tables are FORCE RLS in production. No helper opens the
+unbound ``get_session()``.
 """
 from __future__ import annotations
 
@@ -115,12 +121,14 @@ def _valid_subject(subject: str) -> bool:
 # Room state
 # ---------------------------------------------------------------------------
 
-def _load_room_state(session_id: str) -> dict[str, Any]:
+def _load_room_state(
+    session_id: str, organization_id: str | None,
+) -> dict[str, Any]:
     """Participants (with identities), agents, and settings — one transaction."""
-    from acb_graph import get_session
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         session_row = s.execute(
             text(
                 "SELECT user_id, agent_name, title, "
@@ -243,7 +251,10 @@ async def get_room(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -266,7 +277,7 @@ async def get_room(
         }
 
     state, presence = await asyncio.gather(
-        asyncio.to_thread(_load_room_state, session_id),
+        asyncio.to_thread(_load_room_state, session_id, user.organization_id),
         read_presence(session_id),
     )
     cap = await _capability_cap(session_id, access.members)
@@ -310,12 +321,12 @@ def _me(access) -> dict[str, Any]:
 
 def _add_participant(
     session_id: str, subject: str, role: str, added_by: str,
-    *, waterline_ms: int | None,
+    *, waterline_ms: int | None, organization_id: str | None,
 ) -> bool:
-    from acb_graph import get_session
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         # S14 round 3: the creator owns a room with no participant row only
         # through the fallback in resolve_room_access, and the first row ends
         # that fallback. So the first add writes the creator's owner row
@@ -366,7 +377,10 @@ async def add_participant(
     what the room just lost in the same round trip that lost it.
     """
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not access.can_invite:
@@ -396,28 +410,35 @@ async def add_participant(
 
     await asyncio.to_thread(
         _add_participant, session_id, subject, req.role, email,
-        waterline_ms=waterline,
+        waterline_ms=waterline, organization_id=user.organization_id,
     )
     # Sharing turns a private thread into a room. `people` is the honest
     # visibility for "the named subjects below" and mirrors apps.visibility.
     if access.visibility == "private":
-        await asyncio.to_thread(_set_visibility, session_id, "people")
+        await asyncio.to_thread(
+            _set_visibility, session_id, "people", user.organization_id,
+        )
 
     await publish_room_event(session_id, {
         "type": "PARTICIPANT_JOINED",
         "subject": subject, "role": req.role, "addedBy": email,
     })
 
-    fresh = await asyncio.to_thread(resolve_room_access, session_id, email)
+    fresh = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     cap = await _capability_cap(session_id, fresh.members)
     return {"ok": True, "subject": subject, "role": req.role, "cap": cap}
 
 
-def _set_visibility(session_id: str, visibility: str) -> None:
-    from acb_graph import get_session
+def _set_visibility(
+    session_id: str, visibility: str, organization_id: str | None,
+) -> None:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text("UPDATE chat_session SET visibility = :v, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, "v": visibility},
@@ -432,7 +453,10 @@ async def patch_participant(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not access.can_invite:
@@ -444,6 +468,7 @@ async def patch_participant(
 
     changed = await asyncio.to_thread(
         _update_participant_role, session_id, subject.strip().lower(), req.role,
+        user.organization_id,
     )
     if not changed:
         raise HTTPException(status_code=404, detail="Not a participant of this room")
@@ -455,11 +480,13 @@ async def patch_participant(
     return {"ok": True}
 
 
-def _update_participant_role(session_id: str, subject: str, role: str) -> bool:
-    from acb_graph import get_session
+def _update_participant_role(
+    session_id: str, subject: str, role: str, organization_id: str | None,
+) -> bool:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         # A room without an owner cannot be administered by anyone — the same
         # invariant the org keeps for its own owner (admin/_common.py).
         if role != "owner":
@@ -505,7 +532,10 @@ async def remove_participant(
     """Anyone may remove themselves; removing someone else takes invite rights."""
     email = user.email or ""
     subject = subject.strip().lower()
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -513,7 +543,9 @@ async def remove_participant(
     if not leaving and not access.can_invite:
         raise HTTPException(status_code=403, detail=access.denied("remove people"))
 
-    removed = await asyncio.to_thread(_remove_participant, session_id, subject)
+    removed = await asyncio.to_thread(
+        _remove_participant, session_id, subject, user.organization_id,
+    )
     if not removed:
         raise HTTPException(status_code=404, detail="Not a participant of this room")
 
@@ -524,11 +556,13 @@ async def remove_participant(
     return {"ok": True, "left": leaving}
 
 
-def _remove_participant(session_id: str, subject: str) -> bool:
-    from acb_graph import get_session
+def _remove_participant(
+    session_id: str, subject: str, organization_id: str | None,
+) -> bool:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         remaining = s.execute(
             text(
                 "SELECT count(*) FROM chat_session_participant "
@@ -572,7 +606,10 @@ async def patch_room(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not access.can_manage:
@@ -594,20 +631,24 @@ async def patch_room(
     if not updates:
         return {"ok": True, "changed": []}
 
-    await asyncio.to_thread(_update_room, session_id, updates)
+    await asyncio.to_thread(
+        _update_room, session_id, updates, user.organization_id,
+    )
     await publish_room_event(session_id, {
         "type": "ROOM_SETTINGS_CHANGED", "changedBy": email, "settings": updates,
     })
     return {"ok": True, "changed": sorted(updates)}
 
 
-def _update_room(session_id: str, updates: dict[str, str]) -> None:
-    from acb_graph import get_session
+def _update_room(
+    session_id: str, updates: dict[str, str], organization_id: str | None,
+) -> None:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
     # Column names come from the closed vocabularies above, never from input.
     sets = ", ".join(f"{col} = :{col}" for col in updates)
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text(f"UPDATE chat_session SET {sets}, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, **updates},
@@ -634,7 +675,10 @@ async def add_room_agent(
     from acb_auth import assert_can_run_agent_in_session
 
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not access.can_manage:
@@ -648,7 +692,10 @@ async def add_room_agent(
 
     await assert_can_run_agent_in_session(user, agent_name, session_id)
 
-    await asyncio.to_thread(_add_agent, session_id, agent_name, req.role, email)
+    await asyncio.to_thread(
+        _add_agent, session_id, agent_name, req.role, email,
+        user.organization_id,
+    )
     await publish_room_event(session_id, {
         "type": "AGENT_ADDED", "agentName": agent_name,
         "role": req.role, "addedBy": email,
@@ -656,11 +703,14 @@ async def add_room_agent(
     return {"ok": True, "agentName": agent_name, "role": req.role}
 
 
-def _add_agent(session_id: str, agent_name: str, role: str, added_by: str) -> None:
-    from acb_graph import get_session
+def _add_agent(
+    session_id: str, agent_name: str, role: str, added_by: str,
+    organization_id: str | None,
+) -> None:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         if role == "primary":
             # Exactly one primary: an unaddressed turn must have exactly one
             # answer, or two agents reply to the same message.
@@ -696,13 +746,18 @@ async def remove_room_agent(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not access.can_manage:
         raise HTTPException(status_code=403, detail=access.denied("remove agents"))
 
-    removed = await asyncio.to_thread(_remove_agent, session_id, agent_name)
+    removed = await asyncio.to_thread(
+        _remove_agent, session_id, agent_name, user.organization_id,
+    )
     if not removed:
         raise HTTPException(status_code=404, detail="That agent is not in this room")
     await publish_room_event(session_id, {
@@ -711,11 +766,13 @@ async def remove_room_agent(
     return {"ok": True}
 
 
-def _remove_agent(session_id: str, agent_name: str) -> bool:
-    from acb_graph import get_session
+def _remove_agent(
+    session_id: str, agent_name: str, organization_id: str | None,
+) -> bool:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         role = s.execute(
             text(
                 "SELECT role FROM chat_session_agent "
@@ -752,7 +809,10 @@ async def heartbeat(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
     # A solo session has nobody to tell. Skipping the write keeps single-player
@@ -779,7 +839,10 @@ async def room_stream(
     what a room *is*, a sequence of runs with people around them.
     """
     email = user.email or ""
-    access = await asyncio.to_thread(resolve_room_access, session_id, email)
+    access = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
     if not access.can_read:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -831,15 +894,17 @@ async def directory(
     org. It returns identity only — no roles, no permissions, no status beyond
     "active" — so it never becomes a back door onto the access model.
     """
-    return await asyncio.to_thread(_directory, (q or "").strip().lower())
+    return await asyncio.to_thread(
+        _directory, (q or "").strip().lower(), user.organization_id,
+    )
 
 
-def _directory(q: str) -> dict[str, Any]:
-    from acb_graph import get_session
+def _directory(q: str, organization_id: str | None) -> dict[str, Any]:
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
     like = f"%{q}%" if q else "%"
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         people = s.execute(
             text(
                 "SELECT email, display_name, avatar_url FROM app_user "

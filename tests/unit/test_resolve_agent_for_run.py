@@ -20,11 +20,16 @@ from fastapi import HTTPException
 
 from gateway.routes import agent as ar
 
+#: The tenant the helpers bind (WS-27bm S15, ``projects_ai_chat.md`` §21).
+#: This suite runs on the ladder-only shape, so any id binds.
+_ORG = "5150aaaa-0000-4000-8000-000000000015"
 
-def _fake_get_session(rows: list[str]):
+
+def _fake_tenant_session(rows: list[str]):
     """Return a contextmanager whose .execute(...).fetchall() yields agent rows."""
     @contextmanager
-    def _cm():
+    def _cm(organization_id=None):
+        assert organization_id == _ORG, organization_id
         class _Result:
             def fetchall(self_inner):
                 return [SimpleNamespace(agent_name=n) for n in rows]
@@ -43,7 +48,7 @@ def _fake_get_session(rows: list[str]):
 # --------------------------------------------------------------------------
 def test_real_agent_name_validates_directly():
     with patch.object(ar, "_validate_agent_name", return_value="task-manager") as v:
-        assert ar._resolve_agent_for_run("task-manager", "t1") == "task-manager"
+        assert ar._resolve_agent_for_run("task-manager", "t1", organization_id=_ORG) == "task-manager"
     v.assert_called_once_with("task-manager")
 
 
@@ -52,25 +57,25 @@ def test_real_agent_name_validates_directly():
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("sentinel", ["unknown", "UNKNOWN", " unknown ", "", "undefined", "null", "none"])
 def test_sentinel_recovers_from_trace(sentinel):
-    with patch("acb_graph.get_session", _fake_get_session(["technical-project-planner"])), \
+    with patch("acb_graph.tenant_session", _fake_tenant_session(["technical-project-planner"])), \
          patch.object(ar, "_validate_agent_name", side_effect=lambda n: n):
-        assert ar._resolve_agent_for_run(sentinel, "thread-42") == "technical-project-planner"
+        assert ar._resolve_agent_for_run(sentinel, "thread-42", organization_id=_ORG) == "technical-project-planner"
 
 
 def test_sentinel_skips_sentinel_traces_and_takes_first_real():
     # Most-recent trace is itself a sentinel; the resolver walks to the first real one.
-    with patch("acb_graph.get_session", _fake_get_session(["unknown", "", "agent-sales-assistant"])), \
+    with patch("acb_graph.tenant_session", _fake_tenant_session(["unknown", "", "agent-sales-assistant"])), \
          patch.object(ar, "_validate_agent_name", side_effect=lambda n: n):
-        assert ar._resolve_agent_for_run("unknown", "thread-42") == "agent-sales-assistant"
+        assert ar._resolve_agent_for_run("unknown", "thread-42", organization_id=_ORG) == "agent-sales-assistant"
 
 
 # --------------------------------------------------------------------------
 # Sentinel + no recoverable agent → actionable 422 (NOT the registry dump).
 # --------------------------------------------------------------------------
 def test_sentinel_no_trace_raises_actionable_error():
-    with patch("acb_graph.get_session", _fake_get_session([])):
+    with patch("acb_graph.tenant_session", _fake_tenant_session([])):
         with pytest.raises(HTTPException) as ei:
-            ar._resolve_agent_for_run("unknown", "thread-empty")
+            ar._resolve_agent_for_run("unknown", "thread-empty", organization_id=_ORG)
     assert ei.value.status_code == 422
     detail = str(ei.value.detail).lower()
     assert "pick" in detail and "agent" in detail
@@ -80,15 +85,15 @@ def test_sentinel_no_trace_raises_actionable_error():
 
 def test_sentinel_no_thread_raises_actionable_error():
     with pytest.raises(HTTPException) as ei:
-        ar._resolve_agent_for_run("unknown", None)
+        ar._resolve_agent_for_run("unknown", None, organization_id=_ORG)
     assert ei.value.status_code == 422
     assert "pick" in str(ei.value.detail).lower()
 
 
 def test_sentinel_all_traces_are_sentinels_raises():
-    with patch("acb_graph.get_session", _fake_get_session(["unknown", "null", ""])):
+    with patch("acb_graph.tenant_session", _fake_tenant_session(["unknown", "null", ""])):
         with pytest.raises(HTTPException) as ei:
-            ar._resolve_agent_for_run("unknown", "thread-x")
+            ar._resolve_agent_for_run("unknown", "thread-x", organization_id=_ORG)
     assert ei.value.status_code == 422
 
 
@@ -99,7 +104,21 @@ def test_recovered_name_is_revalidated():
     def _reject(_n):
         raise HTTPException(status_code=422, detail="Unknown agent 'gone'.")
 
-    with patch("acb_graph.get_session", _fake_get_session(["gone-agent"])), \
+    with patch("acb_graph.tenant_session", _fake_tenant_session(["gone-agent"])), \
          patch.object(ar, "_validate_agent_name", side_effect=_reject):
         with pytest.raises(HTTPException):
-            ar._resolve_agent_for_run("unknown", "thread-stale")
+            ar._resolve_agent_for_run("unknown", "thread-stale", organization_id=_ORG)
+
+
+# --------------------------------------------------------------------------
+# WS-27bm S15 (§21): with no tenant the trace read is skipped, fail closed.
+# --------------------------------------------------------------------------
+def test_sentinel_with_no_tenant_reads_nothing_and_raises():
+    def _never(*_a, **_k):
+        raise AssertionError("the trace read ran with no tenant")
+
+    with patch("acb_graph.tenant_session", _never), \
+         patch("acb_graph.get_session", _never), \
+         pytest.raises(HTTPException) as ei:
+        ar._resolve_agent_for_run("unknown", "thread-42", organization_id=None)
+    assert ei.value.status_code == 422
