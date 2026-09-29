@@ -187,9 +187,16 @@ async def _mirror_gateway_delete(
 
 
 def _get_workspace_path(
-    session_id: str, user_email: str | None = None,
+    session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
     """Look up workspace_path from Postgres for this session.
+
+    H-201 (``projects_ai_chat.md`` §21.13). ``chat_session`` is FORCE RLS in
+    production, so the read opens ``acb_graph.tenant_session`` for the
+    caller's tenant. The route passes ``user.organization_id``, which the
+    server resolves from the authenticated identity, never from the request.
+    With no tenant the read raises ``TenantUnbound`` and the app handler
+    answers 403. Nothing falls back to an unbound session.
 
     Fallback chain:
     1. Explicit ``workspace_path`` column (set by write_artifact or PATCH
@@ -199,11 +206,13 @@ def _get_workspace_path(
        for the viewing member (``user_email``) so a personal agent's session
        browser opens the viewer's own partition even before its first run.
     """
+    from acb_graph import tenant_session
+    from acb_graph.db import TenantUnbound
+
     try:
-        from acb_graph import get_session as _db_session
         from sqlalchemy import text
 
-        with _db_session() as s:
+        with tenant_session(organization_id) as s:
             row = s.execute(
                 text("SELECT workspace_path, agent_name FROM chat_session WHERE id = :id"),
                 {"id": session_id},
@@ -223,6 +232,8 @@ def _get_workspace_path(
 
         return _resolve_agent_workspace(agent_name, user_email)
 
+    except TenantUnbound:
+        raise
     except Exception as exc:
         _log.warning("workspace.db_lookup_failed", session_id=session_id, error=str(exc))
     return None
@@ -533,7 +544,10 @@ async def get_workspace_tree(
     """
     import asyncio
     loop = asyncio.get_event_loop()
-    workspace = await loop.run_in_executor(None, _get_workspace_path, session_id, _user.email)
+    workspace = await loop.run_in_executor(
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
+    )
     if workspace is None or not workspace.exists():
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
@@ -560,7 +574,8 @@ async def get_workspace_file(
     """
     import asyncio
     workspace = await asyncio.get_event_loop().run_in_executor(
-        None, _get_workspace_path, session_id, _user.email
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
     )
     if workspace is None or not workspace.exists():
         raise HTTPException(status_code=404, detail="Workspace not found for session")
@@ -654,13 +669,21 @@ async def set_workspace_path(
     body: WorkspacePatchRequest,
     _user: UserContext = Depends(get_current_user),
 ) -> None:
-    """Record the workspace_path for a session (called by write_artifact tool)."""
+    """Record the workspace_path for a session (called by write_artifact tool).
+
+    H-201: the UPDATE runs in the caller's tenant. Under FORCE RLS an unbound
+    UPDATE matches no row and changes nothing. With no tenant the write
+    raises ``TenantUnbound``, and the app handler answers it.
+    """
+    from acb_graph import tenant_session
+    from acb_graph.db import TenantUnbound
+
+    organization_id = _user.organization_id
     try:
-        from acb_graph import get_session as _db_session
         from sqlalchemy import text
 
         def _write():
-            with _db_session() as s:
+            with tenant_session(organization_id) as s:
                 s.execute(
                     text(
                         "UPDATE chat_session SET workspace_path = :path "
@@ -671,6 +694,8 @@ async def set_workspace_path(
                 s.commit()
 
         await __import__("asyncio").get_event_loop().run_in_executor(None, _write)
+    except TenantUnbound:
+        raise
     except Exception as exc:
         _log.warning("workspace.patch_failed", session_id=session_id, error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to update workspace path") from exc
@@ -782,7 +807,8 @@ async def upload_files(
     uploaded files and their paths so it can reference them.
     """
     workspace = await asyncio.get_event_loop().run_in_executor(
-        None, _get_workspace_path, session_id, _user.email
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
     )
     if workspace is None:
         raise HTTPException(
@@ -949,7 +975,8 @@ async def delete_workspace_file(
 ) -> DeleteResponse:
     """Delete a file from the session workspace."""
     workspace = await asyncio.get_event_loop().run_in_executor(
-        None, _get_workspace_path, session_id, _user.email
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
     )
     if workspace is None or not workspace.exists():
         raise HTTPException(
@@ -1006,7 +1033,8 @@ async def promote_input_to_agent_data(
 ) -> FileEntry:
     """Move an inputs/ file into agent-data/ (permanent, prompt-shaping storage)."""
     workspace = await asyncio.get_event_loop().run_in_executor(
-        None, _get_workspace_path, session_id, _user.email
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
     )
     if workspace is None or not workspace.exists():
         raise HTTPException(status_code=404, detail="workspace not found")
@@ -1066,7 +1094,8 @@ async def get_workspace_history(
     can track and directly access the full history of any file.
     """
     workspace = await asyncio.get_event_loop().run_in_executor(
-        None, _get_workspace_path, session_id, _user.email
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
     )
     if workspace is None:
         return {"history": []}
@@ -1107,7 +1136,10 @@ async def write_workspace_file(
     import base64
 
     loop = asyncio.get_event_loop()
-    workspace = await loop.run_in_executor(None, _get_workspace_path, session_id, _user.email)
+    workspace = await loop.run_in_executor(
+        None, _get_workspace_path, session_id, _user.email,
+        _user.organization_id,
+    )
     if workspace is None or not workspace.exists():
         raise HTTPException(
             status_code=404, detail="Workspace not found for session"

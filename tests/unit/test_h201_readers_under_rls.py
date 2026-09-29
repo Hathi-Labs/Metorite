@@ -1,0 +1,350 @@
+"""H-201 — the other readers bind the tenant (``projects_ai_chat.md`` §21.13).
+
+S15 bound the chat save path. Some modules still opened the unbound
+``acb_graph.get_session()`` on a FORCE-RLS table. In production an unbound
+read there finds no row and an unbound write changes nothing. This suite runs
+the REAL readers on the H3 rehearsal's phase-4 catalog, as its NOSUPERUSER
+NOBYPASSRLS role, with one fresh backend per session. It reuses the S15
+fixtures, so it does not patch ``get_session``.
+
+For each bound reader it shows three things:
+
+* the org's own rows come back under the org's tenant;
+* another org gets nothing;
+* no tenant refuses, and nothing falls back to an unbound session.
+
+Mutations this suite catches (R7):
+
+* ``workspace._get_workspace_path`` back to ``get_session()``: the org's own
+  path reads as ``None``;
+* ``set_workspace_path`` back to ``get_session()``: the UPDATE changes no row;
+* ``history_tools.query_history`` back to ``get_session()``: the org's own
+  message is not found;
+* ``agent._member_graph_session`` back to ``get_session()``: the pending
+  commit and the audit event of the org read as absent;
+* the room check removed from ``POST /agent/respond-input``: Bob and Carol
+  reach the relay.
+
+The source fence at the end reads the code, so it runs with no database.
+
+Run::
+
+    TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/acb_tenant \\
+        uv run pytest tests/unit/test_h201_readers_under_rls.py -v -rs
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("sqlalchemy")
+
+from sqlalchemy import text
+
+# Resolved by name as fixtures, so ruff sees them as unused (F401) and the
+# test signatures as redefinitions (F811). The imports are load-bearing.
+from tests.unit.test_chat_write_under_rls import (  # noqa: F401
+    _ALICE,
+    _BOB,
+    _CAROL,
+    _admin_one,
+    _browser_rows,
+    _client,
+    _new_session,
+    _sid,
+    _user,
+    graph_as_app,
+    members,
+)
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
+
+def _seed_session(promoted, org: str, owner: str, workspace: str | None) -> str:  # noqa: F811
+    sid = _sid()
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, workspace_path, "
+            "organization_id) VALUES (:s, :u, 'orchestrator', :w, CAST(:o AS uuid))"),
+            {"s": sid, "u": owner, "w": workspace, "o": org})
+    return sid
+
+
+# ── routes/workspace.py — chat_session.workspace_path ───────────────────────
+
+@_DB_GATE
+def test_the_workspace_path_reads_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+    from gateway.routes.workspace import _get_workspace_path
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    sid = _seed_session(graph_as_app, a, _ALICE, "/srv/h201/ws-a")
+
+    assert _get_workspace_path(sid, _ALICE, a) == Path("/srv/h201/ws-a")
+    assert _get_workspace_path(sid, _CAROL, b) is None
+    with pytest.raises(TenantUnbound):
+        _get_workspace_path(sid, _ALICE, None)
+
+
+@_DB_GATE
+def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+    from gateway.routes.workspace import WorkspacePatchRequest, set_workspace_path
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    sid = _seed_session(graph_as_app, a, _ALICE, None)
+
+    def _patch(user, path: str) -> None:
+        asyncio.run(set_workspace_path(
+            sid, WorkspacePatchRequest(workspace_path=path), _user=user))
+
+    def _stored() -> str | None:
+        return _admin_one(graph_as_app, "SELECT workspace_path AS w FROM "
+                          "chat_session WHERE id = :s", s=sid).w
+
+    # Org B's member matches no row of org A, so nothing changes.
+    _patch(_user(_CAROL, b), "/srv/h201/from-b")
+    assert _stored() is None
+    with pytest.raises(TenantUnbound):
+        _patch(_user(_ALICE, None), "/srv/h201/no-tenant")
+    assert _stored() is None
+    _patch(_user(_ALICE, a), "/srv/h201/ws-a")
+    assert _stored() == "/srv/h201/ws-a"
+
+
+# ── acb_skills/history_tools.py — query_history ─────────────────────────────
+
+def _history(org: str | None, **criteria) -> str:
+    """``query_history`` on a run frame that carries *org*, the way the
+    executor sets it: ``_RUN_ORG`` keyed by the run's thread id."""
+    from acb_skills.history_tools import query_history
+    from orchestrator import executor
+
+    tid = f"h201-run-{uuid.uuid4().hex[:8]}"
+
+    async def _go() -> str:
+        executor._stream_relay_thread_id.set(tid)
+        if org:
+            executor._RUN_ORG[tid] = org
+        try:
+            return await query_history(**criteria)
+        finally:
+            executor._RUN_ORG.pop(tid, None)
+
+    return asyncio.run(_go())
+
+
+@_DB_GATE
+def test_query_history_reads_in_the_runs_tenant(graph_as_app, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "true")
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    term = f"h201-{uuid.uuid4().hex[:8]}"
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    rows = _browser_rows(f"u-{uuid.uuid4().hex[:8]}")
+    rows[0]["content"] = f"Recall {term} please"
+    assert alice.post(f"/chat/sessions/{sid}/messages", json=rows).json()["saved"] == 1
+
+    mine = json.loads(_history(a, search=term))
+    assert [(r["thread_id"], r["role"]) for r in mine] == [(sid, "user")]
+    assert term in mine[0]["content"]
+
+    assert _history(b, search=term) == "[]"
+    # With the bind ON and no tenant, the opener is None and the tool answers
+    # empty. It never opens an unbound session.
+    assert _history(None, search=term) == "[]"
+
+
+# ── routes/agent.py — pending_commit and audit_event ────────────────────────
+
+def _seed_commit(promoted, org: str) -> str:  # noqa: F811
+    cid = str(uuid.uuid4())
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pending_commit (id, agent_name, run_id, local_clone_dir, "
+            "commit_sha, commit_message, organization_id) VALUES (CAST(:i AS uuid), "
+            "'h201-agent', 'run-h201', '/nonexistent', 'deadbeef', 'fix', "
+            "CAST(:o AS uuid))"), {"i": cid, "o": org})
+    return cid
+
+
+def _seed_audit(promoted, org: str) -> str:  # noqa: F811
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO audit_event (actor, action, target, payload, organization_id) "
+            "VALUES ('system:mutation', 'agent_run_complete', 'agent:h201', "
+            "CAST(:p AS jsonb), CAST(:o AS uuid))"),
+            {"p": json.dumps({"run_id": run_id}), "o": org})
+    return run_id
+
+
+@_DB_GATE
+def test_pending_commits_read_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+    from fastapi import HTTPException
+    from gateway.routes.agent import (
+        get_pending_commit_diff,
+        list_mutations,
+        list_pending_commits,
+    )
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    cid = _seed_commit(graph_as_app, a)
+    alice, carol = _user(_ALICE, a), _user(_CAROL, b)
+
+    def _ids(rows) -> set[str]:
+        return {r["id"] for r in rows if "id" in r}
+
+    assert cid in _ids(asyncio.run(list_pending_commits(limit=200, user=alice)))
+    assert cid in _ids(asyncio.run(list_mutations(limit=200, user=alice)))
+    assert asyncio.run(get_pending_commit_diff(cid, user=alice))["id"] == cid
+
+    assert cid not in _ids(asyncio.run(list_pending_commits(limit=200, user=carol)))
+    assert cid not in _ids(asyncio.run(list_mutations(limit=200, user=carol)))
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(get_pending_commit_diff(cid, user=carol))
+    assert err.value.status_code == 404
+
+    nobody = _user(_ALICE, None)
+    for call in (lambda: list_pending_commits(limit=5, user=nobody),
+                 lambda: list_mutations(limit=5, user=nobody),
+                 lambda: get_pending_commit_diff(cid, user=nobody)):
+        with pytest.raises(TenantUnbound):
+            asyncio.run(call())
+
+
+@_DB_GATE
+def test_a_pending_commit_delete_stays_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+    from gateway.routes.agent import delete_pending_commit
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    cid = _seed_commit(graph_as_app, a)
+
+    def _there() -> bool:
+        return _admin_one(graph_as_app, "SELECT 1 AS x FROM pending_commit "
+                          "WHERE id = CAST(:i AS uuid)", i=cid) is not None
+
+    out = asyncio.run(delete_pending_commit(cid, user=_user(_CAROL, b)))
+    assert out["rows_deleted"] == 0 and _there()
+    with pytest.raises(TenantUnbound):
+        asyncio.run(delete_pending_commit(cid, user=_user(_ALICE, None)))
+    assert _there()
+    out = asyncio.run(delete_pending_commit(cid, user=_user(_ALICE, a)))
+    assert out["rows_deleted"] == 1 and not _there()
+
+
+@_DB_GATE
+def test_run_status_and_audit_dismiss_stay_in_the_members_tenant(graph_as_app):  # noqa: F811
+    from acb_graph.db import TenantUnbound
+    from gateway.routes.agent import dismiss_mutation_event, get_run_status
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    run_id = _seed_audit(graph_as_app, a)
+    alice, carol = _user(_ALICE, a), _user(_CAROL, b)
+
+    assert asyncio.run(get_run_status(run_id, user=alice))["status"] == "completed"
+    assert asyncio.run(get_run_status(run_id, user=carol))["status"] == "not_found"
+    with pytest.raises(TenantUnbound):
+        asyncio.run(get_run_status(run_id, user=_user(_ALICE, None)))
+
+    assert asyncio.run(dismiss_mutation_event(run_id, user=carol))["rows_deleted"] == 0
+    with pytest.raises(TenantUnbound):
+        asyncio.run(dismiss_mutation_event(run_id, user=_user(_ALICE, None)))
+    assert asyncio.run(dismiss_mutation_event(run_id, user=alice))["rows_deleted"] == 1
+
+
+# ── POST /agent/respond-input — the room check before the relay ─────────────
+
+@pytest.fixture
+def relay_calls(monkeypatch):
+    """Both delivery paths, stubbed. The list records every call that got
+    past the room check."""
+    from orchestrator import executor, stream_relay
+
+    calls: list[str] = []
+
+    def _fast(request_id, *_a, **_k):
+        calls.append(f"fast:{request_id}")
+        return False
+
+    async def _relay(thread_id, *_a, **_k):
+        calls.append(f"relay:{thread_id}")
+        return False
+
+    monkeypatch.setattr(executor, "resolve_user_input", _fast)
+    monkeypatch.setattr(stream_relay, "dispatch_control", _relay)
+    return calls
+
+
+def _answer(user, thread_id: str | None):
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.agent import respond_user_input
+
+    app = FastAPI()
+    app.post("/agent/respond-input")(respond_user_input)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app).post("/agent/respond-input", json={
+        "request_id": "req-h201", "answer": "yes", "thread_id": thread_id,
+    })
+
+
+@_DB_GATE
+def test_respond_input_needs_send_in_the_room(graph_as_app, relay_calls):  # noqa: F811
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    assert alice.post(f"/chat/sessions/{sid}/messages",
+                      json=_browser_rows("u-h201")).json()["saved"] == 1
+
+    # Bob is in org A and is not in Alice's private room.
+    assert _answer(_user(_BOB, a), sid).status_code == 403
+    # Carol is in org B. Alice's session reads as another tenant's.
+    assert _answer(_user(_CAROL, b), sid).status_code == 403
+    # No tenant is no capability.
+    assert _answer(_user(_ALICE, None), sid).status_code == 403
+    assert relay_calls == []
+
+    # Alice passes the check. No run is parked, so both paths say no: 409.
+    assert _answer(_user(_ALICE, a), sid).status_code == 409
+    assert relay_calls == ["fast:req-h201", f"relay:{sid}"]
+
+
+# ── The source fence. It reads the code, so it cannot skip. ─────────────────
+
+def test_the_h201_readers_open_no_unbound_session() -> None:
+    import inspect
+
+    from acb_skills import history_tools
+    from gateway.routes import agent, workspace
+
+    for fn in (workspace._get_workspace_path, workspace.set_workspace_path,
+               history_tools.query_history,
+               agent.get_run_status, agent.list_mutations,
+               agent.list_pending_commits, agent.get_pending_commit_diff,
+               agent.approve_pending_commit, agent.reject_pending_commit,
+               agent.remutate_pending_commit, agent.delete_pending_commit,
+               agent.dismiss_mutation_event, agent._member_graph_session):
+        src = inspect.getsource(fn)
+        assert "get_session" not in src, fn.__name__
+    # The workspace read takes the tenant with no default to fall back on.
+    param = inspect.signature(workspace._get_workspace_path).parameters["organization_id"]
+    assert param.default is inspect.Parameter.empty
+    # The history tool takes its tenant from the run, never from an argument.
+    assert "organization_id" not in inspect.signature(history_tools.query_history).parameters
+    assert "_graph_session_opener_current" in inspect.getsource(history_tools.query_history)
+    # The answer path checks the room before it relays.
+    src = inspect.getsource(agent.respond_user_input)
+    assert src.index("can_send") < src.index("dispatch_control(")

@@ -51,20 +51,28 @@ _CONTENT_CAP = 500
 #: The only two tables reachable from this tool, ever. Not configurable — a
 #: table name that arrives as data is the hole this module was rewritten to
 #: close.
+#:
+#: H-201: neither table has a ``thread_id`` column. The thread IS
+#: ``chat_session.id``, and ``chat_message.session_id`` points at it. The old
+#: join named a column that does not exist, so every call failed. The output
+#: key stays ``thread_id``, because the docstring promises it. Each optional
+#: criterion carries a CAST, because psycopg 3 sends a NULL with no type and
+#: Postgres cannot type a bare ``:x IS NULL``. The R8 suite found both faults.
 _SEARCH_SQL = """
 SELECT m.role,
        m.content,
        m.created_at,
-       s.thread_id,
+       s.id AS thread_id,
        s.agent_name,
        s.title
   FROM chat_message m
-  JOIN chat_session s ON s.thread_id = m.thread_id
- WHERE (:thread_id  IS NULL OR s.thread_id  = :thread_id)
-   AND (:agent_name IS NULL OR s.agent_name = :agent_name)
-   AND (:user_id    IS NULL OR s.user_id    = :user_id)
-   AND (:search     IS NULL OR m.content ILIKE :search_like)
-   AND (:since_days IS NULL OR m.created_at >= now() - make_interval(days => :since_days))
+  JOIN chat_session s ON s.id = m.session_id
+ WHERE (CAST(:thread_id  AS text) IS NULL OR s.id         = :thread_id)
+   AND (CAST(:agent_name AS text) IS NULL OR s.agent_name = :agent_name)
+   AND (CAST(:user_id    AS text) IS NULL OR s.user_id    = :user_id)
+   AND (CAST(:search     AS text) IS NULL OR m.content ILIKE :search_like)
+   AND (CAST(:since_days AS int)  IS NULL
+        OR m.created_at >= now() - make_interval(days => CAST(:since_days AS int)))
  ORDER BY m.created_at DESC
  LIMIT :limit
 """
@@ -141,11 +149,25 @@ async def query_history(
         "limit": lim,
     }
 
+    # H-201 (``projects_ai_chat.md`` §21.13). ``chat_message`` and
+    # ``chat_session`` are FORCE RLS in production, so an unbound read finds
+    # nothing. The run's tenant comes from the executor opener, which reads it
+    # on this frame from the run boundary, never from a tool argument (R11).
+    # With the bind flag ON and no tenant, the opener is None and the tool
+    # answers empty. Nothing falls back to an unbound session.
     try:
-        from acb_graph import get_session
+        from orchestrator.executor import _graph_session_opener_current  # noqa: PLC0415
+
+        _open = _graph_session_opener_current()
+    except Exception as exc:
+        return f"query_history failed: {exc}"
+    if _open is None:
+        return "[]"
+
+    try:
         from sqlalchemy import text
 
-        with get_session() as s:
+        with _open() as s:
             result = s.execute(text(_SEARCH_SQL), params)
             rows = result.fetchmany(lim)
             columns = list(result.keys())
