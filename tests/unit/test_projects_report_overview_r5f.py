@@ -105,7 +105,7 @@ def _clear_spine(seeded: dict[str, Any]) -> None:  # noqa: F811
 CROWD = 23
 
 
-def _crowd(seeded: dict[str, Any]) -> None:
+def _crowd(seeded: dict[str, Any]) -> None:  # noqa: F811
     """Seed ``CROWD`` people, each with one overdue task that blocks ``m1``.
 
     Each person gives a Load and a Capacity row, and each overdue blocker
