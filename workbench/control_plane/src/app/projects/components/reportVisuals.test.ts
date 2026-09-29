@@ -513,7 +513,9 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(panel).toContain("1 waiting past the date");
     expect(panel).toContain("Needs help: Blocked, Stale, Waiting past its date");
     expect(panel).toContain("This view hides 2 other people");
-    expect(table).toContain("This report hides 2 other people");
+    // The hidden line shows once, under the panel. The table does not
+    // count the same people again under a second noun (§6.5 item 16).
+    expect(table).not.toMatch(/hides \d+ other/);
   });
 
   it("hygiene draws one bar a kind, five titles, then the rest as a count", () => {

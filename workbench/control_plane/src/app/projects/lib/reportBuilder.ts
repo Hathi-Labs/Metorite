@@ -473,6 +473,9 @@ export function subjectOptions(
       value: subjectValue({ kind: "person", email: p.email }),
       label: own ? "Me" : p.name || p.email,
       hint: own || (p.name && twin) ? p.email : undefined,
+      // The filter matches the address too, so a search by address finds a
+      // named person whose address the menu does not show.
+      keywords: p.email,
       group: "People",
     };
   });
@@ -785,20 +788,32 @@ export function projectOnly(template: ReportTemplate | null | undefined): boolea
   );
 }
 
-/** Item 2. Why the preview cannot run yet because of the scope, or `null`. */
+/**
+ * Item 2. Why the preview cannot run yet because of the scope, or `null`.
+ *
+ * ⚠️ **A new report only.** PATCH cannot change the scope, so an edit of a
+ * saved org-wide "Project status" cannot answer the prompt. With the prompt
+ * on, Save stayed off and the report could not be edited (repair round 1).
+ */
 export function scopePrompt(
   state: Pick<BuilderState, "projectId">,
-  template: ReportTemplate | null | undefined
+  template: ReportTemplate | null | undefined,
+  editing: boolean
 ): string | null {
+  if (editing) return null;
   return projectOnly(template) && state.projectId === null ? SCOPE_PROMPT : null;
 }
 
-/** Item 2. The scope chip's options. A project-only template has no org. */
+/**
+ * Item 2. The scope chip's options. A NEW project-only report has no
+ * "Whole organization". An edit keeps it, so the chip names the saved scope.
+ */
 export function scopeChoices(
   scopes: readonly ScopeOption[],
-  template: ReportTemplate | null | undefined
+  template: ReportTemplate | null | undefined,
+  editing: boolean
 ): ScopeOption[] {
-  return projectOnly(template)
+  return projectOnly(template) && !editing
     ? scopes.filter((s) => s.value !== WHOLE_ORGANIZATION)
     : [...scopes];
 }
@@ -838,8 +853,11 @@ export const TEAM_HINT = "Choose a team in About to report on that team only.";
  */
 export function hiddenTeamHint(
   answer: ReportSubjects | null | undefined,
-  subject: ReportSubject | null
+  subject: ReportSubject | null,
+  chipShown: boolean
 ): string | null {
+  // No About chip, no hint: the words must not name a control that is absent.
+  if (!chipShown) return null;
   if (!answer || answer.everyone || answer.teams.length === 0) return null;
   return subject === null ? TEAM_HINT : null;
 }
@@ -1021,6 +1039,19 @@ export function reportCardLine(
   return [said(template) ? null : template, subject && !said(subject) ? `About ${subject}` : null, scope]
     .filter(Boolean)
     .join(" · ");
+}
+
+/**
+ * §6.5 item 12. The one empty line of the Reports home. The rail shows no
+ * line of its own. The finished count shows only when it is a number, so the
+ * line never says "undefined".
+ */
+export function homeEmptyLine(finishedCount?: number | null): string {
+  const count =
+    typeof finishedCount === "number" && Number.isFinite(finishedCount) && finishedCount > 0
+      ? ` There ${finishedCount === 1 ? "is 1 finished task" : `are ${finishedCount} finished tasks`} to report on.`
+      : "";
+  return `You have not saved a report yet.${count} Pick a question below.`;
 }
 
 /** Item 12. The rail's two lists, by the server's `mine`, newest first. */

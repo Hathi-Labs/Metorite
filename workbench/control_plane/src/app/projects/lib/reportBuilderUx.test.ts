@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { filterOptions } from "@/components/ui/SelectButton";
+
 import type { ProjectRow, ReportRow, ReportSubjects, ReportTemplate } from "./api";
 import {
   AS_OF_TODAY,
@@ -24,6 +26,7 @@ import {
   newBuilderState,
   periodFree,
   railGroups,
+  saveRefusal,
   reportCardLine,
   reportHeaderLine,
   scopeChoices,
@@ -60,7 +63,7 @@ const T2: ReportTemplate = {
   requires_subject: "self",
 };
 
-const T3: ReportTemplate = {
+const T5: ReportTemplate = {
   key: "project_status",
   name: "Project status",
   question: "Will this project finish on time, and what blocks it?",
@@ -166,25 +169,43 @@ function row(over: Partial<ReportRow> = {}): ReportRow {
 
 describe("(2) a project-only template asks for a project", () => {
   it("Project status with no project prompts, and a project clears it", () => {
-    const state = builderStateFromTemplate(T3)!;
-    expect(scopePrompt(state, T3)).toBe(SCOPE_PROMPT);
+    const state = builderStateFromTemplate(T5)!;
+    expect(scopePrompt(state, T5, false)).toBe(SCOPE_PROMPT);
     expect(SCOPE_PROMPT).toBe("Choose a project in the In chip to see this report.");
-    expect(scopePrompt({ ...state, projectId: "p-x2" }, T3)).toBeNull();
+    expect(scopePrompt({ ...state, projectId: "p-x2" }, T5, false)).toBeNull();
   });
 
   it("a template that takes the organization never prompts", () => {
     for (const t of [T1, T4, null]) {
-      expect(scopePrompt(newBuilderState(), t)).toBeNull();
+      expect(scopePrompt(newBuilderState(), t, false)).toBeNull();
     }
   });
 
   it("the scope chip leaves Whole organization out for a project-only template", () => {
-    expect(scopeChoices(SCOPES, T3).map((o) => o.label)).toEqual([
+    expect(scopeChoices(SCOPES, T5, false).map((o) => o.label)).toEqual([
       "Printer X2",
       "Firmware",
       "Solo",
     ]);
-    expect(scopeChoices(SCOPES, T4)[0].label).toBe("Whole organization");
+    expect(scopeChoices(SCOPES, T4, false)[0].label).toBe("Whole organization");
+  });
+
+  it("an edit of a saved org-wide Project status keeps Save on and its scope", () => {
+    // A T5 saved before the UX pass can have no project. PATCH cannot change
+    // the scope, so the edit must not ask for one.
+    const saved = builderStateFrom(
+      row({
+        name: "Status",
+        config: { ...row().config, template: "project_status", sections: ["outlook"] },
+      })
+    );
+    expect(saved.projectId).toBeNull();
+    expect(scopePrompt(saved, T5, true)).toBeNull();
+    expect(saveRefusal(saved)).toBeNull();
+    expect(scopeChoices(SCOPES, T5, true)[0].label).toBe("Whole organization");
+    // A new Project status still asks for a project.
+    expect(scopePrompt(builderStateFromTemplate(T5)!, T5, false)).toBe(SCOPE_PROMPT);
+    expect(scopeChoices(SCOPES, T5, false)[0].label).toBe("Printer X2");
   });
 });
 
@@ -227,13 +248,20 @@ describe("(6) Team pulse starts on the reader's one team", () => {
   });
 
   it("the hidden line asks for a team only where the reader leads one", () => {
-    expect(hiddenTeamHint(LEAD_OF_TWO, null)).toBe(TEAM_HINT);
-    expect(hiddenTeamHint(LEAD, null)).toBe(TEAM_HINT);
+    expect(hiddenTeamHint(LEAD_OF_TWO, null, true)).toBe(TEAM_HINT);
+    expect(hiddenTeamHint(LEAD, null, true)).toBe(TEAM_HINT);
     // A team is chosen already, a member has no team, an admin hides nobody.
-    expect(hiddenTeamHint(LEAD, HARDWARE)).toBeNull();
-    expect(hiddenTeamHint(MEMBER, null)).toBeNull();
-    expect(hiddenTeamHint(ADMIN, null)).toBeNull();
-    expect(hiddenTeamHint(undefined, null)).toBeNull();
+    expect(hiddenTeamHint(LEAD, HARDWARE, true)).toBeNull();
+    expect(hiddenTeamHint(MEMBER, null, true)).toBeNull();
+    expect(hiddenTeamHint(ADMIN, null, true)).toBeNull();
+    expect(hiddenTeamHint(undefined, null, true)).toBeNull();
+  });
+
+  it("the hint is absent on a template with no About chip", () => {
+    // Weekly delivery has no About chip, so "Choose a team in About" would
+    // point at a control that is not there.
+    expect(hiddenTeamHint(LEAD, null, false)).toBeNull();
+    expect(hiddenTeamHint(LEAD, null, true)).toBe(TEAM_HINT);
   });
 });
 
@@ -335,6 +363,14 @@ describe("(9) the subject menu", () => {
     expect(admin.find((o) => o.label === "Meera Iyer")?.hint).toBeUndefined();
   });
 
+  it("a search by address finds a named person, and the address stays hidden", () => {
+    const options = subjectOptions(LEAD);
+    const ana = options.find((o) => o.label === "Ana Shah");
+    expect(ana?.hint).toBeUndefined();
+    expect(filterOptions(options, "ana@example").map((o) => o.label)).toEqual(["Ana Shah"]);
+    expect(filterOptions(options, "Ana").map((o) => o.label)).toEqual(["Ana Shah"]);
+  });
+
   it("a saved team the answer omits stays inside the Teams group", () => {
     const gone = { kind: "team", slug: "gone" } as const;
     const options = subjectOptions(LEAD, gone, true);
@@ -373,8 +409,8 @@ describe("(11) the name follows the chips until the member types one", () => {
   it("derives the name from the template and the subject or the scope", () => {
     const t6 = withSubject(builderStateFromTemplate(T6)!, MEERA);
     expect(builderName(t6, T6, ADMIN, SCOPES)).toBe("1:1 prep: Meera Iyer");
-    const t3 = { ...builderStateFromTemplate(T3)!, projectId: "p-x2" };
-    expect(builderName(t3, T3, ADMIN, SCOPES)).toBe("Project status: Printer X2");
+    const t5 = { ...builderStateFromTemplate(T5)!, projectId: "p-x2" };
+    expect(builderName(t5, T5, ADMIN, SCOPES)).toBe("Project status: Printer X2");
     const t1 = withSubject(builderStateFromTemplate(T1)!, HARDWARE);
     expect(builderName(t1, T1, LEAD, SCOPES)).toBe("Team pulse: Hardware team");
   });

@@ -43,7 +43,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
@@ -79,7 +78,6 @@ import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
   helpLine,
-  hiddenPeopleLine,
   pulseFocus,
   pulseName,
   pulseRows,
@@ -126,6 +124,7 @@ import {
   editTitle,
   errorChip,
   hiddenTeamHint,
+  homeEmptyLine,
   newBuilderState,
   parseReportLink,
   parseSubjectValue,
@@ -546,11 +545,6 @@ export function RenderedBody({
                 </div>
               ))}
             </div>
-            {hiddenPeopleLine(sections.pulse.hidden_people, "report", hiddenHint) && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                {hiddenPeopleLine(sections.pulse.hidden_people, "report", hiddenHint)}
-              </p>
-            )}
           </Table>
         </div>
       )}
@@ -853,7 +847,7 @@ function ReportBuilder({
     needs === "person" ? allSubjects.filter((o) => o.group === "People") : allSubjects;
   const refusal = saveRefusal(state);
   const personPrompt = subjectPrompt(state, template, chipStatus === "failed");
-  const projectPrompt = scopePrompt(state, template);
+  const projectPrompt = scopePrompt(state, template, isEdit);
   const prompt = personPrompt ?? projectPrompt;
   const noPeriod = periodFree(state);
 
@@ -942,7 +936,8 @@ function ReportBuilder({
   const chipPreviewError = currentError !== null && errorChip(currentError) !== "other";
   const updating = !prompt && preview !== null && preview.key !== previewKey && !currentError;
   const sectionNote = subjectSectionNote(state);
-  const onlyProjects = projectOnly(template);
+  // A new project-only report asks for a project. An edit keeps its scope.
+  const onlyProjects = projectOnly(template) && !isEdit;
 
   let subjectChip: React.ReactNode = null;
   if (chipShown) {
@@ -991,7 +986,7 @@ function ReportBuilder({
         asOf: asOfDay(preview.body.sections.pulse?.today, new Date()),
       })
     : undefined;
-  const hiddenHint = hiddenTeamHint(answer, state.subject);
+  const hiddenHint = hiddenTeamHint(answer, state.subject, chipShown);
 
   return (
     <div className="space-y-3">
@@ -1010,7 +1005,7 @@ function ReportBuilder({
                 widthClass={CHIP_WIDTH}
                 value={state.projectId ?? WHOLE_ORGANIZATION}
                 defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
-                options={scopeChoices(scopes, template)}
+                options={scopeChoices(scopes, template, isEdit)}
                 filterAbove={8}
                 disabled={isEdit}
                 onChange={(value) =>
@@ -1246,12 +1241,8 @@ function TemplateCard({
         title={template.waits_for ? `Waits for: ${template.waits_for}` : undefined}
         className="h-full rounded-lg border border-dashed border-border p-2 text-muted-foreground"
       >
-        <div className="flex items-center gap-2">
-          <span className="min-w-0 truncate pr-px text-sm font-medium">{template.name}</span>
-          <Badge size="xs" className="ml-auto shrink-0">
-            Coming soon
-          </Badge>
-        </div>
+        {/* No badge: the section title "Coming later" already says it. */}
+        <span className="block min-w-0 truncate pr-px text-sm font-medium">{template.name}</span>
         <p className="mt-1 text-xs">{template.question}</p>
       </div>
     );
@@ -1291,6 +1282,7 @@ export function ReportsHome({
   templates,
   templatesError,
   cardLine,
+  finishedCount,
   onOpen,
   onStart,
 }: {
@@ -1298,6 +1290,8 @@ export function ReportsHome({
   templates: ReportTemplate[] | undefined;
   templatesError: string | null;
   cardLine: (row: ReportRow) => string;
+  /** The portfolio's finished count, when the page has it. */
+  finishedCount?: number | null;
   onOpen: (id: string) => void;
   onStart: (template: ReportTemplate) => void;
 }) {
@@ -1314,9 +1308,7 @@ export function ReportsHome({
         {rows === null ? (
           <SkeletonRows count={2} />
         ) : mine.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            You have not saved a report yet. Pick a question below.
-          </p>
+          <p className="text-xs text-muted-foreground">{homeEmptyLine(finishedCount)}</p>
         ) : (
           <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {mine.map((r) => (
@@ -1452,11 +1444,14 @@ function RailList({
   rows,
   selected,
   author,
+  scopeLabel,
   onOpen,
 }: {
   title: string;
   rows: ReportRow[];
   selected: string | null;
+  /** The scope in the chips' words: "Whole organization" or the project. */
+  scopeLabel: (row: ReportRow) => string;
   /** The author's name, on a shared row. */
   author?: (row: ReportRow) => string;
   onOpen: (id: string) => void;
@@ -1485,16 +1480,12 @@ function RailList({
                 ) : null}
               </span>
               <span
-                className="shrink-0 font-normal text-muted-foreground"
-                title={
-                  r.scope === "portfolio"
-                    ? "Whole organization"
-                    : "One project and what is under it"
-                }
+                className="max-w-[6rem] shrink-0 truncate pr-px font-normal text-muted-foreground"
+                title={scopeLabel(r)}
               >
-                {/* ⚠️ "Project", not "Node". `node` is the table's word for a
-                    row in the tree and it reaches no other surface. */}
-                {r.scope === "portfolio" ? "All" : "Project"}
+                {/* The chips' words (§6.5 item 12): "Whole organization" or
+                    the project's name, never "All" or "Node". */}
+                {scopeLabel(r)}
               </span>
             </button>
           </li>
@@ -1636,6 +1627,7 @@ export default function ReportsView({
 
   const selectedRow = rows?.find((r) => r.id === selected) ?? null;
   const building = pane.kind !== "view";
+  const railShown = !building && (rows === null || rows.length > 0);
   const { yours, shared } = railGroups(rows ?? []);
   const header =
     body && selectedRow
@@ -1675,16 +1667,17 @@ export default function ReportsView({
         </Button>
       </div>
 
-      {/* The UX pass, item 1. While the member builds a report the rail
-          leaves, and the builder takes the width for its preview. */}
+      {/* §6.5 item 1. While the member builds a report the rail leaves, and
+          the builder takes the width for its preview. §6.5 item 12: with no
+          report saved the rail leaves too, so Home says the one empty line. */}
       <div
         className={
-          building ? "" : "grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]"
+          railShown ? "grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]" : ""
         }
       >
-        {!building && (
-          // Item 12. On a phone the rail is gone on Home, where the cards
-          // already list your reports.
+        {railShown && (
+          // §6.5 item 12. On a phone the rail is gone on Home, where the
+          // cards already list your reports.
           <aside
             className={`rounded-lg border border-border bg-card p-2 ${
               selected ? "" : "hidden lg:block"
@@ -1692,19 +1685,13 @@ export default function ReportsView({
           >
             {rows === null ? (
               <SkeletonRows count={3} />
-            ) : rows.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No reports yet.{" "}
-                {finished
-                  ? `There are ${finished.total_completed} finished tasks to report on.`
-                  : ""}
-              </p>
             ) : (
               <div className="space-y-2">
                 <RailList
                   title="Yours"
                   rows={yours}
                   selected={selected}
+                  scopeLabel={scopeName}
                   onOpen={(id) => setSelected(id)}
                 />
                 <RailList
@@ -1712,6 +1699,7 @@ export default function ReportsView({
                   rows={shared}
                   selected={selected}
                   author={authorName}
+                  scopeLabel={scopeName}
                   onOpen={(id) => setSelected(id)}
                 />
               </div>
@@ -1748,6 +1736,7 @@ export default function ReportsView({
               templates={templates}
               templatesError={catalogue.error}
               cardLine={cardLine}
+              finishedCount={finished?.total_completed}
               onOpen={(id) => setSelected(id)}
               onStart={start}
             />

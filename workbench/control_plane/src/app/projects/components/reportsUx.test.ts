@@ -17,7 +17,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { RenderedReportBody, ReportRow, ReportTemplate } from "../lib/api";
-import { asOfDay, subjectPrompt } from "../lib/reportBuilder";
+import { asOfDay, homeEmptyLine, subjectPrompt } from "../lib/reportBuilder";
 import {
   PreviewPrompt,
   RenderFailed,
@@ -178,6 +178,41 @@ describe("(5) the gallery", () => {
   it("the empty state is one line, with no row of buttons", () => {
     expect(markup).toContain("You have not saved a report yet. Pick a question below.");
     expect(markup).not.toContain("Start with:");
+  });
+
+  it("Home says the one empty line, and the rail has none of its own", () => {
+    expect(homeEmptyLine(12)).toBe(
+      "You have not saved a report yet. There are 12 finished tasks to report on. Pick a question below."
+    );
+    expect(homeEmptyLine(1)).toContain("There is 1 finished task to report on.");
+    for (const absent of [undefined, null, 0, Number.NaN]) {
+      const line = homeEmptyLine(absent);
+      expect(line).toBe("You have not saved a report yet. Pick a question below.");
+      expect(line).not.toMatch(/undefined|NaN/);
+    }
+    const withCount = html(
+      createElement(ReportsHome, {
+        rows: [],
+        templates: [LIVE],
+        templatesError: null,
+        cardLine: () => "",
+        finishedCount: 3,
+        onOpen: () => {},
+        onStart: () => {},
+      })
+    );
+    expect(withCount).toContain("There are 3 finished tasks to report on.");
+    expect(VIEW).not.toContain("No reports yet");
+    expect(VIEW).toContain("const railShown = !building && (rows === null || rows.length > 0);");
+  });
+
+  it("the rail tag says the scope in the chips' words", () => {
+    expect(VIEW).not.toMatch(/"All" : "Project"/);
+    expect(VIEW.match(/scopeLabel=\{scopeName\}/g)?.length).toBe(2);
+  });
+
+  it("a card under Coming later carries no Coming soon badge", () => {
+    expect(VIEW).not.toContain("Coming soon");
   });
 
   it("a coming-soon card names what it waits for in its tooltip only", () => {
