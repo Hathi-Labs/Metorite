@@ -14,7 +14,7 @@
  * hides a section to mean "not permitted".
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
@@ -109,6 +109,10 @@ export default function ProjectsSettings({
     (initialSpaceId && spaces.some((s) => s.id === initialSpaceId) ? initialSpaceId : spaces[0]?.id) ?? null,
   );
   const [outcome, setOutcome] = useState<DiscardOutcome | null>(null);
+  // A manager reports its first LOAD through `onChanged` too. That is not an
+  // edit, so it must not make the board re-read (the I-6 review: a burst of
+  // reads on every section open). Skip the first report of each mount.
+  const loaded = useRef<string | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
 
   const space = useMemo(() => spaces.find((s) => s.id === spaceId) ?? spaces[0] ?? null, [spaces, spaceId]);
@@ -116,6 +120,15 @@ export default function ProjectsSettings({
   const current =
     [...organization, ...SPACE_SECTIONS].find((s) => s.id === section) ?? SPACE_SECTIONS[0];
   const isSpaceSection = SPACE_SECTIONS.some((s) => s.id === current.id);
+
+  const mountKey = `${current.id}:${space?.id ?? ""}`;
+  const onEdited = () => {
+    if (loaded.current !== mountKey) {
+      loaded.current = mountKey;
+      return;
+    }
+    onBoardStale();
+  };
 
   const choose = (id: SettingsSection) => {
     setSection(id);
@@ -220,7 +233,7 @@ export default function ProjectsSettings({
             projectId={space.id}
             projectName={space.name}
             onClose={() => undefined}
-            onChanged={onBoardStale}
+            onChanged={onEdited}
             onTasksTouched={onBoardStale}
           />
         );
@@ -232,7 +245,7 @@ export default function ProjectsSettings({
             projectId={space.id}
             projectName={space.name}
             onClose={() => undefined}
-            onChanged={onBoardStale}
+            onChanged={onEdited}
           />
         );
       case "tags":
@@ -243,7 +256,7 @@ export default function ProjectsSettings({
             projectId={space.id}
             projectName={space.name}
             onClose={() => undefined}
-            onChanged={onBoardStale}
+            onChanged={onEdited}
             onTasksTouched={onBoardStale}
           />
         );

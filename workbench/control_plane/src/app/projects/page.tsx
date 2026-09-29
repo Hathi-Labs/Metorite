@@ -2644,10 +2644,14 @@ function ProjectsWorkspace() {
         else if (what === "statuses") setManagingStatuses(selected);
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
-      openSettings: () => openSettings(null, selected ? spaceOf(roots, selected).id : null),
+      // Not while it is open: a re-seed remounts the pane and drops an edit.
+      openSettings: () => {
+        if (app === "settings") return;
+        openSettings(null, selected ? spaceOf(roots, selected).id : null);
+      },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected, openSettings, roots],
+    [router, setPanelMode, selected, openSettings, roots, app],
   );
 
   const commandCtx: CommandContext = {
