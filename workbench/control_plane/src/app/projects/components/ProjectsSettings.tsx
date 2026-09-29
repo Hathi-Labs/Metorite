@@ -6,8 +6,8 @@
  *
  * Spec: `project-docs/specs/projects_settings.md` §4.
  *
- * Two scopes, always named: the ORGANIZATION (the import, and later the
- * export and the shared vocabulary) and one SPACE (its identity, statuses,
+ * Two scopes, always named: the ORGANIZATION (the shared vocabulary, the
+ * import, and later the export) and one SPACE (its identity, statuses,
  * fields, tags and lifecycle). Every space section is the same manager the
  * row menu opens, drawn inline through `ManagerFrame`, so there is one body
  * per setting. The server decides what a member may change; this pane never
@@ -25,12 +25,16 @@ import type { ProjectRow } from "../lib/api";
 import { FieldManager } from "./FieldManager";
 import ImportHistory, { type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import { LifecyclePolicy } from "./LifecyclePolicy";
+import SharedVocabulary from "./SharedVocabulary";
 import SpaceSettings from "./SpaceSettings";
 import { StatusManager } from "./StatusManager";
 import { TagManager } from "./TagManager";
 import { TypeManager } from "./TypeManager";
 
-export type SettingsSection = "import" | "general" | "statuses" | "fields" | "tags" | "types" | "lifecycle";
+export type SettingsSection =
+  | "vocabulary"
+  | "import"
+  | "general" | "statuses" | "fields" | "tags" | "types" | "lifecycle";
 
 interface SectionItem {
   id: SettingsSection;
@@ -40,7 +44,14 @@ interface SectionItem {
   hint: string;
 }
 
-const ORGANIZATION_SECTIONS: SectionItem[] = [
+const VOCABULARY_SECTION: SectionItem = {
+  id: "vocabulary",
+  label: "Shared vocabulary",
+  icon: "BookOpen",
+  hint: "The tags, custom fields and task types every space shares.",
+};
+
+const IMPORT_SECTIONS: SectionItem[] = [
   {
     id: "import",
     label: "Import & export",
@@ -108,7 +119,7 @@ export default function ProjectsSettings({
   importsVersion = 0,
 }: ProjectsSettingsProps) {
   const firstSection: SettingsSection =
-    initialSection ?? (spaces.length > 0 ? "general" : mayImport ? "import" : "general");
+    initialSection ?? (spaces.length > 0 ? "general" : mayImport ? "import" : "vocabulary");
   const [section, setSection] = useState<SettingsSection>(firstSection);
   // On a phone the list and the section take turns; on a desktop both show.
   const [phoneShowsSection, setPhoneShowsSection] = useState(Boolean(initialSection));
@@ -123,7 +134,9 @@ export default function ProjectsSettings({
   const [historyKey, setHistoryKey] = useState(0);
 
   const space = useMemo(() => spaces.find((s) => s.id === spaceId) ?? spaces[0] ?? null, [spaces, spaceId]);
-  const organization = mayImport ? ORGANIZATION_SECTIONS : [];
+  // Shared vocabulary is for every member: they see the rows in every space
+  // anyway, and the server decides who may rename. Import needs the grant.
+  const organization = [VOCABULARY_SECTION, ...(mayImport ? IMPORT_SECTIONS : [])];
   const current =
     [...organization, ...SPACE_SECTIONS].find((s) => s.id === section) ?? SPACE_SECTIONS[0];
   const isSpaceSection = SPACE_SECTIONS.some((s) => s.id === current.id);
@@ -144,16 +157,14 @@ export default function ProjectsSettings({
 
   const list = (
     <nav aria-label="Settings sections" className="flex flex-col gap-4">
-      {organization.length > 0 ? (
-        <div className="flex flex-col gap-0.5">
-          <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Organization
-          </p>
-          {organization.map((item) => (
-            <SectionRow key={item.id} item={item} active={section === item.id} onChoose={choose} />
-          ))}
-        </div>
-      ) : null}
+      <div className="flex flex-col gap-0.5">
+        <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Organization
+        </p>
+        {organization.map((item) => (
+          <SectionRow key={item.id} item={item} active={section === item.id} onChoose={choose} />
+        ))}
+      </div>
       <div className="flex flex-col gap-0.5">
         <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Space</p>
         {space ? (
@@ -182,6 +193,7 @@ export default function ProjectsSettings({
   );
 
   const body = (() => {
+    if (current.id === "vocabulary") return <SharedVocabulary onChanged={onBoardStale} />;
     if (current.id === "import") {
       return (
         <div className="flex flex-col gap-4">

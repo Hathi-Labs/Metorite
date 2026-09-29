@@ -95,6 +95,19 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-205 · Decide how an organization-wide tag, field or type is retired · [OWNER]
+- **Check:** `rg -n "refuse_org_wide_write\(" apps/services/gateway/gateway/routes/projects/`
+  → present on the DELETE and MERGE paths means a shared row still cannot be retired.
+- **Why:** D-PM-33 allows a rename only. Shared vocabulary (WS-42 PS-3) now
+  lists every shared row, so an admin can see a wrong one and cannot remove it.
+  Two shapes exist. A delete strips the tag or field value off every task in
+  every space, and nothing restores it. A merge folds the row into another one.
+  Both reach spaces the admin may not open, so the owner rules first. Answer
+  this before H-5 flips, because a flip lets people mint rows.
+- **Authority:** `specs/project_management_app.md` §9.11.2 (D-PM-33), and
+  `specs/projects_settings.md` §7 row PS-3
+- **Added:** 2026-09-29 · WS-42 PS-3
+
 ### H-204 · Prove that chat saves when GitHub cannot reach the box · [AGENT]
 - **Check:** `grep -n "smoke_chat" .github/workflows/vps-health.yml deploy/hostinger/*.timer deploy/hostinger/*.service`
   → no match means no path outside `deploy.yml` runs the chat smoke, so this is open.
@@ -1223,29 +1236,15 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 · `specs/engineering_practice.md` (security)
 - **Added:** 2026-08-14 · carried from the session that refused them
 
-### H-4 · WS-27bj: build the admin surface for org-wide vocabularies · [AGENT]
-- **🟢 2026-09-20 — the RENAME half is built (D-PM-33).** An org-wide tag,
-  field or type can now be renamed by somebody holding
-  `admin:settings:manage`, and a tag rename is previewed first by
-  `GET /tags/{id}/impact`. Merge and delete stay refused by name. What is
-  still owed is the SURFACE: a place to see the organization's vocabulary,
-  and a decision about retiring a row.
-- **Check:** `rg -n "refuse_org_wide_write" apps/services/gateway/gateway/routes/projects/`
-  → present on DELETE and MERGE only is the expected state after D-PM-33. Present
-  on a PATCH path means the rename regressed. The entry stays open until a
-  surface lists the organization's own vocabulary, which no route does yet.
-- **Why:** An org-wide tag, task type or custom field can currently be
-  **created but never edited or retired** — `refuse_org_wide_write` answers 409
-  rather than letting those routes 500 on `CAST('None' AS uuid)`. That is the
-  conservative half of ship-dark and it is real debt: the affordance to fix a
-  typo in an org-wide row does not exist.
-- **Authority:** `specs/project_management_app.md` §9.11 ("Not in scope" —
-  the seam lands first) and §9.11.1
-- **Added:** 2026-08-14 · session that built WS-27bj
-
 ### H-5 · Flip `PROJECTS_ORG_VOCABULARIES` when org-wide creates should go live · [OWNER]
+- **2026-09-29 — the surface this entry waited for is built (WS-42 PS-3).**
+  Projects, Settings, Shared vocabulary lists every org-wide tag, field and
+  type, with rename and a tag colour. Two things stay true after a flip. No
+  settings screen creates an org-wide row yet. The flip opens the API and the
+  Projects chat, whose create writes send `scope: "org"`. A create in Shared
+  vocabulary is the next slice. A row still cannot be retired (H-205).
 - **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
-  The flip waits for the admin surface (H-4). Creating an org-wide row is
+  The flip waited for the admin surface (H-4, built as WS-42 PS-3). Creating an org-wide row is
   easy and un-creating it is the hard part, so a member could mint rows
   nobody can then manage. Measured the same day: the flag is unset in
   production and both databases hold zero org-wide rows, so nothing is
