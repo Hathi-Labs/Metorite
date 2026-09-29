@@ -95,6 +95,19 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-204 · Prove that chat saves when GitHub cannot reach the box · [AGENT]
+- **Check:** `grep -n "smoke_chat" .github/workflows/vps-health.yml deploy/hostinger/*.timer deploy/hostinger/*.service`
+  → no match means no path outside `deploy.yml` runs the chat smoke, so this is open.
+- **Why:** The `chat-smoke` job gives a no-verdict warning and stays green when
+  ssh from GitHub cannot reach the box. That keeps the H-142 contract. But when
+  ssh stays blocked (H-50 fail2ban, WS-25 2026-08-05), every run gives that
+  warning, and no run proves that chat saves. `vps-health.yml` does not run
+  the smoke, and no timer on the box runs it. The fix is one of two. Run
+  `deploy/smoke_chat.sh` from a box timer or from `vps-health.yml`, and alert
+  on its exit. Or make the job red after N no-verdict runs in a row.
+- **Authority:** `specs/projects_ai_chat.md` §21.10, board row WS-27bm S16
+- **Added:** 2026-09-29 · WS-27bm S16 fix round 2, PR #541
+
 ### H-203 · Decide whether a new task takes its space's default type · [OWNER]
 - **Check:** `rg -n "is_default" apps/services/gateway/gateway/routes/projects/tasks.py`
   → no match means a new task still gets no type, whatever a space marks default.

@@ -3475,6 +3475,9 @@ Then it runs `scripts/smoke_chat_persist.py`.
   `pull-delivery` proved the SHA by HTTPS, and a runner that cannot reach
   the box must not turn it red.
 - A `FAIL` step line, followed by an ssh drop, is red at once, with no retry.
+- ⚠️ When ssh from GitHub stays blocked, every run gives that warning, and no
+  run proves that chat saves. No box timer and no `vps-health.yml` step runs
+  the smoke. **H-204** carries the fix.
 - The run has no rollback. R6 says we only roll forward, so a red run means
   "the release is live, and chat does not save".
 - The wait and the smoke hold a SHARED lock on `/opt/acb/acb-deploy.lock`.
