@@ -347,6 +347,34 @@ def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_cl
     ).status_code == 204
 
 
+@_DB_GATE
+def test_a_link_to_a_sibling_prefix_dir_is_refused(graph_as_app, roots, workspace_client):  # noqa: F811
+    """H-201 fix round 2 (the verifier's probe). ``_safe_resolve`` used a
+    string prefix. A link inside the workspace, ``outputs/sib``, that points
+    at ``<app>2``, a sibling whose name starts with the workspace's name,
+    resolved to a path that "starts with" the root. The file under it read.
+    A path check refuses it."""
+    a = graph_as_app.org_a
+    sibling = roots.apps / f"{roots.app_a.name}2"
+    sibling.mkdir()
+    (sibling / "secret.md").write_text("OTHER APP", encoding="utf-8")
+    (roots.app_a / "outputs").mkdir()
+    _link(roots.app_a / "outputs" / "sib", sibling)
+    sid = _seed_session(graph_as_app, a, _ALICE, str(roots.app_a))
+    base = f"/agent/workspace/{sid}"
+    alice = workspace_client(_user(_ALICE, a))
+
+    for verb in ("get", "delete"):
+        r = getattr(alice, verb)(f"{base}/file", params={"path": "outputs/sib/secret.md"})
+        assert r.status_code in (400, 404), (verb, r.status_code)
+        assert "OTHER APP" not in r.text
+    r = alice.put(f"{base}/file", params={"path": "outputs/sib/forged.md"},
+                  json={"content": "forged"})
+    assert r.status_code in (400, 404), r.status_code
+    assert (sibling / "secret.md").read_text(encoding="utf-8") == "OTHER APP"
+    assert not (sibling / "forged.md").exists()
+
+
 # ── H-201 fix round 2 (P0): an agent name is one safe path segment ──────────
 
 _BAD_AGENT_NAMES = ("../..", "..", ".", "a/b", "/etc", "a\x00b", "..\..",
