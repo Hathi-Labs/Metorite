@@ -117,6 +117,10 @@ class Recorder:
                               "scheduled_end": "2026-09-24T09:30:00+05:30"}], "total": 1}
         if path.startswith("/projects/my/tasks") and path.endswith("/lanes"):
             return self.lanes
+        if path.startswith("/projects/my/tasks") and path.endswith("/subtasks"):
+            # `personal.add_my_steps`: the new ids, in the order given.
+            titles = kw.get("json", {}).get("titles", [])
+            return {"created": [CID] * len(titles)}
         if path.startswith("/projects/my/tasks"):
             # TASK itself unless a test swapped one in, so a test that
             # monkeypatches TASK is read live.
@@ -218,10 +222,7 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
      [("POST", f"{MY}/organize"), ("GET", MY), *SHOW]),
     ("my_tasks_subtasks", {"item_id": TID}, [("GET", "/projects/tasks")]),
     ("my_tasks_add_subtasks", {"item_id": TID, "titles": "a\nb"},
-     [("GET", T),
-      ("POST", "/projects/tasks"), ("PUT", f"/projects/tasks/{CID}/assignees"),
-      ("POST", "/projects/tasks"), ("PUT", f"/projects/tasks/{CID}/assignees"),
-      ("GET", "/projects/tasks")]),
+     [("POST", f"{MY}/subtasks"), ("GET", T), ("GET", f"/projects/my/tasks/{CID}")]),
     ("my_tasks_archive", {"item_id": TID}, [("POST", f"{T}/archive"), ("GET", MY), *SHOW]),
     ("my_tasks_archive", {"item_id": TID, "restore": True},
      [("POST", f"{T}/unarchive"), ("GET", MY), *SHOW]),
@@ -783,10 +784,119 @@ def test_capture_many_splits_a_long_dump_at_the_routes_batch_cap(gw: Recorder):
     assert out.startswith("Captured 250 item(s) to the inbox")
 
 
-def test_subtasks_are_self_assigned_in_the_parent_project(gw: Recorder):
-    run(core.my_tasks_add_subtasks(item_id=TID, titles="a"))
-    assert gw.kwargs[1]["json"] == {"project_id": ROOT, "parent_task_id": TID, "title": "a"}
-    assert gw.kwargs[2]["json"] == {"assignees": [ME]}
+# ── The step tool calls the My Tasks door (§11.42 gap, D-PM-38) ─────────────
+#
+# `POST /projects/tasks` gave a step the parent's lane and stated nothing, so a
+# chat step under a NEXT parent left the member's Next list. The My Tasks door
+# (`personal.add_my_steps`) states NEXT the way the checklist does. The lane
+# and NEXT rules themselves are fenced on the route (`test_subtasks_s4.py`)
+# and live (`tests/live/live_subtask_parent_lane.py` (h)).
+
+STEPS = f"{MY}/subtasks"
+#: A created step as `/projects/my/tasks/{id}` reads it: the parent's lane
+#: and my stated NEXT.
+STEP = {**TASK, "id": CID, "title": "a", "parent_task_id": TID,
+        "workflow_stage": "In review", "disposition": "NEXT"}
+
+
+class _StepGateway(Recorder):
+    """The recorder, with a numbered parent and switchable failures."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.task = STEP
+        self.fail_post_at: int | None = None
+        self.post_error = "(404): No such task"
+        self.reads_fail = False
+        self._posts = 0
+
+    async def __call__(self, method: str, path: str, **kw: Any) -> Any:
+        if method == "POST" and path == STEPS:
+            self._posts += 1
+            if self.fail_post_at == self._posts:
+                self.calls.append((method, path))
+                self.kwargs.append(kw)
+                raise RuntimeError(f"Tasks POST {path} failed {self.post_error}")
+        if method == "GET" and self.reads_fail:
+            self.calls.append((method, path))
+            raise RuntimeError(f"Tasks GET {path} failed (500): boom")
+        if method == "GET" and path == T:
+            self.calls.append((method, path))
+            self.kwargs.append(kw)
+            return {**TASK, "task_number": 7, "title": "Parent"}
+        return await super().__call__(method, path, **kw)
+
+
+@pytest.fixture
+def steps(monkeypatch: pytest.MonkeyPatch) -> _StepGateway:
+    rec = _StepGateway()
+    monkeypatch.setattr(core, "_request", rec)
+    monkeypatch.setattr(core, "_current_user_email", lambda: ME)
+    return rec
+
+
+def test_the_step_tool_calls_the_my_tasks_door_with_titles_only(steps: _StepGateway):
+    """One request to the door the checklist calls. The body carries the
+    titles and nothing else: no project, no status, no identity (R5)."""
+    run(core.my_tasks_add_subtasks(item_id=TID, titles=" a \n\nb"))
+    posts = [(p, kw) for (m, p), kw in zip(steps.calls, steps.kwargs, strict=True)
+             if m == "POST"]
+    assert posts == [(STEPS, {"json": {"titles": ["a", "b"]}})]
+    assert ("POST", "/projects/tasks") not in steps.calls
+    assert not any(p.endswith("/assignees") for _, p in steps.calls)
+
+
+def test_the_receipt_names_the_lane_the_parent_and_the_next_list(steps: _StepGateway):
+    out = run(core.my_tasks_add_subtasks(item_id=TID, titles="a\nb"))
+    assert out.splitlines()[0] == (
+        "Added 2 steps to «In review» under #7 «Parent» · on your Next list:")
+    assert out.count(f"full_id: {CID}") == 2
+
+
+def test_a_step_that_is_not_next_says_which_list(steps: _StepGateway):
+    steps.task = {**STEP, "workflow_stage": "Backlog", "disposition": "SOMEDAY"}
+    out = run(core.my_tasks_add_subtasks(item_id=TID, titles="a"))
+    assert out.splitlines()[0] == (
+        "Added 1 step to «Backlog» under #7 «Parent» · on your list as SOMEDAY:")
+
+
+def test_titles_past_max_batch_go_in_batches_of_the_routes_cap(steps: _StepGateway):
+    """`MAX_BATCH` is 100 and the door answers 422 past it. 250 titles are
+    three requests, and the receipt counts every created step."""
+    out = run(core.my_tasks_add_subtasks(
+        item_id=TID, titles="\n".join(f"s{n}" for n in range(250))))
+    posts = [kw["json"]["titles"] for (m, p), kw in zip(steps.calls, steps.kwargs, strict=True)
+             if (m, p) == ("POST", STEPS)]
+    assert [len(b) for b in posts] == [100, 100, 50]
+    assert posts[1][0] == "s100"
+    assert out.startswith("Added 250 steps")
+
+
+def test_a_hidden_parent_is_a_clear_refusal_and_nothing_else(steps: _StepGateway):
+    """The door answers 404 for a parent I cannot see. The tool says so and
+    reads nothing after it: there is no parent to read."""
+    steps.fail_post_at = 1
+    out = run(core.my_tasks_add_subtasks(item_id=TID, titles="a"))
+    assert out == (f"No steps added: task {TID} is not one you can see, "
+                   "so nothing was written.")
+    assert steps.calls == [("POST", STEPS)]
+
+
+def test_a_refusal_after_a_committed_batch_reports_the_written_steps(steps: _StepGateway):
+    steps.fail_post_at = 2
+    steps.post_error = "(422): nope"
+    out = run(core.my_tasks_add_subtasks(
+        item_id=TID, titles="\n".join(f"s{n}" for n in range(150))))
+    assert out.startswith("Added 100 steps:")
+    assert "The other 50 step(s) were NOT added" in out
+    assert "(422): nope" in out
+
+
+def test_a_failed_read_back_still_reports_the_writes(steps: _StepGateway):
+    steps.reads_fail = True
+    out = run(core.my_tasks_add_subtasks(item_id=TID, titles="a\nb"))
+    assert out.splitlines()[0] == "Added 2 steps:"
+    assert out.count(f"full_id: {CID}") == 2
 
 
 def test_calendar_window_uses_the_lens_parameter_names_and_keeps_done_blocks(gw: Recorder):

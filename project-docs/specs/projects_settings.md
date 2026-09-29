@@ -1,6 +1,6 @@
 # Projects settings — one place for every setting of the Projects app
 
-**Status: ACTIVE — PS-1 to build.** Owner directive, 2026-09-29. Board row
+**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29.** Owner directive, 2026-09-29. Board row
 **WS-42**. This spec records **D81**.
 
 Verified against code on 2026-09-29 at `main` `02658314`.
@@ -120,6 +120,7 @@ it alone, under a Back control that returns to the list.
 | Space | Statuses | `StatusManager` for the space's set, and a line on how roll-ups read it | The space's status set |
 | Space | Custom fields | `FieldManager` | The space, and org-wide rows |
 | Space | Tags | `TagManager` | The space, and org-wide rows |
+| Space | Task types | `TypeManager` (PS-2): add, rename, icon, colour, delete | The space. Epic and org-wide rows are shown and locked |
 | Space | Lifecycle | `LifecyclePolicy`: auto-archive, auto-close and the time zone | The space |
 
 ### 4.5 Permissions
@@ -159,7 +160,7 @@ in a manager changes.
 | Slice | Delivers | Done when |
 |---|---|---|
 | **PS-1** | The pane, the section list, the space picker, the five managers inline through `ManagerFrame`, Import & export, and the entry points of §4.1 | An admin opens Settings from the sidebar, picks a space, edits a status, a field, a tag, the lifecycle and the space name without leaving the pane, and starts an import. The row menus still open the same dialogs. The walk passes in light mode, at compact density, under a changed accent, and at 390 px |
-| **PS-2** | Task types: list, create, rename, recolour and delete, for the space | The section edits types through the existing routes (`admin.py:858-1009`) |
+| **PS-2** ✅ built 2026-09-29 | Task types: list, create, rename, recolour and delete, for the space | The section edits types through the existing routes (`admin.py:858-1009`). **Met:** a browser walk against a real gateway and database added a type, set its colour and its icon, renamed it and deleted it, and found Epic's rename and delete disabled. **No default:** `pm_task_types.is_default` exists, but `create_task` never reads it, so the screen offers no default it cannot keep. HANDOFF H-203 asks the owner whether new tasks should take one. The walk found a 500: a name the space already held fired migration 175's unique index. `create_type` and `patch_type` now answer 409, and `tests/live/live_ws42_types.py` proves it on Postgres. The seed stores icons in kebab case, so the picker compares names without case (`taskTypes.test.ts`) |
 | **PS-3** | Shared vocabulary: the organization's own tags, fields and types, with rename (D-PM-33) | HANDOFF H-4 closes. The owner can then decide H-5 |
 | **PS-4** | Export | A spec section says what an export holds and in which format, before any build |
 
