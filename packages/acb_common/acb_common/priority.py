@@ -256,21 +256,3 @@ def cell_for_name(name: str) -> str | None:
 def level_names() -> str:
     """The seven labels in rank order, for a refusal or a tool description."""
     return ", ".join(CELL_META[c][2] for c in CELLS_IN_ORDER)
-
-
-#: The retired 0-4 scale, as a chat tool may still send it for one release
-#: (H-173). ⚠️ DEPRECATED. Each value maps to Important EXPLICITLY, by
-#: ``IMPORTANT_AT``: 0 and 1 are not important, 2, 3 and 4 are important. A
-#: value outside this map is refused, never guessed.
-LEGACY_IMPORTANCE: dict[int, bool] = {0: False, 1: False, 2: True, 3: True, 4: True}
-
-
-def important_from_legacy(value: Any) -> bool | None:
-    """A deprecated 0-4 number → Important, or None when it is not on the scale."""
-    if isinstance(value, bool):
-        return None
-    try:
-        number = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return LEGACY_IMPORTANCE.get(number)

@@ -18,7 +18,12 @@ from datetime import date, timedelta
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, patch, post, uuid_of
-from skill_projects.priority import priority_fields, takes_important_only
+from skill_projects.priority import (
+    Removed,
+    level_note,
+    priority_fields,
+    takes_priority,
+)
 from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
     CANCELLED,
@@ -276,37 +281,31 @@ async def save_view(project_id: str, name: str, view_type: str = "list", view_id
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
-@takes_important_only
+@takes_priority
 async def capture_intake(
     title: str,
     project_id: str = "",
     description: str = "",
     due: str = "",
-    importance: int = -1,
     priority: str = "",
     important: str = "",
+    leveraged: str = "",
+    importance: Removed = None,
 ) -> str:
     """Capture a task into a project's intake queue for someone to triage,
     rather than straight onto its board. project_id empty captures into
     the member's own personal project, when they have one. The card shows
-    the title and where it lands. A capture takes Important only. The
-    intake route stores no Leveraged, so a leveraged level is refused: set
-    it with update_task after triage."""
+    the title, the priority and where it lands. Omit every priority argument
+    to leave the task unjudged."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
-    judged = priority_fields(priority=priority, important=important, importance=importance)
-    if isinstance(judged, str):
-        return judged
-    flags, notes = judged
-    # `POST /projects/intake` (`IntakeIn`) has no `leveraged` field, and
-    # pydantic drops an unknown key without a word. A dropped flag is a
-    # misread, so it is refused here instead.
-    if flags.pop("leveraged", False):
-        return (
-            "A capture cannot set Leveraged. Capture it with important only, "
-            "then set leveraged with update_task."
-        )
+    # H-196: `IntakeIn` takes `leveraged`, and writes it the way create does.
+    flags = priority_fields(
+        priority=priority, important=important, leveraged=leveraged, importance=importance
+    )
+    if isinstance(flags, str):
+        return flags
     payload: dict[str, Any] = {"title": label}
     if project_id.strip():
         pid, node = await _node(project_id)
@@ -345,7 +344,11 @@ async def capture_intake(
     result = (await post("/projects/intake", payload)) or {}
     task = result.get("task") or {}
     return "\n".join(
-        [f"Captured into the intake queue of {where}:", *_task_line(task), *notes]
+        [
+            f"Captured into the intake queue of {where}:",
+            *_task_line(task),
+            *level_note(priority, task),
+        ]
     )
 
 

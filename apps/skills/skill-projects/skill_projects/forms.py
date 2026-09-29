@@ -33,7 +33,12 @@ import httpx
 from acb_common.priority import importance_for, important_from_importance
 
 from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
-from skill_projects.priority import card_view, flag, level_label, priority_fields
+from skill_projects.priority import (
+    card_view,
+    flag,
+    level_label,
+    priority_fields,
+)
 from skill_projects.reads import _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
@@ -436,15 +441,16 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
     level = item.get("level") or (
         spoken if isinstance(spoken, str) and not spoken.strip().isdigit() else ""
     )
-    judged = priority_fields(
+    # H-196: the 0-4 number is gone. A row that still sends it is refused,
+    # never read as no priority.
+    flags = priority_fields(
         priority=str(level or ""),
         important=item.get("important", ""),
         leveraged=item.get("leveraged", ""),
-        importance=item.get("importance", -1),
+        importance=item.get("importance"),
     )
-    if isinstance(judged, str):
-        return f"Task {i}: {judged}"
-    flags = judged[0]
+    if isinstance(flags, str):
+        return f"Task {i}: {flags}"
     if "importance" in flags:
         row["important"] = bool(important_from_importance(flags["importance"]))
     if "leveraged" in flags:
@@ -812,8 +818,7 @@ async def propose_plan(
     tasks is a JSON list of {key, title, owner, effort_mins, start?, due,
     after?, level?, important?, leveraged?, impact?, urgency?, effort?}.
     level is a priority level name, and sets that level's Important and
-    Leveraged flags. important and leveraged are true or false. A number in
-    importance is deprecated: 2 or more reads as Important. key is a short label
+    Leveraged flags. important and leveraged are true or false. key is a short label
     such as t1. start and due are YYYY-MM-DD. after lists the keys of the
     tasks that must finish first, and becomes blocks links. Every task needs
     a verb-plus-object title, an owner (email or name), an effort and a due

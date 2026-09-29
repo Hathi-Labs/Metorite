@@ -18,9 +18,14 @@ What a tool accepts:
   implies (``CELL_FLAGS``). Urgent is the due date's, so the answer names
   the level the task reads NOW.
 * ``important`` and ``leveraged`` — "true" or "false", the stored fields.
-* ``importance`` — ⚠️ DEPRECATED, the retired 0-4 number, for one release.
-  It maps EXPLICITLY through ``LEGACY_IMPORTANCE``: 2 or more is Important,
-  0 and 1 are not. It never sets Leveraged. The answer says how it was read.
+
+⚠️ **The retired 0-4 ``importance`` number is GONE from every tool (H-196).**
+The model no longer sees it in a schema. A tool that took it keeps a hidden
+``importance: Removed = None`` parameter and hands it to ``priority_fields``,
+which answers a call that still sends it with the replacement arguments. It is not dropped
+without a word: the agent framework drops an unknown argument silently, so a
+parameter that simply vanished would let an old call write a task with no
+priority and say nothing.
 """
 
 from __future__ import annotations
@@ -39,10 +44,15 @@ from acb_common.priority import (
     importance_for,
     importance_write,
     important_from_importance,
-    important_from_legacy,
     level_names,
     task_cell,
 )
+from pydantic.json_schema import SkipJsonSchema
+
+#: The annotation of a REMOVED tool argument. ``SkipJsonSchema`` keeps it out
+#: of the JSON schema the model reads, and validation still passes a sent
+#: value through, so the tool can refuse it by name.
+Removed = SkipJsonSchema[Any]
 
 
 def _labels(cells: list[str]) -> str:
@@ -60,24 +70,20 @@ _URGENT_CELLS = sorted(
     }
     - {"low-priority"}
 )
-#: The levels a capture can take: the intake route stores no Leveraged.
-_UNLEVERAGED_CELLS = [c for c, (_imp, lev) in CELL_FLAGS.items() if not lev]
-
 #: The words a tool description uses for the priority arguments.
 PRIORITY_ARGS_DOC = (
     "priority is a level name: " + level_names() + ". It sets that level's "
     "Important and Leveraged flags. The due date sets Urgent, so the task "
     f"reads {_labels(_URGENT_CELLS)} only while it is due within "
     f"{DEFAULT_URGENT_WINDOW_HOURS} hours. Or set important and leveraged "
-    "directly (true or false). importance (a number) is deprecated: 2 or more "
-    "reads as Important."
+    "directly (true or false)."
 )
 
-#: `capture_intake`'s version: it takes Important only (H-196).
-INTAKE_PRIORITY_DOC = (
-    f"priority is a level name that is not leveraged: {_labels(_UNLEVERAGED_CELLS)}. "
-    "Or set important directly (true or false). importance (a number) is "
-    "deprecated: 2 or more reads as Important."
+#: The answer to a call that still sends the removed ``importance`` number.
+IMPORTANCE_REMOVED = (
+    "importance (a number) was removed, and nothing was written. Pass "
+    f"priority, a level name ({level_names()}), or important and leveraged, "
+    "each true or false."
 )
 
 
@@ -91,11 +97,6 @@ def takes_priority(fn, text: str = PRIORITY_ARGS_DOC):
     return fn
 
 
-def takes_important_only(fn):
-    """``takes_priority`` for a tool that cannot store Leveraged."""
-    return takes_priority(fn, INTAKE_PRIORITY_DOC)
-
-
 #: `clear` words for the priority → the stored fields each one empties.
 CLEAR_PRIORITY: dict[str, dict[str, Any]] = {
     "importance": {"importance": None},
@@ -104,35 +105,34 @@ CLEAR_PRIORITY: dict[str, dict[str, Any]] = {
     "leveraged": {"leveraged": False},
 }
 
-_TRUE = frozenset({"true", "yes", "y", "1", "on"})
-_FALSE = frozenset({"false", "no", "n", "0", "off"})
+#: The words a flag reads as. ⚠️ "1" and "0" are NOT here, on purpose
+#: (review of PR #509). The retired ``importance`` scale read 1 as NOT
+#: important, and a flag would read "1" as true. One string must not mean two
+#: things, so a digit is refused and the model is told to say true or false.
+_TRUE = frozenset({"true", "yes", "y", "on"})
+_FALSE = frozenset({"false", "no", "n", "off"})
 
 
 def flag(value: Any) -> bool | str | None:
-    """"true"/"false" → a bool. Empty → None (not passed). Anything else → a
-    refusal string, because a flag the tool cannot read is not a guess."""
+    """"true"/"false" → a bool. Empty or None → None (not passed). Anything
+    else → a refusal string, because a flag the tool cannot read is not a
+    guess. A number, "1" and "0" included, is refused (see ``_TRUE``)."""
     if isinstance(value, bool):
         return value
-    raw = str(value or "").strip().lower()
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return f"{value!r} is a number. Pass true or false."
+    raw = str(value).strip().lower()
     if not raw:
         return None
     if raw in _TRUE:
         return True
     if raw in _FALSE:
         return False
+    if raw.lstrip("-").replace(".", "", 1).isdigit():
+        return f"{value!r} is a number. Pass true or false."
     return f"{value!r} is not true or false."
-
-
-def legacy_number(value: Any) -> int | None:
-    """The deprecated ``importance`` argument: -1 (the default), empty or
-    None means "not passed". 0 is a real value."""
-    if value is None or value == "" or isinstance(value, bool):
-        return None
-    try:
-        parsed = int(str(value).strip())
-    except (TypeError, ValueError):
-        return -2  # passed, and not a number: refused by the caller
-    return None if parsed == -1 else parsed
 
 
 def priority_fields(
@@ -140,48 +140,39 @@ def priority_fields(
     priority: str = "",
     important: Any = "",
     leveraged: Any = "",
-    importance: Any = -1,
+    importance: Any = None,
     current: Mapping[str, Any] | None = None,
-) -> tuple[dict[str, Any], list[str]] | str:
-    """The ``pm_tasks`` fields the priority arguments write, and the notes the
-    answer must carry, or a refusal.
+) -> dict[str, Any] | str:
+    """The ``pm_tasks`` fields the priority arguments write, or a refusal.
 
     ``current`` is the task's row for an update. Only what CHANGES is
     written, and an Important task keeps a stored 3. With no ``current`` (a
     new task, or a bulk edit over a mixed selection) each passed flag is
-    written as it stands.
+    written as it stands. A sent ``importance`` (H-196: removed) is refused
+    with ``IMPORTANCE_REMOVED``, before anything else is read.
+
+    ⚠️ **So a bulk ``important=true`` writes 2 over a stored 3** (review of
+    PR #509). Both read as Important, so the level does not change. The app's
+    bulk bar does the same (``BULK_FLAG_OPTIONS``), and the chat keeps that
+    rule rather than read every task in the selection first.
+    ``test_chat_priority_levels.py`` pins it.
     """
-    notes: list[str] = []
+    if importance is not None:
+        return IMPORTANCE_REMOVED
     imp = flag(important)
     lev = flag(leveraged)
     for name, parsed in (("important", imp), ("leveraged", lev)):
         if isinstance(parsed, str):
             return f"{name}: {parsed}"
-    number = legacy_number(importance)
     level = str(priority or "").strip()
 
     if level:
-        if imp is not None or lev is not None or number is not None:
+        if imp is not None or lev is not None:
             return "Pass priority, or important and leveraged. Not both."
         cell = cell_for_name(level)
         if cell is None:
             return f"priority is one of: {level_names()}. Not {level!r}."
         imp, lev = CELL_FLAGS[cell]
-    elif number is not None:
-        if imp is not None:
-            return "importance is deprecated. Pass important, not both."
-        read = important_from_legacy(number)
-        if read is None:
-            return (
-                "importance is deprecated, and takes 0 to 4. Pass priority "
-                f"({level_names()}), or important true or false."
-            )
-        imp = read
-        notes.append(
-            f"importance {number} is deprecated. It was read as "
-            + ("Important" if read else "not Important")
-            + ". Next time pass priority, or important true or false."
-        )
 
     fields: dict[str, Any] = {}
     if imp is not None:
@@ -193,7 +184,7 @@ def priority_fields(
                 fields["importance"] = write
     if lev is not None and (current is None or bool(current.get("leveraged")) != lev):
         fields["leveraged"] = bool(lev)
-    return fields, notes
+    return fields
 
 
 def level_label(task: Mapping[str, Any]) -> str:
@@ -217,6 +208,34 @@ def level_detail(task: Mapping[str, Any]) -> str:
     important = "not judged" if judged is None else ("yes" if judged else "no")
     leveraged = "yes" if task.get("leveraged") else "no"
     return f"{level_label(task)} (important: {important}, leveraged: {leveraged})"
+
+
+def level_note(priority: str, task: Mapping[str, Any]) -> list[str]:
+    """The answer's note when the level asked for is not the level the task
+    reads, or an empty list (review of PR #509).
+
+    ``priority`` sets Important and Leveraged only. The due date sets Urgent,
+    so ``priority=Critical`` on a task with no due date reads High-Leverage.
+    Without this note the model reports the level it asked for.
+    """
+    asked = cell_for_name(str(priority or ""))
+    if asked is None:
+        return []
+    reads = task_cell(task)
+    if reads == asked:
+        return []
+    if asked in _URGENT_CELLS:
+        why = (
+            "has no due date"
+            if not task.get("due_at")
+            else f"is not due within {DEFAULT_URGENT_WINDOW_HOURS} hours"
+        )
+    else:
+        why = f"is due within {DEFAULT_URGENT_WINDOW_HOURS} hours, or overdue"
+    return [
+        f"Note: you asked for {cell_label(asked)}, and the task reads "
+        f"{cell_label(reads)}. The due date sets Urgent, and this task {why}."
+    ]
 
 
 def card_view(fields: Mapping[str, Any]) -> dict[str, Any]:

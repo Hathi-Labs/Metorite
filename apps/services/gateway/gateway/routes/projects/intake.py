@@ -88,6 +88,9 @@ class IntakeIn(BaseModel):
     title: str | None = None
     description: str | None = None
     importance: int | None = None
+    #: D78, H-196. The matrix's shared Leveraged input, as on `TaskIn`. Omitted
+    #: or null, the column default (false) holds, which is what create does.
+    leveraged: bool | None = None
     due_at: str | None = None
     #: Where this came from — free text ('email', 'slack', 'api', …) stored on
     #: the WRAPPER. When it happens to be a legal `pm_tasks.source` value it is
@@ -291,6 +294,12 @@ async def capture_intake(
             "title": title,
             "description": payload.description,
             "importance": payload.importance,
+            # The create rule (`clean_payload`): a stated value is written,
+            # and an unstated one leaves the column default.
+            **(
+                {"leveraged": payload.leveraged}
+                if payload.leveraged is not None else {}
+            ),
             "due_at": payload.due_at,
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
