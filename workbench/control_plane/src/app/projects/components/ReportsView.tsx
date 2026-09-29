@@ -44,6 +44,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
@@ -75,7 +76,7 @@ import {
   kindTitle,
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
-import { PANEL_HINTS } from "../lib/panelHints";
+import { PANEL_HINT_DETAILS, PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
   helpLine,
@@ -131,6 +132,9 @@ import {
   overviewState,
   overviewTableShown,
   parseReportLink,
+  previewNeeded,
+  REPORT_SECTIONS,
+  reportsPane,
   parseSubjectValue,
   patchPayload,
   periodFree,
@@ -165,6 +169,8 @@ import {
   withSubject,
   yourReports,
 } from "../lib/reportBuilder";
+import { allClear, clearLine, sectionIsClear } from "../lib/sectionEmpty";
+import { sectionIcon } from "../lib/sectionIcons";
 import {
   CapacityPanel,
   ConflictsPanel,
@@ -172,6 +178,7 @@ import {
   HygienePanel,
   LoadPanel,
   OutlookPanel,
+  PanelChromeContext,
   PulsePanel,
   RebalancePanel,
   Stat,
@@ -190,16 +197,14 @@ function duration(hours: number | null | undefined): string {
 }
 
 /**
- * A section's table, folded under its panel (WS-27bn R2b).
- *
- * The picture comes first and the figures second. `keepMounted` keeps the
- * folded table in the page, so find-in-page reaches it and a render test
- * can see that the panel and the table agree.
+ * A section's table (WS-27bn R2b). Since R5f round 1 (§6.6 D item 5) it
+ * opens from the table button in the header of the section's card, and it
+ * sits inside that card.
  *
  * ⚠️ `title` is the section's name in the report's own words, which the
  * chat's report card borrows (`skill_projects/views.py`
- * `REPORT_CARD_SECTIONS`, fenced by `test_projects_agent.py`). The panel
- * above carries the heading, so here the words name the disclosure only.
+ * `REPORT_CARD_SECTIONS`, fenced by `test_projects_agent.py`). It labels the
+ * table for a screen reader.
  */
 function Table({
   title,
@@ -211,14 +216,106 @@ function Table({
   children: React.ReactNode;
 }) {
   return (
-    <CollapsibleSection
-      label={`${title}, as a table`}
-      count={count}
-      defaultOpen={false}
-      keepMounted
-    >
+    <div role="group" aria-label={`${title}, as a table`}>
+      {typeof count === "number" && (
+        <p className="mb-1 text-xs text-muted-foreground">
+          {count} {count === 1 ? "row" : "rows"}
+        </p>
+      )}
       {children}
-    </CollapsibleSection>
+    </div>
+  );
+}
+
+/**
+ * A section in a report: its panel, with the section's icon and its table
+ * in the card header (§6.6 D). `PanelChromeContext` carries both into the
+ * panel, so each panel stays the only child of its `LayoutBoundary`.
+ */
+function SectionFrame({
+  sectionKey,
+  table,
+  children,
+}: {
+  sectionKey: string;
+  table?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <PanelChromeContext.Provider value={{ icon: sectionIcon(sectionKey), table }}>
+      {children}
+    </PanelChromeContext.Provider>
+  );
+}
+
+/** One clear section: a check mark, its title and one friendly line (§6.6 D item 3). */
+export function ClearRow({ sectionKey, title }: { sectionKey: string; title: string }) {
+  const done = statusAccent({ category: "done" });
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2">
+      <Icon name="CircleCheckBig" className={`h-4 w-4 shrink-0 ${done.text}`} />
+      <span className="min-w-0 text-xs">
+        <span className="font-medium text-foreground">{title}</span>
+        <span className="text-muted-foreground"> · {clearLine(sectionKey)}</span>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The one card of a report whose sections are all clear (§6.6 D item 3). The
+ * owner's case: Team pulse on a quiet day looked like three error boxes.
+ */
+export function AllClear({ keys, scope }: { keys: string[]; scope: string }) {
+  const done = statusAccent({ category: "done" });
+  const where = scope.startsWith("In ") ? ` ${scope.charAt(0).toLowerCase()}${scope.slice(1)}` : scope ? ` in the ${scope.toLowerCase()}` : "";
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <Icon name="CircleCheckBig" className={`h-5 w-5 shrink-0 ${done.text}`} />
+        All clear
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {`Nothing needs attention${where} right now.`}
+      </p>
+      <ul className="mt-3 space-y-1.5">
+        {keys.map((key) => (
+          <li key={key} className="flex items-center gap-2 text-xs">
+            <Icon name="Check" className={`h-3.5 w-3.5 shrink-0 ${done.text}`} />
+            <span className="font-medium text-foreground">
+              {REPORT_SECTIONS.find((r) => r.key === key)?.label ?? key}
+            </span>
+            <span className="text-muted-foreground">{clearLine(key)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The meta line under a report's title, with a small icon for each part
+ * (§6.6 D item 2). `reportHeaderLine` stays the one source of the words, and
+ * this only splits them on " · ".
+ */
+export function HeaderMeta({ line }: { line: string }) {
+  const parts = line.split(" · ").filter(Boolean);
+  return (
+    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      {parts.map((part, i) => {
+        const icon = part.startsWith("About ")
+          ? "User"
+          : i === parts.length - 1
+            ? "CalendarDays"
+            : "FolderKanban";
+        return (
+          <span key={`${i}:${part}`} className="inline-flex items-center gap-1">
+            <Icon name={icon} className="h-3.5 w-3.5 shrink-0" />
+            {part}
+          </span>
+        );
+      })}
+    </p>
   );
 }
 
@@ -275,6 +372,7 @@ export function RenderedBody({
   headerLine,
   hiddenHint,
   lead,
+  showTitle = true,
 }: {
   body: RenderedReportBody | PreviewReportBody;
   /**
@@ -290,25 +388,31 @@ export function RenderedBody({
    * strip and the space table (`SpaceSummary`). A saved report has none.
    */
   lead?: React.ReactNode;
+  /**
+   * §6.6 D. The builder names the report in its header row, so its preview
+   * shows the meta line only. A saved report shows its name.
+   */
+  showTitle?: boolean;
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
   const tiles = reportTiles(sections);
   const tone = { done: done.text, late: late.text };
+  // §6.6 D item 3. Every chosen section is clear: one calm card, and no row
+  // for each section.
+  const clear = allClear(sections);
+  const line =
+    headerLine ??
+    `${body.report.scope === "portfolio" ? "Whole organization" : "This project"} · ${periodLabel(body.period_start, body.period_end)}`;
 
   return (
-    // ⚠️ A readable MEASURE, not the panel's full width. Photographed
-    // 2026-09-17: at 1440 the rows ran the whole pane, so "Mobile App" sat
-    // about 1200px from its own number and the eye could not join them. A
-    // report body is a document, and a document has a column width.
-    <div className="max-w-2xl space-y-3">
-      <header>
-        <h3 className="text-sm font-semibold">{body.report.name}</h3>
-        <p className="text-xs text-muted-foreground">
-          {headerLine ??
-            `${body.report.scope === "portfolio" ? "Whole organization" : "This project"} · ${periodLabel(body.period_start, body.period_end)}`}
-        </p>
+    <div className="space-y-3">
+      <header className="space-y-1">
+        {showTitle && (
+          <h3 className="text-base font-semibold text-foreground">{body.report.name}</h3>
+        )}
+        <HeaderMeta line={line} />
       </header>
 
       {tiles.length > 0 && (
@@ -326,389 +430,471 @@ export function RenderedBody({
         </div>
       )}
 
+      {/* §6.6 E item 2. The strip and the space table take the full width. */}
       {lead}
 
-      {sections.finished && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="finished work">
-            <FinishedPanel data={finishedPanelData(sections.finished, body)} />
-          </LayoutBoundary>
-          <Table title="What we finished" count={sections.finished.projects.length}>
-            <p
-              className={`mb-1 text-xs font-medium tabular-nums ${done.text}`}
-              title={`${sections.finished.total_completed} tasks reached a done status in this period`}
-            >
-              {sections.finished.total_completed} finished
-            </p>
-            <ul className="space-y-0.5">
-              {sections.finished.projects.slice(0, 8).map((p) => (
-                <Row
-                  key={p.project_id}
-                  name={p.name}
-                  value={p.completed}
-                  aside={p.cancelled ? `−${p.cancelled}` : undefined}
-                  title={
-                    `${p.completed} finished in ${p.name}` +
-                    (p.cancelled ? `, ${p.cancelled} cancelled` : "")
-                  }
-                />
-              ))}
-            </ul>
-            {sections.finished.total_cancelled > 0 && (
-              <p
-                className="mt-1 text-xs text-muted-foreground"
-                // ⚠️ Beside the finished count, never added to it. A team that
-                // cancelled nine did not finish nine.
-                title="Cancellations are never counted as finished work."
-              >
-                {sections.finished.total_cancelled} cancelled
-              </p>
-            )}
-          </Table>
-        </div>
-      )}
+      {clear.clear ? (
+        <AllClear keys={clear.keys} scope={line.split(" · ").find((p) => !p.startsWith("About ")) ?? ""} />
+      ) : (
+      // ⚠️ A readable MEASURE, not the panel's full width. Photographed
+      // 2026-09-17: at 1440 the rows ran the whole pane, so "Mobile App" sat
+      // about 1200px from its own number and the eye could not join them. A
+      // report body is a document, and a document has a column width.
+      <div className="max-w-3xl space-y-3">
 
-      {sections.throughput && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="throughput">
-            <ThroughputPanel
-              data={throughputPanelData(sections.throughput, body)}
-            />
-          </LayoutBoundary>
-          <Table title="How long it took" count={sections.throughput.series.length}>
-            <p
-              className="text-xs"
-              title={
-                sections.throughput.median_hours === null
-                  ? "No task in this period recorded both a start and a finish."
-                  : `Half of the ${sections.throughput.measured} measured tasks took less than this, from first In progress until done.`
-              }
-            >
-              Median{" "}
-              <strong className="tabular-nums">
-                {duration(sections.throughput.median_hours)}
-              </strong>{" "}
-              <span className="text-muted-foreground">
-                over {sections.throughput.measured} measured
-              </span>
-            </p>
-            <ul className="mt-1 space-y-0.5">
-              {sections.throughput.series.map((w) => (
-                <Row
-                  key={w.week_start}
-                  name={`Week of ${w.week_start}`}
-                  value={w.completed}
-                  title={`${w.completed} finished in the week of ${w.week_start}`}
-                />
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+      {sections.finished &&
+        (sectionIsClear("finished", sections.finished) ? (
+          <ClearRow sectionKey="finished" title="What we finished" />
+        ) : (
+          <SectionFrame
+            sectionKey="finished"
+            table={
+              <Table title="What we finished" count={sections.finished.projects.length}>
+                <p
+                  className={`mb-1 text-xs font-medium tabular-nums ${done.text}`}
+                  title={`${sections.finished.total_completed} tasks reached a done status in this period`}
+                >
+                  {sections.finished.total_completed} finished
+                </p>
+                <ul className="space-y-0.5">
+                  {sections.finished.projects.slice(0, 8).map((p) => (
+                    <Row
+                      key={p.project_id}
+                      name={p.name}
+                      value={p.completed}
+                      aside={p.cancelled ? `−${p.cancelled}` : undefined}
+                      title={
+                        `${p.completed} finished in ${p.name}` +
+                        (p.cancelled ? `, ${p.cancelled} cancelled` : "")
+                      }
+                    />
+                  ))}
+                </ul>
+                {sections.finished.total_cancelled > 0 && (
+                  <p
+                    className="mt-1 text-xs text-muted-foreground"
+                    // ⚠️ Beside the finished count, never added to it. A team that
+                    // cancelled nine did not finish nine.
+                    title="Cancellations are never counted as finished work."
+                  >
+                    {sections.finished.total_cancelled} cancelled
+                  </p>
+                )}
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="finished work">
+              <FinishedPanel data={finishedPanelData(sections.finished, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
+
+      {sections.throughput &&
+        (sectionIsClear("throughput", sections.throughput) ? (
+          <ClearRow sectionKey="throughput" title="How long it took" />
+        ) : (
+          <SectionFrame
+            sectionKey="throughput"
+            table={
+              <Table title="How long it took" count={sections.throughput.series.length}>
+                <p
+                  className="text-xs"
+                  title={
+                    sections.throughput.median_hours === null
+                      ? "No task in this period recorded both a start and a finish."
+                      : `Half of the ${sections.throughput.measured} measured tasks took less than this, from first In progress until done.`
+                  }
+                >
+                  Median{" "}
+                  <strong className="tabular-nums">
+                    {duration(sections.throughput.median_hours)}
+                  </strong>{" "}
+                  <span className="text-muted-foreground">
+                    over {sections.throughput.measured} measured
+                  </span>
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {sections.throughput.series.map((w) => (
+                    <Row
+                      key={w.week_start}
+                      name={`Week of ${w.week_start}`}
+                      value={w.completed}
+                      title={`${w.completed} finished in the week of ${w.week_start}`}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="throughput">
+              <ThroughputPanel
+                data={throughputPanelData(sections.throughput, body)}
+              />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bn R3a. Opt-in. The outlook route's own body, for this scope.
           The table says each figure the panel draws, in words. */}
-      {sections.outlook && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="forecast">
-            <OutlookPanel data={outlookPanelData(sections.outlook)} />
-          </LayoutBoundary>
-          <Table title="Forecast">
-            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
-              <dt className="text-muted-foreground">Forecast</dt>
-              <dd className="font-medium">
-                {headlineVerdict(sections.outlook).headline}
-              </dd>
-              <dt className="text-muted-foreground">Planned finish</dt>
-              <dd className="tabular-nums">
-                {shortDate(sections.outlook.plan?.planned_finish)}
-              </dd>
-              <dt className="text-muted-foreground">Forecast finish</dt>
-              <dd className="tabular-nums">
-                {shortDate(sections.outlook.velocity?.finish_date)}
-              </dd>
-              <dt className="text-muted-foreground">Open tasks</dt>
-              <dd
-                className="tabular-nums"
-                title="Open tasks in this scope that the forecast must clear."
-              >
-                {sections.outlook.velocity?.remaining_tasks ?? "—"}
-              </dd>
-            </dl>
-          </Table>
-        </div>
-      )}
+      {sections.outlook &&
+        (sectionIsClear("outlook", sections.outlook) ? (
+          <ClearRow sectionKey="outlook" title="Forecast" />
+        ) : (
+          <SectionFrame
+            sectionKey="outlook"
+            table={
+              <Table title="Forecast">
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+                  <dt className="text-muted-foreground">Forecast</dt>
+                  <dd className="font-medium">
+                    {headlineVerdict(sections.outlook).headline}
+                  </dd>
+                  <dt className="text-muted-foreground">Planned finish</dt>
+                  <dd className="tabular-nums">
+                    {shortDate(sections.outlook.plan?.planned_finish)}
+                  </dd>
+                  <dt className="text-muted-foreground">Forecast finish</dt>
+                  <dd className="tabular-nums">
+                    {shortDate(sections.outlook.velocity?.finish_date)}
+                  </dd>
+                  <dt className="text-muted-foreground">Open tasks</dt>
+                  <dd
+                    className="tabular-nums"
+                    title="Open tasks in this scope that the forecast must clear."
+                  >
+                    {sections.outlook.velocity?.remaining_tasks ?? "—"}
+                  </dd>
+                </dl>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="forecast">
+              <OutlookPanel data={outlookPanelData(sections.outlook)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
-      {sections.stuck && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="stuck work">
-            <StuckPanel data={stuckPanelData(sections.stuck, body)} />
-          </LayoutBoundary>
-          <Table title="Overdue" count={sections.stuck.overdue.length}>
-            <p
-              className={`mb-1 text-xs font-medium tabular-nums ${late.text}`}
-              title={`${sections.stuck.overdue_total} open tasks are past their due date`}
-            >
-              {sections.stuck.overdue_total} overdue
-            </p>
-            <ul className="space-y-0.5">
-              {sections.stuck.overdue.slice(0, 8).map((o) => (
-                <Row
-                  key={o.project_id}
-                  name={o.name}
-                  value={o.overdue}
-                  tone={late.text}
-                  title={`${o.overdue} open tasks in ${o.name} are past their due date`}
-                />
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+      {sections.stuck &&
+        (sectionIsClear("stuck", sections.stuck) ? (
+          <ClearRow sectionKey="stuck" title="Overdue" />
+        ) : (
+          <SectionFrame
+            sectionKey="stuck"
+            table={
+              <Table title="Overdue" count={sections.stuck.overdue.length}>
+                <p
+                  className={`mb-1 text-xs font-medium tabular-nums ${late.text}`}
+                  title={`${sections.stuck.overdue_total} open tasks are past their due date`}
+                >
+                  {sections.stuck.overdue_total} overdue
+                </p>
+                <ul className="space-y-0.5">
+                  {sections.stuck.overdue.slice(0, 8).map((o) => (
+                    <Row
+                      key={o.project_id}
+                      name={o.name}
+                      value={o.overdue}
+                      tone={late.text}
+                      title={`${o.overdue} open tasks in ${o.name} are past their due date`}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="stuck work">
+              <StuckPanel data={stuckPanelData(sections.stuck, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
-      {sections.load && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="load">
-            <LoadPanel data={loadPanelData(sections.load, body)} />
-          </LayoutBoundary>
-          <Table title="Open work" count={sections.load.people.length}>
-            <p
-              className="mb-1 text-xs text-muted-foreground"
-              // ⚠️ The rows sum past this. A task with two assignees sits on
-              // both plates, so the total is counted over tasks.
-              title="Counted over tasks. A task assigned to two people appears in both rows, so the rows add up to more than this."
-            >
-              {sections.load.total_tasks} open
-            </p>
-            <ul className="space-y-0.5">
-              {sections.load.people.slice(0, 8).map((p) => (
-                <Row
-                  key={p.assignee ?? "__unassigned"}
-                  name={p.assignee ?? "Unassigned"}
-                  value={p.open_tasks}
-                  aside={p.overdue ? `${p.overdue} late` : undefined}
-                  title={
-                    `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
-                    (p.overdue ? `, ${p.overdue} overdue` : "")
-                  }
-                />
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+      {sections.load &&
+        (sectionIsClear("load", sections.load) ? (
+          <ClearRow sectionKey="load" title="Open work" />
+        ) : (
+          <SectionFrame
+            sectionKey="load"
+            table={
+              <Table title="Open work" count={sections.load.people.length}>
+                <p
+                  className="mb-1 text-xs text-muted-foreground"
+                  // ⚠️ The rows sum past this. A task with two assignees sits on
+                  // both plates, so the total is counted over tasks.
+                  title="Counted over tasks. A task assigned to two people appears in both rows, so the rows add up to more than this."
+                >
+                  {sections.load.total_tasks} open
+                </p>
+                <ul className="space-y-0.5">
+                  {sections.load.people.slice(0, 8).map((p) => (
+                    <Row
+                      key={p.assignee ?? "__unassigned"}
+                      name={p.assignee ?? "Unassigned"}
+                      value={p.open_tasks}
+                      aside={p.overdue ? `${p.overdue} late` : undefined}
+                      title={
+                        `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
+                        (p.overdue ? `, ${p.overdue} overdue` : "")
+                      }
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="load">
+              <LoadPanel data={loadPanelData(sections.load, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bm S7a. Opt-in: only a report that asked for `capacity` has it.
           The rows and the hours are the capacity route's, verbatim. */}
-      {sections.capacity && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="capacity">
-            <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
-          </LayoutBoundary>
-          <Table title="Who has the hours" count={sections.capacity.people.length}>
-            <p
-              className="mb-1 text-xs text-muted-foreground"
-              title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
-            >
-              {sections.capacity.total_tasks} open · next{" "}
-              {sections.capacity.horizon_days} days
-            </p>
-            <ul className="space-y-0.5">
-              {capacityReportRows(sections.capacity.people).map((p) => (
-                <Row
-                  key={p.key}
-                  name={p.name}
-                  value={p.open}
-                  aside={p.aside}
-                  title={p.title}
-                />
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+      {sections.capacity &&
+        (sectionIsClear("capacity", sections.capacity) ? (
+          <ClearRow sectionKey="capacity" title="Who has the hours" />
+        ) : (
+          <SectionFrame
+            sectionKey="capacity"
+            table={
+              <Table title="Who has the hours" count={sections.capacity.people.length}>
+                <p
+                  className="mb-1 text-xs text-muted-foreground"
+                  title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
+                >
+                  {sections.capacity.total_tasks} open · next{" "}
+                  {sections.capacity.horizon_days} days
+                </p>
+                <ul className="space-y-0.5">
+                  {capacityReportRows(sections.capacity.people).map((p) => (
+                    <Row
+                      key={p.key}
+                      name={p.name}
+                      value={p.open}
+                      aside={p.aside}
+                      title={p.title}
+                    />
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="capacity">
+              <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bn R3d. Opt-in. `pulse_body`, read today and not over the
           period. The server removed the cards this reader may not see, and
           the table names each card and each focus task it sent. */}
-      {sections.pulse && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="team pulse">
-            <PulsePanel data={pulsePanelData(sections.pulse)} hiddenHint={hiddenHint} />
-          </LayoutBoundary>
-          <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
-            <p
-              className="mb-1 text-xs text-muted-foreground"
-              title="Every person who holds open work in this scope, before the report hides any card."
-            >
-              {sections.pulse.people_total} people
-            </p>
-            <div className="space-y-1.5">
-              {pulseRows(sections.pulse).map((r) => (
-                <div key={r.assignee} className="text-xs">
-                  <ul>
-                    <Row
-                      name={pulseName(r)}
-                      value={r.open_tasks}
-                      aside={statusMark(r)?.label}
-                      title={
-                        `${r.open_tasks} open, ${r.overdue} overdue,` +
-                        ` ${r.blocked_count} blocked, ${r.stale_count} stale,` +
-                        ` ${r.focus_total} focus tasks` +
-                        (typeof r.waiting_count === "number"
-                          ? `, ${r.waiting_count} waiting past the date`
-                          : "")
-                      }
-                    />
-                  </ul>
-                  <ul className="mt-0.5 space-y-0.5 pl-2">
-                    {pulseFocus(r).map((f) => (
-                      <li
-                        key={f.id}
-                        className="truncate pr-px text-muted-foreground"
-                        title={f.title}
-                      >
-                        <span className="text-foreground">{f.title}</span> ·{" "}
-                        {focusWhy(f)}
-                        {f.project_name ? ` · ${f.project_name}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                  {helpLine(r) && (
-                    <p className="pl-2 text-muted-foreground">{helpLine(r)}</p>
-                  )}
+      {sections.pulse &&
+        (sectionIsClear("pulse", sections.pulse) ? (
+          <ClearRow sectionKey="pulse" title="Team pulse" />
+        ) : (
+          <SectionFrame
+            sectionKey="pulse"
+            table={
+              <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
+                <p
+                  className="mb-1 text-xs text-muted-foreground"
+                  title="Every person who holds open work in this scope, before the report hides any card."
+                >
+                  {sections.pulse.people_total} people
+                </p>
+                <div className="space-y-1.5">
+                  {pulseRows(sections.pulse).map((r) => (
+                    <div key={r.assignee} className="text-xs">
+                      <ul>
+                        <Row
+                          name={pulseName(r)}
+                          value={r.open_tasks}
+                          aside={statusMark(r)?.label}
+                          title={
+                            `${r.open_tasks} open, ${r.overdue} overdue,` +
+                            ` ${r.blocked_count} blocked, ${r.stale_count} stale,` +
+                            ` ${r.focus_total} focus tasks` +
+                            (typeof r.waiting_count === "number"
+                              ? `, ${r.waiting_count} waiting past the date`
+                              : "")
+                          }
+                        />
+                      </ul>
+                      <ul className="mt-0.5 space-y-0.5 pl-2">
+                        {pulseFocus(r).map((f) => (
+                          <li
+                            key={f.id}
+                            className="truncate pr-px text-muted-foreground"
+                            title={f.title}
+                          >
+                            <span className="text-foreground">{f.title}</span> ·{" "}
+                            {focusWhy(f)}
+                            {f.project_name ? ` · ${f.project_name}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                      {helpLine(r) && (
+                        <p className="pl-2 text-muted-foreground">{helpLine(r)}</p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </Table>
-        </div>
-      )}
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="team pulse">
+              <PulsePanel data={pulsePanelData(sections.pulse)} hiddenHint={hiddenHint} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bn R3c. Opt-in. `hygiene_body`, read now and not over the
           period. The table names each task the server sent, kind by kind. */}
-      {sections.hygiene && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="data hygiene">
-            <HygienePanel data={hygienePanelData(sections.hygiene)} />
-          </LayoutBoundary>
-          <Table title="Data hygiene" count={sections.hygiene.rows.length}>
-            <p
-              className="mb-1 text-xs text-muted-foreground"
-              title={OVERLAP_NOTE}
-            >
-              {sections.hygiene.open_total} open
-            </p>
-            <ul className="space-y-1.5">
-              {HYGIENE_KINDS.map(({ kind, label, title }) => (
-                <li key={kind} className="text-xs">
-                  <span
-                    className="font-medium text-foreground"
-                    title={kindTitle(title, sections.hygiene)}
-                  >
-                    {label}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {" "}
-                    · {hygieneCount(sections.hygiene, kind) ?? "—"} of{" "}
-                    {sections.hygiene?.open_total}
-                  </span>
-                  <ul className="mt-0.5 space-y-0.5">
-                    {hygieneRows(sections.hygiene, kind).map((r) => (
-                      <li
-                        key={r.id}
-                        className="truncate pr-px text-muted-foreground"
-                        title={r.title}
+      {sections.hygiene &&
+        (sectionIsClear("hygiene", sections.hygiene) ? (
+          <ClearRow sectionKey="hygiene" title="Data hygiene" />
+        ) : (
+          <SectionFrame
+            sectionKey="hygiene"
+            table={
+              <Table title="Data hygiene" count={sections.hygiene.rows.length}>
+                <p
+                  className="mb-1 text-xs text-muted-foreground"
+                  title={OVERLAP_NOTE}
+                >
+                  {sections.hygiene.open_total} open
+                </p>
+                <ul className="space-y-1.5">
+                  {HYGIENE_KINDS.map(({ kind, label, title }) => (
+                    <li key={kind} className="text-xs">
+                      <span
+                        className="font-medium text-foreground"
+                        title={kindTitle(title, sections.hygiene)}
                       >
-                        <span className="text-foreground">{r.title}</span> ·{" "}
-                        {r.project_name}
-                        {kind === "stale_in_progress" && r.updated_at
-                          ? ` · last change ${shortDate(r.updated_at)}`
-                          : ""}
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+                        {label}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {hygieneCount(sections.hygiene, kind) ?? "—"} of{" "}
+                        {sections.hygiene?.open_total}
+                      </span>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {hygieneRows(sections.hygiene, kind).map((r) => (
+                          <li
+                            key={r.id}
+                            className="truncate pr-px text-muted-foreground"
+                            title={r.title}
+                          >
+                            <span className="text-foreground">{r.title}</span> ·{" "}
+                            {r.project_name}
+                            {kind === "stale_in_progress" && r.updated_at
+                              ? ` · last change ${shortDate(r.updated_at)}`
+                              : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="data hygiene">
+              <HygienePanel data={hygienePanelData(sections.hygiene)} />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
           it. The rows and the sentences are the conflicts route's, verbatim. */}
-      {sections.conflicts && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="conflicts">
-            <ConflictsPanel
-              data={conflictsPanelData(sections.conflicts, body)}
-            />
-          </LayoutBoundary>
-          <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
-            <p
-              className="mb-1 text-xs text-muted-foreground"
-              title={`Counted by the server over every row. Dated kinds read the next ${sections.conflicts.horizon_days} days.`}
-            >
-              {sections.conflicts.total} conflicts
-            </p>
-            <ul className="space-y-1">
-              {conflictsReportRows(sections.conflicts.rows).map((c) => (
-                <li key={c.key} className="text-xs" title={c.sentence}>
-                  {/* The dot carries the severity, as on the Analytics panel. */}
-                  <span
-                    className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
-                    aria-hidden
-                  />
-                  <span className="font-medium text-foreground">{c.label}</span>
-                  <span className="text-muted-foreground"> · {c.sentence}</span>
-                </li>
-              ))}
-            </ul>
-          </Table>
-        </div>
-      )}
+      {sections.conflicts &&
+        (sectionIsClear("conflicts", sections.conflicts) ? (
+          <ClearRow sectionKey="conflicts" title="Where the plan conflicts" />
+        ) : (
+          <SectionFrame
+            sectionKey="conflicts"
+            table={
+              <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
+                <p
+                  className="mb-1 text-xs text-muted-foreground"
+                  title={`Counted by the server over every row. The plan is read ${sections.conflicts.horizon_days} days ahead.`}
+                >
+                  {sections.conflicts.total} conflicts
+                </p>
+                <ul className="space-y-1">
+                  {conflictsReportRows(sections.conflicts.rows).map((c) => (
+                    <li key={c.key} className="text-xs" title={c.sentence}>
+                      {/* The dot carries the severity, as on the Analytics panel. */}
+                      <span
+                        className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
+                        aria-hidden
+                      />
+                      <span className="font-medium text-foreground">{c.label}</span>
+                      <span className="text-muted-foreground"> · {c.sentence}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="conflicts">
+              <ConflictsPanel
+                data={conflictsPanelData(sections.conflicts, body)}
+              />
+            </LayoutBoundary>
+          </SectionFrame>
+        ))}
 
       {/* WS-27bn R3b. Opt-in, and read only. The rebalance route's own body.
           Without the HR grant it has no lists, and the table says why. */}
-      {sections.rebalance && (
-        <div className="space-y-1">
-          <LayoutBoundary layout="who could help">
-            <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
-          </LayoutBoundary>
+      {sections.rebalance &&
+        (sectionIsClear("rebalance", sections.rebalance) ? (
+          <ClearRow sectionKey="rebalance" title="Who could help" />
+        ) : (
+          <SectionFrame
+            sectionKey="rebalance"
+            table={
+              <Table title="Who could help" count={
+                rebalanceTasks(sections.rebalance).length +
+                rebalancePickups(sections.rebalance).length
+              }>
+                {sections.rebalance.hr_visible === false ? (
+                  <p className="text-xs text-muted-foreground">
+                    {REBALANCE_HR_HINT}
+                  </p>
+                ) : (
+                  <ul className="space-y-1">
+                    {rebalanceTasks(sections.rebalance).map((t) => (
+                      <li key={t.task_id} className="text-xs" title={t.title}>
+                        <span className="font-medium text-foreground">{t.title}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          · held by {t.holder?.name || t.holder?.email} ·{" "}
+                          {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
+                          helpers {helpersLine(t) ?? "none"}
+                        </span>
+                      </li>
+                    ))}
+                    {rebalancePickups(sections.rebalance).map((p) => (
+                      <li key={p.email} className="text-xs" title={p.name}>
+                        <span className="font-medium text-foreground">{p.name}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          could take: {pickupLine(p)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Table>
+            }
+          >
+            <LayoutBoundary layout="who could help">
+              <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
+            </LayoutBoundary>
           {/* H-186 item 2. The table lists the idle people too, so they count. */}
-          <Table title="Who could help" count={
-            rebalanceTasks(sections.rebalance).length +
-            rebalancePickups(sections.rebalance).length
-          }>
-            {sections.rebalance.hr_visible === false ? (
-              <p className="text-xs text-muted-foreground">
-                {REBALANCE_HR_HINT}
-              </p>
-            ) : (
-              <ul className="space-y-1">
-                {rebalanceTasks(sections.rebalance).map((t) => (
-                  <li key={t.task_id} className="text-xs" title={t.title}>
-                    <span className="font-medium text-foreground">{t.title}</span>
-                    <span className="text-muted-foreground">
-                      {" "}
-                      · held by {t.holder?.name || t.holder?.email} ·{" "}
-                      {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
-                      helpers {helpersLine(t) ?? "none"}
-                    </span>
-                  </li>
-                ))}
-                {rebalancePickups(sections.rebalance).map((p) => (
-                  <li key={p.email} className="text-xs" title={p.name}>
-                    <span className="font-medium text-foreground">{p.name}</span>
-                    <span className="text-muted-foreground">
-                      {" "}
-                      could take: {pickupLine(p)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Table>
-        </div>
+          </SectionFrame>
+        ))}
+      </div>
       )}
     </div>
   );
@@ -749,7 +935,7 @@ function ChipSlot({
 }
 
 /** A chip's width: the full column on a phone and in the builder's column. */
-const CHIP_WIDTH = "w-full sm:w-[16rem] xl:w-full";
+const CHIP_WIDTH = "w-full";
 
 /**
  * The subject chip when the subjects read failed (§6.5 item 8).
@@ -762,8 +948,7 @@ export function SubjectChipFailed({ onRetry }: { onRetry: () => void }) {
     <div className="flex w-full items-center gap-1 sm:w-auto xl:w-full">
       <div className="min-w-0 flex-1">
         <SelectButton
-          label="Subject"
-          prefix="About:"
+          label="Who is it about?"
           prompt={SUBJECTS_FAILED}
           widthClass={CHIP_WIDTH}
           value=""
@@ -838,6 +1023,10 @@ export function ReportBuilder({
   onSaveAs,
   onPreview,
   onOpenNode,
+  onNewReport,
+  onStartTemplate,
+  initialPreview = null,
+  onDraft,
 }: {
   initial: BuilderState;
   /** The saved report under edit, or `null` for a new one. */
@@ -852,16 +1041,29 @@ export function ReportBuilder({
   mode?: "report" | "reportsOverview";
   /** R5f rule 10. Overview's "Save as report", with the state on screen. */
   onSaveAs?: (state: BuilderState) => void;
-  /** R5f. Each preview the server answers, for the Home empty line. */
-  onPreview?: (body: PreviewReportBody) => void;
+  /** R5f. Each preview the server answers, with its key, for Home to keep. */
+  onPreview?: (body: PreviewReportBody, key: string) => void;
   /** R5f. Open a row of the space table in the Projects page. */
   onOpenNode?: (id: string) => void;
+  /** R5f round 1 (§6.6 E). "New report" in the Overview header row. */
+  onNewReport?: () => void;
+  /** R5f round 1 (§6.6 E). A card of the template strip above Overview. */
+  onStartTemplate?: (template: ReportTemplate) => void;
+  /**
+   * R5f round 1, rule 6. The last preview Home kept. When its key equals
+   * the key of the choices, the builder asks the server for nothing.
+   */
+  initialPreview?: { key: string; body: PreviewReportBody } | null;
+  /** R5f round 1, rule 6. Each change of the choices, for Home to keep. */
+  onDraft?: (draft: BuilderState) => void;
 }) {
   const inOverview = mode === "reportsOverview";
   const [draft, setState] = useState<BuilderState>(initial);
   const [preview, setPreview] = useState<{ key: string; body: PreviewReportBody } | null>(
-    null
+    initialPreview
   );
+  /** §6.6 E item 5. The Overview controls on a small screen. */
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(
     null
   );
@@ -927,13 +1129,21 @@ export function ReportBuilder({
   );
   // The first preview asks at once, so Overview does not wait for the delay
   // on each visit. A change after that waits, as before.
-  const previewShown = useRef(false);
+  const previewShown = useRef(initialPreview !== null);
+  /** The key of the preview on screen, so a return to Home asks nothing. */
+  const shownKey = useRef<string | null>(initialPreview?.key ?? null);
   // A ref, so a new callback on each render of the parent does not ask the
   // server again. It is written in an effect, never during render.
   const onPreviewRef = useRef(onPreview);
+  const onDraftRef = useRef(onDraft);
   useEffect(() => {
     onPreviewRef.current = onPreview;
+    onDraftRef.current = onDraft;
   });
+  useEffect(() => {
+    onDraftRef.current?.(draft);
+  }, [draft]);
+  const liveTemplates = (templates ?? []).filter((t) => t.available);
 
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
@@ -954,15 +1164,17 @@ export function ReportBuilder({
     // A template about one person with no person yet, or about one project
     // with no project yet: the server would answer 422, so the preview asks
     // for nothing and says what to do.
-    if (blocked) return;
+    // R5f round 1, rule 6. The preview on screen already answers this key.
+    if (!previewNeeded(shownKey.current, previewKey, blocked)) return;
     const timer = setTimeout(() => {
       projectsApi.previewReport({ project_id, name: "", config }).then(
         (body) => {
           if (off) return;
           previewShown.current = true;
+          shownKey.current = previewKey;
           setPreview({ key: previewKey, body });
           setPreviewError(null);
-          onPreviewRef.current?.(body);
+          onPreviewRef.current?.(body, previewKey);
         },
         (e) => {
           if (off) return;
@@ -1025,6 +1237,14 @@ export function ReportBuilder({
   // A new project-only report asks for a project. An edit keeps its scope.
   const onlyProjects = projectOnly(template) && !isEdit;
 
+  // The locked chip of "My day": "You" for its author, the author's name for
+  // an admin who edits it (§6.6 B item 1).
+  const selfEmail = self?.kind === "person" ? self.email : null;
+  const lockedLabel =
+    state.subject?.kind === "person" && state.subject.email !== selfEmail
+      ? (subjectLabel(state.subject, answer) ?? "Its author")
+      : "You";
+
   let subjectChip: React.ReactNode = null;
   if (chipShown) {
     if (chipStatus === "failed") {
@@ -1032,7 +1252,16 @@ export function ReportBuilder({
     } else if (chipStatus === "loading" || !answer) {
       subjectChip = (
         <ChipSlot>
-          <Skeleton className="h-7 w-full sm:w-[16rem] xl:w-full" />
+          <Skeleton className="h-8 w-full" />
+        </ChipSlot>
+      );
+    } else if (needs === "self") {
+      subjectChip = (
+        <ChipSlot note={subjectChipNote(needs, answer, state.subject, isEdit)}>
+          <p className="flex h-8 w-full items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 text-xs text-foreground">
+            <Icon name="Lock" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            {lockedLabel}
+          </p>
         </ChipSlot>
       );
     } else {
@@ -1042,15 +1271,13 @@ export function ReportBuilder({
           note={subjectChipNote(needs, answer, state.subject, isEdit)}
         >
           <SelectButton
-            label="Subject"
-            prefix="About:"
-            prompt={needs === "person" ? "choose a person" : undefined}
+            label="Who is it about?"
+            prompt={needs === "person" ? "Choose a person" : undefined}
             widthClass={CHIP_WIDTH}
             value={subjectValue(state.subject)}
             defaultValue={needs === "person" ? "" : subjectValue(null)}
             options={people}
             filterAbove={8}
-            disabled={needs === "self"}
             onChange={(value) => {
               const subject = parseSubjectValue(value);
               if (subject === undefined) return;
@@ -1073,227 +1300,247 @@ export function ReportBuilder({
       })
     : undefined;
   const hiddenHint = hiddenTeamHint(answer, state.subject, chipShown);
+  const saveDisabled = refusal !== null || prompt !== null;
+
+  const actions = inOverview ? (
+    <>
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="Save"
+        disabled={prompt !== null}
+        onClick={() => onSaveAs?.(state)}
+      >
+        Save as report
+      </Button>
+      {onNewReport && (
+        <Button variant="primary" size="sm" icon="Plus" onClick={onNewReport}>
+          New report
+        </Button>
+      )}
+    </>
+  ) : (
+    <>
+      {/* §6.6 A item 3. Absent, never disabled, without the server's
+          can_delete (R5d). Quiet, and apart from Save. */}
+      {deleteShown(editing) && (
+        <Button
+          variant="text"
+          size="sm"
+          icon="Trash2"
+          onClick={() => setConfirmDelete(true)}
+        >
+          Delete report
+        </Button>
+      )}
+      <Button variant="ghost" size="sm" onClick={onCancel}>
+        Cancel
+      </Button>
+      <Button
+        variant="primary"
+        size="sm"
+        loading={saving}
+        disabled={saveDisabled}
+        title={refusal ?? prompt ?? undefined}
+        onClick={save}
+      >
+        {editing ? "Save changes" : "Save report"}
+      </Button>
+    </>
+  );
+
+  const controls = (
+    <div className="space-y-3 rounded-xl border border-border bg-card p-3">
+      <p className="text-sm font-semibold text-foreground">
+        {inOverview ? "What you see" : "Build your report"}
+      </p>
+      {chipShown && (
+        <Step n={1} label="Who is it about?">
+          {subjectChip}
+        </Step>
+      )}
+      <Step n={chipShown ? 2 : 1} label="Which work?">
+        <ChipSlot error={scopeError}>
+          <SelectButton
+            label="Which work?"
+            prompt={onlyProjects ? "Choose a project" : undefined}
+            widthClass={CHIP_WIDTH}
+            value={state.projectId ?? WHOLE_ORGANIZATION}
+            defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
+            options={scopeChoices(scopes, template, isEdit)}
+            filterAbove={8}
+            disabled={isEdit}
+            onChange={(value) =>
+              setState((s) => ({
+                ...s,
+                projectId: value === WHOLE_ORGANIZATION ? null : value,
+              }))
+            }
+          />
+        </ChipSlot>
+        {isEdit && (
+          <p className="text-xs text-muted-foreground">
+            A saved report keeps its scope. Start a new report for another one.
+          </p>
+        )}
+        {state.projectId !== null && (
+          <label className="flex items-center gap-2 text-xs text-foreground">
+            <Checkbox
+              size="sm"
+              checked={state.includeSubtree}
+              onChange={(e) =>
+                setState((s) => ({ ...s, includeSubtree: e.target.checked }))
+              }
+            />
+            Include the projects under it
+          </label>
+        )}
+      </Step>
+      <Step n={chipShown ? 3 : 2} label="What time?">
+        {noPeriod ? (
+          // §6.6 B item 3. Every chosen section reads the state now, so a
+          // period chip would change nothing.
+          <p
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-muted px-3 text-xs text-muted-foreground"
+            title="Each section you chose reads the state now. The period does not change this report."
+          >
+            <Icon name="Clock" className="h-3.5 w-3.5" />
+            {AS_OF_TODAY}
+          </p>
+        ) : (
+          <SelectButton
+            label="What time?"
+            widthClass={CHIP_WIDTH}
+            value={periodKey(state) ?? SAVED_PERIOD}
+            defaultValue="last_week"
+            options={periodOptions(state)}
+            onChange={(value) => setState((s) => withPeriod(s, value))}
+          />
+        )}
+      </Step>
+
+      <fieldset className="space-y-2 border-t border-border pt-3">
+        <legend className="mb-1 text-xs font-semibold text-foreground">
+          What to include
+        </legend>
+        {/* §6.6 C. Tiles in three groups, each in SECTIONS order. The
+            tooltip is the panel's own sentence. */}
+        {sectionGroups().map((group) => (
+          <div key={group.label} className="space-y-1">
+            <p className="text-xs text-muted-foreground">{group.label}</p>
+            <div className="grid gap-1.5">
+              {group.sections.map((section) => {
+                const blocked = sectionBlockedBySubject(state, section.key);
+                const on = !blocked && state.sections.includes(section.key);
+                const last =
+                  on &&
+                  state.sections.filter((k) => !sectionBlockedBySubject(state, k))
+                    .length === 1;
+                return (
+                  <SectionTile
+                    key={section.key}
+                    sectionKey={section.key}
+                    label={section.label}
+                    on={on}
+                    blocked={blocked}
+                    last={last}
+                    onToggle={() =>
+                      setState((s) => ({
+                        ...s,
+                        sections: toggleSection(s.sections, section.key),
+                      }))
+                    }
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
+      </fieldset>
+      {(otherSaveError || deleteError) && (
+        <p className="text-xs text-destructive" role="alert">
+          {deleteError ?? otherSaveError}
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-3">
-      <h3 className="min-w-0 truncate pr-px text-sm font-semibold text-foreground">
-        {inOverview
-          ? OVERVIEW_NAME
-          : editing
-            ? editTitle(editing)
-            : (template?.name ?? "Custom report")}
-      </h3>
-      <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
-        <div className="space-y-3 xl:sticky xl:top-0">
-          <div className="flex flex-wrap items-start gap-2 text-xs xl:flex-col">
-            {subjectChip}
-            <ChipSlot error={scopeError}>
-              <SelectButton
-                label="Scope"
-                prefix="In:"
-                prompt={onlyProjects ? "choose a project" : undefined}
-                widthClass={CHIP_WIDTH}
-                value={state.projectId ?? WHOLE_ORGANIZATION}
-                defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
-                options={scopeChoices(scopes, template, isEdit)}
-                filterAbove={8}
-                disabled={isEdit}
-                onChange={(value) =>
-                  setState((s) => ({
-                    ...s,
-                    projectId: value === WHOLE_ORGANIZATION ? null : value,
-                  }))
-                }
-              />
-            </ChipSlot>
-            <ChipSlot>
-              {noPeriod ? (
-                // §6.5 item 3. Every chosen section reads the state
-                // now, so a period chip would change nothing.
-                <p
-                  className="flex h-7 items-center text-xs text-muted-foreground"
-                  title="Each section you chose reads the state now. The period does not change this report."
-                >
-                  {AS_OF_TODAY}
-                </p>
-              ) : (
-                <SelectButton
-                  label="Period"
-                  prefix="Over:"
-                  widthClass={CHIP_WIDTH}
-                  value={periodKey(state) ?? SAVED_PERIOD}
-                  defaultValue="last_week"
-                  options={periodOptions(state)}
-                  onChange={(value) => setState((s) => withPeriod(s, value))}
-                />
-              )}
-            </ChipSlot>
-          </div>
-
-          {/* A template that locks the subject does not let each choice
-              change. An edit is not "started from a template". */}
-          {state.template && needs !== "self" && !isEdit && (
-            <p className="text-xs text-muted-foreground">
-              Started from a template. You can change each choice.
-            </p>
-          )}
-
-          {isEdit && (
-            <p className="text-xs text-muted-foreground">
-              The scope of a saved report stays as saved. To report on another
-              scope, start a new report.
-            </p>
-          )}
-
-          {state.projectId !== null && (
-            <label className="flex items-center gap-2 text-xs">
-              <Checkbox
-                size="sm"
-                checked={state.includeSubtree}
-                onChange={(e) =>
-                  setState((s) => ({ ...s, includeSubtree: e.target.checked }))
-                }
-              />
-              Include the projects under it
-            </label>
-          )}
-
-          <fieldset className="space-y-2">
-            <legend className="mb-1 text-xs font-semibold text-foreground">Sections</legend>
-            {/* §6.5 item 4: three small labels, each in SECTIONS
-                order. The tooltip is the panel's own sentence. */}
-            {sectionGroups().map((group) => (
-              <div key={group.label}>
-                <p className="mb-0.5 text-xs text-muted-foreground">{group.label}</p>
-                <div className="flex flex-wrap gap-x-4 gap-y-1">
-                  {group.sections.map((section) => {
-                    const blocked = sectionBlockedBySubject(state, section.key);
-                    const on = !blocked && state.sections.includes(section.key);
-                    const last =
-                      on &&
-                      state.sections.filter((k) => !sectionBlockedBySubject(state, k))
-                        .length === 1;
-                    return (
-                      <label
-                        key={section.key}
-                        className={`flex items-center gap-1.5 text-xs ${
-                          blocked ? "text-muted-foreground" : ""
-                        }`}
-                        title={
-                          blocked
-                            ? "Off for a person or team."
-                            : last
-                              ? "A report needs at least one section."
-                              : PANEL_HINTS[section.key]
-                        }
-                      >
-                        <Checkbox
-                          size="sm"
-                          checked={on}
-                          disabled={blocked || last}
-                          onChange={() =>
-                            setState((s) => ({
-                              ...s,
-                              sections: toggleSection(s.sections, section.key),
-                            }))
-                          }
-                        />
-                        {section.label}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-            {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
-          </fieldset>
-
-          {inOverview ? (
-            // R5f rules 10 and 11. Overview saves nothing. This opens the
-            // builder with the same choices, and the builder names it.
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                icon="Save"
-                disabled={prompt !== null}
-                onClick={() => onSaveAs?.(state)}
-              >
-                Save as report
-              </Button>
-            </div>
+      <BuilderHeader
+        onBack={inOverview ? undefined : onCancel}
+        title={
+          inOverview ? (
+            <h3 className="text-base font-semibold text-foreground">{OVERVIEW_NAME}</h3>
           ) : (
-          <>
-          <label className="block text-xs">
-            <span className="mb-1 block font-semibold text-foreground">Name</span>
-            <Input
-              inputSize="sm"
-              className="w-full sm:w-[20rem] xl:w-full"
+            <TitleField
               value={state.name}
-              maxLength={MAX_REPORT_NAME}
-              onChange={(e) =>
-                setState((s) => ({ ...s, name: e.target.value, nameTouched: true }))
-              }
+              onChange={(name) => setState((s) => ({ ...s, name, nameTouched: true }))}
             />
-          </label>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              loading={saving}
-              disabled={refusal !== null || prompt !== null}
-              onClick={save}
-            >
-              {editing ? "Save changes" : "Save report"}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              Cancel
-            </Button>
-            {/* §6.5 item 10. Absent, never disabled, without the
-                server's can_delete (R5d). */}
-            {deleteShown(editing) && (
-              <Button
-                className="ml-auto"
-                variant="destructive"
-                size="sm"
-                icon="Trash2"
-                onClick={() => setConfirmDelete(true)}
-              >
-                Delete report
-              </Button>
-            )}
-          </div>
-          {(refusal || otherSaveError || deleteError) && (
-            <p className="text-xs text-destructive" role="alert">
-              {deleteError ?? otherSaveError ?? refusal}
-            </p>
+          )
+        }
+        actions={actions}
+      />
+      {!inOverview && (state.template || editing) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {state.template && template && (
+            <Badge tone="neutral" icon="FileText">
+              From template: {template.name}
+            </Badge>
           )}
-          </>
+          {editing && (
+            <Badge tone="neutral" icon="Pencil">
+              Editing a saved report
+            </Badge>
           )}
+        </div>
+      )}
+      {inOverview && liveTemplates.length > 0 && onStartTemplate && (
+        <TemplateStrip templates={liveTemplates} onStart={onStartTemplate} />
+      )}
+      {inOverview && (
+        <div className="xl:hidden">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="SlidersHorizontal"
+            aria-expanded={controlsOpen}
+            onClick={() => setControlsOpen((o) => !o)}
+          >
+            Change what you see
+          </Button>
+        </div>
+      )}
+      <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
+        <div
+          className={`xl:sticky xl:top-0 ${inOverview && !controlsOpen ? "hidden xl:block" : ""}`}
+        >
+          {controls}
         </div>
 
         <section
-          className="min-w-0 border-t border-border pt-3 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"
+          className="min-w-0 rounded-xl bg-muted/40 p-3 sm:p-4"
           aria-label="Preview"
         >
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <p className="text-xs text-muted-foreground">
-              {inOverview
-                ? "The server computes each number. Overview saves nothing."
-                : "Preview. The server computes each number, and nothing is saved."}
-            </p>
-            {updating && (
-              <span className="text-xs text-muted-foreground" role="status">
-                Updating…
-              </span>
-            )}
+          <div className="mb-3 flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              {updating ? (
+                <Icon name="Loader2" className="h-3 w-3 animate-spin" />
+              ) : (
+                <span
+                  aria-hidden
+                  className={`inline-block size-1.5 rounded-full ${statusAccent({ category: "done" }).dot}`}
+                />
+              )}
+              <span role="status">{updating ? "Updating" : "Live preview"}</span>
+            </span>
           </div>
           {prompt ? (
             <PreviewPrompt icon={personPrompt ? "User" : "FolderKanban"} text={prompt} />
           ) : currentError && chipPreviewError ? (
             <p className="text-xs text-muted-foreground">
-              Change the choice marked above to see the preview.
+              Change the choice marked on the left to see the preview.
             </p>
           ) : currentError ? (
             <p className="flex items-center gap-2 text-xs text-destructive" role="alert">
@@ -1303,10 +1550,12 @@ export function ReportBuilder({
               </Button>
             </p>
           ) : preview ? (
-            // §6.5 item 9. During a change the last preview stays,
-            // dimmed, so the page does not jump. A skeleton only on the first
-            // load.
-            <div className={updating ? "opacity-60" : undefined} aria-busy={updating}>
+            // §6.5 item 9. During a change the last preview stays, dimmed,
+            // so the page does not jump. A skeleton only on the first load.
+            <div
+              className={`transition-opacity ${updating ? "opacity-60" : ""}`}
+              aria-busy={updating}
+            >
               <RenderedBody
                 body={{
                   ...preview.body,
@@ -1317,6 +1566,9 @@ export function ReportBuilder({
                 }}
                 headerLine={headerLine}
                 hiddenHint={hiddenHint}
+                // §6.6 D. The header row above names the report, so the
+                // preview does not say the name a second time.
+                showTitle={false}
                 lead={
                   !tableShown ? null : summary.data ? (
                     <SpaceSummary
@@ -1344,6 +1596,178 @@ export function ReportBuilder({
           onCancel={() => setConfirmDelete(false)}
         />
       )}
+    </div>
+  );
+}
+
+/** One numbered step of "Build your report" (§6.6 B), a label over a control. */
+function Step({
+  n,
+  label,
+  children,
+}: {
+  n: number;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="flex items-center gap-2 text-xs font-medium text-foreground">
+        <span
+          aria-hidden
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary"
+        >
+          {n}
+        </span>
+        {label}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The builder's one header row (§6.6 A): back, the title, and the actions.
+ * The title is a heading in Overview and an input in the builder.
+ */
+export function BuilderHeader({
+  onBack,
+  title,
+  actions,
+}: {
+  onBack?: () => void;
+  title: React.ReactNode;
+  actions: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {onBack && (
+        <Button variant="ghost" size="sm" icon="ArrowLeft" onClick={onBack}>
+          Reports
+        </Button>
+      )}
+      <div className="min-w-0 flex-1">{title}</div>
+      <div className="flex flex-wrap items-center gap-2">{actions}</div>
+    </div>
+  );
+}
+
+/**
+ * The report name as an inline title (§6.6 A item 2). It is a labelled input
+ * that looks like a heading, with a pencil on hover and on focus. The border
+ * shows only on hover and on focus.
+ */
+export function TitleField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  return (
+    <label className="group flex min-w-0 items-center gap-1.5 [&_input]:border-transparent [&_input]:bg-transparent [&_input:hover]:border-border [&_input:focus]:border-primary/50">
+      <span className="sr-only">Report name</span>
+      <Input
+        inputSize="lg"
+        className="min-w-0 flex-1 font-semibold"
+        value={value}
+        maxLength={MAX_REPORT_NAME}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <Icon
+        name="Pencil"
+        className="reveal-on-hover h-3.5 w-3.5 shrink-0 text-muted-foreground transition-opacity group-focus-within:opacity-100"
+      />
+    </label>
+  );
+}
+
+/**
+ * One section tile of "What to include" (§6.6 C). A toggle with the
+ * section's icon, its label and one short line. A tile that a subject turns
+ * off is muted and says why. The last chosen tile stays on, because a
+ * report needs one section.
+ */
+export function SectionTile({
+  sectionKey,
+  label,
+  on,
+  blocked,
+  last,
+  onToggle,
+}: {
+  sectionKey: string;
+  label: string;
+  on: boolean;
+  blocked: boolean;
+  last: boolean;
+  onToggle: () => void;
+}) {
+  const line = blocked ? "Off for a person or team." : PANEL_HINTS[sectionKey];
+  return (
+    <Button
+      variant="secondary"
+      size="none"
+      layout="flex w-full items-start gap-2 text-left"
+      className="rounded-lg px-2.5 py-2 transition-colors"
+      selected={on}
+      disabled={blocked}
+      title={
+        blocked
+          ? "Off for a person or team."
+          : last
+            ? "A report needs at least one section."
+            : PANEL_HINT_DETAILS[sectionKey]
+      }
+      onClick={last ? undefined : onToggle}
+    >
+      <Icon
+        name={sectionIcon(sectionKey)}
+        className={`mt-0.5 h-4 w-4 shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`}
+      />
+      <span className="min-w-0 flex-1">
+        <span className={`block text-xs font-medium ${on ? "text-foreground" : ""}`}>
+          {label}
+        </span>
+        <span className="block text-xs text-muted-foreground">{line}</span>
+      </span>
+      <Icon
+        name="Check"
+        className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-primary ${on ? "" : "invisible"}`}
+      />
+    </Button>
+  );
+}
+
+/**
+ * The compact strip of live templates above Overview (§6.6 E item 3). The
+ * full gallery stays under Overview.
+ */
+export function TemplateStrip({
+  templates,
+  onStart,
+}: {
+  templates: ReportTemplate[];
+  onStart: (template: ReportTemplate) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-muted-foreground">Start from a question</p>
+      <ul className="flex gap-2 overflow-x-auto pb-1">
+        {templates.map((t) => (
+          <li key={t.key} className="shrink-0">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="FileText"
+              title={t.question}
+              onClick={() => onStart(t)}
+            >
+              {t.name}
+            </Button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -1652,6 +2076,16 @@ export default function ReportsView({
   const [pane, setPane] = useState<Pane>({ kind: "view" });
   /** Moves after a save, and on "Try again", so the render runs again. */
   const [renderRound, setRenderRound] = useState(0);
+  /**
+   * R5f round 1, rule 6. Overview's choices and its last preview, kept here.
+   * A member who opens the builder or a saved report and comes back finds
+   * Overview as it was, and Overview asks the server nothing new.
+   */
+  const [overviewDraft, setOverviewDraft] = useState<BuilderState>(() => overviewState());
+  const [overviewPreview, setOverviewPreview] = useState<{
+    key: string;
+    body: PreviewReportBody;
+  } | null>(null);
 
   // The scope chip lists the tree the caller can see. One read cache, the
   // same key the page uses, so this adds no request on a warm page.
@@ -1765,6 +2199,9 @@ export default function ReportsView({
 
   const selectedRow = rows?.find((r) => r.id === selected) ?? null;
   const building = pane.kind !== "view";
+  // R5f round 1, rule 7. A builder link decides the pane before Overview
+  // mounts, so Overview sends no preview for it.
+  const shown = reportsPane({ building, selected, linkPending: linkQuery !== "" });
   // R5f rule 16. Overview is Home, and the rail is absent there. It shows
   // when a member opens a saved report.
   const railShown = !building && selected !== null;
@@ -1789,24 +2226,8 @@ export default function ReportsView({
       : undefined;
 
   return (
+    // §6.6 E item 1. No heading here: the page header names the app.
     <div className="flex-1 overflow-y-auto p-4">
-      <div className="mb-3 flex flex-wrap items-baseline gap-2">
-        {/* R5f visual review. The page header above already says "Reports ·
-            Look now, or save to deliver", so this row adds no second
-            subtitle. */}
-        <h2 className="text-sm font-semibold">Reports</h2>
-        <Button
-          className="ml-auto"
-          variant="secondary"
-          size="sm"
-          icon="Plus"
-          disabled={pane.kind === "new"}
-          onClick={() => setPane({ kind: "new", initial: newBuilderState() })}
-        >
-          New report
-        </Button>
-      </div>
-
       {/* §6.5 item 1. While the member builds a report the rail leaves, and
           the builder takes the width for its preview. R5f rule 16: Home is
           Overview, and the rail leaves there too. */}
@@ -1841,7 +2262,7 @@ export default function ReportsView({
           </aside>
         )}
 
-        <div className="min-w-0 rounded-lg border border-border bg-card p-3">
+        <div className="min-w-0">
           {pane.kind === "new" ? (
             <ReportBuilder
               key={`new:${pane.initial.template ?? "blank"}:${subjectValue(pane.initial.subject)}:${pane.initial.projectId ?? ""}`}
@@ -1864,15 +2285,19 @@ export default function ReportsView({
               onDeleted={deleted}
               onCancel={() => setPane({ kind: "view" })}
             />
-          ) : !selected ? (
+          ) : shown === "wait-for-link" ? (
+            <SkeletonRows count={4} />
+          ) : shown === "overview" ? (
             // R5f (§6.1). Home is Overview, then the gallery, then "Your
             // reports". Overview writes no row. "Save as report" opens the
             // builder with its choices.
-            <div className="space-y-4">
+            <div className="space-y-6">
               <ReportBuilder
                 key="reportsOverview"
                 mode="reportsOverview"
-                initial={overviewState()}
+                initial={overviewDraft}
+                initialPreview={overviewPreview}
+                onDraft={setOverviewDraft}
                 editing={null}
                 roots={roots}
                 templates={templates}
@@ -1882,9 +2307,12 @@ export default function ReportsView({
                 onSaveAs={(state) =>
                   setPane({ kind: "new", initial: saveAsReportState(state) })
                 }
-                onPreview={(preview) =>
-                  setOverviewFinished(preview.sections.finished?.total_completed ?? null)
-                }
+                onNewReport={() => setPane({ kind: "new", initial: newBuilderState() })}
+                onStartTemplate={start}
+                onPreview={(preview, key) => {
+                  setOverviewPreview({ key, body: preview });
+                  setOverviewFinished(preview.sections.finished?.total_completed ?? null);
+                }}
                 onOpenNode={onOpenNode}
               />
               <div className="border-t border-border pt-4">
@@ -1924,7 +2352,10 @@ export default function ReportsView({
                   />
                 )}
               </div>
-              <RenderedBody body={body} headerLine={header} />
+              {/* §6.6 D item 1. A soft surface, so the report reads like a page. */}
+              <div className="rounded-xl bg-muted/40 p-3 sm:p-4">
+                <RenderedBody body={body} headerLine={header} />
+              </div>
             </div>
           )}
         </div>

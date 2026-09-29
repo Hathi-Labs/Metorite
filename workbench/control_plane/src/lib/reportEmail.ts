@@ -24,6 +24,7 @@
  */
 import { shortDate } from "@/app/projects/lib/outlook";
 import { asOfDay, periodFree } from "@/app/projects/lib/reportBuilder";
+import { clearNote } from "@/app/projects/lib/sectionEmpty";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -536,8 +537,9 @@ export function reportLayout(
             ` · ${textBar(p.overdue, p.open_tasks)}` +
             ` ${p.overdue} of ${p.open_tasks} overdue`,
         ),
-      // WS-27bn R5a. The rows this reader may not see, counted.
-      notes: hiddenNotes(load.hidden_people),
+      // WS-27bn R5a. The rows this reader may not see, counted. R5f round 1:
+      // a clear section says so in the words of the screen.
+      notes: [...hiddenNotes(load.hidden_people), ...clearNote("load", load)],
     });
   }
 
@@ -575,6 +577,7 @@ export function reportLayout(
       notes: [
         ...(cap.hr_visible ? [] : ["Hours need HR read access."]),
         ...hiddenNotes(cap.hidden_people),
+        ...clearNote("capacity", cap),
       ],
     });
   }
@@ -621,6 +624,7 @@ export function reportLayout(
     const hidden = hiddenPeopleLine(pulse.hidden_people);
     if (hidden) notes.push(hidden);
     if (pulse.help_note) notes.push(pulse.help_note);
+    notes.push(...clearNote("pulse", pulse));
     parts.push({
       head: { lead: `Team pulse: ${pulse.people_total} people`, strong: true },
       items,
@@ -634,6 +638,7 @@ export function reportLayout(
     // The counts are the server's, and each bar draws two of them.
     const items: string[] = [];
     const notes: string[] = [
+      ...clearNote("hygiene", hyg),
       "A task can miss more than one thing, so the counts do not add up to the open total.",
     ];
     for (const [kind, label] of HYGIENE_WORDS) {
@@ -677,6 +682,7 @@ export function reportLayout(
       notes: [
         ...(conf.hr_visible ? [] : ["Four kinds need HR read access."]),
         ...hiddenNotes(conf.hidden_people),
+        ...clearNote("conflicts", conf),
       ],
     });
   }
@@ -703,6 +709,7 @@ export function reportLayout(
     if (typeof reb.pickups_total === "number" && reb.pickups_total > people.length) {
       notes.push(`…and ${reb.pickups_total - people.length} more people who could take work`);
     }
+    notes.push(...clearNote("rebalance", reb));
     parts.push({
       head: {
         lead: `Who could help: ${reb.at_risk_total ?? tasks.length} at risk`,

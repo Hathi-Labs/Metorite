@@ -18,12 +18,34 @@
 /** The start of the `finished` panel's sentence. The panel adds the dates. */
 export const FINISHED_HINT_LEAD = "Completed by project";
 
+/**
+ * The short sentence of each section (`projects_reports.md` §6.6 C). The panel
+ * prints it under its title, and the builder's section tile prints it under
+ * the label. It is short on purpose: one line in a tile.
+ */
 export const PANEL_HINTS: Readonly<Record<string, string>> = {
   finished: `${FINISHED_HINT_LEAD}, in the period.`,
+  throughput: "Tasks finished each week, and how long they took.",
+  outlook: "When the open work should finish, at the real pace.",
+  load: "Open tasks per person, by when they are due.",
+  capacity: "Open work per person, and the hours they have spare.",
+  pulse: "Each person's open work today, and who needs help.",
+  stuck: "Work with no recent change, and work past due.",
+  hygiene: "Tasks with no owner, date or estimate, and stalled work.",
+  conflicts: "Late blockers, and people on too many projects.",
+  rebalance: "Tasks at risk, and people who could help.",
+};
+
+/**
+ * The longer sentence of each section, for a tooltip only (§6.6 D item 7).
+ * These were the panel hints until R5f repair round 1.
+ */
+export const PANEL_HINT_DETAILS: Readonly<Record<string, string>> = {
+  finished: "Tasks completed in the period, by project. Cancelled work is not counted as finished.",
   throughput:
     "Tasks finished each week, and how long they took from first started to done.",
   outlook:
-    "Forecast from what the team actually did, against what the plan would need. Estimated — this product records no hours worked.",
+    "Forecast from what the team actually did, against what the plan would need. Estimated, because this product records no hours worked.",
   load: "Open tasks per person, split by when they are due. Unassigned is a bar, not a gap.",
   capacity:
     "Open work per person in this scope, with the spare hours they have across all the work you can see.",

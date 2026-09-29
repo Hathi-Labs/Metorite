@@ -31,7 +31,10 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
-import { useId } from "react";
+import { createContext, useContext, useId, useState } from "react";
+
+import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 
 import {
   type AccentHue,
@@ -96,6 +99,7 @@ import {
   velocityLine,
 } from "../lib/outlook";
 import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
+import { SECTION_CLEAR_LINES } from "../lib/sectionEmpty";
 import {
   focusMore,
   focusShown,
@@ -187,6 +191,23 @@ function duration(hours: number | null | undefined): string {
   return `${Math.round(hours / 24)}d`;
 }
 
+/**
+ * What a report adds to a panel's card (WS-27bn R5f round 1, §6.6 D).
+ *
+ * `RenderedBody` wraps each panel in a provider. The panel then shows the
+ * section's icon beside its title, and a small table button in its header.
+ * The table opens inside the same card. A panel outside a report, such as
+ * one on `NodeDashboard`, gets no provider and draws as before.
+ */
+export interface PanelChrome {
+  /** The section's icon, from `lib/sectionIcons.ts`. */
+  icon?: string;
+  /** The section as a table. Absent, and the header has no table button. */
+  table?: React.ReactNode;
+}
+
+export const PanelChromeContext = createContext<PanelChrome | null>(null);
+
 function Panel({
   title,
   hint,
@@ -207,23 +228,51 @@ function Panel({
   // "What we finished, region" and not an anonymous section. `useId` keeps
   // two panels of one kind on one page from sharing an id.
   const titleId = useId();
+  const chrome = useContext(PanelChromeContext);
+  const [tableOpen, setTableOpen] = useState(false);
   return (
     <section
       className="rounded-lg border border-border bg-card p-3"
       aria-labelledby={titleId}
     >
-      <header className="mb-3">
-        <h3 id={titleId} className="text-xs font-semibold text-foreground">
-          {title}
-        </h3>
-        <p
-          className="mt-0.5 text-[11px] text-muted-foreground"
-          title={hintTitle ?? undefined}
-        >
-          {hint}
-        </p>
+      <header className="mb-3 flex items-start gap-2">
+        {chrome?.icon ? (
+          <Icon name={chrome.icon} className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <h3 id={titleId} className="text-xs font-semibold text-foreground">
+            {title}
+          </h3>
+          <p
+            className="mt-0.5 text-[11px] text-muted-foreground"
+            title={hintTitle ?? undefined}
+          >
+            {hint}
+          </p>
+        </div>
+        {chrome?.table ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="Table2"
+            aria-expanded={tableOpen}
+            aria-label={tableOpen ? "Hide the table" : "Show as a table"}
+            title={tableOpen ? "Hide the table" : "Show as a table"}
+            onClick={() => setTableOpen((o) => !o)}
+          />
+        ) : null}
       </header>
       {children}
+      {chrome?.table ? (
+        // `until-found` keeps the folded table in the page, so find-in-page
+        // still reaches it, as the fold before round 1 did.
+        <div
+          className="mt-3 border-t border-border pt-3"
+          hidden={tableOpen ? undefined : ("until-found" as unknown as boolean)}
+        >
+          {chrome.table}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -522,7 +571,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
     >
       {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.load)}
         </p>
       ) : (
         <>
@@ -658,7 +707,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
     >
       {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.load)}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -795,7 +844,7 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
     >
       {drawn.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No conflicts in this scope.")}
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.conflicts)}
         </p>
       ) : (
         <>
@@ -862,7 +911,8 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
           HR read access. An admin can see them.
         </p>
       ) : (
-        span && (
+        span &&
+        asList(data?.rows).length > 0 && (
           <p
             className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground"
             title="The window bounds absences, leaving dates, overcommitment and parallel work. A dependency is wrong whenever it falls."
@@ -906,9 +956,7 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
       {hidden ? (
         <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
       ) : tasks.length === 0 && pickups.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">
-          No task at risk and nobody idle in this scope.
-        </p>
+        <p className="text-[11px] text-muted-foreground">{SECTION_CLEAR_LINES.rebalance}</p>
       ) : (
         <>
           {typeof data?.at_risk_total === "number" &&
@@ -1130,7 +1178,7 @@ export function PulsePanel({
     >
       {rows.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No card to show. Nobody you can see holds open work in this scope.
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.pulse)}
         </p>
       ) : (
         // `@container`: the grid follows the panel's own width, not the

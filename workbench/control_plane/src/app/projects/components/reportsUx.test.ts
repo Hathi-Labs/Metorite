@@ -141,7 +141,9 @@ describe("(13) the header line", () => {
 
   it("draws the line the caller built", () => {
     const line = "About Meera Iyer · In Printer X2 · 31 Aug – 27 Sep 2026";
-    expect(html(createElement(RenderedBody, { body, headerLine: line }))).toContain(line);
+    // R5f round 1 (§6.6 D item 2). Each part of the one line, with its icon.
+    const markup = html(createElement(RenderedBody, { body, headerLine: line }));
+    for (const part of line.split(" \u00b7 ")) expect(markup).toContain(part);
   });
 
   it("says Whole organization, never Every space you can see", () => {

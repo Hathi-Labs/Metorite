@@ -1168,3 +1168,48 @@ export function deleteShown(row: ReportRow | null): boolean {
 export function editTitle(row: ReportRow): string {
   return `Edit: ${row.name}`;
 }
+
+// ── WS-27bn R5f repair round 1 ──────────────────────────────────────────────
+
+/**
+ * True when the builder must ask the server for a preview (rule 6).
+ *
+ * The preview on screen answers `shownKey`. When the member returns to Home,
+ * Overview comes back with the preview that Home kept, and its key equals
+ * the key of the choices. Then nothing is asked. A prompt asks nothing too.
+ */
+export function previewNeeded(
+  shownKey: string | null,
+  key: string,
+  blocked: boolean
+): boolean {
+  if (blocked) return false;
+  return shownKey !== key;
+}
+
+/** What the Reports pane shows. */
+export type ReportsPane = "wait-for-link" | "overview" | "builder" | "saved";
+
+/**
+ * The pane of `ReportsView` (rule 7).
+ *
+ * ⚠️ **A builder link decides the pane before the first preview.** While the
+ * address still holds a key of `REPORT_LINK_KEYS`, the pane waits, and
+ * Overview does not mount. Before round 1 Overview mounted first and sent
+ * its heavy preview for a link that opened the builder a moment later.
+ */
+export function reportsPane(parts: {
+  building: boolean;
+  selected: string | null;
+  linkPending: boolean;
+}): ReportsPane {
+  if (parts.building) return "builder";
+  if (parts.linkPending) return "wait-for-link";
+  if (parts.selected !== null) return "saved";
+  return "overview";
+}
+
+/** True when the address holds a key of a builder link. */
+export function linkPending(params: URLSearchParams): boolean {
+  return REPORT_LINK_KEYS.some((k) => params.has(k));
+}

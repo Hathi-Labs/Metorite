@@ -120,10 +120,11 @@ describe("the words", () => {
     expect(line).not.toMatch(/overcommitted|ceiling|leaves|away/i);
   });
 
-  it("says which rows the window binds", () => {
+  it("says how far ahead the window looks", () => {
     expect(windowLine(report())).toBe(
       // §6.5 item 17 reads the dates as a person does.
-      "Dated kinds: 24 Sep 2026 to 8 Oct 2026 (14 days). Dependencies are checked whenever they fall.",
+      // R5f round 1 (§6.6 D item 6): one short line.
+      "Looks 14 days ahead, to 8 Oct 2026.",
     );
     expect(windowLine(report({ window: undefined as unknown as ConflictsReport["window"] }))).toBeNull();
   });

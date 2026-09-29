@@ -434,9 +434,13 @@ function draw(sections: Sections): string {
   return renderToStaticMarkup(createElement(RenderedBody, { body: body(sections) }));
 }
 
-/** The markup before the section's folded table, and the table itself. */
+/**
+ * The markup before the section's table, and the table itself. Since R5f
+ * round 1 (§6.6 D item 5) the table sits inside the card, under the panel,
+ * and its label is an `aria-label`.
+ */
 function panelAndTable(markup: string): { panel: string; table: string } {
-  const at = markup.indexOf(", as a table<");
+  const at = markup.indexOf(', as a table"');
   expect(at, "the section draws no table").toBeGreaterThan(-1);
   return { panel: markup.slice(0, at), table: markup.slice(at) };
 }
@@ -462,7 +466,9 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(", as a table<").length).toBe(11);
+    expect(html.split(', as a table"').length).toBe(11);
+    // §6.6 D item 5. Each card has one table button in its header.
+    expect(html.match(/aria-label="Show as a table"/g)?.length).toBe(10);
     // The panel names its region, so a screen reader announces the title.
     expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(10);
   });
@@ -541,13 +547,15 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(table).toContain("last change 1 Sep 2026");
   });
 
-  it("hygiene with no open work says so, and draws no bar", () => {
+  it("hygiene with no open work is all clear, with no bar and no table", () => {
     const html = draw({
       hygiene: { open_total: 0, stale_days: 14, by_kind: {}, rows: [] },
     });
-    expect(html).toContain("No open tasks in this scope.");
-    const { panel } = panelAndTable(html);
-    expect(panel).not.toContain('role="img"');
+    // R5f round 1 (§6.6 D item 3). One calm card, not an empty panel.
+    expect(html).toContain("All clear");
+    expect(html).toContain("The data looks tidy.");
+    expect(html).not.toContain('role="img"');
+    expect(html).not.toContain(', as a table"');
   });
 
   it("rebalance draws each task with its holder and helpers, then pickups, then the caps", () => {
@@ -582,7 +590,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect([tasks, pickups]).toEqual([1, 3]);
     const html = draw({ rebalance: data });
     const count = html.match(
-      /Who could help, as a table<\/span><span[^>]*>· (?:<!-- -->)?(\d+)<\/span>/
+      /aria-label="Who could help, as a table"><p[^>]*>(\d+)(?:<!-- -->)? rows?</
     );
     expect(count, "the table title carries no count").not.toBeNull();
     expect(Number(count![1])).toBe(tasks + pickups);
@@ -628,11 +636,10 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
   it("folds the table closed by default, and keeps it in the page", () => {
     const html = draw({ load: SECTIONS.load });
     const { table } = panelAndTable(html);
-    // Closed: the trigger says so, and the panel is hidden, not removed.
-    expect(html).toMatch(
-      /aria-expanded="false"[^>]*>(?:(?!<\/button>)[\s\S])*, as a table</
-    );
-    expect(table).toMatch(/<div[^>]*data-closed=""[^>]*hidden=""/);
+    // R5f round 1 (§6.6 D item 5). The table button sits in the card header,
+    // closed. The table is hidden, not removed, so find-in-page reaches it.
+    expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*aria-label="Show as a table"/);
+    expect(html).toMatch(/<div[^>]*hidden="(?:until-found|)"[^>]*><div role="group" aria-label="Open work, as a table"/);
     expect(table).toContain("ana@example.test");
   });
 
@@ -697,7 +704,7 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     });
   }
 
-  it("says 'No open work in this scope' only when every band is zero", () => {
+  it("says 'Nothing is stuck' only when every band is zero", () => {
     const zero = draw({
       stuck: {
         overdue: [],
@@ -705,13 +712,16 @@ describe("degrade: a report-shaped body prints no broken words", () => {
         stale: SECTIONS.stuck.stale!.map((b) => ({ band: b.band, n: 0 })),
       },
     });
-    expect(zero).toContain("No open work in this scope.");
-    expect(draw({ stuck: SECTIONS.stuck })).not.toContain("No open work in this scope");
+    // R5f round 1 (§6.6 D item 3). A clear section is one calm line.
+    expect(zero).toContain("Nothing is stuck.");
+    expect(draw({ stuck: SECTIONS.stuck })).not.toContain("Nothing is stuck.");
   });
 
   it("pulse with no card says so, and still counts the hidden people", () => {
     const html = draw({ pulse: { ...PULSE_MEMBER, rows: [], hidden_people: 3 } });
-    expect(html).toContain("No card to show.");
+    // The work exists, and this reader may not see it: never "all clear".
+    expect(html).not.toContain("All clear");
+    expect(html).toContain("You can see no rows here.");
     expect(html).toContain("This view hides 3 other people");
     const { panel } = panelAndTable(html);
     expect(panel).not.toContain('role="img"');
@@ -861,8 +871,10 @@ describe("an empty panel for a member whose rows are all hidden", () => {
       load: { people: [], total_tasks: 0 },
       conflicts: { ...SECTIONS.conflicts, rows: [], total: 0, by_kind: {} },
     });
-    expect(html).toContain("No open work in this scope.");
-    expect(html).toContain("No conflicts in this scope.");
+    // R5f round 1 (§6.6 D item 3). Both sections are clear: one calm card.
+    expect(html).toContain("All clear");
+    expect(html).toContain("Nobody holds open work here right now.");
+    expect(html).toContain("No conflicts. The plan lines up.");
     expect(html).not.toContain("You can see no rows here.");
   });
 });

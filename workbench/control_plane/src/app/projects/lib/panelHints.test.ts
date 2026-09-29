@@ -43,8 +43,11 @@ describe("(4) one sentence for each section", () => {
     expect(PANEL_HINTS.finished.startsWith(FINISHED_HINT_LEAD)).toBe(true);
   });
 
-  it("the builder's checkboxes take their tooltip from the same hints", () => {
-    expect(view).toMatch(/title=\{[^}]*PANEL_HINTS\[section\.key\]/);
+  it("the builder's section tiles take their line from the same hints", () => {
+    // R5f round 1 (§6.6 C). The tile prints the short hint, and its
+    // tooltip is the longer detail.
+    expect(view).toMatch(/PANEL_HINTS\[sectionKey\]/);
+    expect(view).toMatch(/PANEL_HINT_DETAILS\[sectionKey\]/);
   });
 });
 
