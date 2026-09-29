@@ -46,6 +46,7 @@ from gateway.routes.projects.analytics import (
     MAX_WEEKS,
     STALE_BANDS,
     _hours,
+    blocked_body,
     cycle_summary_sql,
     finished_period_sql,
     finished_sql,
@@ -981,13 +982,21 @@ async def render_body(
                 )
             ).one()
             sections[name] = {
+                # WS-27bn R5f. Each week carries the route's figures, so the
+                # panel draws the weekly hover and the Finished cell.
                 "series": [
                     {
                         "week_start": w.week.date().isoformat(),
                         "completed": int(w.completed or 0),
+                        "cancelled": int(w.cancelled or 0),
+                        "measured": int(w.measured or 0),
+                        "no_start": int(w.no_start or 0),
+                        "median_hours": _hours(w.median_hours),
+                        "p90_hours": _hours(w.p90_hours),
                     }
                     for w in series
                 ],
+                "completed": int(totals.completed or 0),
                 "median_hours": _hours(totals.median_hours),
                 "measured": int(totals.measured or 0),
                 # WS-27bn R2b. Passed through from `_CYCLE_MEASURES`, which
@@ -1019,10 +1028,16 @@ async def render_body(
                         # bar the Analytics app draws.
                         "due_next_7d": p["due_next_7d"],
                         "later": p["later"],
+                        # WS-27bn R5f. The estimate of each plate, so the
+                        # panel draws the effort line of the Load route.
+                        "est_mins": p["est_mins"],
+                        "estimated": p["estimated"],
                     }
                     for p in people[:MAX_PEOPLE]
                 ],
                 "total_tasks": found["total_tasks"],
+                "people_total": found["people_total"],
+                "effort": found["effort"],
             }
             sections[name] = _with_hidden(section, hidden, allowed)
         elif name == "outlook":
@@ -1062,9 +1077,10 @@ async def render_body(
             named = [r for r in rows if r["kind"] != "unassigned"]
             nobody = [r for r in rows if r["kind"] == "unassigned"]
             sections[name] = _with_hidden({
-                # Capped like `load`, and the unassigned row survives the
-                # cap: it is the one row a reader can act on today.
-                "people": named[:MAX_PEOPLE] + nobody,
+                # WS-27bn R5f. Every row, as the capacity route sends them,
+                # so Overview shows what the Analytics app showed. The email
+                # and the download cut their own lists (`MAX_EMAIL_ROWS`).
+                "people": named + nobody,
                 "people_total": cap["people_total"],
                 "total_tasks": cap["total_tasks"],
                 "hr_visible": cap["hr_visible"],
@@ -1085,9 +1101,9 @@ async def render_body(
             # A dependency row keeps its holders.
             rows, hidden = filter_conflict_rows(found["rows"], allowed)
             sections[name] = _with_hidden({
-                # Capped like `load`. `total` and `by_kind` count every
-                # row, so a reader sees how many the cap left out.
-                "rows": rows[:MAX_PEOPLE],
+                # WS-27bn R5f. Every row, as the conflicts route sends them.
+                # The email and the download cut their own lists.
+                "rows": rows,
                 "total": found["total"],
                 "by_kind": found["by_kind"],
                 "hr_visible": found["hr_visible"],
@@ -1164,6 +1180,10 @@ async def render_body(
                     text(overdue_by_project_sql(open_where)), params,
                 )
             ).fetchall()
+            # WS-27bn R5f. The route's blocked list, from the one helper.
+            blocked_total, blocked = await blocked_body(
+                db, vis, open_where, params,
+            )
             sections[name] = {
                 "overdue": [
                     {
@@ -1180,6 +1200,8 @@ async def render_body(
                     {"band": band, "n": int(getattr(stale_row, band, 0) or 0)}
                     for band, _, _ in STALE_BANDS
                 ],
+                "blocked_total": blocked_total,
+                "blocked": blocked,
             }
 
     return {

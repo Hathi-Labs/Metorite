@@ -16,6 +16,7 @@ import {
   PROJECT_APP_SECTIONS,
   chatEnabled,
   projectAppSections,
+  resolveAppLink,
 } from "./projectApps";
 
 const OFF = { NEXT_PUBLIC_PROJECTS_CHAT: "0" };
@@ -87,5 +88,42 @@ describe("the AI chat slot", () => {
       (i) => i.id === "ai-chat",
     );
     expect(base?.launch).toBe("preview");
+  });
+});
+
+describe("WS-27bn R5f: one Reports app", () => {
+  const items = PROJECT_APP_SECTIONS.flatMap((s) => s.items);
+
+  it("(a) holds no analytics entry, and Reports is live", () => {
+    expect(items.map((i) => i.id as string)).not.toContain("analytics");
+    const reports = items.find((i) => i.id === "reports");
+    expect(reports?.launch).toBe("live");
+    expect(reports?.icon).toBe("FileText");
+  });
+
+  it("(b) resolveAppLink sends analytics and reports to reports", () => {
+    expect(resolveAppLink("analytics")).toBe("reports");
+    expect(resolveAppLink("reports")).toBe("reports");
+    expect(resolveAppLink(" Analytics ")).toBe("reports");
+  });
+
+  it("(b) resolveAppLink refuses a preview id and an unknown id", () => {
+    // The chat slot ships preview, so the shape of record refuses it.
+    expect(resolveAppLink("ai-chat")).toBeNull();
+    expect(resolveAppLink("../admin")).toBeNull();
+    expect(resolveAppLink("")).toBeNull();
+    expect(resolveAppLink(null)).toBeNull();
+  });
+
+  it("(b) a flagged entry opens when the page passes the resolved list", () => {
+    expect(resolveAppLink("ai-chat", projectAppSections(ON))).toBe("ai-chat");
+    expect(resolveAppLink("analytics", projectAppSections(ON))).toBe("reports");
+  });
+
+  it("the page calls the one map for the link and for the chat", () => {
+    const page = fs.readFileSync(path.join(__dirname, "..", "page.tsx"), "utf8");
+    expect(page.match(/resolveAppLink\(/g)?.length).toBe(2);
+    // A second map would find the entry by hand again.
+    expect(page).not.toMatch(/items\)\.find\(\s*\(i\) => i\.id === (appLink|id) &&/);
   });
 });

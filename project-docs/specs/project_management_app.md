@@ -4524,12 +4524,20 @@ ramp through `src/lib/categorical.ts`, never a raw palette class.
 2026-09-26). Members see the name "Forecast". The route and the key stay
 `outlook`.
 
+**Since 2026-09-29 (§9 Q14), the Reports app of `projects_reports.md` shows
+this analytics.** Its Overview is what the Analytics app was. That spec owns
+the surface, and this section still owns the four reads.
+
 #### 9.12.8 Reporting — analytics, rendered and sent (owner decision, 2026-08-31)
 
 **The owner drew the line: analytics is what you look at, a report is what gets
 delivered.** So this is built ON §9.12.7 and after it. A report with no
 analytics behind it would mint a second set of numbers, and two sets of numbers
 disagree.
+
+**Since 2026-09-29 (§9 Q14 of `projects_reports.md`), one Reports app holds
+both.** Overview is what you look at, and a saved report is what you deliver.
+That spec owns the surface.
 
 A report is a saved definition: scope, period, sections, recipients, schedule.
 `pm_views` is the precedent for a saved definition, and `pm_reports` follows its

@@ -414,7 +414,7 @@ read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 | Card | For | Action |
 |---|---|---|
 | `TaskListCard` | `list_tasks`, `find_tasks`, `my_work` | A row opens the task panel by `?task=` |
-| `SummaryCard` | `project_summary`, the five analytics reads | Opens the node, or the Analytics app |
+| `SummaryCard` | `project_summary`, the five analytics reads | Opens the node, or the Reports app (the Analytics app until R5f of `projects_reports.md`) |
 | `planCard` (template) | W1's proposal, editable, before approval | Submits the edited plan back to `propose_plan` |
 | `timeline`, `taskBoard`, `dataGrid`, `reportCard` (templates) | `render_timeline`, `render_board`, `render_tasks`, `render_report` | The timeline's title opens its task. A board card and a table row open their task. The report's title opens the Reports app |
 | `formCard` (template) | `edit_task`, `edit_project` | Submits the edited fields back to the tool |
@@ -438,6 +438,11 @@ reads the row first and always returns the link as well. The result says
 the event. A dispatch is kept off the stored message and runs once per event
 id, across a reload. `set_filter` is not
 built. The page's filter state has no stable shape to hand a model yet.
+
+**Since R5f of `projects_reports.md` (2026-09-29), the Analytics app is gone.**
+`open_in_app` still accepts `analytics`, and it opens `reports`. The link is
+`/projects?app=reports`. `resolveAppLink` in `lib/projectApps.ts` maps the old
+id for the `?app=` link and for `projects.open_app`.
 
 **The visual review (2026-09-23).** The rail and every card were rendered in
 a browser, in dark and light mode, at compact density, under a changed accent
@@ -742,7 +747,8 @@ Each slice is one pull request. Each one is useful alone.
 4. The rail renders in the `ai-chat` slot when the flag is on. The slot stays
    `preview` when it is off. `projectApps.test.ts` covers both.
 5. "What is stuck in Marketing?" in the rail returns the server's numbers,
-   and the card opens the Analytics app.
+   and the card opens the Analytics app. Since R5f of `projects_reports.md`,
+   the card opens the Reports app.
 
 **Tests:** `tests/unit/test_projects_chat_coverage.py` ·
 `tests/unit/test_projects_agent.py` (the recording fake client, copied from
@@ -1204,7 +1210,9 @@ one row for unassigned work. A row carries these figures:
 **Surfaces.** The Analytics app gets a Capacity panel beside Load. Reports get
 the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 `reportEmail.ts` and the chat's `_REPORT_SECTIONS`. The chat gets
-`team_capacity`, class A.
+`team_capacity`, class A. Since R5f of `projects_reports.md` (2026-09-29), the
+Overview of the Reports app shows the Capacity panel, and the Analytics app is
+gone.
 
 **As built, 2026-09-23.** Six facts that the rules above do not say.
 - **Two scopes on one row.** The row's task half is this scope, and it is
@@ -1221,7 +1229,9 @@ the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 - **Load leads the Analytics panel grid**, so Capacity sits beside it. The
   node dashboards already lead with Load. The route lives in
   `routes/projects/analytics_capacity.py`, and Load's predicate is the named
-  `analytics.load_open_where`, which both routes call.
+  `analytics.load_open_where`, which both routes call. Since R5f, the
+  Overview of Reports draws the panels in the order of `RenderedBody`, and
+  Load comes after Forecast and Overdue.
 - **One dated bound for two callers.** `gateway/capacity.py` `dated_until`
   reaches this Sunday for the pill and includes the horizon's last day. The
   People dashboard and the capacity route both read it. Review round 1 found
@@ -1340,7 +1350,9 @@ feedback while the member drags. One fixture file of cases runs against both,
 so the two cannot drift.
 
 **Surfaces.** A Conflicts panel in the Analytics app. The report section kind
-`conflicts`. The chat tool `find_conflicts`, class A.
+`conflicts`. The chat tool `find_conflicts`, class A. Since R5f of
+`projects_reports.md` (2026-09-29), the Overview of the Reports app shows the
+Conflicts panel.
 
 **Rules for the build.** The S7c audit (2026-09-24) found twelve decisions
 that the text above does not make. The owner took four decisions on

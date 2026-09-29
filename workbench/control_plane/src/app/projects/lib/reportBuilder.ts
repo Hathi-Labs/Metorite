@@ -10,8 +10,11 @@
  *
  * ⚠️ **Only what the config can express.** `normalise_report_config` knows
  * `weeks`, `skip_current_week`, `include_subtree` and `sections`. So the
- * period chip offers three periods, and nothing that needs a field the
+ * period chip offers only `PERIODS`, and nothing that needs a field the
  * server does not have ("today", a custom range, a forward period).
+ *
+ * WS-27bn R5f (§8 R5f) adds Overview, the start of the one Reports app:
+ * `overviewState`, `saveAsReportState` and `overviewTableShown`.
  *
  * ⚠️ **The scope is a project node or the whole organization.** People and
  * teams are R5, behind `may_report_on` (§7.1). A picker that listed a person
@@ -41,8 +44,11 @@ import { shortDate } from "./outlook";
 import { flatten } from "./tree";
 
 /**
- * The sections, in the server's `SECTIONS` order, with the heading
- * `RenderedBody` draws for each.
+ * The sections, in the server's `SECTIONS` order, with the ONE name of each.
+ *
+ * WS-27bn R5f round 2 (§6.6 C). The builder tile, the card title of the
+ * panel, the clear row, the all-clear list and the email heading all say this
+ * name, so a member can join a tile to its card. `sectionName` reads it.
  *
  * ⚠️ A mirror of `reports.py` `SECTIONS`. `test_projects_report_sections_lockstep.py`
  * reads this list as text and fails when the two differ in name or order.
@@ -54,11 +60,16 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "load", label: "Open work" },
   { key: "capacity", label: "Who has the hours" },
   { key: "pulse", label: "Team pulse" },
-  { key: "stuck", label: "Overdue" },
+  { key: "stuck", label: "Stuck work" },
   { key: "hygiene", label: "Data hygiene" },
   { key: "conflicts", label: "Where the plan conflicts" },
   { key: "rebalance", label: "Who could help" },
 ];
+
+/** The one name of a section (§6.6 C). An unknown key names itself. */
+export function sectionName(key: string): string {
+  return REPORT_SECTIONS.find((s) => s.key === key)?.label ?? key;
+}
 
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
@@ -88,7 +99,11 @@ export interface PeriodOption {
   skip_current_week: boolean;
 }
 
-/** The three periods the config can express (§8 R1). */
+/**
+ * The periods the config can express (§8 R1). WS-27bn R5f adds "The last 12
+ * weeks", the period of Overview. So the chip names the Overview period,
+ * and "Save as report" keeps it.
+ */
 export const PERIODS: readonly PeriodOption[] = [
   { key: "last_week", label: "Last week", weeks: 1, skip_current_week: true },
   { key: "this_week", label: "This week", weeks: 1, skip_current_week: false },
@@ -97,6 +112,12 @@ export const PERIODS: readonly PeriodOption[] = [
     label: "The last 4 weeks",
     weeks: 4,
     skip_current_week: true,
+  },
+  {
+    key: "last_12_weeks",
+    label: "The last 12 weeks",
+    weeks: 12,
+    skip_current_week: false,
   },
 ];
 
@@ -172,6 +193,80 @@ export function newBuilderState(): BuilderState {
     nameTouched: false,
     subjectTouched: false,
   };
+}
+
+// ── WS-27bn R5f: Overview, the start of the one Reports app ────────────────
+
+/**
+ * The seven sections of Overview, in `SECTIONS` order. The Analytics app
+ * drew these seven, with the route defaults that `overviewState` copies, so
+ * Overview shows the same numbers (§8 R5f rule 4). `pulse`, `hygiene` and
+ * `rebalance` start off. A reader turns them on in the section list.
+ */
+export const OVERVIEW_SECTIONS: readonly string[] = [
+  "finished",
+  "throughput",
+  "outlook",
+  "load",
+  "capacity",
+  "stuck",
+  "conflicts",
+];
+
+/** The title of Overview, and the name its preview shows. */
+export const OVERVIEW_NAME = "Overview";
+
+/**
+ * The state Overview starts with (§8 R5f rule 3): the whole organization,
+ * no subject, the subtree, and the Analytics routes' own period, 12 weeks
+ * with the running week. It is not a template, so `template` is `null`.
+ */
+export function overviewState(): BuilderState {
+  return {
+    ...newBuilderState(),
+    name: OVERVIEW_NAME,
+    projectId: null,
+    weeks: 12,
+    skipCurrentWeek: false,
+    includeSubtree: true,
+    sections: orderedSections(OVERVIEW_SECTIONS),
+    template: null,
+    subject: null,
+  };
+}
+
+/**
+ * The builder that "Save as report" opens (§8 R5f rules 10 and 11). It keeps
+ * the scope, the subject, the period, the subtree and the sections of
+ * Overview. The template is `null` and the name is untouched, so
+ * `builderName` names the report from the chips.
+ */
+export function saveAsReportState(state: BuilderState): BuilderState {
+  return {
+    ...newBuilderState(),
+    projectId: state.projectId,
+    subject: state.subject,
+    weeks: state.weeks,
+    skipCurrentWeek: state.skipCurrentWeek,
+    includeSubtree: state.includeSubtree,
+    sections: orderedSections(state.sections),
+    template: null,
+    nameTouched: false,
+    subjectTouched: state.subject !== null,
+  };
+}
+
+/**
+ * True when Overview draws the KPI strip and the space table (§8 R5f rule 8).
+ *
+ * ⚠️ The summary routes take no subject, and they always count the subtree.
+ * So with a subject, or without the subtree, their counts would disagree
+ * with the sections under them. Then the strip and the table are absent.
+ */
+export function overviewTableShown(
+  state: Pick<BuilderState, "subject" | "includeSubtree">
+): boolean {
+  return state.subject === null && state.includeSubtree === true;
 }
 
 /** A saved report, opened for an edit. Every field comes from the row. */
@@ -972,17 +1067,17 @@ export function reportHeaderLine(parts: {
 const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   finished: "What happened",
   throughput: "What happened",
-  outlook: "Where we stand",
-  load: "Where we stand",
-  capacity: "Where we stand",
-  stuck: "Where we stand",
-  hygiene: "Where we stand",
+  outlook: "Where things stand",
+  load: "Where things stand",
+  capacity: "Where things stand",
+  stuck: "Where things stand",
+  hygiene: "Where things stand",
   pulse: "Who needs help",
   conflicts: "Who needs help",
   rebalance: "Who needs help",
 };
 
-const SECTION_GROUP_ORDER = ["What happened", "Where we stand", "Who needs help"];
+const SECTION_GROUP_ORDER = ["What happened", "Where things stand", "Who needs help"];
 
 /**
  * §6.5 item 4. The section checkboxes under three small labels. Each group
@@ -1044,14 +1139,15 @@ export function reportCardLine(
 /**
  * §6.5 item 12. The one empty line of the Reports home. The rail shows no
  * line of its own. The finished count shows only when it is a number, so the
- * line never says "undefined".
+ * line never says "undefined". Since R5f the gallery is above "Your
+ * reports", so the line says "above". The count comes from Overview.
  */
 export function homeEmptyLine(finishedCount?: number | null): string {
   const count =
     typeof finishedCount === "number" && Number.isFinite(finishedCount) && finishedCount > 0
       ? ` There ${finishedCount === 1 ? "is 1 finished task" : `are ${finishedCount} finished tasks`} to report on.`
       : "";
-  return `You have not saved a report yet.${count} Pick a question below.`;
+  return `You have not saved a report yet.${count} Pick a question above.`;
 }
 
 /** §6.5 item 12. The rail's two lists, by the server's `mine`, newest first. */
@@ -1079,4 +1175,78 @@ export function deleteShown(row: ReportRow | null): boolean {
 /** §6.5 item 10. The builder's title in edit mode. */
 export function editTitle(row: ReportRow): string {
   return `Edit: ${row.name}`;
+}
+
+// ── WS-27bn R5f repair round 1 ──────────────────────────────────────────────
+
+/**
+ * True when the builder must ask the server for a preview (rule 6).
+ *
+ * The preview on screen answers `shownKey`. When the member returns to Home,
+ * Overview comes back with the preview that Home kept, and its key equals
+ * the key of the choices. Then nothing is asked. A prompt asks nothing too.
+ */
+export function previewNeeded(
+  shownKey: string | null,
+  key: string,
+  blocked: boolean
+): boolean {
+  if (blocked) return false;
+  return shownKey !== key;
+}
+
+/** What the Reports pane shows. */
+export type ReportsPane = "wait-for-link" | "overview" | "builder" | "saved";
+
+/**
+ * The pane of `ReportsView` (rule 7).
+ *
+ * ⚠️ **A builder link decides the pane before the first preview.** While the
+ * address still holds a key of `REPORT_LINK_KEYS`, the pane waits, and
+ * Overview does not mount. Before round 1 Overview mounted first and sent
+ * its heavy preview for a link that opened the builder a moment later.
+ */
+export function reportsPane(parts: {
+  building: boolean;
+  selected: string | null;
+  linkPending: boolean;
+}): ReportsPane {
+  if (parts.building) return "builder";
+  if (parts.linkPending) return "wait-for-link";
+  if (parts.selected !== null) return "saved";
+  return "overview";
+}
+
+/**
+ * What the pane does with a builder link (R5f round 2, item 1).
+ *
+ * - `wait`: the catalogue or the tree has not arrived yet.
+ * - `read`: parse the link now. A failed tree read counts as arrived, and
+ *   the node is then dropped.
+ * - `drop`: the catalogue read failed. No template can be checked, so the
+ *   link is removed and Home shows the catalogue's error. Before round 2 the
+ *   pane waited for the catalogue for ever.
+ */
+export function linkStep(parts: {
+  hasTemplates: boolean;
+  catalogueFailed: boolean;
+  hasTree: boolean;
+  treeFailed: boolean;
+}): "wait" | "read" | "drop" {
+  if (!parts.hasTemplates) return parts.catalogueFailed ? "drop" : "wait";
+  if (!parts.hasTree && !parts.treeFailed) return "wait";
+  return "read";
+}
+
+/**
+ * The preview key on screen when the builder mounts (rule 6). Home passes
+ * the preview it kept, so Overview asks the server nothing for it.
+ */
+export function initialShownKey(initialPreview: { key: string } | null | undefined): string | null {
+  return initialPreview?.key ?? null;
+}
+
+/** True when the address holds a key of a builder link. */
+export function linkPending(params: URLSearchParams): boolean {
+  return REPORT_LINK_KEYS.some((k) => params.has(k));
 }

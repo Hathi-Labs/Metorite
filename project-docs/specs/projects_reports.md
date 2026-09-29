@@ -24,6 +24,14 @@ points "Report on this", "1:1 prep" and "My day"). **The UX pass BUILT
 the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
 Phases 2 and 3 are not built.
 
+**R5f BUILT 2026-09-30** (one Reports app: the Analytics app joins Reports,
+and Overview is the landing screen, §9 Q14). **R5f repair round 1 BUILT
+2026-09-30** (the pass-through fields and the builder redesign of §6.6).
+
+**R5f repair round 2 BUILT 2026-09-30.** It gives each section one name,
+makes each tile one line, and puts the HR grant into plain words. The email
+now matches the app.
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -169,17 +177,18 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:252`). The create control is "New report" (`:1359`).
+  `RenderedBody` (`:273`). The create control is "New report" (`:1806`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
 - `lib/api.ts:1613` to `:1653`. The client can list, create, patch, preview,
   render and delete a report, and read the templates and the subjects. It has
   no call for recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:721`).
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:829`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
-- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1117`)
-  and the template card (`TemplateCard`, `:1060`).
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:1406`)
+  and the template card (`TemplateCard`, `:1352`). These anchors were
+  measured again on 2026-09-30, after R5f.
 - **Since R5b-1:** the builder has the subject chip. `lib/reportBuilder.ts`
   holds `subjectOptions`, `reportLink` and `parseReportLink`.
 - **Since R5b-2:** `lib/reportEntry.ts` holds the three entry points. It
@@ -187,6 +196,8 @@ flag that applies, and a reason for each.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
+- **Since R5f:** Reports is `live`, and the Analytics app is gone. Its
+  Overview shows what Analytics showed (§9 Q14).
 
 ### 3.3 The chat
 
@@ -348,6 +359,13 @@ rail is absent on the home screen, because the cards list your reports.
 
 **In R2, the saved list has no filter.** The filter for scope, template and
 owner waits for a later slice.
+
+**Since R5f (§9 Q14)**, the home screen has three areas, top to bottom.
+1. **Overview.** The builder with no name field, over the whole organization. It shows the KPI strip, the space table and seven sections. It saves nothing, and "Save as report" keeps its choices.
+2. **Start from a question.** The template gallery from §4.
+3. **Your reports.** The saved reports, as cards.
+
+The rail is absent on Overview. It shows when a member opens a saved report.
 
 ### 6.2 The builder — one sentence
 
@@ -558,6 +576,49 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
   ran now.
 
 ---
+
+### 6.6 Builder redesign (owner, 2026-09-30)
+
+The owner looked at the Team pulse builder and asked for a UI that is "easier to use and non-threatening". The builder and the report must feel calm, friendly and obvious. They use fewer words, less chrome and more visual guidance. The data, the seams and the one look do not change (`DESIGN_SYSTEM.md`).
+
+**A. One header row.**
+1. The row holds a back button "Reports", the report name as an inline title, Cancel and the Save button.
+2. The title looks like a heading, and it shows a pencil on hover and on focus. It is still a labelled input with `MAX_REPORT_NAME`, and the `nameTouched` rule stays.
+3. "Delete report" stays in the row as a quiet button. It shows only when the server's `can_delete` is true.
+4. In Overview the title is "Overview", and it does not change. The row holds "Save as report".
+5. The pane has no heading "Reports", because the page header names the app. Home keeps "New report".
+
+**B. Three steps.** The left column is one card, "Build your report", with three numbered steps. A plain label sits above each control.
+1. "Who is it about?" holds the subject chip. A locked "My day" shows "You", a lock icon and a short note.
+2. "Which work?" holds the scope chip, and "Include the projects under it" sits under it.
+3. "What time?" holds the period chip. With no period, a soft pill says "Today's snapshot", with a clock icon. Its tooltip gives the reason.
+
+A report from a template shows a small badge "From template: [name]" under the header. The line "Started from a template" goes.
+
+**C. What to include.** Section tiles replace the checkbox grid.
+1. Each tile is one line: the icon of its section, its name and a check. The short line is the tooltip, and a screen reader reads it through `aria-describedby` (round 2).
+2. A chosen tile has an accent border, a soft accent tint and a check mark.
+3. A tile that a subject turns off is muted, and it says why.
+4. The groups are "What happened", "Where things stand" and "Who needs help". A report still needs one section. The last chosen tile is `aria-disabled`, and it says why.
+5. One map in `lib/sectionIcons.ts` names the icon of each section.
+6. Each section has one name, in `REPORT_SECTIONS` (round 2). The tile, the card title, the clear row and the email heading all say it. So a member can join a tile to its card.
+
+**D. The preview.**
+1. The preview sits on a soft surface, so the report reads like a page. A small "Live preview" label and a status dot replace the server sentence. A spinner shows while it updates.
+2. The report header shows the name. Under it, one line with small icons names the subject, the scope and the period. `reportHeaderLine` stays the one source of that text.
+3. An empty section is one compact row: a check mark, the section title and one friendly line. When every section is empty, one calm card says "All clear" and lists the sections.
+4. The friendly lines are short and active. `lib/sectionEmpty.ts` holds them, and the app, the email and the download read them.
+5. The table of a section opens from a small table button in the section header. An empty section has no table button.
+6. A footnote, such as the conflicts horizon, is one short line. It shows only when the section has rows.
+
+**E. Home.**
+1. One heading "Reports" shows.
+2. The space table takes the full width of the preview.
+3. A compact strip of the live templates sits above the Overview panels. The full gallery stays below.
+4. "Save as report" sits in the Overview header row.
+5. At 390 px a number shows before the controls. The controls sit behind "Change what you see".
+
+**F. Motion and density.** Only subtle transitions, such as a colour change. The type follows the density tokens. The review covers light, dark, compact, a changed accent and 390 px.
 
 ## 7. Data and privacy rules
 
@@ -1507,6 +1568,139 @@ Six mutations each turn a test red (v). They remove the filter, its 403, the aut
 Six mutations each turn a test red (ac). Three change the server: no PATCH check, a pass for every change, or no author path for a change.
 Three change a client: `can_edit` always true, no chat check, or Edit always.
 
+### R5f — One Reports app · AGENT-SAFE · BUILT 2026-09-30
+
+**What:** the Analytics app joins the Reports app (§9 Q14). Reports opens on Overview. Overview is the builder with no name field and no Save. It starts with the seven sections that the Analytics app showed, for the whole organization. The gallery and the saved reports come under it. "Save as report" opens the builder with the same choices.
+
+**Rules:**
+1. `PROJECT_APP_SECTIONS` holds no `analytics` entry, and `ProjectAppId` loses `"analytics"`. The Reports entry keeps its id, its icon and `live`.
+2. Overview renders through `POST /projects/reports/preview`, so `render_body` computes every section. Overview adds no second fetch of a section.
+3. `overviewState()` in `lib/reportBuilder.ts` is the start of Overview. It holds the whole organization, no subject, `weeks` 12, `skip_current_week` false and the subtree.
+4. Its sections are `finished`, `throughput`, `outlook`, `load`, `capacity`, `stuck` and `conflicts`. The Analytics app drew these seven with these defaults, so Overview shows the same numbers.
+5. `PERIODS` gains "The last 12 weeks", with `weeks` 12 and `skip_current_week` false. So the period chip names the Overview period, and a saved report keeps it.
+6. The KPI strip and the space table move out of `AnalyticsView.tsx` into one component. Overview draws them above the sections. Do not copy them.
+7. The strip and the table read `GET /projects/summary` for the whole organization, and `GET /projects/nodes/{id}/summary` for a node.
+8. They show only when the subject is "Everyone" and `include_subtree` is true. The summary routes take no subject, so their counts would disagree with the sections.
+9. In Overview the strip has no Overdue tile. The report tiles show Overdue from `stuck`, and one screen shows one Overdue tile.
+10. "Save as report" opens the builder with `saveAsReportState(state)`. It keeps the scope, the subject, the period, the subtree and the sections.
+11. The template of that state is `null`, and `builderName` names it. Overview itself writes no row.
+12. `resolveAppLink` in `lib/projectApps.ts` maps `analytics` to `reports`. The `?app=` link and the `projects.open_app` handler both call it. A second map is a defect.
+13. The chat tool `open_in_app` accepts `analytics` and opens `reports`. Its link is `/projects?app=reports`, and its docstring names Reports only.
+14. `OPENS_APP` in `ProjectToolCards.tsx` sends each analytics read to `reports`, with the label "Open Reports".
+15. Each panel in `RenderedBody` is the only child of its own `LayoutBoundary`. The Analytics app had this rule (WS-27bm S12), and Overview must keep it.
+16. The saved-reports rail is absent on Overview. It shows when a member opens a saved report.
+17. The code names the mode `reportsOverview`. `page.tsx` already uses `overview` for the overview of a project.
+
+**Non-goals:**
+- No server change, except the pass-through of repair round 1 (below). If the slice needs another, stop and change this spec first.
+- `NodeDashboard` does not change. Each dashboard keeps its own reads.
+- The analytics routes stay. The dashboards and the chat read them.
+- No new section and no new template. Overview is not a template, so the gallery does not list it.
+- `pulse`, `hygiene` and `rebalance` start off in Overview. A reader turns them on in "More".
+- No link to an Overview state. A link opens the builder, as R5b says.
+
+**Done when:**
+- (a) Vitest: `PROJECT_APP_SECTIONS` holds no `analytics` entry, and the Reports entry is `live`.
+- (b) Vitest: `resolveAppLink` maps `analytics` and `reports` to `reports`. It maps a preview id and an unknown id to `null`.
+- (c) Vitest: `overviewState()` holds no project, no subject, `weeks` 12, `skip_current_week` false and the seven sections in `SECTIONS` order. Its `periodKey` is `last_12_weeks`.
+- (d) Vitest: `saveAsReportState` keeps the scope, the subject, the period, the subtree and the sections. Its template is `null`, and `nameTouched` is false.
+- (e) Vitest: `overviewTableShown` is true for "Everyone" with the subtree, and false with a subject or without the subtree.
+- (f) Vitest: `OPENS_APP` holds no `analytics` value. Pytest: `open_in_app` with `analytics` sends `reports`, and its link is `/projects?app=reports`.
+- (g) Real database: for one reader and one scope, the preview of `overviewState()` equals the analytics routes. The throughput series and the finished total are the same.
+- (h) Real database: a member previews `overviewState()`. The `load` rows hold the member only, and `hidden_people` counts the others (§7.1 rule 3).
+- (i) `layoutBoundary.test.ts` finds each panel of `RenderedBody` in its own boundary. A mutation that removes one boundary turns it red.
+- (j) A visual review in light mode, at compact density, with a changed accent and at 390 px finds no defect. Do it as an admin, a lead and a member.
+
+**As built (2026-09-30).** Each rule has its fence. A mutation of each fence turns it red.
+
+- `projectApps.ts` holds `resolveAppLink` and `APP_ALIASES`. The page passes its own resolved list, so the flagged chat entry still opens. Fences: `projectApps.test.ts` (a), (b) and rule 12.
+- `reportBuilder.ts` holds `OVERVIEW_SECTIONS`, `overviewState`, `saveAsReportState` and `overviewTableShown`. Fence: `reportsOverview.test.ts` (c) to (e).
+- `ReportBuilder` takes `mode="reportsOverview"`. Overview has no name field and no Save. "Save as report" opens the builder, and the builder names the report "Untitled report".
+- `SpaceSummary.tsx` holds the KPI strip and the space table. For a node it adds the "Direct work" row, so the rows add up to the footer. `AnalyticsView.tsx` is deleted.
+- `RenderedBody` takes `lead`, and each of its ten panels is the only child of its own `LayoutBoundary`. Fence: `layoutBoundary.test.ts` (i).
+- `ReportsView` takes `onOpenNode` and no `finished`. The Home line takes its count from the Overview preview. The gallery is now above "Your reports", so the line says "Pick a question above".
+- `OPENS_APP` is exported, and each value is `reports`. `nav.py` holds `APP_ALIASES`. Fences: `ProjectToolCards.test.ts` and `test_projects_agent.py` (f).
+- `test_projects_report_overview_r5f.py` proves (g) and (h) on a real database. (g) runs for one project and for the whole organization. A wrong period and a missing row filter each turn it red.
+- (j) ran on 2026-09-30 with mocked routes, as an admin, a lead and a member. It found one defect: the pane repeated the page subtitle. The pane now has no second subtitle.
+
+⚠️ **Two differences from the Analytics app stay.** Repair round 1 removed the other two (the blocked list and the 20-row cap).
+1. The Overdue column of the space table comes from `/summary`, and the Overdue tile comes from `stuck`. The two use different open-work rules, so they can differ.
+2. `RenderedBody` draws Overdue before Open work. That order is older than R5f, and it is not the `SECTIONS` order.
+
+**First paint (2026-09-30).** Three measurements:
+- The server answers the Overview preview in 345 to 416 ms on the seeded scratch database.
+- One section alone takes 190 to 270 ms. Each request pays that cost once.
+- In `next dev` with a mocked server, the first panel draws 2900 to 3800 ms after navigation. A server delay of 1500 ms adds about 1000 ms.
+
+The first preview asks at once. Only a later change waits for the delay.
+
+#### R5f repair round 1 (2026-09-30) · BUILT 2026-09-30
+
+The review of R5f found lost figures. The owner also asked for a calmer builder (§6.6). This round does both.
+
+**Rules, the server pass-through.** `render_body` calls the functions of the routes and adds no arithmetic.
+1. The `load` section carries `effort` and `people_total` from `load_body`. Each row carries `est_mins` and `estimated`. The rows keep the cap of 20, because the Load route caps them too.
+2. Each week of the `throughput` section carries `cancelled`, `measured`, `no_start`, `median_hours` and `p90_hours`. The section carries `completed`, as the route summary does.
+3. The `stuck` section carries `blocked` and `blocked_total`. `blocked_body` in `analytics.py` is the one read, and the route and the section both call it.
+4. `capacity` and `conflicts` keep every row, as their routes do. The email cuts each list to `MAX_EMAIL_ROWS` in `reportEmail.ts`, so this adds no length to an email. The download keeps every row, because a file is the whole report. Round 2 corrected this rule, which said that the download cut its lists too.
+
+**Rules, the client.**
+5. The adapters in `reportPanels.ts` copy the new fields. An absent field stays absent.
+6. Home keeps the Overview state when a member opens the builder or a saved report and comes back. Overview asks the server again only when a choice changed.
+7. A builder link (`?template=`, `?subject=` or `?report_node=`) decides the pane before the first preview. Overview does not render first, and it sends no preview.
+8. The builder follows §6.6.
+
+**Done when:**
+- (k) Real database: test (g) compares each section with its route row for row. It seeds 23 people, so a list of more than 20 rows shows a cap. The load effort, the throughput weeks and the blocked list are equal.
+- (l) Vitest: each adapter copies the new fields, and the panel draws the effort line, the blocked list and the Finished cell.
+- (m) Vitest: a return to Home keeps the Overview state and asks for no second preview.
+- (n) Vitest: a builder link opens the builder, and Overview sends no preview.
+- (o) Vitest: the header row, the section tiles, the all-clear state and the table toggle follow §6.6.
+- (p) A mutation of each new test turns it red.
+- (q) A visual review finds no defect. It covers Team pulse (all clear and with data), Project status, My day and Overview. Each screen is seen in light, dark, compact, a changed accent and 390 px.
+
+**As built, round 1 (2026-09-30).** Each item names its fence. A mutation of each fence turns it red.
+
+- `blocked_body` in `analytics.py` holds the blocked read. `render_body` passes `effort`, `people_total`, the row estimates, the weekly figures and `completed` through, and it keeps every row of `capacity` and `conflicts`. Fence: `test_projects_report_overview_r5f.py` (k), with six mutations.
+- `reportPanels.ts` copies the new fields. Fence: `reportPassThrough.test.ts` (l).
+- `previewNeeded` and `reportsPane` in `reportBuilder.ts` hold rules 6 and 7. `ReportsView` keeps `overviewDraft` and `overviewPreview`. Fence: `reportsRedesign.test.ts` (m) and (n).
+- `lib/sectionIcons.ts` and `lib/sectionEmpty.ts` hold the icons and the clear lines. `reportEmail.ts` adds the same clear line as a note. Fence: `reportsRedesign.test.ts` (o).
+- `PanelChromeContext` in `AnalyticsPanels.tsx` puts the section icon and the table button in the card header. A panel outside a report draws as before.
+- `PANEL_HINTS` is short. Round 2 removed `PANEL_HINT_DETAILS`, because the tile's tooltip is now the short line.
+- The review found five defects, and this round fixes each one:
+  1. The tiles overflowed the card, because a fieldset keeps a min-content width.
+  2. The hints were cut off.
+  3. The title was cut off at 390 px.
+  4. A table showed a "2 rows" line.
+  5. The rebalance line said "nobody is idle" while one person was idle. `idleLine` now names the idle people.
+- The shared panels also changed the empty lines on `NodeDashboard`. For example, "No open work in this scope." is now "Nobody holds open work here right now." The look of the dashboard did not change.
+
+#### R5f repair round 2 (2026-09-30) · BUILT 2026-09-30
+
+The review and the verifier found two defects, two weak fences and seven UX items. The owner's words bind this round too: "easier to use and non-threatening".
+
+**Rules:**
+1. A builder link never hangs. `linkStep` in `reportBuilder.ts` drops the link when the catalogue read fails, and Home shows the error.
+2. `conflicts` is not clear when `hr_visible` is false. The server holds four kinds back, so the panel says "No conflicts in the kinds you can see."
+3. The email prints the blocked list and `blocked_total` of `stuck`. A stuck section with blocked work and nothing overdue still prints.
+4. Each of the ten sections gets its clear line in the email from `sectionEmpty.ts`, as in the app.
+5. The email says "…and N more" under each list that it cuts. It says the same under the Load rows that the server cut.
+6. `hrHints.ts` holds the three lines that replace the words "HR read access". The panels, the email and the chat read them.
+7. Each section has one name (§6.6 C item 6).
+8. A closed table carries `hidden="until-found"`, which an effect sets through a ref. React 19 writes `hidden` as a boolean.
+9. The "Change what you see" toggle has `aria-controls`.
+
+**Done when:**
+- (r) Vitest: `linkStep` drops a link when the catalogue fails.
+- (s) Vitest: conflicts without the grant are not clear, and the email does not say "No conflicts" beside the HR line.
+- (t) Real database: the crowd seed blocks four tasks, and a cut of the blocked list turns test (g) red.
+- (u) Vitest: `initialShownKey` seeds the key on screen, and `shownKey = useRef(null)` turns a test red.
+- (v) Vitest: the email checks of rules 3 to 6, one test for each of the ten sections.
+- (w) Vitest: the one-line tile, the last tile, the group labels, the all-clear rows on a phone, find-in-page and `aria-controls`.
+- (x) A visual review finds no defect on four screens. They are Team pulse all clear at 1440 and 390 px, and Team pulse with data under a changed accent. The fourth is Overview for a member without the grant.
+
+**As built, round 2 (2026-09-30).** `reportsRedesign.test.ts` and `reportEmailRound2.test.ts` hold the fences. A mutation of each new fence turns it red: 13 in the client and 1 on the real database.
+
 ### R6 — The AI summary, on request · AGENT-SAFE
 
 **What:** a **Summarize with AI** control on a rendered report. When a person
@@ -1596,7 +1790,7 @@ item 6) and the chat's `send_report` both call it.
 ### Order
 
 **Phase 1, on request:** R1 → R2 → R2b → R3 (R3a → R3b → R3c → R3d) → R5 →
-R4 → R4b → R6 → R8 → R9.
+R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
 
 - R1 and R2 give a member control of what exists.
 - R2b draws each section as a chart or a progress bar.
@@ -1662,6 +1856,7 @@ that the render does not need a saved row.
 | Q11 (2026-09-28) | May a report show the address of its author? | The owner: "author email address is fine for people from the same org". Every reader is in the organization of the report. So `created_by` stays in the report, the list and the chat. Nothing changes. |
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
 | Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
+| Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
@@ -1686,6 +1881,7 @@ hides the file that hung.
 ```bash
 uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_report_scope_r5b.py \
+  tests/unit/test_projects_report_overview_r5f.py \
   tests/unit/test_projects_report_sections_r3d.py \
   tests/unit/test_projects_report_sections_r3.py \
   tests/unit/test_projects_report_sections_r3b.py \
@@ -1720,6 +1916,8 @@ names a built tool which never calls the route fails there.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
+- `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
+  `reportsOverview.test.ts`.
 
 Client, in `workbench/control_plane`:
 

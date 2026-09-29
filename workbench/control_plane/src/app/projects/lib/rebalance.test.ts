@@ -80,7 +80,7 @@ describe("the words", () => {
   it("reads absent lists as absent, never as a crash", () => {
     expect(rebalanceTasks(report({ hr_visible: false }))).toEqual([]);
     expect(rebalancePickups(undefined)).toEqual([]);
-    expect(REBALANCE_HR_HINT).toBe("Rebalancing needs HR read access. An admin can see it.");
+    expect(REBALANCE_HR_HINT).toBe("This part shows people's skills and hours, so only admins see it. Ask an admin if you need it.");
   });
 });
 

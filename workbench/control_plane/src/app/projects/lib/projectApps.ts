@@ -11,7 +11,7 @@
  * *inside* one app, they are not routes, they carry no `feature` grant, and
  * they never belong in `PANES` — `nav.test.ts` asserts `PANES` equals the
  * launch-surface allowlist, so adding them there would fail it and would
- * also put "Analytics" in the global nav, which is not what it is.
+ * also put "Reports" in the global nav, which is not what it is.
  *
  * ⚠️ **`preview` means NOT BUILT, never "hidden by permission"** — the same
  * word `launch_surface.md` uses, and the same rule: a preview entry is
@@ -19,7 +19,7 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "analytics" | "reports" | "ai-chat" | "settings";
+export type ProjectAppId = "reports" | "ai-chat" | "settings";
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -46,18 +46,14 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
       // "My work" was REMOVED here (owner directive 2026-08-31): /tasks IS
       // the personal lens over the one store (D52-D54), so an entry for it
       // inside Projects was a second door to the same room.
-      {
-        id: "analytics",
-        label: "Analytics",
-        icon: "BarChart3",
-        note: "Every space at a glance",
-        launch: "live",
-      },
+      // WS-27bn R5f (`projects_reports.md` §9 Q14). The Analytics app joined
+      // Reports. Reports opens on Overview, which shows what Analytics
+      // showed, and `resolveAppLink` sends the old id here.
       {
         id: "reports",
         label: "Reports",
         icon: "FileText",
-        note: "What gets delivered",
+        note: "Look now, or save to deliver",
         // §9.12.8 slice 1 renders in the app. Delivery is built and DARK —
         // `PROJECT_REPORT_EMAIL_ENABLED` is off, and arming it is the owner's.
         launch: "live",
@@ -126,6 +122,34 @@ export function projectAppSections(
       item.id === "ai-chat" && chat ? { ...item, launch: "live" } : item,
     ),
   }));
+}
+
+/**
+ * Old app ids that still open an app (WS-27bn R5f). A chat card, a saved
+ * link or a model can still say `analytics`, and it opens Reports.
+ */
+const APP_ALIASES: Readonly<Record<string, ProjectAppId>> = {
+  analytics: "reports",
+};
+
+/**
+ * The live app an `?app=` link or a `projects.open_app` call opens, or
+ * `null`. It reads an old id through `APP_ALIASES`. A preview entry and an
+ * unknown id give `null`, because the sidebar would refuse them.
+ *
+ * ⚠️ The ONE map of an app id. The page's link handler and its chat
+ * handler both call it, and a second map is a defect (R5f rule 12).
+ */
+export function resolveAppLink(
+  id: string | null | undefined,
+  sections: readonly ProjectAppSection[] = PROJECT_APP_SECTIONS,
+): ProjectAppId | null {
+  const raw = String(id ?? "").trim().toLowerCase();
+  const wanted = APP_ALIASES[raw] ?? raw;
+  const hit = sections
+    .flatMap((s) => s.items)
+    .find((i) => i.id === wanted && i.launch === "live");
+  return hit ? hit.id : null;
 }
 
 /** The heading the space tree sits under. */

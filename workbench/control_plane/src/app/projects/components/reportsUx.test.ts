@@ -141,7 +141,9 @@ describe("(13) the header line", () => {
 
   it("draws the line the caller built", () => {
     const line = "About Meera Iyer · In Printer X2 · 31 Aug – 27 Sep 2026";
-    expect(html(createElement(RenderedBody, { body, headerLine: line }))).toContain(line);
+    // R5f round 1 (§6.6 D item 2). Each part of the one line, with its icon.
+    const markup = html(createElement(RenderedBody, { body, headerLine: line }));
+    for (const part of line.split(" \u00b7 ")) expect(markup).toContain(part);
   });
 
   it("says Whole organization, never Every space you can see", () => {
@@ -177,18 +179,18 @@ describe("(11) the gallery", () => {
   });
 
   it("the empty state is one line, with no row of buttons", () => {
-    expect(markup).toContain("You have not saved a report yet. Pick a question below.");
+    expect(markup).toContain("You have not saved a report yet. Pick a question above.");
     expect(markup).not.toContain("Start with:");
   });
 
   it("Home says the one empty line, and the rail has none of its own", () => {
     expect(homeEmptyLine(12)).toBe(
-      "You have not saved a report yet. There are 12 finished tasks to report on. Pick a question below."
+      "You have not saved a report yet. There are 12 finished tasks to report on. Pick a question above."
     );
     expect(homeEmptyLine(1)).toContain("There is 1 finished task to report on.");
     for (const absent of [undefined, null, 0, Number.NaN]) {
       const line = homeEmptyLine(absent);
-      expect(line).toBe("You have not saved a report yet. Pick a question below.");
+      expect(line).toBe("You have not saved a report yet. Pick a question above.");
       expect(line).not.toMatch(/undefined|NaN/);
     }
     const withCount = html(
@@ -204,7 +206,8 @@ describe("(11) the gallery", () => {
     );
     expect(withCount).toContain("There are 3 finished tasks to report on.");
     expect(VIEW).not.toContain("No reports yet");
-    expect(VIEW).toContain("const railShown = !building && (rows === null || rows.length > 0);");
+    // WS-27bn R5f rule 16. Home is Overview, and the rail is absent there.
+    expect(VIEW).toContain("const railShown = !building && selected !== null;");
   });
 
   it("the rail tag says the scope in the chips' words", () => {

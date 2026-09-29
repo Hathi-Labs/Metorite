@@ -37,8 +37,6 @@ import {
   type StuckReport,
   type LoadReport,
   type OutlookReport,
-  type CapacityReport,
-  type ConflictsReport,
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
@@ -192,13 +190,13 @@ import {
   showsDashboard,
   spaceOf,
 } from "./lib/tree";
-import AnalyticsView from "./components/AnalyticsView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
   chatEnabled,
   projectAppSections,
+  resolveAppLink,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
 } from "./lib/projectApps";
@@ -749,20 +747,12 @@ function ProjectsWorkspace() {
   const [mergingTasks, setMergingTasks] = useState<readonly string[] | null>(null);
   const [mergeBusy, setMergeBusy] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
-  // Analytics reads the portfolio roll-up — the same shape as a node's, so
-  // one dashboard component draws both.
-  const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
   // §9.12.7's three reads. Held SEPARATELY rather than in one object: each
   // one can fail or arrive on its own, and a single slot would make the whole
   // dashboard wait for the slowest of them.
   const [stuck, setStuck] = useState<StuckReport | null>(null);
   const [load, setLoad] = useState<LoadReport | null>(null);
   const [outlook, setOutlook] = useState<OutlookReport | null>(null);
-  // WS-27bm S7a. The Analytics app's own read — the node dashboards do not
-  // draw it, so it is not fetched for them.
-  const [capacity, setCapacity] = useState<CapacityReport | null>(null);
-  // WS-27bm S7c. The Analytics app's own read too, drawn beside Capacity.
-  const [conflicts, setConflicts] = useState<ConflictsReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
@@ -1325,11 +1315,11 @@ function ProjectsWorkspace() {
   const dashboardOnly =
     !app && Boolean(selected) && showsDashboard(selectedLevel);
   /** Any surface that is not a project's board — no views, no composer. */
-  // An app pane (Analytics, Reports, the AI chat) is not a view of the
+  // An app pane (Reports, the AI chat, Settings) is not a view of the
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "analytics" || app === "reports" || app === "ai-chat" || app === "settings";
+    dashboardOnly || app === "reports" || app === "ai-chat" || app === "settings";
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1358,31 +1348,13 @@ function ProjectsWorkspace() {
     };
   }, [selected?.id, treeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Analytics' own read. Separate from `summary` because the two answer
-  // different questions and are on screen at different times — sharing one
-  // slot would make switching between them flash the wrong numbers.
-  useEffect(() => {
-    if (app !== "analytics") return;
-    let cancelled = false;
-    setPortfolio(null);
-    projectsApi
-      .portfolio()
-      .then((next) => {
-        if (!cancelled) setPortfolio(next);
-      })
-      .catch(() => {
-        if (!cancelled) setPortfolio(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [app, treeKey]);
-
   /**
    * §9.12.7 (a) to (d), for whatever scope is on screen.
    *
-   * ⚠️ **The SAME four reads now feed the Analytics pane AND every node
-   * dashboard** (owner ask 2026-09-17: *"in the analytics, as well as the
+   * ⚠️ **The SAME four reads feed every node dashboard.** WS-27bn R5f
+   * moved the portfolio's panels into Reports' Overview, which renders
+   * through the report preview, so this effect no longer runs for an app.
+   * They fed the Analytics pane too until then (owner ask 2026-09-17: *"in the analytics, as well as the
    * overview of each project/subproject, I want to see the workload of the
    * individual people who are working on the project"*). The endpoints have
    * taken a node scope since the portfolio-scope slice; nothing was asking
@@ -1394,8 +1366,8 @@ function ProjectsWorkspace() {
    *
    * Each read settles on its own, so one slow panel never blanks the others.
    */
-  const analyticsNode = app === "analytics" ? undefined : selected?.id;
-  const wantsAnalytics = app === "analytics" || dashboardOnly || overview;
+  const analyticsNode = selected?.id;
+  const wantsAnalytics = dashboardOnly || overview;
   useEffect(() => {
     if (!wantsAnalytics) return;
     let cancelled = false;
@@ -1431,33 +1403,6 @@ function ProjectsWorkspace() {
       cancelled = true;
     };
   }, [wantsAnalytics, analyticsNode, treeKey]);
-
-  /**
-   * WS-27bm S7a — the Capacity panel, for the Analytics app only.
-   *
-   * A separate effect rather than a sixth read in the one above: that one
-   * also feeds every node dashboard, and those do not draw this panel. A
-   * rejected read stays null and renders nothing, as the others do.
-   */
-  useEffect(() => {
-    if (app !== "analytics") return;
-    let cancelled = false;
-    setCapacity(null);
-    projectsApi.capacity().then(
-      (r) => !cancelled && setCapacity(r),
-      () => !cancelled && setCapacity(null)
-    );
-    // S7c — the same effect, because the same app draws it. A rejected read
-    // stays null and renders nothing, as the others do.
-    setConflicts(null);
-    projectsApi.conflicts().then(
-      (r) => !cancelled && setConflicts(r),
-      () => !cancelled && setConflicts(null)
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [app, treeKey]);
 
   // Selecting nothing is a real state (an empty portfolio), so the default is
   // applied only when the current selection has fallen out of the filtered set.
@@ -2462,19 +2407,19 @@ function ProjectsWorkspace() {
     [openWithStatuses]
   );
 
-  // `?app=analytics|reports` opens one of the app's own destinations — the
-  // door a chat card uses (WS-27bm, `ProjectToolCards`). Only a LIVE entry
-  // opens; a preview slug is ignored, because the sidebar would refuse it.
-  // Consumed after the open, like `?task=`, so the same link works twice.
+  // `?app=reports` opens one of the app's own destinations — the door a
+  // chat card uses (WS-27bm, `ProjectToolCards`). Only a LIVE entry opens;
+  // a preview slug is ignored, because the sidebar would refuse it. Since
+  // WS-27bn R5f, `resolveAppLink` also sends an old `?app=analytics` to
+  // Reports. Consumed after the open, like `?task=`, so the same link works
+  // twice.
   const appLink = searchParams.get("app");
   useEffect(() => {
     if (!appLink) return;
-    const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
-      (i) => i.id === appLink && i.launch === "live",
-    );
+    const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
     if (live) {
-      if (live.id === "settings") setSettingsSeed({});
-      setApp(live.id);
+      if (live === "settings") setSettingsSeed({});
+      setApp(live);
     }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
@@ -2513,15 +2458,14 @@ function ProjectsWorkspace() {
   });
   useFrontendTool({
     name: "projects.open_app",
-    description: "Open a live Projects app (analytics, reports).",
+    description: "Open a live Projects app (reports).",
     dispatched: true,
     handler: (args) => {
-      const id = String(args.app ?? "");
-      const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
-        (i) => i.id === id && i.launch === "live",
-      );
+      // WS-27bn R5f. The one map of an app id, which sends `analytics` to
+      // Reports. The `?app=` link above calls it too.
+      const live = resolveAppLink(String(args.app ?? ""), PROJECT_APP_SECTIONS);
       if (!live) return "not a live app";
-      setApp(live.id);
+      setApp(live);
       return "opened";
     },
   });
@@ -3707,37 +3651,19 @@ function ProjectsWorkspace() {
     </div>
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
-    // Its own reads; it shares only `finished`, to say how much there is to
-    // report on while the list is empty.
-    <ReportsView finished={finished} />
-  ) : app === "analytics" ? (
-    // Analytics — the portfolio roll-up in Plane's shape: a KPI strip over
-    // a per-space state matrix (see AnalyticsView's header for sources).
-    // Same endpoint as the dashboards, so the two cannot disagree.
-    <>
-      {shownError ? renderState("error", shownError) : null}
-      {portfolio ? (
-        <AnalyticsView
-          summary={portfolio}
-          stuck={stuck}
-          load={load}
-          throughput={throughput}
-          finished={finished}
-          outlook={outlook}
-          capacity={capacity}
-          conflicts={conflicts}
-          onOpen={(id) => {
-            const row = flatten(visibleRoots).find((e) => e.node.id === id);
-            if (row) {
-              setApp(null);
-              setSelected(row.node as ProjectRow);
-            }
-          }}
-        />
-      ) : (
-        renderState("loading", "Counting every space…")
-      )}
-    </>
+    // WS-27bn R5f: Reports is also where the Analytics app went. It opens on
+    // Overview, which renders through the report preview, so it has its own
+    // reads and takes nothing from the page. A row of Overview's space table
+    // opens that node here, as the Analytics table did.
+    <ReportsView
+      onOpenNode={(id) => {
+        const row = flatten(visibleRoots).find((e) => e.node.id === id);
+        if (row) {
+          setApp(null);
+          setSelected(row.node as ProjectRow);
+        }
+      }}
+    />
   ) : dashboardOnly ? (
     // A SPACE IS NOT A PROJECT (owner directive 2026-08-31). It shows a
     // roll-up of everything beneath it and none of a project's machinery —

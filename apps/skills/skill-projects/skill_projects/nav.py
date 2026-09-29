@@ -34,7 +34,11 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 
 #: The apps the page opens by id. Only LIVE entries open (the page checks
 #: `launch === "live"` again, so a slug here that is not live does nothing).
-APPS = ("analytics", "reports")
+APPS = ("reports",)
+#: Old app ids that still open an app (WS-27bn R5f). The Analytics app
+#: joined Reports, so a model that says ``analytics`` opens Reports. The
+#: page maps the id again through ``resolveAppLink`` in ``projectApps.ts``.
+APP_ALIASES = {"analytics": "reports"}
 TARGETS = ("task", "project", "app")
 
 
@@ -51,10 +55,10 @@ async def _dispatch(name: str, args: dict[str, Any]) -> bool:
 @_annotate(read_only=True, idempotent=True)
 async def open_in_app(target: str, target_id: str = "") -> str:
     """Open something in the member's Projects page: target is task (a
-    task's full_id), project (a node's full_id) or app (analytics or
-    reports, as target_id). It reads the row first, then asks the open page
-    to show it. It changes nothing. The result always carries a link, for
-    a member who is not on the Projects page."""
+    task's full_id), project (a node's full_id) or app (reports, as
+    target_id). It reads the row first, then asks the open page to show
+    it. It changes nothing. The result always carries a link, for a member
+    who is not on the Projects page."""
     which = str(target or "").strip().lower()
     # A run with nobody to act as opens nothing, even an app that needs no
     # read: the same refusal every gateway call makes (`client.headers`).
@@ -63,6 +67,7 @@ async def open_in_app(target: str, target_id: str = "") -> str:
         return f"target is one of {', '.join(TARGETS)}."
     if which == "app":
         app = str(target_id or "").strip().lower()
+        app = APP_ALIASES.get(app, app)
         if app not in APPS:
             return f"app is one of {', '.join(APPS)}."
         sent = await _dispatch("projects.open_app", {"app": app})

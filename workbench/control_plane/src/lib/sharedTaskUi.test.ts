@@ -280,6 +280,9 @@ const SEAM: {
       "app/projects/components/NodeDashboard.tsx":
         "the 'Direct work' row: tasks that sit on a project in no " +
         "subproject. A project fact, not a subtask",
+      "app/projects/components/SpaceSummary.tsx":
+        "the same 'Direct work' row, in the space table of Reports' " +
+        "Overview (WS-27bn R5f). A project fact, not a subtask",
     },
   },
   {

@@ -18,7 +18,8 @@ const SURFACES: Array<[string, string]> = [
   ["src/app/projects/components/ReportsView.tsx", '<Table title="Forecast">'],
   ["src/app/projects/lib/reportBuilder.ts", '{ key: "outlook", label: "Forecast" }'],
   ["src/components/projects/ProjectToolCards.tsx", 'analytics_outlook: { icon: "Telescope", label: "Forecast" }'],
-  ["src/lib/reportEmail.ts", "lead: `Forecast: "],
+  // R5f round 2: the email heading reads the one name, which is "Forecast".
+  ["src/lib/reportEmail.ts", "lead: `${sectionName(\"outlook\")}: "],
   ["../../apps/skills/skill-projects/skill_projects/reads.py", 'f"Forecast for '],
   ["../../apps/skills/skill-projects/skill_projects/views.py", '"## Forecast"'],
   ["../../apps/skills/skill-projects/skill_projects/views.py", '"title": "Forecast"'],

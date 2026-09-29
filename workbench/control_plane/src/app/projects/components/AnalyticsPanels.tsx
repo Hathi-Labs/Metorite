@@ -5,7 +5,8 @@
  *
  * Three endpoints existed and NOTHING drew them. `/analytics/stuck`,
  * `/analytics/load` and `/analytics/throughput` all shipped with tests and no
- * surface, and `AnalyticsView`'s own header recorded the gap it left: *"a
+ * surface, and the header of the Analytics view (deleted in WS-27bn R5f)
+ * recorded the gap it left: *"a
  * chart drawn from data we do not have would be an invented trend line. When
  * a time-series endpoint exists, that section slots in below the table."*
  * This is that section, plus the two panels beside it.
@@ -16,8 +17,8 @@
  * paginated, so a total taken in the browser is a total of one page. It looks
  * right, and nothing on the way says otherwise.
  *
- * ⚠️ **No chart library.** Same reasoning `AnalyticsView` used for dropping
- * TanStack: one screen of bars is not worth a dependency, and every charting
+ * ⚠️ **No chart library.** Same reasoning the old Analytics view used for
+ * dropping TanStack (its table is `SpaceSummary.tsx` since WS-27bn R5f): one screen of bars is not worth a dependency, and every charting
  * package brings its own palette — which is the second colour vocabulary
  * `AGENTS.md` rule 1 refuses. Bars are flex children with a percentage width,
  * so they inherit the one look for free.
@@ -30,7 +31,10 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
-import { useId } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+
+import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 
 import {
   type AccentHue,
@@ -95,6 +99,9 @@ import {
   velocityLine,
 } from "../lib/outlook";
 import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
+import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT } from "../lib/hrHints";
+import { sectionName } from "../lib/reportBuilder";
+import { SECTION_CLEAR_LINES } from "../lib/sectionEmpty";
 import {
   focusMore,
   focusShown,
@@ -186,6 +193,35 @@ function duration(hours: number | null | undefined): string {
   return `${Math.round(hours / 24)}d`;
 }
 
+/**
+ * The line of a rebalance section with no task at risk and no pickup, when
+ * somebody is idle. "Nobody is idle" would then be false, so the panel says
+ * who is idle and why no pickup shows. `null` when nobody is idle.
+ */
+export function idleLine(idle: number | null | undefined): string | null {
+  if (typeof idle !== "number" || idle <= 0) return null;
+  return idle === 1
+    ? "Nothing is at risk. 1 idle person has no task that fits."
+    : `Nothing is at risk. ${idle} idle people have no task that fits.`;
+}
+
+/**
+ * What a report adds to a panel's card (WS-27bn R5f round 1, §6.6 D).
+ *
+ * `RenderedBody` wraps each panel in a provider. The panel then shows the
+ * section's icon beside its title, and a small table button in its header.
+ * The table opens inside the same card. A panel outside a report, such as
+ * one on `NodeDashboard`, gets no provider and draws as before.
+ */
+export interface PanelChrome {
+  /** The section's icon, from `lib/sectionIcons.ts`. */
+  icon?: string;
+  /** The section as a table. Absent, and the header has no table button. */
+  table?: React.ReactNode;
+}
+
+export const PanelChromeContext = createContext<PanelChrome | null>(null);
+
 function Panel({
   title,
   hint,
@@ -206,23 +242,67 @@ function Panel({
   // "What we finished, region" and not an anonymous section. `useId` keeps
   // two panels of one kind on one page from sharing an id.
   const titleId = useId();
+  const chrome = useContext(PanelChromeContext);
+  const [tableOpen, setTableOpen] = useState(false);
+  // R5f round 2 (item 13). React 19 writes `hidden` as a boolean, so the
+  // value `until-found` is set on the element here. Find-in-page then reaches
+  // a closed table, and the browser opens it with `beforematch`.
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = tableRef.current;
+    if (!el) return;
+    if (tableOpen) {
+      el.removeAttribute("hidden");
+      return;
+    }
+    el.setAttribute("hidden", "until-found");
+    const found = () => setTableOpen(true);
+    el.addEventListener("beforematch", found);
+    return () => el.removeEventListener("beforematch", found);
+  }, [tableOpen]);
   return (
     <section
       className="rounded-lg border border-border bg-card p-3"
       aria-labelledby={titleId}
     >
-      <header className="mb-3">
-        <h3 id={titleId} className="text-xs font-semibold text-foreground">
-          {title}
-        </h3>
-        <p
-          className="mt-0.5 text-[11px] text-muted-foreground"
-          title={hintTitle ?? undefined}
-        >
-          {hint}
-        </p>
+      <header className="mb-3 flex items-start gap-2">
+        {chrome?.icon ? (
+          <Icon name={chrome.icon} className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <h3 id={titleId} className="text-xs font-semibold text-foreground">
+            {title}
+          </h3>
+          <p
+            className="mt-0.5 text-[11px] text-muted-foreground"
+            title={hintTitle ?? undefined}
+          >
+            {hint}
+          </p>
+        </div>
+        {chrome?.table ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="Table2"
+            aria-expanded={tableOpen}
+            aria-label={tableOpen ? "Hide the table" : "Show as a table"}
+            title={tableOpen ? "Hide the table" : "Show as a table"}
+            onClick={() => setTableOpen((o) => !o)}
+          />
+        ) : null}
       </header>
       {children}
+      {chrome?.table ? (
+        // The server render writes `hidden=""`. The effect above turns it
+        // into `until-found` in the browser. ⚠️ Keep this div BARE:
+        // `until-found` does not set `display: none` (Tailwind's preflight
+        // excludes it), so a border, margin or padding here still paints
+        // while the table is closed. The box lives on the child.
+        <div ref={tableRef} hidden={!tableOpen}>
+          <div className="mt-3 border-t border-border pt-3">{chrome.table}</div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -230,8 +310,9 @@ function Panel({
 /**
  * One figure in a tile, and never a blank. THE tile (WS-27bn R2b).
  *
- * `AnalyticsView`, `NodeDashboard` and the report's summary row each held a
- * copy until R2b. This is the `NodeDashboard` copy, which already took a
+ * The old Analytics view, `NodeDashboard` and the report's summary row each
+ * held a copy until R2b. Since WS-27bn R5f that view is gone, and
+ * `SpaceSummary` and `RenderedBody` draw its tiles with this one. This is the `NodeDashboard` copy, which already took a
  * `title`, and one more prop: `display`, for a figure that is words, such as
  * a median that reads "3d" or "not measured".
  *
@@ -352,7 +433,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
 
   return (
     <Panel
-      title="Where work is stuck"
+      title={sectionName("stuck")}
       hint={
         // WS-27bn R3a. A report sends the bands and no blocked list, so its
         // hint does not name what the panel cannot show.
@@ -515,12 +596,12 @@ export function LoadPanel({ data }: { data: LoadReport }) {
 
   return (
     <Panel
-      title="Who is overloaded"
+      title={sectionName("load")}
       hint={PANEL_HINTS.load}
     >
       {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.load)}
         </p>
       ) : (
         <>
@@ -651,12 +732,12 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
 
   return (
     <Panel
-      title="Who has the hours"
+      title={sectionName("capacity")}
       hint={PANEL_HINTS.capacity}
     >
       {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No open work in this scope.")}
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.load)}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -753,7 +834,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
           beside hours. Without the grant there are none to explain. */}
       {data?.hr_visible === false ? (
         <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          Hours, absences and skills need HR read access. An admin can see them.
+          {CAPACITY_HR_HINT}
         </p>
       ) : (
         <p
@@ -788,12 +869,19 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
 
   return (
     <Panel
-      title="Where the plan conflicts"
+      title={sectionName("conflicts")}
       hint={PANEL_HINTS.conflicts}
     >
       {drawn.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          {emptyPanelLine(data?.hidden_people, "No conflicts in this scope.")}
+          {emptyPanelLine(
+            data?.hidden_people,
+            // R5f round 2 (item 2). Without the grant the server holds four
+            // kinds back, so "The plan lines up" would be a claim about them.
+            data?.hr_visible === false
+              ? "No conflicts in the kinds you can see."
+              : SECTION_CLEAR_LINES.conflicts,
+          )}
         </p>
       ) : (
         <>
@@ -856,11 +944,11 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
       )}
       {data?.hr_visible === false ? (
         <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          Overcommitment, absences, leaving dates and work over a ceiling need
-          HR read access. An admin can see them.
+          {CONFLICTS_HR_HINT}
         </p>
       ) : (
-        span && (
+        span &&
+        asList(data?.rows).length > 0 && (
           <p
             className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground"
             title="The window bounds absences, leaving dates, overcommitment and parallel work. A dependency is wrong whenever it falls."
@@ -898,14 +986,14 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
 
   return (
     <Panel
-      title="Who could help"
+      title={sectionName("rebalance")}
       hint={PANEL_HINTS.rebalance}
     >
       {hidden ? (
         <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
       ) : tasks.length === 0 && pickups.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No task at risk and nobody idle in this scope.
+          {idleLine(data?.idle_total) ?? SECTION_CLEAR_LINES.rebalance}
         </p>
       ) : (
         <>
@@ -1017,7 +1105,7 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
 
   return (
     <Panel
-      title="What open tasks are missing"
+      title={sectionName("hygiene")}
       hint={PANEL_HINTS.hygiene}
     >
       {typeof open !== "number" || open <= 0 ? (
@@ -1120,7 +1208,7 @@ export function PulsePanel({
 
   return (
     <Panel
-      title="Who needs help today"
+      title={sectionName("pulse")}
       hint={PANEL_HINTS.pulse}
       // §6.5 item 17. The note sits in the hint's tooltip, not as a
       // line of its own under the cards.
@@ -1128,7 +1216,7 @@ export function PulsePanel({
     >
       {rows.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
-          No card to show. Nobody you can see holds open work in this scope.
+          {emptyPanelLine(data?.hidden_people, SECTION_CLEAR_LINES.pulse)}
         </p>
       ) : (
         // `@container`: the grid follows the panel's own width, not the
@@ -1352,7 +1440,7 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
 
   return (
     <Panel
-      title="Are we getting faster"
+      title={sectionName("throughput")}
       hint={PANEL_HINTS.throughput}
     >
       {/* ⚠️ A CHART WITH NO AXIS IS A PICTURE. Photographed 2026-09-17: six
@@ -1495,7 +1583,7 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
 
   return (
     <Panel
-      title="What we finished"
+      title={sectionName("finished")}
       hint={`${FINISHED_HINT_LEAD}, ${period(data?.period_start, data?.period_end)}.`}
     >
       {projects.length === 0 ? (
@@ -1691,7 +1779,7 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
 
   return (
     <Panel
-      title="Will this land"
+      title={sectionName("outlook")}
       hint={PANEL_HINTS.outlook}
     >
       {/* ⚠️ THE ANSWER FIRST, and at a size nothing else on the page reaches.

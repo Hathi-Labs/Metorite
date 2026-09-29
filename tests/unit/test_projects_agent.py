@@ -1142,6 +1142,20 @@ async def test_every_open_in_app_result_carries_a_link(monkeypatch) -> None:
         assert "\n  link: /projects?" in out, out
 
 
+async def test_open_in_app_sends_analytics_to_reports(monkeypatch) -> None:
+    """WS-27bn R5f (f). The Analytics app joined Reports. A model that still
+    says ``analytics`` opens Reports, and the link names Reports."""
+    sent = dispatched(monkeypatch)
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    out = await skill_projects.open_in_app("app", "analytics")
+    assert sent == [("projects.open_app", {"app": "reports"})]
+    assert calls == []
+    assert "link: /projects?app=reports" in out
+    assert "analytics" not in out
+    doc = skill_projects.open_in_app.__doc__ or ""
+    assert "reports" in doc and "analytics" not in doc
+
+
 async def test_open_in_app_refuses_an_app_that_is_not_one(monkeypatch) -> None:
     sent = dispatched(monkeypatch)
     calls = fake_gateway(monkeypatch, _detail_responder)

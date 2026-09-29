@@ -136,11 +136,13 @@ describe("the scope picker offers the tree and the whole organization only", () 
 });
 
 describe("the period chip offers only what the config can express", () => {
-  it("offers three periods and their exact config", () => {
+  it("offers four periods and their exact config", () => {
+    // WS-27bn R5f adds the Overview period, "The last 12 weeks".
     expect(PERIODS.map((p) => [p.label, p.weeks, p.skip_current_week])).toEqual([
       ["Last week", 1, true],
       ["This week", 1, false],
       ["The last 4 weeks", 4, true],
+      ["The last 12 weeks", 12, false],
     ]);
   });
 

@@ -1037,7 +1037,13 @@ export interface RenderedReportBody {
       total_cancelled: number;
     };
     throughput?: {
-      series: { week_start: string; completed: number }[];
+      /**
+       * WS-27bn R5f: each week carries the route's figures. Optional, so a
+       * body from a server before R5f still draws.
+       */
+      series: ThroughputWeek[];
+      /** WS-27bn R5f: the summary's completed count, as the route sends it. */
+      completed?: number;
       median_hours: number | null;
       measured: number;
       /** WS-27bn R2b: passed through from `_CYCLE_MEASURES`. */
@@ -1058,8 +1064,14 @@ export interface RenderedReportBody {
         /** WS-27bn R2b: passed through from `load_sql`. */
         due_next_7d?: number;
         later?: number;
+        /** WS-27bn R5f: the estimate of each plate, as the route sends it. */
+        est_mins?: number;
+        estimated?: number;
       }[];
       total_tasks: number;
+      /** WS-27bn R5f: passed through from `load_body`. */
+      people_total?: number;
+      effort?: EffortReport;
       /** WS-27bn R5a. Sent for a reader who is not an admin only. */
       hidden_people?: number;
     };
@@ -1088,6 +1100,9 @@ export interface RenderedReportBody {
        * a body from a server before R3a still draws.
        */
       stale?: { band: string; n: number }[];
+      /** WS-27bn R5f: the route's blocked list, from `blocked_body`. */
+      blocked?: StuckReport["blocked"];
+      blocked_total?: number;
     };
     /**
      * WS-27bn R3c. Opt-in. Open tasks that lack an assignee, a due date or an
