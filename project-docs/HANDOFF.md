@@ -3568,7 +3568,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R5d · the R5d review, 2026-09-28
 - **Added:** 2026-09-28 · the WS-27bn R5d session
 
-### H-200 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
+### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as\|with _db_session() as" apps/services/gateway/gateway/routes/workspace.py packages/acb_skills/acb_skills/history_tools.py apps/services/gateway/gateway/routes/observability.py`.
   A hit means this is open.
 - **What happens.** S15 bound the chat save path (`projects_ai_chat.md`

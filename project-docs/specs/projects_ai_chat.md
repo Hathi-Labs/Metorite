@@ -3326,10 +3326,10 @@ replaces a non-empty cache. The function then gives back the cache.
   reads in `routes/agent.py`, `routes/observability.py`,
   `routes/integrations.py`, `routes/integrations_skills.py`,
   `routes/debug.py`, `action_broker/broker.py` and `acb_skills/loader.py`.
-  H-200 carries each one with its verdict.
+  H-201 carries each one with its verdict.
 - **The access-request knock.** `acb_auth.access` records an unprovisioned
   sign-in into `access_request`. It resolves the org from the email domain
-  and has no tenant yet, so it is not the same one-line pattern. H-200 names
+  and has no tenant yet, so it is not the same one-line pattern. H-201 names
   it.
 - **The save race.** `sessions.ts` sends the session upsert and the first
   save in parallel. A save that arrives first breaks the foreign key and
@@ -3337,7 +3337,7 @@ replaces a non-empty cache. The function then gives back the cache.
   creates the session, so the loss is one save. S15 does not change it.
 - **`/chat/active-sessions`.** Its Redis scan is not tenant-prefixed. A
   thread of another org has no visible row, so it can appear as "unknown".
-  H-200 names it.
+  H-201 names it.
 - **`record_message_feedback`.** Its audit event carries no organization,
   so `acb_audit` files it under the operator org.
 - **`write_artifact`.** The agent's own blob mirror takes the tenant bound by
