@@ -19,11 +19,14 @@ import { reportLayout } from "@/lib/reportEmail";
 import type { RenderedReportBody } from "../lib/api";
 import { REBALANCE_HR_HINT } from "../lib/hrHints";
 import {
+  initialShownKey,
+  linkStep,
   MAX_REPORT_NAME,
   REPORT_SECTIONS,
   linkPending,
   previewNeeded,
   reportsPane,
+  sectionGroups,
   sectionName,
 } from "../lib/reportBuilder";
 import { SECTION_CLEAR_LINES, allClear, clearNote, sectionIsClear } from "../lib/sectionEmpty";
@@ -373,5 +376,105 @@ describe("round 2, item 9: the chat says the same HR line", () => {
   it("no report surface names the HR permission", () => {
     const PANELS = readFileSync(join(__dirname, "AnalyticsPanels.tsx"), "utf-8");
     for (const src of [VIEW, PANELS]) expect(src).not.toMatch(/HR read access/);
+  });
+});
+
+describe("round 2, items 7, 10 and 12: one-line tiles", () => {
+  const tile = (props: Partial<Parameters<typeof SectionTile>[0]>) =>
+    html(
+      createElement(SectionTile, {
+        sectionKey: "load",
+        label: "Open work",
+        on: true,
+        blocked: false,
+        last: false,
+        onToggle: () => {},
+        ...props,
+      })
+    );
+
+  it("shows the icon, the label and the check on one line", () => {
+    const markup = tile({});
+    // The short line is the tooltip, and a screen reader reads it through
+    // aria-describedby. It is not a visible second line.
+    expect(markup).toMatch(/title="Open tasks per person, by due date\."/);
+    const described = markup.match(/aria-describedby="([^"]+)"/);
+    expect(described).not.toBeNull();
+    expect(markup).toContain(`<span id="${described![1]}" class="sr-only">Open tasks per person, by due date.</span>`);
+    expect(markup).not.toContain("line-clamp-2");
+  });
+
+  it("the last chosen tile is aria-disabled and says why", () => {
+    const markup = tile({ last: true });
+    expect(markup).toContain('aria-disabled="true"');
+    expect(markup).toContain('class="sr-only">A report needs at least one section.</span>');
+    const other = tile({ last: false });
+    expect(other).not.toContain("aria-disabled");
+  });
+
+  it("the three groups say What happened, Where things stand, Who needs help", () => {
+    expect(sectionGroups().map((g) => g.label)).toEqual([
+      "What happened",
+      "Where things stand",
+      "Who needs help",
+    ]);
+  });
+});
+
+describe("round 2, item 11: the all-clear list stacks on a phone", () => {
+  it("each row puts the name over the line below sm", () => {
+    const card = html(createElement(AllClear, { keys: ["pulse"], scope: "Whole organization" }));
+    expect(card).toMatch(/<span class="flex min-w-0 flex-col sm:flex-row sm:gap-2">/);
+  });
+});
+
+describe("round 2, item 1: a link never hangs", () => {
+  it("waits for the catalogue and the tree, and reads the link when both arrive", () => {
+    const base = { hasTemplates: false, catalogueFailed: false, hasTree: false, treeFailed: false };
+    expect(linkStep(base)).toBe("wait");
+    expect(linkStep({ ...base, hasTemplates: true })).toBe("wait");
+    expect(linkStep({ ...base, hasTemplates: true, hasTree: true })).toBe("read");
+    expect(linkStep({ ...base, hasTemplates: true, treeFailed: true })).toBe("read");
+  });
+
+  it("drops the link when the catalogue read fails, so Home shows the error", () => {
+    expect(
+      linkStep({ hasTemplates: false, catalogueFailed: true, hasTree: true, treeFailed: false })
+    ).toBe("drop");
+    expect(
+      linkStep({ hasTemplates: false, catalogueFailed: true, hasTree: false, treeFailed: false })
+    ).toBe("drop");
+  });
+
+  it("the pane's effect follows linkStep and re-runs on a catalogue error", () => {
+    expect(VIEW).toMatch(/const step = linkStep\(\{/);
+    expect(VIEW).toMatch(/if \(step === "wait"\) return;/);
+    expect(VIEW).toMatch(/\[linkQuery, templates, roots, tree\.error, catalogue\.error\]/);
+  });
+});
+
+describe("round 2, item 4: Overview starts from the kept preview", () => {
+  it("the key on screen is the kept preview's key", () => {
+    expect(initialShownKey(null)).toBeNull();
+    expect(initialShownKey({ key: "k1" })).toBe("k1");
+  });
+
+  it("the builder seeds its key from the kept preview", () => {
+    expect(VIEW).toContain("const shownKey = useRef<string | null>(initialShownKey(initialPreview));");
+  });
+});
+
+describe("round 2, items 13 and 14: find-in-page and the controls toggle", () => {
+  const PANELS = readFileSync(join(__dirname, "AnalyticsPanels.tsx"), "utf-8");
+
+  it("a closed table is hidden until found, set through a ref", () => {
+    expect(PANELS).toContain('el.setAttribute("hidden", "until-found")');
+    expect(PANELS).toContain('"beforematch"');
+    expect(PANELS).not.toContain('"until-found" as unknown as boolean');
+  });
+
+  it("the Overview toggle names the controls it shows", () => {
+    expect(VIEW).toContain("aria-controls={controlsId}");
+    expect(VIEW).toMatch(/id=\{controlsId\}/);
   });
 });

@@ -35,28 +35,3 @@ export const PANEL_HINTS: Readonly<Record<string, string>> = {
   conflicts: "Late blockers, and people spread thin.",
   rebalance: "Tasks at risk, and who could help.",
 };
-
-/**
- * The longer sentence of each section, for a tooltip only (§6.6 D item 7).
- * These were the panel hints until R5f repair round 1.
- */
-export const PANEL_HINT_DETAILS: Readonly<Record<string, string>> = {
-  finished: "Tasks completed in the period, by project. Cancelled work is not counted as finished.",
-  throughput:
-    "Tasks finished each week, and how long they took from first started to done.",
-  outlook:
-    "Forecast from what the team actually did, against what the plan would need. Estimated, because this product records no hours worked.",
-  load: "Open tasks per person, split by when they are due. Unassigned is a bar, not a gap.",
-  capacity:
-    "Open work per person in this scope, with the spare hours they have across all the work you can see.",
-  pulse:
-    "One card for each person who holds open work in this scope: the load, the status, the top focus tasks and the reasons to help. This is today, not the period.",
-  stuck:
-    "Open tasks by how long they have sat without a change, and what is past due.",
-  hygiene:
-    "Open tasks with no assignee, no due date or no estimate, and work in progress that has not changed. This is the state now, not the period.",
-  conflicts:
-    "Work that starts before its blocker is due, late blockers, and one person on too many projects at once. Nothing is rescheduled.",
-  rebalance:
-    "Tasks at risk of missing their due date, the people whose skills fit them, and idle people with work they could take. Nothing is reassigned.",
-};

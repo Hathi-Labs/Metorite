@@ -1067,17 +1067,17 @@ export function reportHeaderLine(parts: {
 const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   finished: "What happened",
   throughput: "What happened",
-  outlook: "Where we stand",
-  load: "Where we stand",
-  capacity: "Where we stand",
-  stuck: "Where we stand",
-  hygiene: "Where we stand",
+  outlook: "Where things stand",
+  load: "Where things stand",
+  capacity: "Where things stand",
+  stuck: "Where things stand",
+  hygiene: "Where things stand",
   pulse: "Who needs help",
   conflicts: "Who needs help",
   rebalance: "Who needs help",
 };
 
-const SECTION_GROUP_ORDER = ["What happened", "Where we stand", "Who needs help"];
+const SECTION_GROUP_ORDER = ["What happened", "Where things stand", "Who needs help"];
 
 /**
  * §6.5 item 4. The section checkboxes under three small labels. Each group
@@ -1215,6 +1215,35 @@ export function reportsPane(parts: {
   if (parts.linkPending) return "wait-for-link";
   if (parts.selected !== null) return "saved";
   return "overview";
+}
+
+/**
+ * What the pane does with a builder link (R5f round 2, item 1).
+ *
+ * - `wait`: the catalogue or the tree has not arrived yet.
+ * - `read`: parse the link now. A failed tree read counts as arrived, and
+ *   the node is then dropped.
+ * - `drop`: the catalogue read failed. No template can be checked, so the
+ *   link is removed and Home shows the catalogue's error. Before round 2 the
+ *   pane waited for the catalogue for ever.
+ */
+export function linkStep(parts: {
+  hasTemplates: boolean;
+  catalogueFailed: boolean;
+  hasTree: boolean;
+  treeFailed: boolean;
+}): "wait" | "read" | "drop" {
+  if (!parts.hasTemplates) return parts.catalogueFailed ? "drop" : "wait";
+  if (!parts.hasTree && !parts.treeFailed) return "wait";
+  return "read";
+}
+
+/**
+ * The preview key on screen when the builder mounts (rule 6). Home passes
+ * the preview it kept, so Overview asks the server nothing for it.
+ */
+export function initialShownKey(initialPreview: { key: string } | null | undefined): string | null {
+  return initialPreview?.key ?? null;
 }
 
 /** True when the address holds a key of a builder link. */

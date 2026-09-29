@@ -641,7 +641,9 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     // R5f round 1 (§6.6 D item 5). The table button sits in the card header,
     // closed. The table is hidden, not removed, so find-in-page reaches it.
     expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*aria-label="Show as a table"/);
-    expect(html).toMatch(/<div[^>]*hidden="(?:until-found|)"[^>]*><div role="group" aria-label="Open work, as a table/);
+    // React 19 writes a boolean `hidden`. The panel's effect turns it into
+    // `until-found` in the browser (reportsRedesign.test.ts, item 13).
+    expect(html).toMatch(/<div class="mt-3 border-t border-border pt-3" hidden=""><div role="group" aria-label="Open work, as a table/);
     expect(table).toContain("ana@example.test");
   });
 

@@ -45,9 +45,8 @@ describe("(4) one sentence for each section", () => {
 
   it("the builder's section tiles take their line from the same hints", () => {
     // R5f round 1 (§6.6 C). The tile prints the short hint, and its
-    // tooltip is the longer detail.
+    // R5f round 2: the tile shows one line, and the hint is its tooltip.
     expect(view).toMatch(/PANEL_HINTS\[sectionKey\]/);
-    expect(view).toMatch(/PANEL_HINT_DETAILS\[sectionKey\]/);
   });
 });
 

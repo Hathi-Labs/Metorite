@@ -386,7 +386,7 @@ describe("(4) the sections sit under three labels, in SECTIONS order", () => {
     const groups = sectionGroups();
     expect(groups.map((g) => g.label)).toEqual([
       "What happened",
-      "Where we stand",
+      "Where things stand",
       "Who needs help",
     ]);
     expect(groups.map((g) => g.sections.map((s) => s.key))).toEqual([

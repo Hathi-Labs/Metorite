@@ -31,7 +31,7 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
-import { createContext, useContext, useId, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -244,6 +244,22 @@ function Panel({
   const titleId = useId();
   const chrome = useContext(PanelChromeContext);
   const [tableOpen, setTableOpen] = useState(false);
+  // R5f round 2 (item 13). React 19 writes `hidden` as a boolean, so the
+  // value `until-found` is set on the element here. Find-in-page then reaches
+  // a closed table, and the browser opens it with `beforematch`.
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = tableRef.current;
+    if (!el) return;
+    if (tableOpen) {
+      el.removeAttribute("hidden");
+      return;
+    }
+    el.setAttribute("hidden", "until-found");
+    const found = () => setTableOpen(true);
+    el.addEventListener("beforematch", found);
+    return () => el.removeEventListener("beforematch", found);
+  }, [tableOpen]);
   return (
     <section
       className="rounded-lg border border-border bg-card p-3"
@@ -278,12 +294,9 @@ function Panel({
       </header>
       {children}
       {chrome?.table ? (
-        // `until-found` keeps the folded table in the page, so find-in-page
-        // still reaches it, as the fold before round 1 did.
-        <div
-          className="mt-3 border-t border-border pt-3"
-          hidden={tableOpen ? undefined : ("until-found" as unknown as boolean)}
-        >
+        // The server render writes `hidden=""`. The effect above turns it
+        // into `until-found` in the browser.
+        <div ref={tableRef} className="mt-3 border-t border-border pt-3" hidden={!tableOpen}>
           {chrome.table}
         </div>
       ) : null}

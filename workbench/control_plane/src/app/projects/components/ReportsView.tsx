@@ -40,7 +40,7 @@
  * yours and shared, and offers Delete in edit mode.
  */
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
@@ -76,7 +76,7 @@ import {
   kindTitle,
 } from "../lib/hygiene";
 import { headlineVerdict, shortDate } from "../lib/outlook";
-import { PANEL_HINT_DETAILS, PANEL_HINTS } from "../lib/panelHints";
+import { PANEL_HINTS } from "../lib/panelHints";
 import {
   focusWhy,
   helpLine,
@@ -133,8 +133,11 @@ import {
   overviewTableShown,
   parseReportLink,
   previewNeeded,
+  initialShownKey,
+  linkStep,
   REPORT_SECTIONS,
   reportsPane,
+  sectionName,
   parseSubjectValue,
   patchPayload,
   periodFree,
@@ -280,12 +283,16 @@ export function AllClear({ keys, scope }: { keys: string[]; scope: string }) {
       </p>
       <ul className="mt-3 space-y-1.5">
         {keys.map((key) => (
-          <li key={key} className="flex items-center gap-2 text-xs">
-            <Icon name="Check" className={`h-3.5 w-3.5 shrink-0 ${done.text}`} />
-            <span className="font-medium text-foreground">
-              {REPORT_SECTIONS.find((r) => r.key === key)?.label ?? key}
+          <li key={key} className="flex items-start gap-2 text-xs">
+            <Icon name="Check" className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${done.text}`} />
+            {/* R5f round 2 (item 11). The name over the line on a phone, so
+                a two-word name does not break in two. */}
+            <span className="flex min-w-0 flex-col sm:flex-row sm:gap-2">
+              <span className="font-medium whitespace-nowrap text-foreground">
+                {sectionName(key)}
+              </span>
+              <span className="text-muted-foreground">{clearLine(key)}</span>
             </span>
-            <span className="text-muted-foreground">{clearLine(key)}</span>
           </li>
         ))}
       </ul>
@@ -1064,6 +1071,7 @@ export function ReportBuilder({
   );
   /** §6.6 E item 5. The Overview controls on a small screen. */
   const [controlsOpen, setControlsOpen] = useState(false);
+  const controlsId = useId();
   const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(
     null
   );
@@ -1131,7 +1139,7 @@ export function ReportBuilder({
   // on each visit. A change after that waits, as before.
   const previewShown = useRef(initialPreview !== null);
   /** The key of the preview on screen, so a return to Home asks nothing. */
-  const shownKey = useRef<string | null>(initialPreview?.key ?? null);
+  const shownKey = useRef<string | null>(initialShownKey(initialPreview));
   // A ref, so a new callback on each render of the parent does not ask the
   // server again. It is written in an effect, never during render.
   const onPreviewRef = useRef(onPreview);
@@ -1431,7 +1439,7 @@ export function ReportBuilder({
         {sectionGroups().map((group) => (
           <div key={group.label} className="space-y-1">
             <p className="text-xs text-muted-foreground">{group.label}</p>
-            <div className="grid min-w-0 grid-cols-1 gap-1.5">
+            <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-1">
               {group.sections.map((section) => {
                 const blocked = sectionBlockedBySubject(state, section.key);
                 const on = !blocked && state.sections.includes(section.key);
@@ -1510,6 +1518,7 @@ export function ReportBuilder({
             size="sm"
             icon="SlidersHorizontal"
             aria-expanded={controlsOpen}
+            aria-controls={controlsId}
             onClick={() => setControlsOpen((o) => !o)}
           >
             Change what you see
@@ -1518,6 +1527,7 @@ export function ReportBuilder({
       )}
       <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
         <div
+          id={controlsId}
           className={`xl:sticky xl:top-0 ${inOverview && !controlsOpen ? "hidden xl:block" : ""}`}
         >
           {controls}
@@ -1687,10 +1697,12 @@ export function TitleField({
 }
 
 /**
- * One section tile of "What to include" (§6.6 C). A toggle with the
- * section's icon, its label and one short line. A tile that a subject turns
- * off is muted and says why. The last chosen tile stays on, because a
- * report needs one section.
+ * One section tile of "What to include" (§6.6 C, R5f round 2 item 7). One
+ * line: the section's icon, its one name and a check. The short line is the
+ * tooltip, and a screen reader reads it through `aria-describedby`. A tile
+ * that a subject turns off is disabled and says why. The last chosen tile
+ * stays on, because a report needs one section: it is `aria-disabled`, it
+ * says why, and its click does nothing (item 10).
  */
 export function SectionTile({
   sectionKey,
@@ -1707,39 +1719,40 @@ export function SectionTile({
   last: boolean;
   onToggle: () => void;
 }) {
-  const line = blocked ? "Off for a person or team." : PANEL_HINTS[sectionKey];
+  const describedBy = useId();
+  const line = blocked
+    ? "Off for a person or team."
+    : last
+      ? "A report needs at least one section."
+      : PANEL_HINTS[sectionKey];
   return (
     <Button
       variant="secondary"
       size="none"
-      layout="flex w-full items-start gap-2 text-left"
+      layout="flex w-full items-center gap-2 text-left"
       className="min-w-0 rounded-lg px-2.5 py-1.5 transition-colors"
       selected={on}
       disabled={blocked}
-      title={
-        blocked
-          ? "Off for a person or team."
-          : last
-            ? "A report needs at least one section."
-            : PANEL_HINT_DETAILS[sectionKey]
-      }
+      aria-disabled={last ? "true" : undefined}
+      aria-describedby={describedBy}
+      title={line}
       onClick={last ? undefined : onToggle}
     >
       <Icon
         name={sectionIcon(sectionKey)}
-        className={`mt-0.5 h-4 w-4 shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`}
+        className={`h-4 w-4 shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`}
       />
-      <span className="min-w-0 flex-1">
-        <span
-          className={`block truncate pr-px text-xs font-medium ${on ? "text-foreground" : "text-foreground/80"}`}
-        >
-          {label}
-        </span>
-        <span className="line-clamp-2 block text-xs text-muted-foreground">{line}</span>
+      <span
+        className={`min-w-0 flex-1 truncate pr-px text-xs font-medium ${on ? "text-foreground" : "text-foreground/80"}`}
+      >
+        {label}
+      </span>
+      <span id={describedBy} className="sr-only">
+        {line}
       </span>
       <Icon
         name="Check"
-        className={`mt-0.5 h-3.5 w-3.5 shrink-0 text-primary ${on ? "" : "invisible"}`}
+        className={`h-3.5 w-3.5 shrink-0 text-primary ${on ? "" : "invisible"}`}
       />
     </Button>
   );
@@ -2140,11 +2153,19 @@ export default function ReportsView({
     ? searchParams.toString()
     : "";
   useEffect(() => {
-    // The tree must arrive too: the node is kept only when it is in it.
-    if (!linkQuery || templates === undefined) return;
-    if (tree.data === undefined && !tree.error) return;
+    if (!linkQuery) return;
+    // The tree must arrive too: the node is kept only when it is in it. A
+    // failed catalogue read drops the link, so the pane never waits for ever.
+    const step = linkStep({
+      hasTemplates: templates !== undefined,
+      catalogueFailed: Boolean(catalogue.error),
+      hasTree: tree.data !== undefined,
+      treeFailed: Boolean(tree.error),
+    });
+    if (step === "wait") return;
     const params = new URLSearchParams(linkQuery);
-    const intent = parseReportLink(params, templates, roots);
+    const intent =
+      step === "read" && templates !== undefined ? parseReportLink(params, templates, roots) : null;
     // A link is consumed by setting state once, as the page's `?app=` does.
     /* eslint-disable react-hooks/set-state-in-effect */
     if (intent) setPane({ kind: "new", initial: builderStateFromLink(intent) });
@@ -2153,7 +2174,7 @@ export default function ReportsView({
     const qs = params.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linkQuery, templates, roots, tree.error]);
+  }, [linkQuery, templates, roots, tree.error, catalogue.error]);
 
   /** Open the builder from a template. A coming-soon one opens nothing. */
   function start(template: ReportTemplate) {
