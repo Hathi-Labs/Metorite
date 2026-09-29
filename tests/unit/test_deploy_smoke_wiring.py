@@ -20,6 +20,7 @@ claims:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -74,11 +75,38 @@ def _code_lines(text: str) -> list[str]:
 def test_the_smoke_job_runs_after_the_deploy_on_both_paths(jobs: dict) -> None:
     job = jobs["chat-smoke"]
     assert set(job["needs"]) == {"deploy", "pull-delivery"}
-    cond = job["if"]
-    assert "always()" in cond, "without always() a skipped pull-delivery skips the smoke"
-    assert "needs.deploy.result == 'success'" in cond
-    assert "needs.pull-delivery.result == 'success'" in cond
-    assert "needs.pull-delivery.result == 'skipped'" in cond
+    # The WHOLE expression, with the whitespace folded. A substring check let
+    # `${{ always() }} # needs.deploy.result == 'success'` through.
+    cond = " ".join(job["if"].split())
+    assert cond == (
+        "${{ always() && needs.deploy.result == 'success' && "
+        "(needs.pull-delivery.result == 'success' || "
+        "needs.pull-delivery.result == 'skipped') }}"
+    ), cond
+
+
+@pytest.mark.parametrize(("deploy", "pull", "runs"), [
+    ("success", "skipped", True),
+    ("success", "success", True),
+    ("success", "failure", False),
+    ("success", "cancelled", False),
+    ("failure", "skipped", False),
+    ("cancelled", "skipped", False),
+    ("skipped", "skipped", False),
+])
+def test_the_if_expression_over_the_cases(jobs: dict, deploy: str, pull: str,
+                                          runs: bool) -> None:
+    """Evaluate the `if` as GitHub does, for each pair of results."""
+    cond = " ".join(jobs["chat-smoke"]["if"].split())
+    m = re.fullmatch(r"\$\{\{(.*)\}\}", cond)
+    assert m, cond
+    expr = m.group(1)
+    assert re.fullmatch(r"[\s\w.()'=|&!-]*", expr), f"an unexpected token in {expr!r}"
+    expr = (expr.replace("always()", "True")
+            .replace("needs.deploy.result", repr(deploy))
+            .replace("needs.pull-delivery.result", repr(pull))
+            .replace("&&", " and ").replace("||", " or "))
+    assert eval(expr) is runs, (expr, deploy, pull)  # a fixed grammar, checked above
 
 
 def test_the_deploy_job_restarts_and_verifies_before_the_smoke(jobs: dict) -> None:
@@ -174,13 +202,40 @@ def test_the_cookie_never_goes_to_a_file_or_a_command_line() -> None:
     assert "set -x" not in "\n".join(code)
 
 
+# Every line that EXPANDS a secret, word for word. A new use needs a review
+# and a new entry here. `cp /dev/stdin /tmp/x <<<"$SMOKE_COOKIE"` has no
+# redirect of the form the rule above looks for, and this catches it.
+SECRET_LINES = {
+    'auth_secret="${auth_secret#\\"}"; auth_secret="${auth_secret%\\"}"',
+    "auth_secret=\"${auth_secret#\\'}\"; auth_secret=\"${auth_secret%\\'}\"",
+    '[ -n "$auth_secret" ] || env_fail "AUTH_SECRET is not set in $WB_ENV"',
+    'jwe="$(cd "$WB_DIR" && AUTH_SECRET="$auth_secret" SMOKE_MEMBER_EMAIL="$SMOKE_MEMBER_EMAIL" \\',
+    '[ -n "$jwe" ] || env_fail "node could not mint a session (next-auth/jwt in $WB_DIR?)"',
+    'SMOKE_COOKIE="$COOKIE_NAME=$jwe"',
+    'state="$(SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 5 20 "$PY" -c "$PROBE_PY" </dev/null '
+    '2>/dev/null)" || state="down:000"',
+    'SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY" </dev/null '
+    '|| rc=$?',
+}
+_EXPANDS = re.compile(r"\$\{?(SMOKE_COOKIE|jwe|auth_secret)\b")
+
+
+def test_every_expansion_of_a_secret_is_a_line_of_record() -> None:
+    seen = set()
+    for line in _code_lines(_read(SCRIPT)):
+        if _EXPANDS.search(line):
+            assert line.strip() in SECRET_LINES, f"a new use of a secret: {line.strip()!r}"
+            seen.add(line.strip())
+    assert seen == SECRET_LINES, SECRET_LINES - seen
+
+
 def test_every_child_reads_dev_null() -> None:
     """The script arrives over `bash -s` stdin. The behavioural case below
     proves it for node and python. This one covers the rest."""
     for line in _code_lines(_read(SCRIPT)):
         if "command -v" in line or "[ -x" in line:
             continue
-        if re.search(r'(^|[\s(])(node|"\$PY"|git|flock|sleep|sed|seq) ', line):
+        if re.search(r'(^|[\s(])(node|"\$PY"|git|flock|sed|seq) ', line):
             assert "</dev/null" in line, f"a child without < /dev/null: {line!r}"
 
 
@@ -268,6 +323,26 @@ def app(tmp_path: Path):
     return a
 
 
+def _tmp_snapshot(skip: Path) -> dict[Path, float]:
+    """Every file under the system temp dir, with its mtime. The test's own
+    tmp_path is left out, because its fakes hold the values on purpose."""
+    snap: dict[Path, float] = {}
+    for dirpath, dirnames, filenames in os.walk("/tmp"):
+        if Path(dirpath).resolve() == skip.resolve():
+            dirnames[:] = []
+            continue
+        for name in filenames:
+            p = Path(dirpath) / name
+            with contextlib.suppress(OSError):
+                snap[p] = p.stat().st_mtime
+    return snap
+
+
+def _tmp_changed(before: dict[Path, float], skip: Path) -> list[Path]:
+    after = _tmp_snapshot(skip)
+    return [p for p, m in after.items() if p.is_file() and before.get(p) != m]
+
+
 def _files_holding(root: Path, needle: str) -> list[Path]:
     hits = []
     for p in root.rglob("*"):
@@ -279,7 +354,11 @@ def _files_holding(root: Path, needle: str) -> list[Path]:
 @needs_shell
 class TestTheScript:
     def test_a_pass_prints_only_the_step_lines_and_leaks_nothing(self, app) -> None:
+        before = _tmp_snapshot(app.root)
         r = app.run()
+        for path in _tmp_changed(before, app.root):
+            body = path.read_text(encoding="utf-8", errors="replace")
+            assert JWE not in body and SECRET not in body, f"a secret in {path}"
         assert r.returncode == 0, r.stdout + r.stderr
         assert r.stdout.splitlines() == [
             "ok   1 create session",

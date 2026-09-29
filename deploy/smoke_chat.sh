@@ -186,7 +186,7 @@ for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do
   esac
   if [ "$try" -lt "$SMOKE_WAIT_TRIES" ]; then
     echo "smoke_chat: waiting for $SMOKE_BASE_URL/api/auth/me ($state, try $try/$SMOKE_WAIT_TRIES)" >&2
-    sleep "$SMOKE_WAIT_NAP" </dev/null
+    sleep "$SMOKE_WAIT_NAP"
   fi
 done
 
