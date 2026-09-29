@@ -25,8 +25,8 @@ the rail and Delete in edit mode). R5c is blocked. R4, R4b, R6 to R9 and
 Phases 2 and 3 are not built.
 
 **R5f BUILT 2026-09-30** (one Reports app: the Analytics app joins Reports,
-and Overview is the landing screen, §9 Q14). **R5f repair round 1 is in
-progress** (the pass-through fields and the builder redesign of §6.6).
+and Overview is the landing screen, §9 Q14). **R5f repair round 1 BUILT
+2026-09-30** (the pass-through fields and the builder redesign of §6.6).
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -1629,7 +1629,7 @@ Three change a client: `can_edit` always true, no chat check, or Edit always.
 
 The first preview asks at once. Only a later change waits for the delay.
 
-#### R5f repair round 1 (2026-09-30)
+#### R5f repair round 1 (2026-09-30) · BUILT 2026-09-30
 
 The review of R5f found lost figures. The owner also asked for a calmer builder (§6.6). This round does both.
 
@@ -1653,6 +1653,21 @@ The review of R5f found lost figures. The owner also asked for a calmer builder 
 - (o) Vitest: the header row, the section tiles, the all-clear state and the table toggle follow §6.6.
 - (p) A mutation of each new test turns it red.
 - (q) A visual review finds no defect. It covers Team pulse (all clear and with data), Project status, My day and Overview. Each screen is seen in light, dark, compact, a changed accent and 390 px.
+
+**As built, round 1 (2026-09-30).** Each item names its fence. A mutation of each fence turns it red.
+
+- `blocked_body` in `analytics.py` holds the blocked read. `render_body` passes `effort`, `people_total`, the row estimates, the weekly figures and `completed` through, and it keeps every row of `capacity` and `conflicts`. Fence: `test_projects_report_overview_r5f.py` (k), with six mutations.
+- `reportPanels.ts` copies the new fields. Fence: `reportPassThrough.test.ts` (l).
+- `previewNeeded` and `reportsPane` in `reportBuilder.ts` hold rules 6 and 7. `ReportsView` keeps `overviewDraft` and `overviewPreview`. Fence: `reportsRedesign.test.ts` (m) and (n).
+- `lib/sectionIcons.ts` and `lib/sectionEmpty.ts` hold the icons and the clear lines. `reportEmail.ts` adds the same clear line as a note. Fence: `reportsRedesign.test.ts` (o).
+- `PanelChromeContext` in `AnalyticsPanels.tsx` puts the section icon and the table button in the card header. A panel outside a report draws as before.
+- `PANEL_HINTS` is short, and `PANEL_HINT_DETAILS` holds the old sentences for a tooltip.
+- The review found five defects, and this round fixes each one:
+  1. The tiles overflowed the card, because a fieldset keeps a min-content width.
+  2. The hints were cut off.
+  3. The title was cut off at 390 px.
+  4. A table showed a "2 rows" line.
+  5. The rebalance line said "nobody is idle" while one person was idle. `idleLine` now names the idle people.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
