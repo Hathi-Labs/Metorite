@@ -471,6 +471,22 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
     assert got.status_code == 200 and "# ok" in got.text
 
 
+@_DB_GATE
+def test_step_two_checks_the_derived_root_on_its_own(graph_as_app, clone_roots, monkeypatch):  # noqa: F811
+    """Step 2 is defence in depth under the clone-dir rule. This proves the
+    layer alone: a derived root outside every allowed root counts as absent,
+    and a real clone root still reads."""
+    from gateway.routes import workspace
+
+    a = graph_as_app.org_a
+    _repos, real, outside = clone_roots
+    sid = _seed_session(graph_as_app, a, _ALICE, None, agent="agent-h201")
+    monkeypatch.setattr(workspace, "_resolve_agent_workspace", lambda *_a, **_k: outside)
+    assert workspace._get_workspace_path(sid, _ALICE, a) is None
+    monkeypatch.setattr(workspace, "_resolve_agent_workspace", lambda *_a, **_k: real)
+    assert workspace._get_workspace_path(sid, _ALICE, a) == real.resolve()
+
+
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────
 
 def _history(org: str | None, user: str | None = None, *, verified: bool = True,
