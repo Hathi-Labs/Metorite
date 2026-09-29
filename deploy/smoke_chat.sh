@@ -42,6 +42,13 @@
 #   75 BUSY. Another deploy held the lock for SMOKE_LOCK_WAIT seconds, so
 #      nothing was checked. That deploy runs its own smoke. Not a red.
 #
+# ⏱ THE TIME BOUND, with the defaults. deploy.yml sizes its ssh timeout from it.
+#   the mint           timeout 30 s, +5 s kill grace                    35 s
+#   the lock wait      SMOKE_LOCK_WAIT                                 240 s
+#   the identity wait  12 probes x (timeout 20 s + 5 s) + 11 naps x 10 410 s
+#   the persist run    SMOKE_RUN_S 240 s + 10 s kill grace             250 s
+#   worst case                                                         935 s
+#
 # Overrides, all optional:
 #   APP_DIR              /opt/acb/app
 #   SMOKE_BASE_URL       https://app.metorite.com (the AUTH_URL host, and NOT
@@ -70,6 +77,9 @@ SMOKE_ORG_ID="${SMOKE_ORG_ID:-2df62642-751d-4ddd-a079-f643ea544c74}"
 # cookie name is also the salt of the JWE.
 COOKIE_NAME="__Secure-authjs.session-token"
 MAX_AGE_S=600
+# The time bound of the persist run: the sweep (one list and at most five
+# deletes) plus the four steps, each call at most 15 s. 11 calls = 165 s.
+SMOKE_RUN_S="${SMOKE_RUN_S:-240}"
 
 WB_DIR="$APP_DIR/workbench/control_plane"
 WB_ENV="$WB_DIR/.env.local"
@@ -117,7 +127,7 @@ process.stdout.write(jwe);
 '
 jwe="$(cd "$WB_DIR" && AUTH_SECRET="$auth_secret" SMOKE_MEMBER_EMAIL="$SMOKE_MEMBER_EMAIL" \
   SMOKE_COOKIE_NAME="$COOKIE_NAME" SMOKE_MAX_AGE_S="$MAX_AGE_S" \
-  node --input-type=module -e "$MINT_JS" </dev/null 2>/dev/null)" || jwe=""
+  timeout -k 5 30 node --input-type=module -e "$MINT_JS" </dev/null 2>/dev/null)" || jwe=""
 unset auth_secret
 [ -n "$jwe" ] || env_fail "node could not mint a session (next-auth/jwt in $WB_DIR?)"
 SMOKE_COOKIE="$COOKIE_NAME=$jwe"
@@ -169,7 +179,7 @@ fi
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
 state=""
 for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do
-  state="$(SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" -c "$PROBE_PY" </dev/null 2>/dev/null)" || state="down:000"
+  state="$(SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 5 20 "$PY" -c "$PROBE_PY" </dev/null 2>/dev/null)" || state="down:000"
   case "$state" in
     ok) break ;;
     org:*|who:*) break ;;
@@ -194,10 +204,11 @@ esac
 
 # The smoke. Its step lines are the only lines on stdout.
 rc=0
-SMOKE_COOKIE="$SMOKE_COOKIE" "$PY" "$SMOKE_PY" </dev/null || rc=$?
+SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY" </dev/null || rc=$?
 unset SMOKE_COOKIE
 [ "$rc" = 0 ] || echo "smoke_chat: the box holds $(served_sha)" >&2
 case "$rc" in
   0|1|2) exit "$rc" ;;
+  124|137) echo "smoke_chat: the smoke did not finish in ${SMOKE_RUN_S}s (exit $rc)" >&2; exit 1 ;;
   *) echo "smoke_chat: the smoke exited $rc" >&2; exit 1 ;;
 esac

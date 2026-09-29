@@ -3464,6 +3464,10 @@ Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
   red at once, with no retry. An ssh blip retries, 3 tries in total.
+- The script has a time bound of 935 s, and its header gives the sum. The
+  job gives one ssh 990 s. A session that goes past that is a timeout, with
+  its own message and no retry, and the job gives a warning. The job
+  timeout is 60 min.
 - Only a smoke that ran and failed is red. When ssh cannot reach the box for
   the whole connect budget, or drops on all 3 tries, the job gives a
   warning and stays green. That keeps the H-142 contract for the pull path:

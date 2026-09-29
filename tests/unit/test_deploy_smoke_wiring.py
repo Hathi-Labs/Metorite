@@ -114,6 +114,34 @@ def test_no_rollback_is_wired(jobs: dict) -> None:
     assert "rollback" not in step and "git reset" not in step and "revert" not in step
 
 
+def _int_default(text: str, name: str) -> int:
+    m = re.search(rf'^{name}="\$\{{{name}:-(\d+)\}}"', text, re.M)
+    assert m, f"{name} needs a numeric default"
+    return int(m.group(1))
+
+
+def test_the_time_bounds_add_up(jobs: dict) -> None:
+    """Fix round 1: the script's worst case fits inside the ssh timeout, and
+    three of those plus the connect budget fit inside the job timeout."""
+    text = _read(SCRIPT)
+    lock = _int_default(text, "SMOKE_LOCK_WAIT")
+    run = _int_default(text, "SMOKE_RUN_S")
+    tries = _int_default(text, "SMOKE_WAIT_TRIES")
+    nap = _int_default(text, "SMOKE_WAIT_NAP")
+    assert "timeout -k 5 30 node " in text
+    assert 'timeout -k 5 20 "$PY" -c "$PROBE_PY"' in text
+    assert 'timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY"' in text
+    worst = 35 + lock + tries * 25 + (tries - 1) * nap + run + 10
+    m = re.search(r"worst case\s+(\d+) s", text)
+    assert m and int(m.group(1)) == worst, (worst, m and m.group(1))
+    step = _smoke_step(jobs)
+    ssh_t = int(re.search(r"SMOKE_SSH_TIMEOUT=(\d+)", step).group(1))
+    assert ssh_t > worst, "the script must report before ssh is killed"
+    assert 'timeout -k 10 "$SMOKE_SSH_TIMEOUT" ssh' in step
+    job_s = jobs["chat-smoke"]["timeout-minutes"] * 60
+    assert job_s >= 3 * (ssh_t + 10) + 300 + 90 + 20 + 40, job_s
+
+
 # ── 2. The script's text ────────────────────────────────────────────────────
 
 
@@ -185,6 +213,7 @@ if [ "$1" = "-c" ]; then
   if [ "$n" -le "${PROBE_DOWN:-0}" ]; then echo "down:502"; else echo "${PROBE_STATE:-ok}"; fi
   exit 0
 fi
+[ -n "${SMOKE_HANG:-}" ] && exec /bin/sleep "$SMOKE_HANG"
 echo "ok   1 create session"
 [ "${SMOKE_RC:-0}" = 1 ] && { echo "FAIL 2 save one row: HTTP 500"; exit 1; }
 echo "ok   2 save one row (saved: 1)"
@@ -320,6 +349,11 @@ class TestTheScript:
         assert not (app.fake / "stdin.log").exists(), (
             (app.fake / "stdin.log").read_text(encoding="utf-8"))
 
+    def test_a_persist_run_past_its_bound_is_named_a_timeout(self, app) -> None:
+        r = app.run(SMOKE_HANG="5", SMOKE_RUN_S="1")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "did not finish in 1s" in r.stderr
+
     def test_no_secret_exits_2(self, app) -> None:
         (app.root / "app" / "workbench" / "control_plane" / ".env.local").write_text(
             "AUTH_URL=https://app.metorite.com\n", encoding="utf-8")
@@ -343,6 +377,7 @@ if [ "$mode" = blip ] && [ "$n" = 1 ]; then
   echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255
 fi
 case "$mode" in
+  hang) exit 124 ;;
   drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   nopass) echo "ok   1 create session"; exit 0 ;;
   busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
@@ -443,6 +478,13 @@ class TestTheWorkflowStep:
     def test_exit_0_without_the_pass_line_is_red(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="nopass")
         assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
+
+    def test_a_timeout_has_its_own_label_and_no_retry(self, runner, jobs) -> None:
+        r = runner.run(jobs, SMOKE_MODE="hang")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "timeout, exit 124" in r.stdout
+        assert "ssh dropped" not in r.stdout
         assert _runs(runner) == 1
 
     def test_an_auth_failure_is_red_without_a_retry(self, runner, jobs) -> None:

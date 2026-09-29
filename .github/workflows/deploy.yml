@@ -754,9 +754,14 @@ jobs:
       ${{ always()
       && needs.deploy.result == 'success'
       && (needs.pull-delivery.result == 'success' || needs.pull-delivery.result == 'skipped') }}
-    # 3 attempts x (the smoke's own wait, 12 x 10 s, plus 4 calls of <= 15 s)
-    # plus the H-142 connect budget of 300 s. About 20 min, under 30.
-    timeout-minutes: 30
+    # A BACKSTOP, sized from the parts. deploy/smoke_chat.sh bounds itself at
+    # 935 s (its header gives the sum), so one ssh gets 990 s + 10 s grace.
+    #   3 attempts, each dropped just before its timeout      3 x 1000   3000 s
+    #   the H-142 connect budget, and one probe past it       300 + 90    390 s
+    #   the naps between attempts                             20 + 40      60 s
+    #   = 3450 s, about 58 min, under 60.
+    # A timeout of one ssh never retries (below), so a real run is far shorter.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -781,6 +786,9 @@ jobs:
 
           # The smoke prints this line only when all four steps passed.
           SMOKE_DONE="PASS chat persistence on"
+          # The script's own bound is 935 s. This is a little more, so the
+          # script always reports first.
+          SMOKE_SSH_TIMEOUT=990
 
           # The smoke did not run to an answer. Green with a warning: only a
           # smoke that RAN and failed is red.
@@ -809,7 +817,7 @@ jobs:
             fi
             echo "── Chat smoke, attempt $attempt/3 ──"
             : > /tmp/smoke.log
-            timeout -k 10 300 ssh "${CI_SSH_OPTS[@]}" \
+            timeout -k 10 "$SMOKE_SSH_TIMEOUT" ssh "${CI_SSH_OPTS[@]}" \
               "$SSH_USER@$SSH_HOST" "bash -s" < deploy/smoke_chat.sh 2>&1 | tee /tmp/smoke.log
             rc=${PIPESTATUS[0]}
             # A teardown flake after the smoke passed is still a pass.
@@ -835,10 +843,15 @@ jobs:
                 # The script exits 0 only after the smoke printed PASS.
                 echo "❌ Chat smoke FAILED: exit 0 with no PASS line. The smoke did not prove a save."
                 exit 1 ;;
+              124|137)
+                # ⏱ A TIMEOUT, not a drop. The script bounds itself at 935 s,
+                # so the session stalled and nobody knows how far the smoke
+                # got. No retry: it could run beside the first one.
+                no_verdict "the smoke did not report in ${SMOKE_SSH_TIMEOUT}s (timeout, exit $rc)" ;;
             esac
-            # Any other code is ssh's own (255) or a timeout. Retry only when
-            # ssh names a network fault, the same test the deploy job uses.
-            if ! ssh_network_fault < /tmp/smoke.log && [ "$rc" != 124 ] && [ "$rc" != 137 ]; then
+            # Any other code is ssh's own (255). Retry only when ssh names a
+            # network fault, the same test the deploy job uses.
+            if ! ssh_network_fault < /tmp/smoke.log; then
               echo "❌ Chat smoke FAILED: exit $rc, and it is not a network blip."
               exit 1
             fi
