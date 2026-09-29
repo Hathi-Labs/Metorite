@@ -20,7 +20,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
-import Modal from "@/components/ui/Modal";
+import ManagerFrame from "./ManagerFrame";
 
 /** See `TagManager` — the same marker, the same reason. */
 const orgWide = (row: { project_id?: string | null }): boolean =>
@@ -58,9 +58,11 @@ interface Props {
   projectName: string;
   onClose: () => void;
   onChanged: (fields: FieldRow[]) => void;
+  /** Drawn as a section of Projects settings, not a dialog (WS-42). */
+  inline?: boolean;
 }
 
-export function FieldManager({ projectId, projectName, onClose, onChanged }: Props) {
+export function FieldManager({ projectId, projectName, onClose, onChanged, inline = false }: Props) {
   const [fields, setFields] = useState<FieldRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -140,8 +142,8 @@ export function FieldManager({ projectId, projectName, onClose, onChanged }: Pro
     // WS-27ak — this dialog had NO Escape and NO outside-press dismissal at
     // all, and nothing focusable was reachable from the keyboard once it was
     // up. Both arrive with the primitive.
-    <Modal
-      open
+    <ManagerFrame
+      inline={inline}
       onClose={onClose}
       title="Custom fields"
       description={`Shared by ${projectName} and everything under it`}
@@ -273,6 +275,6 @@ export function FieldManager({ projectId, projectName, onClose, onChanged }: Pro
           </p>
         ) : null}
       </form>
-    </Modal>
+    </ManagerFrame>
   );
 }

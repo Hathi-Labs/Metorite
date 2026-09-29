@@ -23,7 +23,7 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import Modal from "@/components/ui/Modal";
+import ManagerFrame from "./ManagerFrame";
 import { CATEGORICAL_SLOTS, accentForSlot } from "@/lib/categorical";
 import { useEffect, useState } from "react";
 
@@ -39,12 +39,15 @@ export interface SpaceSettingsProps {
     space: ProjectRow,
     values: { name: string; icon: string; icon_slot: number }
   ) => void;
+  /** Drawn as a section of Projects settings, not a dialog (WS-42). */
+  inline?: boolean;
 }
 
 export default function SpaceSettings({
   space,
   onClose,
   onSave,
+  inline = false,
 }: SpaceSettingsProps) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string>(LEVEL_ICONS.space);
@@ -75,8 +78,8 @@ export default function SpaceSettings({
   };
 
   return (
-    <Modal
-      open
+    <ManagerFrame
+      inline={inline}
       onClose={onClose}
       title="Space settings"
       description="The name, the icon and the colour this space wears in the sidebar."
@@ -172,12 +175,14 @@ export default function SpaceSettings({
         </div>
 
         <div className="flex justify-end gap-2 pt-1">
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
+          {inline ? null : (
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+          )}
           <Button type="submit">Save</Button>
         </div>
       </form>
-    </Modal>
+    </ManagerFrame>
   );
 }

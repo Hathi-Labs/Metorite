@@ -54,7 +54,7 @@ import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { Input } from "@/components/ui/Input";
-import Modal from "@/components/ui/Modal";
+import ManagerFrame from "./ManagerFrame";
 import {
   ACCENT_HUES,
   type AccentHue,
@@ -93,6 +93,8 @@ interface Props {
    * refetches.
    */
   onTasksTouched: () => void;
+  /** Drawn as a section of Projects settings, not a dialog (WS-42). */
+  inline?: boolean;
 }
 
 export function StatusManager({
@@ -101,6 +103,7 @@ export function StatusManager({
   onClose,
   onChanged,
   onTasksTouched,
+  inline = false,
 }: Props) {
   const [rows, setRows] = useState<StatusRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -330,8 +333,8 @@ export function StatusManager({
   }
 
   return (
-    <Modal
-      open
+    <ManagerFrame
+      inline={inline}
       onClose={onClose}
       title="Statuses"
       // The scope is no longer a constant, so the header stops asserting
@@ -778,7 +781,7 @@ export function StatusManager({
           named a stage and then left the reader to go find it. The scope half
           of this block's old job moved to `StatusSetControl` when migration
           196 made ownership a per-project question. */}
-    </Modal>
+    </ManagerFrame>
   );
 }
 

@@ -68,9 +68,11 @@ interface Props {
   onDone: (spaceIds: string[]) => void;
   /** Open one of the spaces the import wrote. */
   onOpenSpace: (spaceId: string) => void;
+  /** Open on this earlier run, as Projects settings asks (WS-42). */
+  openRunId?: string | null;
 }
 
-export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace }: Props) {
+export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace, openRunId }: Props) {
   const [step, setStep] = useState<Step>("upload");
   const [files, setFiles] = useState<File[]>([]);
   const [run, setRun] = useState<ImportRun | null>(null);
@@ -237,6 +239,14 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
       setBusy(false);
     }
   }, []);
+
+  // Projects settings lists earlier runs; "Open" arrives here with its id.
+  useEffect(() => {
+    if (!open || !openRunId) return;
+    // After the render that opened the dialog, not inside it: the open resets
+    // the wizard first, and this then loads the run on top.
+    queueMicrotask(() => void openRun(openRunId));
+  }, [open, openRunId, openRun]);
 
   const upload = useCallback(async () => {
     const mine = generation.current;
