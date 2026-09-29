@@ -500,8 +500,9 @@ The one look binds each rule (`DESIGN_SYSTEM.md`).
     carry no badge. What a template waits for is a tooltip, not a line on
     the card.
 12. **The rail and the cards** follow §6.1: "Yours" and "Shared with you",
-    the author on a shared row, and one empty line. The rail tag says the
-    scope in the chips' words: "Whole organization" or the project's name.
+    the author on a shared row, and one empty line. Each rail row says its
+    scope on a line under the name, in the chips' words: "Whole
+    organization" or the project's name.
     With no saved report the rail is absent, and Home shows the one empty
     line. The line adds the finished count only when the count is a number.
 13. **The header line** follows §6.4: the subject and the scope in the chips'

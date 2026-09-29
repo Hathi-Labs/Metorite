@@ -1473,19 +1473,20 @@ function RailList({
               <Icon name="FileText" className="mt-0.5 h-3 w-3 shrink-0" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate pr-px">{r.name}</span>
+                {/* The chips' words (§6.5 item 12): "Whole organization" or
+                    the project's name, never "All" or "Node". A line of its
+                    own, so a long project name does not cut the report's. */}
+                <span
+                  className="block truncate pr-px font-normal text-muted-foreground"
+                  title={scopeLabel(r)}
+                >
+                  {scopeLabel(r)}
+                </span>
                 {author ? (
                   <span className="block truncate pr-px font-normal text-muted-foreground">
                     by {author(r)}
                   </span>
                 ) : null}
-              </span>
-              <span
-                className="max-w-[6rem] shrink-0 truncate pr-px font-normal text-muted-foreground"
-                title={scopeLabel(r)}
-              >
-                {/* The chips' words (§6.5 item 12): "Whole organization" or
-                    the project's name, never "All" or "Node". */}
-                {scopeLabel(r)}
               </span>
             </button>
           </li>
