@@ -3493,7 +3493,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-184 · Five small follow-ups from the R2b review of the report visuals · [AGENT]
+### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
 - **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
   → no hit means item 1 is still open. Check each other item by hand.
 - **Why:** the R2b review (PR for `ws-27bn-r2b-visuals`) found these. None
@@ -3509,9 +3509,6 @@ line — never reclaim a number by deleting the other entry.
      `hidden`. Pass `hiddenUntilFound` too, or delete the claim.
   4. The arithmetic check of fence (c) in `reportVisuals.test.ts` does not
      catch a binary `+`. It copies `capacity.test.ts:182`, so widen both.
-  5. On a phone, the `/projects` shell has no branch for an app pane. So a
-     member cannot open Reports or Analytics at 390 px. This gap is older
-     than R2b.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session

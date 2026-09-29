@@ -18,8 +18,9 @@ chat's dataset read, and the rule for a delete or a change, §9 Q10 to Q13).
 
 **R5b-1 BUILT 2026-09-29** (the subject chip in the builder, T2 and T6 live,
 T1 takes a team, and the link contract). Repair round 1 on 2026-09-29 keeps a
-T2 about its author on an edit. R5b-2 is next. R5c is blocked. R4,
-R4b, R5b-2, R6 to R9 and Phases 2 and 3 are not built.
+T2 about its author on an edit. **R5b-2 BUILT 2026-09-29** (the entry
+points "Report on this", "1:1 prep" and "My day"). R5c is blocked. R4,
+R4b, R6 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -179,6 +180,8 @@ flag that applies, and a reason for each.
   and the template card (`TemplateCard`, `:1060`).
 - **Since R5b-1:** the builder has the subject chip. `lib/reportBuilder.ts`
   holds `subjectOptions`, `reportLink` and `parseReportLink`.
+- **Since R5b-2:** `lib/reportEntry.ts` holds the three entry points. It
+  decides the parts of each link, and `reportLink` builds the link.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -1256,6 +1259,19 @@ A mutation of (a), (c), (d), (e), (f) and (g) turns its test red.
 7. **The "as saved" hint.** `subjectOptions` takes `editing`. A subject from a link that the answer omits reads "not in your list". Fence: vitest (7).
 8. **The builder text.** The template name, or "Custom report", is the title above the chips. A T2 does not show "Started from a template". A custom report starts as "Untitled report". When the subjects read fails, the T2 preview line says so and offers Retry. Fence: vitest (8).
 9. **(r).** `subjectChipStatus` decides the skeleton, the retry line and the ready chip, and `subjectChipNote` decides the empty line. Vitest (9) pins the pure functions. No test renders the chip, because the vitest environment has no DOM.
+
+**As built, R5b-2 (2026-09-29).** This PR touches the People app and the My Tasks app. `lib/reportEntry.ts` decides the parts of each link, and `reportLink` builds each link. `reportEntry.test.ts` holds the fences for (k) and (l).
+
+- **"Report on this".** `NodeDashboard` takes `onReport`, and both dashboard renders in `page.tsx` pass it. The link names the node and nothing else.
+- **"1:1 prep".** `PersonPanel` reads the subjects answer through `useCachedResource`, with the key that the builder reads. `oneOnOneLink` gives `null` when the read fails, before the answer arrives, or when the answer omits the person. Then the control is absent.
+- **"My day".** The desktop bar and the phone bar of My Tasks show it. The link names T2 and no subject. The builder makes the reader the subject of a new T2 (`builderSubject`). An address in the link could name another member, and the server refuses that T2.
+- **(m).** A visual review at 390 px opened each link. Each one opened Reports with the builder filled in: "About: Me", "About: Ana Shah" and "In: Hardware". So H-184 item 5 was stale, and this PR removes it.
+- **The fences.** Five mutations each turn a test red:
+  1. A node link with `project=`.
+  2. T6 changed to T2.
+  3. A failed read that shows "1:1 prep".
+  4. An omitted person that shows "1:1 prep".
+  5. A `PersonPanel` that ignores the read error.
 
 ### R5c — The member setting · BLOCKED
 `reports.members_see_own_team` waits for an organization-scoped settings store. `org_settings` has no `organization_id` today, so one key would change every organization. The rule without the setting is the strict rule, so R5a and R5b do not need it. The owner chose to wait for the WS-29 fix (§9, Q8).
