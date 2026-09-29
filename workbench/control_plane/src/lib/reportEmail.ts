@@ -22,6 +22,8 @@
  * is two verified addresses to keep in step, and the second to drift is the
  * one that starts bouncing.
  */
+import { shortDate } from "@/app/projects/lib/outlook";
+import { asOfDay, periodFree } from "@/app/projects/lib/reportBuilder";
 import {
   type EmailOtpEnv,
   type ResendSender,
@@ -122,6 +124,8 @@ export interface RenderedReport {
       people_total: number;
       hidden_people: number;
       help_note?: string;
+      /** The one UTC day the section read, as `YYYY-MM-DD`. */
+      today?: string;
       rows: {
         assignee: string;
         name: string | null;
@@ -386,10 +390,17 @@ export interface ReportLayout {
  *
  * `maxRows` caps each list. An email carries {@link MAX_EMAIL_ROWS}. A
  * download passes `Infinity`, because a file is the whole of the report.
+ *
+ * ⚠️ **A period-free render says "As of [day]", as the screen does.** When no
+ * section of the render reads the period, the period line is the day of the
+ * render. `periodFree` and `asOfDay` in `reportBuilder.ts` are the one rule,
+ * so the email, the file and the screen cannot disagree. `now` is the day of
+ * the render when the server sends none.
  */
 export function reportLayout(
   rendered: RenderedReport,
   maxRows: number = MAX_EMAIL_ROWS,
+  now: Date = new Date(),
 ): ReportLayout {
   const { report, sections } = rendered;
   const parts: ReportPart[] = [];
@@ -722,13 +733,29 @@ export function reportLayout(
     });
   }
 
+  const asOf = renderAsOf(rendered, now);
   return {
     title: report.name,
-    period: periodLabel(rendered.period_start, rendered.period_end),
+    period: asOf
+      ? `As of ${shortDate(asOf)}`
+      : periodLabel(rendered.period_start, rendered.period_end),
     scope:
       report.scope === "portfolio" ? "Whole organization" : "This project",
     parts,
   };
+}
+
+/**
+ * The day a period-free render is "as of", as `YYYY-MM-DD`, or `null` when a
+ * section of the render reads the period. The sections are the ones the
+ * render holds, because those are the ones the server drew.
+ */
+export function renderAsOf(rendered: RenderedReport, now: Date = new Date()): string | null {
+  const drawn = Object.entries(rendered.sections)
+    .filter(([, body]) => body !== undefined && body !== null)
+    .map(([key]) => key);
+  if (!periodFree({ sections: drawn, subject: null })) return null;
+  return asOfDay(rendered.sections.pulse?.today, now);
 }
 
 function textOf(layout: ReportLayout): string {
@@ -836,9 +863,12 @@ export function reportDocument(rendered: RenderedReport): {
   html: string;
 } {
   const layout = reportLayout(rendered, Infinity);
+  const asOf = renderAsOf(rendered);
   return {
     basename: fileSafe(
-      `${layout.title} ${rendered.period_start} to ${rendered.period_end}`,
+      asOf
+        ? `${layout.title} ${asOf}`
+        : `${layout.title} ${rendered.period_start} to ${rendered.period_end}`,
     ),
     markdown: markdownOf(layout),
     html: htmlOf(layout),
