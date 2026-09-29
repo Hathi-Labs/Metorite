@@ -718,6 +718,100 @@ jobs:
               ;;
           esac
 
+  # ── WS-27bm S16: every deploy proves that chat saves ────────────────────
+  #
+  # For two months every chat save on production failed and every deploy went
+  # green (spec projects_ai_chat.md §21). `verify()` asks whether the app is up
+  # on this commit. This job asks whether a chat message SAVES and READS BACK.
+  #
+  # It runs after the deploy is verified, on either path: the push apply, or
+  # the pull path that `pull-delivery` confirmed. `deploy/smoke_chat.sh` runs
+  # on the box as the ssh user, mints a 600 s session in memory and runs
+  # `scripts/smoke_chat_persist.py`. No cookie file and no GitHub secret.
+  #
+  # ⚠️ RED ON PURPOSE, and no rollback. R6 says we only roll forward. A red
+  # here means "the release is live and chat does not save". Fix forward.
+  # Exit 1 (a step failed) and exit 2 (the environment is wrong) are both red
+  # at once, with no retry. Only an ssh blip retries, as H-142 does it.
+  chat-smoke:
+    name: "Chat saves (smoke)"
+    runs-on: ubuntu-latest
+    needs: [deploy, pull-delivery]
+    # `always()`, for the reason the `pull-delivery` job records. A skipped
+    # `pull-delivery` is the NORMAL case, when the push path reached the box.
+    if: >-
+      ${{ always()
+      && needs.deploy.result == 'success'
+      && (needs.pull-delivery.result == 'success' || needs.pull-delivery.result == 'skipped') }}
+    # 3 attempts x (the smoke's own wait, 12 x 10 s, plus 4 calls of <= 15 s)
+    # plus the H-142 connect budget of 300 s. About 20 min, under 30.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Save one chat message on the box and read it back
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+        run: |
+          # ⚠️ `set +e`. GitHub runs this step under `bash -e`, and a failed
+          # ssh pipe would end the step before the case below reads its code.
+          set +e
+          set -uo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+          ci_pin_host_key || exit 1
+
+          # The smoke prints this line only when all four steps passed.
+          SMOKE_DONE="PASS chat persistence on"
+          for attempt in 1 2 3; do
+            wrc=0
+            wait_for_ssh || wrc=$?
+            if [ "$wrc" = 4 ]; then
+              echo "❌ Chat smoke FAILED: the box's ssh host key did not verify."
+              exit 1
+            fi
+            if [ "$wrc" != 0 ]; then
+              echo "❌ Chat smoke FAILED: ssh did not reach the box (exit $wrc). Nothing was checked."
+              exit 1
+            fi
+            echo "── Chat smoke, attempt $attempt/3 ──"
+            : > /tmp/smoke.log
+            timeout -k 10 300 ssh "${CI_SSH_OPTS[@]}" \
+              "$SSH_USER@$SSH_HOST" "bash -s" < deploy/smoke_chat.sh 2>&1 | tee /tmp/smoke.log
+            rc=${PIPESTATUS[0]}
+            # A teardown flake after the smoke passed is still a pass.
+            if grep -qF "$SMOKE_DONE" /tmp/smoke.log; then
+              echo "✅ Chat saves on production."
+              exit 0
+            fi
+            case "$rc" in
+              1)
+                echo "❌ Chat smoke FAILED: a step failed. Chat does not save on production."
+                echo "   The release is live. Fix forward (R6). Read the step line above."
+                exit 1 ;;
+              2)
+                echo "❌ Chat smoke FAILED: the environment is wrong (exit 2). See the line above."
+                exit 1 ;;
+            esac
+            # Any other code is ssh's own (255) or a timeout. Retry only when
+            # ssh names a network fault, the same test the deploy job uses.
+            if ! ssh_network_fault < /tmp/smoke.log && [ "$rc" != 124 ] && [ "$rc" != 137 ]; then
+              echo "❌ Chat smoke FAILED: exit $rc, and it is not a network blip."
+              exit 1
+            fi
+            echo "↩  ssh dropped (exit $rc). Trying again."
+            sleep $((attempt * 20))
+          done
+          echo "❌ Chat smoke FAILED: ssh dropped on all 3 attempts. Nothing was proved."
+          exit 1
+
   # ── Post-deploy: Smoke test (hit /health endpoint) ─────────────────────
   smoke:
     name: "Smoke test"

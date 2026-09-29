@@ -14,7 +14,8 @@ S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
 schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 2026-09-28. S13 (message integrity, §19) was built 2026-09-28. S14 (no
 forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
-production, §21) was built 2026-09-29.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+production, §21) was built 2026-09-29. S16 (every deploy proves that chat
+saves, §21.10) was built 2026-09-29.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -3343,9 +3344,8 @@ replaces a non-empty cache. The function then gives back the cache.
   the run. It passes no explicit one. The executor's shared
   `_WRITE_ARTIFACT_CONTEXT` dict is not per run, so it is the wrong place for
   a tenant.
-- **Deploy wiring.** Neither the smoke check nor the alarm runs from
-  `deploy.yml` or a timer yet. A later change wires them after a first manual
-  run on the box.
+- **Deploy wiring.** S16 wires the smoke check into `deploy.yml` (§21.10).
+  The alarm stays manual, and §21.10 gives the reason.
 - **A member with no organization.** Such a member now gets no chat
   persistence and no room access, where before the ladder shape let the
   write through. That is the fail-closed rule.
@@ -3451,12 +3451,31 @@ On the box, after a deploy:
 
 ```bash
 # The smoke member and org exist already. This script creates neither.
-SMOKE_BASE_URL=https://app.metorite.com \
-  SMOKE_COOKIE="$(cat /home/acb/.smoke/cookie)" \
-  SMOKE_MEMBER_EMAIL=smoke-chat@smoke.metorite.invalid SMOKE_ORG_SLUG=smoke-chat \
-  python3 scripts/smoke_chat_persist.py
+cd /opt/acb/app && bash deploy/smoke_chat.sh   # as acb. Exit 0, 1 or 2.
 bash scripts/alarm_chat_persist.sh     # exit 1 when a write failed in 10 min
 ```
+
+**Every deploy runs the smoke (S16).** The `chat-smoke` job in `deploy.yml`
+runs after the deploy is verified, on the push path and on the pull path. It
+sends `deploy/smoke_chat.sh` to the box over ssh. The script mints a session
+of 600 s in memory from the workbench `AUTH_SECRET`. It waits for
+`/api/auth/me` to name the smoke member in the smoke org, 12 tries 10 s apart.
+Then it runs `scripts/smoke_chat_persist.py`.
+
+- Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
+  red at once, with no retry. An ssh blip retries, 3 attempts in total.
+- The run has no rollback. R6 says we only roll forward, so a red run means
+  "the release is live, and chat does not save".
+- The cookie goes to each child through the environment only. The script
+  never writes it to a file, never puts it on a command line, and never
+  prints it.
+- The fence is `tests/unit/test_deploy_smoke_wiring.py`.
+
+**The alarm stays manual.** `alarm_chat_persist.sh` counts write failures in
+the last 10 minutes of the gateway journal. After a deploy, that window holds
+the failures of the old code too. So a deploy gate on it can go red for a
+defect that the release fixed. A timer is the correct home, and no change has
+added one.
 
 The smoke check reads `/api/auth/me` first. It stops, and writes nothing,
 when the cookie is not the smoke member in the smoke org.
@@ -3473,8 +3492,9 @@ when the cookie is not the smoke member in the smoke org.
   never receives mail.
 - The script uses the host `app.metorite.com`, which is the `AUTH_URL` host.
   The host `metorite.com` is a different site, and its `/api/auth/me` gives 404.
-- The cookie is `__Secure-authjs.session-token` at
-  `/home/acb/.smoke/cookie` on the box. The script docstring tells how to make it.
+- The cookie is `__Secure-authjs.session-token`. `deploy/smoke_chat.sh`
+  mints a new one for each run. The static file `/home/acb/.smoke/cookie`
+  was for the first manual run, and no step reads it now.
 
 The first production run PASSED on 2026-09-29, all four steps, on
 `https://app.metorite.com`.

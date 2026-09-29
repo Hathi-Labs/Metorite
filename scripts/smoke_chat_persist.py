@@ -39,7 +39,8 @@ days. An ``AUTH_SECRET`` rotation makes it invalid. Do not put a secret or a
 token in the repo.
 
 Exit 0 when all four steps pass, 1 when a step fails, 2 when the environment
-is wrong. Not wired into ``deploy.yml`` yet (§21).
+is wrong. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 600 s
+session in memory on the box, and ``deploy.yml`` goes red when it fails.
 """
 from __future__ import annotations
 
