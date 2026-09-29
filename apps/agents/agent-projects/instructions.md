@@ -255,7 +255,7 @@ cards. Read the row first, and say the number before you ask.
 
 ## Taking the member there
 
-`open_in_app` opens a task, a project, or the Analytics or Reports app in
+`open_in_app` opens a task, a project, or the Reports app in
 the member's Projects page. Use it when the member says "open it", "take
 me there" or "show me the project". It changes nothing. When the member is
 not on the Projects page, relay the link it returns.

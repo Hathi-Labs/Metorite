@@ -10,8 +10,11 @@
  *
  * ⚠️ **Only what the config can express.** `normalise_report_config` knows
  * `weeks`, `skip_current_week`, `include_subtree` and `sections`. So the
- * period chip offers three periods, and nothing that needs a field the
+ * period chip offers only `PERIODS`, and nothing that needs a field the
  * server does not have ("today", a custom range, a forward period).
+ *
+ * WS-27bn R5f (§8 R5f) adds Overview, the start of the one Reports app:
+ * `overviewState`, `saveAsReportState` and `overviewTableShown`.
  *
  * ⚠️ **The scope is a project node or the whole organization.** People and
  * teams are R5, behind `may_report_on` (§7.1). A picker that listed a person
@@ -88,7 +91,11 @@ export interface PeriodOption {
   skip_current_week: boolean;
 }
 
-/** The three periods the config can express (§8 R1). */
+/**
+ * The periods the config can express (§8 R1). WS-27bn R5f adds "The last 12
+ * weeks", the period of Overview. So the chip names the Overview period,
+ * and "Save as report" keeps it.
+ */
 export const PERIODS: readonly PeriodOption[] = [
   { key: "last_week", label: "Last week", weeks: 1, skip_current_week: true },
   { key: "this_week", label: "This week", weeks: 1, skip_current_week: false },
@@ -97,6 +104,12 @@ export const PERIODS: readonly PeriodOption[] = [
     label: "The last 4 weeks",
     weeks: 4,
     skip_current_week: true,
+  },
+  {
+    key: "last_12_weeks",
+    label: "The last 12 weeks",
+    weeks: 12,
+    skip_current_week: false,
   },
 ];
 
@@ -172,6 +185,80 @@ export function newBuilderState(): BuilderState {
     nameTouched: false,
     subjectTouched: false,
   };
+}
+
+// ── WS-27bn R5f: Overview, the start of the one Reports app ────────────────
+
+/**
+ * The seven sections of Overview, in `SECTIONS` order. The Analytics app
+ * drew these seven, with the route defaults that `overviewState` copies, so
+ * Overview shows the same numbers (§8 R5f rule 4). `pulse`, `hygiene` and
+ * `rebalance` start off. A reader turns them on in the section list.
+ */
+export const OVERVIEW_SECTIONS: readonly string[] = [
+  "finished",
+  "throughput",
+  "outlook",
+  "load",
+  "capacity",
+  "stuck",
+  "conflicts",
+];
+
+/** The title of Overview, and the name its preview shows. */
+export const OVERVIEW_NAME = "Overview";
+
+/**
+ * The state Overview starts with (§8 R5f rule 3): the whole organization,
+ * no subject, the subtree, and the Analytics routes' own period, 12 weeks
+ * with the running week. It is not a template, so `template` is `null`.
+ */
+export function overviewState(): BuilderState {
+  return {
+    ...newBuilderState(),
+    name: OVERVIEW_NAME,
+    projectId: null,
+    weeks: 12,
+    skipCurrentWeek: false,
+    includeSubtree: true,
+    sections: orderedSections(OVERVIEW_SECTIONS),
+    template: null,
+    subject: null,
+  };
+}
+
+/**
+ * The builder that "Save as report" opens (§8 R5f rules 10 and 11). It keeps
+ * the scope, the subject, the period, the subtree and the sections of
+ * Overview. The template is `null` and the name is untouched, so
+ * `builderName` names the report from the chips.
+ */
+export function saveAsReportState(state: BuilderState): BuilderState {
+  return {
+    ...newBuilderState(),
+    projectId: state.projectId,
+    subject: state.subject,
+    weeks: state.weeks,
+    skipCurrentWeek: state.skipCurrentWeek,
+    includeSubtree: state.includeSubtree,
+    sections: orderedSections(state.sections),
+    template: null,
+    nameTouched: false,
+    subjectTouched: state.subject !== null,
+  };
+}
+
+/**
+ * True when Overview draws the KPI strip and the space table (§8 R5f rule 8).
+ *
+ * ⚠️ The summary routes take no subject, and they always count the subtree.
+ * So with a subject, or without the subtree, their counts would disagree
+ * with the sections under them. Then the strip and the table are absent.
+ */
+export function overviewTableShown(
+  state: Pick<BuilderState, "subject" | "includeSubtree">
+): boolean {
+  return state.subject === null && state.includeSubtree === true;
 }
 
 /** A saved report, opened for an edit. Every field comes from the row. */
@@ -1044,14 +1131,15 @@ export function reportCardLine(
 /**
  * §6.5 item 12. The one empty line of the Reports home. The rail shows no
  * line of its own. The finished count shows only when it is a number, so the
- * line never says "undefined".
+ * line never says "undefined". Since R5f the gallery is above "Your
+ * reports", so the line says "above". The count comes from Overview.
  */
 export function homeEmptyLine(finishedCount?: number | null): string {
   const count =
     typeof finishedCount === "number" && Number.isFinite(finishedCount) && finishedCount > 0
       ? ` There ${finishedCount === 1 ? "is 1 finished task" : `are ${finishedCount} finished tasks`} to report on.`
       : "";
-  return `You have not saved a report yet.${count} Pick a question below.`;
+  return `You have not saved a report yet.${count} Pick a question above.`;
 }
 
 /** §6.5 item 12. The rail's two lists, by the server's `mine`, newest first. */

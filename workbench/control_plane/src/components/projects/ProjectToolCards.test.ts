@@ -27,6 +27,7 @@ import {
   parseTaskRows,
   receiptIdOf,
   rowIdOf,
+  OPENS_APP,
 } from "./ProjectToolCards";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -232,5 +233,30 @@ describe("the UX review (2026-09-23)", () => {
       expect(VIEW_TOOLS.has(t)).toBe(true);
     }
     expect(VIEW_TOOLS.has("list_tasks")).toBe(false);
+  });
+});
+
+describe("WS-27bn R5f: every app card opens Reports", () => {
+  it("(f) OPENS_APP holds no analytics value", () => {
+    const apps = Object.values(OPENS_APP).map((o) => o.app as string);
+    expect(apps).not.toContain("analytics");
+    expect(new Set(apps)).toEqual(new Set(["reports"]));
+    for (const o of Object.values(OPENS_APP)) expect(o.label).toBe("Open Reports");
+  });
+
+  it("(f) each analytics read still opens an app", () => {
+    for (const tool of [
+      "project_summary",
+      "analytics_stuck",
+      "analytics_load",
+      "analytics_throughput",
+      "analytics_finished",
+      "analytics_outlook",
+      "team_capacity",
+      "find_conflicts",
+      "status_report",
+    ]) {
+      expect(OPENS_APP[tool]?.app, tool).toBe("reports");
+    }
   });
 });

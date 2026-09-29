@@ -40,9 +40,10 @@
  * yours and shared, and offers Delete in edit mode.
  */
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { LayoutBoundary } from "@/components/LayoutBoundary";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
@@ -55,7 +56,7 @@ import { accentForHue, statusAccent } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
-  type FinishedReport,
+  type NodeSummary,
   type PreviewReportBody,
   type ReportRow,
   type ReportTemplate,
@@ -108,6 +109,7 @@ import {
   type BuilderState,
   MAX_REPORT_NAME,
   NEW_REPORT_NAME,
+  OVERVIEW_NAME,
   REPORT_LINK_KEYS,
   SAVED_PERIOD,
   SUBJECTS_FAILED,
@@ -126,6 +128,8 @@ import {
   hiddenTeamHint,
   homeEmptyLine,
   newBuilderState,
+  overviewState,
+  overviewTableShown,
   parseReportLink,
   parseSubjectValue,
   patchPayload,
@@ -137,6 +141,7 @@ import {
   reportCardLine,
   reportHeaderLine,
   requiredSubject,
+  saveAsReportState,
   saveRefusal,
   scopeChoices,
   scopeOptions,
@@ -174,6 +179,7 @@ import {
   ThroughputPanel,
 } from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
+import SpaceSummary from "./SpaceSummary";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -256,11 +262,19 @@ function Row({
  * `lib/reportPanels.ts`. The panel carries the heading, so the section has
  * no heading of its own. Each `sections.<name>` access stays literal,
  * because `test_projects_report_sections_lockstep.py` reads them.
+ *
+ * ⚠️ WS-27bn R5f rule 15. **Each panel is the only child of its own
+ * `LayoutBoundary`.** The Analytics app had this rule (WS-27bm S12), and
+ * Overview is now where those panels live. The reports branch of `page.tsx`
+ * sits outside every other boundary, so one panel that throws on a missing
+ * field would blank the whole page. `layoutBoundary.test.ts` holds each tag
+ * to this shape.
  */
 export function RenderedBody({
   body,
   headerLine,
   hiddenHint,
+  lead,
 }: {
   body: RenderedReportBody | PreviewReportBody;
   /**
@@ -271,6 +285,11 @@ export function RenderedBody({
   headerLine?: string;
   /** §6.5 item 16. What the hidden-people line adds, in the builder only. */
   hiddenHint?: string | null;
+  /**
+   * WS-27bn R5f rule 6. What Overview draws above the sections: the KPI
+   * strip and the space table (`SpaceSummary`). A saved report has none.
+   */
+  lead?: React.ReactNode;
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
@@ -307,9 +326,13 @@ export function RenderedBody({
         </div>
       )}
 
+      {lead}
+
       {sections.finished && (
         <div className="space-y-1">
-          <FinishedPanel data={finishedPanelData(sections.finished, body)} />
+          <LayoutBoundary layout="finished work">
+            <FinishedPanel data={finishedPanelData(sections.finished, body)} />
+          </LayoutBoundary>
           <Table title="What we finished" count={sections.finished.projects.length}>
             <p
               className={`mb-1 text-xs font-medium tabular-nums ${done.text}`}
@@ -347,9 +370,11 @@ export function RenderedBody({
 
       {sections.throughput && (
         <div className="space-y-1">
-          <ThroughputPanel
-            data={throughputPanelData(sections.throughput, body)}
-          />
+          <LayoutBoundary layout="throughput">
+            <ThroughputPanel
+              data={throughputPanelData(sections.throughput, body)}
+            />
+          </LayoutBoundary>
           <Table title="How long it took" count={sections.throughput.series.length}>
             <p
               className="text-xs"
@@ -385,7 +410,9 @@ export function RenderedBody({
           The table says each figure the panel draws, in words. */}
       {sections.outlook && (
         <div className="space-y-1">
-          <OutlookPanel data={outlookPanelData(sections.outlook)} />
+          <LayoutBoundary layout="forecast">
+            <OutlookPanel data={outlookPanelData(sections.outlook)} />
+          </LayoutBoundary>
           <Table title="Forecast">
             <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
               <dt className="text-muted-foreground">Forecast</dt>
@@ -414,7 +441,9 @@ export function RenderedBody({
 
       {sections.stuck && (
         <div className="space-y-1">
-          <StuckPanel data={stuckPanelData(sections.stuck, body)} />
+          <LayoutBoundary layout="stuck work">
+            <StuckPanel data={stuckPanelData(sections.stuck, body)} />
+          </LayoutBoundary>
           <Table title="Overdue" count={sections.stuck.overdue.length}>
             <p
               className={`mb-1 text-xs font-medium tabular-nums ${late.text}`}
@@ -439,7 +468,9 @@ export function RenderedBody({
 
       {sections.load && (
         <div className="space-y-1">
-          <LoadPanel data={loadPanelData(sections.load, body)} />
+          <LayoutBoundary layout="load">
+            <LoadPanel data={loadPanelData(sections.load, body)} />
+          </LayoutBoundary>
           <Table title="Open work" count={sections.load.people.length}>
             <p
               className="mb-1 text-xs text-muted-foreground"
@@ -471,7 +502,9 @@ export function RenderedBody({
           The rows and the hours are the capacity route's, verbatim. */}
       {sections.capacity && (
         <div className="space-y-1">
-          <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
+          <LayoutBoundary layout="capacity">
+            <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
+          </LayoutBoundary>
           <Table title="Who has the hours" count={sections.capacity.people.length}>
             <p
               className="mb-1 text-xs text-muted-foreground"
@@ -500,7 +533,9 @@ export function RenderedBody({
           the table names each card and each focus task it sent. */}
       {sections.pulse && (
         <div className="space-y-1">
-          <PulsePanel data={pulsePanelData(sections.pulse)} hiddenHint={hiddenHint} />
+          <LayoutBoundary layout="team pulse">
+            <PulsePanel data={pulsePanelData(sections.pulse)} hiddenHint={hiddenHint} />
+          </LayoutBoundary>
           <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
             <p
               className="mb-1 text-xs text-muted-foreground"
@@ -553,7 +588,9 @@ export function RenderedBody({
           period. The table names each task the server sent, kind by kind. */}
       {sections.hygiene && (
         <div className="space-y-1">
-          <HygienePanel data={hygienePanelData(sections.hygiene)} />
+          <LayoutBoundary layout="data hygiene">
+            <HygienePanel data={hygienePanelData(sections.hygiene)} />
+          </LayoutBoundary>
           <Table title="Data hygiene" count={sections.hygiene.rows.length}>
             <p
               className="mb-1 text-xs text-muted-foreground"
@@ -601,9 +638,11 @@ export function RenderedBody({
           it. The rows and the sentences are the conflicts route's, verbatim. */}
       {sections.conflicts && (
         <div className="space-y-1">
-          <ConflictsPanel
-            data={conflictsPanelData(sections.conflicts, body)}
-          />
+          <LayoutBoundary layout="conflicts">
+            <ConflictsPanel
+              data={conflictsPanelData(sections.conflicts, body)}
+            />
+          </LayoutBoundary>
           <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
             <p
               className="mb-1 text-xs text-muted-foreground"
@@ -632,7 +671,9 @@ export function RenderedBody({
           Without the HR grant it has no lists, and the table says why. */}
       {sections.rebalance && (
         <div className="space-y-1">
-          <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
+          <LayoutBoundary layout="who could help">
+            <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
+          </LayoutBoundary>
           {/* H-186 item 2. The table lists the idle people too, so they count. */}
           <Table title="Who could help" count={
             rebalanceTasks(sections.rebalance).length +
@@ -777,8 +818,15 @@ export function PreviewPrompt({ icon, text }: { icon: string; text: string }) {
  * sections all ignore the period says "As of today" in place of the period
  * chip. Edit mode names the report and offers Delete to a reader the server
  * lets delete it.
+ *
+ * WS-27bn R5f (§8 R5f). `mode="reportsOverview"` is Overview, the start of
+ * the one Reports app: the builder with no name field and no Save. It shows
+ * the KPI strip and the space table above the sections when
+ * `overviewTableShown` allows it. "Save as report" hands its choices to
+ * `onSaveAs`, and Overview itself writes no row. The mode is not called
+ * `overview`, because `page.tsx` uses that word for a project's overview.
  */
-function ReportBuilder({
+export function ReportBuilder({
   initial,
   editing,
   roots,
@@ -786,6 +834,10 @@ function ReportBuilder({
   onSaved,
   onDeleted,
   onCancel,
+  mode = "report",
+  onSaveAs,
+  onPreview,
+  onOpenNode,
 }: {
   initial: BuilderState;
   /** The saved report under edit, or `null` for a new one. */
@@ -796,7 +848,16 @@ function ReportBuilder({
   onSaved: (row: ReportRow) => void;
   onDeleted: (id: string) => void;
   onCancel: () => void;
+  /** R5f. `reportsOverview` is Overview: no name field and no Save. */
+  mode?: "report" | "reportsOverview";
+  /** R5f rule 10. Overview's "Save as report", with the state on screen. */
+  onSaveAs?: (state: BuilderState) => void;
+  /** R5f. Each preview the server answers, for the Home empty line. */
+  onPreview?: (body: PreviewReportBody) => void;
+  /** R5f. Open a row of the space table in the Projects page. */
+  onOpenNode?: (id: string) => void;
 }) {
+  const inOverview = mode === "reportsOverview";
   const [draft, setState] = useState<BuilderState>(initial);
   const [preview, setPreview] = useState<{ key: string; body: PreviewReportBody } | null>(
     null
@@ -851,6 +912,29 @@ function ReportBuilder({
   const prompt = personPrompt ?? projectPrompt;
   const noPeriod = periodFree(state);
 
+  // R5f rules 7 and 8. The strip and the table read the summary routes,
+  // which take no subject. So they show only for "Everyone" with the
+  // subtree, and a null key asks the server for nothing.
+  const tableShown = inOverview && overviewTableShown(state);
+  const summaryKey = !tableShown
+    ? null
+    : state.projectId === null
+      ? projectsKey("summary")
+      : projectsKey(`nodes/${state.projectId}/summary`);
+  const summaryNode = state.projectId;
+  const summary = useCachedResource<NodeSummary>(summaryKey, () =>
+    summaryNode === null ? projectsApi.portfolio() : projectsApi.summary(summaryNode)
+  );
+  // The first preview asks at once, so Overview does not wait for the delay
+  // on each visit. A change after that waits, as before.
+  const previewShown = useRef(false);
+  // A ref, so a new callback on each render of the parent does not ask the
+  // server again. It is written in an effect, never during render.
+  const onPreviewRef = useRef(onPreview);
+  useEffect(() => {
+    onPreviewRef.current = onPreview;
+  });
+
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
   const previewKey = JSON.stringify({
@@ -875,8 +959,10 @@ function ReportBuilder({
       projectsApi.previewReport({ project_id, name: "", config }).then(
         (body) => {
           if (off) return;
+          previewShown.current = true;
           setPreview({ key: previewKey, body });
           setPreviewError(null);
+          onPreviewRef.current?.(body);
         },
         (e) => {
           if (off) return;
@@ -887,7 +973,7 @@ function ReportBuilder({
           });
         }
       );
-    }, PREVIEW_DELAY_MS);
+    }, previewShown.current ? PREVIEW_DELAY_MS : 0);
     return () => {
       off = true;
       clearTimeout(timer);
@@ -991,7 +1077,11 @@ function ReportBuilder({
   return (
     <div className="space-y-3">
       <h3 className="min-w-0 truncate pr-px text-sm font-semibold text-foreground">
-        {editing ? editTitle(editing) : (template?.name ?? "Custom report")}
+        {inOverview
+          ? OVERVIEW_NAME
+          : editing
+            ? editTitle(editing)
+            : (template?.name ?? "Custom report")}
       </h3>
       <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
         <div className="space-y-3 xl:sticky xl:top-0">
@@ -1118,6 +1208,22 @@ function ReportBuilder({
             {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
           </fieldset>
 
+          {inOverview ? (
+            // R5f rules 10 and 11. Overview saves nothing. This opens the
+            // builder with the same choices, and the builder names it.
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="Save"
+                disabled={prompt !== null}
+                onClick={() => onSaveAs?.(state)}
+              >
+                Save as report
+              </Button>
+            </div>
+          ) : (
+          <>
           <label className="block text-xs">
             <span className="mb-1 block font-semibold text-foreground">Name</span>
             <Input
@@ -1163,6 +1269,8 @@ function ReportBuilder({
               {deleteError ?? otherSaveError ?? refusal}
             </p>
           )}
+          </>
+          )}
         </div>
 
         <section
@@ -1171,7 +1279,9 @@ function ReportBuilder({
         >
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <p className="text-xs text-muted-foreground">
-              Preview. The server computes each number, and nothing is saved.
+              {inOverview
+                ? "The server computes each number. Overview saves nothing."
+                : "Preview. The server computes each number, and nothing is saved."}
             </p>
             {updating && (
               <span className="text-xs text-muted-foreground" role="status">
@@ -1200,10 +1310,23 @@ function ReportBuilder({
               <RenderedBody
                 body={{
                   ...preview.body,
-                  report: { ...preview.body.report, name: state.name.trim() || NEW_REPORT_NAME },
+                  report: {
+                    ...preview.body.report,
+                    name: inOverview ? OVERVIEW_NAME : state.name.trim() || NEW_REPORT_NAME,
+                  },
                 }}
                 headerLine={headerLine}
                 hiddenHint={hiddenHint}
+                lead={
+                  !tableShown ? null : summary.data ? (
+                    <SpaceSummary
+                      summary={summary.data}
+                      onOpen={(id) => onOpenNode?.(id)}
+                    />
+                  ) : summary.loading ? (
+                    <SkeletonRows count={2} />
+                  ) : null
+                }
               />
             </div>
           ) : (
@@ -1276,6 +1399,9 @@ function TemplateCard({
  *
  * §6.5 item 11. The live templates come first, in one grid. The
  * coming-soon ones fold under "Coming later (N)".
+ *
+ * WS-27bn R5f (§6.1). Overview sits above this, and the order under it is
+ * the gallery, then "Your reports".
  */
 export function ReportsHome({
   rows,
@@ -1290,7 +1416,7 @@ export function ReportsHome({
   templates: ReportTemplate[] | undefined;
   templatesError: string | null;
   cardLine: (row: ReportRow) => string;
-  /** The portfolio's finished count, when the page has it. */
+  /** Overview's finished count, when its preview has answered (R5f). */
   finishedCount?: number | null;
   onOpen: (id: string) => void;
   onStart: (template: ReportTemplate) => void;
@@ -1301,36 +1427,6 @@ export function ReportsHome({
 
   return (
     <div className="space-y-4">
-      <section aria-labelledby="reports-yours">
-        <h3 id="reports-yours" className="mb-2 text-xs font-semibold text-foreground">
-          Your reports
-        </h3>
-        {rows === null ? (
-          <SkeletonRows count={2} />
-        ) : mine.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{homeEmptyLine(finishedCount)}</p>
-        ) : (
-          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            {mine.map((r) => (
-              <li key={r.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpen(r.id)}
-                  className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
-                >
-                  <span className="block truncate pr-px text-sm font-medium text-foreground">
-                    {r.name}
-                  </span>
-                  <span className="mt-1 block truncate pr-px text-xs text-muted-foreground">
-                    {cardLine(r)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
       <section aria-labelledby="reports-gallery">
         <h3 id="reports-gallery" className="mb-2 text-xs font-semibold text-foreground">
           Start from a question
@@ -1362,6 +1458,36 @@ export function ReportsHome({
               </CollapsibleSection>
             )}
           </div>
+        )}
+      </section>
+
+      <section aria-labelledby="reports-yours">
+        <h3 id="reports-yours" className="mb-2 text-xs font-semibold text-foreground">
+          Your reports
+        </h3>
+        {rows === null ? (
+          <SkeletonRows count={2} />
+        ) : mine.length === 0 ? (
+          <p className="text-xs text-muted-foreground">{homeEmptyLine(finishedCount)}</p>
+        ) : (
+          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {mine.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => onOpen(r.id)}
+                  className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
+                >
+                  <span className="block truncate pr-px text-sm font-medium text-foreground">
+                    {r.name}
+                  </span>
+                  <span className="mt-1 block truncate pr-px text-xs text-muted-foreground">
+                    {cardLine(r)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
     </div>
@@ -1502,13 +1628,24 @@ type Pane =
   | { kind: "new"; initial: BuilderState }
   | { kind: "edit"; row: ReportRow };
 
+/**
+ * The one Reports app (WS-27bn R5f, §9 Q14). Home is Overview, then the
+ * gallery, then "Your reports". A saved report opens with the rail beside
+ * it. The rail is absent on Overview (rule 16).
+ *
+ * ⚠️ The page passed the portfolio's `finished` roll-up here before R5f,
+ * and the page no longer fetched it for Reports, so the Home line never had
+ * a count. The count now comes from Overview's own preview.
+ */
 export default function ReportsView({
-  finished,
+  onOpenNode,
 }: {
-  /** The portfolio's finished roll-up, used to offer a first report. */
-  finished: FinishedReport | null;
+  /** Open a row of Overview's space table in the Projects page. */
+  onOpenNode?: (id: string) => void;
 }) {
   const [rows, setRows] = useState<ReportRow[] | null>(null);
+  /** The finished total of Overview's last preview, for the Home line. */
+  const [overviewFinished, setOverviewFinished] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [body, setBody] = useState<RenderedReportBody | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1628,7 +1765,9 @@ export default function ReportsView({
 
   const selectedRow = rows?.find((r) => r.id === selected) ?? null;
   const building = pane.kind !== "view";
-  const railShown = !building && (rows === null || rows.length > 0);
+  // R5f rule 16. Overview is Home, and the rail is absent there. It shows
+  // when a member opens a saved report.
+  const railShown = !building && selected !== null;
   const { yours, shared } = railGroups(rows ?? []);
   const header =
     body && selectedRow
@@ -1654,7 +1793,7 @@ export default function ReportsView({
       <div className="mb-3 flex flex-wrap items-baseline gap-2">
         <h2 className="text-sm font-semibold">Reports</h2>
         <p className="text-xs text-muted-foreground">
-          A saved question, answered from the same numbers the dashboard shows.
+          Look at your work now, or save a report to deliver.
         </p>
         <Button
           className="ml-auto"
@@ -1669,21 +1808,15 @@ export default function ReportsView({
       </div>
 
       {/* §6.5 item 1. While the member builds a report the rail leaves, and
-          the builder takes the width for its preview. §6.5 item 12: with no
-          report saved the rail leaves too, so Home says the one empty line. */}
+          the builder takes the width for its preview. R5f rule 16: Home is
+          Overview, and the rail leaves there too. */}
       <div
         className={
           railShown ? "grid gap-3 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]" : ""
         }
       >
         {railShown && (
-          // §6.5 item 12. On a phone the rail is gone on Home, where the
-          // cards already list your reports.
-          <aside
-            className={`rounded-lg border border-border bg-card p-2 ${
-              selected ? "" : "hidden lg:block"
-            }`}
-          >
+          <aside className="rounded-lg border border-border bg-card p-2">
             {rows === null ? (
               <SkeletonRows count={3} />
             ) : (
@@ -1732,15 +1865,40 @@ export default function ReportsView({
               onCancel={() => setPane({ kind: "view" })}
             />
           ) : !selected ? (
-            <ReportsHome
-              rows={rows}
-              templates={templates}
-              templatesError={catalogue.error}
-              cardLine={cardLine}
-              finishedCount={finished?.total_completed}
-              onOpen={(id) => setSelected(id)}
-              onStart={start}
-            />
+            // R5f (§6.1). Home is Overview, then the gallery, then "Your
+            // reports". Overview writes no row. "Save as report" opens the
+            // builder with its choices.
+            <div className="space-y-4">
+              <ReportBuilder
+                key="reportsOverview"
+                mode="reportsOverview"
+                initial={overviewState()}
+                editing={null}
+                roots={roots}
+                templates={templates}
+                onSaved={saved}
+                onDeleted={deleted}
+                onCancel={() => undefined}
+                onSaveAs={(state) =>
+                  setPane({ kind: "new", initial: saveAsReportState(state) })
+                }
+                onPreview={(preview) =>
+                  setOverviewFinished(preview.sections.finished?.total_completed ?? null)
+                }
+                onOpenNode={onOpenNode}
+              />
+              <div className="border-t border-border pt-4">
+                <ReportsHome
+                  rows={rows}
+                  templates={templates}
+                  templatesError={catalogue.error}
+                  cardLine={cardLine}
+                  finishedCount={overviewFinished}
+                  onOpen={(id) => setSelected(id)}
+                  onStart={start}
+                />
+              </div>
+            </div>
           ) : error ? (
             <RenderFailed
               error={error}

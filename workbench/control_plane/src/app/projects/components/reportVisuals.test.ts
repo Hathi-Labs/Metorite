@@ -867,7 +867,7 @@ describe("an empty panel for a member whose rows are all hidden", () => {
   });
 });
 
-describe("the Analytics app renders as before", () => {
+describe("the Analytics panels render as before", () => {
   it("still draws the band chart and its empty state from the route's shape", () => {
     const html = renderToStaticMarkup(
       createElement(StuckPanel, {

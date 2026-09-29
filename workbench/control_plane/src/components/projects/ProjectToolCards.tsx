@@ -85,23 +85,24 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
 };
 
 /**
- * The app destination a read's card opens, when it has one. The five
- * analytics reads and the summary open the Analytics app, where the same
- * numbers are drawn; a rendered report opens the Reports app on the list.
+ * The app destination a read's card opens, when it has one. The analytics
+ * reads, the summary and a rendered report all open the Reports app. Since
+ * WS-27bn R5f its Overview draws what the Analytics app drew, and the
+ * Analytics app is gone. Exported for `ProjectToolCards.test.ts`.
  */
-const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }> = {
-  project_summary: { app: "analytics", label: "Open Analytics" },
-  analytics_stuck: { app: "analytics", label: "Open Analytics" },
-  analytics_load: { app: "analytics", label: "Open Analytics" },
-  analytics_throughput: { app: "analytics", label: "Open Analytics" },
-  analytics_finished: { app: "analytics", label: "Open Analytics" },
-  analytics_outlook: { app: "analytics", label: "Open Analytics" },
-  team_capacity: { app: "analytics", label: "Open Analytics" },
-  find_conflicts: { app: "analytics", label: "Open Analytics" },
+export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
+  project_summary: { app: "reports", label: "Open Reports" },
+  analytics_stuck: { app: "reports", label: "Open Reports" },
+  analytics_load: { app: "reports", label: "Open Reports" },
+  analytics_throughput: { app: "reports", label: "Open Reports" },
+  analytics_finished: { app: "reports", label: "Open Reports" },
+  analytics_outlook: { app: "reports", label: "Open Reports" },
+  team_capacity: { app: "reports", label: "Open Reports" },
+  find_conflicts: { app: "reports", label: "Open Reports" },
   report_list: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },
-  status_report: { app: "analytics", label: "Open Analytics" },
+  status_report: { app: "reports", label: "Open Reports" },
 };
 
 /**
