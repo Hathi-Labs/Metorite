@@ -248,6 +248,83 @@ jobs:
           echo "::error::serving ${got:0:8}, which is NOT an ancestor of main"
           exit 1
 
+  # H-204: the box runs deploy/smoke_chat.sh itself, from acb-smoke-chat.timer,
+  # every 6 hours. No path on the box raises an alert, so this job reads the
+  # unit. A FAILED acb-smoke-chat.service means chat does not save (exit 1) or
+  # the smoke environment is wrong (exit 2), and the run goes red. Exit 75
+  # (the deploy lock was busy) is a success in the unit, so it is not red.
+  #
+  # systemd keeps the failed state until the next run passes. So a failure
+  # while ssh from GitHub is blocked is still red on the first run that gets in.
+  # An unreachable box is a warning here. The `probe` job owns reachability.
+  chat-smoke-timer:
+    name: "The box's chat smoke must not be failed"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            scripts/ci_deploy_reach.sh
+            scripts/ci_ssh_host_key.sh
+            deploy/hostinger/known_hosts
+          sparse-checkout-cone-mode: false
+      - name: Read acb-smoke-chat.service on the box
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          CONNECT_BUDGET: "180"
+        run: |
+          # `set +e`: a failed ssh must reach the case below.
+          set +e
+          set -uo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+          ci_pin_host_key || exit 1
+
+          wrc=0
+          wait_for_ssh || wrc=$?
+          case "$wrc" in
+            0) ;;
+            1) echo "::warning title=Chat smoke timer not read::ssh could not reach the box. See the probe job."
+               exit 0 ;;
+            *) echo "::error title=Chat smoke timer not read::ssh failed for a reason that is not the network (wait_for_ssh $wrc)."
+               exit 1 ;;
+          esac
+
+          # The box prints its state. It exits 10 when the service is failed,
+          # and 11 when the timer is not active.
+          cat > /tmp/smoke_state.sh <<'REMOTE'
+          t="$(systemctl is-active acb-smoke-chat.timer 2>/dev/null)"
+          s="$(systemctl is-failed acb-smoke-chat.service 2>/dev/null)"
+          echo "timer=${t:-unknown} service=${s:-unknown}"
+          systemctl show acb-smoke-chat.service -p Result -p ExecMainStatus -p ExecMainExitTimestamp --no-pager 2>/dev/null
+          if [ "$s" = failed ]; then
+            sudo -n journalctl -u acb-smoke-chat.service -n 40 --no-pager -o short-iso 2>/dev/null
+            exit 10
+          fi
+          [ "$t" = active ] || exit 11
+          exit 0
+          REMOTE
+          rc=0
+          timeout -k 10 120 ssh "${CI_SSH_OPTS[@]}" "$SSH_USER@$SSH_HOST" 'bash -s' \
+            < /tmp/smoke_state.sh || rc=$?
+          case "$rc" in
+            0)  echo "OK      acb-smoke-chat.service is not failed, and its timer is active" ;;
+            10) echo "::error title=Chat does not save::acb-smoke-chat.service is FAILED on the box. Its last run exited 1 (chat does not save) or 2 (the environment is wrong). See the journal lines above."
+                exit 1 ;;
+            11) echo "::error title=Chat smoke timer is off::acb-smoke-chat.timer is not active on the box, so nothing proves that chat saves. Check: systemctl status acb-smoke-chat.timer"
+                exit 1 ;;
+            *)  echo "::warning title=Chat smoke timer not read::ssh ended with exit $rc before the state was read."
+                exit 0 ;;
+          esac
+
   # Only runs on manual dispatch with diagnose=true. SSH is the thing that
   # breaks during these outages, so this is best-effort and never fails the run.
   diagnose:

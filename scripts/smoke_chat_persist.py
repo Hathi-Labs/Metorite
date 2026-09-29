@@ -37,12 +37,11 @@ Use the workbench host ``app.metorite.com``. The host ``metorite.com`` is a
 different site. Its ``/api/auth/me`` gives 404, so the script stops with
 "nobody in no org".
 
-Getting the cookie. The operator mints it on the box with ``encode`` from
-``next-auth/jwt``. The salt is the cookie name, and the secret is the
-workbench ``AUTH_SECRET``. The box keeps it at ``/home/acb/.smoke/cookie``
-(mode 600, owner acb), and it never leaves the box. It expires after 30
-days. An ``AUTH_SECRET`` rotation makes it invalid. Do not put a secret or a
-token in the repo.
+Getting the cookie. ``deploy/smoke_chat.sh`` mints a short-lived session in
+memory on each run, with ``encode`` from ``next-auth/jwt``. The salt is the
+cookie name, and the secret is the workbench ``AUTH_SECRET``. No cookie file
+exists on the box, and the session never leaves the process. Do not put a
+secret or a token in the repo.
 
 Exit 0 when all four steps pass, 1 when a step fails, 2 when the environment
 is wrong. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 900 s
