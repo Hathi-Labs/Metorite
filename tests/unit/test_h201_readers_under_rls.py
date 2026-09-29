@@ -801,6 +801,33 @@ def test_respond_input_answers_only_for_the_thread_that_asked(graph_as_app, monk
     assert answer == {"answer": "yes", "wasFreeform": True}
 
 
+def test_the_relay_applier_answers_only_for_its_own_channel() -> None:
+    """H-201 fix round 2 (verifier). A request that thread Y asked, applied
+    from thread X's control channel, is refused. The applier must pass its
+    channel's thread, never the request's recorded owner."""
+    from orchestrator import executor
+
+    async def _go() -> tuple[bool, bool, dict | None]:
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park("req-h201-relay", fut, "thread-Y")
+        try:
+            cmd = {"request_id": "req-h201-relay", "answer": "from X"}
+            from_x = executor._respond_input_applier("thread-X")(cmd)
+            await asyncio.sleep(0.01)
+            stolen = fut.done()
+            cmd = {"request_id": "req-h201-relay", "answer": "from Y"}
+            from_y = executor._respond_input_applier("thread-Y")(cmd)
+            await asyncio.sleep(0.01)
+            return from_x or stolen, from_y, (fut.result() if fut.done() else None)
+        finally:
+            executor._pending_user_input.pop("req-h201-relay", None)
+
+    refused_x, from_y, answer = asyncio.run(_go())
+    assert refused_x is False, "thread X's channel answered thread Y's question"
+    assert from_y is True
+    assert answer == {"answer": "from Y", "wasFreeform": True}
+
+
 # ── The source fence. It reads the code, so it cannot skip. ─────────────────
 
 def test_the_h201_readers_open_no_unbound_session() -> None:
@@ -833,3 +860,5 @@ def test_the_h201_readers_open_no_unbound_session() -> None:
     from orchestrator import executor
     param = inspect.signature(executor.resolve_user_input).parameters["thread_id"]
     assert param.default is inspect.Parameter.empty
+    # The run registers the channel applier, which is tested above.
+    assert '_respond_input_applier(thread_id)' in inspect.getsource(executor)

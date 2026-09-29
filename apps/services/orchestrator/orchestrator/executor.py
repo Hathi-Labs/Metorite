@@ -33,7 +33,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
@@ -583,6 +583,27 @@ def resolve_user_input(
         lambda: (not fut.done()) and fut.set_result(payload)
     )
     return True
+
+
+def _respond_input_applier(thread_id: str) -> Callable[[dict[str, Any]], bool]:
+    """The ``respond_input`` applier for the control channel of *thread_id*.
+
+    H-201 fix round 2. The bus delivers a command on ONE run's channel, so
+    that run's thread is the only thread it may answer for. The applier
+    passes the channel's thread, and never the request's recorded owner.
+    Passing the owner would let a command on thread X's channel answer a
+    question that thread Y asked.
+    """
+
+    def _apply(command: dict[str, Any]) -> bool:
+        return resolve_user_input(
+            str(command.get("request_id", "")),
+            str(command.get("answer", "")),
+            bool(command.get("was_freeform", True)),
+            thread_id=thread_id,
+        )
+
+    return _apply
 
 
 async def wait_user_future(
@@ -2807,17 +2828,7 @@ async def run_agent_stream(
             register_control_command as _register_ctl,
         )
 
-        def _respond_input_apply(command: dict[str, Any]) -> bool:
-            # The bus delivered this command on THIS run's channel, so the
-            # run's thread is the only thread it may answer for (H-201).
-            return resolve_user_input(
-                str(command.get("request_id", "")),
-                str(command.get("answer", "")),
-                bool(command.get("was_freeform", True)),
-                thread_id=thread_id,
-            )
-
-        _register_ctl(thread_id, "respond_input", _respond_input_apply)
+        _register_ctl(thread_id, "respond_input", _respond_input_applier(thread_id))
     except Exception:
         pass
 
