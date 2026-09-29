@@ -38,16 +38,16 @@ from gateway.routes.projects.core import (
     assert_can_manage_settings,
     clean_payload,
     count_where,
-    load_visible_project,
-    record_activity,
     is_org_wide,
+    load_visible_project,
+    org_wide_exists,
+    record_activity,
     refuse_org_wide_rescope,
     refuse_org_wide_write,
-    require_known_tenant,
-    require_org_vocabulary_edit,
     remap_task_statuses,
     require_done_status,
     require_known_tenant,
+    require_org_vocabulary_edit,
     require_org_vocabulary_write,
     require_row,
     resolve_visibility,
@@ -855,6 +855,28 @@ async def set_status_set(
 
 # ── Types ───────────────────────────────────────────────────────────────────
 
+#: WS-42 PS-2 — is this name taken by ANOTHER type of the same space? Migration
+#: 175's `uq_pm_task_types_project_name` would answer a clash with an
+#: IntegrityError, a 500, which is how the first real walk of the type screen
+#: found it. A 409 that names the clash belongs there, as fields and tags give.
+TYPE_NAME_TAKEN_SQL = (
+    "SELECT 1 FROM pm_task_types "
+    " WHERE project_id = CAST(:root AS uuid) AND name = :name "
+    "   AND id <> CAST(:id AS uuid)"
+)
+_NO_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def _refuse_taken_type_name(db: Any, root: str, name: str, own_id: str = _NO_ID) -> None:
+    taken = (
+        await db.execute(text(TYPE_NAME_TAKEN_SQL), {"root": root, "name": name, "id": own_id})
+    ).fetchone()
+    if taken is not None:
+        raise HTTPException(
+            status_code=409, detail=f"A task type called '{name}' already exists here."
+        )
+
+
 @router.get("/nodes/{project_id}/types")
 async def list_types(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -909,6 +931,13 @@ async def create_type(
         root = await _root_for(db, vis, project_id)
         if org_wide:
             require_known_tenant(vis, "task type")
+            if await org_wide_exists(db, "pm_task_types", root, name):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"An organization-wide task type called '{name}' already exists.",
+                )
+        else:
+            await _refuse_taken_type_name(db, root, name)
         # ⚠️ The tenant is passed EXPLICITLY for an org-wide row, and it has to
         # be. Migration 161's trigger derives `organization_id` from the parent
         # project, so with no `project_id` nothing fills it and `NOT NULL`
@@ -975,6 +1004,13 @@ async def patch_type(
             refuse_org_wide_write(existing, "task type")
             vis = await resolve_visibility(db, user)
             await load_visible_project(db, vis, str(existing.project_id))
+            if "name" in values:
+                values["name"] = str(values["name"] or "").strip()
+                if not values["name"]:
+                    raise HTTPException(status_code=422, detail="A task type needs a name.")
+                await _refuse_taken_type_name(
+                    db, str(existing.project_id), values["name"], type_id
+                )
         if getattr(existing, "is_system", False) and "name" in values:
             raise HTTPException(
                 status_code=409,

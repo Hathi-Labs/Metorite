@@ -28,8 +28,9 @@ import { LifecyclePolicy } from "./LifecyclePolicy";
 import SpaceSettings from "./SpaceSettings";
 import { StatusManager } from "./StatusManager";
 import { TagManager } from "./TagManager";
+import { TypeManager } from "./TypeManager";
 
-export type SettingsSection = "import" | "general" | "statuses" | "fields" | "tags" | "lifecycle";
+export type SettingsSection = "import" | "general" | "statuses" | "fields" | "tags" | "types" | "lifecycle";
 
 interface SectionItem {
   id: SettingsSection;
@@ -58,6 +59,12 @@ export const SPACE_SECTIONS: SectionItem[] = [
   },
   { id: "fields", label: "Custom fields", icon: "SlidersHorizontal", hint: "Extra details every task in the space can carry." },
   { id: "tags", label: "Tags", icon: "Tag", hint: "The labels tasks in the space can wear, with their colours." },
+  {
+    id: "types",
+    label: "Task types",
+    icon: "Shapes",
+    hint: "The kinds of work a task can be, like a bug or a feature. Epic is built in and stays the top level.",
+  },
   {
     id: "lifecycle",
     label: "Lifecycle",
@@ -258,6 +265,17 @@ export default function ProjectsSettings({
             onClose={() => undefined}
             onChanged={onEdited}
             onTasksTouched={onBoardStale}
+          />
+        );
+      case "types":
+        return (
+          <TypeManager
+            key={space.id}
+            inline
+            projectId={space.id}
+            projectName={space.name}
+            onClose={() => undefined}
+            onChanged={onEdited}
           />
         );
       case "lifecycle":

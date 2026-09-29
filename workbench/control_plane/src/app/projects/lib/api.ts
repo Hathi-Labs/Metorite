@@ -1121,11 +1121,15 @@ export interface RenderedReportBody {
  */
 export interface TaskTypeRow {
   id: string;
+  /** `null` means ORG-WIDE — see `TagRow.project_id` (WS-27bj / D-PM-16). */
+  project_id?: string | null;
   name: string;
   icon?: string | null;
   color?: string | null;
   is_default?: boolean | null;
   is_system?: boolean | null;
+  /** A top-level type (migration 168). Epic carries it and keeps it. */
+  is_epic?: boolean | null;
 }
 
 export interface TaskRow {
@@ -2164,6 +2168,24 @@ export const projectsApi = {
    */
   types: (projectId: string) =>
     call<{ rows: TaskTypeRow[]; total: number }>(`nodes/${projectId}/types`),
+
+  /** WS-42 PS-2 — a new type in the node's space. */
+  createType: (projectId: string, payload: Record<string, unknown>) =>
+    call<TaskTypeRow>(`nodes/${projectId}/types`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Rename, recolour, re-icon, or make it the default. Epic cannot be renamed. */
+  patchType: (typeId: string, payload: Record<string, unknown>) =>
+    call<TaskTypeRow>(`types/${typeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Tasks carrying it stay, untyped; the count says how many. */
+  deleteType: (typeId: string) =>
+    call<{ deleted: string; tasks_untyped: number }>(`types/${typeId}`, { method: "DELETE" }),
 
   createTag: (projectId: string, payload: Record<string, unknown>) =>
     call<TagRow>(`nodes/${projectId}/tags`, {
