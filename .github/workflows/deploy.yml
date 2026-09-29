@@ -718,6 +718,156 @@ jobs:
               ;;
           esac
 
+  # ── WS-27bm S16: every deploy proves that chat saves ────────────────────
+  #
+  # For two months every chat save on production failed and every deploy went
+  # green (spec projects_ai_chat.md §21). `verify()` asks whether the app is up
+  # on this commit. This job asks whether a chat message SAVES and READS BACK.
+  #
+  # It runs after the deploy is verified, on either path: the push apply, or
+  # the pull path that `pull-delivery` confirmed. `deploy/smoke_chat.sh` runs
+  # on the box as the ssh user, mints a 900 s session in memory and runs
+  # `scripts/smoke_chat_persist.py`. No cookie file and no GitHub secret.
+  #
+  # ⚠️ RED ON PURPOSE, and no rollback. R6 says we only roll forward. A red
+  # here means "the release is live and chat does not save". Fix forward.
+  # Exit 1 (a step failed) and exit 2 (the environment is wrong) are both red
+  # at once, with no retry. Only an ssh blip retries, as H-142 does it.
+  #
+  # ⚠️ ONLY A SMOKE THAT RAN AND FAILED IS RED. When ssh cannot reach the box
+  # for the whole connect budget, or drops on all 3 attempts, the smoke has no
+  # verdict. The job is then green with a warning, which is H-142's contract
+  # for the pull path: `pull-delivery` proved the SHA by HTTPS, and the runner
+  # that cannot reach the box must not turn that into a red.
+  #
+  # ⚠️ No concurrency group here. The `deploy-production` group covers only
+  # the `deploy` job. The smoke holds a SHARED lock on the box's deploy lock
+  # instead, which every apply takes EXCLUSIVE, on both delivery paths. Exit 75
+  # means another deploy held it for the whole wait. That is a warning.
+  chat-smoke:
+    name: "Chat saves (smoke)"
+    runs-on: ubuntu-latest
+    needs: [deploy, pull-delivery]
+    # `always()`, for the reason the `pull-delivery` job records. A skipped
+    # `pull-delivery` is the NORMAL case, when the push path reached the box.
+    if: >-
+      ${{ always()
+      && needs.deploy.result == 'success'
+      && (needs.pull-delivery.result == 'success' || needs.pull-delivery.result == 'skipped') }}
+    # A BACKSTOP, sized from the parts. deploy/smoke_chat.sh bounds itself at
+    # 935 s (its header gives the sum), so one ssh gets 990 s + 10 s grace.
+    #   3 attempts, each dropped just before its timeout      3 x 1000   3000 s
+    #   the H-142 connect budget, and one probe past it       300 + 90    390 s
+    #   the naps between attempts                             20 + 40      60 s
+    #   = 3450 s, about 58 min, under 60.
+    # A timeout of one ssh never retries (below), so a real run is far shorter.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Save one chat message on the box and read it back
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+        run: |
+          # ⚠️ `set +e`. GitHub runs this step under `bash -e`, and a failed
+          # ssh pipe would end the step before the case below reads its code.
+          set +e
+          set -uo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # shellcheck source=scripts/ci_deploy_reach.sh
+          . scripts/ci_deploy_reach.sh
+          ci_pin_host_key || exit 1
+
+          # The smoke prints this line only when all four steps passed.
+          SMOKE_DONE="PASS chat persistence on"
+          # The script's own bound is 935 s. This is a little more, so the
+          # script always reports first.
+          SMOKE_SSH_TIMEOUT=990
+
+          # The smoke did not run to an answer. Green with a warning: only a
+          # smoke that RAN and failed is red.
+          no_verdict() {
+            echo "⚠️  Chat smoke did not run: $1."
+            echo "::warning title=Chat smoke did not run::$1. Chat was not checked on this run. Run deploy/smoke_chat.sh on the box by hand."
+            exit 0
+          }
+          for attempt in 1 2 3; do
+            wrc=0
+            wait_for_ssh || wrc=$?
+            if [ "$wrc" = 4 ]; then
+              echo "❌ Chat smoke FAILED: the box's ssh host key did not verify."
+              exit 1
+            fi
+            # H-142: the connect budget ran out on network faults. The smoke did
+            # not RUN, so it has no verdict. `pull-delivery` already proved the
+            # SHA by HTTPS, and H-142's contract for that case is green with a
+            # warning. A red here would reverse it.
+            if [ "$wrc" = 1 ]; then
+              no_verdict "ssh did not reach the box in ${CONNECT_SPENT}s of connect budget"
+            fi
+            if [ "$wrc" != 0 ]; then
+              echo "❌ Chat smoke FAILED: ssh fails for a reason that is not the network (exit $wrc)."
+              exit 1
+            fi
+            echo "── Chat smoke, attempt $attempt/3 ──"
+            : > /tmp/smoke.log
+            timeout -k 10 "$SMOKE_SSH_TIMEOUT" ssh "${CI_SSH_OPTS[@]}" \
+              "$SSH_USER@$SSH_HOST" "bash -s" < deploy/smoke_chat.sh 2>&1 | tee /tmp/smoke.log
+            rc=${PIPESTATUS[0]}
+            # A teardown flake after the smoke passed is still a pass.
+            if grep -qF "$SMOKE_DONE" /tmp/smoke.log; then
+              echo "✅ Chat saves on production."
+              exit 0
+            fi
+            # ⚠️ A STEP FAILED, and then ssh dropped. The log holds the smoke's
+            # own lines too, so a drop after a FAIL line must not read as a
+            # blip. Red at once, before the retry and the no-verdict tests.
+            if grep -q '^FAIL ' /tmp/smoke.log; then
+              echo "❌ Chat smoke FAILED: a step failed before ssh dropped (exit $rc). Chat does not save on production."
+              echo "   The release is live. Fix forward (R6). Read the step line above."
+              exit 1
+            fi
+            case "$rc" in
+              1)
+                echo "❌ Chat smoke FAILED: a step failed. Chat does not save on production."
+                echo "   The release is live. Fix forward (R6). Read the step line above."
+                exit 1 ;;
+              2)
+                echo "❌ Chat smoke FAILED: the environment is wrong (exit 2). See the line above."
+                exit 1 ;;
+              75)
+                # BUSY. A later deploy held the box's deploy lock for the whole
+                # wait, so the smoke checked nothing. That deploy runs its own
+                # chat-smoke. A red here would blame this release for nothing.
+                echo "::warning title=Chat smoke did not run::Another deploy held the box's deploy lock, so chat was not checked on this run. The later deploy's own chat-smoke checks it."
+                exit 0 ;;
+              0)
+                # The script exits 0 only after the smoke printed PASS.
+                echo "❌ Chat smoke FAILED: exit 0 with no PASS line. The smoke did not prove a save."
+                exit 1 ;;
+              124|137)
+                # ⏱ A TIMEOUT, not a drop. The script bounds itself at 935 s,
+                # so the session stalled and nobody knows how far the smoke
+                # got. No retry: it could run beside the first one.
+                no_verdict "the smoke did not report in ${SMOKE_SSH_TIMEOUT}s (timeout, exit $rc)" ;;
+            esac
+            # Any other code is ssh's own (255). Retry only when ssh names a
+            # network fault, the same test the deploy job uses.
+            if ! ssh_network_fault < /tmp/smoke.log; then
+              echo "❌ Chat smoke FAILED: exit $rc, and it is not a network blip."
+              exit 1
+            fi
+            echo "↩  ssh dropped (exit $rc). Trying again."
+            sleep $((attempt * 20))
+          done
+          no_verdict "ssh dropped on all 3 attempts"
+
   # ── Post-deploy: Smoke test (hit /health endpoint) ─────────────────────
   smoke:
     name: "Smoke test"

@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-204 · Decide how an organization-wide tag, field or type is retired · [OWNER]
+### H-205 · Decide how an organization-wide tag, field or type is retired · [OWNER]
 - **Check:** `rg -n "refuse_org_wide_write\(" apps/services/gateway/gateway/routes/projects/`
   → present on the DELETE and MERGE paths means a shared row still cannot be retired.
 - **Why:** D-PM-33 allows a rename only. Shared vocabulary (WS-42 PS-3) now
@@ -107,6 +107,19 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §9.11.2 (D-PM-33), and
   `specs/projects_settings.md` §7 row PS-3
 - **Added:** 2026-09-29 · WS-42 PS-3
+
+### H-204 · Prove that chat saves when GitHub cannot reach the box · [AGENT]
+- **Check:** `grep -n "smoke_chat" .github/workflows/vps-health.yml deploy/hostinger/*.timer deploy/hostinger/*.service`
+  → no match means no path outside `deploy.yml` runs the chat smoke, so this is open.
+- **Why:** The `chat-smoke` job gives a no-verdict warning and stays green when
+  ssh from GitHub cannot reach the box. That keeps the H-142 contract. But when
+  ssh stays blocked (H-50 fail2ban, WS-25 2026-08-05), every run gives that
+  warning, and no run proves that chat saves. `vps-health.yml` does not run
+  the smoke, and no timer on the box runs it. The fix is one of two. Run
+  `deploy/smoke_chat.sh` from a box timer or from `vps-health.yml`, and alert
+  on its exit. Or make the job red after N no-verdict runs in a row.
+- **Authority:** `specs/projects_ai_chat.md` §21.10, board row WS-27bm S16
+- **Added:** 2026-09-29 · WS-27bm S16 fix round 2, PR #541
 
 ### H-203 · Decide whether a new task takes its space's default type · [OWNER]
 - **Check:** `rg -n "is_default" apps/services/gateway/gateway/routes/projects/tasks.py`
@@ -1229,7 +1242,7 @@ line — never reclaim a number by deleting the other entry.
   type, with rename and a tag colour. Two things stay true after a flip. No
   settings screen creates an org-wide row yet. The flip opens the API and the
   Projects chat, whose create writes send `scope: "org"`. A create in Shared
-  vocabulary is the next slice. A row still cannot be retired (H-204).
+  vocabulary is the next slice. A row still cannot be retired (H-205).
 - **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
   The flip waited for the admin surface (H-4, built as WS-42 PS-3). Creating an org-wide row is
   easy and un-creating it is the hard part, so a member could mint rows
