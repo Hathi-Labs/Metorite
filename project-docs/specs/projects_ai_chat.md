@@ -3525,7 +3525,7 @@ The first production run PASSED on 2026-09-29, all four steps, on
 
 ### 21.13 H-201 — the other readers bind the tenant
 
-**Status: BUILT 2026-09-30, part 1 of H-201, with fix round 1.** This part binds the readers
+**Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2.** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -3634,6 +3634,44 @@ live. Each one blocked the merge.
 | the `member_verified` check removed | 1 |
 | the owner check in `resolve_user_input` removed | 1 |
 | the `thread_id` requirement removed from the route | 2 |
+
+**Fix round 2.** The review found one new P0. `chat_session.agent_name`
+came from the browser as a bare string. Step 2 of `_get_workspace_path`
+joined it onto `repos/`, so `../../../../../..` became `/`.
+
+The same join was live on main with no database involved. Three routes
+passed a request's agent name into `_agent_clone_dir` or
+`_canonical_workspace_dir`:
+
+- `POST /agent/artifacts/upload?agent=` wrote into any directory.
+- The email artifact import read any file into the member's workspace.
+- The attachment refs of an email send could attach any file.
+
+The repair is one rule, in one place. `acb_skills.agent_paths.AGENT_NAME_RE`
+takes one path segment: a letter or digit first, then letters, digits, `.`,
+`_` or `-`, at most 64 characters. These sites apply it:
+
+1. The session upsert refuses a bad name with 422.
+2. `_agent_clone_dir` gives no clone dir for a bad name. A candidate must
+   also resolve strictly below its `repos/` root, so a link out fails.
+3. `_canonical_workspace_dir`, `agent_code_dir` and `agent_state_dir`
+   raise `InvalidAgentName`.
+4. The artifact upload answers 422.
+5. Step 2 passes its result through the same read check as a stored root.
+
+**Fix round 2 mutations.**
+
+| Mutation | Tests that fail |
+|---|---|
+| the upsert check removed | 1 |
+| the name check in `_agent_clone_dir` removed | 2 |
+| the containment check in `_agent_clone_dir` removed | 1 |
+| the read check on step 2 removed | 1 |
+| both checks in `_agent_clone_dir` removed | 2 |
+| the upload check removed | 1 |
+| the rule removed from `_canonical_workspace_dir` | 1 |
+| the rule removed from `agent_state_dir` | 1 |
+| the rule widened to any string | 5 |
 
 **Verification.**
 

@@ -3540,6 +3540,7 @@ line — never reclaim a number by deleting the other entry.
   - The room check on each workspace route.
   - The member scope of `query_history`.
   - The owner thread of each `ask_user` request.
+  - Fix round 2: the one agent-name rule, `agent_paths.AGENT_NAME_RE`.
 - **What happens.** These modules still open the unbound
   `acb_graph.get_session()` on a FORCE-RLS table. In production a read there
   sees no row, and the database refuses a write there.
@@ -3578,6 +3579,12 @@ line — never reclaim a number by deleting the other entry.
   `access_request`. It has no tenant yet, so it needs its own design.
   `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread
   of another org can appear there as "unknown".
+- **Found in fix round 2.** Four local agent-name regexes remain, in
+  `routes/apps/grants.py`, `routes/observability.py`, `routes/agent.py`
+  (`_sync_file_into_db`) and the executor registry path. Move each one to
+  `agent_paths.AGENT_NAME_RE`, so the product has one rule.
+  `import_artifact` in `routes/email/transport/send.py` also checks
+  containment with `startswith`. Use `is_relative_to`.
 - **Found in part 1 fix round 1.** The `write_artifact` tool PATCHes the
   session workspace with the internal token and no member. That call has no
   tenant, so the room check refuses it. It was already a no-op in production under
