@@ -156,7 +156,7 @@ async def query_history(
     # With the bind flag ON and no tenant, the opener is None and the tool
     # answers empty. Nothing falls back to an unbound session.
     try:
-        from orchestrator.executor import _graph_session_opener_current  # noqa: PLC0415
+        from orchestrator.executor import _graph_session_opener_current
 
         _open = _graph_session_opener_current()
     except Exception as exc:
