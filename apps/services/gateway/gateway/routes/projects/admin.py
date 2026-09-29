@@ -63,6 +63,7 @@ from gateway.routes.projects.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 
 class StatusIn(BaseModel):
@@ -950,23 +951,31 @@ async def create_type(
         # than two. That is not a no-op: 161's trigger switches from FILLING the
         # column to VERIFYING it against the parent project, which turns a
         # cross-tenant insert into a refusal instead of a stored row.
-        row = (await db.execute(
-            text(
-                "INSERT INTO pm_task_types "
-                "(project_id, organization_id, name, icon, color, is_default, "
-                " is_epic, is_system) "
-                "VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :name, :icon, "
-                "        :color, :is_default, :is_epic, false) RETURNING *"
-            ),
-            {
-                "root": None if org_wide else root,
-                "org": vis.organization_id,
-                "name": name,
-                "icon": values.get("icon"), "color": values.get("color"),
-                "is_default": bool(values.get("is_default")),
-                "is_epic": bool(values.get("is_epic")),
-            },
-        )).fetchone()
+        try:
+            row = (await db.execute(
+                text(
+                    "INSERT INTO pm_task_types "
+                    "(project_id, organization_id, name, icon, color, is_default, "
+                    " is_epic, is_system) "
+                    "VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :name, :icon, "
+                    "        :color, :is_default, :is_epic, false) RETURNING *"
+                ),
+                {
+                    "root": None if org_wide else root,
+                    "org": vis.organization_id,
+                    "name": name,
+                    "icon": values.get("icon"), "color": values.get("color"),
+                    "is_default": bool(values.get("is_default")),
+                    "is_epic": bool(values.get("is_epic")),
+                },
+            )).fetchone()
+        except IntegrityError as exc:
+            # The pre-check above covers every case but a race: two creates of
+            # one name in the same instant. The index answers the second; this
+            # turns its 500 into the same 409 (PS-2 review).
+            raise HTTPException(
+                status_code=409, detail=f"A task type called '{name}' already exists here.",
+            ) from exc
         # is_system is written as a literal false, never from the payload: the
         # Epic rule keys off it (§3.4), so a caller able to set it could mint a
         # second root-only type — or, worse, a type that claims Epic's exemption.
@@ -1034,7 +1043,13 @@ async def patch_type(
             )
         if not values:
             return row_to_dict(existing, TypeModel)
-        row = await update_row(db, "pm_task_types", type_id, values)
+        try:
+            row = await update_row(db, "pm_task_types", type_id, values)
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A task type called '{values.get('name')}' already exists here.",
+            ) from exc
         if values.get("is_default"):
             await _clear_other_defaults(
                 db, "pm_task_types", str(row.project_id), type_id,

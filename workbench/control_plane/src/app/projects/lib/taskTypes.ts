@@ -40,14 +40,40 @@ export function iconChoiceFor(icon: string | null | undefined): (typeof TYPE_ICO
   return TYPE_ICON_CHOICES.find((c) => c.toLowerCase() === key) ?? TYPE_ICON_CHOICES[0];
 }
 
+/**
+ * What the picker shows for a stored icon: its list spelling when it is on the
+ * list, or the stored name itself when it is not (an imported "star"). So a
+ * render never claims "Circle" for an icon it is not drawing, and picking the
+ * first choice cannot overwrite an icon by accident.
+ */
+export function iconValueFor(icon: string | null | undefined): string {
+  if (!icon) return TYPE_ICON_CHOICES[0];
+  const key = icon.replace(/[-_\s]/g, "").toLowerCase();
+  return TYPE_ICON_CHOICES.find((c) => c.toLowerCase() === key) ?? icon;
+}
+
+/** The list, plus a stored icon that is not on it. */
+export function iconOptionsFor(icon: string | null | undefined): string[] {
+  const value = iconValueFor(icon);
+  const list: string[] = [...TYPE_ICON_CHOICES];
+  return list.includes(value) ? list : [value, ...list];
+}
+
 /** A row the whole organization owns. PS-3 edits those; this screen does not. */
 export function typeOrgWide(row: Pick<TaskTypeRow, "project_id">): boolean {
   return row.project_id === null;
 }
 
-/** Epic first (the top level), then the default, then by name. */
+/**
+ * Epic first (the top level), then by name.
+ *
+ * ⚠️ No "default" ranks here, and the screen offers no default. The column
+ * `is_default` exists, but nothing reads it when a task is created
+ * (`tasks.py create_task`), so a star that set it would promise a result
+ * that never happens (the PS-2 review's P0).
+ */
 export function sortTypes<T extends TaskTypeRow>(rows: readonly T[]): T[] {
-  const rank = (t: T) => (t.is_system ? 0 : t.is_default ? 1 : 2);
+  const rank = (t: T) => (t.is_system ? 0 : 1);
   return [...rows].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 

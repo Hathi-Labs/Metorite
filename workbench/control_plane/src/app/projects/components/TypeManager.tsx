@@ -28,7 +28,7 @@ import SelectButton from "@/components/ui/SelectButton";
 
 import { type TaskTypeRow, projectsApi } from "../lib/api";
 import { TAG_COLORS, chipClass } from "../lib/tags";
-import { TYPE_ICON_CHOICES, iconChoiceFor, sortTypes, typeDeleteBody, typeOrgWide } from "../lib/taskTypes";
+import { iconOptionsFor, iconValueFor, sortTypes, typeDeleteBody, typeOrgWide } from "../lib/taskTypes";
 import ManagerFrame from "./ManagerFrame";
 
 interface Props {
@@ -169,7 +169,6 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                       {t.name}
                     </span>
                     {t.is_system ? <Badge title={EPIC_NOTE}>Top level</Badge> : null}
-                    {t.is_default ? <Badge tone="primary">Default</Badge> : null}
                     {typeOrgWide(t) ? (
                       <Badge tone="primary" title={ORG_NOTE}>
                         Organization
@@ -179,7 +178,7 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                     <SelectButton
                       label={`Icon for ${t.name}`}
                       widthClass="w-[7.5rem]"
-                      value={iconChoiceFor(t.icon)}
+                      value={iconValueFor(t.icon)}
                       disabled={typeOrgWide(t)}
                       onChange={(next) =>
                         void run(async () => {
@@ -187,7 +186,7 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                           return null;
                         })
                       }
-                      options={TYPE_ICON_CHOICES.map((c) => ({ value: c, label: c }))}
+                      options={iconOptionsFor(t.icon).map((c) => ({ value: c, label: c }))}
                     />
                     <SelectButton
                       label={`Colour for ${t.name}`}
@@ -201,26 +200,6 @@ export function TypeManager({ projectId, projectName, onClose, onChanged, inline
                         })
                       }
                       options={TAG_COLORS.map((c) => ({ value: c, label: c }))}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      icon="Star"
-                      aria-label={`Make ${t.name} the default`}
-                      title={
-                        typeOrgWide(t)
-                          ? ORG_NOTE
-                          : t.is_default
-                            ? "New tasks start as this type"
-                            : "Make new tasks start as this type"
-                      }
-                      disabled={typeOrgWide(t) || Boolean(t.is_default)}
-                      onClick={() =>
-                        void run(async () => {
-                          await projectsApi.patchType(t.id, { is_default: true });
-                          return `New tasks now start as “${t.name}”.`;
-                        })
-                      }
                     />
                     <Button
                       variant="ghost"
