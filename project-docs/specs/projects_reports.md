@@ -28,6 +28,10 @@ Phases 2 and 3 are not built.
 and Overview is the landing screen, §9 Q14). **R5f repair round 1 BUILT
 2026-09-30** (the pass-through fields and the builder redesign of §6.6).
 
+**R5f repair round 2 BUILT 2026-09-30.** It gives each section one name,
+makes each tile one line, and puts the HR grant into plain words. The email
+now matches the app.
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -592,11 +596,12 @@ The owner looked at the Team pulse builder and asked for a UI that is "easier to
 A report from a template shows a small badge "From template: [name]" under the header. The line "Started from a template" goes.
 
 **C. What to include.** Section tiles replace the checkbox grid.
-1. Each tile shows the icon of its section, its label and one short line.
+1. Each tile is one line: the icon of its section, its name and a check. The short line is the tooltip, and a screen reader reads it through `aria-describedby` (round 2).
 2. A chosen tile has an accent border, a soft accent tint and a check mark.
 3. A tile that a subject turns off is muted, and it says why.
-4. The groups are "What happened", "Where things stand" and "Who needs help". A report still needs one section.
+4. The groups are "What happened", "Where things stand" and "Who needs help". A report still needs one section. The last chosen tile is `aria-disabled`, and it says why.
 5. One map in `lib/sectionIcons.ts` names the icon of each section.
+6. Each section has one name, in `REPORT_SECTIONS` (round 2). The tile, the card title, the clear row and the email heading all say it. So a member can join a tile to its card.
 
 **D. The preview.**
 1. The preview sits on a soft surface, so the report reads like a page. A small "Live preview" label and a status dot replace the server sentence. A spinner shows while it updates.
@@ -1637,7 +1642,7 @@ The review of R5f found lost figures. The owner also asked for a calmer builder 
 1. The `load` section carries `effort` and `people_total` from `load_body`. Each row carries `est_mins` and `estimated`. The rows keep the cap of 20, because the Load route caps them too.
 2. Each week of the `throughput` section carries `cancelled`, `measured`, `no_start`, `median_hours` and `p90_hours`. The section carries `completed`, as the route summary does.
 3. The `stuck` section carries `blocked` and `blocked_total`. `blocked_body` in `analytics.py` is the one read, and the route and the section both call it.
-4. `capacity` and `conflicts` keep every row, as their routes do. The email and the download cut each list to `MAX_EMAIL_ROWS` in `reportEmail.ts`, so this adds no length to an email.
+4. `capacity` and `conflicts` keep every row, as their routes do. The email cuts each list to `MAX_EMAIL_ROWS` in `reportEmail.ts`, so this adds no length to an email. The download keeps every row, because a file is the whole report. Round 2 corrected this rule, which said that the download cut its lists too.
 
 **Rules, the client.**
 5. The adapters in `reportPanels.ts` copy the new fields. An absent field stays absent.
@@ -1661,13 +1666,40 @@ The review of R5f found lost figures. The owner also asked for a calmer builder 
 - `previewNeeded` and `reportsPane` in `reportBuilder.ts` hold rules 6 and 7. `ReportsView` keeps `overviewDraft` and `overviewPreview`. Fence: `reportsRedesign.test.ts` (m) and (n).
 - `lib/sectionIcons.ts` and `lib/sectionEmpty.ts` hold the icons and the clear lines. `reportEmail.ts` adds the same clear line as a note. Fence: `reportsRedesign.test.ts` (o).
 - `PanelChromeContext` in `AnalyticsPanels.tsx` puts the section icon and the table button in the card header. A panel outside a report draws as before.
-- `PANEL_HINTS` is short, and `PANEL_HINT_DETAILS` holds the old sentences for a tooltip.
+- `PANEL_HINTS` is short. Round 2 removed `PANEL_HINT_DETAILS`, because the tile's tooltip is now the short line.
 - The review found five defects, and this round fixes each one:
   1. The tiles overflowed the card, because a fieldset keeps a min-content width.
   2. The hints were cut off.
   3. The title was cut off at 390 px.
   4. A table showed a "2 rows" line.
   5. The rebalance line said "nobody is idle" while one person was idle. `idleLine` now names the idle people.
+- The shared panels also changed the empty lines on `NodeDashboard`. For example, "No open work in this scope." is now "Nobody holds open work here right now." The look of the dashboard did not change.
+
+#### R5f repair round 2 (2026-09-30) · BUILT 2026-09-30
+
+The review and the verifier found two defects, two weak fences and seven UX items. The owner's words bind this round too: "easier to use and non-threatening".
+
+**Rules:**
+1. A builder link never hangs. `linkStep` in `reportBuilder.ts` drops the link when the catalogue read fails, and Home shows the error.
+2. `conflicts` is not clear when `hr_visible` is false. The server holds four kinds back, so the panel says "No conflicts in the kinds you can see."
+3. The email prints the blocked list and `blocked_total` of `stuck`. A stuck section with blocked work and nothing overdue still prints.
+4. Each of the ten sections gets its clear line in the email from `sectionEmpty.ts`, as in the app.
+5. The email says "…and N more" under each list that it cuts. It says the same under the Load rows that the server cut.
+6. `hrHints.ts` holds the three lines that replace the words "HR read access". The panels, the email and the chat read them.
+7. Each section has one name (§6.6 C item 6).
+8. A closed table carries `hidden="until-found"`, which an effect sets through a ref. React 19 writes `hidden` as a boolean.
+9. The "Change what you see" toggle has `aria-controls`.
+
+**Done when:**
+- (r) Vitest: `linkStep` drops a link when the catalogue fails.
+- (s) Vitest: conflicts without the grant are not clear, and the email does not say "No conflicts" beside the HR line.
+- (t) Real database: the crowd seed blocks four tasks, and a cut of the blocked list turns test (g) red.
+- (u) Vitest: `initialShownKey` seeds the key on screen, and `shownKey = useRef(null)` turns a test red.
+- (v) Vitest: the email checks of rules 3 to 6, one test for each of the ten sections.
+- (w) Vitest: the one-line tile, the last tile, the group labels, the all-clear rows on a phone, find-in-page and `aria-controls`.
+- (x) A visual review finds no defect on four screens. They are Team pulse all clear at 1440 and 390 px, and Team pulse with data under a changed accent. The fourth is Overview for a member without the grant.
+
+**As built, round 2 (2026-09-30).** `reportsRedesign.test.ts` and `reportEmailRound2.test.ts` hold the fences. A mutation of each new fence turns it red: 13 in the client and 1 on the real database.
 
 ### R6 — The AI summary, on request · AGENT-SAFE
 
@@ -1849,6 +1881,7 @@ hides the file that hung.
 ```bash
 uv run pytest tests/unit/test_projects_report_scope_r5.py \
   tests/unit/test_projects_report_scope_r5b.py \
+  tests/unit/test_projects_report_overview_r5f.py \
   tests/unit/test_projects_report_sections_r3d.py \
   tests/unit/test_projects_report_sections_r3.py \
   tests/unit/test_projects_report_sections_r3b.py \
@@ -1883,6 +1916,7 @@ names a built tool which never calls the route fails there.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
+- `test_projects_report_overview_r5f.py` is R5f's file.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 
