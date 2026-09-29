@@ -187,6 +187,20 @@ def test_the_script_targets_the_app_host_by_default() -> None:
     assert m.group(1) == "https://app.metorite.com"
 
 
+def test_the_lock_default_is_the_file_every_apply_locks() -> None:
+    """Fix round 3: the smoke's shared lock must be the SAME file that
+    vps_apply.sh and vps_pull.sh lock exclusive, or it serialises nothing."""
+    line = 'DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"'
+    for f in (SCRIPT, ROOT / "scripts" / "vps_apply.sh", ROOT / "scripts" / "vps_pull.sh"):
+        assert re.search(rf"^{re.escape(line)}$", _read(f), re.M), f"{f.name} has another default"
+    if sys.platform.startswith("linux") and shutil.which("bash"):
+        env = {k: v for k, v in os.environ.items() if k != "DEPLOY_LOCK"}
+        env["APP_DIR"] = "/opt/acb/app"
+        out = subprocess.run(["bash", "-c", f'{line}; printf %s "$DEPLOY_LOCK"'], env=env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+        assert out.stdout == "/opt/acb/acb-deploy.lock", out.stdout + out.stderr
+
+
 def test_the_script_does_not_use_the_static_cookie_file() -> None:
     code = "\n".join(_code_lines(_read(SCRIPT)))
     assert ".smoke/cookie" not in code, "the static cookie expires. Mint one per run."
@@ -466,6 +480,8 @@ case "$mode" in
   faildrop) echo "ok   1 create session"; echo "FAIL 2 save one row: HTTP 500"
             echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   hang) exit 124 ;;
+  failhang) echo "ok   1 create session"; echo "FAIL 2 save one row: HTTP 500"; exit 124 ;;
+  exit1) echo "ok   1 create session"; echo "smoke_chat: the smoke did not finish in 240s (exit 124)" >&2; exit 1 ;;
   drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   nopass) echo "ok   1 create session"; exit 0 ;;
   busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
@@ -575,6 +591,23 @@ class TestTheWorkflowStep:
         assert "a step failed before ssh dropped" in r.stdout
         assert _runs(runner) == 1
 
+    def test_a_fail_line_then_a_timeout_is_red(self, runner, jobs) -> None:
+        """Fix round 3: the FAIL check comes BEFORE the timeout's no-verdict
+        arm. A step that failed is a verdict, whatever ssh did next."""
+        r = runner.run(jobs, SMOKE_MODE="failhang")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "::warning" not in r.stdout
+        assert _runs(runner) == 1
+
+    def test_exit_1_with_no_fail_line_is_red(self, runner, jobs) -> None:
+        """Fix round 3: the rc 1 arm on its own. The persist run timed out, so
+        the script exits 1 and prints no FAIL step line."""
+        r = runner.run(jobs, SMOKE_MODE="exit1")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "Chat does not save on production" in r.stdout
+        assert "::warning" not in r.stdout
+        assert _runs(runner) == 1
+
     def test_a_timeout_has_its_own_label_and_no_retry(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="hang")
         assert r.returncode == 0, r.stdout + r.stderr
@@ -607,7 +640,9 @@ def test_the_sweep_deletes_only_old_sessions_and_is_bounded(monkeypatch, capsys)
     iso = lambda age: datetime.fromtimestamp(now - age, UTC).isoformat()  # noqa: E731
     # Fix round 2: shared rooms come FIRST, so without the owner filter they
     # would use up the budget of 5.
-    rows = [{"id": f"shared{i}", "updatedAt": iso(7200), "isOwner": False} for i in range(5)]
+    # Fix round 3: a row with no isOwner field is not the member's to delete.
+    rows = [{"id": "noflag", "updatedAt": iso(7200)}]
+    rows += [{"id": f"shared{i}", "updatedAt": iso(7200), "isOwner": False} for i in range(5)]
     rows += [{"id": f"old{i}", "updatedAt": iso(7200), "isOwner": True} for i in range(7)]
     rows += [{"id": "new", "updatedAt": iso(60), "isOwner": True}]
     calls: list[tuple[str, str]] = []
@@ -621,6 +656,7 @@ def test_the_sweep_deletes_only_old_sessions_and_is_bounded(monkeypatch, capsys)
     deleted = [p for m, p in calls if m == "DELETE"]
     assert len(deleted) == mod.SWEEP_MAX == 5
     assert all("/old" in p for p in deleted), deleted
+    assert not any("noflag" in p or "shared" in p for p in deleted), deleted
     assert "ok   0 swept 5 old session(s), 2 left" in capsys.readouterr().out
 
 
