@@ -5,7 +5,8 @@
  *
  * Three endpoints existed and NOTHING drew them. `/analytics/stuck`,
  * `/analytics/load` and `/analytics/throughput` all shipped with tests and no
- * surface, and `AnalyticsView`'s own header recorded the gap it left: *"a
+ * surface, and the header of the Analytics view (deleted in WS-27bn R5f)
+ * recorded the gap it left: *"a
  * chart drawn from data we do not have would be an invented trend line. When
  * a time-series endpoint exists, that section slots in below the table."*
  * This is that section, plus the two panels beside it.
@@ -16,8 +17,8 @@
  * paginated, so a total taken in the browser is a total of one page. It looks
  * right, and nothing on the way says otherwise.
  *
- * ⚠️ **No chart library.** Same reasoning `AnalyticsView` used for dropping
- * TanStack: one screen of bars is not worth a dependency, and every charting
+ * ⚠️ **No chart library.** Same reasoning the old Analytics view used for
+ * dropping TanStack (its table is `SpaceSummary.tsx` since WS-27bn R5f): one screen of bars is not worth a dependency, and every charting
  * package brings its own palette — which is the second colour vocabulary
  * `AGENTS.md` rule 1 refuses. Bars are flex children with a percentage width,
  * so they inherit the one look for free.
@@ -230,8 +231,9 @@ function Panel({
 /**
  * One figure in a tile, and never a blank. THE tile (WS-27bn R2b).
  *
- * `AnalyticsView`, `NodeDashboard` and the report's summary row each held a
- * copy until R2b. This is the `NodeDashboard` copy, which already took a
+ * The old Analytics view, `NodeDashboard` and the report's summary row each
+ * held a copy until R2b. Since WS-27bn R5f that view is gone, and
+ * `SpaceSummary` and `RenderedBody` draw its tiles with this one. This is the `NodeDashboard` copy, which already took a
  * `title`, and one more prop: `display`, for a figure that is words, such as
  * a median that reads "3d" or "not measured".
  *

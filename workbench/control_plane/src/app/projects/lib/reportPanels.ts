@@ -71,9 +71,9 @@ export function finishedPanelData(
 /**
  * `throughput` as `ThroughputPanel` takes it.
  *
- * The report's summary has no `completed` (its Finished section says it),
- * and its weeks carry only the count. So those stay absent, and the panel
- * hides their cells.
+ * Since WS-27bn R5f each week carries the route's figures, and the summary
+ * carries `completed`. A body from a server before R5f lacks them, so they
+ * stay absent, and the panel hides their cells.
  *
  * `current_week_partial` is the route's own rule (`analytics.py`,
  * `bool(series)`): `weekly_sql` always ends on the running week.
@@ -82,15 +82,16 @@ export function throughputPanelData(
   section: NonNullable<Sections["throughput"]>,
   frame: ReportFrame
 ): ThroughputReport {
-  const series = asList<{ week_start: string; completed: number }>(
-    section.series
-  ).map((w) => ({ week_start: w.week_start, completed: w.completed }));
+  const series = asList<ThroughputReport["series"][number]>(section.series).map((w) => ({
+    ...w,
+  }));
   return {
     ...scopeOf(frame),
     weeks: frame.report.config.weeks,
     series,
     current_week_partial: series.length > 0,
     summary: {
+      ...(typeof section.completed === "number" ? { completed: section.completed } : {}),
       median_hours: section.median_hours,
       measured: section.measured,
       p90_hours: section.p90_hours,
@@ -100,7 +101,11 @@ export function throughputPanelData(
   };
 }
 
-/** `load` as `LoadPanel` takes it. No `people_total` and no `effort`. */
+/**
+ * `load` as `LoadPanel` takes it. Since WS-27bn R5f the section carries
+ * `people_total` and `effort`, so the panel draws the effort line. An absent
+ * key stays absent.
+ */
 export function loadPanelData(
   section: NonNullable<Sections["load"]>,
   frame: ReportFrame
@@ -111,6 +116,8 @@ export function loadPanelData(
     people: asList<NonNullable<Sections["load"]>["people"][number]>(
       section.people
     ).map((p) => ({ ...p })),
+    ...(typeof section.people_total === "number" ? { people_total: section.people_total } : {}),
+    ...(section.effort ? { effort: { ...section.effort } } : {}),
     // WS-27bn R5a. Copied, never counted. Absent for an admin.
     ...(typeof section.hidden_people === "number"
       ? { hidden_people: section.hidden_people }
@@ -157,6 +164,13 @@ export function stuckPanelData(
     ...(section.stale === undefined || section.stale === null
       ? {}
       : { stale: asList<{ band: string; n: number }>(section.stale) }),
+    // WS-27bn R5f. The route's blocked list, copied. Absent before R5f.
+    ...(section.blocked === undefined || section.blocked === null
+      ? {}
+      : { blocked: asList<NonNullable<StuckReport["blocked"]>[number]>(section.blocked) }),
+    ...(typeof section.blocked_total === "number"
+      ? { blocked_total: section.blocked_total }
+      : {}),
   };
 }
 
