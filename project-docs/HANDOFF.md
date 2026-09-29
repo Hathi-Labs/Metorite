@@ -3573,6 +3573,13 @@ line — never reclaim a number by deleting the other entry.
   - `acb_skills/loader.py` writes `pending_commit`. Tenant-scoped.
   - Already bound behind `ACB_GRAPH_TENANT_BIND`, no work: `executor.py`,
     `mutation.py`, `_tool_injection.py` and `acb_audit/log.py`.
+- **The stream relay keys (S15 fix round 1).** `cc:stream`, `cc:active`,
+  `cc:runactor`, `cc:runsource`, `cc:runfloor` and `cc:steer` carry the bare
+  thread id, with no tenant prefix. The room check now denies another
+  tenant's id, and that check is the boundary. A prefix is defence in depth.
+  It reaches 10 importing modules and 16 client sites, and it moves the
+  `stream_relay.py`, `steer.py` and `room_stream.py` entries in the
+  `tests/unit/test_tenant_redis.py` ratchet. Use `acb_common.tenant_redis`.
 - **Also found.** `acb_auth.access` records an unprovisioned sign-in into
   `access_request`. It has no tenant yet, so it needs its own design.
   `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread

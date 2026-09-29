@@ -3175,7 +3175,8 @@ The `-rs` output must show no R8 skip.
 
 ## 21. Chat is saved on production (S15)
 
-**Status: BUILT 2026-09-29.** This slice repairs a live defect in production.
+**Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12).** This slice
+repairs a live defect in production.
 A read-only diagnosis of production on 2026-09-29 is the audit
 (GO-NARROWED). `chat_message` had never held a row in production, so every
 member's chat history lived only in one browser.
@@ -3331,10 +3332,8 @@ replaces a non-empty cache. The function then gives back the cache.
   sign-in into `access_request`. It resolves the org from the email domain
   and has no tenant yet, so it is not the same one-line pattern. H-201 names
   it.
-- **The save race.** `sessions.ts` sends the session upsert and the first
-  save in parallel. A save that arrives first breaks the foreign key and
-  answers 500. The next save sends the whole list again, and the mint also
-  creates the session, so the loss is one save. S15 does not change it.
+- **The save race.** Fix round 1 added one retry (§21.12). The upsert and
+  the first save still leave the browser in parallel.
 - **`/chat/active-sessions`.** Its Redis scan is not tenant-prefixed. A
   thread of another org has no visible row, so it can appear as "unknown".
   H-201 names it.
@@ -3351,6 +3350,76 @@ replaces a non-empty cache. The function then gives back the cache.
   persistence and no room access, where before the ladder shape let the
   write through. That is the fail-closed rule.
 
+### 21.11 Fix round 1 — a session of another tenant is not a new thread
+
+The reviewer found a P0 in the first build of S15. Under FORCE RLS, a
+session of ANOTHER tenant reads as "no row". `_load_room` returned `None`
+for it, and `resolve_room_access` turned `None` into `_unsaved_thread()`,
+which is owner access.
+
+The stream relay keys a run by the bare thread id
+(`orchestrator/stream_relay.py`). So a member of org A who held an id of
+org B could follow B's run, cancel it and steer it. That member could also
+attach rows to B's session id. The unique index on `chat_session.id` and the
+`chat_message` foreign key both ignore RLS.
+
+**The repair.**
+
+1. Migration 222 adds `public.chat_session_exists(p_id text) RETURNS
+   boolean`. It is the first SECURITY DEFINER function in the ladder. It
+   returns one bit across tenants and never a row or an org id. It sets
+   `search_path = pg_catalog, pg_temp`, and it names `public.chat_session`
+   in full.
+2. FORCE RLS binds the owner too, unless the owner is a superuser or
+   BYPASSRLS. So the function returns NULL when its owner cannot see through
+   RLS on a table with RLS. The gateway reads NULL as "cannot tell" and
+   denies. Measured on production on 2026-09-29: `postgres` owns
+   `chat_session` with `rolbypassrls = t`.
+3. The migration revokes EXECUTE from PUBLIC, and from `anon`,
+   `authenticated` and `service_role` by name. Supabase gives a new function
+   to those three, and PostgREST publishes it as an RPC. It grants EXECUTE to
+   `acb_app` only.
+4. `rooms.session_exists_elsewhere` calls the function in the caller's
+   bound session. `_load_room` asks it when the bound read finds no row. An
+   id that exists elsewhere, or that the function cannot place, gets no role
+   and no capability. Only an id that exists nowhere is the caller's new
+   thread.
+5. `_ensure_session` and `_upsert_session` raise `SessionOfAnotherTenant`
+   before any write. `POST /chat/sessions` then answers 404.
+   `_upsert_messages` declines every id. So the mint and the fold also write
+   nothing under the id.
+
+**Acceptance, added to §21.8.** On the phase-4 catalog, as the app role:
+
+- Org A's member gets `can_read`, `can_send` and `can_cancel` all false on
+  an org B session. `_thread_owner_ok` and `_thread_control_ok` are false.
+- A's save under B's id gets 403, and A's session upsert gets 404. No row
+  of org A lands, and B's title does not change.
+- `_ensure_session` raises, `_upsert_messages` declines, and the mint and
+  the fold write no row of org A. B's rows stay as they were.
+- A truly new id is still the member's own thread, with the owner role.
+- With the function owned by a role that cannot bypass RLS, even a new id
+  is refused. The check fails closed.
+- The ACL of the function has no PUBLIC entry, and it names the app role.
+- Mutation: `_load_room` without the check gives Alice owner on B's id and
+  fails 3 tests. The write guard off fails 2 tests.
+
+**Not in this round: the relay prefix.** Prefixing the stream relay keys
+with the tenant is defence in depth. It reaches 10 importing modules and 16
+client sites, and it moves the `stream_relay.py`, `steer.py` and
+`room_stream.py` entries in the `test_tenant_redis.py` ratchet. That is not
+small, so H-201 carries it. The room check above is the boundary, and every
+reconnect, cancel and steer path goes through it.
+
+### 21.12 Fix round 1 — the first save survives the race
+
+The session upsert and the first save leave the browser at the same time.
+When the save lands first, the `chat_message` foreign key refuses it, and the
+answer is a 5xx. A member who closed the tab then lost the first prompt.
+`postMessagesWithRetry` in `lib/sessions.ts` sends the save again once, after
+about 1 s, on a 5xx or a network failure. It does not retry a 4xx, and it
+never throws. The fence is `lib/sessions.test.ts`.
+
 ### 21.10 Verification
 
 R8 needs a tenancy-shaped database: the ladder, and the four generated
@@ -3362,7 +3431,8 @@ export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/ac
 export DATABASE_URL=$TENANT_LADDER_DATABASE_URL
 uv run pytest tests/unit/test_chat_write_under_rls.py \
   tests/unit/test_h3_rls_promotion_rehearsal.py \
-  tests/unit/test_tenant_coverage.py -q -rs
+  tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py \
+  tests/unit/test_tenancy_insert_fence.py -q -rs
 uv run pytest tests/unit/test_rooms.py tests/unit/test_chat_message_upsert.py \
   tests/unit/test_resolve_agent_for_run.py tests/unit/test_chat_hardening.py \
   tests/unit/test_run_agent_stream_e2e.py tests/unit/test_org_access_control.py \
