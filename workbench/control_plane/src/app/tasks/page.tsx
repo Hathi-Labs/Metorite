@@ -7,6 +7,7 @@ import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { useAccess } from "@/components/AccessProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
@@ -43,6 +44,7 @@ import { tasksOverlayOpen } from "./lib/shortcuts";
 import { SearchPalette } from "../projects/components/SearchPalette";
 import { NotificationBell } from "../projects/components/NotificationBell";
 import { isOpenShortcut } from "../projects/lib/search";
+import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
@@ -64,6 +66,7 @@ export default function TasksPage() {
   const closeFocus = useTaskStore((s) => s.closeFocus);
   const openFocus = useTaskStore((s) => s.openFocus);
   const router = useRouter();
+  const { access, loading: accessLoading } = useAccess();
   // The lists rail folds itself below `lg`, so the pane beside it keeps a
   // usable width on a tablet. The toggle still opens it, and the member's
   // choice holds until the width changes band (`lib/railFold.ts`).
@@ -220,6 +223,20 @@ export default function TasksPage() {
     tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
   );
   const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
+  // WS-27bn R5b-2 — "My day" opens the T2 report in Projects. The builder
+  // makes the reader its subject, so the link names none (`myDayLink`).
+  // A member who cannot open Projects sees no control at all (`myDayShown`).
+  const myDay = myDayShown(access, accessLoading) ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      icon="FileText"
+      aria-label={`${MY_DAY} report`}
+      onClick={() => router.push(myDayLink())}
+    >
+      {MY_DAY}
+    </Button>
+  ) : null;
 
   if (isMobile) {
     // Single-pane mobile flow. Section switching + capture live in the AppShell
@@ -232,10 +249,12 @@ export default function TasksPage() {
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
             holds the page's one h1 here too. Capture and the lists live in
-            the shell's bottom bar, so this carries only search and the bell. */}
+            the shell's bottom bar, so this carries "My day", search and the
+            bell. */}
         <AppTopBar
           compact
           title="My Tasks"
+          actions={myDay}
           tools={
             <>
               <AppSearchButton onOpen={openSearch} />
@@ -282,15 +301,18 @@ export default function TasksPage() {
         actions={
           /* The same primitive and size as AssistantToggle, so the chips in
              this bar share one height and one radius. */
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="Plus"
-            onClick={() => openQuickCapture("single")}
-          >
-            Capture
-            <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Plus"
+              onClick={() => openQuickCapture("single")}
+            >
+              Capture
+              <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
+            </Button>
+            {myDay}
+          </>
         }
         tools={
           <>

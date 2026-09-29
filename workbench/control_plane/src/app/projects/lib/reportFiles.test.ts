@@ -77,6 +77,21 @@ describe("downloadReportFile", () => {
     expect(text).toContain("- Apollo: 4");
   });
 
+  it("names a period-free file after its day, as the screen says As of", async () => {
+    const pulse: RenderedReport = {
+      report: { name: "Team pulse", scope: "portfolio" },
+      period_start: "2026-09-21",
+      period_end: "2026-09-27",
+      sections: { pulse: { people_total: 0, hidden_people: 0, rows: [], today: "2026-09-29" } },
+    };
+    const d = { ...deps(), render: vi.fn(async () => pulse) };
+    const name = await downloadReportFile(ID, "md", d);
+    expect(name).toBe("Team pulse 2026-09-29.md");
+    const text = await d.saved[0].body.text();
+    expect(text).toContain("As of 29 Sep 2026 · Whole organization");
+    expect(text).not.toContain("21 – 27 Sep 2026");
+  });
+
   it("posts the formatted HTML as text/html and saves the PDF bytes", async () => {
     const d = deps();
     const name = await downloadReportFile(ID, "pdf", d);

@@ -95,6 +95,19 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-203 · Decide whether a new task takes its space's default type · [OWNER]
+- **Check:** `rg -n "is_default" apps/services/gateway/gateway/routes/projects/tasks.py`
+  → no match means a new task still gets no type, whatever a space marks default.
+- **Why:** `pm_task_types.is_default` exists and every space seeds one default,
+  but `create_task` never reads it, so every new task is untyped. PS-2 dropped
+  its "make default" star, because the star promised "New tasks now start as
+  Bug" and nothing happened. Applying the default would put a type chip on
+  every new task in every organization, which is a product change and the
+  owner's to make. If yes, `create_task` fills `type_id` from the root's
+  default when the payload has none, and the star comes back.
+- **Authority:** `specs/projects_settings.md` §7 row PS-2, and the PS-2 review
+- **Added:** 2026-09-29 · WS-42 PS-2
+
 ### H-196 · Retire the chat tools' deprecated `importance` number, and let intake take `Leveraged` · [AGENT]
 - **Check:** `grep -n "importance: int = -1" apps/skills/skill-projects/skill_projects/*.py`.
   A hit means this is open.
@@ -3471,7 +3484,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-184 · Five small follow-ups from the R2b review of the report visuals · [AGENT]
+### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
 - **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
   → no hit means item 1 is still open. Check each other item by hand.
 - **Why:** the R2b review (PR for `ws-27bn-r2b-visuals`) found these. None
@@ -3487,9 +3500,6 @@ line — never reclaim a number by deleting the other entry.
      `hidden`. Pass `hiddenUntilFound` too, or delete the claim.
   4. The arithmetic check of fence (c) in `reportVisuals.test.ts` does not
      catch a binary `+`. It copies `capacity.test.ts:182`, so widen both.
-  5. On a phone, the `/projects` shell has no branch for an app pane. So a
-     member cannot open Reports or Analytics at 390 px. This gap is older
-     than R2b.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
@@ -3577,6 +3587,20 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_chat_write_under_rls.py` or a sibling of it.
 - **Authority:** `specs/projects_ai_chat.md` §21.9 · R5
 - **Added:** 2026-09-29 · the WS-27bm S15 session
+
+### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
+- **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
+  → a hit in `scopeName` means item 2 is still open.
+- **Why:** the verifier of the Reports UX pass found these. Neither blocks.
+  1. Four test titles sit under the wrong §6.5 item. `reportsUx.test.ts`
+     :179, :184 and :210 test the empty line and the rail scope, which are
+     item 12, under `describe("(11) the gallery")`. `reportBuilderUx.test.ts`
+     :444 tests `reportCardLine`, also item 12, under `describe("(5) …")`.
+  2. `scopeName` in `ReportsView.tsx` shows "Project" while the tree loads,
+     or when the tree does not hold the node. The chips never use that
+     word. Use the same words as `scopePhrase`, for example "In a project".
+- **Authority:** `specs/projects_reports.md` §6.5 · the UX pass verification, 2026-09-29
+- **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
 # DONE — deleted, not archived
 

@@ -20,6 +20,13 @@ real route function on a real Postgres:
   names the lane.
 * **(g)** My Tasks S4 is unchanged: ``POST /my/tasks/{id}/subtasks`` under a
   NEXT parent in "In review" lands the step in "In review" and states NEXT.
+* **(h)** The My Tasks chat tool ``my_tasks_add_subtasks``, with its HTTP
+  calls sent to the real route functions, calls that door. Its steps land in
+  "In review", state NEXT, and its receipt names the lane and the Next list.
+* **(i)** The same tool under a parent the member cannot see answers a clear
+  refusal and writes nothing.
+* **(j)** The same tool under a parent the member reaches by assignment
+  alone, in a project with no grant, adds the step.
 
 Running it, on a FRESH database (01_schema.sql, then apply_migrations.sh)::
 
@@ -39,15 +46,18 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 sys.path.insert(0, os.environ.get("LIVE_GATEWAY_PATH", "apps/services/gateway"))
 sys.path.insert(0, "apps/skills/skill-projects")
+sys.path.insert(0, "apps/skills/skill-my-tasks")
 
 from acb_auth import UserContext, UserRole, build_access
 from acb_common.db import bind_tenant
+from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from gateway.db import get_db
 from gateway.routes.projects import admin as pm_admin
 from gateway.routes.projects import personal as pm_personal
 from gateway.routes.projects import tasks as pm_tasks
 from gateway.routes.projects.core import TaskIn
+from skill_my_tasks import core as my_tasks
 from skill_projects import writes as chat_writes
 from sqlalchemy import text
 
@@ -164,6 +174,77 @@ def route_the_chat_to_the_gateway():
     chat_writes._confirm = confirm
 
 
+def route_my_tasks_to_the_gateway(calls: list[tuple[str, str]]):
+    """The My Tasks tool's HTTP calls, answered by the real route functions.
+
+    A route's HTTPException becomes the RuntimeError ``core._request`` raises,
+    with the same ``(status)`` text, so the tool reads a real refusal.
+    """
+
+    async def request(method, path, **kw):
+        calls.append((method, path))
+        parts = path.strip("/").split("/")
+        try:
+            if method == "POST" and parts[:3] == ["projects", "my", "tasks"] \
+                    and parts[-1] == "subtasks":
+                return jsonable_encoder(await pm_personal.add_my_steps(
+                    parts[3], pm_personal.StepsIn(**kw["json"]), user=member()))
+            if method == "GET" and parts[:3] == ["projects", "my", "tasks"] \
+                    and len(parts) == 4:
+                return jsonable_encoder(
+                    await pm_personal.my_task(parts[3], user=member()))
+            if method == "GET" and parts[:2] == ["projects", "tasks"] \
+                    and len(parts) == 3:
+                return jsonable_encoder(
+                    await pm_tasks.get_task(parts[2], user=member()))
+        except HTTPException as exc:
+            raise RuntimeError(
+                f"Tasks {method} {path} failed ({exc.status_code}): "
+                f"{exc.detail}") from exc
+        raise AssertionError(f"unexpected {method} {path}")
+
+    my_tasks._request = request
+    my_tasks._current_user_email = lambda: MEMBER
+
+
+async def hidden_parent(db, seed, *, assigned: bool) -> str:
+    """A task in a project with NO grant for the member. Assigned, the member
+    reaches it by assignment alone. Not assigned, the member cannot see it."""
+    pid = str(uuid.uuid4())
+    await db.execute(text(
+        "INSERT INTO pm_projects (id, organization_id, name, source, "
+        "created_by, owns_statuses) VALUES (CAST(:id AS uuid), "
+        "CAST(:o AS uuid), :n, 'manual', 'someone.else@fracktal.in', true)"),
+        {"id": pid, "o": seed.org, "n": f"{MARK} hidden {assigned}"})
+    seed.projects.append(pid)
+    lane = await seed.lane(f"h_{assigned}", pid, "Doing", "in_progress", 0)
+    tid = str(uuid.uuid4())
+    await db.execute(text(
+        "INSERT INTO pm_tasks (id, organization_id, project_id, "
+        "root_project_id, status_id, title, source, created_by, task_number) "
+        "VALUES (CAST(:id AS uuid), CAST(:o AS uuid), CAST(:p AS uuid), "
+        "CAST(:p AS uuid), CAST(:s AS uuid), :t, 'manual', "
+        "'someone.else@fracktal.in', :n)"),
+        {"id": tid, "o": seed.org, "p": pid, "s": lane,
+         "t": f"{MARK} hidden parent", "n": 2000 + int(assigned)})
+    if assigned:
+        await db.execute(text(
+            "INSERT INTO pm_task_assignees (task_id, organization_id, "
+            "assignee, assigned_by) VALUES (CAST(:t AS uuid), "
+            "CAST(:o AS uuid), :w, 'someone.else@fracktal.in')"),
+            {"t": tid, "o": seed.org, "w": MEMBER})
+    return tid
+
+
+async def steps_of(db, parent) -> list:
+    return (await db.execute(text(
+        "SELECT t.status_id::text AS sid, p.disposition FROM pm_tasks t "
+        "LEFT JOIN pm_task_personal p ON p.task_id = t.id "
+        "AND lower(p.member_email) = :who "
+        "WHERE t.parent_task_id = CAST(:p AS uuid) AND t.title LIKE 'tool %'"),
+        {"p": parent, "who": MEMBER})).fetchall()
+
+
 async def main():
     db = await get_db()
     seed = None
@@ -232,6 +313,46 @@ async def main():
               row.sid, seed.lanes["a_review"])
         check("(g) My Tasks step states NEXT under a NEXT parent",
               row.disposition, "NEXT")
+
+        # (h) The My Tasks chat tool goes through the same door (§11.42 gap).
+        parent = await seed.task(a, a, seed.lanes["a_review"])
+        await pm_personal._upsert_personal(
+            db, parent, MEMBER, {"disposition": "NEXT"})
+        hidden = await hidden_parent(db, seed, assigned=False)
+        reached = await hidden_parent(db, seed, assigned=True)
+        await db.commit()
+        calls: list[tuple[str, str]] = []
+        route_my_tasks_to_the_gateway(calls)
+        out = await my_tasks.my_tasks_add_subtasks(parent, "tool one\ntool two")
+        print(out.encode("ascii", "replace").decode("ascii"))
+        check("(h) the tool posts to the My Tasks door only",
+              [c for c in calls if c[0] == "POST"],
+              [("POST", f"/projects/my/tasks/{parent}/subtasks")])
+        kids = await steps_of(db, parent)
+        check("(h) the tool made two steps", len(kids), 2)
+        check("(h) both tool steps landed in 'In review'",
+              {k.sid for k in kids}, {seed.lanes["a_review"]})
+        check("(h) both tool steps state NEXT under a NEXT parent",
+              {k.disposition for k in kids}, {"NEXT"})
+        check("(h) the receipt names the lane, the parent and the Next list",
+              out.split("\n")[0],
+              f"Added 2 steps to «In review» under #{1000 + seed.n} "
+              f"«{MARK} parent {seed.n}» · on your Next list:")
+
+        out = await my_tasks.my_tasks_add_subtasks(hidden, "tool hidden")
+        check("(i) a hidden parent is a clear refusal", out,
+              f"No steps added: task {hidden} is not one you can see, "
+              "so nothing was written.")
+        check("(i) a hidden parent gets no step",
+              len(await steps_of(db, hidden)), 0)
+
+        out = await my_tasks.my_tasks_add_subtasks(reached, "tool reached")
+        kids = await steps_of(db, reached)
+        check("(j) a parent reached by assignment alone gets the step",
+              len(kids), 1)
+        check("(j) its receipt names the lane",
+              out.split("\n")[0].startswith("Added 1 step to «Doing» under #"),
+              True)
     finally:
         await db.rollback()
         if seed is not None:
