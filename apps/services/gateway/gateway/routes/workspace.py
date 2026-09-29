@@ -284,7 +284,7 @@ def _allowed_workspace(
         except OSError:
             continue
 
-    from acb_skills.agent_paths import agent_state_dir, state_root
+    from acb_skills.agent_paths import agent_state_dir, is_valid_agent_name, state_root
 
     try:
         state = state_root().resolve()
@@ -292,6 +292,8 @@ def _allowed_workspace(
         state = None
     if state is not None and _is_under(resolved, state, strictly=True):
         agent = resolved.relative_to(state).parts[0]
+        if not is_valid_agent_name(agent):
+            return None
         instance = _agent_instance_for(agent, user_email)
         if instance:
             own = agent_state_dir(agent, instance).resolve()
@@ -363,7 +365,16 @@ def _get_workspace_path(
         if not agent_name or agent_name in ("orchestrator", "default"):
             return None
 
-        return _resolve_agent_workspace(agent_name, user_email)
+        # H-201 fix round 2 (P0): the derived root passes the same read check
+        # as a stored one. ``agent_name`` came from the session row, which a
+        # member wrote, and ``_agent_clone_dir`` already refuses a bad name.
+        derived = _resolve_agent_workspace(agent_name, user_email)
+        if derived is None:
+            return None
+        return _allowed_workspace(
+            str(derived), session_id=session_id, user_email=user_email,
+            organization_id=organization_id, write=False,
+        )
 
     except TenantUnbound:
         raise
@@ -414,9 +425,19 @@ def _agent_clone_dir(agent_name: str) -> Path | None:
     ``/tmp/acb_agents`` default — older clones (created before the clone root
     moved under ``$HOME``) still live in ``/tmp`` until the agent next runs,
     and we must still surface their files.
+
+    H-201 fix round 2 (P0): *agent_name* is data. It comes from a query, a
+    request body or a ``chat_session`` row. A name such as ``../../..``
+    joined onto ``repos/`` escaped to ``/``. A name that fails the one rule
+    (``agent_paths.is_valid_agent_name``) has no clone dir. A candidate
+    must also resolve strictly below its ``repos/`` root.
     """
     from acb_common import get_settings
+    from acb_skills.agent_paths import is_valid_agent_name
 
+    if not is_valid_agent_name(agent_name):
+        _log.warning("workspace.agent_name_rejected", agent=str(agent_name)[:80])
+        return None
     settings = get_settings()
     configured = getattr(
         settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")
@@ -437,7 +458,9 @@ def _agent_clone_dir(agent_name: str) -> Path | None:
     for clone_root in clone_roots:
         for name in names:
             candidate = clone_root / name
-            if candidate.is_dir():
+            if candidate.is_dir() and _is_under(
+                candidate.resolve(), clone_root.resolve(), strictly=True,
+            ):
                 return candidate
     return None
 
@@ -493,7 +516,11 @@ def _canonical_workspace_dir(agent_name: str) -> Path:
     configured = getattr(
         settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")
     )
-    return Path(configured) / "repos" / agent_name
+    from acb_skills.agent_paths import require_agent_name
+
+    # H-201 fix round 2: raises InvalidAgentName for a name that is not one
+    # safe path segment.
+    return Path(configured) / "repos" / require_agent_name(agent_name)
 
 
 def _resolve_agent_workspace(
@@ -1110,6 +1137,15 @@ async def upload_artifact(
     dir for an instanced agent, else ``repos/{agent}``) and can then be picked
     via ``GET /agent/artifacts?agent=…&category=…`` — which resolves the SAME
     directory for the same member."""
+    from acb_skills.agent_paths import is_valid_agent_name
+
+    # H-201 fix round 2 (P0): the agent name is a query string, and it is
+    # joined onto repos/. A name that is not one safe segment gets 422.
+    if not is_valid_agent_name(agent):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Not a valid agent name.",
+        )
     cat = category if category in ("agent-data", "inputs", "outputs") else "agent-data"
     workspace = _agent_workspace_dir(agent, _user.email) or _canonical_workspace_dir(
         agent,

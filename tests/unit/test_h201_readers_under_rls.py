@@ -67,13 +67,14 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 )
 
 
-def _seed_session(promoted, org: str, owner: str, workspace: str | None) -> str:  # noqa: F811
+def _seed_session(promoted, org: str, owner: str, workspace: str | None,  # noqa: F811
+                  agent: str = "orchestrator") -> str:
     sid = _sid()
     with promoted.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO chat_session (id, user_id, agent_name, workspace_path, "
-            "organization_id) VALUES (:s, :u, 'orchestrator', :w, CAST(:o AS uuid))"),
-            {"s": sid, "u": owner, "w": workspace, "o": org})
+            "organization_id) VALUES (:s, :u, :a, :w, CAST(:o AS uuid))"),
+            {"s": sid, "u": owner, "a": agent, "w": workspace, "o": org})
     return sid
 
 
@@ -344,6 +345,130 @@ def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_cl
     assert workspace_client(service).post(
         f"{base}/events", json={"name": "artifact_created", "path": "outputs/x.md"},
     ).status_code == 204
+
+
+# ── H-201 fix round 2 (P0): an agent name is one safe path segment ──────────
+
+_BAD_AGENT_NAMES = ("../..", "..", ".", "a/b", "/etc", "a\x00b", "..\..",
+                    "x/../agent-h201", "", "a" * 65, " agent", ".hidden")
+
+
+def test_the_one_agent_name_rule() -> None:
+    """``agent_paths`` holds the ONE rule, and the path helpers refuse."""
+    from acb_skills.agent_paths import (
+        InvalidAgentName,
+        agent_code_dir,
+        agent_state_dir,
+        is_valid_agent_name,
+    )
+
+    for good in ("orchestrator", "email-assistant", "agent-sales-assistant",
+                 "Metorite-Dev", "app_builder", "a.b", "a" * 64):
+        assert is_valid_agent_name(good), good
+    for bad in _BAD_AGENT_NAMES:
+        assert not is_valid_agent_name(bad), repr(bad)
+        with pytest.raises(InvalidAgentName):
+            agent_code_dir(bad)
+        with pytest.raises(InvalidAgentName):
+            agent_state_dir(bad, "u:alice@example.test")
+
+
+@pytest.fixture
+def clone_roots(tmp_path, monkeypatch):
+    """A scratch clone root with one real agent and one link out of it."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(settings, "custom_apps_root", str(tmp_path / "agents" / "custom_apps"))
+    repos = tmp_path / "agents" / "repos"
+    real = repos / "agent-h201"
+    (real / "outputs").mkdir(parents=True)
+    (real / "outputs" / "ok.md").write_text("# ok", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("DATABASE_URL=x", encoding="utf-8")
+    _link(repos / "evil", outside)
+    return repos, real, outside
+
+
+def test_the_clone_dir_refuses_a_bad_name_and_a_link_out(clone_roots) -> None:
+    from acb_skills.agent_paths import InvalidAgentName
+    from gateway.routes.workspace import _agent_clone_dir, _canonical_workspace_dir
+
+    repos, real, _outside = clone_roots
+    assert _agent_clone_dir("agent-h201") == real
+    for bad in _BAD_AGENT_NAMES:
+        assert _agent_clone_dir(bad) is None, repr(bad)
+        with pytest.raises(InvalidAgentName):
+            _canonical_workspace_dir(bad)
+    # One valid segment, but a link that leaves repos/.
+    assert _agent_clone_dir("evil") is None
+
+
+def test_the_artifact_upload_refuses_a_bad_agent_name(clone_roots) -> None:
+    """🔴 Live on main: ``POST /agent/artifacts/upload?agent=../../outside``
+    wrote into any directory the gateway could write."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import workspace
+
+    _repos, _real, outside = clone_roots
+    app = FastAPI()
+    app.include_router(workspace.router)
+    app.dependency_overrides[get_current_user] = lambda: _user(_ALICE, "org-a")
+    c = TestClient(app)
+    for bad in ("../../outside", "..", "a/b", "/etc", "..\..\outside"):
+        r = c.post("/agent/artifacts/upload", params={"agent": bad, "category": "inputs"},
+                   files={"files": ("x.py", b"print(1)")})
+        assert r.status_code == 422, (bad, r.status_code)
+    assert not (outside / "inputs").exists()
+
+
+@_DB_GATE
+def test_the_session_upsert_refuses_an_agent_name_that_is_not_one_segment(graph_as_app):  # noqa: F811
+    a = graph_as_app.org_a
+    client = _client(_user(_ALICE, a))
+    for bad in ("../..", "..", "a/b", "/etc", "a\x00b", ".", "a" * 65):
+        sid = _sid()
+        r = client.post("/chat/sessions", json={"id": sid, "agent_name": bad})
+        assert r.status_code == 422, (repr(bad), r.status_code)
+        assert _admin_one(graph_as_app, "SELECT 1 AS x FROM chat_session "
+                          "WHERE id = :s", s=sid) is None
+    sid = _sid()
+    ok = client.post("/chat/sessions", json={"id": sid, "agent_name": "email-assistant"})
+    assert ok.status_code == 200, ok.text
+
+
+@_DB_GATE
+def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_roots):  # noqa: F811
+    """🔴 The P0 of fix round 2. A row with ``workspace_path`` NULL falls to
+    step 2, which joined ``agent_name`` onto ``repos/``. A row written before
+    the upsert check, or by any other writer, must still read as absent."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.workspace import _get_workspace_path, get_workspace_file
+
+    a = graph_as_app.org_a
+    _repos, real, _outside = clone_roots
+    app = FastAPI()
+    app.get("/workspace/{session_id}/file", response_model=None)(get_workspace_file)
+    app.dependency_overrides[get_current_user] = lambda: _user(_ALICE, a)
+    client = TestClient(app)
+
+    for bad in ("../../outside", "../../..", "..", "evil", "x/../agent-h201"):
+        sid = _seed_session(graph_as_app, a, _ALICE, None, agent=bad)
+        assert _get_workspace_path(sid, _ALICE, a) is None, bad
+        got = client.get(f"/workspace/{sid}/file", params={"path": "notes.txt"})
+        assert got.status_code == 404, (bad, got.status_code)
+        assert "DATABASE_URL" not in got.text
+    # A real agent name still resolves, and its file reads.
+    sid = _seed_session(graph_as_app, a, _ALICE, None, agent="agent-h201")
+    assert _get_workspace_path(sid, _ALICE, a) == real.resolve()
+    got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
+    assert got.status_code == 200 and "# ok" in got.text
 
 
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────
