@@ -28,6 +28,7 @@ interface Props {
 }
 
 export function LifecyclePolicy({ project, onClose, onSaved, inline = false }: Props) {
+  const [saved, setSaved] = useState(false);
   const [archiveMonths, setArchiveMonths] = useState(
     project.archive_after_months == null ? "" : String(project.archive_after_months)
   );
@@ -45,6 +46,7 @@ export function LifecyclePolicy({ project, onClose, onSaved, inline = false }: P
     if (!close.ok) return setError(`Close after: ${close.reason}`);
     setBusy(true);
     setError(null);
+    setSaved(false);
     try {
       const fresh = await projectsApi.patchProject(project.id, {
         archive_after_months: archive.value,
@@ -54,6 +56,8 @@ export function LifecyclePolicy({ project, onClose, onSaved, inline = false }: P
       });
       onSaved(fresh);
       onClose();
+      // Inline, nothing closes, so the save must say itself (WS-42).
+      if (inline) setSaved(true);
     } catch (err) {
       setError(String((err as Error).message));
     } finally {
@@ -124,6 +128,11 @@ export function LifecyclePolicy({ project, onClose, onSaved, inline = false }: P
       </div>
 
       <footer className="flex justify-end gap-2 border-t border-border px-3 py-2">
+        {saved ? (
+          <p role="status" className="mr-auto self-center text-xs text-muted-foreground">
+            Saved.
+          </p>
+        ) : null}
         {inline ? null : (
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             Cancel

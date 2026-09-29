@@ -17,6 +17,11 @@ icon and colour, its statuses, custom fields, tags, task types and lifecycle.
 The right-click menus stay as shortcuts. They open the same controls, so there
 is one body per setting and never a copy.
 
+**Built in PS-1, from its review:** a change in the pane re-reads the board's
+fields, tags and lanes at once. The sidebar row and a `?app=settings` link
+start at the selected space. The list of imports re-reads when the wizard
+closes. An inline lifecycle save says "Saved.", because nothing closes.
+
 ## 1. What the owner asked for
 
 The owner did not like the "Import from ClickUp" row in the sidebar. The owner
@@ -74,8 +79,8 @@ vocabulary (HANDOFF H-4), and the export (not designed).
 - A **"Settings" row** with a gear icon, last in the Projects app list, after
   Reports and AI chat. It is drawn like the rows above it.
 - The command palette: "Projects settings".
-- The header menu of a selected space: "Open space settings", which opens the
-  pane at that space.
+- The header menu of a selected project: "All settings for this space", which
+  opens the pane at the project's space.
 - The empty tree: "Import from another tool", which opens the pane at
   Import & export.
 
@@ -103,8 +108,8 @@ it alone, under a Back control that returns to the list.
   holds. It is a `SelectButton`.
 - It starts at the selected space, or at the space of the selected node, or
   at the first space.
-- An organization with no spaces shows no space group. It shows one line that
-  says a space must exist first, beside the Import & export section.
+- An organization with no spaces shows the Space heading with one line under
+  it. The line says a space must exist first, and points to the import.
 
 ### 4.4 The sections
 
@@ -144,7 +149,7 @@ in a manager changes.
 
 | Rule | Fence |
 |---|---|
-| One body per setting | `projectsSettings.test.ts`: each of the five managers renders a `ManagerFrame`, and no file but `ManagerFrame.tsx` and the managers imports their bodies |
+| One body per setting | `projectsSettings.test.ts`: each of the five managers renders a `ManagerFrame` and imports no `Modal`, and the pane renders the same five managers inline |
 | The pane is an app pane, never a nav entry | `nav.test.ts` stays green, and `projectsSettings.test.ts` checks that `settings` is a `ProjectAppId` |
 | The import entry left the sidebar | `projectsSettings.test.ts`: `page.tsx` has no "Import from ClickUp" sidebar row |
 | The look | `conformance.test.ts`, plus the visual-review walk: light mode, compact density, a changed accent, and 390 px |

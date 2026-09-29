@@ -81,8 +81,10 @@ export interface ProjectsSettingsProps {
   onSaveSpace: (space: ProjectRow, values: { name: string; icon: string; icon_slot: number }) => void;
   /** A space's lifecycle saved: the tree's copy must re-read. */
   onLifecycleSaved: (fresh: ProjectRow) => void;
-  /** A setting changed what the board shows; it reloads when the pane closes. */
+  /** A setting changed what the board shows: the board re-reads it. */
   onBoardStale: () => void;
+  /** Bumped by the page when the wizard closes or an import ends. */
+  importsVersion?: number;
 }
 
 export default function ProjectsSettings({
@@ -96,6 +98,7 @@ export default function ProjectsSettings({
   onSaveSpace,
   onLifecycleSaved,
   onBoardStale,
+  importsVersion = 0,
 }: ProjectsSettingsProps) {
   const firstSection: SettingsSection =
     initialSection ?? (spaces.length > 0 ? "general" : mayImport ? "import" : "general");
@@ -183,7 +186,7 @@ export default function ProjectsSettings({
           </div>
           {outcome ? <DiscardNotice outcome={outcome} /> : null}
           <ImportHistory
-            refreshKey={historyKey}
+            refreshKey={historyKey + importsVersion}
             onOpen={onOpenImportRun}
             onOutcome={(next) => {
               setOutcome(next);

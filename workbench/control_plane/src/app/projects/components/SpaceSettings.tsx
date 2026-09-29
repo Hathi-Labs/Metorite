@@ -96,7 +96,7 @@ export default function SpaceSettings({
           </label>
           <Input
             id="space-name"
-            autoFocus
+            autoFocus={!inline}
             value={name}
             onChange={(e) => setName(e.target.value)}
             aria-label="Space name"

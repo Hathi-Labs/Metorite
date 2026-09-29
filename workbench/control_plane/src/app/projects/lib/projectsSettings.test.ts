@@ -73,3 +73,21 @@ describe("the import lives in settings (D81.5)", () => {
     expect(page).toContain("All settings for this space");
   });
 });
+
+describe("the review's findings stay fixed", () => {
+  const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
+  it("the palette opens it", async () => {
+    const { COMMANDS } = await import("./commands");
+    const cmd = COMMANDS.find((c) => c.id === "projects.settings");
+    expect(cmd?.label).toBe("Projects settings");
+  });
+  it("a change re-reads the board's fields and tags, not only its lanes", () => {
+    const pane = page.slice(page.indexOf("onBoardStale={() => {"), page.indexOf("onBoardStale={() => {") + 200);
+    expect(pane).toContain("setTreeKey");
+    expect(pane).toContain("loadProject");
+  });
+  it("the sidebar row starts afresh, at the selected space", () => {
+    expect(page).toContain("onApp={chooseApp}");
+    expect(page).not.toContain("onApp={setApp}");
+  });
+});

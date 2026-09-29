@@ -727,26 +727,23 @@ function ProjectsWorkspace() {
   const [importing, setImporting] = useState(false);
   // An earlier run the settings pane asked the wizard to open (WS-42).
   const [importRunId, setImportRunId] = useState<string | null>(null);
-  // WS-42 (D81) — where Projects settings opens, and whether a change made in
-  // it left the board stale. The pane edits ANY space, so it never writes the
-  // board's own lanes or fields; the board reloads when the pane closes.
+  // WS-42 (D81) — where Projects settings opens. The sidebar row and a
+  // `?app=settings` link clear it, so they start at the selected space.
   const [settingsSeed, setSettingsSeed] = useState<{
     section?: SettingsSection | null;
     spaceId?: string | null;
   }>({});
-  const boardStale = useRef(false);
+  // Bumped when the wizard closes, so the pane's list of imports reads again.
+  const [importsVersion, setImportsVersion] = useState(0);
   const openSettings = useCallback((section: SettingsSection | null, spaceId?: string | null) => {
     setSettingsSeed({ section, spaceId: spaceId ?? null });
     setApp("settings");
   }, []);
-  // Leaving Projects settings after a change reloads the board it may have
-  // left stale.
-  useEffect(() => {
-    if (app === "settings" || !boardStale.current) return;
-    boardStale.current = false;
-    if (selected) void loadProject(selected);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app]);
+  /** The sidebar's app rows: a plain open of Settings starts afresh. */
+  const chooseApp = useCallback((id: ProjectAppId | null) => {
+    if (id === "settings") setSettingsSeed({});
+    setApp(id);
+  }, []);
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
   const [moving, setMoving] = useState(false);
@@ -1538,7 +1535,7 @@ function ProjectsWorkspace() {
             roots={visibleRoots}
             selectedId={selected?.id ?? null}
             app={app}
-            onApp={setApp}
+            onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
               setSelected(project);
@@ -2500,7 +2497,10 @@ function ProjectsWorkspace() {
     const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
       (i) => i.id === appLink && i.launch === "live",
     );
-    if (live) setApp(live.id);
+    if (live) {
+      if (live.id === "settings") setSettingsSeed({});
+      setApp(live.id);
+    }
     const rest = new URLSearchParams(searchParams.toString());
     rest.delete("app");
     const qs = rest.toString();
@@ -2644,9 +2644,10 @@ function ProjectsWorkspace() {
         else if (what === "statuses") setManagingStatuses(selected);
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
+      openSettings: () => openSettings(null, selected ? spaceOf(roots, selected).id : null),
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode, selected],
+    [router, setPanelMode, selected, openSettings, roots],
   );
 
   const commandCtx: CommandContext = {
@@ -3706,8 +3707,13 @@ function ProjectsWorkspace() {
           );
           setTreeKey((k) => k + 1);
         }}
+        importsVersion={importsVersion}
+        // The pane edits ANY space, so it never writes the board's own lanes,
+        // fields or tags. It re-reads them from the server instead: the tree
+        // key drives fields and tags, and `loadProject` the lanes and tasks.
         onBoardStale={() => {
-          boardStale.current = true;
+          setTreeKey((k) => k + 1);
+          if (selected) void loadProject(selected);
         }}
       />
     </div>
@@ -4195,8 +4201,14 @@ function ProjectsWorkspace() {
           open={importing}
           openRunId={importRunId}
           roots={roots}
-          onClose={() => setImporting(false)}
-          onDone={() => void refreshTree()}
+          onClose={() => {
+            setImporting(false);
+            setImportsVersion((v) => v + 1);
+          }}
+          onDone={() => {
+            void refreshTree();
+            setImportsVersion((v) => v + 1);
+          }}
           onOpenSpace={(id) => {
             const space = roots.find((r) => r.id === id);
             if (space) {
@@ -4509,7 +4521,7 @@ function ProjectsWorkspace() {
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
               app={app}
-              onApp={setApp}
+              onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
                 setSelected(project);
