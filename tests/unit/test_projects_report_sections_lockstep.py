@@ -38,7 +38,10 @@ template names none. The 13 keys are append-only.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -207,6 +210,91 @@ def test_the_builder_turns_off_the_sections_the_route_refuses_with_a_subject() -
     from gateway.routes.projects.report_scope import NO_SUBJECT_SECTIONS
 
     assert _ts_list("NO_SUBJECT_SECTIONS") == list(NO_SUBJECT_SECTIONS)
+
+
+# ── The Reports UX pass (2026-09-29): the period-free sections ───────────────
+
+#: The names through which the report period reaches a query in
+#: `render_body`: the `skip` flag, and the weekly series.
+_PERIOD_NAMES = {"skip", "weekly_sql"}
+#: The config keys of the period.
+_PERIOD_KEYS = {"weeks", "skip_current_week"}
+
+
+def _render_branches() -> dict[str, list[ast.stmt]]:
+    """Each section's branch of the `if name == "<section>"` chain."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(reports.render_body)))
+    branches: dict[str, list[ast.stmt]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "name"
+            and isinstance(node.test.comparators[0], ast.Constant)
+        ):
+            branches[str(node.test.comparators[0].value)] = node.body
+    return branches
+
+
+def _reads_the_period(body: list[ast.stmt]) -> bool:
+    """True when the branch reads `weeks` or `skip_current_week`.
+
+    The AST sees code and not comments, so a comment that says "no
+    `config["weeks"]` here" does not count.
+    """
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and node.id in _PERIOD_NAMES:
+                return True
+            if isinstance(node, ast.keyword) and node.arg in _PERIOD_KEYS:
+                return True
+            if isinstance(node, ast.Constant) and node.value in _PERIOD_KEYS:
+                return True
+    return False
+
+
+def test_every_section_has_a_render_branch() -> None:
+    assert sorted(_render_branches()) == sorted(reports.SECTIONS)
+
+
+def test_the_builder_knows_which_sections_ignore_the_period() -> None:
+    """The builder hides the period chip and says "As of today" when every
+    chosen section ignores the period (`PERIOD_FREE_SECTIONS`). A section
+    listed there that reads the period would hide a chip that changes the
+    report. A section left out would show a chip that changes nothing."""
+    branches = _render_branches()
+    free = [s for s in reports.SECTIONS if not _reads_the_period(branches[s])]
+    assert _ts_list("PERIOD_FREE_SECTIONS") == free
+    # The two sections that read the period, by name, so a change is seen.
+    assert [s for s in reports.SECTIONS if s not in free] == ["finished", "throughput"]
+
+
+def test_a_period_free_branch_calls_no_query_that_binds_weeks() -> None:
+    """`params` carries `weeks` into every query. So a period-free branch
+    must call no SQL builder that binds `:weeks`, or it reads the period
+    after all. `stuck` is the branch that calls builders of its own."""
+    branches = _render_branches()
+    for section in _ts_list("PERIOD_FREE_SECTIONS"):
+        for stmt in branches[section]:
+            for node in ast.walk(stmt):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id.endswith("_sql")
+                ):
+                    built = getattr(reports, node.func.id)("TRUE")
+                    sql = built[0] if isinstance(built, tuple) else built
+                    assert ":weeks" not in sql, (section, node.func.id)
+
+
+def test_the_period_fence_fires_on_a_branch_that_reads_the_period() -> None:
+    reads = ast.parse("x = finished_sql(p, skip_current_week=skip)").body
+    plain = ast.parse("x = await load_body(db, vis, project_id=p)").body
+    commented = ast.parse("# no config['weeks'] here\nx = hygiene_body(db)").body
+    assert _reads_the_period(reads)
+    assert not _reads_the_period(plain)
+    assert not _reads_the_period(commented)
 
 
 # ── WS-27bn R2: the template catalogue ───────────────────────────────────────

@@ -84,8 +84,8 @@ export const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 /**
  * The options a filter query keeps, with their group headings (WS-27bn R5b).
  *
- * A case-insensitive match on the label or the hint, so a member finds a
- * person by name or by address. An empty query keeps every option. A pure
+ * A case-insensitive match on the label, the hint or `keywords`, so a member
+ * finds a person by name or by address, when the list shows no address. An empty query keeps every option. A pure
  * function, for the reason `arrowFor` is one.
  */
 export function filterOptions(
@@ -97,7 +97,8 @@ export function filterOptions(
   return options.filter(
     (o) =>
       o.label.toLowerCase().includes(q) ||
-      (o.hint ?? "").toLowerCase().includes(q)
+      (o.hint ?? "").toLowerCase().includes(q) ||
+      (o.keywords ?? "").toLowerCase().includes(q)
   );
 }
 
@@ -160,6 +161,11 @@ export interface SelectOption {
   label: string;
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
+  /**
+   * WS-27bn R5b. Words the filter matches and the list never draws, such as
+   * the address of a person whose row shows only the name.
+   */
+  keywords?: string;
   /**
    * Indent, for a list that is really a TREE. One step per level.
    *

@@ -188,40 +188,43 @@ describe("(b) the subject chip lists what the server answered", () => {
     });
   });
 
-  it("a lead sees Me first, the team members, then the teams they lead", () => {
+  // §6.5 item 6 moved the teams before the people and took the
+  // heading off "Everyone". The members listed stay exactly the same.
+  it("a lead sees the teams they lead, then Me first, then the team members", () => {
     const options = subjectOptions(LEAD);
     expect(options.map((o) => o.label)).toEqual([
       "Everyone",
+      "Hardware team",
       "Me",
       "Ana Shah",
       "mia@example.test",
-      "Hardware team",
     ]);
     expect(options.map((o) => o.group)).toEqual([
-      "Everyone",
-      "People",
-      "People",
-      "People",
+      undefined,
       "Teams",
+      "People",
+      "People",
+      "People",
     ]);
-    // The name first, the address muted beside it. No name: the address.
-    expect(options[2].hint).toBe("ana@example.test");
+    // The address shows on Me only. No name: the address is the label.
+    expect(options[2].hint).toBe("lee@example.test");
     expect(options[3].hint).toBeUndefined();
+    expect(options[4].hint).toBeUndefined();
   });
 
   it("an admin sees every person and every team in the answer", () => {
     expect(values(ADMIN)).toEqual([
       EVERYONE,
+      "team:design",
+      "team:hardware",
       "person:boss@example.test",
       "person:ana@example.test",
       "person:lee@example.test",
       "person:mia@example.test",
       "person:noa@example.test",
-      "team:design",
-      "team:hardware",
     ]);
     // A team named "... team" is not "Design team team".
-    expect(subjectOptions(ADMIN).at(-2)?.label).toBe("Design team");
+    expect(subjectOptions(ADMIN)[1]?.label).toBe("Design team");
   });
 
   it("a saved subject the answer omits stays as an option", () => {

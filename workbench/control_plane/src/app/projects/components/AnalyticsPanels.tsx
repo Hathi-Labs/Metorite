@@ -94,6 +94,7 @@ import {
   slipRange,
   velocityLine,
 } from "../lib/outlook";
+import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
 import {
   focusMore,
   focusShown,
@@ -188,11 +189,17 @@ function duration(hours: number | null | undefined): string {
 function Panel({
   title,
   hint,
+  hintTitle,
   children,
 }: {
   title: string;
   /** What the panel MEANS. The owner asked for exactly this. */
   hint: string;
+  /**
+   * A second fact about the panel, as the hint's tooltip (`projects_reports.md`
+   * §6.5 item 17). `pulse` puts its `help_note` here.
+   */
+  hintTitle?: string | null;
   children: React.ReactNode;
 }) {
   // WS-27bn R2b. The title names the region, so a screen reader announces
@@ -208,7 +215,12 @@ function Panel({
         <h3 id={titleId} className="text-xs font-semibold text-foreground">
           {title}
         </h3>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
+        <p
+          className="mt-0.5 text-[11px] text-muted-foreground"
+          title={hintTitle ?? undefined}
+        >
+          {hint}
+        </p>
       </header>
       {children}
     </section>
@@ -347,7 +359,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
         hasBands && typeof data.blocked_total === "number"
           ? "Open tasks by how long they have sat without a change, what is blocked, and what is past due."
           : hasBands
-            ? "Open tasks by how long they have sat without a change, and what is past due."
+            ? PANEL_HINTS.stuck
             : "Open tasks past their due date, by project."
       }
     >
@@ -504,7 +516,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
   return (
     <Panel
       title="Who is overloaded"
-      hint="Open tasks per person, split by when they are due. Unassigned is a bar, not a gap."
+      hint={PANEL_HINTS.load}
     >
       {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -527,7 +539,9 @@ export function LoadPanel({ data }: { data: LoadReport }) {
                       "Open work with nobody assigned. On a real board this is usually the largest bar."
                     }
                   >
-                    {row.assignee ?? "Unassigned"}
+                    {/* §6.5 item 17: the name when the payload has
+                        one, and the address only when it has none. */}
+                    {row.name || row.assignee || "Unassigned"}
                   </span>
                   {/* ⚠️ Hours ONLY when this plate is sized. `personEffort`
                       answers null otherwise — nine unsized tasks is not zero
@@ -638,7 +652,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
   return (
     <Panel
       title="Who has the hours"
-      hint="Open work per person in this scope, with the spare hours they have across all the work you can see."
+      hint={PANEL_HINTS.capacity}
     >
       {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -775,7 +789,7 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
   return (
     <Panel
       title="Where the plan conflicts"
-      hint="Work that starts before its blocker is due, late blockers, and one person on too many projects at once. Nothing is rescheduled."
+      hint={PANEL_HINTS.conflicts}
     >
       {drawn.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -885,7 +899,7 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
   return (
     <Panel
       title="Who could help"
-      hint="Tasks at risk of missing their due date, the people whose skills fit them, and idle people with work they could take. Nothing is reassigned."
+      hint={PANEL_HINTS.rebalance}
     >
       {hidden ? (
         <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
@@ -1004,7 +1018,7 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
   return (
     <Panel
       title="What open tasks are missing"
-      hint="Open tasks with no assignee, no due date or no estimate, and work in progress that has not changed. This is the state now, not the period."
+      hint={PANEL_HINTS.hygiene}
     >
       {typeof open !== "number" || open <= 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -1088,16 +1102,29 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
  * ⚠️ **A report panel only.** The Analytics app does not mount it: there is
  * no `/analytics/pulse` route yet.
  */
-export function PulsePanel({ data }: { data: PulseReport }) {
+export function PulsePanel({
+  data,
+  hiddenHint,
+}: {
+  data: PulseReport;
+  /**
+   * `projects_reports.md` §6.5 item 16. What the reader can do about the hidden
+   * cards. The report builder passes it. The words stay `hiddenPeopleLine`'s.
+   */
+  hiddenHint?: string | null;
+}) {
   const rows = pulseRows(data);
-  const hidden = hiddenPeopleLine(data?.hidden_people, "view");
+  const hidden = hiddenPeopleLine(data?.hidden_people, "view", hiddenHint);
   const overdue = accentForHue("red");
   const help = accentForHue("red");
 
   return (
     <Panel
       title="Who needs help today"
-      hint="One card for each person who holds open work in this scope: the load, the status, the top focus tasks and the reasons to help. This is today, not the period."
+      hint={PANEL_HINTS.pulse}
+      // §6.5 item 17. The note sits in the hint's tooltip, not as a
+      // line of its own under the cards.
+      hintTitle={data?.help_note}
     >
       {rows.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -1217,14 +1244,11 @@ export function PulsePanel({ data }: { data: PulseReport }) {
           </ul>
         </div>
       )}
-      {(hidden || data?.help_note) && (
+      {hidden && (
         <div className="mt-3 space-y-0.5 border-t border-border pt-2 text-[11px] text-muted-foreground">
-          {hidden && (
-            <p title="You see your own card, and the cards of the members of the teams you lead. An admin sees every card.">
-              {hidden}
-            </p>
-          )}
-          {data?.help_note && <p>{data.help_note}</p>}
+          <p title="You see your own card, and the cards of the members of the teams you lead. An admin sees every card.">
+            {hidden}
+          </p>
         </div>
       )}
     </Panel>
@@ -1329,7 +1353,7 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
   return (
     <Panel
       title="Are we getting faster"
-      hint="Tasks finished each week, and how long they took from first started to done."
+      hint={PANEL_HINTS.throughput}
     >
       {/* ⚠️ A CHART WITH NO AXIS IS A PICTURE. Photographed 2026-09-17: six
           green bars with no label anywhere, so a reader could see that the
@@ -1472,7 +1496,7 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
   return (
     <Panel
       title="What we finished"
-      hint={`Completed by project, ${period(data?.period_start, data?.period_end)}.`}
+      hint={`${FINISHED_HINT_LEAD}, ${period(data?.period_start, data?.period_end)}.`}
     >
       {projects.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
@@ -1668,7 +1692,7 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
   return (
     <Panel
       title="Will this land"
-      hint="Forecast from what the team actually did, against what the plan would need. Estimated — this product records no hours worked."
+      hint={PANEL_HINTS.outlook}
     >
       {/* ⚠️ THE ANSWER FIRST, and at a size nothing else on the page reaches.
           Photographed 2026-09-17: six equal-weight facts and no verdict, with

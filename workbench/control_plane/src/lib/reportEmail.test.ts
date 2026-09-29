@@ -558,6 +558,35 @@ describe("reportEmail · pulse", () => {
     expect(own).toContain("This report hides 24 other people");
   });
 
+  it("a period-free render says As of its day, as the screen does, and no period", () => {
+    // Pulse reads the state now, so the render's period means nothing here.
+    const NL = String.fromCharCode(10);
+    const pulse = withPulse({ today: "2026-09-29" });
+    const mail = reportEmail(pulse);
+    expect(mail.subject).toBe("Weekly delivery — As of 29 Sep 2026");
+    expect(mail.text.split(NL).slice(0, 3)).toEqual([
+      "Weekly delivery",
+      "As of 29 Sep 2026",
+      "Whole organization",
+    ]);
+    expect(mail.text).not.toContain("7 – 13 Sep 2026");
+    const doc = reportDocument(pulse);
+    expect(doc.markdown.split(NL)[2]).toBe("As of 29 Sep 2026 · Whole organization");
+    expect(doc.basename).toBe("Weekly delivery 2026-09-29");
+    // A render that holds a period section keeps the period.
+    const mixed = reportEmail({ ...pulse, sections: { ...pulse.sections, ...rendered.sections } });
+    expect(mixed.subject).toBe("Weekly delivery — 7 – 13 Sep 2026");
+  });
+
+  it("a period-free render with no server day reads the day it ran", () => {
+    const hygiene: RenderedReport = {
+      ...rendered,
+      sections: { hygiene: { open_total: 0, rows: [] } },
+    };
+    const layout = reportLayout(hygiene, MAX_EMAIL_ROWS, new Date(2026, 8, 30, 9));
+    expect(layout.period).toBe("As of 30 Sep 2026");
+  });
+
   it("carries no colour, and escapes a name", () => {
     const { html } = reportEmail(withPulse());
     expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
@@ -577,7 +606,7 @@ describe("reportDocument", () => {
       [
         "# Weekly delivery",
         "",
-        "7 – 13 Sep 2026 · Every space you can see",
+        "7 – 13 Sep 2026 · Whole organization",
         "",
         "**Finished: 17** · 1 cancelled",
         "",
@@ -726,7 +755,7 @@ describe("reportEmail · the exact HTML", () => {
     expect(reportEmail(GOLDEN_A).html).toBe(
       [
       "<div><h2>Weekly delivery</h2>",
-      "<p>7 – 13 Sep 2026 · Every space you can see</p>",
+      "<p>7 – 13 Sep 2026 · Whole organization</p>",
       "<p><strong>Finished: 17</strong> · 1 cancelled</p>",
       "<ul><li>Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17</li><li>Billing: 5 · ███░░░░░░░ 5 of 17</li></ul>",
       "<p>Median time to finish: 27 hours (over 15 measured)</p>",
