@@ -34,7 +34,6 @@ from gateway.routes.projects import reports as rep
 
 # The fixtures of R5a: one organization, two teams, a second organization.
 from tests.unit.test_projects_report_scope_r5 import (  # noqa: F401
-    _TENANT_URL,
     _ladder,
     _needs_db,
     _people,
@@ -69,7 +68,7 @@ def test_the_overview_config_is_one_the_server_accepts() -> None:
     assert got["skip_current_week"] is False
 
 
-def _overview(seeded: dict[str, Any], reader: str, *, admin: bool = False,
+def _overview(seeded: dict[str, Any], reader: str, *, admin: bool = False,  # noqa: F811
               project: str | None = None) -> dict[str, Any]:
     return asyncio.run(rep.preview_report(
         {"project_id": project, "config": dict(OVERVIEW_CONFIG)},
@@ -77,7 +76,7 @@ def _overview(seeded: dict[str, Any], reader: str, *, admin: bool = False,
     ))
 
 
-def _finish(seeded: dict[str, Any], task_key: str, days_ago: int) -> None:
+def _finish(seeded: dict[str, Any], task_key: str, days_ago: int) -> None:  # noqa: F811
     """Record a start and a finish on the activity spine, which is what the
     throughput and finished reads count."""
     for to, hours in (("in_progress", 30), ("done", 0)):
@@ -93,7 +92,7 @@ def _finish(seeded: dict[str, Any], task_key: str, days_ago: int) -> None:
         )
 
 
-def _clear_spine(seeded: dict[str, Any]) -> None:
+def _clear_spine(seeded: dict[str, Any]) -> None:  # noqa: F811
     _sql(
         seeded,
         "DELETE FROM pm_activities WHERE task_id IN"
@@ -108,7 +107,7 @@ def _pairs(series: list[dict[str, Any]]) -> list[tuple[str, int]]:
 
 @_needs_db
 @pytest.mark.parametrize("scope_key", ["project", None])
-def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> None:
+def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> None:  # noqa: F811
     """(g) One reader, one scope: the numbers the Analytics app drew."""
     who = seeded["who"]
     project = seeded[scope_key] if scope_key else None
@@ -172,7 +171,7 @@ def test_g_overview_equals_the_analytics_routes(seeded, wired, scope_key) -> Non
 
 
 @_needs_db
-def test_h_a_member_sees_their_own_load_row_only(seeded, wired) -> None:
+def test_h_a_member_sees_their_own_load_row_only(seeded, wired) -> None:  # noqa: F811
     """(h) The Overview of a member: their row, and a count of the others."""
     who = seeded["who"]
     sections = _overview(seeded, "m")["sections"]
