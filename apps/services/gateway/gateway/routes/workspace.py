@@ -41,7 +41,7 @@ import mimetypes
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
@@ -663,6 +663,48 @@ def _is_blocked_path(rel_path: str) -> bool:
     return _is_hidden_or_secret_file(parts[-1])
 
 
+async def _room_for(session_id: str, user: UserContext) -> Any:
+    """This caller's place in the session's room, in the caller's tenant.
+
+    H-201 fix round 1 (P1). The workspace belongs to the session, so the
+    session's room decides who may reach it. This is S15's
+    ``resolve_room_access``, with its rules for an unsaved id, an id of
+    another tenant and a failed lookup.
+    """
+    from gateway.rooms import resolve_room_access
+
+    return await asyncio.to_thread(
+        resolve_room_access, session_id, user.email or "",
+        organization_id=user.organization_id,
+    )
+
+
+async def _refuse_unless_room(
+    session_id: str, user: UserContext, *, send: bool,
+) -> None:
+    """A read needs ``can_read`` and a change needs ``can_send``.
+
+    A read that is refused answers 404, the same as a session with no
+    workspace. A change that is refused answers 403, as a chat save does.
+    """
+    room = await _room_for(session_id, user)
+    if send:
+        if not room.can_send:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=room.denied("change its files"),
+            )
+    elif not room.can_read:
+        raise HTTPException(status_code=404, detail="Workspace not found for session")
+
+
+def _is_service_caller(user: UserContext) -> bool:
+    """The internal-token caller with no member, which holds every right."""
+    from acb_auth.roles import UserRole
+
+    return user.role is UserRole.AGENT and user.has_permission("*")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -677,6 +719,10 @@ async def get_workspace_tree(
     If the session has no explicit workspace_path set, the agent's clone
     directory is used automatically (derived from the session's agent_name).
     """
+    # H-201 fix round 1 (P1): a room you cannot read gets the same empty
+    # tree as a session with no workspace, as chat gives [].
+    if not (await _room_for(session_id, _user)).can_read:
+        return WorkspaceTree(session_id=session_id, root="", files=[])
     import asyncio
     loop = asyncio.get_event_loop()
     workspace = await loop.run_in_executor(
@@ -707,6 +753,7 @@ async def get_workspace_file(
     one seam, ``gateway.pdf_render``, AFTER the same workspace, blocked-path
     and containment checks as a raw read. Any other file type is a 415.
     """
+    await _refuse_unless_room(session_id, _user, send=False)
     import asyncio
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
@@ -815,6 +862,7 @@ async def set_workspace_path(
     (:func:`_allowed_workspace`). Anything else gets 422, and no row changes.
     The stored value is the resolved path.
     """
+    await _refuse_unless_room(session_id, _user, send=True)
     import asyncio
 
     from acb_graph import tenant_session
@@ -873,6 +921,10 @@ async def push_artifact_event(
 ) -> None:
     """Receive an artifact event from the write_artifact tool and fan it out
     to any subscribed SSE consumers for this session."""
+    # The write_artifact tool posts here with the internal token and no
+    # member. That caller already holds every right, so it skips the room.
+    if not _is_service_caller(_user):
+        await _refuse_unless_room(session_id, _user, send=True)
     payload = event.model_dump()
     for q in list(_artifact_subscribers.get(session_id, [])):
         try:
@@ -898,6 +950,7 @@ async def stream_artifact_events(
     The Next.js api/agent/chat route (or a dedicated proxy) can subscribe
     here and forward custom events into the existing chat SSE stream.
     """
+    await _refuse_unless_room(session_id, _user, send=False)
     q: asyncio.Queue = asyncio.Queue(maxsize=256)
     _artifact_subscribers[session_id].append(q)
 
@@ -959,6 +1012,7 @@ async def upload_files(
     tracked by Git.  The agent receives a system message with the list of
     uploaded files and their paths so it can reference them.
     """
+    await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
         _user.organization_id,
@@ -1127,6 +1181,7 @@ async def delete_workspace_file(
     _user: UserContext = Depends(get_current_user),
 ) -> DeleteResponse:
     """Delete a file from the session workspace."""
+    await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
         _user.organization_id,
@@ -1185,6 +1240,7 @@ async def promote_input_to_agent_data(
     _user: UserContext = Depends(get_current_user),
 ) -> FileEntry:
     """Move an inputs/ file into agent-data/ (permanent, prompt-shaping storage)."""
+    await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
         _user.organization_id,
@@ -1246,6 +1302,9 @@ async def get_workspace_history(
     Every unique version an agent created/modified over time is a row, so a user
     can track and directly access the full history of any file.
     """
+    # H-201 fix round 1 (P1): the same empty answer as no workspace.
+    if not (await _room_for(session_id, _user)).can_read:
+        return {"history": []}
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
         _user.organization_id,
@@ -1286,6 +1345,7 @@ async def write_workspace_file(
     Accepts text (encoding='utf-8') and binary (encoding='base64') content.
     Returns the updated FileEntry with fresh stat metadata.
     """
+    await _refuse_unless_room(session_id, _user, send=True)
     import base64
 
     loop = asyncio.get_event_loop()

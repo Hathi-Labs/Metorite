@@ -153,13 +153,21 @@ def _stored(promoted, sid: str) -> str | None:  # noqa: F811
 @_DB_GATE
 def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app, roots):  # noqa: F811
     from acb_graph.db import TenantUnbound
+    from fastapi import HTTPException
 
     a = graph_as_app.org_a
     sid = _seed_session(graph_as_app, a, _ALICE, None)
 
-    with pytest.raises(TenantUnbound):
+    # No tenant: the room lookup fails closed first, so the answer is 403.
+    with pytest.raises(HTTPException) as err:
         _patch(sid, _user(_ALICE, None), str(roots.app_a))
+    assert err.value.status_code == 403
     assert _stored(graph_as_app, sid) is None
+    # The path check itself refuses with no tenant too.
+    from gateway.routes.workspace import _allowed_workspace
+    with pytest.raises(TenantUnbound):
+        _allowed_workspace(str(roots.app_a), session_id=sid, user_email=_ALICE,
+                           organization_id=None, write=True)
     _patch(sid, _user(_ALICE, a), str(roots.app_a))
     assert _stored(graph_as_app, sid) == str(roots.app_a.resolve())
 
@@ -194,10 +202,16 @@ def test_the_workspace_patch_refuses_every_path_outside_an_app_it_may_edit(
             _patch(sid, _user(_ALICE, a), path)
         assert err.value.status_code == 422, why
         assert _stored(graph_as_app, sid) is None, why
-    # Bob is in org A, but he may not edit Alice's app.
+    # Bob is in org A, but he is not in Alice's room (403). Given his own
+    # session, he still may not bind Alice's app, which he cannot edit (422).
     with pytest.raises(HTTPException) as err:
         _patch(sid, _user(_BOB, a), str(roots.app_a))
+    assert err.value.status_code == 403
+    bobs = _seed_session(graph_as_app, a, _BOB, None)
+    with pytest.raises(HTTPException) as err:
+        _patch(bobs, _user(_BOB, a), str(roots.app_a))
     assert err.value.status_code == 422
+    assert _stored(graph_as_app, bobs) is None
     # Carol may edit her own app, but Alice's session is in org A.
     with pytest.raises(HTTPException):
         _patch(sid, _user(_CAROL, b), str(roots.app_a))
@@ -251,6 +265,83 @@ def test_the_file_route_cannot_read_outside_the_workspace(graph_as_app, roots): 
     got = TestClient(app).get(f"/workspace/{sid}/file", params={"path": "secret.txt"})
     assert got.status_code == 404, got.text
     assert "DATABASE_URL" not in got.text
+
+
+@pytest.fixture
+def workspace_client(roots, monkeypatch):
+    """The real workspace router. The blob-store mirror is the only stub."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import workspace
+
+    async def _no_store(*_a, **_k):
+        return False
+
+    for name in ("_mirror_gateway_write", "_mirror_gateway_delete", "_faultin_from_store"):
+        monkeypatch.setattr(workspace, name, _no_store)
+
+    def _as(user):
+        app = FastAPI()
+        app.include_router(workspace.router)
+        app.dependency_overrides[get_current_user] = lambda: user
+        return TestClient(app)
+
+    return _as
+
+
+@_DB_GATE
+def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_client):  # noqa: F811
+    """🔴 H-201 fix round 1, P1. Bob is in org A and has the id of Alice's
+    private session. Carol is in org B. Neither may list, read, write,
+    upload, promote, delete or bind. A read that is refused looks like no
+    workspace, and a change that is refused is 403, as in chat."""
+    from acb_auth import UserContext
+    from acb_auth.access import SERVICE_ACCESS
+    from acb_auth.roles import UserRole
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    (roots.app_a / "outputs").mkdir()
+    (roots.app_a / "outputs" / "note.md").write_text("# Alice", encoding="utf-8")
+    (roots.app_a / "inputs").mkdir()
+    (roots.app_a / "inputs" / "spec.txt").write_text("spec", encoding="utf-8")
+    sid = _seed_session(graph_as_app, a, _ALICE, str(roots.app_a))
+    base = f"/agent/workspace/{sid}"
+
+    for who in (_user(_BOB, a), _user(_CAROL, b), _user(_ALICE, None)):
+        c = workspace_client(who)
+        tree = c.get(base)
+        assert tree.status_code == 200 and tree.json()["files"] == [], who.email
+        assert c.get(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 404
+        assert c.get(f"{base}/history", params={"path": "outputs/note.md"}).json() == {"history": []}
+        assert c.get(f"{base}/events").status_code == 404
+        assert c.put(f"{base}/file", params={"path": "outputs/x.md"},
+                     json={"content": "forged"}).status_code == 403
+        assert c.delete(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 403
+        assert c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}).status_code == 403
+        assert c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}).status_code == 403
+        assert c.patch(base, json={"workspace_path": str(roots.app_a)}).status_code == 403
+        assert c.post(f"{base}/events", json={"name": "artifact_created",
+                                              "path": "outputs/x.md"}).status_code == 403
+    assert (roots.app_a / "outputs" / "note.md").is_file()
+    assert not (roots.app_a / "outputs" / "x.md").exists()
+
+    # Alice owns the room.
+    alice = workspace_client(_user(_ALICE, a))
+    names = {f["path"] for f in alice.get(base).json()["files"]}
+    assert "outputs/note.md" in names
+    got = alice.get(f"{base}/file", params={"path": "outputs/note.md"})
+    assert got.status_code == 200 and "# Alice" in got.text
+    put = alice.put(f"{base}/file", params={"path": "outputs/x.md"}, json={"content": "ok"})
+    assert put.status_code == 200, put.text
+    assert alice.delete(f"{base}/file", params={"path": "outputs/x.md"}).status_code == 200
+
+    # The write_artifact tool posts events with the internal token and no member.
+    service = UserContext(email="system:internal", role=UserRole.AGENT,
+                          access=SERVICE_ACCESS)
+    assert workspace_client(service).post(
+        f"{base}/events", json={"name": "artifact_created", "path": "outputs/x.md"},
+    ).status_code == 204
 
 
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────
