@@ -498,7 +498,7 @@ def _tee_sse_line(line: str) -> None:
 # message).  The handler emits a ``user_input_requested`` SSE frame to the
 # live stream and parks on an asyncio.Future until the frontend POSTs the
 # answer to ``/agent/respond-input`` (which calls :func:`resolve_user_input`).
-class _PendingUserInput(dict):
+class _PendingUserInput(dict[str, Any]):
     """The parked HITL futures, keyed by request id, with each OWNER thread.
 
     H-201 fix round 1 (P2). A request id travels in the run's own stream, so

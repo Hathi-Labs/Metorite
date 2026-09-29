@@ -123,7 +123,13 @@ def test_ask_questions_blocks_on_copilot_thread_hop(monkeypatch) -> None:
         import json
         payload = json.loads(pushed[0].removeprefix("data: ").strip())
         rid = payload["value"]["request_id"]
-        assert ex.resolve_user_input(rid, "Delhi", was_freeform=False) is True
+        # H-201: the request is owned by the thread its card went to, even
+        # across the Copilot thread hop, and only that thread may answer it.
+        assert ex._pending_user_input.owner_of(rid) == "t-copilot-aq"
+        assert ex.resolve_user_input(rid, "Delhi", was_freeform=False,
+                                     thread_id="another-thread") is False
+        assert ex.resolve_user_input(rid, "Delhi", was_freeform=False,
+                                     thread_id="t-copilot-aq") is True
         return await asyncio.wait_for(task, timeout=5)
 
     result = asyncio.run(_run())
@@ -158,7 +164,13 @@ def test_request_confirmation_blocks_on_copilot_thread_hop(monkeypatch) -> None:
         import json
         payload = json.loads(pushed[0].removeprefix("data: ").strip())
         rid = payload["value"]["request_id"]
-        assert ex.resolve_user_input(rid, "APPROVE", was_freeform=False) is True
+        # H-201: the request is owned by the thread its card went to, even
+        # across the Copilot thread hop, and only that thread may answer it.
+        assert ex._pending_user_input.owner_of(rid) == "t-copilot-rc"
+        assert ex.resolve_user_input(rid, "APPROVE", was_freeform=False,
+                                     thread_id="another-thread") is False
+        assert ex.resolve_user_input(rid, "APPROVE", was_freeform=False,
+                                     thread_id="t-copilot-rc") is True
         return await asyncio.wait_for(task, timeout=5)
 
     approved = asyncio.run(_run())

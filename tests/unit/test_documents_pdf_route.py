@@ -55,6 +55,17 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         return False
 
     monkeypatch.setattr(workspace, "_faultin_from_store", _no_store)
+
+    # H-201: each workspace route checks the room first. This suite tests the
+    # PDF render, so the room answers yes. The R8 room cases live in
+    # test_h201_readers_under_rls.py.
+    class _Room:
+        can_read = can_send = True
+
+    async def _in_room(*_a: object, **_k: object) -> _Room:
+        return _Room()
+
+    monkeypatch.setattr(workspace, "_room_for", _in_room)
     return root
 
 
