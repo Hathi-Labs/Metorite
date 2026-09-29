@@ -1252,7 +1252,7 @@ line — never reclaim a number by deleting the other entry.
   Projects chat, whose create writes send `scope: "org"`. A create in Shared
   vocabulary is the next slice. A row still cannot be retired (H-204).
 - **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
-  The flip waits for the admin surface (H-4). Creating an org-wide row is
+  The flip waited for the admin surface (H-4, built as WS-42 PS-3). Creating an org-wide row is
   easy and un-creating it is the hard part, so a member could mint rows
   nobody can then manage. Measured the same day: the flag is unset in
   production and both databases hold zero org-wide rows, so nothing is
