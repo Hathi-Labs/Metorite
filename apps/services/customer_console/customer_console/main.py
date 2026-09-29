@@ -1273,15 +1273,25 @@ def _starter_credits() -> Decimal:
     than to 0, so a typo cannot silently leave every new customer with nothing.
     """
     raw = os.environ.get("CUSTOMER_CONSOLE_STARTER_CREDITS", "").strip()
+    default = Decimal("500")
     try:
-        value = Decimal(raw) if raw else Decimal("500")
+        value = Decimal(raw) if raw else default
+        # ⚠️ `nan`, `Infinity` and a number past `credit_ledger.delta`
+        # NUMERIC(14,4) all parse, and each would fail EVERY new signup with a
+        # 500 (review of PR #532). Treat them like a typo.
+        if not value.is_finite() or value >= STARTER_CREDITS_MAX:
+            raise ValueError(raw)
+        return value if value > 0 else Decimal(0)
     except Exception:
         _log.warning("console.starter_credits_unparseable value=%r", raw)
-        value = Decimal("500")
-    return value if value > 0 else Decimal(0)
+        return default
 
 
-def _grant_starter_credits(conn, *, org_id: str) -> None:
+#: A ceiling far above any sane gift and below the ledger column's limit.
+STARTER_CREDITS_MAX = Decimal("1000000")
+
+
+def _grant_starter_credits(conn, *, org_id: str, actor: str = "operator") -> None:
     """Grant a new organization its starter credits, once, as a free lot.
 
     ⚠️ `LEDGER_REASON_GRANT` makes it a free lot, and free lots burn before
@@ -1311,7 +1321,9 @@ def _grant_starter_credits(conn, *, org_id: str) -> None:
         reason=LEDGER_REASON_GRANT,
         ref=STARTER_CREDITS_REF,
     )
-    _audit(conn, org_id, "credits.starter", {"credits": str(credits)})
+    # The actor of the provision that created the org, never a default: a
+    # self-serve signup must not read as a staff member minting money.
+    _audit(conn, org_id, "credits.starter", {"credits": str(credits)}, actor=actor)
 
 
 def _audit(
@@ -4254,7 +4266,17 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) 
         # find their subscription row already there, so none of them is granted
         # again or retroactively. The fixed `ref` backs that up.
         if new_subscription is not None:
-            _grant_starter_credits(conn, org_id=org_id)
+            _grant_starter_credits(
+                conn,
+                org_id=org_id,
+                # The SAME actor the `org.provision` row names below: a staff
+                # member on the operator arm, "deployment" on self-serve.
+                actor=(
+                    getattr(getattr(request, "state", None), "staff", None).actor
+                    if caller is None
+                    else "deployment"
+                ),
+            )
 
         # Resumability, recorded rather than assumed. Provisioning is a
         # multi-step distributed action that WILL fail halfway; this row is what
