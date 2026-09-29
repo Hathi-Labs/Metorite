@@ -29,14 +29,14 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 sys.path.insert(0, os.environ.get("LIVE_GATEWAY_PATH", "apps/services/gateway"))
 
-from acb_auth import UserContext, UserRole, build_access  # noqa: E402
-from acb_common.db import bind_tenant  # noqa: E402
-from gateway.db import get_db  # noqa: E402
-from sqlalchemy import text  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
-from gateway.routes.projects import admin as pm_admin  # noqa: E402
-from gateway.routes.projects import tree as pm_tree  # noqa: E402
-from gateway.routes.projects.core import ProjectIn  # noqa: E402
+from acb_auth import UserContext, UserRole, build_access
+from acb_common.db import bind_tenant
+from fastapi import HTTPException
+from gateway.db import get_db
+from gateway.routes.projects import admin as pm_admin
+from gateway.routes.projects import tree as pm_tree
+from gateway.routes.projects.core import ProjectIn
+from sqlalchemy import text
 
 ME = os.environ.get("LIVE_ME", "dev@fracktal.in")
 failures: list[str] = []
@@ -68,13 +68,16 @@ async def main() -> None:
     try:
         org = (
             await db.execute(
-                text("SELECT organization_id FROM app_user WHERE lower(email) = lower(:e)"), {"e": ME}
+                text("SELECT organization_id FROM app_user WHERE lower(email) = lower(:e)"),
+                {"e": ME},
             )
         ).scalar()
     finally:
         await db.close()
     if org is None:
-        sys.exit(f"{ME} has no app_user row here; start the gateway with EXECUTIVE_EMAILS={ME} once.")
+        sys.exit(
+            f"{ME} has no app_user row here; start the gateway with EXECUTIVE_EMAILS={ME} once."
+        )
     bind_tenant(str(org))
     name = f"__live_ws42__ {uuid.uuid4().hex[:6]}"
     space = await pm_tree.create_node(ProjectIn(name=name, kind="project"), user=owner())
@@ -86,17 +89,23 @@ async def main() -> None:
         clash = names[0]
         check(
             f"adding a second '{clash}' is a 409, not a 500",
-            await status_of(pm_admin.create_type(space_id, pm_admin.TypeIn(name=clash), user=owner())),
+            await status_of(
+                pm_admin.create_type(space_id, pm_admin.TypeIn(name=clash), user=owner())
+            ),
             409,
         )
         made = await pm_admin.create_type(space_id, pm_admin.TypeIn(name="Spike"), user=owner())
         check("a new name is created", made["name"], "Spike")
         check(
             f"renaming Spike to the taken '{clash}' is a 409",
-            await status_of(pm_admin.patch_type(made["id"], pm_admin.TypeIn(name=clash), user=owner())),
+            await status_of(
+                pm_admin.patch_type(made["id"], pm_admin.TypeIn(name=clash), user=owner())
+            ),
             409,
         )
-        renamed = await pm_admin.patch_type(made["id"], pm_admin.TypeIn(name="Spike 2"), user=owner())
+        renamed = await pm_admin.patch_type(
+            made["id"], pm_admin.TypeIn(name="Spike 2"), user=owner()
+        )
         check("renaming to a free name works", renamed["name"], "Spike 2")
         again = await pm_admin.patch_type(made["id"], pm_admin.TypeIn(name="Spike 2"), user=owner())
         check("renaming to its own name is no clash", again["name"], "Spike 2")
