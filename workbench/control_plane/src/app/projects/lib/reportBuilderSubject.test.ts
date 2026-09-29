@@ -188,7 +188,7 @@ describe("(b) the subject chip lists what the server answered", () => {
     });
   });
 
-  // The UX pass (item 9) moved the teams before the people and took the
+  // §6.5 item 6 moved the teams before the people and took the
   // heading off "Everyone". The members listed stay exactly the same.
   it("a lead sees the teams they lead, then Me first, then the team members", () => {
     const options = subjectOptions(LEAD);

@@ -196,8 +196,8 @@ function Panel({
   /** What the panel MEANS. The owner asked for exactly this. */
   hint: string;
   /**
-   * A second fact about the panel, as the hint's tooltip (the Reports UX
-   * pass, item 15). `pulse` puts its `help_note` here.
+   * A second fact about the panel, as the hint's tooltip (`projects_reports.md`
+   * §6.5 item 17). `pulse` puts its `help_note` here.
    */
   hintTitle?: string | null;
   children: React.ReactNode;
@@ -539,7 +539,7 @@ export function LoadPanel({ data }: { data: LoadReport }) {
                       "Open work with nobody assigned. On a real board this is usually the largest bar."
                     }
                   >
-                    {/* The UX pass, item 15: the name when the payload has
+                    {/* §6.5 item 17: the name when the payload has
                         one, and the address only when it has none. */}
                     {row.name || row.assignee || "Unassigned"}
                   </span>
@@ -1108,7 +1108,7 @@ export function PulsePanel({
 }: {
   data: PulseReport;
   /**
-   * The Reports UX pass, item 6. What the reader can do about the hidden
+   * `projects_reports.md` §6.5 item 16. What the reader can do about the hidden
    * cards. The report builder passes it. The words stay `hiddenPeopleLine`'s.
    */
   hiddenHint?: string | null;
@@ -1122,7 +1122,7 @@ export function PulsePanel({
     <Panel
       title="Who needs help today"
       hint={PANEL_HINTS.pulse}
-      // The UX pass, item 15. The note sits in the hint's tooltip, not as a
+      // §6.5 item 17. The note sits in the hint's tooltip, not as a
       // line of its own under the cards.
       hintTitle={data?.help_note}
     >

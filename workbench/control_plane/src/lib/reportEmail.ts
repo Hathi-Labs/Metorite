@@ -299,7 +299,7 @@ function hiddenNotes(n: number | null | undefined): string[] {
  * The panels say "view", because the Analytics app mounts them too. The
  * rest of the words have this one source.
  *
- * `hint` (the Reports UX pass, item 6) is one sentence after the shared
+ * `hint` (`projects_reports.md` §6.5 item 16) is one sentence after the shared
  * words, which says what the reader can do. The builder passes it. The
  * email and the chat pass none, so their words do not change.
  */

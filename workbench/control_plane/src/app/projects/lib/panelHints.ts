@@ -1,7 +1,7 @@
 /**
  * What each report section's panel means, in one sentence: the ONE source.
  *
- * The Reports UX pass (2026-09-29, `projects_reports.md` §6.5, item 10).
+ * The Reports UX pass (2026-09-29, `projects_reports.md` §6.5 item 4).
  * The panel in `AnalyticsPanels.tsx` prints the sentence under its title,
  * and the builder puts the same sentence on the section's checkbox as its
  * tooltip. Before, the builder had no words for a section, and a copy

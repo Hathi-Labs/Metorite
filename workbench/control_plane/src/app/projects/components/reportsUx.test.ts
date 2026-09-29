@@ -3,8 +3,9 @@
  *
  * The rules that a pure function holds are in `lib/reportBuilderUx.test.ts`.
  * This file renders the pieces of `ReportsView.tsx` that carry a rule of
- * their own: one Retry (item 8), the render error inside the pane (item 3),
- * the header line (item 4) and the gallery (item 5).
+ * their own: one Retry (§6.5 item 8), the render error inside the pane (item 14),
+ * the header line (item 13) and the gallery (item 11). Each title names
+ * its §6.5 item.
  *
  * Rendered through `react-dom/server` in the node environment, as
  * `reportVisuals.test.ts` does. That proves the markup, not the layout.
@@ -94,7 +95,7 @@ describe("(8) one Retry for a failed subjects read", () => {
   });
 });
 
-describe("(3) a failed render stays inside the pane", () => {
+describe("(14) a failed render stays inside the pane", () => {
   it("says what failed, offers Try again, and the way home", () => {
     const markup = html(
       createElement(RenderFailed, {
@@ -130,7 +131,7 @@ describe("(3) a failed render stays inside the pane", () => {
   });
 });
 
-describe("(4) the header line", () => {
+describe("(13) the header line", () => {
   const body = {
     report: row(),
     period_start: "2026-08-31",
@@ -155,7 +156,7 @@ describe("(4) the header line", () => {
   });
 });
 
-describe("(5) the gallery", () => {
+describe("(11) the gallery", () => {
   const markup = html(
     createElement(ReportsHome, {
       rows: [],
@@ -221,7 +222,7 @@ describe("(5) the gallery", () => {
   });
 });
 
-describe("(14) text follows the member's density", () => {
+describe("(15) text follows the member's density", () => {
   it("ReportsView holds no px text size", () => {
     expect(VIEW).not.toMatch(/text-\[\d+px\]/);
   });

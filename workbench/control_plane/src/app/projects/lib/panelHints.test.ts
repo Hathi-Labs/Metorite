@@ -1,8 +1,8 @@
 /**
  * The Reports UX pass (2026-09-29, `projects_reports.md` §6.5).
  *
- * Item 10: a section's panel and its builder checkbox say the same sentence,
- * from `panelHints.ts`. Item 15: the pulse note sits in the hint's tooltip,
+ * §6.5 item 4: a section's panel and its builder checkbox say the same sentence,
+ * from `panelHints.ts`. §6.5 item 17: the pulse note sits in the hint's tooltip,
  * and "Who is overloaded" shows a name when the payload has one.
  *
  * Rendered through `react-dom/server` in the node environment, as
@@ -25,7 +25,7 @@ const source = (rel: string) =>
 const panels = source("../components/AnalyticsPanels.tsx");
 const view = source("../components/ReportsView.tsx");
 
-describe("(10) one sentence for each section", () => {
+describe("(4) one sentence for each section", () => {
   it("every section has a hint", () => {
     expect(Object.keys(PANEL_HINTS).sort()).toEqual(
       REPORT_SECTIONS.map((s) => s.key).sort()
@@ -48,7 +48,7 @@ describe("(10) one sentence for each section", () => {
   });
 });
 
-describe("(15) the panels in a report", () => {
+describe("(17) the panels in a report", () => {
   it("pulse puts its note in the hint's tooltip, not in a line of its own", () => {
     const note = "Behind two runs in a row is not checked yet.";
     const data = {

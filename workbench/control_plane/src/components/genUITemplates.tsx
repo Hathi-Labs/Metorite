@@ -1238,7 +1238,7 @@ function ReportCard({ data }: { data: Data }) {
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <TIcon name="file-text" size={15} color="var(--primary)" />
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>
-          {/* The one address builder of Reports (the UX pass, item 18). */}
+          {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
           <TitleLink href={reportLink()}>{str(data.title, "Report")}</TitleLink>
         </span>
         {data.period != null && <span style={MUTED}>{str(data.period)}</span>}

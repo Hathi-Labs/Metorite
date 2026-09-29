@@ -264,12 +264,12 @@ export function RenderedBody({
 }: {
   body: RenderedReportBody | PreviewReportBody;
   /**
-   * The line under the title (the UX pass, item 4): "About [subject] ·
+   * The line under the title (§6.5 item 13): "About [subject] ·
    * [scope] · [period]", from `reportHeaderLine`. The caller knows the
    * names. Without it the line names the scope word and the period.
    */
   headerLine?: string;
-  /** Item 6. What the hidden-people line adds, in the builder only. */
+  /** §6.5 item 16. What the hidden-people line adds, in the builder only. */
   hiddenHint?: string | null;
 }) {
   const done = statusAccent({ category: "done" });
@@ -711,7 +711,7 @@ function ChipSlot({
 const CHIP_WIDTH = "w-full sm:w-[16rem] xl:w-full";
 
 /**
- * The subject chip when the subjects read failed (the UX pass, item 8).
+ * The subject chip when the subjects read failed (§6.5 item 8).
  *
  * The chip keeps its shape: a disabled chip that says so, and the ONE Retry
  * beside it. The preview line says what failed, and has no second Retry.
@@ -825,7 +825,7 @@ function ReportBuilder({
   // "My day" is always about its AUTHOR. A new one takes the reader, derived
   // here and never typed. An edit keeps the stored subject, so an admin who
   // edits a member's day leaves it about the member (R5b-1 repair). A lead
-  // of one team starts Team pulse on that team (the UX pass, item 6).
+  // of one team starts Team pulse on that team (§6.5 item 7).
   const self = selfSubject(answer);
   const scopes = useMemo(() => scopeOptions(roots), [roots]);
   const derived = startingTeam(
@@ -834,7 +834,7 @@ function ReportBuilder({
     answer,
     isEdit
   );
-  // The name follows the chips until the member types one (item 11).
+  // The name follows the chips until the member types one (§6.5 item 5).
   const state: BuilderState = {
     ...derived,
     name: builderName(derived, template, answer, scopes),
@@ -1018,7 +1018,7 @@ function ReportBuilder({
             </ChipSlot>
             <ChipSlot>
               {noPeriod ? (
-                // The UX pass, item 7. Every chosen section reads the state
+                // §6.5 item 3. Every chosen section reads the state
                 // now, so a period chip would change nothing.
                 <p
                   className="flex h-7 items-center text-xs text-muted-foreground"
@@ -1070,7 +1070,7 @@ function ReportBuilder({
 
           <fieldset className="space-y-2">
             <legend className="mb-1 text-xs font-semibold text-foreground">Sections</legend>
-            {/* The UX pass, item 10: three small labels, each in SECTIONS
+            {/* §6.5 item 4: three small labels, each in SECTIONS
                 order. The tooltip is the panel's own sentence. */}
             {sectionGroups().map((group) => (
               <div key={group.label}>
@@ -1144,7 +1144,7 @@ function ReportBuilder({
             <Button variant="ghost" size="sm" onClick={onCancel}>
               Cancel
             </Button>
-            {/* The UX pass, item 15. Absent, never disabled, without the
+            {/* §6.5 item 10. Absent, never disabled, without the
                 server's can_delete (R5d). */}
             {deleteShown(editing) && (
               <Button
@@ -1193,7 +1193,7 @@ function ReportBuilder({
               </Button>
             </p>
           ) : preview ? (
-            // The UX pass, item 13. During a change the last preview stays,
+            // §6.5 item 9. During a change the last preview stays,
             // dimmed, so the page does not jump. A skeleton only on the first
             // load.
             <div className={updating ? "opacity-60" : undefined} aria-busy={updating}>
@@ -1234,7 +1234,7 @@ function TemplateCard({
   onStart: (template: ReportTemplate) => void;
 }) {
   if (!template.available) {
-    // The UX pass, item 5. What it waits for is a tooltip, not a line.
+    // §6.5 item 11. What it waits for is a tooltip, not a line.
     return (
       <div
         aria-disabled="true"
@@ -1274,7 +1274,7 @@ function TemplateCard({
  * ⚠️ **"Your reports" is the server's `mine`.** The browser does not compare
  * addresses. It filters the rows the server marked.
  *
- * The UX pass (item 5). The live templates come first, in one grid. The
+ * §6.5 item 11. The live templates come first, in one grid. The
  * coming-soon ones fold under "Coming later (N)".
  */
 export function ReportsHome({
@@ -1400,7 +1400,7 @@ export function ReportActions({
 }
 
 /**
- * A render that failed, inside the pane (the UX pass, item 3). The sentence,
+ * A render that failed, inside the pane (§6.5 item 14). The sentence,
  * one "Try again", and the way home or to Edit, so the reader is never stuck
  * on an error with no control.
  */
@@ -1527,7 +1527,7 @@ export default function ReportsView({
   );
   const templates = catalogue.data?.templates;
 
-  // The UX pass (items 4, 11 and 12). The names of subjects and authors,
+  // §6.5 items 5, 12 and 13. The names of subjects and authors,
   // from the key the builder reads, so this adds no request once it ran.
   const subjects = useCachedResource(projectsKey("reports/subjects"), () =>
     projectsApi.reportSubjects()

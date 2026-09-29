@@ -141,7 +141,7 @@ export function PersonPanel({
           : "flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-card"
       }
     >
-      {/* The UX pass, item 16. The header wraps: at 390 px the actions go
+      {/* §6.5 item 18. The header wraps: at 390 px the actions go
           under the name, so the title keeps its width and does not cut. */}
       <header className="flex flex-wrap items-start justify-between gap-2 border-b border-border p-3">
         <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">

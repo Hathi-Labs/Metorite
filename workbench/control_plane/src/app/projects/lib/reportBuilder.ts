@@ -146,12 +146,12 @@ export interface BuilderState {
    */
   subject: ReportSubject | null;
   /**
-   * The UX pass (item 11). False until the member types a name. While it is
+   * §6.5 item 5. False until the member types a name. While it is
    * false, `builderName` derives the name from the chips.
    */
   nameTouched: boolean;
   /**
-   * The UX pass (item 6). True when the subject was chosen: by the member,
+   * §6.5 item 7. True when the subject was chosen: by the member,
    * by a link, or by a saved row. `startingTeam` changes only an untouched
    * subject.
    */
@@ -356,7 +356,7 @@ export const AUTHOR_SUBJECT_NOTE = "My day is always about its author.";
 
 /**
  * What the subject chip says when the subjects read fails. The UX pass
- * (item 8) draws it as the prompt of a disabled chip, with Retry beside it.
+ * (§6.5 item 8) draws it as the prompt of a disabled chip, with Retry beside it.
  */
 export const SUBJECTS_FAILED = "People did not load";
 
@@ -434,7 +434,7 @@ export function teamLabel(name: string): string {
 /**
  * The subject chip's options, from the subjects answer only (§8 R5b).
  *
- * The UX pass (§6.5, item 9) sets the order. "Everyone" comes first, with
+ * §6.5 item 6 sets the order. "Everyone" comes first, with
  * no heading. The teams come next, under "Teams", then the people, under
  * "People". The reader's own row reads "Me" and comes first among the
  * people. The address shows only on "Me", and on two people who share one
@@ -772,7 +772,7 @@ export function saveRefusal(state: BuilderState): string | null {
 
 // ── The UX pass (2026-09-29), `projects_reports.md` §6.5 ────────────────────
 
-/** Item 2. The preview line of a project-only template with no project. */
+/** §6.5 item 2. The preview line of a project-only template with no project. */
 export const SCOPE_PROMPT = "Choose a project in the In chip to see this report.";
 
 /**
@@ -789,7 +789,7 @@ export function projectOnly(template: ReportTemplate | null | undefined): boolea
 }
 
 /**
- * Item 2. Why the preview cannot run yet because of the scope, or `null`.
+ * §6.5 item 2. Why the preview cannot run yet because of the scope, or `null`.
  *
  * ⚠️ **A new report only.** PATCH cannot change the scope, so an edit of a
  * saved org-wide "Project status" cannot answer the prompt. With the prompt
@@ -805,7 +805,7 @@ export function scopePrompt(
 }
 
 /**
- * Item 2. The scope chip's options. A NEW project-only report has no
+ * §6.5 item 2. The scope chip's options. A NEW project-only report has no
  * "Whole organization". An edit keeps it, so the chip names the saved scope.
  */
 export function scopeChoices(
@@ -819,7 +819,7 @@ export function scopeChoices(
 }
 
 /**
- * Item 6. A new report from a template that takes a team starts on the
+ * §6.5 item 7. A new report from a template that takes a team starts on the
  * reader's team, when the reader leads exactly one and is not an admin.
  *
  * ⚠️ A lead already receives the rows of their team with "Everyone"
@@ -840,11 +840,11 @@ export function startingTeam(
   return withSubject(draft, { kind: "team", slug: answer.teams[0].slug });
 }
 
-/** Item 6. What the hidden line adds for a lead who can choose a team. */
+/** §6.5 item 16. What the hidden line adds for a lead who can choose a team. */
 export const TEAM_HINT = "Choose a team in About to report on that team only.";
 
 /**
- * Item 6. The hint after "This report hides N other people", or `null`.
+ * §6.5 item 16. The hint after "This report hides N other people", or `null`.
  *
  * It shows only where a team choice changes the report: the reader leads a
  * team, is not an admin, and chose no subject yet. ⚠️ A team choice does
@@ -863,7 +863,7 @@ export function hiddenTeamHint(
 }
 
 /**
- * Item 7. The sections that ignore the period: `render_body` reads each of
+ * §6.5 item 3. The sections that ignore the period: `render_body` reads each of
  * them as the state now. `finished` and `throughput` are the only sections
  * that read `weeks` and `skip_current_week`.
  *
@@ -881,11 +881,11 @@ export const PERIOD_FREE_SECTIONS: readonly string[] = [
   "rebalance",
 ];
 
-/** Item 7. What the builder shows in place of the period chip. */
+/** §6.5 item 3. What the builder shows in place of the period chip. */
 export const AS_OF_TODAY = "As of today";
 
 /**
- * Item 7. The day a period-free report is "as of", as `YYYY-MM-DD`.
+ * §6.5 item 3. The day a period-free report is "as of", as `YYYY-MM-DD`.
  *
  * The server's day wins when the body names one: `pulse` reads one UTC day
  * and sends it as `today`. Otherwise the reader's own date, because the
@@ -898,13 +898,13 @@ export function asOfDay(serverDay: string | null | undefined, now: Date): string
   return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
 }
 
-/** Item 7. True when every section the config sends ignores the period. */
+/** §6.5 item 3. True when every section the config sends ignores the period. */
 export function periodFree(state: Pick<BuilderState, "sections" | "subject">): boolean {
   const sent = sectionsFor(state);
   return sent.length > 0 && sent.every((s) => PERIOD_FREE_SECTIONS.includes(s));
 }
 
-/** Item 4. A subject as its name, from the subjects answer. */
+/** §6.5 item 13. A subject as its name, from the subjects answer. */
 export function subjectLabel(
   subject: ReportSubject | null,
   answer: ReportSubjects | null | undefined
@@ -927,7 +927,7 @@ function scopeLabelOf(
 }
 
 /**
- * Item 4. The scope, as the header says it. "Whole organization", or "In"
+ * §6.5 item 13. The scope, as the header says it. "Whole organization", or "In"
  * and the node. With the subtree on and a node that has children, it adds
  * "and the projects under it". `scopes` is `scopeOptions`, in tree order,
  * so a child is the next option at a greater depth.
@@ -947,7 +947,7 @@ export function scopePhrase(
 }
 
 /**
- * Item 4 and item 7. The line under the report's title: "About [subject]
+ * §6.5 items 13 and 3. The line under the report's title: "About [subject]
  * · [scope] · [period]", or "As of [day]" in place of the period for a
  * period-free report. The dates are the server's.
  */
@@ -968,7 +968,7 @@ export function reportHeaderLine(parts: {
     .join(" · ");
 }
 
-/** The three labels of item 10, and the sections under each. */
+/** The three labels of §6.5 item 4, and the sections under each. */
 const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
   finished: "What happened",
   throughput: "What happened",
@@ -985,7 +985,7 @@ const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
 const SECTION_GROUP_ORDER = ["What happened", "Where we stand", "Who needs help"];
 
 /**
- * Item 10. The section checkboxes under three small labels. Each group
+ * §6.5 item 4. The section checkboxes under three small labels. Each group
  * keeps the server's `SECTIONS` order, because it reads `REPORT_SECTIONS`.
  */
 export function sectionGroups(): {
@@ -999,7 +999,7 @@ export function sectionGroups(): {
 }
 
 /**
- * Item 11. The name the builder shows and saves.
+ * §6.5 item 5. The name the builder shows and saves.
  *
  * A typed name wins (`nameTouched`). Otherwise the template name, and what
  * the report is about: "1:1 prep: Meera Iyer", "Project status: Printer X2"
@@ -1024,7 +1024,7 @@ export function builderName(
 }
 
 /**
- * Item 11. The muted line on a "Your reports" card. The template and the
+ * §6.5 item 12. The muted line on a "Your reports" card. The template and the
  * subject show only when the name does not say them already, as a derived
  * name ("1:1 prep: Meera Iyer") does. The scope always shows.
  */
@@ -1054,7 +1054,7 @@ export function homeEmptyLine(finishedCount?: number | null): string {
   return `You have not saved a report yet.${count} Pick a question below.`;
 }
 
-/** Item 12. The rail's two lists, by the server's `mine`, newest first. */
+/** §6.5 item 12. The rail's two lists, by the server's `mine`, newest first. */
 export function railGroups(rows: readonly ReportRow[]): {
   yours: ReportRow[];
   shared: ReportRow[];
@@ -1069,14 +1069,14 @@ export function railGroups(rows: readonly ReportRow[]): {
 }
 
 /**
- * Item 15. "Delete report" shows in edit mode only when the server's
+ * §6.5 item 10. "Delete report" shows in edit mode only when the server's
  * `can_delete` is true. It is absent, never disabled, as Edit is (R5d).
  */
 export function deleteShown(row: ReportRow | null): boolean {
   return row?.can_delete === true;
 }
 
-/** Item 15. The builder's title in edit mode. */
+/** §6.5 item 10. The builder's title in edit mode. */
 export function editTitle(row: ReportRow): string {
   return `Edit: ${row.name}`;
 }

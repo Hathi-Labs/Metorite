@@ -165,7 +165,7 @@ describe("(l) '1:1 prep' is absent unless the subjects answer lists the person",
     expect(oneOnOneLink(LEAD, false, "  ")).toBeNull();
   });
 
-  it("(17) is absent on the reader's own page, because My day covers it", () => {
+  it("(18) is absent on the reader's own page, because My day covers it", () => {
     expect(oneOnOneLink(LEAD, false, "lee@example.test")).toBeNull();
     expect(oneOnOneLink(LEAD, false, " Lee@Example.test ")).toBeNull();
     expect(oneOnOneLink(LEAD, false, "ana@example.test")).not.toBeNull();
@@ -226,7 +226,7 @@ describe("the hosts render each control through reportEntry", () => {
     expect(genui).not.toMatch(/app=reports|report_node=/);
   });
 
-  it("(16) the person header lets its actions wrap under the name", () => {
+  it("(18) the person header lets its actions wrap under the name", () => {
     const header = panel.slice(panel.indexOf("<header"), panel.indexOf("</header>"));
     expect(header).toMatch(/<header className="[^"]*flex-wrap/);
   });

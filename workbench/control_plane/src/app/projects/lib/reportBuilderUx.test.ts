@@ -209,7 +209,7 @@ describe("(2) a project-only template asks for a project", () => {
   });
 });
 
-describe("(6) Team pulse starts on the reader's one team", () => {
+describe("(7) Team pulse starts on the reader's one team", () => {
   it("a lead of exactly one team starts on that team", () => {
     const draft = builderStateFromTemplate(T1)!;
     expect(startingTeam(draft, T1, LEAD, false).subject).toEqual(HARDWARE);
@@ -247,7 +247,7 @@ describe("(6) Team pulse starts on the reader's one team", () => {
     );
   });
 
-  it("the hidden line asks for a team only where the reader leads one", () => {
+  it("(16) the hidden line asks for a team only where the reader leads one", () => {
     expect(hiddenTeamHint(LEAD_OF_TWO, null, true)).toBe(TEAM_HINT);
     expect(hiddenTeamHint(LEAD, null, true)).toBe(TEAM_HINT);
     // A team is chosen already, a member has no team, an admin hides nobody.
@@ -257,7 +257,7 @@ describe("(6) Team pulse starts on the reader's one team", () => {
     expect(hiddenTeamHint(undefined, null, true)).toBeNull();
   });
 
-  it("the hint is absent on a template with no About chip", () => {
+  it("(16) the hint is absent on a template with no About chip", () => {
     // Weekly delivery has no About chip, so "Choose a team in About" would
     // point at a control that is not there.
     expect(hiddenTeamHint(LEAD, null, false)).toBeNull();
@@ -265,7 +265,7 @@ describe("(6) Team pulse starts on the reader's one team", () => {
   });
 });
 
-describe("(7) a report with no period section reads as of today", () => {
+describe("(3) a report with no period section reads as of today", () => {
   it("the period-free set is the sections that ignore the period", () => {
     // The lockstep pytest pins this set to `render_body`.
     expect([...PERIOD_FREE_SECTIONS]).toEqual([
@@ -303,7 +303,7 @@ describe("(7) a report with no period section reads as of today", () => {
   });
 });
 
-describe("(4) the rendered header names the subject and the scope", () => {
+describe("(13) the rendered header names the subject and the scope", () => {
   it("reads About, In and the period", () => {
     expect(
       reportHeaderLine({
@@ -334,7 +334,7 @@ describe("(4) the rendered header names the subject and the scope", () => {
   });
 });
 
-describe("(9) the subject menu", () => {
+describe("(6) the subject menu", () => {
   it("Everyone has no heading, and the teams come before the people", () => {
     const options = subjectOptions(LEAD);
     expect(options.map((o) => o.label)).toEqual([
@@ -381,7 +381,7 @@ describe("(9) the subject menu", () => {
   });
 });
 
-describe("(10) the sections sit under three labels, in SECTIONS order", () => {
+describe("(4) the sections sit under three labels, in SECTIONS order", () => {
   it("each group keeps the server's order, and every section is in one group", () => {
     const groups = sectionGroups();
     expect(groups.map((g) => g.label)).toEqual([
@@ -405,7 +405,7 @@ describe("(10) the sections sit under three labels, in SECTIONS order", () => {
   });
 });
 
-describe("(11) the name follows the chips until the member types one", () => {
+describe("(5) the name follows the chips until the member types one", () => {
   it("derives the name from the template and the subject or the scope", () => {
     const t6 = withSubject(builderStateFromTemplate(T6)!, MEERA);
     expect(builderName(t6, T6, ADMIN, SCOPES)).toBe("1:1 prep: Meera Iyer");
@@ -472,7 +472,7 @@ describe("(12) the rail splits yours from shared", () => {
   });
 });
 
-describe("(15) edit mode", () => {
+describe("(10) edit mode", () => {
   it("Delete shows only when the server's can_delete is true", () => {
     expect(deleteShown(row({ can_delete: true }))).toBe(true);
     expect(deleteShown(row({ can_delete: false }))).toBe(false);

@@ -122,7 +122,7 @@ describe("the words", () => {
 
   it("says which rows the window binds", () => {
     expect(windowLine(report())).toBe(
-      // The UX pass (item 15) reads the dates as a person does.
+      // §6.5 item 17 reads the dates as a person does.
       "Dated kinds: 24 Sep 2026 to 8 Oct 2026 (14 days). Dependencies are checked whenever they fall.",
     );
     expect(windowLine(report({ window: undefined as unknown as ConflictsReport["window"] }))).toBeNull();

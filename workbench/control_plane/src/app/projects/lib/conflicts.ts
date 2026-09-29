@@ -105,7 +105,7 @@ export function windowLine(data: ConflictsReport): string | null {
   const w = data?.window;
   if (!w?.starts_on || !w?.ends_on) return null;
   return (
-    // The UX pass, item 15: dates as a person reads them, one shape app-wide.
+    // `projects_reports.md` §6.5 item 17: dates as a person reads them, one shape app-wide.
     `Dated kinds: ${shortDate(w.starts_on)} to ${shortDate(w.ends_on)} (${w.days} days). ` +
     "Dependencies are checked whenever they fall."
   );

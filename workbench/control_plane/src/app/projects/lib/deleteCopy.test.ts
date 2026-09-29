@@ -37,7 +37,7 @@ describe("the words", () => {
     expect(deleteTasksCopy(1).title).toBe("Delete 1 task?");
   });
 
-  it("a saved report: deleted for good, for every reader (UX pass, item 15)", () => {
+  it("a saved report: deleted for good, for every reader (§6.5 item 10)", () => {
     const copy = deleteReportCopy("Friday");
     expect(copy.title).toBe("Delete this report?");
     expect(copy.subject).toBe("Friday");

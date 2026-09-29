@@ -72,7 +72,7 @@ describe("the words are one set", () => {
     expect(hiddenPeopleLine(undefined)).toBeNull();
   });
 
-  it("(UX pass, item 6) adds an optional hint after the shared words", () => {
+  it("(§6.5 item 16) adds an optional hint after the shared words", () => {
     expect(hiddenPeopleLine(2, "report", "Choose a team.")).toBe(
       "This report hides 2 other people. Choose a team."
     );

@@ -57,8 +57,8 @@ export function deleteTasksCopy(count: number): DeleteCopy {
 }
 
 /**
- * A saved report, from the builder's edit mode (the Reports UX pass, item
- * 15). `DELETE /projects/reports/{id}` runs `DELETE FROM pm_reports`, and
+ * A saved report, from the builder's edit mode (`projects_reports.md`
+ * §6.5 item 10). `DELETE /projects/reports/{id}` runs `DELETE FROM pm_reports`, and
  * a report is shared, so every reader loses it. Nothing restores it.
  */
 export function deleteReportCopy(name: string): DeleteCopy {

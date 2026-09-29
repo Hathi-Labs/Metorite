@@ -750,8 +750,8 @@ export interface LoadRow {
   /** `null` is the UNASSIGNED bar — usually the real finding, never a gap. */
   assignee: string | null;
   /**
-   * The person's name, when the payload carries one (the Reports UX pass,
-   * item 15). `LoadPanel` shows it in place of the address. Optional: no
+   * The person's name, when the payload carries one (`projects_reports.md`
+   * §6.5 item 17). `LoadPanel` shows it in place of the address. Optional: no
    * server sends it yet, and the panel then shows the address.
    */
   name?: string | null;
