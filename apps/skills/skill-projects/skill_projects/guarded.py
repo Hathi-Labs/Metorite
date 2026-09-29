@@ -39,7 +39,13 @@ from skill_projects.client import (
     post,
     uuid_of,
 )
-from skill_projects.priority import card_view, priority_fields, takes_priority
+from skill_projects.priority import (
+    Removed,
+    card_view,
+    level_note,
+    priority_fields,
+    takes_priority,
+)
 from skill_projects.reads import _day, _task_line
 from skill_projects.writes import (
     CANCELLED,
@@ -411,17 +417,19 @@ def _bulk_patch(
 
     A selection is mixed, so each passed flag is written as it stands (no
     ``current``), and a flag not passed is left alone on every task. This is
-    the bulk bar's rule (``BULK_FLAG_OPTIONS``, review 2026-09-24).
+    the bulk bar's rule (``BULK_FLAG_OPTIONS``, review 2026-09-24). So
+    ``important=true`` writes 2 over a stored 3, which still reads as
+    Important (``priority_fields``).
     """
     patch: dict[str, Any] = {}
     if status.strip():
         patch["status"] = status.strip()
-    judged = priority_fields(
+    flags = priority_fields(
         priority=priority, important=important, leveraged=leveraged, importance=importance
     )
-    if isinstance(judged, str):
-        return judged
-    patch.update(judged[0])
+    if isinstance(flags, str):
+        return flags
+    patch.update(flags)
     if due.strip():
         patch["due_at"] = due.strip()
     if start.strip():
@@ -494,7 +502,6 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
 async def bulk_update(
     task_ids: str,
     status: str = "",
-    importance: int = -1,
     due: str = "",
     start: str = "",
     estimate_mins: int = 0,
@@ -507,6 +514,7 @@ async def bulk_update(
     priority: str = "",
     important: str = "",
     leveraged: str = "",
+    importance: Removed = None,
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
@@ -554,6 +562,8 @@ async def bulk_update(
     for t in tasks:
         if str(t.get("id")) in applied:
             out.extend(_task_line(t))
+            # The level asked for, against each task's own due date.
+            out.extend(level_note(priority, {**t, **patch}))
     return "\n".join(out)
 
 

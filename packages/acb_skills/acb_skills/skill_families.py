@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import typing
 from typing import Any, Callable, Mapping
 
 # ---------------------------------------------------------------------------
@@ -279,10 +280,11 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
     doc = inspect.getdoc(fn) or ""
     props: dict[str, Any] = {}
     required: list[str] = []
+    hidden = _hidden_params(fn)
     try:
         sig = inspect.signature(fn)
         for pname, param in sig.parameters.items():
-            if pname in ("self", "cls") or param.kind in (
+            if pname in ("self", "cls") or pname in hidden or param.kind in (
                 inspect.Parameter.VAR_POSITIONAL,
                 inspect.Parameter.VAR_KEYWORD,
             ):
@@ -304,6 +306,25 @@ def tool_json_schema(fn: Any) -> dict[str, Any]:
             },
         },
     }
+
+
+def _hidden_params(fn: Any) -> frozenset[str]:
+    """The parameters the runtime keeps OUT of the schema the model reads.
+
+    A removed tool argument stays in the signature as ``SkipJsonSchema[...]``
+    so the tool can refuse a stale call by name (H-196). Pydantic, and so the
+    agent framework, drops it from the JSON schema. This price follows.
+    """
+    try:
+        hints = typing.get_type_hints(fn, include_extras=True)
+    except Exception:  # a pricing helper, never a failure
+        return frozenset()
+    return frozenset(
+        name
+        for name, hint in hints.items()
+        if typing.get_origin(hint) is typing.Annotated
+        and any(type(m).__name__ == "SkipJsonSchema" for m in typing.get_args(hint)[1:])
+    )
 
 
 def _schema_type(annotation: Any) -> str:

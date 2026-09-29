@@ -153,6 +153,26 @@ class TestTheWalk:
         assert seen == ["a/one", "b/three"]
         assert served.model == "b/three"
 
+    def test_a_402_EMPTY_ACCOUNT_falls_over_to_ANOTHER_vendor(self, provider):
+        """🔴 Owner decision 2026-09-29. An empty account answers 402 to every
+        call. It used to stop the walk, so one empty vendor stopped every tier
+        bound to it, backups included (the DeepSeek outage, 2026-09-26..28)."""
+        plan, seen = provider
+        plan["a/one"] = {"ok": False, "status": 402}
+        response, served = walk([step("a/one"), step("a/two"), step("b/three")])
+        # The SAME vendor's other model shares the empty balance: skipped.
+        assert seen == ["a/one", "b/three"]
+        assert served.model == "b/three"
+        assert response["model"] == "b/three"
+
+    def test_a_402_with_no_other_vendor_still_fails_as_402(self, provider):
+        plan, seen = provider
+        plan["a/one"] = {"ok": False, "status": 402}
+        with pytest.raises(UpstreamFailed) as exc:
+            walk([step("a/one"), step("a/two")])
+        assert exc.value.status == 402
+        assert seen == ["a/one"]
+
     def test_a_429_does_NOT_strike_off_the_vendor(self, provider):
         # A rate limit is per model and per capacity pool. A second model from
         # the same vendor is a legitimate next try, unlike a bad key.

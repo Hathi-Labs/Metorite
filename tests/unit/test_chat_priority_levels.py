@@ -10,8 +10,10 @@ D78 (2026-09-24) made one priority system: the matrix level, from Important
    ``projects/lib/matrix.ts``). No skill spells a level or a threshold.
 2. **Every tool that writes a priority round-trips each level**, by name and
    with no regard to case, and prints the label the app draws.
-3. **The deprecated number maps explicitly.** 0 and 1 are not Important, 2
-   to 4 are, and anything else is refused. The answer says how it was read.
+3. **The 0-4 number is gone (H-196).** No tool schema offers ``importance``,
+   and a stale call that still sends it is refused by name, with zero
+   writes. A flag reads true or false only: "1" and "0" are refused, because
+   the retired scale read 1 as NOT important.
 4. **Every reader prints the level**, never the stored number: a list line, a
    detail read, the table card, the timeline and the CSV export.
 """
@@ -147,33 +149,98 @@ def test_no_skill_carries_a_second_vocabulary() -> None:
     assert offenders == []
 
 
-# ── The deprecated number ───────────────────────────────────────────────────
+# ── The removed number (H-196) ──────────────────────────────────────────────
+
+#: Every tool that took the 0-4 number until H-196.
+REMOVED_FROM = ("create_task", "update_task", "bulk_update", "capture_intake")
+
+
+def test_the_legacy_map_is_gone_from_the_one_source() -> None:
+    """H-196's own Check, as a fence: no second reading of the old scale."""
+    assert not hasattr(shared, "LEGACY_IMPORTANCE")
+    assert not hasattr(shared, "important_from_legacy")
+    for folder in SKILL_DIRS:
+        for path in folder.glob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            assert "importance: int = -1" not in src, path.name
+            assert not re.search(
+                r"importance[^\n]*deprecated|deprecated[^\n]*importance", src, re.I
+            ), path.name
+
+
+@pytest.mark.parametrize("name", REMOVED_FROM)
+def test_no_tool_schema_offers_importance(name: str) -> None:
+    """The schema the model reads is the agent framework's, built from the
+    signature. `importance` is not in it, and the replacements are."""
+    from acb_skills.skill_families import tool_json_schema
+    from agent_framework import FunctionTool
+
+    fn = getattr(skill_projects, name)
+    props = FunctionTool(func=fn, name=name).parameters()["properties"]
+    assert "importance" not in props
+    assert {"priority", "important", "leveraged"} <= set(props)
+    # The Skills tab's price reads the same schema.
+    assert "importance" not in tool_json_schema(fn)["function"]["parameters"]["properties"]
+    assert "importance" not in (fn.__doc__ or "")
+
+
+def _stale_call(name: str) -> dict[str, Any]:
+    first = {"create_task": {"project_id": PID, "title": "Ship it"},
+             "update_task": {"task_id": TID},
+             "bulk_update": {"task_ids": TID},
+             "capture_intake": {"title": "Ship it", "project_id": PID}}[name]
+    return {**first, "importance": 3}
+
+
+@pytest.mark.parametrize("name", REMOVED_FROM)
+async def test_a_stale_importance_call_is_refused_by_name(monkeypatch, name: str) -> None:
+    """Through the agent framework, as a model's call arrives. The framework
+    drops an unknown argument without a word, so a parameter that simply
+    vanished would write a task with no priority. It must refuse instead,
+    name the replacements, and write nothing."""
+    from agent_framework import FunctionTool
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, Store())
+    tool = FunctionTool(func=getattr(skill_projects, name), name=name)
+    out = await tool.invoke(arguments=_stale_call(name), skip_parsing=True)
+    assert out == skill_priority.IMPORTANCE_REMOVED
+    for word in ("priority", "important", "leveraged", shared.level_names()):
+        assert word in out
+    assert writes(calls) == [] and asked == []
+
+
+def test_a_plan_row_with_importance_is_refused() -> None:
+    row = forms._plan_row(
+        1,
+        {"title": "Call the vendor", "owner": "priya@x.io", "effort_mins": 60,
+         "due": "2026-12-01", "importance": 3},
+    )
+    assert row == f"Task 1: {skill_priority.IMPORTANCE_REMOVED}"
+
+
+@pytest.mark.parametrize("value", ["1", "0", 1, 0, " 1 ", "2", 0.5])
+def test_a_flag_refuses_a_number(value: Any) -> None:
+    """Review of PR #509, P3 (a). The old scale read 1 as NOT important, and a
+    flag read "1" as true. One string, two meanings: a number is refused."""
+    out = skill_priority.priority_fields(important=value)
+    assert isinstance(out, str) and "Pass true or false" in out
+    out = skill_priority.priority_fields(leveraged=value)
+    assert isinstance(out, str) and "Pass true or false" in out
 
 
 @pytest.mark.parametrize(
-    ("number", "important"), [(0, False), (1, False), (2, True), (3, True), (4, True)]
+    ("value", "want"),
+    [("true", True), ("Yes", True), ("on", True), (True, True),
+     ("false", False), ("no", False), ("off", False), (False, False),
+     ("", None), (None, None)],
 )
-def test_the_legacy_number_maps_explicitly(number: int, important: bool) -> None:
-    fields, notes = skill_priority.priority_fields(importance=number)
-    assert fields == {"importance": shared.importance_for(important)}
-    assert "deprecated" in notes[0]
-    assert ("not Important" in notes[0]) is (not important)
-
-
-@pytest.mark.parametrize("number", [5, -3, "two", "2.5"])
-def test_a_number_off_the_scale_is_refused(number: Any) -> None:
-    out = skill_priority.priority_fields(importance=number)
-    assert isinstance(out, str) and "deprecated" in out
-
-
-def test_the_default_minus_one_means_not_passed() -> None:
-    assert skill_priority.priority_fields(importance=-1) == ({}, [])
+def test_a_flag_reads_the_words(value: Any, want: bool | None) -> None:
+    assert skill_priority.flag(value) is want
 
 
 def test_a_level_and_a_flag_together_are_refused() -> None:
     out = skill_priority.priority_fields(priority="critical", important="true")
-    assert isinstance(out, str) and "Not both" in out
-    out = skill_priority.priority_fields(priority="critical", importance=2)
     assert isinstance(out, str) and "Not both" in out
 
 
@@ -186,20 +253,12 @@ def test_an_unknown_level_is_refused_and_lists_the_seven() -> None:
 
 def test_the_tool_descriptions_name_the_levels() -> None:
     """The model reads the docstring. The names in it come from the source."""
-    for tool in (
-        skill_projects.create_task,
-        skill_projects.update_task,
-        skill_projects.bulk_update,
-    ):
-        doc = tool.__doc__ or ""
-        assert shared.level_names() in doc, tool.__name__
-        assert "0 to 4" not in doc, tool.__name__
-    # A capture stores no Leveraged, so its description offers no leveraged
-    # level and no `leveraged` argument (review 2026-09-28).
-    doc = skill_projects.capture_intake.__doc__ or ""
-    for cell, (_important, leveraged) in shared.CELL_FLAGS.items():
-        assert (_label(cell) in doc.split("A capture takes")[-1]) is (not leveraged), cell
-    assert "important and leveraged" not in doc
+    # H-196: a capture takes every level now, leveraged ones included.
+    for name in REMOVED_FROM:
+        doc = getattr(skill_projects, name).__doc__ or ""
+        assert shared.level_names() in doc, name
+        assert "important and leveraged" in doc, name
+        assert "0 to 4" not in doc, name
 
 
 # ── 2. The writers round-trip every level ───────────────────────────────────
@@ -233,7 +292,7 @@ class Store:
             return {"task": dict(self.task)}
         if path == "/projects/tasks/bulk":
             self.task.update(body.get("patch") or {})
-            return {"applied": 1, "requested": 1, "skipped": []}
+            return {"applied": 1, "requested": 1, "skipped": [], "results": [{"task_id": TID}]}
         if path == f"/projects/tasks/{TID}":
             if method == "PATCH":
                 self.task.update(body)
@@ -308,14 +367,57 @@ async def test_update_task_keeps_a_stored_three(monkeypatch) -> None:
     assert "priority High-Leverage" in out
 
 
-async def test_update_task_reads_a_legacy_number_and_says_so(monkeypatch) -> None:
+async def test_a_bulk_important_writes_two_over_a_stored_three(monkeypatch) -> None:
+    """Review of PR #509, P3 (b), kept on purpose and pinned here. A mixed
+    selection has no one `current`, so the bulk bar's rule writes the flag as
+    it stands: a 3 becomes a 2. Both read as Important, so the level holds."""
     approve(monkeypatch)
-    store = Store()
-    fake_gateway(monkeypatch, store)
-    out = await skill_projects.update_task(TID, importance=3)
-    assert store.task["importance"] == shared.IMPORTANT_AT
-    assert "importance 3 is deprecated" in out
-    assert "priority Important" in out
+    store = Store(importance=3)
+    calls = fake_gateway(monkeypatch, store)
+    await skill_projects.bulk_update(TID, important="true")
+    body = next(c for c in writes(calls) if c["path"] == "/projects/tasks/bulk")["json"]
+    assert body["patch"] == {"importance": shared.IMPORTANT_AT}
+    assert shared.task_cell(store.task) == "important"
+
+
+@pytest.mark.parametrize(
+    ("asked", "due", "reads", "why"),
+    [
+        ("Critical", None, "High-Leverage", "has no due date"),
+        ("Urgent", None, "Important", "has no due date"),
+        ("Quick Leverage Win", "2099-01-01", "Speculative Bet", "is not due within 48 hours"),
+        ("High-Leverage", "2000-01-01", "Critical", "is due within 48 hours, or overdue"),
+    ],
+)
+async def test_the_answer_says_when_the_due_date_moves_the_level(
+    monkeypatch, asked: str, due: str | None, reads: str, why: str
+) -> None:
+    """Review of PR #509, P3 (c). `priority` sets two flags, and the due
+    date sets Urgent. Critical on a task with no due date reads
+    High-Leverage, and the answer must say so, or the model reports the level
+    it asked for."""
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, Store(due_at=due))
+    out = await skill_projects.update_task(TID, priority=asked)
+    assert f"you asked for {asked}, and the task reads {reads}" in out
+    assert why in out
+    # create, bulk and capture carry the same note.
+    fake_gateway(monkeypatch, Store(due_at=due))
+    out = await skill_projects.create_task(PID, "Ship it", due=due or "", priority=asked)
+    assert f"the task reads {reads}" in out
+    fake_gateway(monkeypatch, Store(due_at=due))
+    out = await skill_projects.capture_intake("Ship it", PID, due=due or "", priority=asked)
+    assert f"the task reads {reads}" in out
+    fake_gateway(monkeypatch, Store(due_at=due))
+    out = await skill_projects.bulk_update(TID, priority=asked, due=due or "")
+    assert f"the task reads {reads}" in out
+
+
+async def test_no_note_when_the_level_is_the_one_asked_for(monkeypatch) -> None:
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, Store(due_at=_due_for("critical")))
+    out = await skill_projects.update_task(TID, priority="Critical")
+    assert "priority Critical" in out and "you asked for" not in out
 
 
 async def test_clear_priority_empties_both_flags(monkeypatch) -> None:
@@ -342,19 +444,31 @@ async def test_bulk_update_round_trips_a_level(monkeypatch, cell: str) -> None:
 
 
 @pytest.mark.parametrize("cell", LEVELS)
-async def test_capture_intake_round_trips_or_refuses_a_level(monkeypatch, cell: str) -> None:
-    """The intake route stores no Leveraged, so a leveraged level is refused
-    with zero writes, never dropped without a word."""
+async def test_capture_intake_round_trips_a_level(monkeypatch, cell: str) -> None:
+    """H-196: `IntakeIn` takes `leveraged`, so a capture takes every level,
+    High-Leverage included, and POSTs both flags."""
     approve(monkeypatch)
     store = Store(due_at=_due_for(cell))
     calls = fake_gateway(monkeypatch, store)
     out = await skill_projects.capture_intake("Ship it", PID, priority=_odd_case(_label(cell)))
-    if shared.CELL_FLAGS[cell][1]:
-        assert "cannot set Leveraged" in out
-        assert writes(calls) == []
-        return
+    posted = next(c for c in writes(calls) if c["path"] == "/projects/intake")["json"]
+    important, leveraged = shared.CELL_FLAGS[cell]
+    assert posted["importance"] == shared.importance_for(important)
+    assert posted["leveraged"] is leveraged
     assert shared.task_cell(store.task) == cell
     _assert_prints(out, cell)
+
+
+async def test_capture_intake_takes_leveraged_directly(monkeypatch) -> None:
+    approve(monkeypatch)
+    store = Store()
+    calls = fake_gateway(monkeypatch, store)
+    out = await skill_projects.capture_intake(
+        "Ship it", PID, important="true", leveraged="true"
+    )
+    posted = next(c for c in writes(calls) if c["path"] == "/projects/intake")["json"]
+    assert (posted["importance"], posted["leveraged"]) == (shared.IMPORTANT_AT, True)
+    assert "priority High-Leverage" in out
 
 
 @pytest.mark.parametrize("cell", LEVELS)
@@ -521,5 +635,5 @@ def test_the_csv_export_prints_the_level() -> None:
 
 
 def test_the_bulk_patch_refuses_a_set_and_a_clear_of_one_flag() -> None:
-    out = guarded._bulk_patch("", -1, "", "", 0, "important", priority="important")
+    out = guarded._bulk_patch("", None, "", "", 0, "important", priority="important")
     assert isinstance(out, str) and "both set and cleared" in out

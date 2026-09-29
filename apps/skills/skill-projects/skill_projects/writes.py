@@ -49,8 +49,10 @@ from skill_projects.client import (
 )
 from skill_projects.priority import (
     CLEAR_PRIORITY,
+    Removed,
     card_view,
     level_label,
+    level_note,
     priority_fields,
     takes_priority,
 )
@@ -343,13 +345,13 @@ async def create_task(
     status: str = "",
     assignees: str = "",
     due: str = "",
-    importance: int = -1,
     estimate_mins: int = 0,
     tags: str = "",
     parent_task_id: str = "",
     priority: str = "",
     important: str = "",
     leveraged: str = "",
+    importance: Removed = None,
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -364,12 +366,11 @@ async def create_task(
     name = str(title or "").strip()
     if not name:
         return "A task needs a title."
-    judged = priority_fields(
+    flags = priority_fields(
         priority=priority, important=important, leveraged=leveraged, importance=importance
     )
-    if isinstance(judged, str):
-        return judged
-    flags, notes = judged
+    if isinstance(flags, str):
+        return flags
     payload: dict[str, Any] = {"project_id": pid, "title": name}
     if description.strip():
         payload["description"] = description.strip()
@@ -419,7 +420,9 @@ async def create_task(
         # The receipt names the lane the row really landed in, read off the
         # created row, as `add_subtasks` does. The card was a forecast.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    return "\n".join(["Created:", *_task_line(task, status_label), *notes])
+    return "\n".join(
+        ["Created:", *_task_line(task, status_label), *level_note(priority, task)]
+    )
 
 
 #: The card's words for a step whose lane the preview cannot name.
@@ -456,13 +459,13 @@ async def update_task(
     status: str = "",
     due: str = "",
     start: str = "",
-    importance: int = -1,
     estimate_mins: int = 0,
     tags: str = "",
     clear: str = "",
     priority: str = "",
     important: str = "",
     leveraged: str = "",
+    importance: Removed = None,
 ) -> str:
     """Change a task's fields. Only the arguments you pass change. status is
     by NAME from the task's project. due and start are YYYY-MM-DD. tags
@@ -472,21 +475,18 @@ async def update_task(
     change as before → after, and the priority level before and after. The
     timeline records every field change, and the app can revert one."""
     tid, task = await _task(task_id)
-    judged = priority_fields(
+    flags = priority_fields(
         priority=priority,
         important=important,
         leveraged=leveraged,
         importance=importance,
         current=task,
     )
-    if isinstance(judged, str):
-        return judged
-    flags, notes = judged
+    if isinstance(flags, str):
+        return flags
     # Every flag the member STATED, including one the task already holds.
     # `flags` drops those, and a clear of a stated flag must still be refused.
-    stated = priority_fields(
-        priority=priority, important=important, leveraged=leveraged, importance=importance
-    )
+    stated = priority_fields(priority=priority, important=important, leveraged=leveraged)
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
     if title.strip():
@@ -514,7 +514,7 @@ async def update_task(
     if tags.strip():
         payload["tags"] = _split(tags)
         before["tags"] = task.get("tags")
-    cleared = _clears(clear, _CLEAR_WORDS, stated[0] if isinstance(stated, tuple) else flags)
+    cleared = _clears(clear, _CLEAR_WORDS, stated if isinstance(stated, dict) else flags)
     if isinstance(cleared, str):
         return cleared
     for key in cleared:
@@ -538,7 +538,9 @@ async def update_task(
         return CANCELLED
     updated = await patch(f"/projects/tasks/{tid}", payload)
     updated["assignees"] = task.get("assignees") or []
-    return "\n".join(["Updated:", *_task_line(updated, status_label), *notes])
+    return "\n".join(
+        ["Updated:", *_task_line(updated, status_label), *level_note(priority, updated)]
+    )
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True)

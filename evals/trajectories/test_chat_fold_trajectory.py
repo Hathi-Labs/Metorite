@@ -20,6 +20,11 @@ from gateway.chat_fold import (
 )
 from orchestrator import stream_relay
 
+#: The run's tenant. WS-27bm S15 (#531) made `organization_id` a required
+#: keyword of `persist_final_assistant_message`. A call without it raised
+#: TypeError inside the relay's `on_complete`, which the relay swallows, so
+#: these trajectories persisted nothing and failed as "0 == 1".
+TRAJ_ORG = "00000000-0000-0000-0000-00000000a001"
 
 def _ev(t: str, ms: int, **kw) -> dict:
     return {"type": t, "_stream_id": f"{ms}-0", **kw}
@@ -423,7 +428,7 @@ async def test_detached_run_persists_final_message(monkeypatch):
     persisted: list[tuple[str, list]] = []
     monkeypatch.setattr(
         chat_routes, "_ensure_session",
-        lambda sid, uid, agent="orchestrator": calls.append(f"ensure:{sid}:{uid}"),
+        lambda sid, uid, agent="orchestrator", **kw: calls.append(f"ensure:{sid}:{uid}"),
     )
     monkeypatch.setattr(
         chat_routes, "_upsert_messages",
@@ -444,6 +449,14 @@ async def test_detached_run_persists_final_message(monkeypatch):
         return None
     monkeypatch.setattr(run_trace, "record_run_trace", _noop_trace)
 
+    # The room clearance (S13) reads the session's members from Postgres, and
+    # offline that read waits on a connection. A solo run records none.
+    import gateway.chat_fold as chat_fold
+
+    async def _solo(*_a, **_kw):
+        return None
+    monkeypatch.setattr(chat_fold, "_run_authority", _solo)
+
     async def _agent_gen():
         yield 'data: {"type": "TEXT_MESSAGE_CONTENT", "delta": "Hello "}\n\n'
         yield 'data: {"type": "TEXT_MESSAGE_CONTENT", "delta": "world."}\n\n'
@@ -457,6 +470,7 @@ async def test_detached_run_persists_final_message(monkeypatch):
         returned.append(
             await persist_final_assistant_message(
                 "traj-persist", "assistant-msg-1", user_id="u@x.io",
+                organization_id=TRAJ_ORG,
             )
         )
 
@@ -500,7 +514,7 @@ async def test_cancelled_run_still_persists_partial_turn(monkeypatch):
     persisted: list[list] = []
     monkeypatch.setattr(
         chat_routes, "_ensure_session",
-        lambda sid, uid, agent="orchestrator": None,
+        lambda sid, uid, agent="orchestrator", **kw: None,
     )
     monkeypatch.setattr(
         chat_routes, "_upsert_messages",
@@ -523,7 +537,9 @@ async def test_cancelled_run_still_persists_partial_turn(monkeypatch):
         yield 'data: {"type": "RUN_FINISHED"}\n\n'
 
     async def _on_complete() -> None:
-        await persist_final_assistant_message("traj-cancel", "assistant-msg-2")
+        await persist_final_assistant_message(
+            "traj-cancel", "assistant-msg-2", organization_id=TRAJ_ORG,
+        )
 
     async def _subscriber() -> None:
         async for _ in stream_relay.run_detached(
