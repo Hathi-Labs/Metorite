@@ -3562,6 +3562,16 @@ line — never reclaim a number by deleting the other entry.
   `access_request`. It has no tenant yet, so it needs its own design.
   `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread
   of another org can appear there as "unknown".
+- **From the S15 fix-round review.**
+  - (P2) `POST /agent/respond-input` in `routes/agent.py` (near lines
+    2342-2389) has no room check. It relays through
+    `dispatch_control(req.thread_id, ...)`, which only the thread id keys.
+    Today no tenant can reach it across tenants. The `request_id` appears
+    only in the run's own stream, and the room check denies that stream.
+    Add `resolve_room_access(...).can_send` as defence in depth.
+  - (P3) `chat_session_exists` fails closed with NULL if its owner loses
+    BYPASSRLS. Then the gateway refuses every new chat. Add a startup
+    self-check or a smoke-check step, which asserts that a random id gives false.
 - **Do:** give each module the tenant from the server-side identity or the
   run, and open `acb_graph.tenant_session`. Add each one to the R8 suite
   `tests/unit/test_chat_write_under_rls.py` or a sibling of it.
