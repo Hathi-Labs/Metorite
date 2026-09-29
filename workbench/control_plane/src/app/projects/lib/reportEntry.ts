@@ -48,8 +48,8 @@ export function myDayLink(): string {
  * The control shows only when the subjects answer lists the person (§7.1
  * decides who may open T6 about whom). It is ABSENT, never disabled, when:
  * the read failed (a 403 for a reader without `feature:projects` is one),
- * the answer has not arrived, the person has no address, or the answer
- * omits the person.
+ * the answer has not arrived, the person has no address, the answer omits
+ * the person, or the person is the reader (the UX pass, item 17).
  */
 export function oneOnOneLink(
   answer: ReportSubjects | null | undefined,
@@ -59,6 +59,9 @@ export function oneOnOneLink(
   if (failed || !answer) return null;
   const wanted = (email ?? "").trim().toLowerCase();
   if (!wanted) return null;
+  // The UX pass, item 17. A 1:1 with yourself is not a meeting, and "My day"
+  // in My Tasks covers your own work. So the reader's own page has no control.
+  if (wanted === (answer.me ?? "").trim().toLowerCase()) return null;
   const listed = (answer.people ?? []).some(
     (p) => (p.email ?? "").trim().toLowerCase() === wanted
   );

@@ -161,6 +161,12 @@ describe("(l) '1:1 prep' is absent unless the subjects answer lists the person",
     expect(oneOnOneLink(LEAD, false, null)).toBeNull();
     expect(oneOnOneLink(LEAD, false, "  ")).toBeNull();
   });
+
+  it("(17) is absent on the reader's own page, because My day covers it", () => {
+    expect(oneOnOneLink(LEAD, false, "lee@example.test")).toBeNull();
+    expect(oneOnOneLink(LEAD, false, " Lee@Example.test ")).toBeNull();
+    expect(oneOnOneLink(LEAD, false, "ana@example.test")).not.toBeNull();
+  });
 });
 
 describe("the hosts render each control through reportEntry", () => {
@@ -196,6 +202,18 @@ describe("the hosts render each control through reportEntry", () => {
   it("NodeDashboard draws 'Report on this', and both page renders pass onReport", () => {
     expect(dashboard).toContain("onReport(nodeReportLink(summary.id))");
     expect(page.match(/onReport=\{\(href\) => router\.push\(href\)\}/g)?.length).toBe(2);
+  });
+
+  it("(18) the chat's report card links through reportLink", () => {
+    const genui = source("../../../components/genUITemplates.tsx");
+    expect(genui).toMatch(/reportLink\(\)/);
+    expect(genui).toMatch(/import \{[^}]*\breportLink\b[^}]*\} from "@\/app\/projects\/lib\/reportBuilder"/);
+    expect(genui).not.toMatch(/app=reports|report_node=/);
+  });
+
+  it("(16) the person header lets its actions wrap under the name", () => {
+    const header = panel.slice(panel.indexOf("<header"), panel.indexOf("</header>"));
+    expect(header).toMatch(/<header className="[^"]*flex-wrap/);
   });
 
   it("no host writes the address by hand", () => {

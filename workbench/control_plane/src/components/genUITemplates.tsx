@@ -46,6 +46,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 import { taskCell } from "@/app/projects/lib/matrix";
+import { reportLink } from "@/app/projects/lib/reportBuilder";
 import { PriorityChip } from "@/components/TaskMeta";
 import { priorityChip } from "@/lib/taskCard";
 
@@ -1237,7 +1238,8 @@ function ReportCard({ data }: { data: Data }) {
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <TIcon name="file-text" size={15} color="var(--primary)" />
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>
-          <TitleLink href="/projects?app=reports">{str(data.title, "Report")}</TitleLink>
+          {/* The one address builder of Reports (the UX pass, item 18). */}
+          <TitleLink href={reportLink()}>{str(data.title, "Report")}</TitleLink>
         </span>
         {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
       </div>

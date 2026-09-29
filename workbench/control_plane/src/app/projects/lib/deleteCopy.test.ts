@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { deleteTaskCopy, deleteTasksCopy } from "./deleteCopy";
+import { deleteReportCopy, deleteTaskCopy, deleteTasksCopy } from "./deleteCopy";
 
 const page = () =>
   readFileSync(resolve(__dirname, "..", "page.tsx"), "utf-8").replace(/\r\n/g, "\n");
@@ -37,8 +37,22 @@ describe("the words", () => {
     expect(deleteTasksCopy(1).title).toBe("Delete 1 task?");
   });
 
+  it("a saved report: deleted for good, for every reader (UX pass, item 15)", () => {
+    const copy = deleteReportCopy("Friday");
+    expect(copy.title).toBe("Delete this report?");
+    expect(copy.subject).toBe("Friday");
+    expect(copy.body).toBe(
+      "It is deleted for good, for everybody who can open it. This cannot be undone."
+    );
+    expect(copy.confirmLabel).toBe("Delete report");
+  });
+
   it("never promises an undo, because this path has none", () => {
-    for (const copy of [deleteTaskCopy({ title: "x", subtasks: 1 }), deleteTasksCopy(4)]) {
+    for (const copy of [
+      deleteTaskCopy({ title: "x", subtasks: 1 }),
+      deleteTasksCopy(4),
+      deleteReportCopy("r"),
+    ]) {
       expect(`${copy.body} ${copy.note ?? ""}`).not.toMatch(/you can undo/i);
     }
   });

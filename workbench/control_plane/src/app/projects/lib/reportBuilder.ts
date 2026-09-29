@@ -27,6 +27,7 @@
  * The two combine, so they are two chips and never one picker.
  */
 import type { SelectOption } from "@/components/ui/SelectButton";
+import { periodLabel } from "@/lib/reportEmail";
 
 import type {
   ProjectRow,
@@ -36,6 +37,7 @@ import type {
   ReportSubjects,
   ReportTemplate,
 } from "./api";
+import { shortDate } from "./outlook";
 import { flatten } from "./tree";
 
 /**
@@ -143,6 +145,17 @@ export interface BuilderState {
    * scope. ⚠️ PATCH replaces the config, so each payload carries it.
    */
   subject: ReportSubject | null;
+  /**
+   * The UX pass (item 11). False until the member types a name. While it is
+   * false, `builderName` derives the name from the chips.
+   */
+  nameTouched: boolean;
+  /**
+   * The UX pass (item 6). True when the subject was chosen: by the member,
+   * by a link, or by a saved row. `startingTeam` changes only an untouched
+   * subject.
+   */
+  subjectTouched: boolean;
 }
 
 /** A new report: the server's defaults, for the whole organization. */
@@ -156,6 +169,8 @@ export function newBuilderState(): BuilderState {
     sections: [...DEFAULT_REPORT_SECTIONS],
     template: null,
     subject: null,
+    nameTouched: false,
+    subjectTouched: false,
   };
 }
 
@@ -172,6 +187,9 @@ export function builderStateFrom(row: ReportRow): BuilderState {
     // WS-27bn R5b. Before R5b this line was absent, so an edit of a report
     // about a person sent a config with no subject, and the PATCH removed it.
     subject: row.config.subject ?? null,
+    // The UX pass. A saved name and a saved subject are choices already.
+    nameTouched: true,
+    subjectTouched: true,
   };
 }
 
@@ -413,56 +431,62 @@ export function teamLabel(name: string): string {
 /**
  * The subject chip's options, from the subjects answer only (§8 R5b).
  *
- * "Everyone", then the people, then the teams, each under a heading. The
- * reader's own row reads "Me" and comes first among the people. A person
- * shows the name, with the address muted beside it. The server already
- * applied §7.1, so this lists what it answered and adds nobody.
+ * The UX pass (§6.5, item 9) sets the order. "Everyone" comes first, with
+ * no heading. The teams come next, under "Teams", then the people, under
+ * "People". The reader's own row reads "Me" and comes first among the
+ * people. The address shows only on "Me", and on two people who share one
+ * name, because only there does the name not say who it is. The server
+ * already applied §7.1, so this lists what it answered and adds nobody.
  *
  * ⚠️ A saved subject that the answer does not list stays as an option, as
  * the period chip keeps a saved period. So an edit of the name does not
- * change the subject. `editing` decides its hint: "as saved" for a saved
- * row, and "not in your list" for a subject that a link named.
+ * change the subject. It goes at the end of its own group, so the menu
+ * draws each heading once. `editing` decides its hint: "as saved" for a
+ * saved row, and "not in your list" for a subject that a link named.
  */
 export function subjectOptions(
   answer: ReportSubjects | null | undefined,
   current: ReportSubject | null = null,
   editing = false
 ): SelectOption[] {
-  const options: SelectOption[] = [
-    { value: EVERYONE, label: "Everyone", group: "Everyone" },
-  ];
   const me = (answer?.me ?? "").trim().toLowerCase();
   const people = [...(answer?.people ?? [])].sort((a, b) =>
     a.email === me ? -1 : b.email === me ? 1 : 0
   );
+  const named = new Map<string, number>();
   for (const p of people) {
+    const key = (p.name ?? "").trim().toLowerCase();
+    if (key) named.set(key, (named.get(key) ?? 0) + 1);
+  }
+  const teamRows: SelectOption[] = (answer?.teams ?? []).map((t) => ({
+    value: subjectValue({ kind: "team", slug: t.slug }),
+    label: teamLabel(t.name || t.slug),
+    group: "Teams",
+  }));
+  const personRows: SelectOption[] = people.map((p) => {
     const own = p.email === me;
-    options.push({
+    const twin = (named.get((p.name ?? "").trim().toLowerCase()) ?? 0) > 1;
+    return {
       value: subjectValue({ kind: "person", email: p.email }),
       label: own ? "Me" : p.name || p.email,
-      hint: own || p.name ? p.email : undefined,
+      hint: own || (p.name && twin) ? p.email : undefined,
       group: "People",
-    });
-  }
-  for (const t of answer?.teams ?? []) {
-    options.push({
-      value: subjectValue({ kind: "team", slug: t.slug }),
-      label: teamLabel(t.name || t.slug),
-      group: "Teams",
-    });
-  }
+    };
+  });
   const saved = subjectValue(current);
-  if (current && !options.some((o) => o.value === saved)) {
-    options.push({
+  const listed = [...teamRows, ...personRows].some((o) => o.value === saved);
+  if (current && !listed) {
+    const row: SelectOption = {
       value: saved,
       label: current.kind === "person" ? current.email : teamLabel(current.slug),
       // "as saved" is true only for a saved row. A subject from a link was
       // never saved, and the server refuses it on the preview.
       hint: editing ? "as saved" : "not in your list",
       group: current.kind === "person" ? "People" : "Teams",
-    });
+    };
+    (current.kind === "person" ? personRows : teamRows).push(row);
   }
-  return options;
+  return [{ value: EVERYONE, label: "Everyone" }, ...teamRows, ...personRows];
 }
 
 /** The subject for "Me", or `null` when the answer has not arrived. */
@@ -704,7 +728,8 @@ export function builderStateFromLink(intent: ReportLinkIntent): BuilderState {
   const base =
     (intent.template && builderStateFromTemplate(intent.template, subject)) ||
     withSubject(newBuilderState(), subject);
-  return { ...base, projectId: intent.node };
+  // A subject the link named is a choice, so `startingTeam` leaves it.
+  return { ...base, projectId: intent.node, subjectTouched: base.subject !== null };
 }
 
 /** The body of `POST /projects/reports` for this state. */
@@ -737,4 +762,271 @@ export function saveRefusal(state: BuilderState): string | null {
   }
   if (state.sections.length === 0) return "Choose at least one section.";
   return null;
+}
+
+// ── The UX pass (2026-09-29), `projects_reports.md` §6.5 ────────────────────
+
+/** Item 2. The preview line of a project-only template with no project. */
+export const SCOPE_PROMPT = "Choose a project in the In chip to see this report.";
+
+/**
+ * True for a template whose `scope_kinds` is exactly `["project"]`, such
+ * as "Project status". Such a report is about one project, and the whole
+ * organization is not a choice.
+ */
+export function projectOnly(template: ReportTemplate | null | undefined): boolean {
+  return (
+    !!template &&
+    template.scope_kinds.length === 1 &&
+    template.scope_kinds[0] === "project"
+  );
+}
+
+/** Item 2. Why the preview cannot run yet because of the scope, or `null`. */
+export function scopePrompt(
+  state: Pick<BuilderState, "projectId">,
+  template: ReportTemplate | null | undefined
+): string | null {
+  return projectOnly(template) && state.projectId === null ? SCOPE_PROMPT : null;
+}
+
+/** Item 2. The scope chip's options. A project-only template has no org. */
+export function scopeChoices(
+  scopes: readonly ScopeOption[],
+  template: ReportTemplate | null | undefined
+): ScopeOption[] {
+  return projectOnly(template)
+    ? scopes.filter((s) => s.value !== WHOLE_ORGANIZATION)
+    : [...scopes];
+}
+
+/**
+ * Item 6. A new report from a template that takes a team starts on the
+ * reader's team, when the reader leads exactly one and is not an admin.
+ *
+ * ⚠️ A lead already receives the rows of their team with "Everyone"
+ * (`report_scope.py` `ReaderScope.people`). The team start only puts the
+ * report on the people the lead may see, so no hidden line shows. A chosen
+ * subject, an edit and a subject from a link stay as they are.
+ */
+export function startingTeam(
+  draft: BuilderState,
+  template: ReportTemplate | null | undefined,
+  answer: ReportSubjects | null | undefined,
+  editing: boolean
+): BuilderState {
+  if (editing || draft.subjectTouched || draft.subject !== null) return draft;
+  if (!template || template.requires_subject) return draft;
+  if (!template.scope_kinds.includes("team")) return draft;
+  if (!answer || answer.everyone || answer.teams.length !== 1) return draft;
+  return withSubject(draft, { kind: "team", slug: answer.teams[0].slug });
+}
+
+/** Item 6. What the hidden line adds for a lead who can choose a team. */
+export const TEAM_HINT = "Choose a team in About to report on that team only.";
+
+/**
+ * Item 6. The hint after "This report hides N other people", or `null`.
+ *
+ * It shows only where a team choice changes the report: the reader leads a
+ * team, is not an admin, and chose no subject yet. ⚠️ A team choice does
+ * not SHOW the hidden people. §7.1 hides them from a lead on any subject,
+ * so the words do not promise that.
+ */
+export function hiddenTeamHint(
+  answer: ReportSubjects | null | undefined,
+  subject: ReportSubject | null
+): string | null {
+  if (!answer || answer.everyone || answer.teams.length === 0) return null;
+  return subject === null ? TEAM_HINT : null;
+}
+
+/**
+ * Item 7. The sections that ignore the period: `render_body` reads each of
+ * them as the state now. `finished` and `throughput` are the only sections
+ * that read `weeks` and `skip_current_week`.
+ *
+ * ⚠️ `test_projects_report_sections_lockstep.py` reads this list as text,
+ * and fails when it differs from the branches of `render_body`.
+ */
+export const PERIOD_FREE_SECTIONS: readonly string[] = [
+  "outlook",
+  "load",
+  "capacity",
+  "pulse",
+  "stuck",
+  "hygiene",
+  "conflicts",
+  "rebalance",
+];
+
+/** Item 7. What the builder shows in place of the period chip. */
+export const AS_OF_TODAY = "As of today";
+
+/** Item 7. True when every section the config sends ignores the period. */
+export function periodFree(state: Pick<BuilderState, "sections" | "subject">): boolean {
+  const sent = sectionsFor(state);
+  return sent.length > 0 && sent.every((s) => PERIOD_FREE_SECTIONS.includes(s));
+}
+
+/** Item 4. A subject as its name, from the subjects answer. */
+export function subjectLabel(
+  subject: ReportSubject | null,
+  answer: ReportSubjects | null | undefined
+): string | null {
+  if (!subject) return null;
+  if (subject.kind === "team") {
+    const team = answer?.teams.find((t) => t.slug === subject.slug);
+    return teamLabel(team?.name || subject.slug);
+  }
+  const person = answer?.people.find((p) => p.email === subject.email);
+  return person?.name || subject.email;
+}
+
+/** The label of a scope option, or `null` when the tree does not hold it. */
+function scopeLabelOf(
+  projectId: string,
+  scopes: readonly ScopeOption[]
+): string | null {
+  return scopes.find((s) => s.value === projectId)?.label ?? null;
+}
+
+/**
+ * Item 4. The scope, as the header says it. "Whole organization", or "In"
+ * and the node. With the subtree on and a node that has children, it adds
+ * "and the projects under it". `scopes` is `scopeOptions`, in tree order,
+ * so a child is the next option at a greater depth.
+ */
+export function scopePhrase(
+  projectId: string | null,
+  includeSubtree: boolean,
+  scopes: readonly ScopeOption[]
+): string {
+  if (projectId === null) return "Whole organization";
+  const at = scopes.findIndex((s) => s.value === projectId);
+  if (at < 0) return "In a project";
+  const node = scopes[at];
+  const next = scopes[at + 1];
+  const parent = includeSubtree && next !== undefined && next.depth > node.depth;
+  return parent ? `In ${node.label} and the projects under it` : `In ${node.label}`;
+}
+
+/**
+ * Item 4 and item 7. The line under the report's title: "About [subject]
+ * · [scope] · [period]", or "As of [day]" in place of the period for a
+ * period-free report. The dates are the server's.
+ */
+export function reportHeaderLine(parts: {
+  subject: string | null;
+  scope: string;
+  periodStart: string;
+  periodEnd: string;
+  periodFree: boolean;
+  /** The day of the render, as `YYYY-MM-DD`. */
+  asOf: string;
+}): string {
+  const when = parts.periodFree
+    ? `As of ${shortDate(parts.asOf)}`
+    : periodLabel(parts.periodStart, parts.periodEnd);
+  return [parts.subject ? `About ${parts.subject}` : null, parts.scope, when]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The three labels of item 10, and the sections under each. */
+const SECTION_GROUP_OF: Readonly<Record<string, string>> = {
+  finished: "What happened",
+  throughput: "What happened",
+  outlook: "Where we stand",
+  load: "Where we stand",
+  capacity: "Where we stand",
+  stuck: "Where we stand",
+  hygiene: "Where we stand",
+  pulse: "Who needs help",
+  conflicts: "Who needs help",
+  rebalance: "Who needs help",
+};
+
+const SECTION_GROUP_ORDER = ["What happened", "Where we stand", "Who needs help"];
+
+/**
+ * Item 10. The section checkboxes under three small labels. Each group
+ * keeps the server's `SECTIONS` order, because it reads `REPORT_SECTIONS`.
+ */
+export function sectionGroups(): {
+  label: string;
+  sections: { key: string; label: string }[];
+}[] {
+  return SECTION_GROUP_ORDER.map((label) => ({
+    label,
+    sections: REPORT_SECTIONS.filter((s) => SECTION_GROUP_OF[s.key] === label),
+  }));
+}
+
+/**
+ * Item 11. The name the builder shows and saves.
+ *
+ * A typed name wins (`nameTouched`). Otherwise the template name, and what
+ * the report is about: "1:1 prep: Meera Iyer", "Project status: Printer X2"
+ * or "Team pulse: Hardware team". The subject comes first, and the scope
+ * when there is no subject. "My day" is always about its author, so it adds
+ * nothing. A custom report with nothing to name is "Untitled report".
+ */
+export function builderName(
+  state: BuilderState,
+  template: ReportTemplate | null | undefined,
+  answer: ReportSubjects | null | undefined,
+  scopes: readonly ScopeOption[]
+): string {
+  if (state.nameTouched) return state.name;
+  const about =
+    template?.requires_subject === "self"
+      ? null
+      : (subjectLabel(state.subject, answer) ??
+        (state.projectId ? scopeLabelOf(state.projectId, scopes) : null));
+  const base = template?.name ?? (about ? "Report" : NEW_REPORT_NAME);
+  return (about ? `${base}: ${about}` : base).slice(0, MAX_REPORT_NAME);
+}
+
+/**
+ * Item 11. The muted line on a "Your reports" card. The template name
+ * shows only when it adds to the name. Then the subject and the scope.
+ */
+export function reportCardLine(
+  row: ReportRow,
+  template: string,
+  subject: string | null,
+  scope: string
+): string {
+  const same = template.trim().toLowerCase() === row.name.trim().toLowerCase();
+  return [same ? null : template, subject ? `About ${subject}` : null, scope]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Item 12. The rail's two lists, by the server's `mine`, newest first. */
+export function railGroups(rows: readonly ReportRow[]): {
+  yours: ReportRow[];
+  shared: ReportRow[];
+} {
+  const newest = [...rows].sort((a, b) =>
+    a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0
+  );
+  return {
+    yours: newest.filter((r) => r.mine === true),
+    shared: newest.filter((r) => r.mine !== true),
+  };
+}
+
+/**
+ * Item 15. "Delete report" shows in edit mode only when the server's
+ * `can_delete` is true. It is absent, never disabled, as Edit is (R5d).
+ */
+export function deleteShown(row: ReportRow | null): boolean {
+  return row?.can_delete === true;
+}
+
+/** Item 15. The builder's title in edit mode. */
+export function editTitle(row: ReportRow): string {
+  return `Edit: ${row.name}`;
 }

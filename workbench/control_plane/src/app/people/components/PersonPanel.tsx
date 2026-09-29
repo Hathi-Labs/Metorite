@@ -141,8 +141,10 @@ export function PersonPanel({
           : "flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-card"
       }
     >
-      <header className="flex items-start justify-between gap-2 border-b border-border p-3">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* The UX pass, item 16. The header wraps: at 390 px the actions go
+          under the name, so the title keeps its width and does not cut. */}
+      <header className="flex flex-wrap items-start justify-between gap-2 border-b border-border p-3">
+        <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">
           <Avatar name={person.name} avatar={person.avatar}
                   className="size-9 text-xs" />
           <div className="min-w-0">
@@ -155,7 +157,7 @@ export function PersonPanel({
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {/* WS-28e §6.4 — "Assign work" routes through the ORDINARY
               task-create flow: /projects with the assignee pre-filled, where
               the pre-fill is visible and dismissible. Nothing here writes an

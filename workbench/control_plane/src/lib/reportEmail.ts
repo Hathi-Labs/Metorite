@@ -294,13 +294,19 @@ function hiddenNotes(n: number | null | undefined): string[] {
  * `noun` fits the surface. The email and the report table say "report".
  * The panels say "view", because the Analytics app mounts them too. The
  * rest of the words have this one source.
+ *
+ * `hint` (the Reports UX pass, item 6) is one sentence after the shared
+ * words, which says what the reader can do. The builder passes it. The
+ * email and the chat pass none, so their words do not change.
  */
 export function hiddenPeopleLine(
   n: number | null | undefined,
   noun: "report" | "view" = "report",
+  hint?: string | null,
 ): string | null {
   if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) return null;
-  return `This ${noun} hides ${n} other ${n === 1 ? "person" : "people"}`;
+  const line = `This ${noun} hides ${n} other ${n === 1 ? "person" : "people"}`;
+  return hint ? `${line}. ${hint}` : line;
 }
 
 /**
