@@ -18,8 +18,7 @@ async def _noop(**_kwargs) -> None:
 
 
 def _set_ctx(tmp_path) -> None:
-    wa._WRITE_ARTIFACT_CONTEXT.clear()
-    wa._WRITE_ARTIFACT_CONTEXT.update(
+    wa.bind_artifact_context(**
         {"session_id": "sess-1", "workspace_root": str(tmp_path)}
     )
 

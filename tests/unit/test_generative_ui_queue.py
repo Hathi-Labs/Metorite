@@ -26,10 +26,10 @@ wa = importlib.import_module("acb_skills.write_artifact")
 @pytest.fixture(autouse=True)
 def _clean_registry():
     ex._RUN_QUEUES.clear()
-    wa._WRITE_ARTIFACT_CONTEXT.clear()
+    wa.bind_artifact_context()
     yield
     ex._RUN_QUEUES.clear()
-    wa._WRITE_ARTIFACT_CONTEXT.clear()
+    wa.bind_artifact_context()
 
 
 async def test_resolve_prefers_contextvar_then_registry():
@@ -48,13 +48,15 @@ async def test_resolve_prefers_contextvar_then_registry():
     assert ex.resolve_run_queue("sess-1") is q_reg
 
 
-async def test_resolve_single_active_run_fallback():
-    # A tool that didn't get the exact key still resolves when exactly one run
-    # is active (the common single-run case).
+async def test_resolve_never_guesses_the_single_active_run():
+    # H-201 (§21.16): a tool with no key, or another run's key, gets NOTHING.
+    # The old "exactly one run is live, so it is this one" fallback sent the
+    # event of a frame with no run into that one run's stream.
     q: asyncio.Queue = asyncio.Queue()
     ex._register_run_queue("only-run", q)
-    assert ex.resolve_run_queue(None) is q
-    assert ex.resolve_run_queue("wrong-key") is q  # single-run fallback
+    assert ex.resolve_run_queue(None) is None
+    assert ex.resolve_run_queue("wrong-key") is None
+    assert ex.resolve_run_queue("only-run") is q
 
 
 async def test_resolve_none_when_no_run():
@@ -65,7 +67,7 @@ async def test_emit_generative_ui_reaches_registry_queue_copilot_case():
     # Simulate the Copilot path: queue is ONLY in the registry, ContextVar unset.
     q: asyncio.Queue = asyncio.Queue()
     ex._register_run_queue("copilot-sess", q)
-    wa._WRITE_ARTIFACT_CONTEXT["session_id"] = "copilot-sess"
+    wa.derive_artifact_context(session_id="copilot-sess")
 
     spec = '{"type":"card","props":{"title":"July 2026 - Monthly Forecast"}}'
     result = await wa.emit_generative_ui(spec)
@@ -79,7 +81,7 @@ async def test_emit_generative_ui_reaches_registry_queue_copilot_case():
 
 async def test_emit_generative_ui_still_errors_with_no_active_run():
     # No registry entry, no ContextVar → the honest error is preserved.
-    wa._WRITE_ARTIFACT_CONTEXT["session_id"] = "ghost"
+    wa.derive_artifact_context(session_id="ghost")
     result = await wa.emit_generative_ui('{"type":"text","props":{"text":"hi"}}')
     assert result["ok"] is False
     assert "no active run stream" in result["error"]
@@ -88,7 +90,7 @@ async def test_emit_generative_ui_still_errors_with_no_active_run():
 async def test_emit_generative_ui_rejects_bad_json():
     q: asyncio.Queue = asyncio.Queue()
     ex._register_run_queue("s", q)
-    wa._WRITE_ARTIFACT_CONTEXT["session_id"] = "s"
+    wa.derive_artifact_context(session_id="s")
     result = await wa.emit_generative_ui("{not json")
     assert result["ok"] is False
     assert "valid JSON" in result["error"]

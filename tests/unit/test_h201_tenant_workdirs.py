@@ -137,15 +137,16 @@ def _run_write(disk: _Disk, org: str, sid: str, rel: str, body: str) -> tuple[di
     way the executor sets it up: the workspace from ``_resolve_run_workspace``
     and the run's tenant bound."""
     from acb_common.db import bind_tenant, release_tenant
-    from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT, write_artifact
+    from acb_skills.write_artifact import bind_artifact_context, write_artifact
     from orchestrator.executor import _resolve_run_workspace
 
     ws, key = _resolve_run_workspace(disk.shared, _cfg(None), organization_id=org)
 
     async def _go() -> dict:
         token = bind_tenant(org)
-        saved = dict(_WRITE_ARTIFACT_CONTEXT)
-        _WRITE_ARTIFACT_CONTEXT.update(
+        # asyncio.run gives this coroutine its own context, so the bind ends
+        # with it (H-201, §21.16).
+        bind_artifact_context(
             session_id=sid, agent_name=_S, run_id=f"r-{uuid.uuid4().hex[:6]}",
             workspace_root=ws, instance=key,
             gateway_url="http://127.0.0.1:9", gateway_token="x",
@@ -156,8 +157,6 @@ def _run_write(disk: _Disk, org: str, sid: str, rel: str, body: str) -> tuple[di
             await asyncio.gather(*rest, return_exceptions=True)
             return out
         finally:
-            _WRITE_ARTIFACT_CONTEXT.clear()
-            _WRITE_ARTIFACT_CONTEXT.update(saved)
             release_tenant(token)
 
     return asyncio.run(_go()), ws, key
@@ -336,9 +335,9 @@ def wiring(disk, monkeypatch):
         seen["git"].append(str(agent_dir))
 
     async def _run_maf(*_a, **_k):
-        from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+        from acb_skills.write_artifact import artifact_context
 
-        seen["context"] = dict(_WRITE_ARTIFACT_CONTEXT)
+        seen["context"] = dict(artifact_context())
         seen.setdefault("run_org", []).append(dict(executor._RUN_ORG))
         return {"answer": "ok"}
 
@@ -377,11 +376,23 @@ def test_a_batch_run_is_given_its_tenant_dir(disk, wiring) -> None:
     assert disk.snapshot() == before
 
 
-def test_a_stream_run_is_given_its_tenant_dir(disk, wiring) -> None:
+def test_a_stream_run_is_given_its_tenant_dir(disk, wiring, monkeypatch) -> None:
     """The stream path resolves the workspace, sets the context and restores
-    the store BEFORE it runs an agent. With no agent the run then ends."""
-    from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+    the store BEFORE it runs an agent. With no agent the run then ends.
+
+    The context is the run's own ContextVar value, and it ends with the run
+    (H-201, §21.16). So the test reads it DURING the run, at the skill-body
+    step that comes right after the bind."""
+    from acb_skills.write_artifact import artifact_context
     from orchestrator import executor
+
+    def _capture(*_a, **_k):
+        from acb_common import get_run_context
+
+        wiring["context"] = dict(artifact_context())
+        wiring["instance"] = (get_run_context() or {}).get("instance")
+
+    monkeypatch.setattr(executor, "materialize_skill_bodies_for_agent", _capture)
 
     async def _drain() -> None:
         async for _line in executor.run_agent_stream(
@@ -392,9 +403,10 @@ def test_a_stream_run_is_given_its_tenant_dir(disk, wiring) -> None:
 
     before = disk.snapshot()
     asyncio.run(_drain())
-    wiring["context"] = dict(_WRITE_ARTIFACT_CONTEXT)
     # The stream path runs the git helpers only once an agent runs.
     _expect_tenant_run(wiring, disk, "org-s", git=False)
+    # H-201 (§21.16): the logs of a shared run show the partition it works in.
+    assert wiring["instance"] == "o:org-s"
     assert disk.snapshot() == before
 
 

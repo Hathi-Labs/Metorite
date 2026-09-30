@@ -16,13 +16,15 @@ import time
 
 import acb_skills.code_tools as ct
 import pytest
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import (
+    derive_artifact_context,
+)
 
 
 @pytest.fixture()
 def ws(monkeypatch, tmp_path):
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "workspace_root", str(tmp_path))
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "session_id", "sess-test")
+    derive_artifact_context(workspace_root=str(tmp_path))
+    derive_artifact_context(session_id="sess-test")
     (tmp_path / "agent-data" / "scripts").mkdir(parents=True)
     (tmp_path / "outputs").mkdir()
     return tmp_path
@@ -43,7 +45,7 @@ def mirrored(monkeypatch):
 # ── run_script: fail-closed edges ───────────────────────────────────────────
 
 def test_run_script_without_workspace(monkeypatch):
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "workspace_root", None)
+    derive_artifact_context(workspace_root=None)
     out = asyncio.run(ct.run_script("agent-data/scripts/x.py"))
     assert "no active workspace" in out
 
@@ -208,7 +210,7 @@ def test_sweep_does_not_follow_symlinked_dir_out_of_workspace(ws, mirrored, tmp_
 # ── code_task: skill-layer behaviour around the engine ──────────────────────
 
 def test_code_task_without_workspace(monkeypatch):
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "workspace_root", None)
+    derive_artifact_context(workspace_root=None)
     out = asyncio.run(ct.code_task("build a report script"))
     assert "no active workspace" in out
 
@@ -259,7 +261,7 @@ def test_code_task_failure_still_sweeps(ws, mirrored, monkeypatch):
 def test_script_env_grants_declared_integration_vars(ws, monkeypatch):
     """A script gets exactly its agent's DECLARED integrations' env vars —
     the undeclared ones stay scrubbed even though they match registry names."""
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    derive_artifact_context(integrations=["zoho-crm"])
     monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_declared")
     monkeypatch.setenv("ZOHO_CLIENT_SECRET", "ws1")
     monkeypatch.setenv("APOLLO_API_KEY", "sk_undeclared")  # not declared
@@ -272,13 +274,13 @@ def test_script_env_grants_declared_integration_vars(ws, monkeypatch):
 
 
 def test_script_env_no_declared_integrations_stays_fully_scrubbed(ws, monkeypatch):
-    monkeypatch.delitem(_WRITE_ARTIFACT_CONTEXT, "integrations", raising=False)
+    derive_artifact_context(integrations=None)
     monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_x")
     assert "ZOHO_CLIENT_ID" not in ct._script_env()
 
 
 def test_run_script_subprocess_sees_declared_integration(ws, mirrored, monkeypatch):
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    derive_artifact_context(integrations=["zoho-crm"])
     monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_live_test")
     monkeypatch.setenv("SERPAPI_API_KEY", "sk_not_declared")
     p = ws / "agent-data" / "scripts" / "integ.py"
@@ -311,11 +313,8 @@ def test_env_var_names_helper():
 
 def test_list_integrations_reports_names_never_values(monkeypatch):
     from acb_skills.integration_tools import list_integrations
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
-    monkeypatch.setitem(
-        _WRITE_ARTIFACT_CONTEXT, "integration_warnings",
-        {"apollo": "apollo: APOLLO_API_KEY is required."},
-    )
+    derive_artifact_context(integrations=["zoho-crm"])
+    derive_artifact_context(integration_warnings={"apollo": "apollo: APOLLO_API_KEY is required."})
     monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_secret_value")
     out = asyncio.run(list_integrations())
     assert "zoho-crm" in out and "ZOHO_CLIENT_ID" in out
@@ -325,10 +324,8 @@ def test_list_integrations_reports_names_never_values(monkeypatch):
 
 def test_list_integrations_none_declared(monkeypatch):
     from acb_skills.integration_tools import list_integrations
-    monkeypatch.delitem(_WRITE_ARTIFACT_CONTEXT, "integrations", raising=False)
-    monkeypatch.delitem(
-        _WRITE_ARTIFACT_CONTEXT, "integration_warnings", raising=False,
-    )
+    derive_artifact_context(integrations=None)
+    derive_artifact_context(integration_warnings=None)
     out = asyncio.run(list_integrations())
     assert "No integrations are declared" in out
 
@@ -338,7 +335,7 @@ def test_code_task_session_prompt_names_integration_env_vars(ws, mirrored, monke
     prompt never carries credential values."""
     import orchestrator.code_session as cs
 
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    derive_artifact_context(integrations=["zoho-crm"])
     monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_secret_value")
     seen: dict[str, str] = {}
 

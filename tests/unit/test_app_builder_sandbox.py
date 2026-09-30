@@ -13,7 +13,10 @@ from __future__ import annotations
 import types
 
 import pytest
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import (
+    artifact_context,
+    derive_artifact_context,
+)
 from orchestrator import copilot_sandbox
 from orchestrator.copilot_sandbox import CopilotSandboxHandle
 from orchestrator.executor import _maybe_sandbox_session_workspace
@@ -33,9 +36,9 @@ def _settings(**overrides) -> types.SimpleNamespace:
 
 @pytest.fixture(autouse=True)
 def _reset():
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(permission_check_root=None)
     yield
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(permission_check_root=None)
 
 
 @pytest.fixture
@@ -125,7 +128,7 @@ async def test_scope_on_and_spawn_succeeds_redirects_workspace_and_mounts(monkey
 
     assert agent._sandbox_cli_url == "127.0.0.1:9999"
     assert agent._default_options["working_directory"] == copilot_sandbox.CONTAINER_WORKSPACE
-    assert _WRITE_ARTIFACT_CONTEXT["permission_check_root"] == copilot_sandbox.CONTAINER_WORKSPACE
+    assert artifact_context()["permission_check_root"] == copilot_sandbox.CONTAINER_WORKSPACE
 
 
 @pytest.mark.asyncio
@@ -144,7 +147,7 @@ async def test_scope_on_but_spawn_fails_falls_back_in_process(monkeypatch, _fake
 
     assert agent._sandbox_cli_url is None
     assert agent._default_options["working_directory"] == "/host/custom_apps/my-app"
-    assert "permission_check_root" not in _WRITE_ARTIFACT_CONTEXT
+    assert "permission_check_root" not in artifact_context()
 
 
 @pytest.mark.asyncio

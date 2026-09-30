@@ -46,32 +46,30 @@ os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
 
 @pytest.fixture(autouse=True)
 def _isolate_write_artifact_context():
-    """Snapshot and restore ``_WRITE_ARTIFACT_CONTEXT`` around every test.
+    """Start every test with NO run artifact context, and restore it after.
 
-    That dict is process-global state the executor populates per agent run
-    (``session_id``, ``workspace_root``, ``integrations``) and that a dozen
-    modules read — notably ``executor.resolve_run_queue``, which keys on
-    ``session_id``. A test that populates it and does not restore it therefore
-    leaks a live session into every test that runs afterwards, and the next test
-    to touch that path blocks on a gateway call that never returns.
-
-    The failure is order-dependent, so it stayed invisible: the tests that
-    populate the global (test_write_artifact, test_share_artifact) happen to sort
-    near the end of the run. Add one test file that sorts earlier and touches
-    write_artifact and the whole suite hangs with no useful output. Rather than
-    depend on filenames, isolate the global here so no test can leak it.
+    The run's artifact context (``acb_skills.write_artifact.artifact_context``)
+    is a ContextVar since H-201 (§21.16). A synchronous test that binds it
+    binds it on the main thread's context, which every later test shares. A
+    test that bound a session and left it would leak that session into every
+    test after it, and the next test on that path would block on a gateway
+    call that never returns. The failure is order-dependent, so it would stay
+    invisible. The token below gives each test a clean start and removes
+    whatever it bound.
     """
     try:
-        from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+        from acb_skills.write_artifact import (
+            _RUN_ARTIFACT_CONTEXT,
+            reset_artifact_context,
+        )
     except ImportError:  # acb_skills unavailable — nothing to isolate
         yield
         return
-    snapshot = dict(_WRITE_ARTIFACT_CONTEXT)
+    token = _RUN_ARTIFACT_CONTEXT.set(None)
     try:
         yield
     finally:
-        _WRITE_ARTIFACT_CONTEXT.clear()
-        _WRITE_ARTIFACT_CONTEXT.update(snapshot)
+        reset_artifact_context(token)
 
 
 # ── R8: say out loud when the database-gated suites did not run ─────────────

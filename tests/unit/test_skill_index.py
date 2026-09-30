@@ -21,9 +21,8 @@ directly, no live DB, env flipped per test with ``monkeypatch``.
 """
 from __future__ import annotations
 
-import pytest
-
 import orchestrator._tool_injection as ti
+import pytest
 from acb_skills import addendum as ad
 from acb_skills import skill_families as sf
 from acb_skills import skill_index as sx
@@ -256,17 +255,20 @@ def test_the_read_path_is_a_core_floor_tool_and_round_trips(tmp_path) -> None:
     import asyncio
 
     from acb_skills.note_tools import recall_notes
-    from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+    from acb_skills.write_artifact import (
+        artifact_context,
+        derive_artifact_context,
+    )
 
     assert "recall_notes" in ti._CORE_STANDARD_TOOL_NAMES
 
     sx.materialize_skill_bodies(tmp_path, force=True, registry_block="R")
-    prev = _WRITE_ARTIFACT_CONTEXT.get("workspace_root", "")
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = str(tmp_path)
+    prev = artifact_context().get("workspace_root", "")
+    derive_artifact_context(workspace_root=str(tmp_path))
     try:
         got = asyncio.run(recall_notes(sx.body_read_argument("memory")))
     finally:
-        _WRITE_ARTIFACT_CONTEXT["workspace_root"] = prev
+        derive_artifact_context(workspace_root=prev)
     assert got == sx.family_bodies(registry_block="R")["memory"]
     assert "recall_agent" in got  # it really is the memory guidance
 

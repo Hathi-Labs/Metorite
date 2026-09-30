@@ -24,7 +24,7 @@ wa = importlib.import_module("acb_skills.write_artifact")
 def queue(monkeypatch) -> asyncio.Queue:
     q: asyncio.Queue = asyncio.Queue()
     monkeypatch.setattr(executor, "resolve_run_queue", lambda _sid=None: q)
-    monkeypatch.setitem(wa._WRITE_ARTIFACT_CONTEXT, "session_id", "t-genui")
+    wa.derive_artifact_context(session_id="t-genui")
     return q
 
 
@@ -97,7 +97,7 @@ def test_hitl_flag_never_reaches_the_frontend(queue: asyncio.Queue):
 
 def test_no_active_run_cleans_up_pending_registry(monkeypatch):
     monkeypatch.setattr(executor, "resolve_run_queue", lambda _sid=None: None)
-    monkeypatch.setitem(wa._WRITE_ARTIFACT_CONTEXT, "session_id", "t-genui")
+    wa.derive_artifact_context(session_id="t-genui")
     before = set(executor._pending_user_input)
 
     async def _run() -> dict[str, Any]:
