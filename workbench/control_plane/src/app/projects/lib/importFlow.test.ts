@@ -128,9 +128,9 @@ const run = (over: Partial<ImportRun> = {}): ImportRun =>
   }) as ImportRun;
 
 describe("the mapping the admin's edits make", () => {
-  it("keeps the server's proposals where the admin changed nothing", () => {
+  it("saves no row the admin left on the proposal, so a later import proposes again (I-9)", () => {
     const m = mappingFrom(run(), {}, {}, { kind: "new_space", name: null });
-    expect(m.people).toEqual({ "name:ann": "ann@x.test", "name:bo": null });
+    expect(m.people).toEqual({});
     expect(m.statuses["Closed"]).toEqual({ category: "done", name: null });
   });
   it("takes an edit, including a deliberate unassign", () => {
@@ -216,6 +216,11 @@ describe("I-8: the tree, status names, columns and sharing", () => {
 });
 
 describe("people with no member", () => {
+  it("keeps an inherited choice that differs from the proposal", () => {
+    const planned = run();
+    planned.plan.people = planned.plan.people.map((p) => (p.ref === "name:ann" ? { ...p, member: null } : p));
+    expect(mappingFrom(planned, {}, {}, { kind: "new_space", name: null }).people).toEqual({ "name:ann": null });
+  });
   it("says how many wait, and how the gap closes", () => {
     const note = unmatchedPeopleNote(run().plan.people, {});
     expect(note).toMatch(/^1 of 2 people have no member here, so 1 assignment waits\./);

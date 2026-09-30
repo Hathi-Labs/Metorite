@@ -326,6 +326,49 @@ def test_the_fill_never_overwrites_a_members_edit() -> None:
     assert m.changes == {}
 
 
+def test_the_footer_never_moves_without_the_assignees() -> None:
+    """The I-9 review: a member assigned Omar by hand, so the assignees do not
+    fill. The footer must keep Priya's name, or nothing on screen says she
+    was assigned in ClickUp."""
+    written = snapshot(_state(assignees=[], description="Assigned in ClickUp to: Priya"))
+    m = merge_fields(
+        _state(assignees=["omar@x.test"], description="Assigned in ClickUp to: Priya"),
+        written,
+        _state(assignees=["priya@x.test"], description=None),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+    assert m.new_snapshot["description"] == "Assigned in ClickUp to: Priya"
+
+
+def test_frozen_assignees_keep_the_footer_too() -> None:
+    written = snapshot(_state(assignees=[], description="Assigned in ClickUp to: Priya"))
+    m = merge_fields(
+        _state(assignees=[], description="Assigned in ClickUp to: Priya"),
+        written,
+        _state(assignees=["priya@x.test"], description=None),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+        frozen=("assignees",),
+    )
+    assert m.changes == {}
+
+
+def test_taking_a_person_off_never_adds_them_to_the_footer() -> None:
+    """The I-9 review's P2: Ann stays assigned (4c.3), so the footer must not
+    start to say she is not."""
+    written = snapshot(_state(assignees=["ann@x.test"], description=None))
+    m = merge_fields(
+        _state(assignees=["ann@x.test"], description=None),
+        written,
+        _state(assignees=[], description="Assigned in ClickUp to: Ann"),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+
+
 def test_the_fill_only_adds_people() -> None:
     """A mapping that swaps one member for another is not a gap."""
     written = snapshot(_state(assignees=["ann@x.test"]))

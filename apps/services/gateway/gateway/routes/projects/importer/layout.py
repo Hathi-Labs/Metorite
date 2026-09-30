@@ -369,6 +369,7 @@ def merge_fields(
     changes: dict[str, Any] = {}
     conflicts: list[str] = []
     kept: dict[str, Any] = {}
+    footer_fill: Any = _NOTHING
     for field in UPDATABLE:
         cur, new = now_cur[field], now_new[field]
         wrote = (
@@ -385,6 +386,12 @@ def merge_fields(
             and src_new[field] == last_source[field]
         )
         if source_unchanged:
+            if field == "description":
+                # Decided after the loop: it follows the assignee fill.
+                if known and cur == wrote and new != wrote:
+                    footer_fill = incoming.get(field)
+                kept[field] = wrote if known else cur
+                continue
             if known and cur == wrote and new != wrote and _fills_a_gap(field, wrote, new):
                 # The source is the same, but the mapping now resolves what it
                 # could not before: a person added to People after the first
@@ -406,6 +413,12 @@ def merge_fields(
         else:
             conflicts.append(field)
             kept[field] = wrote if known else cur
+    # The "Assigned in ClickUp to" line changes ONLY with the assignees it
+    # describes. Rewritten alone, it would drop a name the task never gained,
+    # or add one who is still assigned (the I-9 review).
+    if "assignees" in changes and footer_fill is not _NOTHING:
+        changes["description"] = footer_fill
+        kept.pop("description", None)
     new_snapshot = {field: kept.get(field, now_new[field]) for field in UPDATABLE}
     new_source = dict(src_new) if src_new is not None else dict(last_source or {})
     for field in frozen:
@@ -421,22 +434,22 @@ def merge_fields(
     )
 
 
+#: "No description fill is pending" — distinct from a fill to ``None``.
+_NOTHING = object()
+
+
 def _fills_a_gap(field: str, wrote: Any, new: Any) -> bool:
     """May a mapping change alone rewrite this field, when no member edited it?
 
-    * **assignees** — only by ADDING people. The first run left a task
-      unassigned because its ClickUp person had no member. Once that person
-      is in People, the next run of the same export assigns the task. A
-      mapping that would take somebody OFF moves nothing, as before.
-    * **description** — its "Assigned in ClickUp to" line lists the people
-      with no member, so it changes with the same fill. A member's own edit
-      to the description is never overwritten: the caller checks that the
-      field still holds what the import last wrote.
+    Only **assignees**, and only by ADDING people. The first run left a task
+    unassigned because its ClickUp person had no member. Once that person is
+    in People, the next run of the same export assigns the task. A mapping
+    that would take somebody OFF moves nothing, as before (4c.3).
 
-    Every other field keeps the rule that a mapping change moves nothing."""
-    if field == "assignees":
-        return set(wrote or []) <= set(new or [])
-    return field == "description"
+    The description's "Assigned in ClickUp to" line follows this fill in
+    `merge_fields`, and never moves by itself. Every other field keeps the
+    rule that a mapping change moves nothing."""
+    return field == "assignees" and set(wrote or []) <= set(new or [])
 
 
 def comment_key(comment: Comment) -> str:

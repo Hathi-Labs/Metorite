@@ -163,7 +163,7 @@ GROUP_EXISTS_SQL = (
 #: an update would start from the proposals, and a person the admin mapped by
 #: hand last time would read as "unmapped".
 INHERIT_MAPPING_SQL = (
-    "SELECT id, mapping FROM pm_import_runs "
+    "SELECT id, mapping, plan FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) AND source = :source "
     "   AND state IN ('done', 'failed', 'applying') AND id::text = ANY(:runs) "
     " ORDER BY created_at DESC LIMIT 1"
@@ -625,9 +625,32 @@ async def _inherited_mapping(
     if row is None:
         return ImportMapping(), None
     try:
-        return ImportMapping.model_validate(_json(row.mapping) or {}), str(row.id)
+        mapping = ImportMapping.model_validate(_json(row.mapping) or {})
     except ValueError:
         return ImportMapping(), None
+    mapping.people = chosen_people(mapping.people, _json(row.plan) or {})
+    return mapping, str(row.id)
+
+
+def chosen_people(people: dict[str, str | None], earlier_plan: dict) -> dict[str, str | None]:
+    """The earlier run's people mapping, less the "unassigned" it held only
+    because it had nobody to propose (I-9).
+
+    The wizard saves every row, so a person with no member was stored as
+    ``None`` whether the admin chose it or not. Inherited as-is, that ``None``
+    would beat the proposal for someone added to People since, and the
+    re-import would never assign their tasks. A ``None`` stays only where the
+    earlier plan DID propose a member: that one was the admin's choice."""
+    proposed = {
+        str(p.get("ref")): p.get("proposed")
+        for p in (earlier_plan.get("people") or [])
+        if isinstance(p, dict)
+    }
+    return {
+        ref: member
+        for ref, member in people.items()
+        if member is not None or proposed.get(ref) is not None
+    }
 
 
 # ── the four reads the plan needs ───────────────────────────────────────────

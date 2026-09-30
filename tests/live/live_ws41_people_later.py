@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import live_ws41_writer as harness
-from gateway.routes.projects import import_writer
+from gateway.routes.projects import import_writer, imports
 from gateway.routes.projects.importer import clickup
 from gateway.routes.projects.importer.plan import ImportMapping, Target
 from sqlalchemy import text
@@ -79,7 +79,12 @@ async def main() -> None:
     bundle = clickup.parse([("people.csv", RAW)])
     org = await harness.seed("people", [harness.ADMIN])
     try:
-        mapping = ImportMapping(target=Target(kind="new_space", name=f"People {TAG}"))
+        # Saved the way the wizard saved it before the fix: "unassigned" for
+        # every person with no member, chosen or not (the I-9 review's P0).
+        mapping = ImportMapping(
+            target=Target(kind="new_space", name=f"People {TAG}"),
+            people={p.ref: None for p in bundle.people},
+        )
         run_id, lease = await harness.new_run(org, harness.ADMIN, bundle, RAW, mapping)
         await import_writer.apply_run(org, run_id, lease)
         harness.check(
@@ -113,7 +118,17 @@ async def main() -> None:
 
         # The team joins People. The same export is uploaded again.
         await add_person(org, "Priya Rao", MEMBER)
-        again, lease = await harness.new_run(org, harness.ADMIN, bundle, RAW, mapping)
+        # The re-upload's mapping comes from the upload route's OWN inheritance.
+        async with harness.tenant_session(org) as db:
+            inherited, _ = await imports._inherited_mapping(db, org, bundle)
+            directory = (await imports._facts(db, bundle, inherited, None, org))["directory"]
+        inherited.people = imports.usable_people(inherited.people, directory)
+        harness.check(
+            "the inherited mapping no longer pins Priya",
+            inherited.people == {},
+            str(inherited.people),
+        )
+        again, lease = await harness.new_run(org, harness.ADMIN, bundle, RAW, inherited)
         await import_writer.apply_run(org, again, lease)
         got = await assignees(org, "p1")
         harness.check("the next run assigns the task to the new member", got == [MEMBER], str(got))
@@ -130,6 +145,19 @@ async def main() -> None:
         )
         got2 = await assignees(org, "p2")
         harness.check("a member's own assignment is kept", OTHER in got2, str(got2))
+        text_p2 = str(
+            await harness.one(
+                org,
+                "SELECT description FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+                " AND origin->>'external_id' = :ref",
+                ref=f"p2{TAG}",
+            )
+        )
+        harness.check(
+            "that task keeps Priya's ClickUp name, since she was not added",
+            "Assigned in ClickUp to: Priya Rao" in text_p2,
+            text_p2,
+        )
         spaces = await harness.one(
             org,
             "SELECT count(*) FROM pm_projects WHERE organization_id = CAST(:org AS uuid) "
