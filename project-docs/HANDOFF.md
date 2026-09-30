@@ -3510,17 +3510,26 @@ line — never reclaim a number by deleting the other entry.
   and an agent with no clone answer 404, and the list leaves them out. The
   blob write-through and the fault-in take `user.organization_id`.
   `tests/unit/test_h201_artifact_routes.py` is the fence. Do not do it again.
-- **Still open from part 2.** Each one reads the shared clone of a shared
-  agent by another path.
-  - `/agent/workspace/{session_id}` reads the clone for a session of a
-    shared agent. The room check limits it to a session the caller may
-    read, but the clone holds the output of other orgs.
-  - `POST /email/send` copies from `_agent_workspace_dir(req.source_agent,
-    ...)`. The request names the agent, and a shared agent gives the clone.
+- **Done in part 2, P0-B.** The email attach and `POST
+  /email/artifacts/import` read only the sender's own workspace, through
+  `_safe_resolve`, and refuse `_is_blocked_path`. The fence is
+  `tests/unit/test_h201_email_artifact_sources.py`.
+- **Still open from part 2.**
+  - **P0-A, live.** `/agent/workspace/{session_id}` reads the clone for a
+    session of a shared agent. A member of org B can open a session with
+    `projects-assistant` and then read, write, delete, upload and promote
+    in the clone. Held: the Projects AI chat serves its `write_artifact`
+    documents from `repos/projects-assistant/outputs/` through that route
+    (§14). A fix needs a decision on where those documents live.
   - The run side writes and rehydrates a shared agent in one clone. A
     tenant partition on disk needs the executor, the loader and
     `rehydrate_workspace`.
-  - The `u:<email>` key has no tenant. One email in two orgs has one folder.
+  - The `u:<email>` key has no tenant. `app_user.email` is unique across
+    orgs, so the case is purge, then rejoin. The old folder stays on disk.
+  - P2. A link planted at `<state dir>/<category>` moves an artifact
+    upload out of the folder. The upload does not resolve `upload_dir`.
+  - P2. On a box where `email-assistant` never ran, the artifact list is
+    empty and the upload answers 404 until the first run.
 - **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** Part 1
   bound the workspace read and PATCH, `query_history`, and the
   `pending_commit` and `audit_event` routes in `routes/agent.py`. It also

@@ -3830,23 +3830,67 @@ the phase 4 catalog, as the NOBYPASSRLS app role.
 | the tenant dropped from the write-through | 2 |
 | the tenant dropped from the fault-in | 1 |
 
+**P0-B, the email attach and import.** The review found two more readers
+of the shared clone. `load_artifact_attachments` (the send and draft paths)
+and `POST /email/artifacts/import` took `agent` and `path` from the
+request. They resolved a shared agent to its clone and checked containment
+with `startswith`.
+
+So a member could mail out, or copy into their own folder, the run output
+of another org. The same was true of a `.env`, a
+`.git/config` and a file in a sibling folder with the same name prefix. The
+import needs no mail account.
+
+1. Both resolve the source only through `_member_agent_workspace`. The
+   import also resolves its target, the caller's email-assistant folder,
+   the same way.
+2. Both put the path through `_safe_resolve`. Both refuse a path when
+   `_is_blocked_path` is true.
+3. The attach skips a refused ref, and a warning names it. The import
+   answers 404.
+4. The `list_artifacts` docstring of the email-assistant stops telling the
+   model to attach from another agent.
+
+`tests/unit/test_h201_email_artifact_sources.py` is the fence. It reads
+the disk only, so no database is involved.
+
+| Mutation | Tests that fail |
+|---|---|
+| both fixes reverted to main | 6 |
+| the attach source back to `_agent_workspace_dir` | 1 |
+| `_is_blocked_path` removed from the attach | 1 |
+| `_safe_resolve` back to `startswith` in the attach | 1 |
+| the import source back to `_agent_workspace_dir` | 1 |
+| `_is_blocked_path` removed from the import | 1 |
+| `_safe_resolve` back to `startswith` in the import | 1 |
+
+**P0-A is held, not built.** `/agent/workspace/{session_id}` still reads
+the clone of a shared agent. A live flow needs that root. The Projects AI
+chat runs `projects-assistant`, which is shared. Its `write_artifact`
+writes documents into `repos/projects-assistant/outputs/`, and the chat
+serves them through `GET /agent/workspace/{sid}/file` (§14, S8).
+
+To remove the `repos/` read root breaks Open, Download and Download PDF in
+that chat. The decision goes back to the coordinator.
+
 **What this part does not do.** H-201 in `HANDOFF.md` lists each item.
 
-- `/agent/workspace/{session_id}` still reads a shared agent's clone. The
-  room check of fix round 1 limits it to a session that the caller may
-  read. The clone still holds the output of other orgs.
-- `POST /email/send` takes `source_agent` from the request, and it copies
-  from `_agent_workspace_dir(source_agent, ...)`. For a shared agent, that
-  is the shared clone.
+- P0-A, above.
 - The run side writes and rehydrates a shared agent in one clone.
-- The `u:<email>` key has no tenant. A person with one email in two orgs
-  has one folder.
+- The `u:<email>` key has no tenant. `app_user.email` is unique across
+  orgs, so the case is a purge and then a rejoin in another org. The old
+  folder is still on disk.
+- A link planted at `<state dir>/<category>` moves an upload out of the
+  folder, because the upload does not resolve `upload_dir`.
+- On a box where `email-assistant` never ran, no clone exists. The list is
+  empty and the upload answers 404 until the first run.
 
 **Verification.**
 
 ```bash
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_h201_artifact_routes.py \
+  tests/unit/test_h201_email_artifact_sources.py \
   tests/unit/test_h201_readers_under_rls.py \
   tests/unit/test_chat_write_under_rls.py -q -rs
 ```
