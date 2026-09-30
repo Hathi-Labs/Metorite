@@ -17,6 +17,7 @@ server runs ``require_template_subject`` and the §7.1 check of
 ⚠️ The real-database half SKIPS without ``TENANT_LADDER_DATABASE_URL``, and
 a skip is not a pass.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,8 +65,9 @@ def _catalogue() -> dict[str, Any]:
     return {"templates": json.loads(json.dumps(list(rep.TEMPLATES.values())))}
 
 
-def _subjects(teams: list[dict[str, str]] | None = None,
-              people: list[dict[str, str | None]] | None = None) -> dict[str, Any]:
+def _subjects(
+    teams: list[dict[str, str]] | None = None, people: list[dict[str, str | None]] | None = None
+) -> dict[str, Any]:
     return {
         "everyone": False,
         "me": _ME,
@@ -167,7 +169,9 @@ async def test_a_person_and_a_team_with_one_name_are_listed(monkeypatch) -> None
     _drawn(monkeypatch)
     people = [{"email": _ME, "name": "Pat"}, {"email": "d@x.io", "name": "Design"}]
     calls = fake_gateway(
-        monkeypatch, _responder(_subjects(people=people)), user=_ME,
+        monkeypatch,
+        _responder(_subjects(people=people)),
+        user=_ME,
     )
     out = await skill_projects.render_report(template="team pulse", subject="design")
     assert _previews(calls) == []
@@ -192,11 +196,13 @@ async def test_a_name_that_matches_nothing_goes_to_the_server(monkeypatch) -> No
     calls = fake_gateway(monkeypatch, _responder(_subjects()), user=_ME)
     await skill_projects.render_report(template="team pulse", subject="Hardware Ops")
     assert _previews(calls)[0]["json"]["config"]["subject"] == {
-        "kind": "team", "slug": "hardware-ops",
+        "kind": "team",
+        "slug": "hardware-ops",
     }
     await skill_projects.render_report(template="1:1 prep", subject="N@X.io")
     assert _previews(calls)[1]["json"]["config"]["subject"] == {
-        "kind": "person", "email": "n@x.io",
+        "kind": "person",
+        "email": "n@x.io",
     }
 
 
@@ -205,7 +211,8 @@ async def test_my_day_takes_the_reader_with_no_subject(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, _responder(_subjects()), user=_ME)
     await skill_projects.render_report(template="my day")
     assert _previews(calls)[0]["json"]["config"]["subject"] == {
-        "kind": "person", "email": _ME,
+        "kind": "person",
+        "email": _ME,
     }
 
 
@@ -331,9 +338,12 @@ def test_the_chat_renders_t1_for_a_team_by_name(seeded, wired, monkeypatch) -> N
     specs = _drawn(monkeypatch)
     calls = _through_routes(monkeypatch)
     monkeypatch.setattr(client, "current_user_email", lambda: seeded["who"]["lead"])
-    out = asyncio.run(skill_projects.render_report(
-        template="Team Pulse", subject=seeded["team_a"].upper(),
-    ))
+    out = asyncio.run(
+        skill_projects.render_report(
+            template="Team Pulse",
+            subject=seeded["team_a"].upper(),
+        )
+    )
     assert [c["path"] for c in calls][-1] == "/projects/reports/preview"
     assert "Report «Team pulse" in out
     card = specs[0]["props"]["data"]
@@ -343,7 +353,9 @@ def test_the_chat_renders_t1_for_a_team_by_name(seeded, wired, monkeypatch) -> N
 
 @_needs_db
 def test_a_member_who_names_a_team_they_do_not_lead_gets_the_403_reason(
-    seeded, wired, monkeypatch,  # noqa: F811
+    seeded,
+    wired,
+    monkeypatch,  # noqa: F811
 ) -> None:
     """Done when 2. The member ``m`` of team A names team B. The server's
     §7.1 reason reaches the member, and nothing is drawn."""
@@ -351,9 +363,12 @@ def test_a_member_who_names_a_team_they_do_not_lead_gets_the_403_reason(
     calls = _through_routes(monkeypatch)
     monkeypatch.setattr(client, "current_user_email", lambda: seeded["who"]["m"])
     with pytest.raises(client.GatewayRefusal) as err:
-        asyncio.run(skill_projects.render_report(
-            template="team pulse", subject=seeded["team_b"],
-        ))
+        asyncio.run(
+            skill_projects.render_report(
+                template="team pulse",
+                subject=seeded["team_b"],
+            )
+        )
     said = str(err.value)
     assert "Not permitted." in said
     assert f"A report on the team {seeded['team_b']} needs" in said
