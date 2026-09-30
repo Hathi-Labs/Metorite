@@ -10,6 +10,7 @@
  * the writer.
  */
 
+import type { SelectOption } from "@/components/ui/SelectButton";
 import type { Access } from "@/lib/access";
 import { hasCapability } from "@/lib/access";
 
@@ -99,6 +100,32 @@ export interface PlanLoss {
   why: string;
 }
 
+/** One source Space, Folder or List, with the admin's choice (I-8). */
+export interface PlanTreeNode {
+  ref: string;
+  kind: "space" | "folder" | "project";
+  name: string;
+  parent_ref: string | null;
+  tasks: number;
+  becomes?: string;
+  skip?: boolean;
+  skipped?: boolean;
+}
+
+/** A column the importer does not read, and what the file holds in it (I-8). */
+export interface PlanColumn {
+  name: string;
+  tasks: number;
+  samples: string[];
+  choice: ColumnChoice;
+}
+
+export type ColumnChoice = "skip" | "description";
+export interface ContainerChoice {
+  name?: string | null;
+  skip?: boolean;
+}
+
 export interface ImportPlan {
   summary: {
     tasks: number;
@@ -121,6 +148,10 @@ export interface ImportPlan {
   to_update: number;
   existing_comments_checked?: number;
   to_write: { tasks: number; comments: number };
+  /** I-8. Absent on a run planned before I-8. */
+  tree?: PlanTreeNode[];
+  columns?: PlanColumn[];
+  skipped_by_choice?: { containers: number; tasks: number };
   target: { kind: "new_space" | "existing"; name: string | null; project_id: string | null };
   grant: string;
   errors: string[];
@@ -135,6 +166,8 @@ export interface ImportMapping {
   statuses: Record<string, { category: Stage; name?: string | null }>;
   target: { kind: "new_space" | "existing"; name?: string | null; project_id?: string | null };
   grant: string;
+  columns?: Record<string, ColumnChoice>;
+  containers?: Record<string, ContainerChoice>;
 }
 
 export interface ImportReport {
@@ -258,10 +291,11 @@ export function runLine(run: ImportRunSummary): { when: string; what: string; st
 
 // ── the wizard ───────────────────────────────────────────────────────────────
 
-export type Step = "upload" | "review" | "map" | "run";
+export type Step = "upload" | "review" | "tree" | "map" | "run";
 export const STEPS: readonly { id: Step; label: string }[] = [
   { id: "upload", label: "Upload" },
   { id: "review", label: "Review" },
+  { id: "tree", label: "Spaces" },
   { id: "map", label: "Map" },
   { id: "run", label: "Import" },
 ];
@@ -297,23 +331,163 @@ export function keepOnReopen(run: ImportRun | null, reportSeen: boolean): boolea
   return (run.state === "done" || run.state === "failed") && !reportSeen;
 }
 
+/** The I-8 choices the wizard holds beside people and stages. */
+export interface WizardChoices {
+  grant?: string;
+  /** Source status name → the name it takes in Metorite. */
+  statusNames?: Record<string, string>;
+  containers?: Record<string, ContainerChoice>;
+  columns?: Record<string, ColumnChoice>;
+}
+
 /** The mapping the admin's edits make, starting from what the plan shows. */
 export function mappingFrom(
   run: ImportRun,
   people: Record<string, string | null>,
   stages: Record<string, Stage>,
   target: ImportMapping["target"],
+  choices: WizardChoices = {},
 ): ImportMapping {
   const statuses: ImportMapping["statuses"] = {};
   for (const status of run.plan.statuses) {
     const category = stages[status.name] ?? status.category;
-    statuses[status.name] = { category, name: status.becomes !== status.name ? status.becomes : null };
+    const typed = choices.statusNames?.[status.name];
+    const becomes = typed !== undefined ? cleanName(typed) || status.name : status.becomes;
+    statuses[status.name] = { category, name: becomes !== status.name ? becomes : null };
   }
   const chosen: Record<string, string | null> = {};
   for (const person of run.plan.people) {
     chosen[person.ref] = person.ref in people ? people[person.ref] : person.member;
   }
-  return { people: chosen, statuses, target, grant: run.mapping?.grant || "org" };
+  // Only refs the file holds: an earlier run's choice for a List that has
+  // since gone has no control on screen to clear it (the I-8 review).
+  const inFile = new Set((run.plan.tree ?? []).map((n) => n.ref));
+  const containers: Record<string, ContainerChoice> = {};
+  for (const [ref, choice] of Object.entries(choices.containers ?? run.mapping?.containers ?? {})) {
+    const name = cleanName(choice.name ?? "") || null;
+    if (inFile.has(ref) && (choice.skip || name)) containers[ref] = { name, skip: Boolean(choice.skip) };
+  }
+  const columns: Record<string, ColumnChoice> = {};
+  for (const [col, how] of Object.entries(choices.columns ?? run.mapping?.columns ?? {})) {
+    if (how === "description") columns[col] = how;
+  }
+  return {
+    people: chosen,
+    statuses,
+    target,
+    grant: choices.grant || run.mapping?.grant || "org",
+    columns,
+    containers,
+  };
+}
+
+/** Spaces collapsed, as the gateway's validators do. */
+export function cleanName(raw: string): string {
+  return raw.split(/\s+/).filter(Boolean).join(" ");
+}
+
+// ── the tree step (I-8) ──────────────────────────────────────────────────────
+
+export interface TreeRow extends PlanTreeNode {
+  depth: number;
+  /** Left out by its own skip. */
+  skipSelf: boolean;
+  /** Left out because a space or folder above it is. */
+  skipInherited: boolean;
+  /** The name it lands with. */
+  shownName: string;
+}
+
+/**
+ * The source tree in reading order, parents first, with the admin's choices.
+ * It mirrors the gateway's `skipped_containers`, which stays the authority:
+ * the plan the server answers is what the Import button acts on.
+ */
+export function importTreeRows(tree: readonly PlanTreeNode[], choices: Record<string, ContainerChoice>): TreeRow[] {
+  const children = new Map<string | null, PlanTreeNode[]>();
+  const refs = new Set(tree.map((n) => n.ref));
+  for (const node of tree) {
+    const parent = node.parent_ref && refs.has(node.parent_ref) ? node.parent_ref : null;
+    children.set(parent, [...(children.get(parent) ?? []), node]);
+  }
+  const out: TreeRow[] = [];
+  const walk = (parent: string | null, depth: number, inherited: boolean) => {
+    for (const node of children.get(parent) ?? []) {
+      const choice = choices[node.ref];
+      const skipSelf = Boolean(choice?.skip);
+      out.push({
+        ...node,
+        depth,
+        skipSelf,
+        skipInherited: inherited,
+        shownName: cleanName(choice?.name ?? "") || node.name,
+      });
+      walk(node.ref, depth + 1, inherited || skipSelf);
+    }
+  };
+  walk(null, 0, false);
+  return out;
+}
+
+/** What the tree step's footer says: the lists and tasks that will land. */
+export function treeTotals(rows: readonly TreeRow[]): { lists: number; skippedLists: number; tasks: number } {
+  let lists = 0;
+  let skippedLists = 0;
+  let tasks = 0;
+  for (const row of rows) {
+    if (row.kind !== "project") continue;
+    if (row.skipSelf || row.skipInherited) skippedLists += 1;
+    else {
+      lists += 1;
+      tasks += row.tasks;
+    }
+  }
+  return { lists, skippedLists, tasks };
+}
+
+// ── statuses: rename and merge (I-8, §6.3) ───────────────────────────────────
+
+/**
+ * Source status name → the OTHER source names that land in the same Metorite
+ * status. Names compare without case, as the gateway merges them.
+ */
+export function statusMerges(
+  statuses: readonly PlanStatus[],
+  names: Record<string, string>,
+): Record<string, string[]> {
+  const landing = (s: PlanStatus) => (cleanName(names[s.name] ?? "") || s.becomes || s.name).toLowerCase();
+  const groups = new Map<string, string[]>();
+  for (const s of statuses) groups.set(landing(s), [...(groups.get(landing(s)) ?? []), s.name]);
+  const out: Record<string, string[]> = {};
+  for (const s of statuses) out[s.name] = (groups.get(landing(s)) ?? []).filter((n) => n !== s.name);
+  return out;
+}
+
+/**
+ * The statuses whose merge partners have another stage. The gateway refuses
+ * such a plan, so the Map step marks each one where the admin can fix it.
+ */
+export function stageClashes(
+  statuses: readonly PlanStatus[],
+  merges: Record<string, string[]>,
+  stages: Record<string, Stage>,
+): Set<string> {
+  const stageOf = new Map(statuses.map((s) => [s.name, stages[s.name] ?? s.category]));
+  const out = new Set<string>();
+  for (const s of statuses) {
+    if ((merges[s.name] ?? []).some((other) => stageOf.get(other) !== stageOf.get(s.name))) out.add(s.name);
+  }
+  return out;
+}
+
+// ── who can see a new space (§5.3) ───────────────────────────────────────────
+
+export const GRANT_ORG = "org";
+export function grantOptions(groups: readonly { slug: string; display_name?: string | null }[]): SelectOption[] {
+  return [
+    { value: GRANT_ORG, label: "Everyone in the organization" },
+    ...groups.map((g) => ({ value: `group:${g.slug}`, label: g.display_name || g.slug, hint: "Only this group" })),
+  ];
 }
 
 /**
@@ -366,7 +540,10 @@ export function matchLabel(person: PlanPerson): string {
 }
 
 /** One line per report number worth saying, in the admin's words. */
-export function reportLines(report: ImportReport | null | undefined): string[] {
+export function reportLines(
+  report: ImportReport | null | undefined,
+  skipped?: ImportPlan["skipped_by_choice"],
+): string[] {
   if (!report) return [];
   const out: string[] = [];
   const created = report.created ?? {};
@@ -394,6 +571,8 @@ export function reportLines(report: ImportReport | null | undefined): string[] {
   if (report.tags_dropped) out.push(`Dropped ${plural(report.tags_dropped, "tag")} over the tag limits.`);
   if (report.people_unassigned)
     out.push(`${plural(report.people_unassigned, "person")} had no member, so their tasks are unassigned.`);
+  // I-8: what the admin unticked is not a loss, but it is not in Metorite either.
+  if (skipped?.tasks) out.push(`Left out ${plural(skipped.tasks, "task")} in the spaces and lists you unticked.`);
   return out;
 }
 

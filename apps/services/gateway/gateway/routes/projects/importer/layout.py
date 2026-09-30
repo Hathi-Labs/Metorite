@@ -69,17 +69,22 @@ def build_nodes(bundle: ImportBundle, target: Target) -> tuple[list[NodeSpec], d
         folders: dict[str, NodeSpec] = {}
         for project in (c for c in bundle.containers if c.kind == "project"):
             parent = by_ref.get(project.parent_ref or "")
+            # The ref is built from the names in the FILE, and the shown name
+            # from the admin's renames (I-8). A re-run with another rename
+            # then reuses the same folder instead of making a second tree.
             if parent is not None and parent.kind == "folder":
                 space = by_ref.get(parent.parent_ref or "")
+                key = f"{_file_name(space)} / {_file_name(parent)}" if space else _file_name(parent)
                 label = f"{space.name} / {parent.name}" if space else parent.name
             else:
+                key = _file_name(parent) if parent is not None else "Imported"
                 label = parent.name if parent is not None else "Imported"
-            folder = folders.get(label)
+            folder = folders.get(key)
             if folder is None:
                 folder = NodeSpec(
-                    ref=f"folder:{label}", kind="folder", name=label[:200], parent_ref=root.ref
+                    ref=f"folder:{key}", kind="folder", name=label[:200], parent_ref=root.ref
                 )
-                folders[label] = folder
+                folders[key] = folder
                 nodes.append(folder)
             node = NodeSpec(
                 ref=project.ref, kind="project", name=project.name, parent_ref=folder.ref
@@ -108,6 +113,11 @@ def build_nodes(bundle: ImportBundle, target: Target) -> tuple[list[NodeSpec], d
         )
         home[project.ref] = project.ref
     return nodes, home
+
+
+def _file_name(container: Any) -> str:
+    """A container's name in the file, before any rename of the admin's."""
+    return container.source_name or container.name
 
 
 def project_statuses(
@@ -212,6 +222,13 @@ def description(task: Task, unassigned: list[str], source: str) -> str | None:
         parts.append("\n".join(lines))
     if task.attachment_names:
         parts.append(f"Attachments in {label}: " + ", ".join(task.attachment_names))
+    if task.extra_columns:
+        # I-8: the unknown columns the admin chose to keep. `plan.choose` has
+        # already dropped the ones left out, so every entry here is wanted.
+        lines = [f"**More from {label}**"] + [
+            f"- {col}: {value}" for col, value in task.extra_columns.items()
+        ]
+        parts.append("\n".join(lines))
     if unassigned:
         parts.append(f"Assigned in {label} to: " + ", ".join(unassigned))
     return "\n\n".join(parts) or None

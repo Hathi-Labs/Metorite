@@ -79,6 +79,7 @@ from gateway.routes.projects.importer.layout import (
 from gateway.routes.projects.importer.plan import (
     ImportMapping,
     build_plan,
+    choose,
     resolve_people,
     resolve_statuses,
 )
@@ -317,6 +318,9 @@ async def apply_run(
     plan = build_plan(bundle, mapping, **facts)
     if not plan["ready"]:
         raise ImportRefused("; ".join(plan["errors"]))
+    # I-8: from here on, the bundle is what the admin chose. The plan above
+    # read it through the same `choose`, so the write matches what it showed.
+    bundle = choose(bundle, mapping)
     people = resolve_people(bundle, mapping, facts["directory"])
     final = resolve_statuses(bundle, mapping)
 
@@ -587,7 +591,9 @@ async def _earlier_nodes(
                 {
                     "org": organization_id,
                     "source": bundle.source,
-                    "refs": [t.ref for t in bundle.tasks],
+                    # The WHOLE file's tasks (I-8): a run that keeps
+                    # other lists than the last one is still that export.
+                    "refs": bundle.file_task_refs or [t.ref for t in bundle.tasks],
                 },
             )
         ).fetchall()

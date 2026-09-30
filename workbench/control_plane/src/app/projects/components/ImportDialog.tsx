@@ -5,16 +5,19 @@
  *
  * Spec: `project-docs/specs/project_import.md` §7.7 · decision D80.
  *
- * Four steps, and only the last one writes:
+ * Five steps, and only the last one writes:
  *
  * 1. **Upload** — the admin chooses the ClickUp workspace export. The server
  *    reads it and plans a dry run. Nothing lands in Projects.
  * 2. **Review** — the counts, the warnings and what the file cannot carry,
  *    before any write. A run that continues an earlier import says so, and
  *    says how many tasks it will UPDATE rather than create (§6.9).
- * 3. **Map** — people, status stages and the target. Saving re-plans on the
- *    server, so the numbers on screen are always the server's.
- * 4. **Import** — the writer runs in the background. The dialog polls the run
+ * 3. **Spaces** (I-8) — where it goes, who can see a new space, and the tree:
+ *    leave out a Space, Folder or List, or rename it.
+ * 4. **Map** — people, status stages and names (two names merge), and the
+ *    columns the importer does not read (I-8). Saving re-plans on the server,
+ *    so the numbers on screen are always the server's.
+ * 5. **Import** — the writer runs in the background. The dialog polls the run
  *    and shows the report. Closing the dialog does not stop the import.
  *
  * The client computes no count (`importFlow.ts`): the server plans, the
@@ -35,7 +38,16 @@ import { CATEGORY_HINT, CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/status
 import { type ProjectRow, projectsApi } from "../lib/api";
 import { importApi } from "../lib/importApi";
 import ImportHistory, { DiscardImportButton, type DiscardOutcome, DiscardNotice } from "./ImportHistory";
+import ImportTree from "./ImportTree";
 import {
+  type ColumnChoice,
+  type ContainerChoice,
+  GRANT_ORG,
+  grantOptions,
+  stageClashes,
+  statusMerges,
+  importTreeRows,
+  treeTotals,
   type ImportMapping,
   type ImportRun,
   MAX_UPLOAD_BYTES,
@@ -85,6 +97,13 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const [confirmedNewTree, setConfirmedNewTree] = useState(false);
   const [spaceName, setSpaceName] = useState("");
   const [members, setMembers] = useState<SelectOption[]>([]);
+  // I-8: who can see a new space, the tree's skips and renames, the status
+  // names (two alike merge), and what becomes of each unknown column.
+  const [grant, setGrant] = useState<string>(GRANT_ORG);
+  const [groups, setGroups] = useState<{ slug: string; display_name?: string | null }[]>([]);
+  const [containers, setContainers] = useState<Record<string, ContainerChoice>>({});
+  const [statusNames, setStatusNames] = useState<Record<string, string>>({});
+  const [columns, setColumns] = useState<Record<string, ColumnChoice>>({});
   const picker = useRef<HTMLInputElement>(null);
   const reported = useRef(false);
   // The admin saw the ended run's report while the dialog was open.
@@ -120,6 +139,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     setStages({});
     setTargetId(NEW_SPACE);
     setSpaceName("");
+    setGrant(GRANT_ORG);
+    setContainers({});
+    setStatusNames({});
+    setColumns({});
     setConfirmedNewTree(false);
     reported.current = false;
     // Only `open` restarts the wizard; the run is read here, not followed.
@@ -144,6 +167,22 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
         setMembers(rows.map((p) => ({ value: p.assignee.toLowerCase(), label: p.name || p.assignee, hint: p.assignee })));
       })
       .catch(() => live && setMembers([]));
+    return () => {
+      live = false;
+    };
+  }, [open, step]);
+
+  // The organization's groups, for "who can see it". An admin who cannot
+  // read groups still gets "everyone", which is the default.
+  useEffect(() => {
+    if (!open || step !== "tree") return;
+    let live = true;
+    fetch("/api/admin/groups", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows: unknown) => {
+        if (live) setGroups(Array.isArray(rows) ? (rows as { slug: string; display_name?: string }[]) : []);
+      })
+      .catch(() => live && setGroups([]));
     return () => {
       live = false;
     };
@@ -261,6 +300,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
       const target = planned.mapping?.target;
       if (target?.kind === "existing" && target.project_id) setTargetId(target.project_id);
       if (target?.name) setSpaceName(target.name);
+      setGrant(planned.mapping?.grant || GRANT_ORG);
+      setContainers(planned.mapping?.containers ?? {});
+      setColumns(planned.mapping?.columns ?? {});
       setStep("review");
     } catch (err) {
       setError((err as Error).message);
@@ -275,8 +317,37 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
       targetId === NEW_SPACE
         ? { kind: "new_space", name: spaceName.trim() || null, project_id: null }
         : { kind: "existing", name: null, project_id: targetId };
-    return mappingFrom(run, people, stages, target);
-  }, [run, people, stages, targetId, spaceName]);
+    return mappingFrom(run, people, stages, target, {
+      // An existing space keeps its own sharing.
+      grant: targetId === NEW_SPACE ? grant : run.mapping?.grant || GRANT_ORG,
+      statusNames,
+      containers,
+      columns,
+    });
+  }, [run, people, stages, targetId, spaceName, grant, statusNames, containers, columns]);
+
+  // The Spaces step's Next SAVES and re-plans, so the Map step shows the
+  // statuses and people of the tree as chosen. A list ticked back in brings
+  // its own statuses, and without this they would import unseen (the I-8
+  // review).
+  const saveTree = useCallback(async () => {
+    const mapping = currentMapping();
+    if (!run || !mapping) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const planned = await importApi.saveMapping(run.id, mapping);
+      setRun(planned);
+      if (!planned.plan.ready && planned.plan.errors.length) {
+        setError(planned.plan.errors.join(" "));
+      }
+      setStep("map");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [run, currentMapping]);
 
   const saveAndImport = useCallback(async () => {
     const mapping = currentMapping();
@@ -308,6 +379,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
 
   const spaces = roots.filter((r) => !r.parent_project_id);
   const plan = run?.plan;
+  const rows = useMemo(() => importTreeRows(plan?.tree ?? [], containers), [plan, containers]);
+  const totals = treeTotals(rows);
+  const merges = useMemo(() => statusMerges(plan?.statuses ?? [], statusNames), [plan, statusNames]);
+  const clashes = useMemo(() => stageClashes(plan?.statuses ?? [], merges, stages), [plan, merges, stages]);
 
   return (
     <Modal
@@ -361,7 +436,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
 
         {step === "review" && plan && <Review run={run} />}
 
-        {step === "map" && plan && (
+        {step === "tree" && plan && (
           <section className="flex flex-col gap-4 text-sm">
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold">Where it goes</h3>
@@ -398,6 +473,64 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
               )}
             </div>
 
+            {targetId === NEW_SPACE && (
+              <div className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold">Who can see it</h3>
+                <SelectButton
+                  label="Who can see the new spaces"
+                  value={grant}
+                  onChange={setGrant}
+                  options={grantOptions(groups).concat(
+                    grant !== GRANT_ORG && !groups.some((g) => `group:${g.slug}` === grant)
+                      ? [{ value: grant, label: grant.replace(/^group:/, "") }]
+                      : [],
+                  )}
+                  widthClass="max-w-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  You can share a space with more people later, from its menu.
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <h3 className="text-xs font-semibold">Spaces and lists</h3>
+              <p className="text-xs text-muted-foreground">
+                Untick what you do not want. Leaving out a space or folder leaves out everything in it, and a
+                subtask goes with its parent task.{" "}
+                {targetId === NEW_SPACE
+                  ? "A new name applies to what this import creates."
+                  : "Into an existing space, each ClickUp space and folder becomes one folder."}
+              </p>
+              {rows.length > 0 ? (
+                <ImportTree
+                  rows={rows}
+                  onSkip={(ref, skip) =>
+                    setContainers((c) => ({ ...c, [ref]: { ...c[ref], skip } }))
+                  }
+                  onRename={(ref, name) => setContainers((c) => ({ ...c, [ref]: { ...c[ref], name } }))}
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">Upload the file again to choose lists.</p>
+              )}
+              <p className="text-xs text-muted-foreground" aria-live="polite">
+                {totals.lists} {totals.lists === 1 ? "list" : "lists"} with {totals.tasks.toLocaleString()} tasks
+                will be imported
+                {totals.skippedLists ? `, and ${totals.skippedLists} left out` : ""}.
+              </p>
+            </div>
+          </section>
+        )}
+
+        {step === "map" && plan && (
+          <section className="flex flex-col gap-4 text-sm">
+            {/* The first Import stops when a saved choice breaks a continuation
+                (`mustConfirmNewTree`). The reason must be HERE, beside the button. */}
+            {confirmedNewTree && !plan.continues && continuationNote(plan) && (
+              <p role="status" className="rounded-md border border-border bg-muted px-2 py-1.5 text-xs text-foreground">
+                {continuationNote(plan)} Choose Import again to go ahead.
+              </p>
+            )}
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold">People</h3>
               <p className="text-xs text-muted-foreground">
@@ -435,7 +568,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold">Statuses</h3>
               <p className="text-xs text-muted-foreground">
-                Choose the stage of each ClickUp status. A task in a Done or Cancelled stage is closed.
+                Choose the stage of each ClickUp status. A task in a Done or Cancelled stage is closed. Rename a
+                status here, and give two statuses the same name to merge them.
               </p>
               <ul className="divide-y divide-border rounded-md border border-border">
                 {plan.statuses.map((status) => (
@@ -444,8 +578,26 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                       <p className="truncate text-xs font-medium">{status.name}</p>
                       <p className="text-[11px] text-muted-foreground">
                         {status.tasks} tasks in {status.lists} {status.lists === 1 ? "list" : "lists"}
+                        {merges[status.name]?.length ? ` · merges with ${merges[status.name].join(", ")}` : ""}
                       </p>
+                      {clashes.has(status.name) && (
+                        <p className="text-[11px] text-destructive">
+                          Merged statuses need one stage. Choose the same stage for each.
+                        </p>
+                      )}
                     </div>
+                    <Input
+                      inputSize="sm"
+                      aria-label={`Name in Metorite for ${status.name}`}
+                      placeholder={status.name}
+                      value={statusNames[status.name] ?? (status.becomes !== status.name ? status.becomes : "")}
+                      maxLength={64}
+                      className="max-w-[10rem]"
+                      // The stage never changes by itself: a name typed on the
+                      // way to another could move closed tasks to open without
+                      // a word (the I-8 review). A clash is shown instead.
+                      onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
+                    />
                     <SelectButton
                       label={`Stage for ${status.name}`}
                       value={stages[status.name] ?? status.category}
@@ -461,6 +613,40 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                 ))}
               </ul>
             </div>
+          </section>
+        )}
+
+        {step === "map" && plan && (plan.columns?.length ?? 0) > 0 && (
+          <section className="flex flex-col gap-2 text-sm">
+            <h3 className="text-xs font-semibold">Columns Metorite does not read</h3>
+            <p className="text-xs text-muted-foreground">
+              The file has columns with no place in Metorite, often ClickUp custom fields. Keep one, and each task
+              lists its value at the end of its description.
+            </p>
+            <ul className="divide-y divide-border rounded-md border border-border">
+              {plan.columns!.map((col) => (
+                <li key={col.name} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium">{col.name}</p>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      {col.tasks ? `${col.tasks} tasks` : "Empty in every task"}
+                      {col.samples.length ? ` · for example ${col.samples.join(", ")}` : ""}
+                    </p>
+                  </div>
+                  <SelectButton
+                    label={`What to do with ${col.name}`}
+                    value={columns[col.name] ?? col.choice}
+                    disabled={!col.tasks}
+                    onChange={(next) => setColumns((c) => ({ ...c, [col.name]: next as ColumnChoice }))}
+                    options={[
+                      { value: "skip", label: "Leave out" },
+                      { value: "description", label: "Keep in the description" },
+                    ]}
+                    widthClass="max-w-[13rem]"
+                  />
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
@@ -480,8 +666,13 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
               Back
             </Button>
           )}
-          {step === "map" && (
+          {step === "tree" && (
             <Button variant="ghost" onClick={() => setStep("review")} disabled={busy}>
+              Back
+            </Button>
+          )}
+          {step === "map" && (
+            <Button variant="ghost" onClick={() => setStep("tree")} disabled={busy}>
               Back
             </Button>
           )}
@@ -491,7 +682,18 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
             </Button>
           )}
           {step === "review" && (
-            <Button variant="primary" onClick={() => setStep("map")}>
+            <Button variant="primary" onClick={() => setStep("tree")}>
+              Next
+            </Button>
+          )}
+          {step === "tree" && (
+            <Button
+              variant="primary"
+              disabled={busy || (rows.length > 0 && totals.lists === 0)}
+              title={rows.length > 0 && totals.lists === 0 ? "Keep at least one list" : undefined}
+              loading={busy}
+              onClick={() => void saveTree()}
+            >
               Next
             </Button>
           )}
@@ -617,7 +819,7 @@ function Running({ run, onOpenSpace }: { run: ImportRun; onOpenSpace: (id: strin
       </p>
     );
   }
-  const lines = reportLines(run.report);
+  const lines = reportLines(run.report, run.plan?.skipped_by_choice);
   return (
     <section className="flex flex-col gap-3 text-sm">
       <ProgressBar
