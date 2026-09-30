@@ -19,6 +19,13 @@ clone cache.
 3. agent_tools.py -- call_agent, call_agents_parallel, call_agent_background for cross-agent delegation.
 4. web_tools.py -- web_search (DuckDuckGo) and fetch_page (Jina Reader). Zero credential.
 5. write_artifact.py -- write_artifact tool for surfacing created files in the UI.
+   It also owns the run's artifact context, the ContextVar seam that every
+   workspace tool reads through `artifact_context()` (H-201 part 4). Bind it
+   with `bind_artifact_context`, change it with `derive_artifact_context`, and
+   scope it with `artifact_context_scope` or `enter_artifact_context` and
+   `reset_artifact_context`. Never add a module-level dict for run state. A
+   tool with no context must fail closed, and never fall back to the cwd or a
+   temp dir. Fence: tests/unit/test_h201_run_context.py.
 5a. skill_families.py -- WS-23 skill-family registry (spec: project-docs/specs/skills_registry.md).
    `SKILL_FAMILIES` maps family slug -> {label, description, tool names} and must
    cover EVERY tool `orchestrator._tool_injection` injects, each in exactly ONE

@@ -26,12 +26,18 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * ``carry_run_context`` made a no-op;
 * ``asyncio.to_thread`` in ``run_script`` swapped for a bare
   ``run_in_executor``;
-* the sub-agent's reset of its token removed;
-* the delegated run takes its member from the payload;
+* the sub-agent's reset of its token removed, or its derive removed;
+* the delegated batch run takes its member from the payload;
+* the Copilot sub-agent ignores the parent's member;
 * ``_delegated_instance`` stops refusing a personal agent with no member;
 * ``_bind_run_instance`` no longer stamps the ``o:`` key of a shared run;
-* the "single live run" fallback put back in ``resolve_run_queue``;
-* the temp-dir fallback put back in ``write_artifact``.
+* the "single live run" fallback put back in ``resolve_run_queue`` or in
+  ``resolve_relay_thread_id``;
+* the temp-dir fallback put back in ``write_artifact``;
+* the permission policy allows a write with no workspace.
+
+The stream run's own reset, and its ``o:`` stamp, are fenced in
+``test_h201_tenant_workdirs.py::test_a_stream_run_is_given_its_tenant_dir``.
 
 Run::
 

@@ -400,9 +400,13 @@ def test_a_stream_run_is_given_its_tenant_dir(disk, wiring, monkeypatch) -> None
             thread_id=f"t-{uuid.uuid4().hex[:6]}", organization_id="org-s",
         ):
             pass
+        # The consumer's task goes on after the stream. The run's context
+        # must not stay behind on it (H-201, §21.16).
+        wiring["after"] = dict(artifact_context())
 
     before = disk.snapshot()
     asyncio.run(_drain())
+    assert wiring["after"] == {}, "the stream run's context outlived the run"
     # The stream path runs the git helpers only once an agent runs.
     _expect_tenant_run(wiring, disk, "org-s", git=False)
     # H-201 (§21.16): the logs of a shared run show the partition it works in.

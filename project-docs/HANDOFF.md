@@ -3504,18 +3504,20 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
-- **⚠️ NEXT PRIORITY: a per-run ContextVar for `_WRITE_ARTIFACT_CONTEXT`.**
-  Part 3 closed the read through the session routes. A concurrent-run race
-  remains. The dict in `acb_skills/write_artifact.py` is one for the whole
-  process. The executor writes it at `executor.py:2472-2479` and
-  `:3096-3103`, and `write_artifact.py:195-197` reads it. Runs of two orgs
-  can overlap on one worker. Then org A's document can land in org B's
-  tenant dir, and its event can go to org B's session.
-  - **Do:** make `workspace_root`, `instance` and `session_id` one
-    ContextVar per run. Move every reader to it, and that includes
-    `resolve_relay_thread_id`.
-  - **Fence:** two overlapping runs of two orgs on one loop. Each document
-    and each event must land in its own tenant.
+- **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
+  artifact context is a ContextVar, and `artifact_context()` is its one
+  reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
+  two orgs on one loop now write their own dirs, rows and sessions.
+  `carry_run_context` carries the context into the Copilot SDK callbacks. A
+  sub-agent derives its own copy. A delegated personal agent works in the
+  parent member's `u:` dir, and with no member it is refused (P2-c). A shared
+  run stamps `o:<org>`. With no context, every reader fails closed. The fence
+  is `tests/unit/test_h201_run_context.py`. Do not do it again.
+- **Still open from part 4.**
+  - `/copilot/chat` and the `/pull` routes run the orchestrator agent with no
+    artifact context. Its `delegate_to_agent` starts a batch run that is not
+    seen as a delegation, so a personal agent there still works in
+    `o:<org>`. Bind a context for those routes, with the session's member.
 - **Done in part 3 (2026-09-30, `projects_ai_chat.md` §21.15).** A shared
   agent works in a tenant dir, `state/<agent>/<slug of o:<org>>`, and never
   in its clone. The executor takes the tenant from the run binding. A run
@@ -3560,13 +3562,6 @@ line — never reclaim a number by deleting the other entry.
       `EMAIL_SYNC_ENABLED` is ON by default. The draft goes on without the
       specialist's answer. Email is a `preview` pane. Pass the tenant of the
       mailbox's account.
-  - The Copilot sub-agent path mirrors its files under the parent's agent
-    name and key. The link opens through the fault-in.
-  - (P2-c of the part 3 review) A personal agent that runs as a sub-agent
-    gets no instance. The sub-task payload has no `user_email`, so the run
-    works in `o:<org>` and not in the member's own dir.
-  - `_bind_run_instance` does not stamp `o:<org>`. The logs and the
-    presence key of a shared run show no partition.
   - The `u:<email>` key has no tenant. `app_user.email` is unique across
     orgs, so the case is purge, then rejoin. The old folder stays on disk.
   - P2. A link planted at `<state dir>/<category>` moves an artifact
