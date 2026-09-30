@@ -30,7 +30,7 @@ import json
 import re
 from typing import Any
 
-from skill_projects.client import data, get, uuid_of
+from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
 from skill_projects.priority import change_view, level_label
 from skill_projects.reads import (
     _MISSING,
@@ -596,13 +596,13 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
     return stats, table
 
 
-@_annotate(read_only=True, idempotent=True)
-async def render_report(report_id: str) -> str:
-    """Draw a saved report as a card: its headline numbers as tiles and
-    each section as a table. Same numbers as report_render, computed now by
-    the Reports app's own SQL. Use it for "show me the weekly report"."""
-    rid = uuid_of(report_id, "report_id")
-    payload = await get(f"/projects/reports/{rid}/render")
+async def _draw_report(payload: dict[str, Any], rid: str | None) -> str:
+    """The one formatter of a rendered report: the text and one card.
+
+    A saved report and the name form (WS-27bn R-final) both call it, so the
+    chat prints one report in one way. A preview has no row, so its card
+    carries no ``reportId``.
+    """
     report = payload.get("report") or {}
     sections = payload.get("sections") or {}
     lines = [
@@ -620,19 +620,138 @@ async def render_report(report_id: str) -> str:
         stats.extend(section_stats)
         if table:
             tables.append(table)
-    await _emit(
-        _template(
-            "reportCard",
-            {
-                "title": _plain(report.get("name")),
-                "period": f"{payload.get('period_start')} to {payload.get('period_end')}",
-                "reportId": rid,
-                "stats": stats[:8],
-                "tables": tables,
-            },
-        )
-    )
+    card: dict[str, Any] = {
+        "title": _plain(report.get("name")),
+        "period": f"{payload.get('period_start')} to {payload.get('period_end')}",
+        "stats": stats[:8],
+        "tables": tables,
+    }
+    if rid:
+        card["reportId"] = rid
+    await _emit(_template("reportCard", card))
     return "\n".join(lines)
+
+
+def _said(value: Any) -> str:
+    """A name as a member says it: no case, and ``_`` or ``-`` is a space."""
+    return " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).casefold()
+
+
+def _named(asked: str, entries: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Each entry that one of ``keys`` names exactly, with no regard to case."""
+    want = _said(asked)
+    return [e for e in entries if any(_said(e.get(k)) == want for k in keys if e.get(k))]
+
+
+def _partly_named(asked: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each entry whose ``name`` holds every word of ``asked`` as a whole
+    word, so "Asha" finds "Asha Rao". Only a fallback, when no entry matches
+    exactly. The entries are the reader's own subjects, so this widens
+    nothing the reader may see."""
+    words = _said(asked).split()
+    if not words:
+        return []
+    return [e for e in entries if set(words) <= set(_said(e.get("name")).split())]
+
+
+def _choices(head: str, rows: list[str]) -> str:
+    """A line that says why, then one row for each choice."""
+    return "\n".join([head, *[f"- {r}" for r in rows]])
+
+
+def _subject_options(asked: str, found: dict[str, Any]) -> list[tuple[dict[str, str], str, str]]:
+    """``(subject, label, choice row)`` for each team and person that
+    ``asked`` names, from the reader's own subjects list."""
+    me = str(found.get("me") or "")
+    if not asked.strip() or _said(asked) in ("me", "myself"):
+        return [({"kind": "person", "email": me}, me, me)]
+    teams = _named(asked, found.get("teams") or [], ("slug", "name"))
+    people = _named(asked, found.get("people") or [], ("email", "name"))
+    if not teams and not people:
+        teams = _partly_named(asked, found.get("teams") or [])
+        people = _partly_named(asked, found.get("people") or [])
+    return [
+        ({"kind": "team", "slug": str(t.get("slug"))}, _plain(t.get("name") or t.get("slug")),
+         f"team {_plain(t.get('name'))} ({t.get('slug')})")
+        for t in teams
+    ] + [
+        ({"kind": "person", "email": str(p.get("email"))}, _plain(p.get("name") or p.get("email")),
+         f"person {_plain(p.get('name') or p.get('email'))} ({p.get('email')})")
+        for p in people
+    ]
+
+
+@_annotate(read_only=True, idempotent=True)
+async def render_report(report_id: str = "", template: str = "", subject: str = "") -> str:
+    """Draw a report as a card: its headline numbers as tiles and each section
+    as a table. The Reports app's own SQL computes the numbers now.
+
+    Two forms. Give ``report_id`` to draw a saved report, for "show me the
+    weekly report". Give ``template`` and ``subject`` and no ``report_id``
+    when the member names a kind of report and a person or a team, and no
+    saved report: "team pulse for Design", "1:1 prep for Asha", "my day".
+    ``template`` is a template name or key. ``subject`` is a team name, or a
+    person's name or address. "My day" needs no subject. The names match
+    with no regard to case, and a first name finds a full name. When two
+    entries match, this tool lists them,
+    and you ask the member which one. The server decides who the member may
+    report on. Relay its refusal as it is, and do not try another way."""
+    if report_id.strip():
+        rid = uuid_of(report_id, "report_id")
+        payload = await get(f"/projects/reports/{rid}/render")
+        return await _draw_report(payload, rid)
+    if not template.strip():
+        raise GatewayRefusal(
+            "Name a saved report (report_id from report_list), or a template"
+            " and a subject, for example template='team pulse', subject='Design'."
+        )
+    catalogue = [
+        t for t in (await get("/projects/reports/templates")).get("templates") or []
+        if isinstance(t, dict) and t.get("available")
+    ]
+    hits = _named(template, catalogue, ("key", "name"))
+    if len(hits) > 1:
+        return _choices(
+            f"More than one template matches {data(template)}. Ask the member which one:",
+            [f"{_plain(t.get('name'))} ({t.get('key')})" for t in hits],
+        )
+    if not hits:
+        return _choices(
+            f"No live template matches {data(template)}. The live templates are:",
+            [f"{_plain(t.get('name'))} ({t.get('key')})" for t in catalogue],
+        )
+    picked = hits[0]
+    config: dict[str, Any] = {
+        "template": picked.get("key"),
+        "sections": list(picked.get("sections") or []),
+        "weeks": picked.get("weeks"),
+        "skip_current_week": picked.get("skip_current_week"),
+    }
+    name = _plain(picked.get("name"))
+    if subject.strip() or picked.get("requires_subject") == "self":
+        options = _subject_options(subject, await get("/projects/reports/subjects"))
+        if len(options) > 1:
+            return _choices(
+                f"More than one person or team matches {data(subject)}."
+                " Ask the member which one:",
+                [row for _, _, row in options],
+            )
+        if options:
+            config["subject"], label = options[0][0], options[0][1]
+        else:
+            # Not one of the subjects this member may report on (§7.1 rule
+            # 1). Send it as it is, so the server says why. Never guess.
+            raw = subject.strip().lower()
+            config["subject"] = (
+                {"kind": "person", "email": raw} if "@" in raw
+                else {"kind": "team", "slug": raw.replace(" ", "-")}
+            )
+            label = subject.strip()
+        # The server refuses a name over 120 characters, and a long
+        # display name must not turn a valid subject into a 422.
+        name = f"{name} · {label}"[:120]
+    payload = await post("/projects/reports/preview", {"name": name, "config": config})
+    return await _draw_report(payload, None)
 
 
 # ── W2 · the status report ───────────────────────────────────────────────────

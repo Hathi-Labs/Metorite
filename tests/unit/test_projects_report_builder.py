@@ -76,8 +76,8 @@ def test_the_preview_is_a_read_only_post_for_the_chat() -> None:
     assert m.is_read("POST", "/projects/reports/preview")
     row = m.route_for("POST", "/projects/reports/preview")
     assert row is not None
-    # Class X in R1. R8 maps it to render_report and changes it to class A.
-    assert row.cls == "X" and row.reason
+    # Class X in R1. R-final maps it to render_report, class A.
+    assert (row.tool, row.cls) == ("render_report", "A")
 
 
 @pytest.mark.parametrize(

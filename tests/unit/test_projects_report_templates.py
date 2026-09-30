@@ -162,13 +162,15 @@ def test_a_template_does_not_fix_the_sections() -> None:
 # ── Hermetic: the chat manifest ──────────────────────────────────────────────
 
 
-def test_the_route_is_class_X_in_the_chat_manifest() -> None:
+def test_the_route_is_render_reports_in_the_chat_manifest() -> None:
+    """Class X in R2. R-final maps it to render_report, class A, so the chat
+    resolves a template by name."""
     from skill_projects import manifest as m
 
     row = m.route_for("GET", "/projects/reports/templates")
     assert row is not None
     assert row.path == "/projects/reports/templates"
-    assert row.cls == "X" and row.reason and not row.tool
+    assert (row.tool, row.cls) == ("render_report", "A")
     # The id row still answers for an id.
     assert m.route_for("GET", "/projects/reports/abc").path == (
         "/projects/reports/{report_id}"

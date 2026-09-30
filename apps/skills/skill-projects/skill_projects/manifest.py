@@ -79,21 +79,6 @@ _DELETE_REASON = (
 _DELIVERY_REASON = (
     "Report delivery stays in the Reports app. Arming the schedule is owner-gated (§9.12.8)."
 )
-#: WS-27bn R1. The builder's preview is the Reports app's. The chat reaches
-#: it in R8, when render_report renders a template with no saved row.
-_PREVIEW_REASON = (
-    "The report builder's preview. The chat reaches it in WS-27bn R8, through render_report."
-)
-#: WS-27bn R2. The template gallery is the Reports app's. The chat reaches
-#: the templates in R8, when render_report takes a template name.
-_TEMPLATES_REASON = (
-    "The template gallery is the Reports app's. The chat reaches templates in WS-27bn R8."
-)
-#: WS-27bn R5a. The builder's picker of people and teams. The chat reaches
-#: subjects in R8, when render_report takes a subject.
-_SUBJECTS_REASON = (
-    "The report builder's picker. The chat reaches subjects in WS-27bn R8."
-)
 #: Writing who can see a project is a membership-shaped act. D-PM-40, the
 #: owner's answer of 2026-09-29 to spec §12 question 2.
 _GRANT_REASON = (
@@ -372,20 +357,22 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
-    # {report_id} row, because route_for takes the first match.
-    Route("GET", "/projects/reports/templates", "", "X", _TEMPLATES_REASON),
+    # {report_id} row, because route_for takes the first match. R-final:
+    # render_report resolves a template name through it.
+    Route("GET", "/projects/reports/templates", "render_report", "A"),
     # WS-27bn R5a - the picker's subjects. Above {report_id} for the same
-    # reason as the templates row.
-    Route("GET", "/projects/reports/subjects", "", "X", _SUBJECTS_REASON),
+    # reason as the templates row. R-final: render_report resolves a person
+    # or a team through it. It lists only what the reader may report on.
+    Route("GET", "/projects/reports/subjects", "render_report", "A"),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),
     Route("PATCH", "/projects/reports/{report_id}", "report_save", "B"),
     Route("DELETE", "/projects/reports/{report_id}", "report_delete", "C"),
     Route("GET", "/projects/reports/{report_id}/render", "report_render", "A"),
     # WS-27bn R1 - the builder's unsaved preview. It writes nothing, so it
-    # is in READ_ONLY_POSTS. Class X until R8 gives render_report the
-    # preview and changes this row to class A.
-    Route("POST", "/projects/reports/preview", "", "X", _PREVIEW_REASON),
+    # is in READ_ONLY_POSTS. R-final: render_report renders a template and a
+    # subject through it, so the server runs the §7.1 check.
+    Route("POST", "/projects/reports/preview", "render_report", "A"),
     Route("GET", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
     Route("POST", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
     Route("DELETE", "/projects/reports/{report_id}/recipients/{email}", "", "X", _DELIVERY_REASON),

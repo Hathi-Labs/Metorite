@@ -159,7 +159,9 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "render_timeline": [{"task_id": UUID}, {"task_id": UUID, "kind": "comments"}],
     "render_board": [{"project_id": UUID}],
     "render_tasks": [{"project_id": UUID, "status_category": "todo"}],
-    "render_report": [{"report_id": UUID}],
+    # WS-27bn R-final: a saved report, and the name form, which reads the
+    # catalogue and the subjects and then the preview.
+    "render_report": [{"report_id": UUID}, {"template": "team pulse", "subject": "Design"}],
     "status_report": [{"project_id": UUID}, {}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
@@ -258,13 +260,6 @@ def _s4_detail(call: dict) -> Any:
                 }
             ],
             "total": 1,
-        }
-    if path.endswith("/render"):
-        return {
-            "report": {"name": "Weekly"},
-            "period_start": "2026-09-15",
-            "period_end": "2026-09-22",
-            "sections": {"finished": {"total": 3, "rows": [{"name": "Ops", "finished": 3}]}},
         }
     if path.startswith("/projects/analytics/stuck"):
         # The route's real row (analytics.py `stuck`): `project_id` was ADDED
@@ -542,6 +537,26 @@ def _s5_detail(call: dict) -> Any:
     return None
 
 
+def _report_detail(path: str) -> Any:
+    """The report routes: a row, a render, and (WS-27bn R-final) the
+    catalogue, the subjects and the preview that the name form reads."""
+    if path == "/projects/reports/templates":
+        return {"templates": [{"key": "team_pulse", "name": "Team pulse", "available": True,
+                               "sections": ["pulse"], "weeks": 1,
+                               "skip_current_week": False}]}
+    if path == "/projects/reports/subjects":
+        return {"me": "pm@fracktal.in", "people": [],
+                "teams": [{"slug": "design", "name": "Design"}]}
+    if path.endswith("/render") or path == "/projects/reports/preview":
+        return {
+            "report": {"name": "Weekly"},
+            "period_start": "2026-09-15",
+            "period_end": "2026-09-22",
+            "sections": {"finished": {"total": 3, "rows": [{"name": "Ops", "finished": 3}]}},
+        }
+    return {"id": UUID, "name": "Weekly"}
+
+
 def _detail_responder(call: dict) -> Any:
     path = call["path"]
     if path.endswith("/relations"):
@@ -556,8 +571,8 @@ def _detail_responder(call: dict) -> Any:
             "project_id": UUID,
             "assignees": ["a@x.io"],
         }
-    if path.startswith("/projects/reports/") and not path.endswith("/render"):
-        return {"id": UUID, "name": "Weekly"}
+    if path.startswith("/projects/reports/"):
+        return _report_detail(path)
     answered = _s4_detail(call)
     if answered is not None:
         return answered
