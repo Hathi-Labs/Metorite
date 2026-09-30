@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 
 from acb_skills.write_artifact import (
-    _WRITE_ARTIFACT_CONTEXT,
+    artifact_context,
     mirror_to_blob_store,
     resolve_in_workspace,
 )
@@ -64,12 +64,12 @@ _ENV_DENY_RE = re.compile(r"(TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)", re.I)
 
 
 def _workspace_root() -> Path | None:
-    root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root")
+    root = artifact_context().get("workspace_root")
     return Path(root) if root else None
 
 
 def _declared_integrations() -> list[str]:
-    raw = _WRITE_ARTIFACT_CONTEXT.get("integrations")
+    raw = artifact_context().get("integrations")
     return [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
 
 
@@ -90,14 +90,10 @@ def _script_env() -> dict[str, str]:
     and a credential leak under two (`saas_multitenancy.md` §6.1). A ContextVar
     is per-task, so a concurrent run cannot widen what this script sees.
 
-    Residual caveat, narrowed but not gone: the declared-*list*
-    (``_WRITE_ARTIFACT_CONTEXT["integrations"]``) is still a process-global dict
-    despite its docstring calling itself coroutine-local, so a concurrent run can
-    still transiently widen *which names* are looked up. That is now much less
-    dangerous than it was — ``credential()`` resolves against **this** context's
-    binding, so a widened name list yields nothing unless this run also holds
-    that credential. Making the declared-list itself a ContextVar is the
-    remaining half; a true per-run boundary is the Tier-2 container env (MT-0c).
+    The declared-*list* (``artifact_context()["integrations"]``) is per-run
+    too since H-201 (§21.16): it lives in the run's own ContextVar, so a
+    concurrent run cannot widen *which names* are looked up. A true per-run
+    boundary for the process itself is the Tier-2 container env (MT-0c).
     """
     env = {
         k: v for k, v in os.environ.items()

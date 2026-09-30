@@ -17,21 +17,22 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-import os
 from pathlib import Path
 
 
 def _find_workspace_root() -> str:
-    """Resolve the agent's workspace root from context vars."""
+    """The workspace root of the run on this frame, or ``""`` for none.
+
+    H-201 (§21.16): a frame with no run context gets ``""``, and the caller
+    checks nothing. The old fallback, the gateway's cwd, read files of no run.
+    """
     try:
-        from acb_skills.write_artifact import \
-            _WRITE_ARTIFACT_CONTEXT  # noqa: PLC0415
-        root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root", "")
-        if root:
-            return root
+        from acb_skills.write_artifact import (  # noqa: PLC0415
+            artifact_context,
+        )
+        return str(artifact_context().get("workspace_root") or "")
     except Exception:  # noqa: BLE001
-        pass
-    return os.getcwd()
+        return ""
 
 
 async def get_errors(filePaths: str = "[]") -> str:
@@ -49,6 +50,9 @@ async def get_errors(filePaths: str = "[]") -> str:
         Structured error report, or ``"No errors found."`` if clean.
     """
     root = _find_workspace_root()
+    if not root:
+        # H-201 (§21.16): no run context, so no workspace. Check nothing.
+        return "No workspace is configured for this run, so nothing was checked."
     root_path = Path(root)
 
     # Parse file paths.

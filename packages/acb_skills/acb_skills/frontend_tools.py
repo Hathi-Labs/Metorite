@@ -41,9 +41,9 @@ async def emit_frontend_tool(name: str, args: dict[str, Any] | None = None) -> d
     try:
         from orchestrator.executor import resolve_run_queue
 
-        from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+        from acb_skills.write_artifact import artifact_context
 
-        queue = resolve_run_queue(_WRITE_ARTIFACT_CONTEXT.get("session_id"))
+        queue = resolve_run_queue(artifact_context().get("session_id"))
     except Exception as exc:  # pragma: no cover — platform absent in isolation
         return {"ok": False, "error": str(exc)}
     if queue is None:

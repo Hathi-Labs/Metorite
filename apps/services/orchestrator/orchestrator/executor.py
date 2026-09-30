@@ -395,18 +395,19 @@ def resolve_run_queue(
     """Return the active run's event queue for pushing CUSTOM SSE events.
 
     Resolution order: the ContextVar (native-MAF, same-context tool calls) →
-    the plain registry keyed by *key* (Copilot-SDK tools that run in a
-    context-reset thread). Tools pass the session/thread id they already hold
-    (from _WRITE_ARTIFACT_CONTEXT["session_id"]) as *key*.
+    the plain registry keyed by *key*. Tools pass the session id of their own
+    run (``artifact_context()["session_id"]``) as *key*.
+
+    H-201 (§21.16): no key and no ContextVar gives ``None``. The old last
+    resort, "exactly one run is live, so it must be this one", sent the event
+    of a frame with no run to whatever run was live. That is another run's
+    stream, so the caller now emits nothing.
     """
     q = _active_run_queue.get(None)
     if q is not None:
         return q
     if key and key in _RUN_QUEUES:
         return _RUN_QUEUES[key]
-    # Last resort: if exactly one run is active, it must be this one.
-    if len(_RUN_QUEUES) == 1:
-        return next(iter(_RUN_QUEUES.values()))
     return None
 
 
@@ -423,25 +424,26 @@ def resolve_relay_thread_id() -> str | None:
 
     Resolution order (works for BOTH runtimes):
       1. ``_stream_relay_thread_id`` ContextVar — native-MAF, same-context tools.
-      2. ``_WRITE_ARTIFACT_CONTEXT["session_id"]`` — a plain module dict the
-         executor sets to ``thread_id or run_id`` on every run path (Copilot too),
-         so it survives the SDK thread hop. Same trick write_artifact uses.
-      3. The single active run-queue key, when exactly one run is live.
+      2. ``artifact_context()["session_id"]`` — the run's own artifact
+         context. A Copilot tool reaches it because
+         :func:`orchestrator.copilot_agent.carry_run_context` runs the SDK
+         callbacks in the context of the run (H-201, §21.16).
+
+    H-201: it was a process-global dict, so a Copilot tool of run A read the
+    session of whatever run set the dict last. A third step also answered
+    "the single live run" for a frame with no run. Both are gone. No context
+    gives ``None``, and the caller parks nothing and pushes nothing.
     """
     tid = _stream_relay_thread_id.get(None)
     if tid:
         return tid
     try:
-        from acb_skills.write_artifact import (
-            _WRITE_ARTIFACT_CONTEXT,
-        )
-        sid = _WRITE_ARTIFACT_CONTEXT.get("session_id")
+        from acb_skills.write_artifact import artifact_context
+        sid = artifact_context().get("session_id")
         if sid:
             return str(sid)
     except Exception:
         pass
-    if len(_RUN_QUEUES) == 1:
-        return next(iter(_RUN_QUEUES.keys()))
     return None
 
 # ContextVar that bridges the executor's ask_questions detection with the
@@ -811,9 +813,19 @@ async def _run_sub_agent_streaming(
     except (ImportError, Exception):
         pass
 
-    # Initialised before try so the finally block always has access
-    # even when load_agent() or build_agents() raises early.
-    _saved_artifact_ctx: dict[str, str] = {}
+    # H-201 (§21.16): the sub-agent gets its OWN artifact context, derived
+    # from its parent's below. This token restores the parent's exact value
+    # in the finally, so the sub-agent can never change what the parent sees.
+    from acb_skills.write_artifact import (
+        artifact_context,
+        derive_artifact_context,
+        enter_artifact_context,
+        reset_artifact_context,
+    )
+    _artifact_token = enter_artifact_context()
+    # The parent run's acting member, from the parent's bound context and
+    # never from the delegated message (H-201 P2-c).
+    _parent_member = str(artifact_context().get("member") or "")
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -865,7 +877,9 @@ async def _run_sub_agent_streaming(
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
-            integrations, _ = build_integrations(mandatory, optional, settings)
+            integrations, _sub_warnings = build_integrations(
+                mandatory, optional, settings,
+            )
             # Scope this sub-agent's creds to its run; restored in the finally.
             _integration_env_token = _bind_run_credentials(integrations)
             agents = loaded.build_agents()
@@ -915,8 +929,13 @@ async def _run_sub_agent_streaming(
             # H-201 part 3: a sub-agent works in the tenant dir of its PARENT
             # run's tenant, never in its clone. No tenant raises
             # RunWorkspaceRefused, and the delegation answers with the error.
-            _sub_agent_dir = _resolve_effective_agent_dir(
+            # H-201 P2-c: a PERSONAL sub-agent works in the u: dir of the
+            # parent's member. With no member it is refused, never put in o:.
+            _sub_agent_dir, _sub_store_instance = _resolve_run_workspace(
                 loaded.agent_dir, loaded.config,
+                instance=_delegated_instance(
+                    loaded.config, agent_name, _parent_member,
+                ),
                 organization_id=_resolve_sub_agent_org(),
             )
             if (
@@ -939,25 +958,22 @@ async def _run_sub_agent_streaming(
                         _make_user_input_handler(_relay_tid)
                     )
 
-            # ── Point write_artifact at sub-agent's own workspace ────────
-            # Save orchestrator's context, switch to sub-agent workspace so
-            # artifacts land in the sub-agent's repo (visible in the Files
-            # sidebar).  Restored after sub-agent completes.
-            try:
-                from acb_skills.write_artifact import \
-                    _WRITE_ARTIFACT_CONTEXT
-                for _k in ("workspace_root", "session_id", "integrations"):
-                    _saved_artifact_ctx[_k] = _WRITE_ARTIFACT_CONTEXT.get(
-                        _k, ""
-                    )
-                _WRITE_ARTIFACT_CONTEXT["workspace_root"] = _sub_agent_dir
-                # The sub-agent's scripts get ITS declared integrations, not
-                # the parent's (same scoping as the env injection above).
-                _WRITE_ARTIFACT_CONTEXT["integrations"] = sorted(integrations)
-                # session_id stays as orchestrator's so download URLs
-                # resolve correctly in the parent chat window.
-            except Exception:
-                pass
+            # ── The sub-agent's OWN artifact context (H-201, §21.16) ─────
+            # A copy of the parent's, with the sub-agent's workspace, blob
+            # key and integrations. session_id, the gateway and the member
+            # stay the parent's, so a download URL opens in the parent's
+            # chat. The parent's mapping does not change, and the token
+            # above restores it when the sub-agent ends.
+            derive_artifact_context(
+                agent_name=agent_name,
+                run_id=run_id,
+                workspace_root=_sub_agent_dir,
+                instance=_sub_store_instance,
+                integrations=sorted(integrations),
+                integration_warnings=dict(_sub_warnings),
+                # A sub-agent never inherits the parent's sandbox root.
+                permission_check_root=None,
+            )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
             # index but the same full bodies — a body costs nothing until it
@@ -1035,6 +1051,11 @@ async def _run_sub_agent_streaming(
                     except Exception:
                         pass
 
+                # H-201 (§21.16): the SDK runs tool calls with no context of
+                # this run. Carry the sub-agent's OWN context into them.
+                from orchestrator.copilot_agent import carry_run_context
+                for _a in agents:
+                    carry_run_context(_a)
                 async with agent:
                     stream = agent.run(message_str, stream=True)
                     # ONE canonical mapping, sub-agent envelope on top —
@@ -1123,17 +1144,8 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
-        # Restore orchestrator's artifact context so subsequent tool calls
-        # (including write_artifact) target the correct workspace.
-        if _saved_artifact_ctx:
-            try:
-                from acb_skills.write_artifact import \
-                    _WRITE_ARTIFACT_CONTEXT
-                for _key, _val in _saved_artifact_ctx.items():
-                    if _val:
-                        _WRITE_ARTIFACT_CONTEXT[_key] = _val
-            except Exception:
-                pass
+        # Give the parent back its own artifact context (H-201, §21.16).
+        reset_artifact_context(_artifact_token)
 
 
 def _custom_apps_root() -> Path:
@@ -1221,6 +1233,37 @@ def _resolve_agent_instance(
         return manifest.instance_key(actor)
     except Exception:
         return ""
+
+
+def _delegated_instance(
+    agent_config: dict[str, Any], agent_name: str, member: str,
+) -> str:
+    """The partition key of a DELEGATED run, keyed by the PARENT's member.
+
+    H-201 P2-c (§21.16). A delegated run gets a message and no ``user_email``,
+    so a personal agent resolved ``''`` and ran in the org dir ``o:<org>``.
+    *member* is the parent run's acting member, from the parent's bound
+    artifact context and never from the delegated payload (R5). A personal
+    agent with no member has no dir of its own, so it is refused with
+    :class:`RunWorkspaceRefused`. It never falls back to ``o:``.
+    """
+    instance = _resolve_agent_instance(agent_config, agent_name, member)
+    if instance:
+        return instance
+    try:
+        from acb_skills.manifest import AgentManifest
+        personal = (
+            AgentManifest.from_config(agent_config, name=agent_name)
+            .sharing.instancing == "personal"
+        )
+    except Exception:
+        personal = False
+    if personal:
+        raise RunWorkspaceRefused(
+            f"Agent {agent_name!r} is personal, and the run that delegated to "
+            "it has no member. It has no working dir, so it cannot run."
+        )
+    return ""
 
 
 def _bind_run_instance(instance: str, run_id: str = "") -> None:
@@ -1466,20 +1509,20 @@ async def _maybe_sandbox_session_workspace(
     interactive path doesn't have today.
 
     Mutates *agent* (``_sandbox_cli_url``, ``_default_options
-    ["working_directory"]``) and ``_WRITE_ARTIFACT_CONTEXT
-    ["permission_check_root"]`` in place on success. Off by default (empty
+    ["working_directory"]``) in place, and sets ``permission_check_root`` in
+    this run's artifact context, on success. Off by default (empty
     scope); any spawn failure leaves *agent* untouched, falling back to the
     in-process ``working_directory`` the caller already set. Never raises.
     """
     try:
-        from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+        from acb_skills.write_artifact import derive_artifact_context
         scope = str(getattr(settings, "copilot_sandbox_scope", "") or "")
         if not (
             session_ws
             and thread_id
             and "app_builder" in {s.strip() for s in scope.split(",") if s.strip()}
         ):
-            _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+            derive_artifact_context(permission_check_root=None)
             return
 
         from gateway.routes.apps._common import t2_vendor_dir
@@ -1508,9 +1551,9 @@ async def _maybe_sandbox_session_workspace(
         if sandbox is not None:
             agent._sandbox_cli_url = sandbox.cli_url
             agent._default_options["working_directory"] = CONTAINER_WORKSPACE
-            _WRITE_ARTIFACT_CONTEXT["permission_check_root"] = CONTAINER_WORKSPACE
+            derive_artifact_context(permission_check_root=CONTAINER_WORKSPACE)
         else:
-            _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+            derive_artifact_context(permission_check_root=None)
     except Exception:
         pass
 
@@ -2264,7 +2307,10 @@ async def run_agent(
         # made here reached the Router with no member, no app and no run, and
         # billed nobody by name. Scoped so a NESTED run restores its parent.
         from acb_common import run_context_scope
-        with run_context_scope():
+        from acb_skills.write_artifact import artifact_context_scope
+        # H-201 (§21.16): the run's artifact context ends with the run, and a
+        # nested run gives its parent back the parent's exact context.
+        with run_context_scope(), artifact_context_scope():
             return await _run_agent_inner(
                 agent_name, event_payload,
                 run_id=run_id, thread_id=thread_id, model=model,
@@ -2302,6 +2348,16 @@ async def _run_agent_inner(
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
     thread_id = thread_id or f"{agent_name}:{run_id}"
+
+    # H-201 P2-c (§21.16): a batch run that starts inside the artifact context
+    # of another run is a DELEGATION (call_agent, delegate_to_agent, a
+    # sub-agent). Its member is the parent run's bound member, read HERE,
+    # before this run binds its own context. The payload never names it.
+    from acb_skills.write_artifact import (
+        artifact_context,
+        bind_artifact_context,
+    )
+    _parent_ctx = artifact_context()
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2429,13 +2485,19 @@ async def _run_agent_inner(
             # agent operates in its own clone directory.
             # A personal/team agent instead lands in its tenant state dir —
             # the same key its blob-store rows carry (migration 136).
-            _agent_instance = _resolve_agent_instance(
-                loaded.config, agent_name,
-                str(
+            if _parent_ctx:
+                _run_actor = str(_parent_ctx.get("member") or "")
+                _agent_instance = _delegated_instance(
+                    loaded.config, agent_name, _run_actor,
+                )
+            else:
+                _run_actor = str(
                     event_payload.get("user_email")
                     or event_payload.get("user_id") or ""
-                ) if isinstance(event_payload, dict) else "",
-            )
+                ) if isinstance(event_payload, dict) else ""
+                _agent_instance = _resolve_agent_instance(
+                    loaded.config, agent_name, _run_actor,
+                )
             _bind_run_app(loaded.config)
             # H-201 part 3: a shared agent works in its tenant dir. The tenant
             # is the run binding (the caller's server-side org, else the bound
@@ -2453,6 +2515,9 @@ async def _run_agent_inner(
             _git_dir = _git_dir_for(
                 loaded.agent_dir, _effective_agent_dir, _store_instance,
             )
+            # H-201 (§21.16): stamp the partition this run WORKS in, so a
+            # shared run's logs show its o:<org> key, and not nothing.
+            _bind_run_instance(_store_instance, run_id)
 
             # For GitHub Copilot SDK agents: install the push guard (prevents
             # direct pushes; commits stay local until operator approves) and
@@ -2508,32 +2573,34 @@ async def _run_agent_inner(
             )  # inject call_agent / call_agent_background
 
             # Set write_artifact context + ensure visible workspace dirs exist.
-            try:
-                from acb_skills.write_artifact import \
-                    _WRITE_ARTIFACT_CONTEXT
-                _WRITE_ARTIFACT_CONTEXT["session_id"] = thread_id or run_id
-                _WRITE_ARTIFACT_CONTEXT["agent_name"] = agent_name
-                _WRITE_ARTIFACT_CONTEXT["run_id"] = run_id
-                _WRITE_ARTIFACT_CONTEXT["workspace_root"] = _effective_agent_dir
+            # H-201 (§21.16): the context is THIS run's own ContextVar value.
+            # A concurrent run on the same process cannot see it or change it.
+            bind_artifact_context(
+                session_id=thread_id or run_id,
+                agent_name=agent_name,
+                run_id=run_id,
+                workspace_root=_effective_agent_dir,
                 # The blob-store partition every write-through must carry —
-                # keeping disk and store on the SAME tenant key (migration 136).
-                # A shared agent's tenant dir carries o:<org> (H-201 part 3).
-                _WRITE_ARTIFACT_CONTEXT["instance"] = _store_instance
+                # keeping disk and store on the SAME tenant key (migration
+                # 136). A shared agent's tenant dir carries o:<org>.
+                instance=_store_instance,
+                # The member a delegated run inherits (P2-c).
+                member=_run_actor,
                 # Declared+resolved integrations for this run — read by
                 # list_integrations (discoverability) and code_tools
                 # (_script_env grants a script exactly these creds).
-                _WRITE_ARTIFACT_CONTEXT["integrations"] = sorted(integrations)
-                _WRITE_ARTIFACT_CONTEXT["integration_warnings"] = dict(
-                    integration_warnings
-                )
-                _WRITE_ARTIFACT_CONTEXT["gateway_url"] = str(
+                integrations=sorted(integrations),
+                integration_warnings=dict(integration_warnings),
+                gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
-                )
-                _WRITE_ARTIFACT_CONTEXT["gateway_token"] = str(
+                ),
+                gateway_token=str(
                     getattr(settings, "gateway_internal_token", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
-                )
+                ),
+            )
+            try:
                 _ws_root = Path(_effective_agent_dir)
                 for _d in ("inputs", "outputs", "agent-data"):
                     (_ws_root / _d).mkdir(parents=True, exist_ok=True)
@@ -3018,6 +3085,12 @@ async def run_agent_stream(
 
     # ── Stream relay: tee all SSE events to Redis for reconnection support ─
     _relay_token = _stream_relay_thread_id.set(thread_id)
+    # H-201 (§21.16): this run's artifact context lives in this token's scope.
+    from acb_skills.write_artifact import (
+        enter_artifact_context,
+        reset_artifact_context,
+    )
+    _artifact_token = enter_artifact_context()
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
@@ -3153,36 +3226,45 @@ async def run_agent_stream(
             _git_dir = _git_dir_for(
                 loaded.agent_dir, _effective_ws, _store_instance,
             )
+            # H-201 (§21.16): a shared run's partition is its tenant key,
+            # o:<org>, which exists only now. Stamp it, so the logs and the
+            # presence snapshot show where this run works.
+            if _store_instance != _agent_instance:
+                _bind_run_instance(_store_instance, run_id)
 
             # Set write_artifact context so the tool knows which session to
             # report files to and where the workspace root lives.
-            try:
-                from acb_skills.write_artifact import \
-                    _WRITE_ARTIFACT_CONTEXT
-                _WRITE_ARTIFACT_CONTEXT["session_id"] = thread_id or run_id
-                _WRITE_ARTIFACT_CONTEXT["agent_name"] = agent_name
-                _WRITE_ARTIFACT_CONTEXT["run_id"] = run_id
-                _WRITE_ARTIFACT_CONTEXT["workspace_root"] = _effective_ws
+            # H-201: THIS run's own ContextVar value. A concurrent run in the
+            # same process cannot see it or change it. The token taken at the
+            # top of this generator restores the earlier value in the finally.
+            from acb_skills.write_artifact import bind_artifact_context
+            bind_artifact_context(
+                session_id=thread_id or run_id,
+                agent_name=agent_name,
+                run_id=run_id,
+                workspace_root=_effective_ws,
                 # The blob-store partition every write-through must carry —
-                # keeping disk and store on the SAME tenant key (migration 136).
-                # A shared agent's tenant dir carries o:<org> (H-201 part 3).
-                _WRITE_ARTIFACT_CONTEXT["instance"] = _store_instance
+                # keeping disk and store on the SAME tenant key (migration
+                # 136). A shared agent's tenant dir carries o:<org>.
+                instance=_store_instance,
+                # The member a delegated run inherits (P2-c): the session's
+                # member, else the claim, as `_run_member` resolved it.
+                member=_corr_user,
                 # Declared+resolved integrations for this run — read by
                 # list_integrations (discoverability) and code_tools
                 # (_script_env grants a script exactly these creds).
-                _WRITE_ARTIFACT_CONTEXT["integrations"] = sorted(integrations)
-                _WRITE_ARTIFACT_CONTEXT["integration_warnings"] = dict(
-                    integration_warnings
-                )
-                _WRITE_ARTIFACT_CONTEXT["gateway_url"] = str(
+                integrations=sorted(integrations),
+                integration_warnings=dict(integration_warnings),
+                gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
-                )
-                _WRITE_ARTIFACT_CONTEXT["gateway_token"] = str(
+                ),
+                gateway_token=str(
                     getattr(settings, "gateway_internal_token", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
-                )
-
+                ),
+            )
+            try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
                 # its first artefact.
@@ -3774,6 +3856,12 @@ async def run_agent_stream(
                     agent=agent,
                     settings=settings,
                 )
+                # H-201 (§21.16): the SDK runs tool calls and permission
+                # requests with no context of this run. Carry it in, AFTER
+                # the sandbox step set permission_check_root.
+                from orchestrator.copilot_agent import carry_run_context
+                for _a in agents:
+                    carry_run_context(_a)
 
                 # Install push guard + capture HEAD for post-run commit detection.
                 await _install_push_guard(_git_dir)
@@ -4838,6 +4926,8 @@ async def run_agent_stream(
                 pass
         _stream_relay_thread_id.reset(_relay_token)
         _active_run_model.reset(_model_token)
+        # H-201: the run's workspace, tenant key and session end with it.
+        reset_artifact_context(_artifact_token)
         # Same reason, for the thing that says WHO this run was: an acting user
         # left bound is inherited by whatever runs next on this task (S1-4).
         _unbind_run_identity(_identity_binding)
@@ -5218,6 +5308,11 @@ async def _run_with_maf_agent(
                 _a._permission_handler = _ph
     except Exception:
         pass
+    # H-201 (§21.16): a Copilot SDK agent runs its tool calls and permission
+    # requests with no context of this run. Carry this run's context in.
+    from orchestrator.copilot_agent import carry_run_context
+    for _a in agents:
+        carry_run_context(_a)
 
     # Build the input for agent.run().
     # For chat events that carry a prior message history (payload["messages"]),

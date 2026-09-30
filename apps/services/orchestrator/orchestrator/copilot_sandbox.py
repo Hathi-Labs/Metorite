@@ -48,7 +48,7 @@ _log = get_logger("orchestrator.copilot_sandbox")
 _CONTAINER_PREFIX = "cc-copilot-"
 # Fixed in-container mount point — public: callers need it to set both
 # `working_directory` in the session config AND `permission_check_root` in
-# _WRITE_ARTIFACT_CONTEXT so the containment check compares against the path
+# the run's artifact context so the containment check compares against the path
 # the sandboxed CLI actually reports (see permission_policy._workspace_root).
 CONTAINER_WORKSPACE = "/workspace/repo"
 _CONTAINER_STATE_DIR = "/root/.copilot"

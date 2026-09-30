@@ -19,23 +19,110 @@ Usage by agents:
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import mimetypes
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
-_WRITE_ARTIFACT_CONTEXT: dict[str, str] = {}
-"""
-Thread/coroutine-local store keyed by session_id, set by the executor
-before each agent run::
+# ── The run's artifact context (H-201, projects_ai_chat.md §21.16) ──────────
+#
+# The workspace, the tenant partition, the session and the gateway of the run
+# that executes on THIS frame. It was one process-global dict. The gateway is
+# one process, so when two runs overlapped the later setup overwrote the
+# earlier, and run A wrote its document into run B's tenant dir and posted the
+# event to run B's session.
+#
+# Now it is a ContextVar that holds an IMMUTABLE mapping. Every asyncio task
+# copies the context at its creation, so each run, and each task a run spawns,
+# sees only its own value. A change makes a new mapping and never edits the
+# old one, so a child cannot change what its parent sees.
+#
+# Keys the executor binds: session_id, agent_name, run_id, workspace_root,
+# instance, member, integrations, integration_warnings, gateway_url,
+# gateway_token, and permission_check_root for a sandboxed Copilot session.
+#
+# A frame with no run context reads an EMPTY mapping. Every reader then fails
+# closed: it writes nothing and emits to no session. No reader may fall back
+# to a value of another run. Fence: tests/unit/test_h201_run_context.py.
+_RUN_ARTIFACT_CONTEXT: contextvars.ContextVar[Mapping[str, Any] | None] = (
+    contextvars.ContextVar("acb_run_artifact_context", default=None)
+)
+_NO_RUN: Mapping[str, Any] = MappingProxyType({})
 
-    _WRITE_ARTIFACT_CONTEXT["session_id"] = session_id
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/tmp/acb_agents/repos/agent-sales-assistant"
-    _WRITE_ARTIFACT_CONTEXT["gateway_url"] = "http://127.0.0.1:8000"
-    _WRITE_ARTIFACT_CONTEXT["gateway_token"] = "sk-local-dev-..."
 
-The executor clears this after each run.
-"""
+def artifact_context() -> Mapping[str, Any]:
+    """The artifact context of the run on this frame. THE one reader.
+
+    Returns an empty, read-only mapping when no run is bound.
+    """
+    ctx = _RUN_ARTIFACT_CONTEXT.get()
+    return _NO_RUN if ctx is None else ctx
+
+
+def bind_artifact_context(**values: Any) -> None:
+    """Set a NEW artifact context for the run on this frame.
+
+    It replaces the context this frame had, and keeps no key of it. The run
+    boundary calls this. Call it inside :func:`artifact_context_scope`, so the
+    earlier value comes back when the scope ends.
+    """
+    _RUN_ARTIFACT_CONTEXT.set(MappingProxyType(dict(values)))
+
+
+def derive_artifact_context(**changes: Any) -> None:
+    """Set a copy of this frame's context with *changes* applied.
+
+    A ``None`` value removes the key. A sub-agent uses this to get its OWN
+    context from its parent's. The parent's mapping does not change.
+    """
+    merged = dict(artifact_context())
+    for key, value in changes.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    _RUN_ARTIFACT_CONTEXT.set(MappingProxyType(merged))
+
+
+@contextlib.contextmanager
+def artifact_context_scope() -> Iterator[None]:
+    """Restore this frame's artifact context when the block ends.
+
+    Every bind or derive inside the block ends with it. The reset uses the
+    ContextVar token, so it restores the exact earlier value.
+    """
+    token = _RUN_ARTIFACT_CONTEXT.set(_RUN_ARTIFACT_CONTEXT.get())
+    try:
+        yield
+    finally:
+        reset_artifact_context(token)
+
+
+def enter_artifact_context() -> contextvars.Token:
+    """Open a scope that an async generator can close in its ``finally``.
+
+    :func:`artifact_context_scope` for a frame that cannot hold a ``with``
+    block across its yields. Pass the token to :func:`reset_artifact_context`.
+    """
+    return _RUN_ARTIFACT_CONTEXT.set(_RUN_ARTIFACT_CONTEXT.get())
+
+
+def reset_artifact_context(token: contextvars.Token) -> None:
+    """Close a scope. Never raises.
+
+    A generator that another task closes runs its ``finally`` in a different
+    context, and the token then does not apply. The context of that frame is
+    cleared instead, so no value of the run stays behind.
+    """
+    try:
+        _RUN_ARTIFACT_CONTEXT.reset(token)
+    except (ValueError, RuntimeError):
+        _RUN_ARTIFACT_CONTEXT.set(None)
 
 # Visible workspace dirs — files written outside these are hidden in the UI.
 _VISIBLE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
@@ -54,10 +141,10 @@ def _current_agent_name() -> str:
     the basename — keying blobs by slug would silently shard one agent's
     store — so the agent name is its parent there.
     """
-    name = _WRITE_ARTIFACT_CONTEXT.get("agent_name")
+    name = artifact_context().get("agent_name")
     if name:
         return str(name)
-    root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root")
+    root = artifact_context().get("workspace_root")
     if not root:
         return ""
     p = Path(root)
@@ -96,13 +183,13 @@ async def mirror_to_blob_store(
         data,
         mime_type=mime_type,
         action=action,
-        run_id=_WRITE_ARTIFACT_CONTEXT.get("run_id"),
-        session_id=_WRITE_ARTIFACT_CONTEXT.get("session_id"),
+        run_id=artifact_context().get("run_id"),
+        session_id=artifact_context().get("session_id"),
         actor=actor,
         # The run's tenant partition, set by the executor alongside
         # workspace_root — disk and store must carry the SAME key, or a
         # personal agent's files rehydrate into the wrong person's run.
-        instance=_WRITE_ARTIFACT_CONTEXT.get("instance", ""),
+        instance=artifact_context().get("instance", ""),
     )
 
 
@@ -192,16 +279,17 @@ async def write_artifact(
     """
     import asyncio
 
-    workspace_root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root")
-    session_id = _WRITE_ARTIFACT_CONTEXT.get("session_id")
-    gateway_url = _WRITE_ARTIFACT_CONTEXT.get("gateway_url", "http://127.0.0.1:8000")
-    gateway_token = _WRITE_ARTIFACT_CONTEXT.get("gateway_token", "sk-local-dev-change-me")
+    ctx = artifact_context()
+    workspace_root = ctx.get("workspace_root")
+    session_id = ctx.get("session_id")
+    gateway_url = ctx.get("gateway_url", "http://127.0.0.1:8000")
+    gateway_token = ctx.get("gateway_token", "sk-local-dev-change-me")
 
     if not workspace_root:
-        # Fallback: write to a temp dir per session
-        import tempfile
-        workspace_root = str(Path(tempfile.gettempdir()) / "acb_artifacts" / (session_id or "unknown"))
-        _WRITE_ARTIFACT_CONTEXT["workspace_root"] = workspace_root
+        # H-201: fail closed. A frame with no run context writes nothing and
+        # emits nothing. The temp-dir fallback that was here put the file
+        # outside every tenant dir, keyed by a session id it could not know.
+        return {"error": "No workspace is configured for this run, so nothing was written."}
 
     root = Path(workspace_root)
     root_r = root.resolve()
@@ -336,10 +424,11 @@ async def share_artifact(path: str) -> dict:
     """
     import asyncio
 
-    workspace_root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root")
-    session_id = _WRITE_ARTIFACT_CONTEXT.get("session_id")
-    gateway_url = _WRITE_ARTIFACT_CONTEXT.get("gateway_url", "http://127.0.0.1:8000")
-    gateway_token = _WRITE_ARTIFACT_CONTEXT.get("gateway_token", "sk-local-dev-change-me")
+    ctx = artifact_context()
+    workspace_root = ctx.get("workspace_root")
+    session_id = ctx.get("session_id")
+    gateway_url = ctx.get("gateway_url", "http://127.0.0.1:8000")
+    gateway_token = ctx.get("gateway_token", "sk-local-dev-change-me")
 
     if not workspace_root:
         return {"error": "No workspace is configured for this run.", "artifacts": []}
@@ -422,9 +511,8 @@ async def _notify(
     """
     # 1. Push AG-UI CUSTOM event into the active executor SSE queue so the
     #    frontend receives it immediately as part of the existing chat stream.
-    #    resolve_run_queue falls back to the plain _RUN_QUEUES registry (keyed
-    #    by session_id) so this reaches the chat stream even for Copilot-SDK
-    #    tools whose fresh-context thread can't see the ContextVar.
+    #    resolve_run_queue falls back to the plain _RUN_QUEUES registry, keyed
+    #    by THIS run's session_id. It never guesses another run's queue.
     try:
         from orchestrator.executor import resolve_run_queue
         queue = resolve_run_queue(session_id)
@@ -748,7 +836,7 @@ async def emit_generative_ui(ui: str) -> dict:
     # thread with a fresh context where the ContextVar is invisible.
     try:
         from orchestrator.executor import resolve_run_queue
-        session_id = _WRITE_ARTIFACT_CONTEXT.get("session_id")
+        session_id = artifact_context().get("session_id")
         queue = resolve_run_queue(session_id)
         if queue is None:
             if _request_id is not None:
