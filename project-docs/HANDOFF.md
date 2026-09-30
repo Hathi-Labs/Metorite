@@ -3504,18 +3504,20 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
-- **⚠️ NEXT PRIORITY: a tenant-partitioned working dir for a shared
-  agent.** The cross-tenant READ of a shared clone is live. A member of
-  org B opens a session of `projects-assistant` and reads the run output
-  of org A. The writes were closed on 2026-09-30 (§21.14).
-  - **Change 1.** `executor._resolve_effective_agent_dir` gives a shared
-    agent's run a folder per tenant, not `repos/<agent>`.
-  - **Change 2.** `write_artifact` gets that folder as its
-    `workspace_root`, so the Projects chat documents land there.
-  - **Change 3.** `rehydrate_workspace` restores into that folder.
-  - **Then.** Remove the `repos/` read arm of `_allowed_workspace`, and
-    make step 2 of `_get_workspace_path` derive only the tenant folder. The
-    chat upload to a shared agent then works again. Until then it answers 403.
+- **⚠️ NEXT PRIORITY: one run's context per run.**
+  `_WRITE_ARTIFACT_CONTEXT` in `acb_skills/write_artifact.py` is one dict
+  for the whole process. Two runs in one worker overwrite each other's
+  `workspace_root` and store key. With two tenants, one run can write into
+  the other tenant's dir. Make it a ContextVar, or key it by run.
+- **Done in part 3 (2026-09-30, `projects_ai_chat.md` §21.15).** A shared
+  agent works in a tenant dir, `state/<agent>/<slug of o:<org>>`, and never
+  in its clone. The executor takes the tenant from the run binding. A run
+  with no tenant is refused and writes nothing. `write_artifact`, the
+  rehydrate and the blob rows use the key `o:<org>`. Step 2 of
+  `_get_workspace_path` gives the caller's tenant dir, and the `repos/`
+  read arm is gone. The chat upload to a shared agent works again. The
+  email follow-ups of the part 2 review are done. The fence is
+  `tests/unit/test_h201_tenant_workdirs.py`. Do not do it again.
 - **Done in part 2 (2026-09-30, `projects_ai_chat.md` §21.14).** The four
   global artifact routes serve only the caller's own `personal` workspace,
   through `workspace._member_agent_workspace`. A shared agent, a team agent
@@ -3526,13 +3528,24 @@ line — never reclaim a number by deleting the other entry.
   /email/artifacts/import` read only the sender's own workspace, through
   `_safe_resolve`, and refuse `_is_blocked_path`. The fence is
   `tests/unit/test_h201_email_artifact_sources.py`.
-- **Still open from part 2.**
-  - **P0-A: writes closed 2026-09-30, cross-tenant READ of a shared clone
-    still open.** The PUT, DELETE, upload and promote session routes
-    answer 403 on a clone root. The read is the next priority, above.
-  - The run side writes and rehydrates a shared agent in one clone. A
-    tenant partition on disk needs the executor, the loader and
-    `rehydrate_workspace`.
+- **Still open from parts 2 and 3.**
+  - The files left in `repos/<agent>/outputs|inputs|agent-data` have no
+    known tenant. No route serves them now. The owner decides whether an
+    operator deletes them. A Projects chat document from before S15 has no
+    blob row, so its link now answers 404.
+  - The `t:<team>` key has no tenant, so two orgs with one team name share
+    one folder.
+  - An agent with a `workspace_root` in `config.json` still works in that
+    one folder for every tenant. No agent in `apps/agents/` declares one.
+  - An App Workshop run (the session override) writes blob rows with
+    `instance=''`. Two tenants can collide on the primary key there.
+  - `notes/dispatch.py` writes its document draft into the clone of the
+    document agent, and to the blob store with `instance=''`.
+  - The webhook route in `routes/agent.py` and the workflow agent node pass
+    no tenant, so a shared agent there is refused. Pass the tenant of the
+    webhook's record and `_workflow_organization`.
+  - The Copilot sub-agent path mirrors its files under the parent's agent
+    name and key. The link opens through the fault-in.
   - The `u:<email>` key has no tenant. `app_user.email` is unique across
     orgs, so the case is purge, then rejoin. The old folder stays on disk.
   - P2. A link planted at `<state dir>/<category>` moves an artifact

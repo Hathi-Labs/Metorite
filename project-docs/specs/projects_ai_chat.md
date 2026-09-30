@@ -16,8 +16,9 @@ schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
 production, §21) was built 2026-09-29. S16 (every deploy proves that chat
 saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
-§21.10) was built 2026-09-29. H-201 part 1 (§21.13) and part 2 (the
-artifact routes, §21.14) were built 2026-09-30. The owner answered the three
+§21.10) was built 2026-09-29. H-201 part 1 (§21.13), part 2 (the
+artifact routes, §21.14) and part 3 (a tenant dir for a shared agent,
+§21.15) were built 2026-09-30. The owner answered the three
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -3901,8 +3902,8 @@ the upload back.
 | every root counted as a shared clone | 3 |
 | the check before `ensure_state_dir` removed | 1 |
 
-**The next slice: a tenant-partitioned working dir for a shared agent.**
-Three places change. `executor._resolve_effective_agent_dir` gives a
+**The next slice: a tenant-partitioned working dir for a shared agent
+(§21.15, built 2026-09-30).** Three places change. `executor._resolve_effective_agent_dir` gives a
 shared agent's run a folder per tenant, not the clone.
 `write_artifact` gets that folder as its `workspace_root`.
 `rehydrate_workspace` restores into that folder. Then the session read,
@@ -3928,6 +3929,189 @@ uv run pytest tests/unit/test_h201_artifact_routes.py \
   tests/unit/test_h201_email_artifact_sources.py \
   tests/unit/test_h201_readers_under_rls.py \
   tests/unit/test_chat_write_under_rls.py -q -rs
+```
+
+The `-rs` output must show no skip.
+
+### 21.15 H-201 part 3 — a shared agent works in a tenant dir
+
+**Status: BUILT 2026-09-30.** This part closes the cross-tenant READ of a
+shared clone, which was live. Part 2 closed the writes (§21.14, P0-A).
+
+**The defect.** A shared agent's run has the instance `''`, and
+`executor._resolve_effective_agent_dir` gave it the one clone,
+`repos/<agent>`. `write_artifact` and `rehydrate_workspace` used the same
+clone. So the run output, the inputs and `agent-data/` of every org lay in
+one folder. A member of org B opened a session of `projects-assistant`.
+The tree and `GET .../file` then showed the run output of org A.
+
+The blob store had a second fault. Its primary key is `(agent_name, instance, path)`, with
+no tenant. So when two orgs wrote one path of a shared agent, RLS refused
+the second write.
+
+**The key.** A fourth instance key, `o:<organization_id>`, joins `''`,
+`u:<email>` and `t:<team>`. `agent_paths.tenant_instance(org)` makes it.
+The prefix is `o`, so a key can never read as a team name. It uses the
+seam that exists: `agent_state_dir`, `ensure_state_dir`, `instance_slug`
+and the `.cc-instance` marker. No parallel mechanism was added.
+
+**The dirs.**
+
+| What | Where |
+|---|---|
+| Code and config | `repos/<agent>/`, one clone, read-only for a run |
+| A shared agent's run, org X | `state/<agent>/<slug of o:X>/` |
+| Its blob rows | `instance = 'o:X'`, `organization_id = X` |
+| A personal agent's run | `state/<agent>/<slug of u:email>/`, unchanged |
+
+**The tenant source.** The executor takes the run's tenant from the run
+binding: the `organization_id` of the caller, else `_current_run_org()`.
+That is `_RUN_ORG[thread_id]`, else `current_tenant()`. It never reads the
+event payload (R5). The gateway takes `user.organization_id`, which the
+server resolves from the authenticated identity.
+
+**The rules.**
+
+1. `executor._resolve_run_workspace` gives `(dir, store key)`. The order
+   is the session override, then a personal or team key. Then comes the
+   `workspace_root` of `config.json`, and last the tenant dir.
+2. **No tenant fails closed.** A shared run with no tenant raises
+   `RunWorkspaceRefused`. The batch path answers `AgentRunError`, with no
+   self-anneal and no self-mutation. The stream path ends in `RUN_ERROR`.
+   The run writes nothing, and it never falls back to the clone.
+3. The tenant dir must lie strictly below `state_root()`. The check comes
+   before `ensure_state_dir`, so a planted link makes nothing in a clone.
+4. `write_artifact` gets the tenant dir as `workspace_root`, and `o:<org>`
+   as the store key. So `NOTES.md`, the skills, the scripts and every
+   output land in the tenant dir. The event names a path in it.
+5. The rehydrate restores `o:<org>` into the tenant dir. It also restores
+   the older rows of this tenant (`instance=''`). It takes such a row only
+   for a path that `o:<org>` does not hold.
+6. The push guard, the HEAD capture, the commit scan, the self-anneal and
+   the self-mutation keep the clone (`_git_dir_for`). A tenant dir holds no
+   code.
+7. The Copilot sub-agent path works in the tenant dir of its parent's
+   tenant. The Projects dispatch now passes the task's tenant to the run.
+8. Step 2 of `_get_workspace_path` gives the caller's tenant dir for a
+   shared agent (`_tenant_agent_workspace`), and `_member_agent_workspace`
+   for a personal one. A team agent keeps the older rule.
+9. `_allowed_workspace` has no `repos/` read arm. A stored path is allowed
+   under the caller's own personal dir or the caller's own tenant dir.
+10. The session upload, PUT, DELETE and promote work in the tenant dir.
+    `_refuse_shared_clone_write` stays as a backstop.
+11. The fault-in never writes into a clone. For a tenant dir it restores
+    only for a caller of that tenant, and it reads the older `''` row of
+    that tenant when `o:<org>` has none. A DELETE removes both rows.
+
+**Old data (R6).** The files in `repos/<agent>/outputs|inputs|agent-data`
+belong to mixed tenants, and nothing records whose they are. So nothing
+moves them into a tenant, and no route serves them now. They stay on disk
+until the owner decides. The blob rows carry their tenant (S15), so the
+tenant dir restores them per tenant.
+
+**What happens to an old Projects chat document.** The ArtifactCard link
+is `/api/agent/workspace/<sid>/file?path=outputs/<name>`. The old session
+stores the clone as its workspace, and that path now counts as absent. So
+step 2 gives the caller's tenant dir. The file is not on disk there, so the
+fault-in reads the blob row. The rules that follow come from that path.
+
+- A document written after S15 (2026-09-29) has a row with `instance=''`
+  and the tenant of its run. It opens, and Download works, for a member of
+  that tenant. The first open copies it into the tenant dir.
+- A member of another tenant gets 404, and the clone copy is never served.
+- A document written before S15 has no row, because RLS refused the write.
+  Its link now answers 404. Before this part, any org could read it.
+
+`test_an_old_document_opens_for_its_own_tenant_only` proves the first two.
+
+**The email follow-ups of the part 2 review.**
+
+1. (P1) `load_artifact_attachments` fails closed. One refused ref fails the
+   send and the draft with 422, and nothing goes out. The email assistant's
+   `send_email` docstring, `_attachment_refs` and `instructions.md` stop
+   telling the model to attach with `"<agent>:<path>"`.
+2. (P2) `actions._load_action_attachments` uses the same three calls as the
+   send path: `_member_agent_workspace`, `_safe_resolve` and
+   `_is_blocked_path`. A rule runs with no request, so a refused ref is
+   skipped with a warning.
+3. (P2) The GET fault-in never writes into a shared clone. No session root
+   is a clone now, and `_faultin_from_store` refuses a clone root too.
+
+**Acceptance.** `tests/unit/test_h201_tenant_workdirs.py` runs the R8
+tests on the phase 4 catalog, as the NOBYPASSRLS app role.
+
+- Org A's and org B's runs of one shared agent write to two dirs and two
+  blob rows. The clone does not change.
+- Each org's session reads only its own files. Org B cannot see org A's
+  output through the tree, the file, the history or the artifact list. A
+  stored path of org A's dir, or of the clone, reads as absent.
+- The upload to a shared agent's session works again, and it lands in the
+  caller's tenant dir.
+- A run with no tenant writes nothing, on the batch and the stream path.
+- The rehydrate restores only the run's tenant.
+- A personal agent is unchanged.
+- The Projects chat flow works: `write_artifact`, then the link, then
+  `GET .../file`, and the fault-in after the disk copy is gone.
+
+**Mutations.** Each one below fails at least one test.
+
+| Mutation | Tests that fail |
+|---|---|
+| a run with no tenant falls back to the clone | 6 |
+| the tenant dir keyed by nothing, one folder for every org | 9 |
+| the store key of a tenant dir back to `''` | 6 |
+| the refusal caught by the self-anneal | 1 |
+| the batch run's store key back to the manifest key | 1 |
+| the stream rehydrate back into the clone | 1 |
+| the git helpers given the tenant dir | 2 |
+| the rehydrate drops the older rows | 1 |
+| the older rows win over the tenant key | 1 |
+| the `repos/` read arm put back | 4 |
+| the tenant arm of `_allowed_workspace` takes any tenant | 1 |
+| step 2 derives the clone for a shared agent | 6 |
+| the fault-in drops its older-row fallback | 2 |
+| the fault-in drops its clone guard | 1 |
+| the fault-in drops its tenant check | 1 |
+| the GET fault-in drops the caller's tenant | 2 |
+| the upload write-through drops the caller's tenant | 1 |
+| a delete leaves the older row | 1 |
+| the Projects dispatch drops the tenant | 1 |
+| a refused attach ref skipped, as before | 5 |
+| the rule action's source back to `_agent_workspace_dir` | 1 |
+| `_is_blocked_path` removed from the rule action | 1 |
+| `_safe_resolve` back to `startswith` in the rule action | 1 |
+
+**What this part does not do.** H-201 in `HANDOFF.md` lists each item.
+
+- `_WRITE_ARTIFACT_CONTEXT` is one dict for the whole process. Two runs
+  in one worker overwrite each other's `workspace_root` and store key. So
+  with two tenants, one run can write into the other tenant's dir. It needs
+  a ContextVar. This is the next priority.
+- The `t:<team>` key has no tenant, and the `u:<email>` key has none.
+- An agent with a `workspace_root` in `config.json` still works in that one
+  folder for every tenant. No agent in `apps/agents/` declares one.
+- A session-override run (the App Workshop) writes blob rows with
+  `instance=''`. Two tenants can collide on the primary key there.
+- `notes/dispatch.py` writes its document draft into the clone of the
+  document agent, and to the blob store with `instance=''`.
+- The webhook route and the workflow agent node pass no tenant, so a
+  shared agent there is refused. Workflows is `preview`.
+- The Copilot sub-agent path mirrors its files under the parent's agent
+  name and key. The link opens through the fault-in, but the rows are keyed
+  to the parent.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_h201_artifact_routes.py \
+  tests/unit/test_h201_email_artifact_sources.py \
+  tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_chat_write_under_rls.py -q -rs
+DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant \
+  uv run pytest tests/unit/test_blob_store_instance.py \
+  tests/unit/test_blob_store_durability.py -q -rs
 ```
 
 The `-rs` output must show no skip.
