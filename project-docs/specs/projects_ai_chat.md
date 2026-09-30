@@ -3936,7 +3936,17 @@ The `-rs` output must show no skip.
 ### 21.15 H-201 part 3 — a shared agent works in a tenant dir
 
 **Status: BUILT 2026-09-30.** This part closes the cross-tenant READ of a
-shared clone, which was live. Part 2 closed the writes (§21.14, P0-A).
+shared clone through the session routes. That read was live. Part 2 closed
+the writes of those routes (§21.14, P0-A).
+
+⚠️ **A concurrent-run race remains, and the next slice closes it.**
+`_WRITE_ARTIFACT_CONTEXT` is one dict for the whole process. The executor
+writes it at run start, and `write_artifact` reads it. Runs of two orgs can
+overlap on one worker. Then org A's document can land in org B's tenant dir,
+and its event can go to org B's session.
+
+The race is no wider than on main, and it is narrower. But this part does
+not close it.
 
 **The defect.** A shared agent's run has the instance `''`, and
 `executor._resolve_effective_agent_dir` gave it the one clone,
@@ -4087,10 +4097,15 @@ tests on the phase 4 catalog, as the NOBYPASSRLS app role.
 
 **What this part does not do.** H-201 in `HANDOFF.md` lists each item.
 
-- `_WRITE_ARTIFACT_CONTEXT` is one dict for the whole process. Two runs
-  in one worker overwrite each other's `workspace_root` and store key. So
-  with two tenants, one run can write into the other tenant's dir. It needs
-  a ContextVar. This is the next priority.
+- **The concurrent-run race, above. This is the next slice.** Make
+  `_WRITE_ARTIFACT_CONTEXT` a per-run ContextVar for `workspace_root`,
+  `instance` and `session_id`. Move every reader to it, and that includes
+  `resolve_relay_thread_id`.
+- A personal agent that runs as a sub-agent gets no instance. The sub-task
+  payload has no `user_email`, so the run works in `o:<org>` and not in the
+  member's own dir (the review's P2-c).
+- `_bind_run_instance` does not stamp `o:<org>`. The logs and the presence
+  key of a shared run show no partition.
 - The `t:<team>` key has no tenant, and the `u:<email>` key has none.
 - An agent with a `workspace_root` in `config.json` still works in that one
   folder for every tenant. No agent in `apps/agents/` declares one.
