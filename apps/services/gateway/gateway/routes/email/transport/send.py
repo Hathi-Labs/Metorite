@@ -58,46 +58,50 @@ def load_artifact_attachments(
     H-201 part 2 (``projects_ai_chat.md`` §21.14). The source is only
     ``workspace._member_agent_workspace``, so a shared agent's clone is never
     read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
-    refuses ``.env``, ``.git/`` and every other secret name. A ref that fails
-    is skipped, and a warning names it. Best-effort: a bad ref never fails
-    the send."""
+    refuses ``.env``, ``.git/`` and every other secret name.
+
+    H-201 part 3 (§21.15, the P1 of the part 2 review): a ref that is refused
+    FAILS the send with 422, and a warning names it. The old rule skipped it,
+    so the mail went out without the file the member asked for, and nobody
+    was told. This fails closed."""
     if not refs:
         return []
+    import mimetypes
+
+    from acb_common import get_logger
+    from gateway.routes.workspace import (
+        _is_blocked_path,
+        _member_agent_workspace,
+        _safe_resolve,
+    )
+
+    log = get_logger("gateway.email.send")
     out: list[dict] = []
-    try:
-        import mimetypes
-
-        from acb_common import get_logger
-        from gateway.routes.workspace import (
-            _is_blocked_path,
-            _member_agent_workspace,
-            _safe_resolve,
-        )
-
-        log = get_logger("gateway.email.send")
-        for ref in refs:
-            agent = (ref.agent or "email-assistant").strip() or "email-assistant"
-            rel = (ref.path or "").strip()
-            if not rel:
-                continue
-            ws = _member_agent_workspace(agent, user_email)
-            full = None
-            if ws is not None and not _is_blocked_path(rel):
-                try:
-                    full = _safe_resolve(ws, rel)
-                except HTTPException:
-                    full = None
-            if full is None or not full.is_file():
-                log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
-                continue
-            mime, _ = mimetypes.guess_type(full.name)
-            out.append({
-                "filename": ref.name or full.name,
-                "content": full.read_bytes(),
-                "mime_type": mime or "application/octet-stream",
-            })
-    except Exception:
-        pass
+    for ref in refs:
+        agent = (ref.agent or "email-assistant").strip() or "email-assistant"
+        rel = (ref.path or "").strip()
+        ws = _member_agent_workspace(agent, user_email) if rel else None
+        full = None
+        if ws is not None and not _is_blocked_path(rel):
+            try:
+                full = _safe_resolve(ws, rel)
+            except HTTPException:
+                full = None
+        if full is None or not full.is_file():
+            log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The attachment '{rel[:200]}' is not a file in your own "
+                    "workspace, so nothing was sent."
+                ),
+            )
+        mime, _ = mimetypes.guess_type(full.name)
+        out.append({
+            "filename": ref.name or full.name,
+            "content": full.read_bytes(),
+            "mime_type": mime or "application/octet-stream",
+        })
     return out
 
 

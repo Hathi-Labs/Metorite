@@ -123,5 +123,9 @@ def test_resolve_effective_dir_precedence(tmp_path: Path) -> None:
         )
         == str(override)
     )
-    # Without an override the existing behaviour is unchanged.
-    assert _resolve_effective_agent_dir(clone, {}) == str(clone)
+    # H-201 part 3: without an override, a shared run never works in the
+    # clone. With no tenant it is refused.
+    from apps.services.orchestrator.orchestrator.executor import RunWorkspaceRefused
+
+    with pytest.raises(RunWorkspaceRefused):
+        _resolve_effective_agent_dir(clone, {})

@@ -127,6 +127,24 @@ class _RaisingLoadCtx(_LoadCtx):
         return stub
 
 
+@pytest.fixture(autouse=True)
+def _a_tenant_for_the_shared_probe(tmp_path, monkeypatch):
+    """H-201 part 3 (``projects_ai_chat.md`` §21.15). The probe is a SHARED
+    agent, and a shared agent's run needs a tenant for its working dir. With
+    no tenant the run is refused before the agent starts. So each test binds
+    one, the way a request does, and the tenant dir lands in a scratch root.
+    """
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    token = bind_tenant("org-h201-probe")
+    try:
+        yield
+    finally:
+        release_tenant(token)
+
+
 def _drive(
     monkeypatch,
     reply: str = "hello world from the agent",

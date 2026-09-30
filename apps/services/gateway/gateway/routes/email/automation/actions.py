@@ -186,7 +186,15 @@ def _load_action_attachments(
     ``attachments: [{path, name}]`` referencing the email-assistant workspace
     of the rule's acting member — the same tenant directory the rule editor's
     upload landed the file in), returning ``[{filename, content, mime_type}]``
-    for the provider. Best-effort and path-traversal-safe."""
+    for the provider.
+
+    H-201 part 3 (``projects_ai_chat.md`` §21.15, the P2 of the part 2
+    review): the same three calls as the send path. The source is only
+    ``workspace._member_agent_workspace``, the path goes through
+    ``_safe_resolve`` and ``_is_blocked_path`` refuses a secret name. The old
+    ``_agent_workspace_dir`` gave the shared clone to a rule with no member,
+    and its ``startswith`` check let a sibling folder through. A rule runs
+    with no request, so a refused ref is skipped with a warning."""
     atts = a.get("attachments") or []
     if not atts:
         return []
@@ -194,21 +202,30 @@ def _load_action_attachments(
     try:
         import mimetypes
 
+        from fastapi import HTTPException
         from gateway.routes.workspace import (
-            _agent_workspace_dir,
+            _is_blocked_path,
+            _member_agent_workspace,
+            _safe_resolve,
         )
-        ws = _agent_workspace_dir("email-assistant", user_email or None)
-        if not ws:
+        ws = _member_agent_workspace("email-assistant", user_email or None)
+        if ws is None:
+            _log.warning("email.attachment_workspace_refused")
             return []
-        ws_root = ws.resolve()
         for att in atts:
             if not isinstance(att, dict):
                 continue
             rel = (att.get("path") or "").strip()
             if not rel:
                 continue
-            full = (ws / rel).resolve()
-            if not str(full).startswith(str(ws_root)) or not full.is_file():
+            full = None
+            if not _is_blocked_path(rel):
+                try:
+                    full = _safe_resolve(ws, rel)
+                except HTTPException:
+                    full = None
+            if full is None or not full.is_file():
+                _log.warning("email.attachment_ref_refused", path=rel[:200])
                 continue
             mime, _ = mimetypes.guess_type(full.name)
             out.append({

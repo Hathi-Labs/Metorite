@@ -1292,10 +1292,10 @@ async def create_label(account_id: str, name: str) -> str:
 def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     """Parse attachment specs into workspace-artifact refs for /email/send.
 
-    Each spec is either ``"outputs/file.pdf"`` (a file in the email assistant's
-    own workspace — e.g. one you created with write_artifact) or
-    ``"<agent>:outputs/file.pdf"`` (a file produced by another agent, e.g.
-    ``"sales-assistant:outputs/quote.pdf"``)."""
+    Each spec is ``"outputs/file.pdf"``, a file in the email assistant's own
+    workspace for this member (e.g. one you created with write_artifact). The
+    server attaches only a file from that workspace. Any other ref fails the
+    send with 422 (H-201 part 3)."""
     refs: list[dict[str, Any]] = []
     for item in attachments or []:
         s = (item or "").strip()
@@ -1338,11 +1338,10 @@ async def send_email(
         cc / bcc: optional carbon-copy recipients.
         reply_to_email_id: local id of a message this is a reply to (threads it,
             and derives to/subject when those are omitted).
-        attachments: workspace artifact paths to attach. Each is either
-            ``"outputs/file.pdf"`` (a file you made with write_artifact) or
-            ``"<agent>:outputs/file.pdf"`` for a sub-agent's file (e.g.
-            ``"sales-assistant:outputs/quote.pdf"``). Use list_artifacts to see
-            what's available; write_artifact to create one first.
+        attachments: workspace artifact paths to attach, e.g.
+            ``"outputs/file.pdf"`` (a file you made with write_artifact). Only
+            a file in your own workspace can be attached. Use list_artifacts
+            to see what's available; write_artifact to create one first.
     """
     to = list(to or [])
     # Reply mode: fill missing recipient / subject from the original message.

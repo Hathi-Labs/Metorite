@@ -2655,6 +2655,12 @@ async def run_agent_sync(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-201 part 3: the same live-run guard as the stream route. The thread id
+    # is client input, and a run on it must not supersede another person's.
+    if req.thread_id:
+        await _refuse_if_another_run_is_active(
+            req.thread_id, (getattr(user, "email", "") or "").strip(),
+        )
     run_id = req.run_id or str(uuid.uuid4())
 
     try:
@@ -2664,6 +2670,11 @@ async def run_agent_sync(
             run_id=run_id,
             thread_id=req.thread_id,
             model=req.model,
+            # H-201 part 3: the caller's tenant, from the authenticated
+            # identity. Without it the executor falls to _current_run_org(),
+            # which reads _RUN_ORG[req.thread_id] first, and the thread id is
+            # client input. So a live thread of another org lent its tenant.
+            organization_id=getattr(user, "organization_id", None),
             session_user=_session_member(user),
         )
         return AgentRunResponse(
@@ -2700,12 +2711,21 @@ async def run_agent_async(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-201 part 3: the same live-run guard as the stream route. The thread id
+    # is client input, and a run on it must not supersede another person's.
+    if req.thread_id:
+        await _refuse_if_another_run_is_active(
+            req.thread_id, (getattr(user, "email", "") or "").strip(),
+        )
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:
         try:
+            # H-201 part 3: the caller's tenant, never the thread's (see
+            # run_agent_sync).
             await run_agent(agent, req.payload, run_id=run_id,
                             thread_id=req.thread_id, model=req.model,
+                            organization_id=getattr(user, "organization_id", None),
                             session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(

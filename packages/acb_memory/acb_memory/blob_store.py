@@ -388,6 +388,7 @@ async def file_history(
 async def rehydrate_workspace(
     agent_name: str, workspace_root: str, *, instance: str = "",
     organization_id: str | None = None,
+    legacy_instance: str | None = None,
 ) -> int:
     """Restore agent-data/inputs/outputs from the store into *workspace_root*.
 
@@ -402,6 +403,14 @@ async def rehydrate_workspace(
     would put one person's notes in front of another. Callers that pass a
     non-empty instance must give each instance its own workspace root.
 
+    *legacy_instance* (H-201 part 3, ``projects_ai_chat.md`` §21.15) also
+    restores the rows of an older partition, for a path that *instance* does
+    not hold. A shared agent's tenant dir (``o:<org>``) passes ``""``. Its rows
+    from before the tenant dir existed carry ``instance=''``, and each row
+    carries the tenant of the run that wrote it (S15). The read is in one
+    tenant, so only this tenant's older rows come back. A row of *instance*
+    always wins over a legacy row at the same path.
+
     Returns the number of files restored/updated. Never raises.
     """
     from pathlib import Path  # noqa: PLC0415
@@ -413,11 +422,18 @@ async def rehydrate_workspace(
         metas = await list_files(
             agent_name, instance=instance, organization_id=org,
         )
-        if not metas:
+        plan: list[tuple[BlobMeta, str]] = [(m, instance) for m in metas]
+        if legacy_instance is not None and legacy_instance != instance:
+            held = {m.path for m in metas}
+            older = await list_files(
+                agent_name, instance=legacy_instance, organization_id=org,
+            )
+            plan += [(m, legacy_instance) for m in older if m.path not in held]
+        if not plan:
             return 0
         root = Path(workspace_root)
         restored = 0
-        for meta in metas:
+        for meta, from_instance in plan:
             dest = root / meta.path
             # Skip if disk already has this exact version.
             if dest.exists():
@@ -427,7 +443,8 @@ async def rehydrate_workspace(
                 except Exception:  # noqa: BLE001
                     pass
             data = await get_file(
-                agent_name, meta.path, instance=instance, organization_id=org,
+                agent_name, meta.path, instance=from_instance,
+                organization_id=org,
             )
             if data is None:
                 continue

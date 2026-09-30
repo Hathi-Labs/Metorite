@@ -136,8 +136,13 @@ def test_a_shared_run_stamps_no_partition() -> None:
 
 
 def test_directory_precedence_is_exact(tmp_path: Path, monkeypatch) -> None:
-    """session override > instance > workspace_root > clone dir."""
-    from orchestrator.executor import _resolve_effective_agent_dir
+    """session override > instance > workspace_root > tenant dir > refused.
+
+    H-201 part 3: the clone dir is never a working dir. A shared run with a
+    tenant gets ``state/<agent>/<o:org slug>``, and one with no tenant is
+    refused.
+    """
+    from orchestrator.executor import RunWorkspaceRefused, _resolve_effective_agent_dir
 
     monkeypatch.setattr(
         "acb_skills.agent_paths._configured_clone_dir", lambda: tmp_path,
@@ -158,8 +163,14 @@ def test_directory_precedence_is_exact(tmp_path: Path, monkeypatch) -> None:
     assert str(tmp_path / "state" / "email-assistant") in inst
     # workspace_root still wins for shared agents.
     assert _resolve_effective_agent_dir(clone, cfg) == str(external)
-    # And the bare default is the clone dir, byte-identically.
-    assert _resolve_effective_agent_dir(clone, {}) == str(clone)
+    assert _resolve_effective_agent_dir(clone, cfg, organization_id="org-a") == str(external)
+    # A shared run with a tenant works in its tenant dir, not the clone.
+    tenant = _resolve_effective_agent_dir(clone, {}, organization_id="org-a")
+    assert Path(tenant).parent == tmp_path / "state" / "email-assistant"
+    assert (Path(tenant) / ".cc-instance").read_text(encoding="utf-8") == "o:org-a"
+    # And with no tenant it has no working dir at all.
+    with pytest.raises(RunWorkspaceRefused):
+        _resolve_effective_agent_dir(clone, {})
 
 
 def test_instanced_dir_is_created_and_stamped(tmp_path: Path, monkeypatch) -> None:

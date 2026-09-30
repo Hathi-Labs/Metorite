@@ -99,8 +99,14 @@ class _LoadCtx:
 
 
 @pytest.fixture
-def probe(monkeypatch: pytest.MonkeyPatch):
-    """``run_agent_stream`` wired to the probe agent. No clone, no LLM, no audit."""
+def probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """``run_agent_stream`` wired to the probe agent. No clone, no LLM, no audit.
+
+    H-201 part 3: a run with a tenant makes its tenant dir below the state
+    root, so the clone root is a scratch dir here."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path))
     seen: list[dict[str, str]] = []
     monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _LoadCtx(seen))
     monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
@@ -146,21 +152,33 @@ def test_run_carries_org_during_and_clears_after(probe):
 
 def test_a_payload_supplied_org_is_never_the_runs_org(probe):
     """R11: ``event_payload`` is client/agent-visible. With no server-side org,
-    an org smuggled in the payload must not become the run's tenant."""
-    asyncio.run(_drain_stream(
-        {
-            "message": "hi", "source": "chat",
-            # Every field a regressed executor might read from the payload.
-            "organization_id": "SPOOF", "org": "SPOOF", "organization": "SPOOF",
-            "tenant": "SPOOF", "tenant_id": "SPOOF",
-        },
-        organization_id=None, thread_id=KNOWN_TID,
-    ))
+    an org smuggled in the payload must not become the run's tenant.
 
-    during = probe.seen[0]
-    assert KNOWN_TID not in during, (
-        f"a payload-supplied org leaked into the run's tenant: {during!r}"
-    )
+    H-201 part 3 (``projects_ai_chat.md`` §21.15): the probe is a SHARED agent,
+    and a shared agent with no tenant is refused before it runs. So the proof
+    is stronger now. Had the executor read the payload, the run would have a
+    tenant dir keyed ``o:SPOOF``, and the probe would run in it."""
+    from acb_skills.agent_paths import agent_state_dir
+
+    events: list[str] = []
+
+    async def _drain() -> None:
+        async for line in executor.run_agent_stream(
+            "org-probe", {
+                "message": "hi", "source": "chat",
+                # Every field a regressed executor might read from the payload.
+                "organization_id": "SPOOF", "org": "SPOOF", "organization": "SPOOF",
+                "tenant": "SPOOF", "tenant_id": "SPOOF",
+            },
+            run_id="run-1", thread_id=KNOWN_TID, organization_id=None,
+        ):
+            events.append(line)
+
+    asyncio.run(_drain())
+
+    assert probe.seen == [], f"the run went ahead with no tenant: {probe.seen!r}"
+    assert any("RunWorkspaceRefused" in e for e in events), events
+    assert not agent_state_dir("tmp", "o:SPOOF").exists()
     assert KNOWN_TID not in executor._RUN_ORG
 
 

@@ -263,6 +263,37 @@ def _graph_session_opener_current():
     return _opener_for_org(_current_run_org())
 
 
+class RunTenantConflict(RuntimeError):
+    """This thread id already carries a live run of ANOTHER tenant.
+
+    H-201 part 3, the verifier's blocker. ``thread_id`` is client input on
+    ``/agent/run`` and ``/agent/run/async``. Writing ``_RUN_ORG[thread_id]``
+    over a live entry of another org would hand that org's run this run's
+    tenant, and this run's end would pop the entry out from under it. So the
+    write refuses instead.
+    """
+
+
+def _claim_run_org(thread_id: str, organization_id: str) -> str | None:
+    """Record *organization_id* as this run's tenant in ``_RUN_ORG``.
+
+    Returns the org this run SET, which is the only entry its ``finally`` may
+    pop. ``None`` when a live entry of the SAME org was already there: this
+    run leaves it to the run that set it. A live entry of a DIFFERENT org
+    raises :class:`RunTenantConflict` and is never overwritten.
+    """
+    held = _RUN_ORG.get(thread_id)
+    if held and held != organization_id:
+        raise RunTenantConflict(
+            f"Thread {str(thread_id)[:40]!r} has a live run of another "
+            "organization, so this run cannot start on it."
+        )
+    if held == organization_id:
+        return None
+    _RUN_ORG[thread_id] = organization_id
+    return organization_id
+
+
 def _guarded_pop_run_org(
     thread_id: str | None, organization_id: str | None,
 ) -> None:
@@ -881,7 +912,13 @@ async def _run_sub_agent_streaming(
             # unless working_directory is explicitly set.  Without this,
             # shell commands, file reads, AGENTS.md, and skill resolution
             # all happen in the wrong directory.
-            _sub_agent_dir = str(loaded.agent_dir)
+            # H-201 part 3: a sub-agent works in the tenant dir of its PARENT
+            # run's tenant, never in its clone. No tenant raises
+            # RunWorkspaceRefused, and the delegation answers with the error.
+            _sub_agent_dir = _resolve_effective_agent_dir(
+                loaded.agent_dir, loaded.config,
+                organization_id=_resolve_sub_agent_org(),
+            )
             if (
                 _runtime == "github-copilot"
                 and hasattr(agent, "_default_options")
@@ -1229,13 +1266,121 @@ def _bind_run_instance(instance: str, run_id: str = "") -> None:
         pass
 
 
+class RunWorkspaceRefused(RuntimeError):
+    """A shared agent's run has no tenant, so it has no working dir.
+
+    H-201 part 3 (``projects_ai_chat.md`` §21.15). The one clone
+    ``repos/<agent>`` holds the code of a shared agent for every tenant. A run
+    with no tenant must not fall back to it for its writes, so the run is
+    refused before the agent starts. It fails closed, and it writes nothing.
+    """
+
+
+def _resolve_run_workspace(
+    agent_dir: Path,
+    agent_config: dict[str, Any],
+    session_override: str | None = None,
+    instance: str = "",
+    organization_id: str | None = None,
+) -> tuple[str, str]:
+    """``(working dir, blob-store instance)`` for one run.
+
+    The order is exact. It is the order of :func:`_resolve_effective_agent_dir`
+    with one new step, and one refusal at the end:
+
+    1. the session override (the App Workshop's app dir);
+    2. a ``personal``/``team`` key (``u:<email>`` / ``t:<team>``);
+    3. the ``workspace_root`` of ``config.json``, when it exists on disk;
+    4. **the tenant dir** ``state/<agent>/<o:org slug>``, for a run whose
+       manifest key is ``''`` (H-201 part 3). The store key is ``o:<org>``, so
+       disk and store agree, and the primary key of ``agent_blob`` can never
+       join two tenants at one path;
+    5. **no tenant: :class:`RunWorkspaceRefused`.** The clone is never a
+       working dir any more.
+
+    *organization_id* is the run's tenant from the run binding (``_RUN_ORG``
+    or ``current_tenant``), never from the event payload (R5).
+    """
+    if session_override:
+        return session_override, instance
+    if instance:
+        from acb_skills.agent_paths import ensure_state_dir
+        # The clone dir's basename IS the agent name (loader clones with
+        # clone_as=agent_name), so no separate parameter to drift from it.
+        return str(ensure_state_dir(agent_dir.name, instance)), instance
+    external = _configured_workspace_root(agent_config)
+    if external:
+        return external, ""
+    if organization_id:
+        return _tenant_workspace(agent_dir.name, organization_id)
+    raise RunWorkspaceRefused(
+        f"Agent {agent_dir.name!r} is shared, and this run has no tenant. "
+        "It has no working dir, so it cannot run."
+    )
+
+
+def _tenant_workspace(agent_name: str, organization_id: str) -> tuple[str, str]:
+    """``(tenant dir, o:<org>)`` for a shared agent, made and stamped.
+
+    The dir must lie strictly below ``state_root()`` with every link
+    followed. The check comes BEFORE ``ensure_state_dir``, as in the gateway:
+    a link planted at ``state/<agent>`` must not make a folder or a marker
+    inside a clone. Raises :class:`RunWorkspaceRefused` otherwise.
+    """
+    from acb_skills.agent_paths import (
+        agent_state_dir,
+        ensure_state_dir,
+        state_root,
+        tenant_instance,
+    )
+    key = tenant_instance(organization_id)
+    root = state_root().resolve()
+    planned = agent_state_dir(agent_name, key).resolve()
+    if planned != root and planned.is_relative_to(root):
+        made = ensure_state_dir(agent_name, key)
+        if made.resolve().is_relative_to(root):
+            return str(made), key
+    raise RunWorkspaceRefused(
+        f"Agent {agent_name!r}: the tenant working dir resolves outside "
+        "the state root."
+    )
+
+
+def _configured_workspace_root(agent_config: dict[str, Any]) -> str:
+    """``config.json``'s ``workspace_root``, resolved, or ``''``.
+
+    ``"$SOME_REPO_ROOT"`` reads the environment variable. A path that is not a
+    directory on disk gives ``''``.
+    """
+    raw = agent_config.get("workspace_root") or ""
+    if not raw:
+        return ""
+    resolved = raw
+    if raw.startswith("$"):
+        resolved = os.environ.get(raw[1:], "")
+    if resolved and Path(resolved).is_dir():
+        return resolved
+    _log.debug(
+        "executor.workspace_root_unavailable",
+        configured=raw,
+        resolved=resolved,
+    )
+    return ""
+
+
 def _resolve_effective_agent_dir(
     agent_dir: Path,
     agent_config: dict[str, Any],
     session_override: str | None = None,
     instance: str = "",
+    organization_id: str | None = None,
 ) -> str:
     """Resolve the effective working directory for an agent.
+
+    H-201 part 3: this is ``_resolve_run_workspace(...)[0]``. A shared agent
+    with a tenant works in its tenant dir, and a shared agent with no tenant
+    raises :class:`RunWorkspaceRefused`. The text below is the older rule
+    for the first three steps.
 
     By default this is the agent's clone directory.  If the agent config
     specifies ``workspace_root`` (optionally as an env-var reference like
@@ -1256,37 +1401,49 @@ def _resolve_effective_agent_dir(
 
     This lets an agent opt in to working on an external repo while its
     agent definition stays in its own clone, exactly like every other
-    Copilot SDK agent.  When unset (the default), the agent operates in
-    its own cloned repo directory.
+    Copilot SDK agent.  When unset (the default), a shared agent works in
+    its tenant dir, never in the clone (H-201 part 3).
     """
-    if session_override:
-        return session_override
+    return _resolve_run_workspace(
+        agent_dir, agent_config,
+        session_override=session_override, instance=instance,
+        organization_id=organization_id,
+    )[0]
+
+
+def _rehydrate_target(
+    agent_dir: Path, instance: str, organization_id: str | None,
+) -> tuple[str, str, str | None] | None:
+    """``(dir, instance, legacy instance)`` for the blob-store rehydrate.
+
+    A personal/team run restores its own key into its own state dir. A shared
+    run restores ``o:<org>`` into the tenant dir, and also this tenant's rows
+    from before the tenant dir (``instance=''``, S15). A run with neither
+    restores nothing, and never into the clone (H-201 part 3).
+    """
+    from acb_skills.agent_paths import ensure_state_dir
+
     if instance:
-        from acb_skills.agent_paths import ensure_state_dir
-        # The clone dir's basename IS the agent name (loader clones with
-        # clone_as=agent_name), so no separate parameter to drift from it.
-        return str(ensure_state_dir(agent_dir.name, instance))
-    raw = agent_config.get("workspace_root") or ""
-    if not raw:
-        return str(agent_dir)
+        return str(ensure_state_dir(agent_dir.name, instance)), instance, None
+    if organization_id:
+        try:
+            where, key = _tenant_workspace(agent_dir.name, organization_id)
+        except RunWorkspaceRefused:
+            return None
+        return where, key, ""
+    return None
 
-    # Resolve $ENV_VAR references
-    resolved = raw
-    if raw.startswith("$"):
-        var_name = raw[1:]
-        resolved = os.environ.get(var_name, "")
 
-    if resolved and Path(resolved).is_dir():
-        return resolved
+def _git_dir_for(agent_dir: Path, effective_dir: str, store_instance: str) -> str:
+    """The dir of the git helpers, the self-anneal and the self-mutation.
 
-    # Fall back to the agent clone if the workspace_root is not available
-    _log.debug(
-        "executor.workspace_root_unavailable",
-        configured=raw,
-        resolved=resolved,
-        fallback=str(agent_dir),
-    )
-    return str(agent_dir)
+    A shared agent's tenant dir holds no code and is not a checkout, so those
+    helpers keep the clone, as before H-201 part 3. Every other run keeps its
+    working dir, so a personal agent is unchanged.
+    """
+    from acb_skills.agent_paths import is_tenant_instance
+
+    return str(agent_dir) if is_tenant_instance(store_instance) else effective_dir
 
 
 async def _maybe_sandbox_session_workspace(
@@ -2186,8 +2343,19 @@ async def _run_agent_inner(
     if isinstance(event_payload, dict):
         _batch_source = str(event_payload.get("source") or "").strip()
     _tenant_token = None
+    # H-201 part 3: the org this run SET in _RUN_ORG, the only one it pops.
+    _owned_org: str | None = None
     if organization_id:
-        _RUN_ORG[thread_id] = organization_id
+        try:
+            _owned_org = _claim_run_org(thread_id, organization_id)
+        except RunTenantConflict as exc:
+            _log.warning(
+                "executor.run_tenant_conflict", agent=agent_name,
+                thread_id=str(thread_id)[:40],
+            )
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         try:
             from acb_common.db import bind_tenant
             _tenant_token = bind_tenant(organization_id)
@@ -2221,6 +2389,9 @@ async def _run_agent_inner(
 
     try:
         _effective_agent_dir: str | None = None
+        # The dir the git helpers, the self-anneal and the self-mutation use.
+        # A tenant dir holds no code, so for a shared agent it stays the clone.
+        _git_dir: str | None = None
 
         # Look up optional repo_name override from the gateway's agent registry.
         # This allows repos not following the "agent-{name}" naming convention
@@ -2266,12 +2437,21 @@ async def _run_agent_inner(
                 ) if isinstance(event_payload, dict) else "",
             )
             _bind_run_app(loaded.config)
-            _effective_agent_dir = _resolve_effective_agent_dir(
+            # H-201 part 3: a shared agent works in its tenant dir. The tenant
+            # is the run binding (the caller's server-side org, else the bound
+            # tenant), never the event payload. No tenant raises
+            # RunWorkspaceRefused, answered below without the self-anneal.
+            _run_org = organization_id or _current_run_org()
+            _effective_agent_dir, _store_instance = _resolve_run_workspace(
                 loaded.agent_dir, loaded.config,
                 session_override=_session_workspace_override(
                     thread_id, loaded.config,
                 ),
                 instance=_agent_instance,
+                organization_id=_run_org,
+            )
+            _git_dir = _git_dir_for(
+                loaded.agent_dir, _effective_agent_dir, _store_instance,
             )
 
             # For GitHub Copilot SDK agents: install the push guard (prevents
@@ -2292,8 +2472,8 @@ async def _run_agent_inner(
                 # Install push guard + capture HEAD for ALL agents (not just
                 # github-copilot).  MAF agents may also generate commits during
                 # a run, and the guard protects against unapproved pushes.
-                await _install_push_guard(_effective_agent_dir)
-                _head_before = await _get_current_head(_effective_agent_dir)
+                await _install_push_guard(_git_dir)
+                _head_before = await _get_current_head(_git_dir)
             except Exception:
                 pass
 
@@ -2337,7 +2517,8 @@ async def _run_agent_inner(
                 _WRITE_ARTIFACT_CONTEXT["workspace_root"] = _effective_agent_dir
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration 136).
-                _WRITE_ARTIFACT_CONTEXT["instance"] = _agent_instance
+                # A shared agent's tenant dir carries o:<org> (H-201 part 3).
+                _WRITE_ARTIFACT_CONTEXT["instance"] = _store_instance
                 # Declared+resolved integrations for this run — read by
                 # list_integrations (discoverability) and code_tools
                 # (_script_env grants a script exactly these creds).
@@ -2364,11 +2545,18 @@ async def _run_agent_inner(
             # is source of truth, disk is a cache). Best-effort; never blocks.
             # The instance selects WHICH partition — restoring the shared one
             # into a tenant dir would put other people's notes in this run.
+            # H-201 part 3: a shared agent restores o:<org>, and this tenant's
+            # older '' rows, into its tenant dir. Never into the clone.
             try:
                 from acb_memory import rehydrate_workspace
-                await rehydrate_workspace(
-                    agent_name, _effective_agent_dir, instance=_agent_instance,
+                _rt = _rehydrate_target(
+                    loaded.agent_dir, _agent_instance, _run_org,
                 )
+                if _rt is not None:
+                    await rehydrate_workspace(
+                        agent_name, _rt[0], instance=_rt[1],
+                        organization_id=_run_org, legacy_instance=_rt[2],
+                    )
             except Exception:
                 pass
 
@@ -2465,7 +2653,7 @@ async def _run_agent_inner(
         except Exception:
             pass
         await _detect_agent_commits(
-            agent_name, _effective_agent_dir, run_id,
+            agent_name, _git_dir, run_id,
             since_sha=_head_before if _head_before else None,
             # WS-29 slice 6a: the batch path now sets _RUN_ORG[thread_id] when its
             # caller supplied an org, so with the flag ON an org-carrying batch run
@@ -2475,6 +2663,17 @@ async def _run_agent_inner(
             thread_id=thread_id,
         )
         return final_state
+
+    except RunWorkspaceRefused as exc:
+        # H-201 part 3: fail closed. No self-anneal and no self-mutation: the
+        # agent is fine, the run has no tenant.
+        _log.warning(
+            "executor.run_workspace_refused", agent=agent_name, run_id=run_id,
+            error=str(exc),
+        )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
 
     except AgentLoadError as exc:
         _log.error("executor.load_error", agent=agent_name, run_id=run_id, error=str(exc))
@@ -2498,7 +2697,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_effective_agent_dir,
+            agent_dir=_git_dir or _effective_agent_dir,
             incompatibility=True,
         )
         pr_url = mutation_result.pr_url if mutation_result else None
@@ -2530,7 +2729,7 @@ async def _run_agent_inner(
             run_id=run_id,
             thread_id=thread_id,
             event_payload=event_payload,
-            agent_dir=_effective_agent_dir,
+            agent_dir=_git_dir or _effective_agent_dir,
             error=exc,
         )
         if recovery is not None:
@@ -2544,7 +2743,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_effective_agent_dir,  # pass persistent clone path for authenticated push
+            agent_dir=_git_dir or _effective_agent_dir,  # the clone, for an authenticated push
         )
         pr_url = mutation_result.pr_url if mutation_result else None
 
@@ -2578,7 +2777,8 @@ async def _run_agent_inner(
         # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
         # GUARDED pop (slice 3, P2): only drop the record if it is STILL this
         # run's org — a superseded same-thread run must not clobber a newer one.
-        _guarded_pop_run_org(thread_id, organization_id)
+        # H-201 part 3: and only an entry this run SET (_owned_org).
+        _guarded_pop_run_org(thread_id, _owned_org)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
@@ -2743,8 +2943,25 @@ async def run_agent_stream(
     #   2. ``bind_tenant(org)`` — so any async ``acb_common.tenant_session`` read
     #      on THIS run's own event loop resolves the tenant.
     _tenant_token = None
+    # H-201 part 3: the org this run SET in _RUN_ORG, the only one it pops.
+    _owned_org: str | None = None
     if organization_id:
-        _RUN_ORG[thread_id] = organization_id
+        try:
+            _owned_org = _claim_run_org(thread_id, organization_id)
+        except RunTenantConflict as exc:
+            # Before the generator's try, so undo what is bound so far: the
+            # acting user and the run correlation.
+            _unbind_run_identity(_identity_binding)
+            with contextlib.suppress(Exception):
+                from acb_common import clear_run_context
+                clear_run_context()
+            _log.warning(
+                "executor.run_tenant_conflict", agent=agent_name,
+                thread_id=str(thread_id)[:40],
+            )
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         try:
             from acb_common.db import bind_tenant
             _tenant_token = bind_tenant(organization_id)
@@ -2805,18 +3022,16 @@ async def run_agent_stream(
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
     _relay_mark_inactive = None  # type: ignore[assignment]
-    try:
+    _relay_mark_active = None  # type: ignore[assignment]
+    with contextlib.suppress(Exception):
         from orchestrator.stream_relay import (
             mark_active as _relay_mark_active,
             mark_inactive as _relay_mark_inactive,
         )
-        await _relay_mark_active(thread_id)
-    except Exception:
-        pass
-
-    # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
-    # reset, so the next event emitted is entry #1 in Redis.
-    _thread_emit_seq[thread_id] = 0
+    # H-201 part 3: the relay mark and the RUN_STARTED yield run INSIDE the
+    # main try below. A consumer that closes the stream at the first event, or
+    # a cancel at the await, must still reach the finally, or this run's
+    # _RUN_ORG entry leaks and no later run pops it.
 
     # Cross-worker HITL delivery (P1-2): register a "respond_input" applier so a
     # user's ask_user answer that arrives on a DIFFERENT worker is relayed here
@@ -2850,14 +3065,22 @@ async def run_agent_stream(
     except ImportError:
         pass
 
-    # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-    yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
-
     # B6 Phase-5 Tier 0: initialised here so the finally can always restore,
     # even if load_agent / build_integrations raises before creds are injected.
     _integration_env_token: IntegrationEnvToken = None
 
     try:
+        if _relay_mark_active is not None:
+            with contextlib.suppress(Exception):
+                await _relay_mark_active(thread_id)
+
+        # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
+        # reset, so the next event emitted is entry #1 in Redis.
+        _thread_emit_seq[thread_id] = 0
+
+        # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -2917,10 +3140,18 @@ async def run_agent_stream(
             # load, so it has no instance) is patched to match.
             _bind_run_instance(_agent_instance, run_id)
             _bind_run_app(loaded.config)
-            _effective_ws = _resolve_effective_agent_dir(
+            # H-201 part 3: a shared agent works in its tenant dir. The tenant
+            # is the run binding, never the event payload. No tenant raises
+            # RunWorkspaceRefused, which ends the run with a RUN_ERROR.
+            _run_org = organization_id or _current_run_org()
+            _effective_ws, _store_instance = _resolve_run_workspace(
                 loaded.agent_dir, loaded.config,
                 session_override=_session_ws,
                 instance=_agent_instance,
+                organization_id=_run_org,
+            )
+            _git_dir = _git_dir_for(
+                loaded.agent_dir, _effective_ws, _store_instance,
             )
 
             # Set write_artifact context so the tool knows which session to
@@ -2934,7 +3165,8 @@ async def run_agent_stream(
                 _WRITE_ARTIFACT_CONTEXT["workspace_root"] = _effective_ws
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration 136).
-                _WRITE_ARTIFACT_CONTEXT["instance"] = _agent_instance
+                # A shared agent's tenant dir carries o:<org> (H-201 part 3).
+                _WRITE_ARTIFACT_CONTEXT["instance"] = _store_instance
                 # Declared+resolved integrations for this run — read by
                 # list_integrations (discoverability) and code_tools
                 # (_script_env grants a script exactly these creds).
@@ -2966,15 +3198,18 @@ async def run_agent_stream(
             # a tenant dir would put other people's notes in this run. A
             # session-override run keeps restoring into the agent's own dir
             # (never the app workspace), exactly as before.
+            # H-201 part 3: a shared agent restores o:<org>, and this tenant's
+            # older '' rows, into its tenant dir. Never into the clone.
             try:
                 from acb_memory import rehydrate_workspace
-                from acb_skills.agent_paths import ensure_state_dir
-                await rehydrate_workspace(
-                    agent_name,
-                    str(ensure_state_dir(loaded.agent_dir.name, _agent_instance))
-                    if _agent_instance else str(loaded.agent_dir),
-                    instance=_agent_instance,
+                _rt = _rehydrate_target(
+                    loaded.agent_dir, _agent_instance, _run_org,
                 )
+                if _rt is not None:
+                    await rehydrate_workspace(
+                        agent_name, _rt[0], instance=_rt[1],
+                        organization_id=_run_org, legacy_instance=_rt[2],
+                    )
             except Exception:
                 pass
 
@@ -3541,8 +3776,8 @@ async def run_agent_stream(
                 )
 
                 # Install push guard + capture HEAD for post-run commit detection.
-                await _install_push_guard(_effective_agent_dir)
-                _stream_head_before = await _get_current_head(_effective_agent_dir)
+                await _install_push_guard(_git_dir)
+                _stream_head_before = await _get_current_head(_git_dir)
 
                 # BYOK provider + model already resolved in the early-
                 # detection block.  Reuse pre-computed values.
@@ -4120,7 +4355,7 @@ async def run_agent_stream(
                 yield _sse({"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id})
 
                 await _detect_agent_commits(
-                    agent_name, _effective_agent_dir, run_id,
+                    agent_name, _git_dir, run_id,
                     since_sha=_stream_head_before if _stream_head_before else None,
                     # Stream path: run_agent_stream set _RUN_ORG[thread_id] at run
                     # start and its finally has not fired yet, so with the flag ON
@@ -4610,8 +4845,9 @@ async def run_agent_stream(
         # worker-thread org record and release the async tenant binding, so a
         # tenant left bound is never inherited by whatever runs next on this task.
         # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
-        # this run's org — see :func:`_guarded_pop_run_org`.
-        _guarded_pop_run_org(thread_id, organization_id)
+        # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
+        # only an entry this run SET (_owned_org).
+        _guarded_pop_run_org(thread_id, _owned_org)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant

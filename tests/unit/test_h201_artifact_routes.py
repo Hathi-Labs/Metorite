@@ -360,36 +360,22 @@ def _snapshot(root: Path) -> dict[str, bytes]:
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-@_DB_GATE
-def test_a_shared_agent_session_is_read_only(graph_as_app, disk, roots, workspace_client):  # noqa: F811
-    """A member of either org opens their own session of a shared agent. The
-    root is the one clone. Reads stay (the Projects chat's documents, §14),
-    and every change route is 403. A stored root in the clone is the same."""
-    a, b = graph_as_app.org_a, graph_as_app.org_b
-    clone = disk.repos / _S
-    (clone / "inputs").mkdir()
-    (clone / "inputs" / "spec.txt").write_text("spec", encoding="utf-8")
-    before = _snapshot(clone)
+# H-201 part 3 (§21.15) retired ``test_a_shared_agent_session_is_read_only``.
+# A shared agent's session no longer resolves to the clone at all: it gives
+# the caller's tenant dir, which the caller may change. The fence for that is
+# ``tests/unit/test_h201_tenant_workdirs.py``. ``_refuse_shared_clone_write``
+# stays as a backstop, and ``test_the_refusal_still_guards_a_clone_root``
+# below keeps it honest.
 
-    for owner, org, stored in ((_ALICE, a, None), (_CAROL, b, None),
-                               (_ALICE, a, str(clone))):
-        sid = _seed_session(graph_as_app, org, owner, stored, agent=_S)
-        c = workspace_client(_user(owner, org))
-        base = f"/agent/workspace/{sid}"
-        tree = c.get(base)
-        assert tree.status_code == 200, tree.text
-        assert "outputs/org-a-run.md" in {f["path"] for f in tree.json()["files"]}
-        assert c.get(f"{base}/file", params={"path": "outputs/org-a-run.md"}).status_code == 200
-        for r in (
-            c.put(f"{base}/file", params={"path": "agent-data/NOTES.md"},
-                  json={"content": "poison"}),
-            c.delete(f"{base}/file", params={"path": "outputs/org-a-run.md"}),
-            c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}),
-            c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}),
-        ):
-            assert r.status_code == 403, (owner, stored, r.status_code, r.text)
-            assert "read-only" in r.text
-    assert _snapshot(clone) == before
+
+def test_the_refusal_still_guards_a_clone_root(disk) -> None:
+    from fastapi import HTTPException
+    from gateway.routes.workspace import _refuse_shared_clone_write
+
+    with pytest.raises(HTTPException) as err:
+        _refuse_shared_clone_write(disk.repos / _S)
+    assert err.value.status_code == 403
+    _refuse_shared_clone_write(disk.alice)
 
 
 @_DB_GATE

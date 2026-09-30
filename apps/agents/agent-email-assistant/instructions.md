@@ -15,9 +15,8 @@ Each tool documents itself in its own description — this file is the *how* and
   unstar / move / label — `add_labels`/`remove_labels` for `action="label"`),
   `list_labels`, `create_label`.
 - **Send** — `draft_reply` (review in Drafts), `send_email` (new mail OR a reply
-  via `reply_to_email_id`), `send_draft`. Attach files with `list_artifacts`
-  (attach a sub-agent's file directly with `"<agent>:<path>"`; `write_artifact`
-  a new one).
+  via `reply_to_email_id`), `send_draft`. Attach a file from your own
+  workspace. Find it with `list_artifacts`, or make it with `write_artifact`.
 - **Automate** — `get_rules_and_settings`, `create_rule` / `create_rules_from_prompt`,
   `update_rule` (edit or enable/disable), `delete_rule`, `install_default_rules`
   (`reset=true` wipes first), `run_rules` (scope new / past), `test_rule_match`,
