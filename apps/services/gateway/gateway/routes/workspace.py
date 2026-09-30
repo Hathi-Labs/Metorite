@@ -316,6 +316,41 @@ def _allowed_workspace(
     return None
 
 
+def _is_shared_clone(workspace: Path) -> bool:
+    """True when *workspace* lies under an agent clone root, ``repos/``.
+
+    That is a shared agent's one clone, which every tenant runs in. H-201
+    part 2, P0-A: no member may change it through a session route. A read
+    stays open for the Projects chat's documents (§14), and the next slice
+    moves a shared agent's run into a tenant-partitioned folder.
+    """
+    from acb_common import get_settings
+
+    settings = get_settings()
+    clone_root = Path(getattr(
+        settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")))
+    try:
+        resolved = workspace.resolve()
+    except OSError:
+        return True
+    for repos in (clone_root / "repos", Path("/tmp/acb_agents") / "repos"):
+        try:
+            if _is_under(resolved, repos.resolve()):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _refuse_shared_clone_write(workspace: Path) -> None:
+    """403 when a session route would change a shared agent's clone."""
+    if _is_shared_clone(workspace):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A shared agent's workspace is read-only.",
+        )
+
+
 def _get_workspace_path(
     session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
@@ -1118,6 +1153,7 @@ async def upload_files(
             detail="No workspace found for this session. "
                    "Start a chat with an agent first.",
         )
+    _refuse_shared_clone_write(workspace)
 
     # Upload to inputs/ (visible workspace directory) — not .tmp/
     upload_dir = workspace / "inputs"
@@ -1300,6 +1336,7 @@ async def delete_workspace_file(
         raise HTTPException(
             status_code=404, detail="Workspace not found for session"
         )
+    _refuse_shared_clone_write(workspace)
 
     file_path = _safe_resolve(workspace, path)
     if not file_path.exists():
@@ -1357,6 +1394,7 @@ async def promote_input_to_agent_data(
     )
     if workspace is None or not workspace.exists():
         raise HTTPException(status_code=404, detail="workspace not found")
+    _refuse_shared_clone_write(workspace)
 
     src_rel = body.path.replace("\\", "/").lstrip("/")
     if not src_rel.startswith("inputs/"):
@@ -1467,6 +1505,7 @@ async def write_workspace_file(
         raise HTTPException(
             status_code=404, detail="Workspace not found for session"
         )
+    _refuse_shared_clone_write(workspace)
 
     file_path = _safe_resolve(workspace, path)
     # Only allow writes within the visible workspace dirs (inputs/, outputs/,
