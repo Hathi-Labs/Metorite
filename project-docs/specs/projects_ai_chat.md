@@ -3992,6 +3992,9 @@ server resolves from the authenticated identity.
    code.
 7. The Copilot sub-agent path works in the tenant dir of its parent's
    tenant. The Projects dispatch now passes the task's tenant to the run.
+   `/agent/run` and `/agent/run/async` pass `user.organization_id`. The
+   thread id is client input, so a live thread of another org must not
+   lend its tenant through `_RUN_ORG`.
 8. Step 2 of `_get_workspace_path` gives the caller's tenant dir for a
    shared agent (`_tenant_agent_workspace`), and `_member_agent_workspace`
    for a personal one. A team agent keeps the older rule.
@@ -4076,6 +4079,7 @@ tests on the phase 4 catalog, as the NOBYPASSRLS app role.
 | the upload write-through drops the caller's tenant | 1 |
 | a delete leaves the older row | 1 |
 | the Projects dispatch drops the tenant | 1 |
+| `/agent/run` and `/agent/run/async` drop the caller's tenant | 2 |
 | a refused attach ref skipped, as before | 5 |
 | the rule action's source back to `_agent_workspace_dir` | 1 |
 | `_is_blocked_path` removed from the rule action | 1 |

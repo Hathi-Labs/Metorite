@@ -29,7 +29,8 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * the fault-in drops its ``''`` fallback, its clone guard or its tenant check;
 * a delete leaves the older ``''`` row;
 * ``_git_dir_for`` gives the tenant dir to the git helpers;
-* the Projects dispatch drops the tenant.
+* the Projects dispatch drops the tenant;
+* ``/agent/run`` or ``/agent/run/async`` drops the caller's tenant.
 
 Run::
 
@@ -390,6 +391,46 @@ def test_a_stream_run_is_given_its_tenant_dir(disk, wiring) -> None:
     # The stream path runs the git helpers only once an agent runs.
     _expect_tenant_run(wiring, disk, "org-s", git=False)
     assert disk.snapshot() == before
+
+
+@pytest.mark.parametrize("route", ["sync", "async"])
+def test_a_run_route_takes_the_callers_tenant_not_the_threads(
+    disk, wiring, monkeypatch, route,
+) -> None:
+    """The reviewer's P2-a. ``/agent/run`` and ``/agent/run/async`` passed no
+    tenant, so the executor fell to ``_current_run_org()``. That reads
+    ``_RUN_ORG[thread_id]`` first, and the thread id is client input. A member
+    of org B who posts a live org-A thread id must work in B's dir."""
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+    from fastapi import BackgroundTasks
+    from gateway.routes import agent as agent_routes
+    from orchestrator import executor
+
+    async def _allowed(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(agent_routes, "_resolve_agent_for_run", lambda *_a, **_k: _S)
+    monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", _allowed)
+    tid = f"org-a-live-{uuid.uuid4().hex[:6]}"
+    executor._RUN_ORG[tid] = "org-a"          # a run of org A is live on it
+    carol = UserContext(email=_CAROL, role=UserRole.EMPLOYEE, organization_id="org-b")
+    req = agent_routes.AgentRunRequest(agent=_S, payload={"message": "hi"}, thread_id=tid)
+
+    async def _go() -> None:
+        if route == "sync":
+            await agent_routes.run_agent_sync(req, user=carol)
+            return
+        tasks = BackgroundTasks()
+        await agent_routes.run_agent_async(req, tasks, user=carol)
+        await tasks()
+
+    try:
+        asyncio.run(_go())
+    finally:
+        executor._RUN_ORG.pop(tid, None)
+    _expect_tenant_run(wiring, disk, "org-b")
+    assert not _tenant_dir("org-a").exists()
 
 
 def test_the_projects_dispatch_passes_the_tenant(monkeypatch) -> None:
