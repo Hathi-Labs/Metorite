@@ -64,6 +64,11 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
+from tests.unit.test_h201_readers_under_rls import (  # noqa: F401
+    _seed_session,
+    roots,
+    workspace_client,
+)
 
 _P, _S, _T, _N = "agent-h201p", "agent-h201s", "agent-h201t", "agent-h201n"
 _ORG_A_SECRET = "ORG-A RUN OUTPUT"
@@ -346,3 +351,60 @@ def test_the_fault_in_reads_only_the_callers_tenant(graph_as_app, disk) -> None:
 
     own = alice.get("/agent/artifacts/file", params={"agent": _P, "path": rel})
     assert own.status_code == 200 and own.text == "STORED"
+
+
+# ── P0-A: a shared agent's session workspace is read-only ───────────────────
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@_DB_GATE
+def test_a_shared_agent_session_is_read_only(graph_as_app, disk, roots, workspace_client):  # noqa: F811
+    """A member of either org opens their own session of a shared agent. The
+    root is the one clone. Reads stay (the Projects chat's documents, §14),
+    and every change route is 403. A stored root in the clone is the same."""
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    clone = disk.repos / _S
+    (clone / "inputs").mkdir()
+    (clone / "inputs" / "spec.txt").write_text("spec", encoding="utf-8")
+    before = _snapshot(clone)
+
+    for owner, org, stored in ((_ALICE, a, None), (_CAROL, b, None),
+                               (_ALICE, a, str(clone))):
+        sid = _seed_session(graph_as_app, org, owner, stored, agent=_S)
+        c = workspace_client(_user(owner, org))
+        base = f"/agent/workspace/{sid}"
+        tree = c.get(base)
+        assert tree.status_code == 200, tree.text
+        assert "outputs/org-a-run.md" in {f["path"] for f in tree.json()["files"]}
+        assert c.get(f"{base}/file", params={"path": "outputs/org-a-run.md"}).status_code == 200
+        for r in (
+            c.put(f"{base}/file", params={"path": "agent-data/NOTES.md"},
+                  json={"content": "poison"}),
+            c.delete(f"{base}/file", params={"path": "outputs/org-a-run.md"}),
+            c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}),
+            c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}),
+        ):
+            assert r.status_code == 403, (owner, stored, r.status_code, r.text)
+            assert "read-only" in r.text
+    assert _snapshot(clone) == before
+
+
+@_DB_GATE
+def test_a_personal_agent_session_can_still_be_changed(graph_as_app, disk, roots, workspace_client):  # noqa: F811
+    a = graph_as_app.org_a
+    sid = _seed_session(graph_as_app, a, _ALICE, None, agent=_P)
+    c = workspace_client(_user(_ALICE, a))
+    base = f"/agent/workspace/{sid}"
+    assert c.put(f"{base}/file", params={"path": "outputs/new.md"},
+                 json={"content": "mine"}).status_code == 200
+    assert (disk.alice / "outputs" / "new.md").read_text(encoding="utf-8") == "mine"
+    up = c.post(f"{base}/upload", files={"files": ("f.txt", b"x")})
+    assert up.status_code == 200, up.text
+    assert (disk.alice / "inputs" / "f.txt").is_file()
+    pr = c.post(f"{base}/promote", json={"path": "inputs/f.txt"})
+    assert pr.status_code == 200, pr.text
+    assert c.delete(f"{base}/file", params={"path": "outputs/new.md"}).status_code == 200
+    assert not (disk.alice / "outputs" / "new.md").exists()
