@@ -43,8 +43,8 @@ import {
   type ColumnChoice,
   type ContainerChoice,
   GRANT_ORG,
-  cleanName,
   grantOptions,
+  stageClashes,
   statusMerges,
   treeRows,
   treeTotals,
@@ -359,6 +359,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const rows = useMemo(() => treeRows(plan?.tree ?? [], containers), [plan, containers]);
   const totals = treeTotals(rows);
   const merges = useMemo(() => statusMerges(plan?.statuses ?? [], statusNames), [plan, statusNames]);
+  const clashes = useMemo(() => stageClashes(plan?.statuses ?? [], merges, stages), [plan, merges, stages]);
 
   return (
     <Modal
@@ -556,6 +557,11 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                         {status.tasks} tasks in {status.lists} {status.lists === 1 ? "list" : "lists"}
                         {merges[status.name]?.length ? ` · merges with ${merges[status.name].join(", ")}` : ""}
                       </p>
+                      {clashes.has(status.name) && (
+                        <p className="text-[11px] text-destructive">
+                          Merged statuses need one stage. Choose the same stage for each.
+                        </p>
+                      )}
                     </div>
                     <Input
                       inputSize="sm"
@@ -564,18 +570,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                       value={statusNames[status.name] ?? (status.becomes !== status.name ? status.becomes : "")}
                       maxLength={64}
                       className="max-w-[10rem]"
-                      onChange={(e) => {
-                        const typed = e.target.value;
-                        setStatusNames((n) => ({ ...n, [status.name]: typed }));
-                        // A merge takes the other status's stage, so the two agree.
-                        const into = plan.statuses.find(
-                          (other) =>
-                            other.name !== status.name &&
-                            (cleanName(statusNames[other.name] ?? "") || other.becomes).toLowerCase() ===
-                              cleanName(typed).toLowerCase(),
-                        );
-                        if (into) setStages((st) => ({ ...st, [status.name]: st[into.name] ?? into.category }));
-                      }}
+                      // The stage never changes by itself: a name typed on the
+                      // way to another could move closed tasks to open without
+                      // a word (the I-8 review). A clash is shown instead.
+                      onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
                     />
                     <SelectButton
                       label={`Stage for ${status.name}`}

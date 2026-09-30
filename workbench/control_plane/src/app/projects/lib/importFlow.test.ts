@@ -26,6 +26,7 @@ import {
   pollDelay,
   STALL_MS,
   mappingFrom,
+  stageClashes,
   statusMerges,
   treeRows,
   treeTotals,
@@ -173,8 +174,26 @@ describe("I-8: the tree, status names, columns and sharing", () => {
     expect(statusMerges(run().plan.statuses, {})["Closed"]).toEqual([]);
   });
 
+  it("marks a merge whose stages differ, and never changes a stage itself", () => {
+    const statuses = run().plan.statuses;
+    const merges = statusMerges(statuses, { "to do": "Closed" });
+    expect([...stageClashes(statuses, merges, {})].sort()).toEqual(["Closed", "to do"]);
+    expect(stageClashes(statuses, merges, { "to do": "done" }).size).toBe(0);
+  });
+
+  it("drops a container choice for a ref the file no longer holds", () => {
+    const planned = run();
+    planned.plan.tree = tree;
+    const m = mappingFrom(planned, {}, {}, { kind: "new_space", name: null }, {
+      containers: { gone: { skip: true }, l1: { skip: true } },
+    });
+    expect(m.containers).toEqual({ l1: { name: null, skip: true } });
+  });
+
   it("carries the I-8 choices, and drops the ones that change nothing", () => {
-    const m = mappingFrom(run(), {}, {}, { kind: "new_space", name: null }, {
+    const planned = run();
+    planned.plan.tree = tree;
+    const m = mappingFrom(planned, {}, {}, { kind: "new_space", name: null }, {
       grant: "group:eng",
       statusNames: { Closed: "  Done ", "to do": "" },
       containers: { l1: { skip: true }, l2: { name: "  " }, f: { name: "Ops" } },

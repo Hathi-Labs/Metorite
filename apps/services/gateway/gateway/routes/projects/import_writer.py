@@ -591,7 +591,9 @@ async def _earlier_nodes(
                 {
                     "org": organization_id,
                     "source": bundle.source,
-                    "refs": [t.ref for t in bundle.tasks],
+                    # The WHOLE file's tasks (I-8): a run that keeps
+                    # other lists than the last one is still that export.
+                    "refs": bundle.file_task_refs or [t.ref for t in bundle.tasks],
                 },
             )
         ).fetchall()

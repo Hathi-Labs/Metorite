@@ -359,10 +359,13 @@ export function mappingFrom(
   for (const person of run.plan.people) {
     chosen[person.ref] = person.ref in people ? people[person.ref] : person.member;
   }
+  // Only refs the file holds: an earlier run's choice for a List that has
+  // since gone has no control on screen to clear it (the I-8 review).
+  const inFile = new Set((run.plan.tree ?? []).map((n) => n.ref));
   const containers: Record<string, ContainerChoice> = {};
   for (const [ref, choice] of Object.entries(choices.containers ?? run.mapping?.containers ?? {})) {
     const name = cleanName(choice.name ?? "") || null;
-    if (choice.skip || name) containers[ref] = { name, skip: Boolean(choice.skip) };
+    if (inFile.has(ref) && (choice.skip || name)) containers[ref] = { name, skip: Boolean(choice.skip) };
   }
   const columns: Record<string, ColumnChoice> = {};
   for (const [col, how] of Object.entries(choices.columns ?? run.mapping?.columns ?? {})) {
@@ -457,6 +460,23 @@ export function statusMerges(
   for (const s of statuses) groups.set(landing(s), [...(groups.get(landing(s)) ?? []), s.name]);
   const out: Record<string, string[]> = {};
   for (const s of statuses) out[s.name] = (groups.get(landing(s)) ?? []).filter((n) => n !== s.name);
+  return out;
+}
+
+/**
+ * The statuses whose merge partners have another stage. The gateway refuses
+ * such a plan, so the Map step marks each one where the admin can fix it.
+ */
+export function stageClashes(
+  statuses: readonly PlanStatus[],
+  merges: Record<string, string[]>,
+  stages: Record<string, Stage>,
+): Set<string> {
+  const stageOf = new Map(statuses.map((s) => [s.name, stages[s.name] ?? s.category]));
+  const out = new Set<string>();
+  for (const s of statuses) {
+    if ((merges[s.name] ?? []).some((other) => stageOf.get(other) !== stageOf.get(s.name))) out.add(s.name);
+  }
   return out;
 }
 

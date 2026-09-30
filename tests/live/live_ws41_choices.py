@@ -23,10 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import live_ws41_writer as harness  # noqa: E402  (sets DATABASE_URL first)
-from gateway.routes.projects import import_writer  # noqa: E402
-from gateway.routes.projects.importer import clickup  # noqa: E402
-from gateway.routes.projects.importer.plan import (  # noqa: E402
+import live_ws41_writer as harness
+from gateway.routes.projects import import_writer
+from gateway.routes.projects.importer import clickup
+from gateway.routes.projects.importer.plan import (
     ContainerChoice,
     ImportMapping,
     Target,
@@ -136,12 +136,55 @@ async def main() -> None:
         harness.check("the subtask lands under its parent", parent == f"b1{TAG}", str(parent))
     finally:
         await harness.drop(org)
+    await other_lists_of_a_newer_export(refs, target_name=f"Newer {TAG}")
 
     failed = [r for r in harness.results if not r[1]]
     for name, ok, detail in harness.results:
         print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f"  [{detail[:300]}]"))
     print(f"\n{len(harness.results) - len(failed)}/{len(harness.results)} passed")
     sys.exit(1 if failed else 0)
+
+
+async def other_lists_of_a_newer_export(refs: dict[str, str], target_name: str) -> None:
+    """The I-8 review's P1: run 1 keeps list 1. A NEWER export of the same
+    workspace (other bytes, so other hashes) keeps only list 2. It is still
+    that export, so it must continue run 1's space, not make a second one."""
+    newer = RAW + (_row("c1", "2") + "\n").encode()
+    org = await harness.seed("i8b", [harness.ADMIN])
+    try:
+        target = Target(kind="new_space", name=target_name)
+        first = ImportMapping(target=target, containers={refs["L2"]: ContainerChoice(skip=True)})
+        bundle = clickup.parse([("choices.csv", RAW)])
+        run_id, lease = await harness.new_run(org, harness.ADMIN, bundle, RAW, first)
+        await import_writer.apply_run(org, run_id, lease)
+
+        later = clickup.parse([("choices.csv", newer)])
+        second = ImportMapping(target=target, containers={refs["L1"]: ContainerChoice(skip=True)})
+        again, lease = await harness.new_run(org, harness.ADMIN, later, newer, second)
+        await import_writer.apply_run(org, again, lease)
+
+        spaces = await harness.one(
+            org,
+            "SELECT count(*) FROM pm_projects WHERE organization_id = CAST(:org AS uuid) "
+            " AND parent_project_id IS NULL",
+        )
+        harness.check("a newer export keeping other lists continues the same space", spaces == 1, str(spaces))
+        written = {
+            str(r.ref)[: -len(TAG)]
+            for r in await harness.rows(
+                org,
+                "SELECT origin->>'external_id' AS ref FROM pm_tasks "
+                " WHERE organization_id = CAST(:org AS uuid)",
+            )
+        }
+        harness.check(
+            # a3 is b1's subtask, and the reader lands a subtask in its parent's list.
+            "and it adds list 2's tasks beside list 1's",
+            written == {"a1", "a2", "a3", "b1", "c1"},
+            str(written),
+        )
+    finally:
+        await harness.drop(org)
 
 
 if __name__ == "__main__":

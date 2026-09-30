@@ -14,12 +14,14 @@ import pathlib
 import pytest
 from gateway.routes.projects.importer import clickup
 from gateway.routes.projects.importer.bundle import ImportBundle
-from gateway.routes.projects.importer.layout import description
+from gateway.routes.projects.importer.layout import build_nodes, description
 from gateway.routes.projects.importer.plan import (
     ContainerChoice,
     ImportMapping,
+    Target,
     build_plan,
     choose,
+    usable_choices,
 )
 from pydantic import ValidationError
 
@@ -43,7 +45,8 @@ def bundle() -> ImportBundle:
         _row("a1", "1", sprint="Sprint 12", points="3"),
         _row("a2", "1", sprint="Sprint 12"),
         _row("b1", "2", sprint="Sprint 13"),
-        # A subtask that lives in list 1, under a task in list 2.
+        # A subtask filed in list 1 under a task in list 2. The reader lands
+        # a subtask in its parent's list, so it belongs to list 2.
         _row("a3", "1", parent="b1"),
     ]
     raw = ("\n".join([HEADER, *rows]) + "\n").encode()
@@ -112,7 +115,7 @@ def test_a_rename_reaches_the_container(bundle: ImportBundle) -> None:
 def test_a_skipped_list_takes_its_tasks_and_their_subtasks(bundle: ImportBundle) -> None:
     mapping = ImportMapping(containers={_ref(bundle, "L2"): ContainerChoice(skip=True)})
     chosen = choose(bundle, mapping)
-    # b1 is in list 2. a3 lives in list 1 but is b1's subtask, so it goes too.
+    # b1 is in list 2, and a3 is b1's subtask, so both go.
     assert sorted(t.ref for t in chosen.tasks) == ["a1", "a2"]
     plan = _plan(bundle, mapping)
     assert plan["skipped_by_choice"] == {"containers": 1, "tasks": 2}
@@ -130,9 +133,48 @@ def test_a_skipped_space_takes_everything_under_it(bundle: ImportBundle) -> None
     assert "Everything is skipped" in " ".join(plan["errors"])
 
 
-def test_a_mapping_that_names_no_container_of_the_file_is_refused(bundle: ImportBundle) -> None:
-    plan = _plan(bundle, ImportMapping(containers={"nope": ContainerChoice(skip=True)}))
-    assert not plan["ready"]
+def test_a_choice_for_a_container_the_file_no_longer_holds_is_ignored(bundle: ImportBundle) -> None:
+    """The I-8 review: an earlier run's choice for a List that has since gone
+    must not block the plan, because the wizard has no control to clear it."""
+    mapping = ImportMapping(
+        containers={"gone": ContainerChoice(skip=True)}, columns={"Old column": "description"}
+    )
+    assert _plan(bundle, mapping)["ready"]
+    tidy = usable_choices(bundle, mapping)
+    assert tidy.containers == {}
+    assert tidy.columns == {}
+
+
+def test_the_same_export_is_judged_on_the_whole_file(bundle: ImportBundle) -> None:
+    """The I-8 review: a run that keeps other lists than the last one is still
+    that export, so `_earlier_nodes` must ask with every ref in the file."""
+    chosen = choose(bundle, ImportMapping(containers={_ref(bundle, "L1"): ContainerChoice(skip=True)}))
+    assert sorted(chosen.file_task_refs) == ["a1", "a2", "a3", "b1"]
+    src = (
+        pathlib.Path(__file__).parents[2]
+        / "apps/services/gateway/gateway/routes/projects/import_writer.py"
+    ).read_text(encoding="utf-8")
+    assert '"refs": bundle.file_task_refs or [t.ref for t in bundle.tasks]' in src
+
+
+def test_status_counts_and_people_follow_what_is_kept(bundle: ImportBundle) -> None:
+    chosen = choose(bundle, ImportMapping(containers={_ref(bundle, "L2"): ContainerChoice(skip=True)}))
+    # Only list 1 is left, with a1 and a2 in "to do".
+    counts = {(s.container_ref, s.name): s.task_count for s in chosen.statuses}
+    assert counts == {(_ref(bundle, "L1"), "to do"): 2}
+
+
+def test_an_existing_space_rename_keeps_the_folder_it_reuses(bundle: ImportBundle) -> None:
+    """The I-8 review: the flattened folder's ref comes from the FILE's names,
+    so a re-run with another rename reuses the same folder."""
+    target = Target(kind="existing", project_id="p")
+    plain, _ = build_nodes(choose(bundle, ImportMapping()), target)
+    renamed, _ = build_nodes(
+        choose(bundle, ImportMapping(containers={_ref(bundle, "S"): ContainerChoice(name="Eng")})),
+        target,
+    )
+    assert [n.ref for n in plain] == [n.ref for n in renamed]
+    assert {n.name for n in renamed if n.kind == "folder"} == {"Eng"}
 
 
 def test_a_blank_rename_is_refused() -> None:

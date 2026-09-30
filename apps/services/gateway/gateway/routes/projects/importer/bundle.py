@@ -28,6 +28,10 @@ class Container(BaseModel):
     name: str
     parent_ref: str | None = None
     source_id: str | None = None
+    #: I-8 — the name in the FILE when the admin renamed it. The layout keys a
+    #: flattened folder on the file's names, so a rename never changes which
+    #: node a re-run reuses (the I-8 review).
+    source_name: str | None = None
 
 
 class Person(BaseModel):
@@ -128,6 +132,10 @@ class ImportBundle(BaseModel):
     comments: list[Comment] = Field(default_factory=list)
     losses: list[Loss] = Field(default_factory=list)
     warnings: list[BundleWarning] = Field(default_factory=list)
+    #: I-8 — every task ref in the FILE, set by `plan.choose`. "Is this the
+    #: same export as an earlier run?" asks the whole file, never only the
+    #: lists the admin kept this time (the I-8 review). Empty means `tasks`.
+    file_task_refs: list[str] = Field(default_factory=list)
 
     def summary(self) -> dict[str, object]:
         """The counts the dry run shows before any write (§3.1)."""

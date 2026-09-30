@@ -69,17 +69,22 @@ def build_nodes(bundle: ImportBundle, target: Target) -> tuple[list[NodeSpec], d
         folders: dict[str, NodeSpec] = {}
         for project in (c for c in bundle.containers if c.kind == "project"):
             parent = by_ref.get(project.parent_ref or "")
+            # The ref is built from the names in the FILE, and the shown name
+            # from the admin's renames (I-8). A re-run with another rename
+            # then reuses the same folder instead of making a second tree.
             if parent is not None and parent.kind == "folder":
                 space = by_ref.get(parent.parent_ref or "")
+                key = f"{_file_name(space)} / {_file_name(parent)}" if space else _file_name(parent)
                 label = f"{space.name} / {parent.name}" if space else parent.name
             else:
+                key = _file_name(parent) if parent is not None else "Imported"
                 label = parent.name if parent is not None else "Imported"
-            folder = folders.get(label)
+            folder = folders.get(key)
             if folder is None:
                 folder = NodeSpec(
-                    ref=f"folder:{label}", kind="folder", name=label[:200], parent_ref=root.ref
+                    ref=f"folder:{key}", kind="folder", name=label[:200], parent_ref=root.ref
                 )
-                folders[label] = folder
+                folders[key] = folder
                 nodes.append(folder)
             node = NodeSpec(
                 ref=project.ref, kind="project", name=project.name, parent_ref=folder.ref
@@ -108,6 +113,11 @@ def build_nodes(bundle: ImportBundle, target: Target) -> tuple[list[NodeSpec], d
         )
         home[project.ref] = project.ref
     return nodes, home
+
+
+def _file_name(container: Any) -> str:
+    """A container's name in the file, before any rename of the admin's."""
+    return container.source_name or container.name
 
 
 def project_statuses(

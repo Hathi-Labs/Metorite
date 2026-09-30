@@ -157,17 +157,49 @@ def choose(bundle: ImportBundle, mapping: ImportMapping) -> ImportBundle:
     dropped = skipped_tasks(bundle, gone)
     kept = {col for col, how in mapping.columns.items() if how == "description"}
     out = bundle.model_copy(deep=True)
+    out.file_task_refs = bundle.file_task_refs or [t.ref for t in bundle.tasks]
     out.containers = [c for c in out.containers if c.ref not in gone]
     for c in out.containers:
         choice = mapping.containers.get(c.ref)
-        if choice and choice.name:
+        if choice and choice.name and choice.name != c.name:
+            c.source_name = c.source_name or c.name
             c.name = choice.name
     out.tasks = [t for t in out.tasks if t.ref not in dropped]
     for t in out.tasks:
         t.extra_columns = {k: v for k, v in t.extra_columns.items() if k in kept}
     out.comments = [c for c in out.comments if c.task_ref not in dropped]
-    out.statuses = [st for st in out.statuses if st.container_ref not in gone]
+    # Recounted from the tasks that stay: a subtask dropped with its parent
+    # may have been the only task in a kept list with that status.
+    uses = Counter((t.container_ref, t.status_name) for t in out.tasks if t.status_name)
+    statuses = []
+    for seen in out.statuses:
+        n = uses.get((seen.container_ref, seen.name), 0)
+        if n:
+            statuses.append(seen.model_copy(update={"task_count": n}))
+    out.statuses = statuses
+    # A person only the skipped tasks name is not in this run.
+    named = {r for t in out.tasks for r in t.assignee_refs}
+    named |= {c.author_ref for c in out.comments if c.author_ref}
+    out.people = [p for p in out.people if p.ref in named]
     return out
+
+
+def usable_choices(bundle: ImportBundle, mapping: ImportMapping) -> ImportMapping:
+    """The mapping without choices for containers or columns the file does
+    not hold. An earlier run's choice for a List that has since gone is not
+    the admin's mistake now, and the wizard has no control to clear it (the
+    I-8 review). `choose` ignores such a ref too, so this only tidies."""
+    refs = {c.ref for c in bundle.containers}
+    columns = {name for t in bundle.tasks for name in t.extra_columns}
+    for w in bundle.warnings:
+        if w.code == "unknown_columns":
+            columns.update(w.sample_refs)
+    return mapping.model_copy(
+        update={
+            "containers": {k: v for k, v in mapping.containers.items() if k in refs},
+            "columns": {k: v for k, v in mapping.columns.items() if k in columns},
+        }
+    )
 
 
 # ── the plan ────────────────────────────────────────────────────────────────
@@ -201,9 +233,6 @@ def build_plan(
     dropped = skipped_tasks(full, gone)
     tree = _tree(full, mapping, gone)
     columns = _columns(full, mapping)
-    refs_in_file = {c.ref for c in full.containers}
-    if any(ref not in refs_in_file for ref in mapping.containers):
-        errors.append("The mapping names a space or list that the file does not hold.")
     bundle = choose(full, mapping)
     if full.tasks and not bundle.tasks:
         errors.append("Everything is skipped. Keep at least one list to import.")
