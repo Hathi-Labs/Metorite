@@ -31,8 +31,12 @@ _PROPOSALS: tuple[tuple[re.Pattern[str], Category], ...] = (
     (re.compile(r"^(to ?do|open|new|not started|pending)$"), "todo"),
 )
 
-#: A group grant is ``group:<slug>`` with the slug grammar of ``lib/centers.ts``.
-_GRANT = re.compile(r"^(org|group:[a-z][a-z0-9-]{0,62})$")
+#: A group grant is ``group:<slug>``, with the slug rule of the groups the
+#: admin can make (``admin/groups._clean_slug``: letters, digits, ``_`` and
+#: ``-``, 1 to 64). The wizard offers every group, so a narrower rule here
+#: refused real ones like ``qa_team`` (the I-8 verify). Existence is checked
+#: against this organization at apply (``import_writer._check_grant``).
+_GRANT = re.compile(r"^(org|group:[\w-]{1,64})$")
 MAX_NAME = 120
 
 
@@ -443,7 +447,9 @@ def _columns(bundle: ImportBundle, mapping: ImportMapping) -> list[dict[str, Any
     for t in bundle.tasks:
         for col, value in t.extra_columns.items():
             filled[col] += 1
-            short = value if len(value) <= COLUMN_SAMPLE_MAX else value[: COLUMN_SAMPLE_MAX - 1] + "…"
+            short = (
+                value if len(value) <= COLUMN_SAMPLE_MAX else value[: COLUMN_SAMPLE_MAX - 1] + "…"
+            )
             if len(samples[col]) < COLUMN_SAMPLES and short not in samples[col]:
                 samples[col].append(short)
     return [

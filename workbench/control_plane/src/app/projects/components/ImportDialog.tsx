@@ -46,7 +46,7 @@ import {
   grantOptions,
   stageClashes,
   statusMerges,
-  treeRows,
+  importTreeRows,
   treeTotals,
   type ImportMapping,
   type ImportRun,
@@ -379,7 +379,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
 
   const spaces = roots.filter((r) => !r.parent_project_id);
   const plan = run?.plan;
-  const rows = useMemo(() => treeRows(plan?.tree ?? [], containers), [plan, containers]);
+  const rows = useMemo(() => importTreeRows(plan?.tree ?? [], containers), [plan, containers]);
   const totals = treeTotals(rows);
   const merges = useMemo(() => statusMerges(plan?.statuses ?? [], statusNames), [plan, statusNames]);
   const clashes = useMemo(() => stageClashes(plan?.statuses ?? [], merges, stages), [plan, merges, stages]);

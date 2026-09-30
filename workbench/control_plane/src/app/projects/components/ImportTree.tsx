@@ -6,7 +6,7 @@
  *
  * Spec: `project-docs/specs/project_import.md` §9 row I-8.
  *
- * The rows come from `importFlow.treeRows`, which mirrors the gateway's rule:
+ * The rows come from `importFlow.importTreeRows`, which mirrors the gateway's rule:
  * leaving a Space or Folder out leaves out everything under it, so a row under
  * one is shown and cannot be ticked. The server plans again on save, and its
  * answer is what the Import button acts on.

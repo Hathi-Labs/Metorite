@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28, with I-5 deferred and the other tools still spec.**
+**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28, with I-8 (the Spaces step and unknown columns) built, I-5 deferred, and the other tools still spec.**
 
 Owner directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp

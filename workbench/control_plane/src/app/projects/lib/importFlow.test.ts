@@ -28,7 +28,7 @@ import {
   mappingFrom,
   stageClashes,
   statusMerges,
-  treeRows,
+  importTreeRows,
   treeTotals,
   grantOptions,
   mustConfirmNewTree,
@@ -152,17 +152,17 @@ describe("I-8: the tree, status names, columns and sharing", () => {
   ];
 
   it("reads the tree parents first, with depth", () => {
-    expect(treeRows(tree, {}).map((r) => `${r.depth}:${r.ref}`)).toEqual(["0:s", "1:f", "2:l1", "1:l2"]);
+    expect(importTreeRows(tree, {}).map((r) => `${r.depth}:${r.ref}`)).toEqual(["0:s", "1:f", "2:l1", "1:l2"]);
   });
   it("a skipped folder leaves out what is under it, and the totals follow", () => {
-    const rows = treeRows(tree, { f: { skip: true } });
+    const rows = importTreeRows(tree, { f: { skip: true } });
     const l1 = rows.find((r) => r.ref === "l1")!;
     expect(l1.skipInherited).toBe(true);
     expect(l1.skipSelf).toBe(false);
     expect(treeTotals(rows)).toEqual({ lists: 1, skippedLists: 1, tasks: 7 });
   });
   it("a rename shows the new name, and blank spaces never make a name", () => {
-    const rows = treeRows(tree, { l2: { name: "  Launch   plan " }, l1: { name: "   " } });
+    const rows = importTreeRows(tree, { l2: { name: "  Launch   plan " }, l1: { name: "   " } });
     expect(rows.find((r) => r.ref === "l2")!.shownName).toBe("Launch plan");
     expect(rows.find((r) => r.ref === "l1")!.shownName).toBe("List 1");
   });

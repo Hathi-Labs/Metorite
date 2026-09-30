@@ -403,7 +403,7 @@ export interface TreeRow extends PlanTreeNode {
  * It mirrors the gateway's `skipped_containers`, which stays the authority:
  * the plan the server answers is what the Import button acts on.
  */
-export function treeRows(tree: readonly PlanTreeNode[], choices: Record<string, ContainerChoice>): TreeRow[] {
+export function importTreeRows(tree: readonly PlanTreeNode[], choices: Record<string, ContainerChoice>): TreeRow[] {
   const children = new Map<string | null, PlanTreeNode[]>();
   const refs = new Set(tree.map((n) => n.ref));
   for (const node of tree) {

@@ -148,7 +148,9 @@ def test_a_choice_for_a_container_the_file_no_longer_holds_is_ignored(bundle: Im
 def test_the_same_export_is_judged_on_the_whole_file(bundle: ImportBundle) -> None:
     """The I-8 review: a run that keeps other lists than the last one is still
     that export, so `_earlier_nodes` must ask with every ref in the file."""
-    chosen = choose(bundle, ImportMapping(containers={_ref(bundle, "L1"): ContainerChoice(skip=True)}))
+    chosen = choose(
+        bundle, ImportMapping(containers={_ref(bundle, "L1"): ContainerChoice(skip=True)})
+    )
     assert sorted(chosen.file_task_refs) == ["a1", "a2", "a3", "b1"]
     src = (
         pathlib.Path(__file__).parents[2]
@@ -158,7 +160,9 @@ def test_the_same_export_is_judged_on_the_whole_file(bundle: ImportBundle) -> No
 
 
 def test_status_counts_and_people_follow_what_is_kept(bundle: ImportBundle) -> None:
-    chosen = choose(bundle, ImportMapping(containers={_ref(bundle, "L2"): ContainerChoice(skip=True)}))
+    chosen = choose(
+        bundle, ImportMapping(containers={_ref(bundle, "L2"): ContainerChoice(skip=True)})
+    )
     # Only list 1 is left, with a1 and a2 in "to do".
     counts = {(s.container_ref, s.name): s.task_count for s in chosen.statuses}
     assert counts == {(_ref(bundle, "L1"), "to do"): 2}
@@ -193,3 +197,15 @@ def test_the_writer_writes_the_chosen_bundle() -> None:
     choose_at = src.index("bundle = choose(bundle, mapping)")
     nodes_at = src.index("_write_nodes(\n")
     assert plan_at < choose_at < nodes_at
+
+
+@pytest.mark.parametrize("grant", ["org", "group:eng", "group:qa_team", "group:2025-team"])
+def test_every_group_the_admin_can_make_is_a_valid_grant(bundle: ImportBundle, grant: str) -> None:
+    """The I-8 verify: the wizard offers every group, and `admin/groups`
+    allows `_` and a leading digit in a slug. The plan must accept them."""
+    assert _plan(bundle, ImportMapping(grant=grant))["ready"]
+
+
+@pytest.mark.parametrize("grant", ["", "everyone", "group:", "a@b.test", "group:a b"])
+def test_a_grant_outside_the_vocabulary_is_refused(bundle: ImportBundle, grant: str) -> None:
+    assert not _plan(bundle, ImportMapping(grant=grant))["ready"]

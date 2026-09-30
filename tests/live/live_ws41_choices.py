@@ -84,7 +84,9 @@ async def main() -> None:
                 org, "SELECT name FROM pm_projects WHERE organization_id = CAST(:org AS uuid)"
             )
         }
-        harness.check("the renamed list lands under its new name", "Launch plan" in names, str(names))
+        harness.check(
+            "the renamed list lands under its new name", "Launch plan" in names, str(names)
+        )
         harness.check("the skipped list creates no node", "L2" not in names, str(names))
         written = {
             str(r.ref)[: -len(TAG)]
@@ -94,7 +96,9 @@ async def main() -> None:
                 " WHERE organization_id = CAST(:org AS uuid)",
             )
         }
-        harness.check("only the kept list's own tasks are written", written == {"a1", "a2"}, str(written))
+        harness.check(
+            "only the kept list's own tasks are written", written == {"a1", "a2"}, str(written)
+        )
         text = str(
             await harness.one(
                 org,
@@ -119,7 +123,9 @@ async def main() -> None:
             )
         }
         harness.check(
-            "a second run adds what the first left out", written == {"a1", "a2", "a3", "b1"}, str(written)
+            "a second run adds what the first left out",
+            written == {"a1", "a2", "a3", "b1"},
+            str(written),
         )
         spaces = await harness.one(
             org,
@@ -168,7 +174,9 @@ async def other_lists_of_a_newer_export(refs: dict[str, str], target_name: str) 
             "SELECT count(*) FROM pm_projects WHERE organization_id = CAST(:org AS uuid) "
             " AND parent_project_id IS NULL",
         )
-        harness.check("a newer export keeping other lists continues the same space", spaces == 1, str(spaces))
+        harness.check(
+            "a newer export keeping other lists continues the same space", spaces == 1, str(spaces)
+        )
         written = {
             str(r.ref)[: -len(TAG)]
             for r in await harness.rows(
