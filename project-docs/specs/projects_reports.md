@@ -41,6 +41,10 @@ Phase 2 (§9 Q16). R5c stays blocked and leaves this feature.
 "team pulse for Design"). **Phase 1 is COMPLETE.** Phases 2 and 3 are not
 built.
 
+**R5g BUILT 2026-09-30** (the live Overview, full page, §6.7 and §9 Q17).
+Overview draws its panels across the page. One toolbar holds the choices
+behind "Filters", and Overview refreshes itself while the tab is visible.
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -628,6 +632,40 @@ A report from a template shows a small badge "From template: [name]" under the h
 5. At 390 px a number shows before the controls. The controls sit behind "Change what you see".
 
 **F. Motion and density.** Only subtle transitions, such as a colour change. The type follows the density tokens. The review covers light, dark, compact, a changed accent and 390 px.
+
+§6.7 replaces items 3, 4 and 5 of E for Overview.
+
+### 6.7 The live Overview (owner, 2026-09-30)
+
+The owner asked to read the live analytics at once, on the full page, with no extra menu (§9 Q17). Overview is still the builder in `reportsOverview` mode. This section changes its layout only. The data, the seams and the one look do not change.
+
+**A. Full-page panels.**
+1. The controls card is not on the page by default.
+2. The KPI strip and the space table take the full width.
+3. The panels flow in a grid. It has one column below `xl` and two columns at `xl` and up. Each cell keeps its own height.
+4. "Forecast" and "How long it took" take both columns when they start a row. When the last row holds one panel, that panel takes both columns. So no row is half empty.
+5. A saved report and the builder keep one readable column.
+
+**B. One slim toolbar.**
+1. On the left: the title "Overview" and one summary line, for example "Whole organization · The last 12 weeks · Updated 2 min ago".
+2. On the right: "Filters", "Refresh", "Save as report" and "New report". There is no menu and no dialog.
+3. "Filters" shows a small count when a choice differs from the Overview defaults.
+4. "Save as report" is optional. A member can read Overview and save nothing.
+
+**C. Filters open in place.**
+1. The panel opens under the toolbar, and its button labels it.
+2. The three choices sit in one row that wraps on a small screen. The sections are small chips under them, in their three groups.
+3. A chip keeps the rules of a tile (§6.6 C).
+4. "Reset" returns to the Overview defaults. It shows only when a choice differs.
+5. Filters is closed by default, on each screen size. The browser remembers the state. The page renders the same when the storage fails.
+
+**D. Live.**
+1. Overview asks the server again when the tab becomes visible and the last answer is more than 60 seconds old.
+2. While the tab is visible, Overview asks again every 5 minutes. A hidden tab stops the timer.
+3. The last body stays on screen during a refresh. Only the Refresh spinner and the "Updated" time change.
+4. A refresh sends the key on screen. So Home still keeps the Overview state.
+
+**E. Home.** The gallery and "Your reports" stay under the dashboard. The template strip above the panels goes, because the gallery under the dashboard has the same heading and the same templates. The "Change what you see" button goes, because "Filters" replaces it.
 
 ## 7. Data and privacy rules
 
@@ -1710,6 +1748,47 @@ The review and the verifier found two defects, two weak fences and seven UX item
 
 **As built, round 2 (2026-09-30).** `reportsRedesign.test.ts` and `reportEmailRound2.test.ts` hold the fences. A mutation of each new fence turns it red: 13 in the client and 1 on the real database.
 
+### R5g — The live Overview, full page · AGENT-SAFE · BUILT 2026-09-30
+
+**What:** the owner's directive of §9 Q17. Overview becomes a full-page dashboard with one toolbar, Filters in place and a live refresh (§6.7). The slice changes the client only.
+
+**Rules:**
+1. `RenderedBody` takes `layout`. Overview sends `grid`, and each other caller keeps `column`. `gridSpans` in `lib/overviewLive.ts` picks the wide panels. `BODY_ORDER` is the draw order of `RenderedBody`.
+2. `OverviewHeader` is the toolbar. The Filters button carries `aria-expanded` and `aria-controls`. The Refresh button has the name "Refresh". `overviewFilterCount` gives the count.
+3. `OverviewFilters` holds the builder's own controls. The builder's steps and the Filters use the same nodes, state and handlers, so the logic has one copy. `SectionTile` takes `variant="chip"`.
+4. `readFiltersOpen` and `writeFiltersOpen` put each storage call in a `try`. The first render is closed, and an effect reads the stored state.
+5. `refreshOnVisible`, `intervalRuns` and `LIVE_INTERVAL_MS` hold the refresh rule. `answerIsCurrent` guards each answer: the first preview, a change and a refresh. A late answer never overwrites a newer one.
+6. A refresh sends the key on screen, through `previewRequest`. The key does not change, so `previewNeeded` and `initialShownKey` keep the rule of Home.
+7. The effect clears both timers and the visibility listener on unmount.
+8. Home keeps the time of the last answer with the preview. So "Updated …" stays true after a return.
+
+**Non-goals:**
+- No server change and no new route.
+- No new section and no new template.
+- The saved report and the builder keep their layout.
+- No link to a Filters state.
+
+**Done when:**
+- (y) Vitest: the Overview body is a grid with one column below `xl` and two at `xl`, and it has no reading measure. A wide panel spans both columns. No row holds one narrow panel alone.
+- (z) Vitest: the default body keeps `max-w-3xl`. The saved report and the builder send no grid.
+- (aa) Vitest: the toolbar names Filters, Refresh and "Save as report". It holds no menu and no dialog, and Filters has `aria-expanded` and `aria-controls`.
+- (ab) Vitest: Filters is closed by default. A failed storage read gives closed, and a failed write does not throw.
+- (ac) Vitest: the count badge is absent at the defaults, and it counts each changed choice once.
+- (ad) Vitest: the refresh rule. It waits 60 seconds on a return and 5 minutes on the timer. A hidden tab pauses it, a refresh keeps the key, and a late answer drops.
+- (ae) Vitest: a chip keeps `aria-pressed` and the blocked reason. The last chip is `aria-disabled` and says why.
+- (af) A mutation of each new fence turns it red.
+- (ag) A visual review finds no defect. It covers Filters closed and open, in light, dark, compact, a violet accent and 390 px, as an admin and as a member without the HR grant.
+
+**As built (2026-09-30).** Each rule has its fence. A mutation of each fence turns it red: 27 mutations, 27 red.
+
+- `lib/overviewLive.ts` holds the pure rules. Fence: `overviewLive.test.ts` (y), (ab), (ac) and (ad).
+- `ReportsView.tsx` holds `OverviewHeader`, `OverviewFilters`, the chip variant of `SectionTile` and the `grid` layout of `RenderedBody`. Fence: `reportsLiveOverview.test.ts` (y), (z), (aa), (ae) and the refresh wiring.
+- The builder puts its controls into three nodes (`workControl`, `timeControl` and `sectionToggles`). The builder's steps and the Overview Filters both use them.
+- The template strip left Overview. The gallery under the dashboard has the same heading and the same live templates.
+- (ag) ran on 2026-09-30 with mocked routes, as an admin and as a member without the HR grant. It found no defect in the new layout. The 390 px space table scrolls sideways, as it did before R5g.
+
+⚠️ `OrgBrandLockup.tsx` reads `window.localStorage` with no `try`. When a browser blocks storage, the sidebar throws before Overview renders. R5g did not change that file. So the in-browser check of a blocked storage could not run, and (ab) is a unit fence only.
+
 ### R6 — The AI summary, on request · CUT 2026-09-30 (§9 Q15)
 
 **What:** a **Summarize with AI** control on a rendered report. When a person
@@ -1935,6 +2014,7 @@ that the render does not need a saved row.
 | Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
 | Q15 (2026-09-30) | How much of Phase 1 is left to build? | The owner: "just conclude this feature soon, keep only what is absolutally necessary". One slice remains, R-final. R4, R4b and R6 are cut. Q16 then narrowed R-final to the chat render by name. |
 | Q16 (2026-09-30) | Does the email send stay in the close-out? | The owner: "Move email to later". The gateway has no system mail sender, and the timed email of Phase 2 needs the same seam. R9 and `send_report` move to Phase 2. R-final keeps only the chat render by name. |
+| Q17 (2026-09-30) | May Overview show the live analytics with no extra menu? | The owner, in these words: `Since reports and analytics share the same option, live analytics should be viewable there without extra menus. Settings, options, and filters can be hidden to display full-page analytics. Exporting to a report is optional; the analytics can be viewed directly. Ensure the live view maintains proper UI/UX.` Overview is now a full-page, live dashboard (§6.7, R5g). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
@@ -1997,6 +2077,8 @@ names a built tool which never calls the route fails there.
 - `test_projects_report_chat_rfinal.py` is R-final's file.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
+- R5g has no server file. Its files are `overviewLive.test.ts` and
+  `reportsLiveOverview.test.ts`, in the client.
 
 Client, in `workbench/control_plane`:
 
