@@ -3504,6 +3504,18 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
+- **⚠️ NEXT PRIORITY: a tenant-partitioned working dir for a shared
+  agent.** The cross-tenant READ of a shared clone is live. A member of
+  org B opens a session of `projects-assistant` and reads the run output
+  of org A. The writes were closed on 2026-09-30 (§21.14).
+  - **Change 1.** `executor._resolve_effective_agent_dir` gives a shared
+    agent's run a folder per tenant, not `repos/<agent>`.
+  - **Change 2.** `write_artifact` gets that folder as its
+    `workspace_root`, so the Projects chat documents land there.
+  - **Change 3.** `rehydrate_workspace` restores into that folder.
+  - **Then.** Remove the `repos/` read arm of `_allowed_workspace`, and
+    make step 2 of `_get_workspace_path` derive only the tenant folder. The
+    chat upload to a shared agent then works again. Until then it answers 403.
 - **Done in part 2 (2026-09-30, `projects_ai_chat.md` §21.14).** The four
   global artifact routes serve only the caller's own `personal` workspace,
   through `workspace._member_agent_workspace`. A shared agent, a team agent
@@ -3515,12 +3527,9 @@ line — never reclaim a number by deleting the other entry.
   `_safe_resolve`, and refuse `_is_blocked_path`. The fence is
   `tests/unit/test_h201_email_artifact_sources.py`.
 - **Still open from part 2.**
-  - **P0-A, live.** `/agent/workspace/{session_id}` reads the clone for a
-    session of a shared agent. A member of org B can open a session with
-    `projects-assistant` and then read, write, delete, upload and promote
-    in the clone. Held: the Projects AI chat serves its `write_artifact`
-    documents from `repos/projects-assistant/outputs/` through that route
-    (§14). A fix needs a decision on where those documents live.
+  - **P0-A: writes closed 2026-09-30, cross-tenant READ of a shared clone
+    still open.** The PUT, DELETE, upload and promote session routes
+    answer 403 on a clone root. The read is the next priority, above.
   - The run side writes and rehydrates a shared agent in one clone. A
     tenant partition on disk needs the executor, the loader and
     `rehydrate_workspace`.

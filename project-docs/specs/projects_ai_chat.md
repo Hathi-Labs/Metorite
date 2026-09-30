@@ -3864,18 +3864,53 @@ the disk only, so no database is involved.
 | `_is_blocked_path` removed from the import | 1 |
 | `_safe_resolve` back to `startswith` in the import | 1 |
 
-**P0-A is held, not built.** `/agent/workspace/{session_id}` still reads
-the clone of a shared agent. A live flow needs that root. The Projects AI
-chat runs `projects-assistant`, which is shared. Its `write_artifact`
-writes documents into `repos/projects-assistant/outputs/`, and the chat
-serves them through `GET /agent/workspace/{sid}/file` (§14, S8).
+**P0-A: writes closed 2026-09-30, the cross-tenant READ of a shared clone
+is still open.** A member of any org could open their own session of a
+shared agent. Step 2 of `_get_workspace_path` then derived the one clone,
+and the member could write, delete, upload and promote in it. That let
+the member change `agent-data/` of every other org, which holds the notes,
+skills and scripts that runs use.
 
-To remove the `repos/` read root breaks Open, Download and Download PDF in
-that chat. The decision goes back to the coordinator.
+1. `workspace._refuse_shared_clone_write` answers 403, "A shared agent's
+   workspace is read-only", when the resolved root lies under a `repos/`
+   root. The PUT, DELETE, upload and promote routes call it.
+2. The reads stay: the tree, `GET .../file`, the history and the events.
+   The Projects AI chat runs `projects-assistant`, which is shared. It
+   serves its `write_artifact` documents from
+   `repos/projects-assistant/outputs/` through `GET .../file` (§14).
+3. `write_artifact` writes on the run side, with `target.write_bytes`. It
+   calls only the PATCH and the events POST, and neither writes a file.
+4. `_member_agent_workspace` now checks `agent_state_dir(...)` against
+   `state_root()` BEFORE `ensure_state_dir`. A link at `state/<agent>`
+   could otherwise make a folder and an instance marker inside a clone.
+
+**What a member loses.** The chat upload button (`FileUploadButton`) posts
+to `POST /agent/workspace/{sid}/upload`. `AgentChat` shows it in the
+Projects chat and in `/chat`, and both are live. For a shared agent, an
+upload now answers 403. The button shows the error text for 3 seconds,
+and the proxy passes the gateway body as that text. The next slice gives
+the upload back.
+
+| Mutation | Tests that fail |
+|---|---|
+| the refusal made a no-op | 1 |
+| the upload check removed | 1 |
+| the delete check removed | 1 |
+| the promote check removed | 1 |
+| the PUT check removed | 1 |
+| every root counted as a shared clone | 3 |
+| the check before `ensure_state_dir` removed | 1 |
+
+**The next slice: a tenant-partitioned working dir for a shared agent.**
+Three places change. `executor._resolve_effective_agent_dir` gives a
+shared agent's run a folder per tenant, not the clone.
+`write_artifact` gets that folder as its `workspace_root`.
+`rehydrate_workspace` restores into that folder. Then the session read,
+the upload and the Projects chat documents all move off the clone.
 
 **What this part does not do.** H-201 in `HANDOFF.md` lists each item.
 
-- P0-A, above.
+- The cross-tenant READ of a shared clone, above.
 - The run side writes and rehydrates a shared agent in one clone.
 - The `u:<email>` key has no tenant. `app_user.email` is unique across
   orgs, so the case is a purge and then a rejoin in another org. The old
