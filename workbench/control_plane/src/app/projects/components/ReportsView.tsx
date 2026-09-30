@@ -132,8 +132,6 @@ import {
   overviewState,
   overviewTableShown,
   parseReportLink,
-  previewNeeded,
-  initialShownKey,
   linkStep,
   REPORT_SECTIONS,
   reportsPane,
@@ -174,16 +172,19 @@ import {
 } from "../lib/reportBuilder";
 import {
   BODY_ORDER,
-  LIVE_INTERVAL_MS,
-  answerIsCurrent,
+  type LiveTimerEnv,
+  type PreviewState,
+  bodyDimmed,
   browserStorage,
+  browserTimerEnv,
+  createPreviewController,
   gridSpans,
-  intervalRuns,
   overviewFilterCount,
   overviewSummary,
   previewRequest,
   readFiltersOpen,
-  refreshOnVisible,
+  startLive,
+  startTicker,
   updatedLine,
   writeFiltersOpen,
 } from "../lib/overviewLive";
@@ -253,14 +254,17 @@ function Table({
 function SectionFrame({
   sectionKey,
   table,
+  fill,
   children,
 }: {
   sectionKey: string;
   table?: React.ReactNode;
+  /** R5g round 1. The card fills the height of its grid cell. */
+  fill?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <PanelChromeContext.Provider value={{ icon: sectionIcon(sectionKey), table }}>
+    <PanelChromeContext.Provider value={{ icon: sectionIcon(sectionKey), table, fill }}>
       {children}
     </PanelChromeContext.Provider>
   );
@@ -430,10 +434,16 @@ export function RenderedBody({
   const grid = layout === "grid";
   // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
   // with one panel alone.
-  const wide = grid
-    ? gridSpans(BODY_ORDER.filter((k) => (sections as Record<string, unknown>)[k]))
-    : new Set<string>();
+  const drawn = BODY_ORDER.filter((k) => (sections as Record<string, unknown>)[k]);
+  // R5g round 1. A clear row takes a full row. Stretched beside a chart, a
+  // one-line row reads as an empty card.
+  const clearKeys = new Set(
+    drawn.filter((k) => sectionIsClear(k, (sections as Record<string, never>)[k]))
+  );
+  const wide = grid ? gridSpans(drawn, clearKeys) : new Set<string>();
   /** One cell of the Overview grid. In a column the section draws bare. */
+  // R5g round 1. The cells of one row stretch to one height, and each
+  // panel card fills its cell (`fill`), so a short card leaves no gap.
   const cell = (key: string, node: React.ReactNode) =>
     grid ? (
       <div key={key} className={wide.has(key) ? "min-w-0 xl:col-span-2" : "min-w-0"}>
@@ -491,7 +501,7 @@ export function RenderedBody({
       // and each cell is narrow enough to read.
       <div
         className={
-          grid ? "grid grid-cols-1 items-start gap-3 xl:grid-cols-2" : "max-w-3xl space-y-3"
+          grid ? "grid grid-cols-1 gap-3 xl:grid-cols-2" : "max-w-3xl space-y-3"
         }
       >
 
@@ -503,6 +513,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="finished"
+            fill={grid}
             table={
               <Table title="What we finished" count={sections.finished.projects.length}>
                 <p
@@ -552,6 +563,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="throughput"
+            fill={grid}
             table={
               <Table title="How long it took" count={sections.throughput.series.length}>
                 <p
@@ -601,6 +613,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="outlook"
+            fill={grid}
             table={
               <Table title="Forecast">
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
@@ -641,6 +654,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="stuck"
+            fill={grid}
             table={
               <Table title="Stuck work" count={sections.stuck.overdue.length}>
                 <p
@@ -677,6 +691,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="load"
+            fill={grid}
             table={
               <Table title="Open work" count={sections.load.people.length}>
                 <p
@@ -720,6 +735,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="capacity"
+            fill={grid}
             table={
               <Table title="Who has the hours" count={sections.capacity.people.length}>
                 <p
@@ -760,6 +776,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="pulse"
+            fill={grid}
             table={
               <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
                 <p
@@ -824,6 +841,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="hygiene"
+            fill={grid}
             table={
               <Table title="Data hygiene" count={sections.hygiene.rows.length}>
                 <p
@@ -883,6 +901,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="conflicts"
+            fill={grid}
             table={
               <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
                 <p
@@ -925,6 +944,7 @@ export function RenderedBody({
         ) : (
           <SectionFrame
             sectionKey="rebalance"
+            fill={grid}
             table={
               <Table title="Who could help" count={
                 rebalanceTasks(sections.rebalance).length +
@@ -1132,9 +1152,38 @@ export function ReportBuilder({
 }) {
   const inOverview = mode === "reportsOverview";
   const [draft, setState] = useState<BuilderState>(initial);
-  const [preview, setPreview] = useState<{ key: string; body: PreviewReportBody } | null>(
-    initialPreview
+  /** R5g round 1. The key of the choices now, for the guard of a late answer. */
+  const keyRef = useRef("");
+  // A ref, so a new callback on each render of the parent does not ask the
+  // server again. It is written in an effect, never during render.
+  const onPreviewRef = useRef(onPreview);
+  /**
+   * R5g round 1. The one owner of the preview requests: the first preview, a
+   * change and a refresh (`createPreviewController`). Its guard drops each
+   * late answer, and its state is what the pane draws.
+   */
+  const [ctl] = useState(() =>
+    createPreviewController<PreviewReportBody>({
+      initial: initialPreview,
+      fetch: ({ project_id, config }) => projectsApi.previewReport({ project_id, name: "", config }),
+      now: () => Date.now(),
+      errorMessage: (e) => message(e, "The preview could not be drawn."),
+    })
   );
+  const [live, setLive] = useState<PreviewState<PreviewReportBody>>(() => ctl.state);
+  // The ports read refs, so they connect in an effect. It runs before the
+  // effect that sends the first request.
+  useEffect(() => {
+    ctl.bind({
+      currentKey: () => keyRef.current,
+      onChange: setLive,
+      onAnswer: (body, key, at) => onPreviewRef.current?.(body, key, at),
+    });
+    // No answer lands after unmount.
+    return () => ctl.dispose();
+  }, [ctl]);
+  const preview = live.preview;
+  const previewError = live.error;
   /**
    * R5g rule 3. The Overview Filters. Closed on the server and at the first
    * render, on every screen. An effect then reads what the member left.
@@ -1142,15 +1191,6 @@ export function ReportBuilder({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const controlsId = useId();
   const filtersButtonId = useId();
-  /** R5g rule 4. A refresh in flight, the time of the last answer, and a failed refresh. */
-  const [refreshing, setRefreshing] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<number | null>(initialPreview?.at ?? null);
-  const [refreshFailed, setRefreshFailed] = useState(false);
-  /** The clock of "Updated …". It moves while the tab is visible. */
-  const [now, setNow] = useState(() => Date.now());
-  const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(
-    null
-  );
   /** Moves on "Try again", so the same config asks the server once more. */
   const [previewRound, setPreviewRound] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -1214,25 +1254,10 @@ export function ReportBuilder({
   // The first preview asks at once, so Overview does not wait for the delay
   // on each visit. A change after that waits, as before.
   const previewShown = useRef(initialPreview !== null);
-  /** The key of the preview on screen, so a return to Home asks nothing. */
-  const shownKey = useRef<string | null>(initialShownKey(initialPreview));
-  // A ref, so a new callback on each render of the parent does not ask the
-  // server again. It is written in an effect, never during render.
-  const onPreviewRef = useRef(onPreview);
   const onDraftRef = useRef(onDraft);
-  /**
-   * R5g rule 4. The stale-answer guard. Each request takes the next number,
-   * and only the newest answer for the key on screen may land
-   * (`answerIsCurrent`). So a slow refresh never overwrites a newer answer.
-   */
-  const seqRef = useRef(0);
-  const refreshingRef = useRef(false);
-  const updatedAtRef = useRef(updatedAt);
-  const refreshRef = useRef<() => void>(() => undefined);
   useEffect(() => {
     onPreviewRef.current = onPreview;
     onDraftRef.current = onDraft;
-    updatedAtRef.current = updatedAt;
   });
   useEffect(() => {
     onDraftRef.current?.(draft);
@@ -1245,139 +1270,34 @@ export function ReportBuilder({
     blocked: prompt !== null,
     round: previewRound,
   });
-  /** R5g. The key of the choices now, for the guard of a late answer. */
-  const keyRef = useRef(previewKey);
   useEffect(() => {
     keyRef.current = previewKey;
   });
 
   useEffect(() => {
-    let off = false;
-    const { project_id, config, blocked } = previewRequest(previewKey);
+    const { blocked } = previewRequest(previewKey);
     // A template about one person with no person yet, or about one project
     // with no project yet: the server would answer 422, so the preview asks
     // for nothing and says what to do.
     // R5f round 1, rule 6. The preview on screen already answers this key.
-    if (!previewNeeded(shownKey.current, previewKey, blocked)) return;
-    const timer = setTimeout(() => {
-      const seq = ++seqRef.current;
-      projectsApi.previewReport({ project_id, name: "", config }).then(
-        (body) => {
-          if (off) return;
-          if (
-            !answerIsCurrent({ seq, latestSeq: seqRef.current, key: previewKey, currentKey: keyRef.current })
-          )
-            return;
-          const at = Date.now();
-          previewShown.current = true;
-          shownKey.current = previewKey;
-          setPreview({ key: previewKey, body });
-          setPreviewError(null);
-          setUpdatedAt(at);
-          setNow(at);
-          setRefreshFailed(false);
-          onPreviewRef.current?.(body, previewKey, at);
-        },
-        (e) => {
-          if (off) return;
-          // The last preview stays, dimmed. The error line says what failed.
-          setPreviewError({
-            key: previewKey,
-            message: message(e, "The preview could not be drawn."),
-          });
-        }
-      );
-    }, previewShown.current ? PREVIEW_DELAY_MS : 0);
-    return () => {
-      off = true;
-      clearTimeout(timer);
-    };
-  }, [previewKey]);
+    if (!ctl.needed(previewKey, blocked)) return;
+    const timer = setTimeout(
+      () => {
+        previewShown.current = true;
+        ctl.request(previewKey);
+      },
+      previewShown.current ? PREVIEW_DELAY_MS : 0
+    );
+    return () => clearTimeout(timer);
+  }, [previewKey, ctl]);
 
-  /**
-   * R5g rule 4. Ask the server again for the key on screen. The key does not
-   * change, so Home keeps the Overview state. The body stays on screen, and
-   * only the Refresh spinner and "Updated …" move.
-   */
-  function refresh() {
-    const { key, project_id, config, blocked } = previewRequest(keyRef.current);
-    if (blocked || refreshingRef.current) return;
-    const seq = ++seqRef.current;
-    refreshingRef.current = true;
-    setRefreshing(true);
-    projectsApi
-      .previewReport({ project_id, name: "", config })
-      .then(
-        (body) => {
-          if (!answerIsCurrent({ seq, latestSeq: seqRef.current, key, currentKey: keyRef.current }))
-            return;
-          const at = Date.now();
-          previewShown.current = true;
-          shownKey.current = key;
-          setPreview({ key, body });
-          setPreviewError(null);
-          setUpdatedAt(at);
-          setNow(at);
-          setRefreshFailed(false);
-          onPreviewRef.current?.(body, key, at);
-        },
-        () => {
-          // The last body stays. The summary line says that the refresh failed.
-          if (seq === seqRef.current) setRefreshFailed(true);
-        }
-      )
-      .finally(() => {
-        refreshingRef.current = false;
-        setRefreshing(false);
-      });
-  }
-  useEffect(() => {
-    refreshRef.current = refresh;
-  });
-
-  // R5g rule 4. Overview is live. A return to the tab refreshes an answer
-  // over a minute old. A timer refreshes every 5 minutes, and a hidden tab
-  // pauses it. The clock of "Updated …" moves on the same rule.
+  // R5g rule 4. Overview is live (`startLive`). A timer refreshes every 5
+  // minutes while the tab is visible, and a hidden tab stops it. A return to
+  // the tab, and a mount, refresh an answer over a minute old.
   useEffect(() => {
     if (!inOverview) return;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    let clock: ReturnType<typeof setInterval> | null = null;
-    const tick = () => refreshRef.current();
-    const start = () => {
-      if (timer === null) timer = setInterval(tick, LIVE_INTERVAL_MS);
-      if (clock === null) clock = setInterval(() => setNow(Date.now()), 30_000);
-    };
-    const stop = () => {
-      if (timer !== null) clearInterval(timer);
-      if (clock !== null) clearInterval(clock);
-      timer = null;
-      clock = null;
-    };
-    const onVisibility = () => {
-      if (!intervalRuns(document.visibilityState)) {
-        stop();
-        return;
-      }
-      const at = Date.now();
-      setNow(at);
-      if (
-        refreshOnVisible({
-          visible: true,
-          busy: refreshingRef.current,
-          updatedAt: updatedAtRef.current,
-          now: at,
-        })
-      )
-        tick();
-      start();
-    };
-    if (intervalRuns(document.visibilityState)) start();
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [inOverview]);
+    return startLive(browserTimerEnv(), ctl);
+  }, [inOverview, ctl]);
 
   // R5g rule 3. Read what the member left once, after the first render, so
   // the server and the first render agree: Filters closed.
@@ -1434,7 +1354,8 @@ export function ReportBuilder({
   const scopeError = errorAt === "scope" ? serverError : null;
   const otherSaveError = errorAt === "other" ? saveError : null;
   const chipPreviewError = currentError !== null && errorChip(currentError) !== "other";
-  const updating = !prompt && preview !== null && preview.key !== previewKey && !currentError;
+  // R5g round 1. Only other choices dim the body. A refresh keeps the key.
+  const updating = !prompt && bodyDimmed(live, previewKey);
   const sectionNote = subjectSectionNote(state);
   // A new project-only report asks for a project. An edit keeps its scope.
   const onlyProjects = projectOnly(template) && !isEdit;
@@ -1736,12 +1657,17 @@ export function ReportBuilder({
       subject: subjectLabel(state.subject, answer),
       scope: scopePhrase(state.projectId, state.includeSubtree, scopes),
       period: periodText,
-      updated: refreshFailed ? "Refresh failed" : updatedLine(updatedAt, now),
+      updated: null,
     });
     return (
       <div className="space-y-3">
         <OverviewHeader
           summary={summaryLine}
+          updated={
+            live.updatedAt !== null || live.refreshFailed ? (
+              <UpdatedAgo updatedAt={live.updatedAt} failed={live.refreshFailed} />
+            ) : null
+          }
           summaryTitle={
             preview ? periodLabel(preview.body.period_start, preview.body.period_end) : undefined
           }
@@ -1749,10 +1675,10 @@ export function ReportBuilder({
           filtersId={controlsId}
           filtersButtonId={filtersButtonId}
           filterCount={filterCount}
-          refreshing={refreshing || updating}
+          refreshing={live.refreshing}
           saveDisabled={prompt !== null}
           onToggleFilters={toggleFilters}
-          onRefresh={refresh}
+          onRefresh={() => ctl.refresh()}
           onSaveAs={() => onSaveAs?.(state)}
           onNewReport={onNewReport}
         />
@@ -1782,7 +1708,7 @@ export function ReportBuilder({
           resetShown={filterCount > 0}
           onReset={() => setState(overviewState())}
         />
-        <section className="min-w-0" aria-label={OVERVIEW_NAME} aria-busy={refreshing || updating}>
+        <section className="min-w-0" aria-label={OVERVIEW_NAME} aria-busy={live.refreshing || updating}>
           {previewBody}
         </section>
       </div>
@@ -2044,6 +1970,7 @@ export function SectionTile({
  */
 export function OverviewHeader({
   summary,
+  updated,
   summaryTitle,
   filtersOpen,
   filtersId,
@@ -2057,6 +1984,11 @@ export function OverviewHeader({
   onNewReport,
 }: {
   summary: string;
+  /**
+   * R5g round 1. "Updated …", as its own small component (`UpdatedAgo`).
+   * Its 30-second clock then renders only this text, and not the body.
+   */
+  updated?: React.ReactNode;
   /** The dates of the period, as a tooltip on the summary. */
   summaryTitle?: string;
   filtersOpen: boolean;
@@ -2078,6 +2010,7 @@ export function OverviewHeader({
         <h3 className="text-base font-semibold text-foreground">{OVERVIEW_NAME}</h3>
         <p className="min-w-0 text-xs text-muted-foreground" title={summaryTitle}>
           {summary}
+          {updated ? <> · {updated}</> : null}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -2099,16 +2032,23 @@ export function OverviewHeader({
             </Badge>
           )}
         </Button>
+        {/* R5g round 1. Never disabled while it loads, so it keeps the
+            focus. The spinner and aria-busy say it works, and the
+            controller ignores a second click. */}
         <Button
           variant="ghost"
           size="icon-sm"
-          icon="RefreshCw"
           aria-label="Refresh"
           title="Refresh"
-          loading={refreshing}
-          aria-busy={refreshing || undefined}
+          aria-busy={refreshing}
           onClick={onRefresh}
-        />
+        >
+          <Icon
+            name={refreshing ? "Loader2" : "RefreshCw"}
+            size={14}
+            className={refreshing ? "animate-spin" : undefined}
+          />
+        </Button>
         <Button variant="secondary" size="sm" icon="Save" disabled={saveDisabled} onClick={onSaveAs}>
           Save as report
         </Button>
@@ -2173,6 +2113,31 @@ export function OverviewFilters({
       <div className="border-t border-border pt-3">{sections}</div>
     </div>
   );
+}
+
+/**
+ * "Updated 2 min ago" (R5g round 1, item 5). It holds its own 30-second
+ * clock, which stops while the tab is hidden, so only this text renders
+ * again and not the panels.
+ */
+export function UpdatedAgo({
+  updatedAt,
+  failed,
+  env = browserTimerEnv,
+}: {
+  updatedAt: number | null;
+  failed: boolean;
+  env?: () => LiveTimerEnv;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const e = env();
+    const tick = () => setNow(e.now());
+    return startTicker(e, { intervalMs: 30_000, onTick: tick, onShow: tick });
+  }, [env]);
+  // A new answer can be newer than the clock. Its age is then zero.
+  const text = failed ? "Refresh failed" : updatedLine(updatedAt, Math.max(now, updatedAt ?? 0));
+  return text ? <span>{text}</span> : null;
 }
 
 /** One labelled choice of the Overview Filters. */

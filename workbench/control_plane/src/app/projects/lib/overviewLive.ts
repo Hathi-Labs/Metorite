@@ -19,7 +19,9 @@ import type { ReportConfig } from "./api";
 import {
   type BuilderState,
   OVERVIEW_SECTIONS,
+  initialShownKey,
   overviewState,
+  previewNeeded,
 } from "./reportBuilder";
 
 /** A return to the tab refreshes an answer older than this. */
@@ -189,14 +191,27 @@ const PREFERS_WIDE: ReadonlySet<string> = new Set(["outlook", "throughput"]);
  * The sections that span both columns of the Overview grid.
  *
  * A preferred panel is wide only when it starts a row, so it leaves no hole.
- * When the last row would hold one panel alone, that panel takes the row.
- * So each row holds two panels or one wide panel. `keys` is in draw order.
+ * A section in `full` is always wide. R5g round 1 puts each clear row there:
+ * a one-line row stretched to the height of a chart beside it looks empty.
+ * When a full-width section arrives after one narrow panel, that panel takes
+ * its row. When the last row would hold one panel alone, that panel takes
+ * the row. So each row holds two panels or one wide panel. `keys` is in draw
+ * order.
  */
-export function gridSpans(keys: readonly string[]): Set<string> {
+export function gridSpans(
+  keys: readonly string[],
+  full: ReadonlySet<string> = new Set()
+): Set<string> {
   const wide = new Set<string>();
   let col = 0;
   let lastNarrow: string | null = null;
   for (const key of keys) {
+    if (full.has(key)) {
+      if (col === 1 && lastNarrow !== null) wide.add(lastNarrow);
+      col = 0;
+      wide.add(key);
+      continue;
+    }
     if (PREFERS_WIDE.has(key) && col === 0) {
       wide.add(key);
       continue;
@@ -207,3 +222,244 @@ export function gridSpans(keys: readonly string[]): Set<string> {
   if (col === 1 && lastNarrow !== null) wide.add(lastNarrow);
   return wide;
 }
+
+// ── R5g round 1: the live wiring, as code a test can drive ─────────────────
+
+/**
+ * What the live wiring needs from the browser. The builder passes
+ * `browserTimerEnv()`. A test passes fake timers, a fake clock and a fake
+ * visibility, so it can prove each rule without a DOM.
+ */
+export interface LiveTimerEnv {
+  now(): number;
+  visibility(): string;
+  setInterval(fn: () => void, ms: number): unknown;
+  clearInterval(id: unknown): void;
+  /** Listen for a change of visibility. It gives back the call that stops it. */
+  onVisibilityChange(fn: () => void): () => void;
+}
+
+/** The timers, the clock and the visibility of the browser. */
+export function browserTimerEnv(): LiveTimerEnv {
+  return {
+    now: () => Date.now(),
+    visibility: () => (typeof document === "undefined" ? "hidden" : document.visibilityState),
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: (id) => clearInterval(id as ReturnType<typeof setInterval>),
+    onVisibilityChange: (fn) => {
+      document.addEventListener("visibilitychange", fn);
+      return () => document.removeEventListener("visibilitychange", fn);
+    },
+  };
+}
+
+/**
+ * Run `onTick` every `intervalMs` while the tab is visible. A hidden tab
+ * stops the timer. A return calls `onShow` and starts it again. `onStart`
+ * runs once, at the start, when the tab is visible. The call it gives back
+ * clears the timer and the listener: call it on unmount.
+ */
+export function startTicker(
+  env: LiveTimerEnv,
+  opts: { intervalMs: number; onTick: () => void; onShow: () => void; onStart?: () => void }
+): () => void {
+  let timer: unknown = null;
+  const start = () => {
+    if (timer === null) timer = env.setInterval(opts.onTick, opts.intervalMs);
+  };
+  const stop = () => {
+    if (timer !== null) env.clearInterval(timer);
+    timer = null;
+  };
+  const unlisten = env.onVisibilityChange(() => {
+    if (!intervalRuns(env.visibility())) {
+      stop();
+      return;
+    }
+    opts.onShow();
+    start();
+  });
+  if (intervalRuns(env.visibility())) {
+    opts.onStart?.();
+    start();
+  }
+  return () => {
+    stop();
+    unlisten();
+  };
+}
+
+/** What `startLive` needs from the preview controller. */
+export interface Refreshable {
+  busy(): boolean;
+  updatedAt(): number | null;
+  refresh(): unknown;
+}
+
+/**
+ * The live rule of Overview (§6.7 D). Every 5 minutes while the tab is
+ * visible, a refresh. On a return to the tab, and on mount, a refresh when
+ * the answer is more than 60 seconds old. So a return from a saved report
+ * also refreshes an old Overview.
+ */
+export function startLive(env: LiveTimerEnv, live: Refreshable): () => void {
+  const maybe = () => {
+    if (
+      refreshOnVisible({
+        visible: intervalRuns(env.visibility()),
+        busy: live.busy(),
+        updatedAt: live.updatedAt(),
+        now: env.now(),
+      })
+    )
+      live.refresh();
+  };
+  return startTicker(env, {
+    intervalMs: LIVE_INTERVAL_MS,
+    onTick: () => live.refresh(),
+    onShow: maybe,
+    onStart: maybe,
+  });
+}
+
+/** The ports of the preview controller: the key now, and where changes go. */
+export interface PreviewPorts<B> {
+  currentKey: () => string;
+  onChange: (state: PreviewState<B>) => void;
+  /** Each answer that lands, with its key and time, for Home to keep. */
+  onAnswer?: (body: B, key: string, at: number) => void;
+}
+
+/** What the preview controller holds. The builder draws from it. */
+export interface PreviewState<B> {
+  /** The body on screen and the key it answers. */
+  preview: { key: string; body: B } | null;
+  /** The key on screen, for `previewNeeded`. */
+  shownKey: string | null;
+  error: { key: string; message: string } | null;
+  /** A request for new choices is in flight. */
+  changing: boolean;
+  refreshing: boolean;
+  refreshFailed: boolean;
+  updatedAt: number | null;
+}
+
+/**
+ * True when the body on screen is dimmed: it answers other choices than the
+ * ones on screen. A refresh keeps the key, so it never dims the body.
+ */
+export function bodyDimmed<B>(state: PreviewState<B>, key: string): boolean {
+  return state.preview !== null && state.preview.key !== key && state.error?.key !== key;
+}
+
+/**
+ * The one owner of the preview requests (R5g round 1). The first preview, a
+ * change of the choices and a refresh all go through it. So one guard,
+ * `answerIsCurrent`, protects each answer: a good one and an error.
+ *
+ * - A refresh sends the key on screen. It keeps the key and the body, and
+ *   it never dims the body.
+ * - A refresh does nothing while a change is in flight or waits for its
+ *   delay, or while another refresh runs. So a timer never drops the answer
+ *   to a filter.
+ * - A change supersedes a refresh. The late refresh answer drops, and the
+ *   refresh state clears when it ends, good or bad.
+ */
+export function createPreviewController<B>(
+  base: {
+    initial: { key: string; body: B; at?: number } | null;
+    fetch: (req: ReturnType<typeof previewRequest>) => Promise<B>;
+    now: () => number;
+    errorMessage: (e: unknown) => string;
+  } & Partial<PreviewPorts<B>>
+) {
+  // The ports can arrive later, through `bind`: a component binds them in
+  // an effect, because they read its refs.
+  const opts: typeof base & PreviewPorts<B> = {
+    currentKey: () => "",
+    onChange: () => undefined,
+    ...base,
+  };
+  let state: PreviewState<B> = {
+    preview: opts.initial ? { key: opts.initial.key, body: opts.initial.body } : null,
+    shownKey: initialShownKey(opts.initial),
+    error: null,
+    changing: false,
+    refreshing: false,
+    refreshFailed: false,
+    updatedAt: opts.initial?.at ?? null,
+  };
+  let seq = 0;
+  let live = true;
+  const set = (patch: Partial<PreviewState<B>>) => {
+    if (!live) return;
+    state = { ...state, ...patch };
+    opts.onChange(state);
+  };
+  const current = (my: number, key: string) =>
+    live && answerIsCurrent({ seq: my, latestSeq: seq, key, currentKey: opts.currentKey() });
+  const land = (key: string, body: B, patch: Partial<PreviewState<B>>) => {
+    const at = opts.now();
+    set({ ...patch, preview: { key, body }, shownKey: key, error: null, updatedAt: at, refreshFailed: false });
+    opts.onAnswer?.(body, key, at);
+  };
+
+  return {
+    get state() {
+      return state;
+    },
+    busy: () => state.changing || state.refreshing,
+    updatedAt: () => state.updatedAt,
+    /** True when the choices need a request (`previewNeeded`). */
+    needed: (key: string, blocked: boolean) => previewNeeded(state.shownKey, key, blocked),
+    /** Ask for new choices. */
+    request(key: string) {
+      const req = previewRequest(key);
+      if (req.blocked) return;
+      const my = ++seq;
+      set({ changing: true });
+      opts.fetch(req).then(
+        (body) => {
+          if (!current(my, key)) return;
+          land(key, body, { changing: false });
+        },
+        (e) => {
+          if (!current(my, key)) return;
+          set({ changing: false, error: { key, message: opts.errorMessage(e) } });
+        }
+      );
+    },
+    /** Ask again for the key on screen. It gives back true when it asked. */
+    refresh(): boolean {
+      const key = opts.currentKey();
+      const req = previewRequest(key);
+      if (req.blocked || state.changing || state.refreshing) return false;
+      // A change waits for its delay: the body on screen is for other choices.
+      if (state.preview !== null && state.preview.key !== key) return false;
+      const my = ++seq;
+      set({ refreshing: true });
+      opts.fetch(req).then(
+        (body) => {
+          if (!current(my, key)) return set({ refreshing: false });
+          land(key, body, { refreshing: false });
+        },
+        () => {
+          set({ refreshing: false, refreshFailed: current(my, key) });
+        }
+      );
+      return true;
+    },
+    /** Connect the ports. Call it before the first request. */
+    bind(ports: PreviewPorts<B>) {
+      Object.assign(opts, ports);
+      // A remount (React's StrictMode runs each effect twice) binds again.
+      live = true;
+    },
+    /** Stop: no answer lands after this. Call it on unmount. */
+    dispose() {
+      live = false;
+    },
+  };
+}
+
+export type PreviewController<B> = ReturnType<typeof createPreviewController<B>>;

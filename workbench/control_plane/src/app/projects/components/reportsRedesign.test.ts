@@ -289,7 +289,7 @@ describe("(m) a return to Home asks for no second preview", () => {
     expect(VIEW).toContain("initialPreview={overviewPreview}");
     expect(VIEW).toContain("onDraft={setOverviewDraft}");
     expect(VIEW).toContain("initial={overviewDraft}");
-    expect(VIEW).toContain("if (!previewNeeded(shownKey.current, previewKey, blocked)) return;");
+    expect(VIEW).toContain("if (!ctl.needed(previewKey, blocked)) return;");
   });
 });
 
@@ -465,7 +465,9 @@ describe("round 2, item 4: Overview starts from the kept preview", () => {
   });
 
   it("the builder seeds its key from the kept preview", () => {
-    expect(VIEW).toContain("const shownKey = useRef<string | null>(initialShownKey(initialPreview));");
+    // R5g round 1: the preview controller holds the key on screen, and
+    // `overviewLiveWiring.test.ts` drives it.
+    expect(VIEW).toContain("initial: initialPreview,");
   });
 });
 

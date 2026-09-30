@@ -121,6 +121,7 @@ describe("R5g rule 2: the filter count badge", () => {
     expect(overviewFilterCount(person)).toBe(1);
     expect(overviewFilterCount({ ...base, projectId: "p1" })).toBe(1);
     expect(overviewFilterCount({ ...base, projectId: "p1", includeSubtree: false })).toBe(1);
+    expect(overviewFilterCount({ ...base, includeSubtree: false })).toBe(1);
     expect(overviewFilterCount({ ...base, weeks: 1, skipCurrentWeek: true })).toBe(1);
     expect(overviewFilterCount({ ...base, sections: ["finished"] })).toBe(1);
     expect(
@@ -239,6 +240,13 @@ describe("R5g rule 1: the grid leaves no half-empty row", () => {
       }
       expect(col, `the last row of ${keys.join(",")} is full`).toBe(0);
     }
+  });
+
+  it("a clear row takes a full row, and closes the row before it", () => {
+    const wide = gridSpans(["finished", "stuck", "load", "capacity"], new Set(["stuck"]));
+    expect([...wide].sort()).toEqual(["finished", "stuck"]);
+    const lone = gridSpans(["finished", "load", "stuck"], new Set(["stuck"]));
+    expect([...lone].sort()).toEqual(["stuck"]);
   });
 
   it("gives the forecast the full width at the Overview defaults", () => {

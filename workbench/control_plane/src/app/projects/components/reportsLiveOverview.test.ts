@@ -19,6 +19,7 @@ import {
   OverviewHeader,
   RenderedBody,
   SectionTile,
+  UpdatedAgo,
 } from "./ReportsView";
 
 const html = (el: React.ReactElement) => renderToStaticMarkup(el);
@@ -82,8 +83,28 @@ describe("R5g rule 1: Overview panels flow in a grid, full width", () => {
     })
   );
 
-  it("one column below xl, two at xl, each cell at its own height", () => {
-    expect(grid).toMatch(/class="grid grid-cols-1 items-start gap-3 xl:grid-cols-2"/);
+  it("one column below xl, two at xl, and the cells of a row share one height", () => {
+    expect(grid).toMatch(/class="grid grid-cols-1 gap-3 xl:grid-cols-2"/);
+    expect(grid).not.toMatch(/class="grid [^"]*items-start/);
+  });
+
+  it("each panel card fills its cell (round 1, item 1)", () => {
+    const cards = grid.match(/<section class="rounded-lg border border-border bg-card p-3[^"]*"/g) ?? [];
+    expect(cards.length).toBe(2);
+    for (const c of cards) expect(c).toContain("h-full");
+  });
+
+  it("a clear row takes a full row, so it never stretches beside a chart", () => {
+    const withClear = html(
+      createElement(RenderedBody, {
+        body: body({ finished: FINISHED, stuck: { ...STUCK, overdue_total: 0, overdue: [], stale: [] }, load: { total_tasks: 1, people: [{ assignee: "a@x.io", open_tasks: 1, overdue: 0 }] } }),
+        layout: "grid",
+        showTitle: false,
+      })
+    );
+    // Stuck is clear: its row spans both columns, and so does the panel
+    // before it, which would sit alone.
+    expect(withClear.match(/xl:col-span-2/g)?.length).toBe(3);
   });
 
   it("has no reading measure in Overview", () => {
@@ -122,6 +143,7 @@ describe("R5g: a saved report and the builder keep their layout", () => {
     expect(column).toContain('class="max-w-3xl space-y-3"');
     expect(column).not.toContain("xl:grid-cols-2");
     expect(column).not.toContain("col-span");
+    expect(column).not.toContain("h-full");
   });
 
   it("the saved report and the builder pass no grid layout", () => {
@@ -162,6 +184,17 @@ describe("R5g rule 2: one slim toolbar", () => {
     expect(busy).toContain("animate-spin");
     expect(busy).toMatch(/<button[^>]*aria-label="Refresh"/);
     expect(bar).not.toContain("animate-spin");
+  });
+
+  it("never disables Refresh while it loads, so it keeps the focus (item 2)", () => {
+    const refresh = toolbar({ refreshing: true }).match(/<button[^>]*aria-label="Refresh"[^>]*>/)?.[0] ?? "";
+    expect(refresh).not.toMatch(/\sdisabled=""/);
+    expect(refresh).toContain('aria-busy="true"');
+  });
+
+  it("draws the Updated slot after the summary", () => {
+    const withTime = toolbar({ summary: "Whole organization", updated: createElement("span", null, "Updated 2 min ago") });
+    expect(withTime).toContain("Whole organization · <span>Updated 2 min ago</span>");
   });
 });
 
@@ -261,21 +294,23 @@ describe("R5g rule 3: section chips keep the tile rules", () => {
   });
 });
 
-describe("R5g rule 4: the live refresh in the builder", () => {
-  it("keeps the last body on screen, with no skeleton during a refresh", () => {
-    // The body shows while `refreshing`; only the first load has no preview.
-    expect(VIEW).toMatch(/refreshing=\{refreshing \|\| updating\}/);
-    expect(VIEW).not.toMatch(/refreshing \? \(\s*<Skeleton/);
+describe("R5g round 1, item 5: the Updated clock is its own component", () => {
+  it("the builder holds no clock: it draws UpdatedAgo, which holds it", () => {
+    const from = VIEW.indexOf("export function ReportBuilder(");
+    const to = VIEW.indexOf("\n}\n", from);
+    const builder = VIEW.slice(from, to);
+    expect(builder).toContain("<UpdatedAgo updatedAt={live.updatedAt} failed={live.refreshFailed} />");
+    expect(builder).not.toMatch(/updatedLine\(|Date\.now\(\)\)|setNow\(/);
   });
 
-  it("guards each answer with the shared rule", () => {
-    expect(VIEW.match(/answerIsCurrent\(\{/g)?.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("listens for visibility, runs the interval, and clears both", () => {
-    expect(VIEW).toContain('document.addEventListener("visibilitychange", onVisibility)');
-    expect(VIEW).toContain('document.removeEventListener("visibilitychange", onVisibility)');
-    expect(VIEW).toMatch(/setInterval\([^)]*LIVE_INTERVAL_MS\)/);
-    expect(VIEW).toMatch(/clearInterval\(/);
+  it("says the age of the answer, or that the refresh failed", () => {
+    const now = Date.now();
+    expect(html(createElement(UpdatedAgo, { updatedAt: now - 2 * 60_000, failed: false }))).toBe(
+      "<span>Updated 2 min ago</span>"
+    );
+    expect(html(createElement(UpdatedAgo, { updatedAt: now, failed: true }))).toBe(
+      "<span>Refresh failed</span>"
+    );
+    expect(html(createElement(UpdatedAgo, { updatedAt: null, failed: false }))).toBe("");
   });
 });
