@@ -479,7 +479,9 @@ describe("round 2, items 13 and 14: find-in-page and the controls toggle", () =>
   });
 
   it("the Overview toggle names the controls it shows", () => {
-    expect(VIEW).toContain("aria-controls={controlsId}");
+    // R5g: the Filters button of the toolbar replaced "Change what you see".
+    expect(VIEW).toContain("aria-controls={filtersId}");
+    expect(VIEW).toContain("filtersId={controlsId}");
     expect(VIEW).toMatch(/id=\{controlsId\}/);
   });
 });
