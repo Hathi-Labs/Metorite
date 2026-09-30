@@ -1293,7 +1293,7 @@ chat card. `reportVisuals.test.ts` draws ten panels. The panel names three
 focus tasks, and the folded table names each focus task that the body
 carries.
 
-### R4 — Stored runs and "what changed" · AGENT-SAFE
+### R4 — Stored runs and "what changed" · CUT 2026-09-30 (§9 Q15)
 
 **What:** a table `pm_report_runs` (report, organization, rendered for, period,
 body JSONB, created). The render writes a run when a schedule fires or when a
@@ -1311,7 +1311,7 @@ report: completed, slipped due date, reassigned, blocked, created.
 **Done when:** a second run shows an arrow and the last value on each figure.
 `changes` lists each event type with a link to its task.
 
-### R4b — Act on a suggestion · AGENT-SAFE
+### R4b — Act on a suggestion · CUT 2026-09-30 (§9 Q15)
 
 **What:** the controls of §6.4 item 4 on each rebalance row. **Assign** asks
 the member to confirm, then sets the helper as an assignee. **Dismiss** hides
@@ -1710,7 +1710,7 @@ The review and the verifier found two defects, two weak fences and seven UX item
 
 **As built, round 2 (2026-09-30).** `reportsRedesign.test.ts` and `reportEmailRound2.test.ts` hold the fences. A mutation of each new fence turns it red: 13 in the client and 1 on the real database.
 
-### R6 — The AI summary, on request · AGENT-SAFE
+### R6 — The AI summary, on request · CUT 2026-09-30 (§9 Q15)
 
 **What:** a **Summarize with AI** control on a rendered report. When a person
 presses it, an LLM writes two or three sentences from the render body. The
@@ -1740,7 +1740,7 @@ fallback is the fixed sentence of §6.4.
 ⚠️ **H-152 applies.** Today a self-serve customer can never be served AI.
 Until H-152 closes, those customers see the refusal.
 
-### R8 — The chat: list, create, render and email · AGENT-SAFE
+### R8 — The chat: list, create, render and email · SPLIT 2026-09-30: R-final built the render by name, and `send_report` moved to Phase 2 (§9 Q16)
 
 **What:** the controls of §6.3, and four chat tools over the report routes.
 
@@ -1768,7 +1768,7 @@ Until H-152 closes, those customers see the refusal.
 - The chat emails a report only after the member confirms the card.
   `test_projects_chat_coverage.py` passes with the new map.
 
-### R9 — Email this report, on request · AGENT-SAFE to build, OWNER-GATE to arm
+### R9 — Email this report, on request · MOVED TO PHASE 2 on 2026-09-30 (§9 Q16)
 
 **What:** `POST /projects/reports/{id}/send` with one recipient. It renders
 the report once, with the **recipient's** visibility (H-111), and sends it
@@ -1799,16 +1799,16 @@ item 6) and the chat's `send_report` both call it.
 
 ### Order
 
-**Phase 1, on request:** R1 → R2 → R2b → R3 (R3a → R3b → R3c → R3d) → R5 →
-R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
+**Phase 1, on request, COMPLETE 2026-09-30:** R1 → R2 → R2b → R3 (R3a →
+R3b → R3c → R3d) → R5 → R-final. Inside R5, R5f comes after R5b. The
+original order ended R4 → R4b → R6 → R8 → R9. §9 Q15 and Q16 cut or moved
+those slices.
 
 - R1 and R2 give a member control of what exists.
 - R2b draws each section as a chart or a progress bar.
 - R3 makes the morning report real.
 - R5 adds the person and team scope and the permission rule.
-- R4 gives a report a memory, and R4b lets a member act on a suggestion.
-- R6 adds the AI summary.
-- R8 and R9 let the chat and the member send a report to one person.
+- R-final lets the chat render a report by name.
 
 ### R-final — The chat renders a report by name (owner, 2026-09-30) · BUILT 2026-09-30
 
@@ -1849,14 +1849,19 @@ works with no saved report. With no id, the tool calls
 - `test_projects_chat_coverage.py` passes with the new map.
 
 **As built (2026-09-30).** `render_report` reads `/templates` and
-`/subjects` and matches a key, a slug, an address or a name with no regard
-to case. When two entries match, the tool lists them and renders nothing.
-A name that matches none of the reader's subjects goes to the preview as it
-is, so the server gives its 422 or its 403 reason. A saved report and a
-preview use one formatter, `_draw_report`. `test_projects_report_chat_rfinal.py`
-proves the done-when on a real database. A mutation of the §7.1 team rule,
-of the fallback to the server, of the case rule and of the choice list each
-turns a test red.
+`/subjects`. It matches a key, a slug, an address or a name with no regard
+to case. With no exact match, a first name finds a full name, so "Asha"
+finds "Asha Rao". When two entries match, the tool lists them and renders
+nothing.
+
+A name that matches none of the reader's subjects goes to the preview as
+it is. The server then gives its 422 or its 403 reason.
+
+A saved report and a preview use one formatter, `_draw_report`.
+`test_projects_report_chat_rfinal.py` proves the done-when on a real
+database. Five mutations each turn a test red. They break the §7.1 team
+rule, the fallback to the server, the case rule, the choice list and the
+first-name match.
 
 ---
 
@@ -1928,7 +1933,7 @@ that the render does not need a saved row.
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
 | Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 | Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
-| Q15 (2026-09-30) | How much of Phase 1 is left to build? | The owner: "just conclude this feature soon, keep only what is absolutally necessary". One slice remains, R-final: email a report to one person, from the page and from the chat, dark behind the owner's flag. R4, R4b and R6 are cut. |
+| Q15 (2026-09-30) | How much of Phase 1 is left to build? | The owner: "just conclude this feature soon, keep only what is absolutally necessary". One slice remains, R-final. R4, R4b and R6 are cut. Q16 then narrowed R-final to the chat render by name. |
 | Q16 (2026-09-30) | Does the email send stay in the close-out? | The owner: "Move email to later". The gateway has no system mail sender, and the timed email of Phase 2 needs the same seam. R9 and `send_report` move to Phase 2. R-final keeps only the chat render by name. |
 
 **Answered before this spec:** whose view a sent report uses. The send renders

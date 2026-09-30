@@ -643,6 +643,17 @@ def _named(asked: str, entries: list[dict[str, Any]], keys: tuple[str, ...]) -> 
     return [e for e in entries if any(_said(e.get(k)) == want for k in keys if e.get(k))]
 
 
+def _partly_named(asked: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each entry whose ``name`` holds every word of ``asked`` as a whole
+    word, so "Asha" finds "Asha Rao". Only a fallback, when no entry matches
+    exactly. The entries are the reader's own subjects, so this widens
+    nothing the reader may see."""
+    words = _said(asked).split()
+    if not words:
+        return []
+    return [e for e in entries if set(words) <= set(_said(e.get("name")).split())]
+
+
 def _choices(head: str, rows: list[str]) -> str:
     """A line that says why, then one row for each choice."""
     return "\n".join([head, *[f"- {r}" for r in rows]])
@@ -656,6 +667,9 @@ def _subject_options(asked: str, found: dict[str, Any]) -> list[tuple[dict[str, 
         return [({"kind": "person", "email": me}, me, me)]
     teams = _named(asked, found.get("teams") or [], ("slug", "name"))
     people = _named(asked, found.get("people") or [], ("email", "name"))
+    if not teams and not people:
+        teams = _partly_named(asked, found.get("teams") or [])
+        people = _partly_named(asked, found.get("people") or [])
     return [
         ({"kind": "team", "slug": str(t.get("slug"))}, _plain(t.get("name") or t.get("slug")),
          f"team {_plain(t.get('name'))} ({t.get('slug')})")
@@ -678,7 +692,8 @@ async def render_report(report_id: str = "", template: str = "", subject: str = 
     saved report: "team pulse for Design", "1:1 prep for Asha", "my day".
     ``template`` is a template name or key. ``subject`` is a team name, or a
     person's name or address. "My day" needs no subject. The names match
-    with no regard to case. When two entries match, this tool lists them,
+    with no regard to case, and a first name finds a full name. When two
+    entries match, this tool lists them,
     and you ask the member which one. The server decides who the member may
     report on. Relay its refusal as it is, and do not try another way."""
     if report_id.strip():
@@ -732,7 +747,9 @@ async def render_report(report_id: str = "", template: str = "", subject: str = 
                 else {"kind": "team", "slug": raw.replace(" ", "-")}
             )
             label = subject.strip()
-        name = f"{name} · {label}"
+        # The server refuses a name over 120 characters, and a long
+        # display name must not turn a valid subject into a 422.
+        name = f"{name} · {label}"[:120]
     payload = await post("/projects/reports/preview", {"name": name, "config": config})
     return await _draw_report(payload, None)
 

@@ -178,6 +178,40 @@ async def test_a_person_and_a_team_with_one_name_are_listed(monkeypatch) -> None
     assert "d@x.io" in out and "design" in out
 
 
+async def test_a_first_name_finds_the_full_name(monkeypatch) -> None:
+    """Review of R-final, P2. "1:1 prep for Asha" is the docstring's own
+    example. With only exact matches, "Asha" went to the server as a team
+    slug and got a 422 that named no role."""
+    _drawn(monkeypatch)
+    people = [{"email": _ME, "name": "Pat"}, {"email": "asha@x.io", "name": "Asha Rao"}]
+    calls = fake_gateway(monkeypatch, _responder(_subjects(people=people)), user=_ME)
+    await skill_projects.render_report(template="1:1 prep", subject="asha")
+    assert _previews(calls)[0]["json"]["config"]["subject"] == {
+        "kind": "person",
+        "email": "asha@x.io",
+    }
+
+
+async def test_a_first_name_two_people_share_is_listed(monkeypatch) -> None:
+    _drawn(monkeypatch)
+    people = [
+        {"email": "asha@x.io", "name": "Asha Rao"},
+        {"email": "asha.k@x.io", "name": "Asha Kumar"},
+    ]
+    calls = fake_gateway(monkeypatch, _responder(_subjects(people=people)), user=_ME)
+    out = await skill_projects.render_report(template="1:1 prep", subject="Asha")
+    assert _previews(calls) == []
+    assert "asha@x.io" in out and "asha.k@x.io" in out
+
+
+async def test_a_long_display_name_keeps_the_report_name_legal(monkeypatch) -> None:
+    _drawn(monkeypatch)
+    people = [{"email": "l@x.io", "name": "L" * 200}]
+    calls = fake_gateway(monkeypatch, _responder(_subjects(people=people)), user=_ME)
+    await skill_projects.render_report(template="1:1 prep", subject="l@x.io")
+    assert len(_previews(calls)[0]["json"]["name"]) <= 120
+
+
 async def test_an_unknown_template_lists_the_live_templates(monkeypatch) -> None:
     _drawn(monkeypatch)
     calls = fake_gateway(monkeypatch, _responder(_subjects()), user=_ME)
