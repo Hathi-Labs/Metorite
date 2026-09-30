@@ -169,6 +169,31 @@ def test_a_planted_link_in_the_state_root_does_not_reach_the_clone(disk) -> None
     assert _member_agent_workspace(_P, _ALICE) is None
 
 
+def test_a_link_at_the_agent_state_root_writes_nothing_through_it(disk) -> None:
+    """The verifier's probe. ``state/<agent>`` is a link into a shared clone,
+    and the member has no folder yet. The refusal must come BEFORE
+    ``ensure_state_dir``, or the refused call still makes a folder and an
+    instance marker (holding the email) inside the clone."""
+    import os
+
+    from acb_skills.agent_paths import state_root
+    from gateway.routes.workspace import _member_agent_workspace
+
+    q = "agent-h201q"
+    (disk.repos / q).mkdir()
+    (disk.repos / q / "config.json").write_text(_config("personal"), encoding="utf-8")
+    link, target = state_root() / q, disk.repos / _S
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        import _winapi  # type: ignore[import-not-found]
+
+        _winapi.CreateJunction(str(target), str(link))
+    before = sorted(p.name for p in target.iterdir())
+    assert _member_agent_workspace(q, _ALICE) is None
+    assert sorted(p.name for p in target.iterdir()) == before
+
+
 # ── The four routes — members of two orgs (R8) ──────────────────────────────
 
 @_DB_GATE

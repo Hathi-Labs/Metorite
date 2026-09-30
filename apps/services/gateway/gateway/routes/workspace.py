@@ -579,7 +579,12 @@ def _member_agent_workspace(
     """
     if not user_email or "@" not in user_email:
         return None
-    from acb_skills.agent_paths import ensure_state_dir, is_valid_agent_name, state_root
+    from acb_skills.agent_paths import (
+        agent_state_dir,
+        ensure_state_dir,
+        is_valid_agent_name,
+        state_root,
+    )
 
     if not is_valid_agent_name(agent_name):
         return None
@@ -589,8 +594,15 @@ def _member_agent_workspace(
             return None
         if _agent_instance_for(agent_name, user_email) != f"u:{user_email}":
             return None
-        ws = ensure_state_dir(code_dir.name, f"u:{user_email}")
-        if not _is_under(ws.resolve(), state_root().resolve(), strictly=True):
+        instance = f"u:{user_email}"
+        root = state_root().resolve()
+        # Check BEFORE ensure_state_dir: it makes the folder and writes the
+        # marker, so a link at state/<agent> must be refused first.
+        planned = agent_state_dir(code_dir.name, instance).resolve()
+        if not _is_under(planned, root, strictly=True):
+            return None
+        ws = ensure_state_dir(code_dir.name, instance)
+        if not _is_under(ws.resolve(), root, strictly=True):
             return None
     except Exception as exc:
         _log.warning(
