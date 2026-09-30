@@ -67,7 +67,8 @@ def test_hitl_blocks_until_user_responds(queue: asyncio.Queue):
         assert req_id in executor._pending_user_input
         assert not task.done(), "hitl call must park until the user answers"
         # The frontend answers via /agent/respond-input → resolve_user_input.
-        assert executor.resolve_user_input(req_id, 'Form — {"temp": 22}')
+        assert executor.resolve_user_input(req_id, 'Form — {"temp": 22}',
+            thread_id=executor._pending_user_input.owner_of(req_id))
         res = await asyncio.wait_for(task, timeout=2)
         return req_id, res
 
@@ -84,7 +85,8 @@ def test_hitl_flag_never_reaches_the_frontend(queue: asyncio.Queue):
             '{"type":"template","hitl":true,"props":{"name":"optionPicker","data":{}}}'
         ))
         ev = await asyncio.wait_for(queue.get(), timeout=2)
-        executor.resolve_user_input(ev["value"]["request_id"], "Selected: A")
+        executor.resolve_user_input(ev["value"]["request_id"], "Selected: A",
+            thread_id=executor._pending_user_input.owner_of(ev["value"]["request_id"]))
         await task
         return ev
 
@@ -120,7 +122,8 @@ def test_parked_genui_suppresses_copilot_stall_detector(queue: asyncio.Queue):
         ))
         ev = await asyncio.wait_for(queue.get(), timeout=2)
         suppressed = copilot_agent._hitl_pending()
-        executor.resolve_user_input(ev["value"]["request_id"], "done")
+        executor.resolve_user_input(ev["value"]["request_id"], "done",
+            thread_id=executor._pending_user_input.owner_of(ev["value"]["request_id"]))
         await task
         return suppressed
 

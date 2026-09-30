@@ -180,8 +180,19 @@ class _FakeSession:
 
 @pytest.fixture
 def captured(monkeypatch):
+    """A member acts, and the run opener yields a recording session.
+
+    H-201: ``query_history`` opens its session through the executor opener,
+    and it answers ``[]`` with no verified member. The R8 half is
+    ``test_h201_readers_under_rls.py``.
+    """
+    import acb_skills.history_tools as ht
+    from orchestrator import executor
+
     sink: dict = {}
-    monkeypatch.setattr("acb_graph.get_session", lambda: _FakeSession(sink), raising=False)
+    monkeypatch.setattr(ht, "_acting_user", lambda: "alice@example.test")
+    monkeypatch.setattr(executor, "_graph_session_opener_current",
+                        lambda: (lambda: _FakeSession(sink)))
     return sink
 
 

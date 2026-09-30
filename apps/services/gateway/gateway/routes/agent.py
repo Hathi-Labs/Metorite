@@ -41,7 +41,7 @@ from acb_common import get_logger, get_settings
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from gateway.db import current_tenant
+from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
 from pydantic import BaseModel
 
@@ -2356,15 +2356,39 @@ async def respond_user_input(
     it — the agent continues in the SAME run/stream, so the answer is never
     queued as a separate chat message.
     """
+    import asyncio  # noqa: PLC0415
+
     from orchestrator.executor import resolve_user_input  # noqa: PLC0415
+
+    # H-201 (S15 review, P2, and fix round 1): answering a run's question is
+    # a contributor's act. The call must name the thread, and the caller
+    # needs ``can_send`` in that room, in the caller's tenant. A thread of
+    # another tenant, or no tenant at all, gets no capability. Both checks
+    # come before the fast path and the relay. Then the executor answers
+    # only when that thread OWNS the request id, so a viewer who saw the id
+    # cannot answer it from a room of their own.
+    if not req.thread_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Name the conversation that asked the question (thread_id).",
+        )
+    room = await asyncio.to_thread(
+        _resolve_room, req.thread_id, getattr(user, "email", None) or "",
+        getattr(user, "organization_id", None),
+    )
+    if room is None or not room.can_send:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot answer a question in this conversation.",
+        )
 
     # Fast path: the run is parked on THIS worker — resolve its Future inline.
     delivered = resolve_user_input(
-        req.request_id, req.answer, req.was_freeform
+        req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
-    if not delivered and req.thread_id:
+    if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(
@@ -2695,6 +2719,21 @@ async def run_agent_async(
     return {"run_id": run_id, "status": "queued", "agent": agent}
 
 
+def _member_graph_session(user: UserContext) -> Any:
+    """An ``acb_graph`` session bound to the caller's tenant. H-201.
+
+    ``pending_commit`` and ``audit_event`` are FORCE RLS in production. An
+    unbound read there finds no row, and an unbound write changes nothing. The
+    tenant is ``user.organization_id``, which the server resolves from the
+    authenticated identity, never from the request (R5). With no tenant
+    ``tenant_session`` raises ``TenantUnbound``. Each route lets it through, so
+    the app handler answers it, and nothing falls back to an unbound session.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
+
+    return tenant_session(getattr(user, "organization_id", None))
+
+
 @router.get("/run/{run_id}/status")
 async def get_run_status(
     run_id: str,
@@ -2706,10 +2745,9 @@ async def get_run_status(
     matching the run_id.  LangGraph PostgresSaver removed in WBS 0.7.
     """
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT action, at FROM audit_event "
@@ -2730,6 +2768,8 @@ async def get_run_status(
         else:
             status_str = "running"
         return {"run_id": run_id, "status": status_str, "events": events}
+    except TenantUnbound:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2748,12 +2788,11 @@ async def list_mutations(
     Items are sorted newest-first.
     """
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         rows: list[dict[str, Any]] = []
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             # 1. Pending commits (primary HITL queue)
             pc_result = sess.execute(
                 text(
@@ -2829,6 +2868,8 @@ async def list_mutations(
         # Sort by timestamp descending (pending_commit.created_at, audit_event.at)
         rows.sort(key=lambda x: x.get("at", ""), reverse=True)
         return rows[:limit]
+    except TenantUnbound:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2846,10 +2887,9 @@ async def list_pending_commits(
 ) -> list[dict[str, Any]]:
     """Return pending commit rows for the inbox (unreviewed agent self-fixes)."""
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT id, agent_name, run_id, commit_sha, commit_message, "
@@ -2880,6 +2920,8 @@ async def list_pending_commits(
                     }
                 )
         return rows
+    except TenantUnbound:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2891,10 +2933,9 @@ async def get_pending_commit_diff(
 ) -> dict[str, Any]:
     """Return the unified diff stored for a pending commit (for inline review)."""
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT id, agent_name, commit_sha, commit_message, "
@@ -2915,7 +2956,7 @@ async def get_pending_commit_diff(
             "test_summary": row.test_summary,
             "status": row.status,
         }
-    except HTTPException:
+    except (HTTPException, TenantUnbound):
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -2943,11 +2984,10 @@ async def approve_pending_commit(
     from acb_audit import AuditEvent, record  # noqa: PLC0415
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         # Fetch the row
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT id, agent_name, run_id, local_clone_dir, commit_sha, "
@@ -3053,7 +3093,7 @@ async def approve_pending_commit(
                 # PR is open — mark the row and return. This path does NOT use
                 # the git-push cascade below (there is no shared remote history
                 # to walk); each approved native-MAF mutation is its own PR.
-                with get_session() as sess:
+                with _member_graph_session(user) as sess:
                     sess.execute(
                         text(
                             "UPDATE pending_commit SET status = 'pr_open', "
@@ -3106,7 +3146,7 @@ async def approve_pending_commit(
             )
 
         # (reviewer resolved above, before the push/PR fork.)
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             update_sql = (
                 "UPDATE pending_commit "
                 "SET status = 'approved', reviewed_by = :by, reviewed_at = now()"
@@ -3125,7 +3165,7 @@ async def approve_pending_commit(
         # origin/<branch> and HEAD in one push).
         cascade_ids: list[str] = []
         try:
-            with get_session() as sess:
+            with _member_graph_session(user) as sess:
                 others = sess.execute(
                     text(
                         "SELECT id, commit_sha FROM pending_commit "
@@ -3150,7 +3190,7 @@ async def approve_pending_commit(
                     cascade_ids.append(str(other.id))
 
             if cascade_ids:
-                with get_session() as sess:
+                with _member_graph_session(user) as sess:
                     sess.execute(
                         text(
                             "UPDATE pending_commit "
@@ -3196,7 +3236,7 @@ async def approve_pending_commit(
             "cascade_approved": len(cascade_ids),
         }
 
-    except HTTPException:
+    except (HTTPException, TenantUnbound):
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3220,10 +3260,9 @@ async def reject_pending_commit(
     from acb_audit import AuditEvent, record  # noqa: PLC0415
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT id, agent_name, run_id, local_clone_dir, commit_sha, status "
@@ -3254,7 +3293,7 @@ async def reject_pending_commit(
             await _git_exec(clone_dir, ["reset", "HEAD~1", "--mixed"])
 
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             sess.execute(
                 text(
                     "UPDATE pending_commit "
@@ -3285,7 +3324,7 @@ async def reject_pending_commit(
         )
         return {"status": "rejected", "commit_sha": commit_sha}
 
-    except HTTPException:
+    except (HTTPException, TenantUnbound):
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3315,10 +3354,9 @@ async def remutate_pending_commit(
     from acb_audit import AuditEvent, record  # noqa: PLC0415
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "SELECT id, agent_name, run_id, local_clone_dir, commit_sha, status "
@@ -3349,7 +3387,7 @@ async def remutate_pending_commit(
             await _git_exec(clone_dir, ["reset", "HEAD~1", "--mixed"])
 
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             sess.execute(
                 text(
                     "UPDATE pending_commit "
@@ -3387,7 +3425,7 @@ async def remutate_pending_commit(
             ),
         }
 
-    except HTTPException:
+    except (HTTPException, TenantUnbound):
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3407,11 +3445,10 @@ async def delete_pending_commit(
     rejected, failed) from the agent card view.
     """
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text("DELETE FROM pending_commit WHERE id = :id"),
                 {"id": commit_id},
@@ -3422,6 +3459,8 @@ async def delete_pending_commit(
         _log.info("mutation.commit_deleted", commit_id=commit_id, rows=deleted, by=reviewer)
         return {"deleted": commit_id, "rows_deleted": deleted}
 
+    except TenantUnbound:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -3440,11 +3479,10 @@ async def dismiss_mutation_event(
     records are never touched.  Non-fatal if run_id not found.
     """
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
         reviewer = getattr(user, "sub", None) or getattr(user, "email", "unknown")
-        with get_session() as sess:
+        with _member_graph_session(user) as sess:
             result = sess.execute(
                 text(
                     "DELETE FROM audit_event "
@@ -3459,6 +3497,8 @@ async def dismiss_mutation_event(
         _log.info("mutation.audit_dismissed", run_id=run_id, rows=deleted, by=reviewer)
         return {"dismissed": run_id, "rows_deleted": deleted}
 
+    except TenantUnbound:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

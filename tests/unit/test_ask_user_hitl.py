@@ -36,7 +36,11 @@ async def test_handler_blocks_then_resolves(monkeypatch):
                 break
             await asyncio.sleep(0.01)
         request_id = next(iter(executor._pending_user_input))
-        assert executor.resolve_user_input(request_id, "Yes", False) is True
+        # H-201: the answer must name the thread that owns the request.
+        assert executor.resolve_user_input(request_id, "Yes", False,
+                                           thread_id="other-thread") is False
+        assert executor.resolve_user_input(request_id, "Yes", False,
+                                           thread_id="thread-xyz") is True
 
     answer_task = asyncio.create_task(_answer_after_delay())
     result = await handler(request, {"session_id": "s"})
@@ -51,4 +55,4 @@ async def test_handler_blocks_then_resolves(monkeypatch):
 
 
 def test_resolve_unknown_request_id_returns_false():
-    assert executor.resolve_user_input("does-not-exist", "x") is False
+    assert executor.resolve_user_input("does-not-exist", "x", thread_id="t") is False
