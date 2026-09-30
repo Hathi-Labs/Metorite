@@ -30,7 +30,10 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * a delete leaves the older ``''`` row;
 * ``_git_dir_for`` gives the tenant dir to the git helpers;
 * the Projects dispatch drops the tenant;
-* ``/agent/run`` or ``/agent/run/async`` drops the caller's tenant.
+* ``/agent/run`` or ``/agent/run/async`` drops the caller's tenant;
+* the live-run guard removed from ``/agent/run`` and ``/agent/run/async``;
+* ``_claim_run_org`` overwrites a live entry of another org;
+* a run pops an entry it did not set.
 
 Run::
 
@@ -335,6 +338,7 @@ def wiring(disk, monkeypatch):
         from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
 
         seen["context"] = dict(_WRITE_ARTIFACT_CONTEXT)
+        seen.setdefault("run_org", []).append(dict(executor._RUN_ORG))
         return {"answer": "ok"}
 
     monkeypatch.setattr(acb_memory, "rehydrate_workspace", _rehydrate)
@@ -393,44 +397,133 @@ def test_a_stream_run_is_given_its_tenant_dir(disk, wiring) -> None:
     assert disk.snapshot() == before
 
 
-@pytest.mark.parametrize("route", ["sync", "async"])
-def test_a_run_route_takes_the_callers_tenant_not_the_threads(
-    disk, wiring, monkeypatch, route,
-) -> None:
-    """The reviewer's P2-a. ``/agent/run`` and ``/agent/run/async`` passed no
-    tenant, so the executor fell to ``_current_run_org()``. That reads
-    ``_RUN_ORG[thread_id]`` first, and the thread id is client input. A member
-    of org B who posts a live org-A thread id must work in B's dir."""
-    from acb_auth import UserContext
-    from acb_auth.roles import UserRole
+def _run_route(route: str, req, user) -> dict | None:
+    """Call ``/agent/run`` (sync) or ``/agent/run/async`` the way FastAPI does."""
     from fastapi import BackgroundTasks
     from gateway.routes import agent as agent_routes
-    from orchestrator import executor
+
+    async def _go():
+        if route == "sync":
+            return (await agent_routes.run_agent_sync(req, user=user)).model_dump()
+        tasks = BackgroundTasks()
+        out = await agent_routes.run_agent_async(req, tasks, user=user)
+        await tasks()
+        return out
+
+    return asyncio.run(_go())
+
+
+@pytest.fixture
+def run_routes(monkeypatch):
+    """The two run routes with the session checks stubbed and no live relay."""
+    import orchestrator.stream_relay as relay
+    from gateway.routes import agent as agent_routes
 
     async def _allowed(*_a, **_k):
         return None
 
+    async def _inactive(*_a, **_k):
+        return False
+
     monkeypatch.setattr(agent_routes, "_resolve_agent_for_run", lambda *_a, **_k: _S)
     monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", _allowed)
+    monkeypatch.setattr(relay, "is_active", _inactive)
+    return agent_routes
+
+
+def _carol():
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+
+    return UserContext(email=_CAROL, role=UserRole.EMPLOYEE, organization_id="org-b")
+
+
+@pytest.mark.parametrize("route", ["sync", "async"])
+def test_a_run_route_takes_the_callers_tenant_not_the_threads(
+    disk, wiring, run_routes, route,
+) -> None:
+    """The reviewer's P2-a. ``/agent/run`` and ``/agent/run/async`` passed no
+    tenant, so the executor fell to ``_current_run_org()``. That reads
+    ``_RUN_ORG[thread_id]`` first, and the thread id is client input. On a
+    free thread, a member of org B works in B's dir, and the run's entry goes
+    when the run ends."""
+    from orchestrator import executor
+
+    tid = f"free-{uuid.uuid4().hex[:6]}"
+    req = run_routes.AgentRunRequest(agent=_S, payload={"message": "hi"}, thread_id=tid)
+    _run_route(route, req, _carol())
+    _expect_tenant_run(wiring, disk, "org-b")
+    assert [snap.get(tid) for snap in wiring["run_org"]] == ["org-b"]
+    assert tid not in executor._RUN_ORG
+    assert not _tenant_dir("org-a").exists()
+
+
+@pytest.mark.parametrize("route", ["sync", "async"])
+def test_a_run_on_a_live_thread_of_another_org_leaves_its_entry(
+    disk, wiring, run_routes, route,
+) -> None:
+    """The verifier's blocker. A run of org A is live on a thread id, and a
+    member of org B posts that id. B is refused, and A's ``_RUN_ORG`` entry is
+    still ``org-a`` during B's call and after it. Nothing runs in either dir."""
+    from orchestrator import executor
+
     tid = f"org-a-live-{uuid.uuid4().hex[:6]}"
-    executor._RUN_ORG[tid] = "org-a"          # a run of org A is live on it
-    carol = UserContext(email=_CAROL, role=UserRole.EMPLOYEE, organization_id="org-b")
-    req = agent_routes.AgentRunRequest(agent=_S, payload={"message": "hi"}, thread_id=tid)
-
-    async def _go() -> None:
-        if route == "sync":
-            await agent_routes.run_agent_sync(req, user=carol)
-            return
-        tasks = BackgroundTasks()
-        await agent_routes.run_agent_async(req, tasks, user=carol)
-        await tasks()
-
+    executor._RUN_ORG[tid] = "org-a"
+    req = run_routes.AgentRunRequest(agent=_S, payload={"message": "hi"}, thread_id=tid)
     try:
-        asyncio.run(_go())
+        out = _run_route(route, req, _carol())
+        after = executor._RUN_ORG.get(tid)
+    finally:
+        executor._RUN_ORG.pop(tid, None)
+    # During B's call: had B run, the agent would have seen the entry.
+    assert all(snap.get(tid) == "org-a" for snap in wiring.get("run_org", []))
+    assert "run_org" not in wiring, "org B's run went ahead on org A's thread"
+    assert after == "org-a"
+    if route == "sync":
+        assert out["status"] == "failed" and "another organization" in out["error"]
+    assert wiring["rehydrate"] == []
+    assert not _tenant_dir("org-a").exists() and not _tenant_dir("org-b").exists()
+
+
+def test_a_run_pops_only_an_entry_it_set(disk, wiring, run_routes) -> None:
+    """A run of org B finds a live entry of org B that another run set. It
+    runs, and at its end it leaves that entry for the run that set it."""
+    from orchestrator import executor
+
+    tid = f"org-b-live-{uuid.uuid4().hex[:6]}"
+    executor._RUN_ORG[tid] = "org-b"
+    req = run_routes.AgentRunRequest(agent=_S, payload={"message": "hi"}, thread_id=tid)
+    try:
+        _run_route("sync", req, _carol())
+        after = executor._RUN_ORG.get(tid)
     finally:
         executor._RUN_ORG.pop(tid, None)
     _expect_tenant_run(wiring, disk, "org-b")
-    assert not _tenant_dir("org-a").exists()
+    assert after == "org-b"
+
+
+@pytest.mark.parametrize("route", ["sync", "async"])
+def test_a_run_route_refuses_another_persons_live_run(run_routes, monkeypatch, route) -> None:
+    """The stream route's live-run guard, now on both batch routes: 409, and
+    the same detail."""
+    import orchestrator.stream_relay as relay
+    from fastapi import HTTPException
+
+    async def _active(*_a, **_k):
+        return True
+
+    async def _owner(*_a, **_k):
+        return _ALICE
+
+    monkeypatch.setattr(relay, "is_active", _active)
+    monkeypatch.setattr(relay, "get_run_actor", _owner)
+    req = run_routes.AgentRunRequest(
+        agent=_S, payload={"message": "hi"}, thread_id=f"t-{uuid.uuid4().hex[:6]}")
+    with pytest.raises(HTTPException) as err:
+        _run_route(route, req, _carol())
+    assert err.value.status_code == 409
+    assert err.value.detail["error"] == "run_in_progress"
+    assert err.value.detail["holder"] == _ALICE
 
 
 def test_the_projects_dispatch_passes_the_tenant(monkeypatch) -> None:

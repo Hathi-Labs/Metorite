@@ -2655,6 +2655,12 @@ async def run_agent_sync(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-201 part 3: the same live-run guard as the stream route. The thread id
+    # is client input, and a run on it must not supersede another person's.
+    if req.thread_id:
+        await _refuse_if_another_run_is_active(
+            req.thread_id, (getattr(user, "email", "") or "").strip(),
+        )
     run_id = req.run_id or str(uuid.uuid4())
 
     try:
@@ -2705,6 +2711,12 @@ async def run_agent_async(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-201 part 3: the same live-run guard as the stream route. The thread id
+    # is client input, and a run on it must not supersede another person's.
+    if req.thread_id:
+        await _refuse_if_another_run_is_active(
+            req.thread_id, (getattr(user, "email", "") or "").strip(),
+        )
     run_id = req.run_id or str(uuid.uuid4())
 
     async def _run() -> None:

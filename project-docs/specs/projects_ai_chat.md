@@ -4005,14 +4005,19 @@ server resolves from the authenticated identity.
    `/agent/run` and `/agent/run/async` pass `user.organization_id`. The
    thread id is client input, so a live thread of another org must not
    lend its tenant through `_RUN_ORG`.
-8. Step 2 of `_get_workspace_path` gives the caller's tenant dir for a
+8. **A run never takes over another org's thread.** Both batch routes now
+   have the stream route's live-run guard (`_refuse_if_another_run_is_active`,
+   409). `executor._claim_run_org` is the one writer of `_RUN_ORG`. A live
+   entry of another org raises `RunTenantConflict` and is never overwritten.
+   A run pops only the entry that it set itself.
+9. Step 2 of `_get_workspace_path` gives the caller's tenant dir for a
    shared agent (`_tenant_agent_workspace`), and `_member_agent_workspace`
    for a personal one. A team agent keeps the older rule.
-9. `_allowed_workspace` has no `repos/` read arm. A stored path is allowed
+10. `_allowed_workspace` has no `repos/` read arm. A stored path is allowed
    under the caller's own personal dir or the caller's own tenant dir.
-10. The session upload, PUT, DELETE and promote work in the tenant dir.
+11. The session upload, PUT, DELETE and promote work in the tenant dir.
     `_refuse_shared_clone_write` stays as a backstop.
-11. The fault-in never writes into a clone. For a tenant dir it restores
+12. The fault-in never writes into a clone. For a tenant dir it restores
     only for a caller of that tenant, and it reads the older `''` row of
     that tenant when `o:<org>` has none. A DELETE removes both rows.
 
@@ -4090,6 +4095,9 @@ tests on the phase 4 catalog, as the NOBYPASSRLS app role.
 | a delete leaves the older row | 1 |
 | the Projects dispatch drops the tenant | 1 |
 | `/agent/run` and `/agent/run/async` drop the caller's tenant | 2 |
+| the live-run guard removed from both batch routes | 2 |
+| `_claim_run_org` overwrites a live entry of another org | 2 |
+| a run pops an entry that it did not set | 1 |
 | a refused attach ref skipped, as before | 5 |
 | the rule action's source back to `_agent_workspace_dir` | 1 |
 | `_is_blocked_path` removed from the rule action | 1 |

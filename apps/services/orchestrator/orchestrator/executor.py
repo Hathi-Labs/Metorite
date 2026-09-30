@@ -263,6 +263,37 @@ def _graph_session_opener_current():
     return _opener_for_org(_current_run_org())
 
 
+class RunTenantConflict(RuntimeError):
+    """This thread id already carries a live run of ANOTHER tenant.
+
+    H-201 part 3, the verifier's blocker. ``thread_id`` is client input on
+    ``/agent/run`` and ``/agent/run/async``. Writing ``_RUN_ORG[thread_id]``
+    over a live entry of another org would hand that org's run this run's
+    tenant, and this run's end would pop the entry out from under it. So the
+    write refuses instead.
+    """
+
+
+def _claim_run_org(thread_id: str, organization_id: str) -> str | None:
+    """Record *organization_id* as this run's tenant in ``_RUN_ORG``.
+
+    Returns the org this run SET, which is the only entry its ``finally`` may
+    pop. ``None`` when a live entry of the SAME org was already there: this
+    run leaves it to the run that set it. A live entry of a DIFFERENT org
+    raises :class:`RunTenantConflict` and is never overwritten.
+    """
+    held = _RUN_ORG.get(thread_id)
+    if held and held != organization_id:
+        raise RunTenantConflict(
+            f"Thread {str(thread_id)[:40]!r} has a live run of another "
+            "organization, so this run cannot start on it."
+        )
+    if held == organization_id:
+        return None
+    _RUN_ORG[thread_id] = organization_id
+    return organization_id
+
+
 def _guarded_pop_run_org(
     thread_id: str | None, organization_id: str | None,
 ) -> None:
@@ -2312,8 +2343,19 @@ async def _run_agent_inner(
     if isinstance(event_payload, dict):
         _batch_source = str(event_payload.get("source") or "").strip()
     _tenant_token = None
+    # H-201 part 3: the org this run SET in _RUN_ORG, the only one it pops.
+    _owned_org: str | None = None
     if organization_id:
-        _RUN_ORG[thread_id] = organization_id
+        try:
+            _owned_org = _claim_run_org(thread_id, organization_id)
+        except RunTenantConflict as exc:
+            _log.warning(
+                "executor.run_tenant_conflict", agent=agent_name,
+                thread_id=str(thread_id)[:40],
+            )
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         try:
             from acb_common.db import bind_tenant
             _tenant_token = bind_tenant(organization_id)
@@ -2735,7 +2777,8 @@ async def _run_agent_inner(
         # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
         # GUARDED pop (slice 3, P2): only drop the record if it is STILL this
         # run's org — a superseded same-thread run must not clobber a newer one.
-        _guarded_pop_run_org(thread_id, organization_id)
+        # H-201 part 3: and only an entry this run SET (_owned_org).
+        _guarded_pop_run_org(thread_id, _owned_org)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
@@ -2900,8 +2943,21 @@ async def run_agent_stream(
     #   2. ``bind_tenant(org)`` — so any async ``acb_common.tenant_session`` read
     #      on THIS run's own event loop resolves the tenant.
     _tenant_token = None
+    # H-201 part 3: the org this run SET in _RUN_ORG, the only one it pops.
+    _owned_org: str | None = None
     if organization_id:
-        _RUN_ORG[thread_id] = organization_id
+        try:
+            _owned_org = _claim_run_org(thread_id, organization_id)
+        except RunTenantConflict as exc:
+            # Before the generator's try, so undo what is bound so far.
+            _unbind_run_identity(_identity_binding)
+            _log.warning(
+                "executor.run_tenant_conflict", agent=agent_name,
+                thread_id=str(thread_id)[:40],
+            )
+            raise AgentRunError(
+                str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+            ) from exc
         try:
             from acb_common.db import bind_tenant
             _tenant_token = bind_tenant(organization_id)
@@ -4779,8 +4835,9 @@ async def run_agent_stream(
         # worker-thread org record and release the async tenant binding, so a
         # tenant left bound is never inherited by whatever runs next on this task.
         # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
-        # this run's org — see :func:`_guarded_pop_run_org`.
-        _guarded_pop_run_org(thread_id, organization_id)
+        # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
+        # only an entry this run SET (_owned_org).
+        _guarded_pop_run_org(thread_id, _owned_org)
         if _tenant_token is not None:
             try:
                 from acb_common.db import release_tenant
