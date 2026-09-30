@@ -355,9 +355,13 @@ export function mappingFrom(
     const becomes = typed !== undefined ? cleanName(typed) || status.name : status.becomes;
     statuses[status.name] = { category, name: becomes !== status.name ? becomes : null };
   }
+  // A row the admin left on the proposal is NOT saved, so a later import
+  // proposes again. Saving "unassigned" for everyone with no member made the
+  // next upload keep them unassigned even after they joined People (I-9).
   const chosen: Record<string, string | null> = {};
   for (const person of run.plan.people) {
-    chosen[person.ref] = person.ref in people ? people[person.ref] : person.member;
+    const value = person.ref in people ? people[person.ref] : person.member;
+    if (person.ref in people || value !== person.proposed) chosen[person.ref] = value;
   }
   // Only refs the file holds: an earlier run's choice for a List that has
   // since gone has no control on screen to clear it (the I-8 review).
@@ -531,6 +535,22 @@ export function mustConfirmNewTree(plan: ImportPlan, confirmed: boolean): boolea
   return Boolean(plan.inherited_from) && !plan.continues && !confirmed;
 }
 
+/**
+ * What the People step says when people in the file have no member. The
+ * gap closes later: add them to People, upload the same export again, and
+ * the tasks nobody has touched get their people (`layout._fills_a_gap`).
+ */
+export function unmatchedPeopleNote(people: readonly PlanPerson[], chosen: Record<string, string | null>): string | null {
+  const open = people.filter((p) => !(p.ref in chosen ? chosen[p.ref] : p.member));
+  if (!open.length) return null;
+  const tasks = open.reduce((sum, p) => sum + p.tasks, 0);
+  return (
+    `${open.length} of ${people.length} people have no member here, so ${tasks.toLocaleString()} ` +
+    `${tasks === 1 ? "assignment waits" : "assignments wait"}. Add them in People, then upload the same export ` +
+    "again: their tasks are assigned, unless a member has changed them."
+  );
+}
+
 /** How the people step says where a proposal came from. */
 export function matchLabel(person: PlanPerson): string {
   if (person.match === "email") return "Matched by email";
@@ -570,7 +590,10 @@ export function reportLines(
   if (report.tasks_moved) out.push(`${plural(report.tasks_moved, "task")} had moved, and kept status and people.`);
   if (report.tags_dropped) out.push(`Dropped ${plural(report.tags_dropped, "tag")} over the tag limits.`);
   if (report.people_unassigned)
-    out.push(`${plural(report.people_unassigned, "person")} had no member, so their tasks are unassigned.`);
+    out.push(
+      `${plural(report.people_unassigned, "person")} had no member, so their tasks are unassigned. ` +
+        "Add them in People and upload the same export again to assign them.",
+    );
   // I-8: what the admin unticked is not a loss, but it is not in Metorite either.
   if (skipped?.tasks) out.push(`Left out ${plural(skipped.tasks, "task")} in the spaces and lists you unticked.`);
   return out;
