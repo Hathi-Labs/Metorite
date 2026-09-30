@@ -24,6 +24,7 @@
  * wizard shows the plan and collects choices.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -45,6 +46,7 @@ import {
   GRANT_ORG,
   grantOptions,
   stageClashes,
+  unmatchedPeopleNote,
   statusMerges,
   importTreeRows,
   treeTotals,
@@ -537,6 +539,14 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                 A person with no member stays unassigned, and their name is kept on the task. Nobody is invited or
                 notified.
               </p>
+              {unmatchedPeopleNote(plan.people, people) && (
+                <p role="status" className="rounded-md border border-border bg-muted px-2 py-1.5 text-xs text-foreground">
+                  {unmatchedPeopleNote(plan.people, people)}{" "}
+                  <Link href="/people" target="_blank" className="underline">
+                    Open People
+                  </Link>
+                </p>
+              )}
               <ul className="divide-y divide-border rounded-md border border-border">
                 {plan.people.map((person) => {
                   const value = (person.ref in people ? people[person.ref] : person.member) ?? UNASSIGNED;

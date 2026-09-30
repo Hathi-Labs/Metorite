@@ -385,6 +385,13 @@ def merge_fields(
             and src_new[field] == last_source[field]
         )
         if source_unchanged:
+            if known and cur == wrote and new != wrote and _fills_a_gap(field, wrote, new):
+                # The source is the same, but the mapping now resolves what it
+                # could not before: a person added to People after the first
+                # import. No member touched the field, so the import fills
+                # what it left empty. It never takes anybody off (4c.3).
+                changes[field] = incoming.get(field)
+                continue
             kept[field] = wrote if known else cur
             continue
         if cur == new:
@@ -412,6 +419,24 @@ def merge_fields(
         new_snapshot=new_snapshot,
         new_source=new_source,
     )
+
+
+def _fills_a_gap(field: str, wrote: Any, new: Any) -> bool:
+    """May a mapping change alone rewrite this field, when no member edited it?
+
+    * **assignees** — only by ADDING people. The first run left a task
+      unassigned because its ClickUp person had no member. Once that person
+      is in People, the next run of the same export assigns the task. A
+      mapping that would take somebody OFF moves nothing, as before.
+    * **description** — its "Assigned in ClickUp to" line lists the people
+      with no member, so it changes with the same fill. A member's own edit
+      to the description is never overwritten: the caller checks that the
+      field still holds what the import last wrote.
+
+    Every other field keeps the rule that a mapping change moves nothing."""
+    if field == "assignees":
+        return set(wrote or []) <= set(new or [])
+    return field == "description"
 
 
 def comment_key(comment: Comment) -> str:

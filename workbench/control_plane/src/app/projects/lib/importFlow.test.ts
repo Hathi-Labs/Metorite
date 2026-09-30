@@ -28,6 +28,7 @@ import {
   mappingFrom,
   stageClashes,
   statusMerges,
+  unmatchedPeopleNote,
   importTreeRows,
   treeTotals,
   grantOptions,
@@ -214,6 +215,18 @@ describe("I-8: the tree, status names, columns and sharing", () => {
   });
 });
 
+describe("people with no member", () => {
+  it("says how many wait, and how the gap closes", () => {
+    const note = unmatchedPeopleNote(run().plan.people, {});
+    expect(note).toMatch(/^1 of 2 people have no member here, so 1 assignment waits\./);
+    expect(note).toMatch(/upload the same export again/);
+  });
+  it("counts the admin's own choice, and says nothing when all match", () => {
+    expect(unmatchedPeopleNote(run().plan.people, { "name:bo": "bo@x.test" })).toBeNull();
+    expect(unmatchedPeopleNote(run().plan.people, { "name:ann": null, "name:bo": null })).toMatch(/^2 of 2 people/);
+  });
+});
+
 describe("I-8: the Map step reads the plan of the chosen tree", () => {
   it("the Spaces step's Next saves the mapping before Map shows", () => {
     const dialog = readFileSync(join(__dirname, "..", "components", "ImportDialog.tsx"), "utf-8");
@@ -254,7 +267,7 @@ describe("progress and the report", () => {
       "Updated 2 tasks that changed in ClickUp.",
       "Kept 1 edit made in Metorite over ClickUp's change.",
       "Added 93 comments.",
-      "1 person had no member, so their tasks are unassigned.",
+      "1 person had no member, so their tasks are unassigned. Add them in People and upload the same export again to assign them.",
     ]);
   });
 });

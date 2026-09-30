@@ -298,6 +298,47 @@ def test_a_changed_people_mapping_unassigns_nobody() -> None:
     assert m.new_snapshot["assignees"] == ["vijay@x.test"]
 
 
+def test_a_person_added_later_is_assigned_on_the_next_run() -> None:
+    """Run 1 had no member for "Vijay R", so the task landed unassigned with
+    the name in the description. Vijay is in People now. The source is the
+    same, no member touched the task, so the next run fills the gap."""
+    written = snapshot(_state(assignees=[], description="Assigned in ClickUp to: Vijay R"))
+    m = merge_fields(
+        _state(assignees=[], description="Assigned in ClickUp to: Vijay R"),
+        written,
+        _state(assignees=["vijay@x.test"], description=None),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {"assignees": ["vijay@x.test"], "description": None}
+    assert m.conflicts == ()
+
+
+def test_the_fill_never_overwrites_a_members_edit() -> None:
+    written = snapshot(_state(assignees=[], description="Assigned in ClickUp to: Vijay R"))
+    m = merge_fields(
+        _state(assignees=["omar@x.test"], description="A member's own words"),
+        written,
+        _state(assignees=["vijay@x.test"], description=None),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+
+
+def test_the_fill_only_adds_people() -> None:
+    """A mapping that swaps one member for another is not a gap."""
+    written = snapshot(_state(assignees=["ann@x.test"]))
+    m = merge_fields(
+        _state(assignees=["ann@x.test"]),
+        written,
+        _state(assignees=["bo@x.test"]),
+        last_source=snapshot(_src()),
+        incoming_source=_src(),
+    )
+    assert m.changes == {}
+
+
 def test_a_changed_status_mapping_moves_no_task() -> None:
     written = snapshot(_state(status_id="s-review"))
     m = merge_fields(
