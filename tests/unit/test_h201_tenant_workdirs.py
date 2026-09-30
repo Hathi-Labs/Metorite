@@ -33,7 +33,8 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * ``/agent/run`` or ``/agent/run/async`` drops the caller's tenant;
 * the live-run guard removed from ``/agent/run`` and ``/agent/run/async``;
 * ``_claim_run_org`` overwrites a live entry of another org;
-* a run pops an entry it did not set (the batch or the stream path).
+* a run pops an entry it did not set (the batch or the stream path);
+* the RUN_STARTED yield back before the stream's main try.
 
 Run::
 
@@ -522,6 +523,34 @@ def test_a_stream_run_pops_only_an_entry_it_set(disk, wiring) -> None:
     finally:
         executor._RUN_ORG.pop(tid, None)
     assert after == "org-a"
+
+
+def test_a_stream_closed_after_run_started_leaves_no_entry(disk, wiring) -> None:
+    """A consumer closes the stream right after RUN_STARTED. The claim, the
+    relay mark and that first event all lie inside the generator's main try,
+    so the finally still pops this run's ``_RUN_ORG`` entry."""
+    from orchestrator import executor
+
+    tid = f"closed-{uuid.uuid4().hex[:6]}"
+
+    async def _first_then_close() -> dict:
+        gen = executor.run_agent_stream(
+            _S, {"message": "hi"}, run_id="r-close", thread_id=tid,
+            organization_id="org-c",
+        )
+        first = json.loads((await gen.__anext__())[len("data: "):])
+        during = executor._RUN_ORG.get(tid)
+        await gen.aclose()
+        return {"first": first, "during": during}
+
+    try:
+        got = asyncio.run(_first_then_close())
+        after = executor._RUN_ORG.get(tid)
+    finally:
+        executor._RUN_ORG.pop(tid, None)
+    assert got["first"]["type"] == "RUN_STARTED"
+    assert got["during"] == "org-c"
+    assert after is None, "the run's _RUN_ORG entry leaked after the close"
 
 
 @pytest.mark.parametrize("route", ["sync", "async"])

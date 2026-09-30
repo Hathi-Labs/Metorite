@@ -2949,8 +2949,12 @@ async def run_agent_stream(
         try:
             _owned_org = _claim_run_org(thread_id, organization_id)
         except RunTenantConflict as exc:
-            # Before the generator's try, so undo what is bound so far.
+            # Before the generator's try, so undo what is bound so far: the
+            # acting user and the run correlation.
             _unbind_run_identity(_identity_binding)
+            with contextlib.suppress(Exception):
+                from acb_common import clear_run_context
+                clear_run_context()
             _log.warning(
                 "executor.run_tenant_conflict", agent=agent_name,
                 thread_id=str(thread_id)[:40],
@@ -3018,18 +3022,16 @@ async def run_agent_stream(
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
     _relay_mark_inactive = None  # type: ignore[assignment]
-    try:
+    _relay_mark_active = None  # type: ignore[assignment]
+    with contextlib.suppress(Exception):
         from orchestrator.stream_relay import (
             mark_active as _relay_mark_active,
             mark_inactive as _relay_mark_inactive,
         )
-        await _relay_mark_active(thread_id)
-    except Exception:
-        pass
-
-    # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
-    # reset, so the next event emitted is entry #1 in Redis.
-    _thread_emit_seq[thread_id] = 0
+    # H-201 part 3: the relay mark and the RUN_STARTED yield run INSIDE the
+    # main try below. A consumer that closes the stream at the first event, or
+    # a cancel at the await, must still reach the finally, or this run's
+    # _RUN_ORG entry leaks and no later run pops it.
 
     # Cross-worker HITL delivery (P1-2): register a "respond_input" applier so a
     # user's ask_user answer that arrives on a DIFFERENT worker is relayed here
@@ -3063,14 +3065,22 @@ async def run_agent_stream(
     except ImportError:
         pass
 
-    # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
-    yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
-
     # B6 Phase-5 Tier 0: initialised here so the finally can always restore,
     # even if load_agent / build_integrations raises before creds are injected.
     _integration_env_token: IntegrationEnvToken = None
 
     try:
+        if _relay_mark_active is not None:
+            with contextlib.suppress(Exception):
+                await _relay_mark_active(thread_id)
+
+        # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
+        # reset, so the next event emitted is entry #1 in Redis.
+        _thread_emit_seq[thread_id] = 0
+
+        # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
+        yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
+
         with load_agent(
             agent_name,
             run_id=run_id,

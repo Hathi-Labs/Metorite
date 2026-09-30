@@ -4009,7 +4009,10 @@ server resolves from the authenticated identity.
    have the stream route's live-run guard (`_refuse_if_another_run_is_active`,
    409). `executor._claim_run_org` is the one writer of `_RUN_ORG`. A live
    entry of another org raises `RunTenantConflict` and is never overwritten.
-   A run pops only the entry that it set itself.
+   A run pops only the entry that it set itself. On the stream path the
+   relay mark and the RUN_STARTED event lie inside the main try. So a client
+   that closes the stream at the first event still reaches the pop. A
+   conflict also clears the run identity and the run correlation.
 9. Step 2 of `_get_workspace_path` gives the caller's tenant dir for a
    shared agent (`_tenant_agent_workspace`), and `_member_agent_workspace`
    for a personal one. A team agent keeps the older rule.
@@ -4097,7 +4100,9 @@ tests on the phase 4 catalog, as the NOBYPASSRLS app role.
 | `/agent/run` and `/agent/run/async` drop the caller's tenant | 2 |
 | the live-run guard removed from both batch routes | 2 |
 | `_claim_run_org` overwrites a live entry of another org | 2 |
-| a run pops an entry that it did not set | 1 |
+| a batch run pops an entry that it did not set | 1 |
+| a stream run pops an entry that it did not set | 1 |
+| the RUN_STARTED event back before the stream's main try | 1 |
 | a refused attach ref skipped, as before | 5 |
 | the rule action's source back to `_agent_workspace_dir` | 1 |
 | `_is_blocked_path` removed from the rule action | 1 |
