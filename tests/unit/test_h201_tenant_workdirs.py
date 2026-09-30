@@ -33,7 +33,7 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * ``/agent/run`` or ``/agent/run/async`` drops the caller's tenant;
 * the live-run guard removed from ``/agent/run`` and ``/agent/run/async``;
 * ``_claim_run_org`` overwrites a live entry of another org;
-* a run pops an entry it did not set.
+* a run pops an entry it did not set (the batch or the stream path).
 
 Run::
 
@@ -500,6 +500,28 @@ def test_a_run_pops_only_an_entry_it_set(disk, wiring, run_routes) -> None:
         executor._RUN_ORG.pop(tid, None)
     _expect_tenant_run(wiring, disk, "org-b")
     assert after == "org-b"
+
+
+def test_a_stream_run_pops_only_an_entry_it_set(disk, wiring) -> None:
+    """The stream twin of the test above. A stream run of org A finds a live
+    entry of org A that another run set. At its end it leaves that entry."""
+    from orchestrator import executor
+
+    tid = f"org-a-live-s-{uuid.uuid4().hex[:6]}"
+    executor._RUN_ORG[tid] = "org-a"
+
+    async def _drain() -> None:
+        async for _ in executor.run_agent_stream(
+            _S, {"message": "hi"}, run_id="r2s", thread_id=tid, organization_id="org-a",
+        ):
+            pass
+
+    try:
+        asyncio.run(_drain())
+        after = executor._RUN_ORG.get(tid)
+    finally:
+        executor._RUN_ORG.pop(tid, None)
+    assert after == "org-a"
 
 
 @pytest.mark.parametrize("route", ["sync", "async"])
