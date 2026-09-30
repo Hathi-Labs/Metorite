@@ -26,7 +26,7 @@ Mutations this suite catches (R7):
 H-201 part 3 (§21.15) adds two rules and their mutations:
 
 * a refused attach ref FAILS the send with 422. The mutation "skip the
-  ref, as before" fails four attach tests;
+  ref, as before" fails five attach tests;
 * a rule action (``actions._load_action_attachments``) reads through the
   same three calls. The mutations "source back to ``_agent_workspace_dir``",
   "``_is_blocked_path`` removed" and "``_safe_resolve`` back to

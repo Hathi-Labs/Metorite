@@ -514,6 +514,8 @@ def test_the_upload_to_a_shared_agent_works_again(graph_as_app, disk) -> None:  
         assert up.status_code == 200, up.text
         assert up.json()[0]["path"] == f"inputs/{name}"
         assert (_tenant_dir(org) / "inputs" / name).read_bytes() == body
+        # The write-through lands in the caller's tenant, under o:<org>.
+        assert (org, f"o:{org}", body.decode()) in _rows(graph_as_app, f"inputs/{name}")
         # The other change routes work in the tenant dir too.
         base = f"/agent/workspace/{sid}"
         assert c.put(f"{base}/file", params={"path": "agent-data/NOTES.md"},
@@ -595,6 +597,10 @@ def test_the_fault_in_writes_no_clone_and_no_other_tenant(graph_as_app, disk) ->
     a, b = graph_as_app.org_a, graph_as_app.org_b
     rel = f"outputs/fi-{uuid.uuid4().hex[:6]}.md"
     _put(a, "", rel, "A ROW")
+    # A row of org B that carries org A's key (planted, or written by a bug).
+    # RLS lets org B read it, so only the tenant check stops the fault-in from
+    # copying org B's bytes into org A's dir.
+    _put(b, f"o:{a}", rel, "B ROW")
     before = disk.snapshot()
     assert asyncio.run(_faultin_from_store(disk.shared, rel, a)) is False
     assert disk.snapshot() == before
