@@ -16,7 +16,8 @@ schedule, §17) was built 2026-09-26. S12 (follow-ups, §18) was built
 forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
 production, §21) was built 2026-09-29. S16 (every deploy proves that chat
 saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
-§21.10) was built 2026-09-29. The owner answered the three
+§21.10) was built 2026-09-29. H-201 part 1 (§21.13) and part 2 (the
+artifact routes, §21.14) were built 2026-09-30. The owner answered the three
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -3742,3 +3743,191 @@ uv run pytest tests/unit/test_h201_readers_under_rls.py \
 ```
 
 The `-rs` output must show no skip in the first two files.
+
+### 21.14 H-201 part 2 — the artifact routes serve only the caller's own workspace
+
+**Status: BUILT 2026-09-30.** This part closes the top item of H-201. The
+hole was live in production, and it was older than part 1.
+
+**The defect.** Four routes in `routes/workspace.py` checked no room and no
+tenant. They are `GET /agent/artifacts`, `GET /agent/artifacts/file`,
+`PUT /agent/artifacts/file` and `POST /agent/artifacts/upload`. For a shared
+agent, each route resolved the one clone that every tenant runs in,
+`{agents_clone_dir}/repos/<agent>`. So any member of any org could
+list, read, write and upload into the run output of another org.
+`_mirror_gateway_write` then copied each write into the blob store.
+
+**What the code shows.**
+
+1. **Which agents are shared.** `AgentManifest.from_config` reads
+   `sharing.instancing`, and the default is `shared`. In `apps/agents/`,
+   two agents are `personal`: `agent-email-assistant` and
+   `agent-whatsapp-assistant`. Six are `shared`: `agent-apis-config`,
+   `agent-app-builder`, `agent-crm`, `agent-orchestrator`, `agent-projects`
+   and `agent-task-manager`. No code writes a `sharing` block for an agent
+   that the Agent Workshop makes. So each Workshop agent is also `shared`.
+2. **Where a shared agent writes.** `executor._resolve_effective_agent_dir`
+   gives the clone dir when the instance is `''`. `write_artifact` writes
+   below that root. So a shared agent writes run output into the shared
+   clone on disk, for every tenant. The blob store is different. Each row
+   carries the run's tenant (S15), with the instance `''`.
+3. **Who calls the routes.** Two surfaces call them. The Artifacts page
+   (`/artifacts`) is `preview` in `src/lib/nav.ts` and in
+   `launch_surface.md` §2. The email rule editor (`src/app/email/lib/api.ts`)
+   lists and uploads with `agent=email-assistant`, which is `personal`. No
+   live surface needs a shared agent through these routes.
+
+**The fix, and why.** Option (b): the four routes serve only the caller's
+own instanced workspace. Option (a) needs a tenant partition on disk, and
+the run side writes a shared agent into one clone. To add that partition
+means a change to the executor, the loader and the rehydrate step. That is
+not a small change. The live flow uses a `personal` agent only, so (b)
+takes nothing from a member.
+
+**The rules.**
+
+1. `workspace._member_agent_workspace(agent, email)` is the only root of the
+   four routes. It gives the state dir keyed `u:<email>`, and only when the
+   agent's `config.json` declares `personal`.
+2. A `shared` agent has no root, for every member of every org.
+3. A `team` agent has no root. Its key is the team name alone, so two orgs
+   with one team name share one folder.
+4. An agent with no clone has no root. The old fallback to the canonical
+   `repos/<agent>` path was the shared folder, so it is gone.
+5. The root must lie strictly below `state_root()` after every link is
+   followed. A planted link into `repos/` gives no root.
+6. A route with no root answers 404. The list leaves the agent out.
+7. `_safe_resolve`, `_is_under`, the visible-folder rule of the PUT and the
+   agent-name rule of fix round 2 still apply.
+8. The write-through and the fault-in take `user.organization_id`. The
+   server resolves it from the authenticated identity (R5).
+
+No new grant. No operator exception was added, because no product need for
+one exists.
+
+**Acceptance.** `tests/unit/test_h201_artifact_routes.py` runs with Alice
+in org A and Carol in org B. Each has a `personal` agent. A `shared` agent,
+a `team` agent and an agent with no clone also exist. The R8 tests run on
+the phase 4 catalog, as the NOBYPASSRLS app role.
+
+- Each member lists and reads only their own files.
+- Neither member can list, read, write or upload through the shared clone,
+  the team folder or the canonical path.
+- A write by Carol to Alice's path lands in Carol's folder.
+- The email flow still works: upload, then pick from the list, then read.
+- The write-through lands in the caller's tenant and partition.
+- The fault-in restores a file in the caller's tenant only.
+
+**Mutations.** Each one below fails at least one test.
+
+| Mutation | Tests that fail |
+|---|---|
+| the whole fix reverted to main | 9 |
+| the list back to clone-or-canonical | 4 |
+| the upload back to clone-or-canonical | 1 |
+| the `u:<email>` check widened to any instance | 4 |
+| the `state_root` containment check removed | 1 |
+| the tenant dropped from the write-through | 2 |
+| the tenant dropped from the fault-in | 1 |
+
+**P0-B, the email attach and import.** The review found two more readers
+of the shared clone. `load_artifact_attachments` (the send and draft paths)
+and `POST /email/artifacts/import` took `agent` and `path` from the
+request. They resolved a shared agent to its clone and checked containment
+with `startswith`.
+
+So a member could mail out, or copy into their own folder, the run output
+of another org. The same was true of a `.env`, a
+`.git/config` and a file in a sibling folder with the same name prefix. The
+import needs no mail account.
+
+1. Both resolve the source only through `_member_agent_workspace`. The
+   import also resolves its target, the caller's email-assistant folder,
+   the same way.
+2. Both put the path through `_safe_resolve`. Both refuse a path when
+   `_is_blocked_path` is true.
+3. The attach skips a refused ref, and a warning names it. The import
+   answers 404.
+4. The `list_artifacts` docstring of the email-assistant stops telling the
+   model to attach from another agent.
+
+`tests/unit/test_h201_email_artifact_sources.py` is the fence. It reads
+the disk only, so no database is involved.
+
+| Mutation | Tests that fail |
+|---|---|
+| both fixes reverted to main | 6 |
+| the attach source back to `_agent_workspace_dir` | 1 |
+| `_is_blocked_path` removed from the attach | 1 |
+| `_safe_resolve` back to `startswith` in the attach | 1 |
+| the import source back to `_agent_workspace_dir` | 1 |
+| `_is_blocked_path` removed from the import | 1 |
+| `_safe_resolve` back to `startswith` in the import | 1 |
+
+**P0-A: writes closed 2026-09-30, the cross-tenant READ of a shared clone
+is still open.** A member of any org could open their own session of a
+shared agent. Step 2 of `_get_workspace_path` then derived the one clone,
+and the member could write, delete, upload and promote in it. That let
+the member change `agent-data/` of every other org, which holds the notes,
+skills and scripts that runs use.
+
+1. `workspace._refuse_shared_clone_write` answers 403, "A shared agent's
+   workspace is read-only", when the resolved root lies under a `repos/`
+   root. The PUT, DELETE, upload and promote routes call it.
+2. The reads stay: the tree, `GET .../file`, the history and the events.
+   The Projects AI chat runs `projects-assistant`, which is shared. It
+   serves its `write_artifact` documents from
+   `repos/projects-assistant/outputs/` through `GET .../file` (§14).
+3. `write_artifact` writes on the run side, with `target.write_bytes`. It
+   calls only the PATCH and the events POST, and neither writes a file.
+4. `_member_agent_workspace` now checks `agent_state_dir(...)` against
+   `state_root()` BEFORE `ensure_state_dir`. A link at `state/<agent>`
+   could otherwise make a folder and an instance marker inside a clone.
+
+**What a member loses.** The chat upload button (`FileUploadButton`) posts
+to `POST /agent/workspace/{sid}/upload`. `AgentChat` shows it in the
+Projects chat and in `/chat`, and both are live. For a shared agent, an
+upload now answers 403. The button shows the error text for 3 seconds,
+and the proxy passes the gateway body as that text. The next slice gives
+the upload back.
+
+| Mutation | Tests that fail |
+|---|---|
+| the refusal made a no-op | 1 |
+| the upload check removed | 1 |
+| the delete check removed | 1 |
+| the promote check removed | 1 |
+| the PUT check removed | 1 |
+| every root counted as a shared clone | 3 |
+| the check before `ensure_state_dir` removed | 1 |
+
+**The next slice: a tenant-partitioned working dir for a shared agent.**
+Three places change. `executor._resolve_effective_agent_dir` gives a
+shared agent's run a folder per tenant, not the clone.
+`write_artifact` gets that folder as its `workspace_root`.
+`rehydrate_workspace` restores into that folder. Then the session read,
+the upload and the Projects chat documents all move off the clone.
+
+**What this part does not do.** H-201 in `HANDOFF.md` lists each item.
+
+- The cross-tenant READ of a shared clone, above.
+- The run side writes and rehydrates a shared agent in one clone.
+- The `u:<email>` key has no tenant. `app_user.email` is unique across
+  orgs, so the case is a purge and then a rejoin in another org. The old
+  folder is still on disk.
+- A link planted at `<state dir>/<category>` moves an upload out of the
+  folder, because the upload does not resolve `upload_dir`.
+- On a box where `email-assistant` never ran, no clone exists. The list is
+  empty and the upload answers 404 until the first run.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h201_artifact_routes.py \
+  tests/unit/test_h201_email_artifact_sources.py \
+  tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_chat_write_under_rls.py -q -rs
+```
+
+The `-rs` output must show no skip.

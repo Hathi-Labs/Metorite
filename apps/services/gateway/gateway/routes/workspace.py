@@ -10,9 +10,11 @@ GET  /agent/workspace/{session_id}/file?path=<rel_path>
     Returns the raw file bytes (streamed).  50 MB cap.
 
 GET  /agent/artifacts?agent=<name>&category=<inputs|outputs|agent-data>
-    Global artifact browser — lists all files from all agent workspaces
-    across the three visible directories.  Supports filtering by agent
-    name and category (folder).  Response: { "artifacts": [ArtifactEntry] }
+    Artifact browser — lists the files of the CALLER'S OWN agent
+    workspaces (a ``personal`` agent's state dir). A shared agent's clone is
+    one folder for every tenant, so it is never served (H-201 part 2).
+    Supports filtering by agent name and category (folder).
+    Response: { "artifacts": [ArtifactEntry] }
     Use Content-Disposition: inline for browser display.
 
 DELETE /agent/workspace/{session_id}/file?path=<rel_path>
@@ -113,12 +115,16 @@ async def _mirror_gateway_write(
     *,
     action: str,
     session_id: str | None,
+    organization_id: str | None = None,
 ) -> None:
     """Write-through a gateway file write into the authoritative blob store.
 
     Mirrors app-side writes (PUT save, upload) to Postgres so a file edited in
     the file manager is as durable as one the agent wrote. No-op for paths
     outside agent-data/inputs/outputs or when the store is unavailable.
+
+    *organization_id* is the caller's tenant, from the authenticated identity
+    (H-201 part 2). ``None`` falls back to the tenant the request bound.
     """
     try:
         from acb_memory import is_stored_path, put_file
@@ -135,17 +141,20 @@ async def _mirror_gateway_write(
         await put_file(
             agent, rel, data,
             mime_type=mime, action=action, session_id=session_id, actor="user",
-            instance=instance,
+            instance=instance, organization_id=organization_id,
         )
     except Exception as exc:
         _log.warning("workspace.blob_mirror_failed", path=rel, error=str(exc)[:200])
 
 
-async def _faultin_from_store(workspace: Path, rel_path: str) -> bool:
+async def _faultin_from_store(
+    workspace: Path, rel_path: str, organization_id: str | None = None,
+) -> bool:
     """Restore a file missing from the disk cache from the authoritative store.
 
     Returns True and writes the file to disk if the store had it, else False.
     Only applies to the three backed folders; a no-op otherwise.
+    *organization_id* is the caller's tenant (see :func:`_mirror_gateway_write`).
     """
     rel = rel_path.replace("\\", "/").lstrip("/")
     try:
@@ -155,7 +164,7 @@ async def _faultin_from_store(workspace: Path, rel_path: str) -> bool:
     if not is_stored_path(rel):
         return False
     agent, instance = _blob_key_for_workspace(workspace)
-    data = await get_file(agent, rel, instance=instance)
+    data = await get_file(agent, rel, instance=instance, organization_id=organization_id)
     if data is None:
         return False
     dest = _safe_resolve(workspace, rel)
@@ -305,6 +314,41 @@ def _allowed_workspace(
     if _is_under(resolved, scratch):
         return resolved
     return None
+
+
+def _is_shared_clone(workspace: Path) -> bool:
+    """True when *workspace* lies under an agent clone root, ``repos/``.
+
+    That is a shared agent's one clone, which every tenant runs in. H-201
+    part 2, P0-A: no member may change it through a session route. A read
+    stays open for the Projects chat's documents (§14), and the next slice
+    moves a shared agent's run into a tenant-partitioned folder.
+    """
+    from acb_common import get_settings
+
+    settings = get_settings()
+    clone_root = Path(getattr(
+        settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")))
+    try:
+        resolved = workspace.resolve()
+    except OSError:
+        return True
+    for repos in (clone_root / "repos", Path("/tmp/acb_agents") / "repos"):
+        try:
+            if _is_under(resolved, repos.resolve()):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _refuse_shared_clone_write(workspace: Path) -> None:
+    """403 when a session route would change a shared agent's clone."""
+    if _is_shared_clone(workspace):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A shared agent's workspace is read-only.",
+        )
 
 
 def _get_workspace_path(
@@ -542,6 +586,65 @@ def _resolve_agent_workspace(
             error=str(exc),
         )
     return None
+
+
+def _member_agent_workspace(
+    agent_name: str, user_email: str | None,
+) -> Path | None:
+    """The caller's OWN workspace for *agent_name*, or ``None``.
+
+    H-201 part 2 (``projects_ai_chat.md`` §21.14). This is the only root the
+    four global artifact routes (``/agent/artifacts``, ``.../file`` GET and
+    PUT, ``.../upload``) may use.
+
+    * A ``personal`` agent gives the member a private state directory, keyed
+      ``u:<email>``. That directory holds only this member's files, so it is
+      the root.
+    * A ``shared`` agent runs every tenant in ONE clone, ``repos/<agent>``.
+      Its ``inputs/``, ``outputs/`` and ``agent-data/`` can hold the run output
+      of another org. So a shared agent has no root here, for every member.
+    * A ``team`` agent is keyed ``t:<team>`` by the team name alone, so two
+      orgs with one team name share one folder. It has no root here either.
+    * An agent with no clone has no readable ``config.json``. Nothing can
+      prove that it is instanced, so it has no root. The old fallback to the
+      canonical ``repos/<agent>`` path was a shared folder.
+
+    The result must also lie strictly below ``state_root()``, so a link or a
+    bad name cannot move it into ``repos/`` or out of the tree. Never raises.
+    """
+    if not user_email or "@" not in user_email:
+        return None
+    from acb_skills.agent_paths import (
+        agent_state_dir,
+        ensure_state_dir,
+        is_valid_agent_name,
+        state_root,
+    )
+
+    if not is_valid_agent_name(agent_name):
+        return None
+    try:
+        code_dir = _agent_clone_dir(agent_name)
+        if code_dir is None:
+            return None
+        if _agent_instance_for(agent_name, user_email) != f"u:{user_email}":
+            return None
+        instance = f"u:{user_email}"
+        root = state_root().resolve()
+        # Check BEFORE ensure_state_dir: it makes the folder and writes the
+        # marker, so a link at state/<agent> must be refused first.
+        planned = agent_state_dir(code_dir.name, instance).resolve()
+        if not _is_under(planned, root, strictly=True):
+            return None
+        ws = ensure_state_dir(code_dir.name, instance)
+        if not _is_under(ws.resolve(), root, strictly=True):
+            return None
+    except Exception as exc:
+        _log.warning(
+            "workspace.member_workspace_failed", agent=agent_name, error=str(exc)[:200],
+        )
+        return None
+    return ws
 
 
 def _safe_resolve(root: Path, rel: str) -> Path:
@@ -1050,6 +1153,7 @@ async def upload_files(
             detail="No workspace found for this session. "
                    "Start a chat with an agent first.",
         )
+    _refuse_shared_clone_write(workspace)
 
     # Upload to inputs/ (visible workspace directory) — not .tmp/
     upload_dir = workspace / "inputs"
@@ -1133,10 +1237,11 @@ async def upload_artifact(
 ) -> list[FileEntry]:
     """Upload file(s) directly into an AGENT's workspace folder (by agent name,
     not chat session). Used by the email rule editor to add draft attachments —
-    files land in the uploader's workspace for the agent (their tenant state
-    dir for an instanced agent, else ``repos/{agent}``) and can then be picked
-    via ``GET /agent/artifacts?agent=…&category=…`` — which resolves the SAME
-    directory for the same member."""
+    files land in the uploader's own state dir for a ``personal`` agent, and
+    can then be picked via ``GET /agent/artifacts?agent=…&category=…`` — which
+    resolves the SAME directory for the same member. H-201 part 2: a shared
+    or team agent, or one with no clone, answers 404
+    (:func:`_member_agent_workspace`)."""
     from acb_skills.agent_paths import is_valid_agent_name
 
     # H-201 fix round 2 (P0): the agent name is a query string, and it is
@@ -1147,9 +1252,13 @@ async def upload_artifact(
             detail="Not a valid agent name.",
         )
     cat = category if category in ("agent-data", "inputs", "outputs") else "agent-data"
-    workspace = _agent_workspace_dir(agent, _user.email) or _canonical_workspace_dir(
-        agent,
-    )
+    # H-201 part 2: only the caller's own instanced folder. A shared agent's
+    # clone, a team folder and the canonical fallback are never a target.
+    workspace = _member_agent_workspace(agent, _user.email)
+    if workspace is None:
+        raise HTTPException(
+            status_code=404, detail=f"Agent workspace not found: {agent}",
+        )
     upload_dir = workspace / cat
     try:
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1188,6 +1297,7 @@ async def upload_artifact(
         # Write-through to the authoritative blob store.
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=None,
+            organization_id=_user.organization_id,
         )
         uploaded.append(FileEntry(
             path=rel_path, name=dest.name, size=stat.st_size,
@@ -1226,6 +1336,7 @@ async def delete_workspace_file(
         raise HTTPException(
             status_code=404, detail="Workspace not found for session"
         )
+    _refuse_shared_clone_write(workspace)
 
     file_path = _safe_resolve(workspace, path)
     if not file_path.exists():
@@ -1283,6 +1394,7 @@ async def promote_input_to_agent_data(
     )
     if workspace is None or not workspace.exists():
         raise HTTPException(status_code=404, detail="workspace not found")
+    _refuse_shared_clone_write(workspace)
 
     src_rel = body.path.replace("\\", "/").lstrip("/")
     if not src_rel.startswith("inputs/"):
@@ -1393,6 +1505,7 @@ async def write_workspace_file(
         raise HTTPException(
             status_code=404, detail="Workspace not found for session"
         )
+    _refuse_shared_clone_write(workspace)
 
     file_path = _safe_resolve(workspace, path)
     # Only allow writes within the visible workspace dirs (inputs/, outputs/,
@@ -1473,14 +1586,17 @@ class ArtifactListResponse(BaseModel):
 def _discover_agent_workspaces(
     user_email: str | None = None,
 ) -> dict[str, Path]:
-    """Return a dict of {agent_name: workspace_path} for all *live* agents.
+    """Return {agent_name: workspace_path} for the caller's OWN workspaces.
 
     Collects the names of every live agent from the registries, then resolves
-    each via :func:`_agent_workspace_dir` for the viewing member — the same
-    path the loader runs the agent from and writes artefacts to (the member's
-    own tenant dir for an instanced agent).  The
-    registry ``local_path`` is deliberately ignored as a workspace (it is only
-    a load-time source pointer; see :func:`_agent_workspace_dir`).
+    each through :func:`_member_agent_workspace` for the viewing member. That
+    is the member's private state dir of a ``personal`` agent, the directory
+    their runs write to.
+
+    H-201 part 2 (``projects_ai_chat.md`` §21.14). A shared agent, a team
+    agent and an agent with no clone have NO entry. Their folder is one
+    folder for every tenant, so it is never listed, read or written here. No
+    caller (``None`` or no ``@``) gets an empty dict.
 
     Name sources:
     1. Static agent registry (``_AGENT_REGISTRY``) — all entries are live.
@@ -1528,20 +1644,14 @@ def _discover_agent_workspaces(
     except Exception:
         pass
 
-    # ── Resolve each name to its workspace.  Prefer an existing clone; fall
-    # back to the canonical path so a registered-but-never-run agent (no clone
-    # on disk yet) STILL appears in the artifacts viewer, instead of silently
-    # vanishing.  _walk_agent_artifacts surfaces the three empty folders for
-    # such agents; real files appear once the agent runs and gets cloned.
+    # ── Resolve each name to the caller's own workspace. H-201 part 2: the
+    # old fallback to the canonical repos/<agent> path is gone. That path is
+    # the shared clone, one folder for every tenant.
     workspaces: dict[str, Path] = {}
     for name in names:
-        try:
-            ws = _agent_workspace_dir(name, user_email) or _canonical_workspace_dir(
-                name,
-            )
-        except Exception:
-            continue
-        workspaces[name] = ws
+        ws = _member_agent_workspace(name, user_email)  # never raises
+        if ws is not None:
+            workspaces[name] = ws
 
     return workspaces
 
@@ -1689,11 +1799,12 @@ async def get_artifacts(
     ),
     _user: UserContext = Depends(get_current_user),
 ) -> ArtifactListResponse:
-    """Global artifact browser — lists files from ALL agent workspaces.
+    """Artifact browser — lists the files of the caller's own workspaces.
 
-    Returns every file across ``inputs/``, ``outputs/``, and ``agent-data/``
-    for every known agent.  Supports optional filtering by agent name and
-    category.
+    Returns every file of each workspace that
+    :func:`_discover_agent_workspaces` gives the caller: the state dir of
+    each ``personal`` agent. A shared agent is absent (H-201 part 2).
+    Supports optional filtering by agent name and category.
     """
     import asyncio as _asyncio
     loop = _asyncio.get_event_loop()
@@ -1737,7 +1848,11 @@ async def get_artifact_file(
     path: str = Query(..., description="Relative path within the workspace"),
     _user: UserContext = Depends(get_current_user),
 ) -> StreamingResponse:
-    """Stream a single file from any agent's workspace (global artifact view)."""
+    """Stream a single file from the caller's own workspace for *agent*.
+
+    A shared agent, or an agent the caller has no workspace for, is 404
+    (H-201 part 2, :func:`_member_agent_workspace`).
+    """
     import asyncio as _asyncio
     loop = _asyncio.get_event_loop()
     workspaces = await loop.run_in_executor(
@@ -1756,7 +1871,9 @@ async def get_artifact_file(
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
-        restored = await _faultin_from_store(workspace, path)
+        restored = await _faultin_from_store(
+            workspace, path, organization_id=_user.organization_id,
+        )
         if not restored:
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -1793,9 +1910,10 @@ async def write_artifact_file(
     body: WriteFileRequest = ...,
     _user: UserContext = Depends(get_current_user),
 ) -> ArtifactEntry:
-    """Overwrite a file in any agent's workspace (global artifact view).
+    """Overwrite a file in the caller's own workspace for *agent*.
 
-    Uses the same agent-workspace discovery as GET /artifacts/file.
+    Uses the same discovery as GET /artifacts/file, so a shared agent is 404
+    (H-201 part 2).
     Accepts text (encoding='utf-8') and binary (encoding='base64') content.
     Returns the updated ArtifactEntry with fresh stat metadata.
     """
@@ -1842,6 +1960,7 @@ async def write_artifact_file(
     await _mirror_gateway_write(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=None,
+        organization_id=_user.organization_id,
     )
 
     # Determine category from path

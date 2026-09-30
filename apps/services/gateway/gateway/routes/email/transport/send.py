@@ -21,11 +21,13 @@ class SendAttachment(BaseModel):
 
 
 class ArtifactAttachment(BaseModel):
-    """Attach a file from an agent's workspace by path (no base64 round-trip).
+    """Attach a file from the sender's own agent workspace by path.
 
-    Lets the email-assistant attach files it (or a sub-agent like sales /
-    task-manager) produced via write_artifact, and lets the compose UI attach
-    AI-generated artifacts.  Resolved server-side, path-traversal-safe."""
+    Lets the email-assistant attach files it produced, and lets the compose UI
+    attach the files the member uploaded. Resolved server-side. H-201 part 2:
+    only the sender's own ``personal`` workspace is a source
+    (``workspace._member_agent_workspace``). A shared agent's clone holds the
+    run output of every tenant, so it is never a source."""
     path: str  # workspace-relative path (e.g. "outputs/quote.pdf")
     name: str | None = None  # display filename (defaults to the file's name)
     agent: str | None = None  # source agent workspace (defaults to email-assistant)
@@ -50,35 +52,43 @@ def load_artifact_attachments(
     user_email: str | None = None,
 ) -> list[dict]:
     """Resolve workspace-artifact references to ``[{filename, content,
-    mime_type}]`` for a provider. Reads each ref from its source agent's
-    workspace (default ``email-assistant``), resolved for the sending member —
-    the same tenant directory their runs and uploads write to when the agent
-    is instanced. Best-effort + path-traversal-safe; silently skips refs that
-    don't resolve to a real file inside the workspace."""
+    mime_type}]`` for a provider. Reads each ref from the sending member's OWN
+    workspace of its source agent (default ``email-assistant``).
+
+    H-201 part 2 (``projects_ai_chat.md`` §21.14). The source is only
+    ``workspace._member_agent_workspace``, so a shared agent's clone is never
+    read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
+    refuses ``.env``, ``.git/`` and every other secret name. A ref that fails
+    is skipped, and a warning names it. Best-effort: a bad ref never fails
+    the send."""
     if not refs:
         return []
     out: list[dict] = []
     try:
         import mimetypes
 
-        from gateway.routes.workspace import \
-            _agent_workspace_dir
+        from acb_common import get_logger
+        from gateway.routes.workspace import (
+            _is_blocked_path,
+            _member_agent_workspace,
+            _safe_resolve,
+        )
 
-        ws_cache: dict[str, object] = {}
+        log = get_logger("gateway.email.send")
         for ref in refs:
             agent = (ref.agent or "email-assistant").strip() or "email-assistant"
             rel = (ref.path or "").strip()
             if not rel:
                 continue
-            ws = ws_cache.get(agent)
-            if ws is None:
-                ws = _agent_workspace_dir(agent, user_email)
-                ws_cache[agent] = ws
-            if not ws:
-                continue
-            ws_root = ws.resolve()
-            full = (ws / rel).resolve()
-            if not str(full).startswith(str(ws_root)) or not full.is_file():
+            ws = _member_agent_workspace(agent, user_email)
+            full = None
+            if ws is not None and not _is_blocked_path(rel):
+                try:
+                    full = _safe_resolve(ws, rel)
+                except HTTPException:
+                    full = None
+            if full is None or not full.is_file():
+                log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
                 continue
             mime, _ = mimetypes.guess_type(full.name)
             out.append({
@@ -206,24 +216,37 @@ async def import_artifact(
     req: ImportArtifactRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Copy a file from another agent's workspace into the email-assistant
-    workspace (``agent-data/``) so it can be attached to emails and browsed /
-    downloaded in the email artifact picker. Returns the new
-    email-assistant-relative path. Path-traversal-safe."""
+    """Copy a file from the caller's own workspace of another agent into the
+    email-assistant workspace (``agent-data/``) so it can be attached to
+    emails and browsed / downloaded in the email artifact picker. Returns the
+    new email-assistant-relative path.
+
+    H-201 part 2 (``projects_ai_chat.md`` §21.14). Both ends resolve only
+    through ``workspace._member_agent_workspace``, so a shared agent's clone
+    is never a source. The path goes through ``_safe_resolve``, and
+    ``_is_blocked_path`` refuses every secret name. A refusal is 404."""
     import shutil
     from pathlib import Path
 
-    from gateway.routes.workspace import \
-        _agent_workspace_dir
+    from gateway.routes.workspace import (
+        _is_blocked_path,
+        _member_agent_workspace,
+        _safe_resolve,
+    )
 
-    src_ws = _agent_workspace_dir(req.source_agent, user.email)
-    dst_ws = _agent_workspace_dir("email-assistant", user.email)
+    src_ws = _member_agent_workspace(req.source_agent, user.email)
+    dst_ws = _member_agent_workspace("email-assistant", user.email)
     if not src_ws or not dst_ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    src_root = src_ws.resolve()
-    src = (src_ws / (req.source_path or "").strip()).resolve()
-    if not str(src).startswith(str(src_root)) or not src.is_file():
+    rel = (req.source_path or "").strip()
+    if not rel or _is_blocked_path(rel):
+        raise HTTPException(status_code=404, detail="Source artifact not found")
+    try:
+        src = _safe_resolve(src_ws, rel)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Source artifact not found") from None
+    if not src.is_file():
         raise HTTPException(status_code=404, detail="Source artifact not found")
 
     dest_dir = (dst_ws / "agent-data").resolve()

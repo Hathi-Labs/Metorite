@@ -3504,32 +3504,41 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
-- **⚠️ NEXT PRIORITY: the global artifact routes check no room and no
-  tenant.** This hole is older than this work, and it is live in production
-  today. PR #547 does not change it.
-  - **The routes.** `GET /agent/artifacts`, `GET /agent/artifacts/file`,
-    `PUT /agent/artifacts/file` and `POST /agent/artifacts/upload`. On main
-    they are in `routes/workspace.py` near lines 1403, 1453, 1508 and 867.
-    Each one resolves its folder through `_discover_agent_workspaces
-    (user.email)` or `_agent_workspace_dir(agent, user.email)`. No step
-    checks a room, and no step checks a tenant.
-  - **Why it leaks.** For an agent that is NOT instanced, the folder is the
-    shared clone, `{agents_clone_dir}/repos/{agent}`. One folder serves
-    every member of every org. Any member can read that agent's `inputs/`,
-    `outputs/` and `agent-data/` and write there. Those folders can hold
-    the run output of another tenant.
-  - **Which agents.** `acb_skills.manifest` reads `sharing.instancing` from
-    each `config.json`, and the default is `shared`. Only `personal` gives
-    each member a private folder, keyed `u:<email>`. In `apps/agents/`
-    these are shared: `agent-apis-config`, `agent-app-builder`, `agent-crm`,
-    `agent-orchestrator`, `agent-projects` and `agent-task-manager`. Two are
-    personal: `agent-email-assistant` and `agent-whatsapp-assistant`. The
-    code cannot tell for a registry agent that lives only on the box. Read
-    its `config.json` there. A `team` agent is keyed by the team name alone,
-    so two tenants with one team name share a folder.
-  - **Do:** key the folder of a shared agent by tenant, or refuse these
-    routes for a shared agent until it has one. Add an R8 test in which
-    org B cannot read or write org A's artifact.
+- **⚠️ NEXT PRIORITY: a tenant-partitioned working dir for a shared
+  agent.** The cross-tenant READ of a shared clone is live. A member of
+  org B opens a session of `projects-assistant` and reads the run output
+  of org A. The writes were closed on 2026-09-30 (§21.14).
+  - **Change 1.** `executor._resolve_effective_agent_dir` gives a shared
+    agent's run a folder per tenant, not `repos/<agent>`.
+  - **Change 2.** `write_artifact` gets that folder as its
+    `workspace_root`, so the Projects chat documents land there.
+  - **Change 3.** `rehydrate_workspace` restores into that folder.
+  - **Then.** Remove the `repos/` read arm of `_allowed_workspace`, and
+    make step 2 of `_get_workspace_path` derive only the tenant folder. The
+    chat upload to a shared agent then works again. Until then it answers 403.
+- **Done in part 2 (2026-09-30, `projects_ai_chat.md` §21.14).** The four
+  global artifact routes serve only the caller's own `personal` workspace,
+  through `workspace._member_agent_workspace`. A shared agent, a team agent
+  and an agent with no clone answer 404, and the list leaves them out. The
+  blob write-through and the fault-in take `user.organization_id`.
+  `tests/unit/test_h201_artifact_routes.py` is the fence. Do not do it again.
+- **Done in part 2, P0-B.** The email attach and `POST
+  /email/artifacts/import` read only the sender's own workspace, through
+  `_safe_resolve`, and refuse `_is_blocked_path`. The fence is
+  `tests/unit/test_h201_email_artifact_sources.py`.
+- **Still open from part 2.**
+  - **P0-A: writes closed 2026-09-30, cross-tenant READ of a shared clone
+    still open.** The PUT, DELETE, upload and promote session routes
+    answer 403 on a clone root. The read is the next priority, above.
+  - The run side writes and rehydrates a shared agent in one clone. A
+    tenant partition on disk needs the executor, the loader and
+    `rehydrate_workspace`.
+  - The `u:<email>` key has no tenant. `app_user.email` is unique across
+    orgs, so the case is purge, then rejoin. The old folder stays on disk.
+  - P2. A link planted at `<state dir>/<category>` moves an artifact
+    upload out of the folder. The upload does not resolve `upload_dir`.
+  - P2. On a box where `email-assistant` never ran, the artifact list is
+    empty and the upload answers 404 until the first run.
 - **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** Part 1
   bound the workspace read and PATCH, `query_history`, and the
   `pending_commit` and `audit_event` routes in `routes/agent.py`. It also

@@ -1397,11 +1397,11 @@ async def send_email(
 # ── Attachments / artifacts ──────────────────────────────────────────────────
 
 async def list_artifacts(agent_name: str = "email-assistant") -> str:
-    """List files available to attach to emails. Defaults to your own workspace;
-    pass another agent (e.g. 'sales-assistant', 'task-manager') to see files a
-    sub-agent produced. Attach any file by passing its path in ``attachments`` —
-    for another agent's file use '<agent_name>:<path>' directly (no copy step
-    needed). Create new files with write_artifact."""
+    """List the files you can attach to emails: the files in your own
+    email-assistant workspace. Attach a file by passing its path in
+    ``attachments``. Create new files with write_artifact. You cannot attach a
+    file from another agent's workspace: the server refuses a shared agent's
+    files, because they can belong to another organization."""
     data = await _get("/agent/artifacts", {"agent": agent_name})
     arts = [a for a in data.get("artifacts", []) if not a.get("is_dir")]
     if not arts:
