@@ -231,7 +231,11 @@ async def _run_and_record(
 
     try:
         result = await asyncio.wait_for(
-            run_agent(agent, message), timeout=AGENT_RUN_TIMEOUT_SECONDS,
+            # H-201 part 3: the run needs its tenant for its working dir. A
+            # shared agent with no tenant is refused. The org is the one the
+            # server-side event carries, and the task row was found in it.
+            run_agent(agent, message, organization_id=organization_id),
+            timeout=AGENT_RUN_TIMEOUT_SECONDS,
         )
     except TimeoutError:
         await _record_outcome(

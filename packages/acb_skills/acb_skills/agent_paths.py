@@ -34,6 +34,14 @@ the disk agreeing with the database. The vocabulary is the manifest's
 (:meth:`acb_skills.manifest.AgentManifest.instance_key`): ``''`` shared,
 ``u:<email>`` personal, ``t:<team>`` team.
 
+``o:<organization_id>`` is the fourth key (H-201 part 3,
+``projects_ai_chat.md`` §21.15). It is the working dir of a SHARED agent for
+one tenant. The executor gives it to a run whose manifest key is ``''``, and
+it takes the organization from the run binding, never from input. So the code
+stays in the one clone, and each tenant's run output, inputs and agent-data
+live in a folder of their own. The blob rows of that folder carry the same
+key. See :func:`tenant_instance`.
+
 WHY ``instance=''`` RETURNS THE OLD PATH
 ----------------------------------------
 Deliberately, and it is the whole safety argument. Every agent that has not
@@ -56,15 +64,18 @@ from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "TENANT_INSTANCE_PREFIX",
     "InvalidAgentName",
     "agent_code_dir",
     "agent_state_dir",
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_tenant_instance",
     "is_valid_agent_name",
     "require_agent_name",
     "state_root",
+    "tenant_instance",
     "workspace_blob_key",
 ]
 
@@ -151,6 +162,35 @@ def instance_slug(instance: str) -> str:
     digest = hashlib.sha256(instance.encode("utf-8")).hexdigest()[:8]
     readable = _UNSAFE.sub("_", instance)[:_SLUG_READABLE_MAX].strip("._-")
     return f"{readable}-{digest}" if readable else digest
+
+
+#: The prefix of a tenant key. ``o`` for organization, so it can never be read
+#: as ``t:<team>``, which is keyed by a team name alone.
+TENANT_INSTANCE_PREFIX = "o:"
+
+
+def tenant_instance(organization_id: object) -> str:
+    """``o:<organization_id>``, the key of a shared agent's working dir for one
+    tenant (H-201 part 3).
+
+    The caller passes the run's tenant from the run binding (``_RUN_ORG`` or
+    ``current_tenant``) or the caller's authenticated identity, never a value
+    from a request body. An empty tenant raises ``ValueError``: no tenant means
+    no working dir, and the caller must fail closed.
+    """
+    org = str(organization_id or "").strip()
+    if not org:
+        raise ValueError("a tenant working dir needs an organization id")
+    return f"{TENANT_INSTANCE_PREFIX}{org}"
+
+
+def is_tenant_instance(instance: object) -> bool:
+    """True when *instance* is an ``o:<organization_id>`` key."""
+    return (
+        isinstance(instance, str)
+        and instance.startswith(TENANT_INSTANCE_PREFIX)
+        and len(instance) > len(TENANT_INSTANCE_PREFIX)
+    )
 
 
 def agent_code_dir(agent_name: str) -> Path:
