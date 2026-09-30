@@ -33,9 +33,9 @@ makes each tile one line, and puts the HR grant into plain words. The email
 now matches the app.
 
 **CLOSE-OUT 2026-09-30 (§9 Q15).** The owner asked to conclude the feature
-with only what is necessary. One slice remains: **R-final**, in §8. R4,
-R4b and R6 are CUT. R5c stays blocked and leaves this feature. Phases 2
-and 3 stay recorded and unscheduled.
+with only what is necessary. One slice remains: **R-final**, in §8, the
+chat render by name. R4, R4b and R6 are CUT. R8's send and R9 move to
+Phase 2 (§9 Q16). R5c stays blocked and leaves this feature.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -1806,39 +1806,62 @@ R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
 - R6 adds the AI summary.
 - R8 and R9 let the chat and the member send a report to one person.
 
-### R-final — The close-out slice (owner, 2026-09-30) · AGENT-SAFE to build, OWNER-GATE to arm
+### R-final — The chat renders a report by name (owner, 2026-09-30) · AGENT-SAFE
 
 The owner asked to conclude the feature and keep only what is necessary
-(§9 Q15). This slice replaces the rest of Phase 1. It holds three parts.
+(§9 Q15). This slice replaces the rest of Phase 1.
 
-1. **R9, less the stored run.** `POST /projects/reports/{id}/send` takes one
-   recipient from the directory. Each R9 rule binds, except the stored run.
-   The Reports page gets an "Email this report" control beside Download.
-2. **The R8 chat tool `send_report`.** It is class C, behind a confirm card.
-   Update the manifest map and `projects_ai_chat.md` in the same PR, as R8
-   says.
-3. **The R8 render by name.** `render_report` takes a template and a subject,
-   so "team pulse for Design" works with no saved report. It calls the
-   preview path, and so it obeys `may_report_on`.
+**What:** the chat tool `render_report` (`skill_projects/views.py:render_report`) takes a template key and a
+subject, and `report_id` becomes optional. So "team pulse for Design"
+works with no saved report. With no id, the tool calls
+`POST /projects/reports/preview`, so the server runs
+`require_template_subject` and the §7.1 check of `render_body`.
 
-**Cut, and why (§9 Q15):**
+**Manifest (`skill_projects/manifest.py`), in the same PR:**
+- The preview row changes from class X (`_PREVIEW_REASON`) to
+  `render_report`, class A. It stays in `READ_ONLY_POSTS`.
+- `GET /projects/reports/subjects` maps to `render_report`, class A, so the
+  tool can resolve "Design" to a subject. That route lists only what the
+  reader may report on.
+- `GET /projects/reports/templates` maps to `render_report`, class A, if
+  the tool resolves a template by name.
+- Every `_DELIVERY_REASON` row stays unchanged.
+
+**Cut, and why (§9 Q15, Q16):**
 - **R4 and R4b.** Stored runs, "what changed", the change arrows and the
   Assign and Dismiss controls were additions, not owner requirements.
 - **R6.** The chat already reads a rendered report and summarizes it on
-  request, with the credits of the member who asks. A second control adds
-  a second credit path and no new ability.
+  request, with the credits of the member who asks.
+- **R8's `send_report` and R9** move to Phase 2. The gateway has no system
+  mail sender, and `sendReportEmail` lives in the Next tier with no caller.
+  Phase 2 needs the same seam for the timed email, so the seam gets built
+  once, there. Until then, a member downloads a report and sends the file.
 - **R5c** waits for WS-29 and leaves this feature.
 
-**Done when:** the R9 done-when items pass, except the stored run. The
-chat renders T1 for a team by name. The chat sends only after the member
-confirms the card. `test_projects_chat_coverage.py` passes with the new
-map. `PROJECT_REPORT_EMAIL_ENABLED` stays off. Only the owner turns it on.
+**Done when:**
+- The chat renders T1 for a team by name, with no saved report.
+- A member who names a team they do not lead gets the 403 reason, not a
+  render. A test proves this.
+- `test_projects_chat_coverage.py` passes with the new map.
 
 ---
 
 ## 8a. Later phases — recorded, not scheduled
 
 ### Phase 2 — R7, a report that renders and emails itself · OWNER-GATE to arm
+
+⚠️ **Phase 2 now owns R9 and R8's `send_report` too (§9 Q16).** Before it is
+dispatched, the spec must name five things that the R-final audit found
+missing (2026-09-30):
+1. The send seam. The gateway has no system mail sender. The only one is
+   `sendReportEmail` in `src/lib/reportEmail.ts`, in the Next tier.
+2. One lock of record, because `delivery_armed()` reads the gateway env
+   and `isReportEmailEnabled` reads the Next env.
+3. The directory check: `report_scope.check_in_directory`, not
+   `reports.py:_known_member`, which matches across organizations.
+4. How the context of the recipient is built, and a shared store for the
+   rate limit.
+5. What a send returns when the recipient may not open the subject.
 
 **What:** a schedule on a saved report: a recipient, a day pattern and a
 local time. `SCHEDULES` gains `weekday_daily` next to `weekly`. The job is
@@ -1892,6 +1915,7 @@ that the render does not need a saved row.
 | Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 | Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
 | Q15 (2026-09-30) | How much of Phase 1 is left to build? | The owner: "just conclude this feature soon, keep only what is absolutally necessary". One slice remains, R-final: email a report to one person, from the page and from the chat, dark behind the owner's flag. R4, R4b and R6 are cut. |
+| Q16 (2026-09-30) | Does the email send stay in the close-out? | The owner: "Move email to later". The gateway has no system mail sender, and the timed email of Phase 2 needs the same seam. R9 and `send_report` move to Phase 2. R-final keeps only the chat render by name. |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
