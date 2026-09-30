@@ -32,6 +32,11 @@ and Overview is the landing screen, §9 Q14). **R5f repair round 1 BUILT
 makes each tile one line, and puts the HR grant into plain words. The email
 now matches the app.
 
+**CLOSE-OUT 2026-09-30 (§9 Q15).** The owner asked to conclude the feature
+with only what is necessary. One slice remains: **R-final**, in §8. R4,
+R4b and R6 are CUT. R5c stays blocked and leaves this feature. Phases 2
+and 3 stay recorded and unscheduled.
+
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
@@ -1740,7 +1745,7 @@ Until H-152 closes, those customers see the refusal.
 | `report_list` | `GET /projects/reports` | A — exists |
 | `report_save` | `POST` and `PATCH /projects/reports` | B — exists. It gains `template` and `subject`. |
 | `render_report` | `GET /projects/reports/{id}/render`, or the preview of R1 | A — exists. It gains a template name and a subject, so "the morning report for Design" works without a saved report. R8 maps `POST /projects/reports/preview` to this tool and changes that row from class X to class A. |
-| `summarize_report` | the R6 route | B — it spends credits, so a card shows the cost first |
+| ~~`summarize_report`~~ | CUT with R6 (§9 Q15). The chat summarizes the output of `render_report` itself. | — |
 | `send_report` | the R9 route | C — a guarded act, behind a confirm card |
 
 **Rules:**
@@ -1775,7 +1780,8 @@ item 6) and the chat's `send_report` both call it.
   the owner's to turn on, because the send reaches a real person (CLAUDE.md
   §3a rule 3). While it is off, the route returns 409 with a clear reason.
   It never reports a send that did not happen.
-- A send writes a stored run (R4) for the recipient, so "Open in Metorite"
+- ~~A send writes a stored run (R4)~~ CUT with R4 (§9 Q15). The email links
+  to the live report. The original rule read: a send writes a run so "Open in Metorite"
   opens exactly what the email said.
 - Rate limit: 20 sends for each member in each hour. A chat loop cannot mail
   the directory.
@@ -1799,6 +1805,34 @@ R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
 - R4 gives a report a memory, and R4b lets a member act on a suggestion.
 - R6 adds the AI summary.
 - R8 and R9 let the chat and the member send a report to one person.
+
+### R-final — The close-out slice (owner, 2026-09-30) · AGENT-SAFE to build, OWNER-GATE to arm
+
+The owner asked to conclude the feature and keep only what is necessary
+(§9 Q15). This slice replaces the rest of Phase 1. It holds three parts.
+
+1. **R9, less the stored run.** `POST /projects/reports/{id}/send` takes one
+   recipient from the directory. Each R9 rule binds, except the stored run.
+   The Reports page gets an "Email this report" control beside Download.
+2. **The R8 chat tool `send_report`.** It is class C, behind a confirm card.
+   Update the manifest map and `projects_ai_chat.md` in the same PR, as R8
+   says.
+3. **The R8 render by name.** `render_report` takes a template and a subject,
+   so "team pulse for Design" works with no saved report. It calls the
+   preview path, and so it obeys `may_report_on`.
+
+**Cut, and why (§9 Q15):**
+- **R4 and R4b.** Stored runs, "what changed", the change arrows and the
+  Assign and Dismiss controls were additions, not owner requirements.
+- **R6.** The chat already reads a rendered report and summarizes it on
+  request, with the credits of the member who asks. A second control adds
+  a second credit path and no new ability.
+- **R5c** waits for WS-29 and leaves this feature.
+
+**Done when:** the R9 done-when items pass, except the stored run. The
+chat renders T1 for a team by name. The chat sends only after the member
+confirms the card. `test_projects_chat_coverage.py` passes with the new
+map. `PROJECT_REPORT_EMAIL_ENABLED` stays off. Only the owner turns it on.
 
 ---
 
@@ -1857,6 +1891,7 @@ that the render does not need a saved row.
 | Q12 (2026-09-28) | Who may delete a report? | The owner: "report deleting should be based on role permissions". The author of a report may delete it, and so may an admin. Every other reader gets 403 with the reason (R5d). |
 | Q13 (2026-09-28) | Does the delete rule also bind a change to a report? | The owner: yes. Only the author or an admin may change a report, its recipients or its schedule. Every other reader gets 403 with the reason (R5d). |
 | Q14 (2026-09-29) | Do Analytics and Reports stay two apps? | The owner: "i think we should combine ANalytics and reports? … its similar contect from a UI/UX point of view right?", then "go ahead" to one app. Reports is now the one app. It opens on Overview, which shows what the Analytics app showed and saves nothing. The gallery and the saved reports come under it. `?app=analytics` opens Overview. This answer changes the presentation only. The line of §9.12.8 (2026-08-31) stays: Overview is what you look at, and a saved report is what you deliver (R5f). |
+| Q15 (2026-09-30) | How much of Phase 1 is left to build? | The owner: "just conclude this feature soon, keep only what is absolutally necessary". One slice remains, R-final: email a report to one person, from the page and from the chat, dark behind the owner's flag. R4, R4b and R6 are cut. |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
