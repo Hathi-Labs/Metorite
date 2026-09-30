@@ -20,14 +20,22 @@ def _extract_request_id(sse_line: str) -> str:
     return payload["value"]["request_id"]
 
 
-async def _answer_when_pending(answer: str) -> None:
-    """Resolve the first pending HITL future once it registers."""
+async def _answer_when_pending(answer: str, thread_id: str) -> None:
+    """Resolve the first pending HITL future once it registers.
+
+    H-201: only the thread that owns the request may answer it, so the
+    trajectory answers as that thread, and a stranger's answer is refused.
+    """
     for _ in range(100):
         if executor._pending_user_input:
             break
         await asyncio.sleep(0.01)
     request_id = next(iter(executor._pending_user_input))
-    assert executor.resolve_user_input(request_id, answer, False) is True
+    assert executor._pending_user_input.owner_of(request_id) == thread_id
+    assert executor.resolve_user_input(request_id, answer, False,
+                                       thread_id="another-thread") is False
+    assert executor.resolve_user_input(request_id, answer, False,
+                                       thread_id=thread_id) is True
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +59,7 @@ async def test_ask_questions_relay_roundtrip(monkeypatch):
     # trajectory; a set-but-unknown request id falls straight through to C.
     executor._active_elicitation_request_id.set("no-bridge")
 
-    answer_task = asyncio.create_task(_answer_when_pending("Staging"))
+    answer_task = asyncio.create_task(_answer_when_pending("Staging", "traj-thread-1"))
     result = await ask_questions(json.dumps({
         "questions": [{
             "header": "Target",
@@ -77,13 +85,14 @@ async def test_ask_questions_executor_bridge_roundtrip():
     bridge); the tool blocks on it and returns the resolved answer."""
     rid = "traj-bridge-rid"
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
-    executor._pending_user_input[rid] = fut
+    executor._pending_user_input.park(rid, fut, "traj-bridge-thread")
     executor._active_elicitation_request_id.set(rid)
     executor._stream_relay_thread_id.set(None)
 
     async def _answer() -> None:
         await asyncio.sleep(0.01)
-        assert executor.resolve_user_input(rid, "Use the blue theme") is True
+        assert executor.resolve_user_input(rid, "Use the blue theme",
+                                           thread_id="traj-bridge-thread") is True
 
     answer_task = asyncio.create_task(_answer())
     result = await ask_questions(json.dumps({
@@ -108,7 +117,7 @@ async def test_request_confirmation_relay_roundtrip(monkeypatch, answer, expecte
     monkeypatch.setattr(executor, "_push_sse_to_stream", _fake_push)
     executor._stream_relay_thread_id.set("traj-thread-2")
 
-    answer_task = asyncio.create_task(_answer_when_pending(answer))
+    answer_task = asyncio.create_task(_answer_when_pending(answer, "traj-thread-2"))
     approved = await request_confirmation(
         "Send this email?", "To a@b.com", "Full body here",
     )

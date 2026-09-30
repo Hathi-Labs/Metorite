@@ -3219,8 +3219,8 @@ The `-rs` output must show no R8 skip.
 
 ## 21. Chat is saved on production (S15)
 
-**Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12).** This slice
-repairs a live defect in production.
+**Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12). H-201 part 1
+BUILT 2026-09-30 (§21.13).** This slice repairs a live defect in production.
 A read-only diagnosis of production on 2026-09-29 is the audit
 (GO-NARROWED). `chat_message` had never held a row in production, so every
 member's chat history lived only in one browser.
@@ -3577,3 +3577,168 @@ when the cookie is not the smoke member in the smoke org.
 
 The first production run PASSED on 2026-09-29, all four steps, on
 `https://app.metorite.com`.
+
+### 21.13 H-201 — the other readers bind the tenant
+
+**Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2.** This part binds the readers
+that are nearest to chat. It also adds the room check on the answer path.
+H-201 in `HANDOFF.md` lists the work that is still open.
+
+**The decision for each table.** The generated phase 4 file,
+`infra/postgres/generated/04_policies.sql`, sets FORCE RLS and a tenant
+policy on each table below.
+
+| Module | Table | Runs in | The tenant comes from | Result |
+|---|---|---|---|---|
+| `routes/workspace.py` `_get_workspace_path` | `chat_session` (read) | a request | `user.organization_id` | bound |
+| `routes/workspace.py` `set_workspace_path` | `chat_session` (UPDATE) | a request | `user.organization_id` | bound |
+| `acb_skills/history_tools.py` `query_history` | `chat_message`, `chat_session` | an agent run | the executor opener `_graph_session_opener_current()` | bound |
+| `routes/agent.py`, the mutation routes | `pending_commit`, `audit_event` | a request | `user.organization_id` | bound |
+| `routes/agent.py` `_load_dynamic_agents` and its writers | `dynamic_agents` | a request, the lifespan and the executor | not decided | open |
+
+**The rules.**
+
+1. A route opens `acb_graph.tenant_session(user.organization_id)`. The
+   server resolves that tenant from the authenticated identity. The request
+   body, a header and a query never supply it (R5).
+2. Each mutation route opens its session through `_member_graph_session(user)`.
+   Each route lets `TenantUnbound` through, and the app handler answers it.
+3. `query_history` runs inside an agent run, so no request exists. It takes
+   the run's tenant from `_graph_session_opener_current()`, on the event-loop
+   frame. That opener obeys `ACB_GRAPH_TENANT_BIND`, which is ON in
+   production. With the flag ON and no tenant, the tool answers `[]`.
+4. `POST /agent/respond-input` checks `resolve_room_access(...).can_send`
+   in the caller's tenant before it resolves or relays an answer. Fix round
+   1 made the thread required, and the thread must own the request.
+
+**Two faults that R8 found in `query_history`.** The join named a
+`thread_id` column that neither chat table has. Also, psycopg 3 sends a NULL
+with no type, and Postgres cannot type a bare `:x IS NULL`. So every call
+failed, on every database. The query now joins `chat_session.id` to
+`chat_message.session_id`, and it casts each optional criterion.
+
+**Why `dynamic_agents` is open.** Its readers run in three places, and two
+of them have no request. The gateway lifespan (`main.py`) and the executor
+read the registry. The spec does not record whether the Agent Registry is
+per tenant or per deployment. A bind without that decision can hide a
+tenant's agents, so this part leaves the table as it was.
+
+**Acceptance.** On the phase 4 catalog, as the NOBYPASSRLS app role, with a
+fresh backend for each session, `tests/unit/test_h201_readers_under_rls.py`
+shows the following:
+
+- Each bound reader gives the org's own rows under its tenant.
+- Each bound reader gives another org nothing.
+- Each bound reader refuses when no tenant is present.
+- A PATCH and a DELETE from another org change no row.
+- Bob, who is not in Alice's room, gets 403 from `respond-input`. Carol of
+  org B gets 403, and a member with no tenant gets 403. None of them reaches
+  the fast path or the relay.
+- A source fence reads the code, so it runs with no database.
+
+**Mutations.** Each one below fails at least one behaviour test.
+
+| Mutation | Tests that fail |
+|---|---|
+| `_get_workspace_path` back to `get_session()` | 2 |
+| `set_workspace_path` back to `get_session()` | 2 |
+| `query_history` back to `get_session()` | 2 |
+| `_member_graph_session` back to `get_session()` | 4 |
+| the room check removed from `respond-input` | 1 |
+
+**Fix round 1.** The review found that the bind made three dormant holes
+live. Each one blocked the merge.
+
+1. **P0, path traversal.** `PATCH /agent/workspace/{id}` stored any string,
+   and every file route trusts that root. A PATCH of `/` made the gateway
+   environment readable. Now `_allowed_workspace` resolves the path, with
+   every symlink followed. A PATCH must land inside the workspace of an app
+   that the caller may edit, in the caller's tenant. Anything else gets
+   422. A read checks the stored value again, and a value that fails counts
+   as absent. A read also takes three legacy `write_artifact` roots. They
+   are a directory strictly below an agent clone root, the caller's own
+   state directory, and this session's scratch directory. `_safe_resolve`
+   now checks the path,
+   and not a string prefix.
+2. **P1, no room check.** No `/agent/workspace/{session_id}` route checked
+   the room. Each route now calls `resolve_room_access` in the caller's
+   tenant. A read needs `can_read`, and a refusal answers as a session with
+   no workspace does. A change needs `can_send`, and a refusal is 403. The
+   internal-token caller with no member skips the room on `POST .../events`
+   only.
+3. **P1, every private chat.** With no acting member, `query_history`
+   searched every private chat of the org. Now it needs a verified member
+   (H-73 `member_verified`), or it answers `[]`. With a member, it joins
+   `rooms.SESSION_VISIBLE_SQL`, the one visibility rule of the session
+   list, and it keeps the `since_join` waterline.
+4. **P2, the answer path.** The fast path resolved an `ask_user` future by
+   the request id alone. `_PendingUserInput` now records the owner thread
+   of each request, at the one write point. `resolve_user_input` takes a
+   required `thread_id` and answers only for the owner. The route refuses a
+   call with no thread with 422.
+
+**Fix round 1 mutations.** Each one fails at least one behaviour test.
+
+| Mutation | Tests that fail |
+|---|---|
+| the PATCH path check skipped | 1 |
+| the check on read removed | 2 |
+| symlinks and `..` not resolved | 2 |
+| the room check of the workspace routes removed | 3 |
+| the visibility rule of `query_history` dropped | 1 |
+| the `member_verified` check removed | 1 |
+| the owner check in `resolve_user_input` removed | 1 |
+| the `thread_id` requirement removed from the route | 2 |
+
+**Fix round 2.** The review found one new P0. `chat_session.agent_name`
+came from the browser as a bare string. Step 2 of `_get_workspace_path`
+joined it onto `repos/`, so `../../../../../..` became `/`.
+
+The same join was live on main with no database involved. Three routes
+passed a request's agent name into `_agent_clone_dir` or
+`_canonical_workspace_dir`:
+
+- `POST /agent/artifacts/upload?agent=` wrote into any directory.
+- The email artifact import read any file into the member's workspace.
+- The attachment refs of an email send could attach any file.
+
+The repair is one rule, in one place. `acb_skills.agent_paths.AGENT_NAME_RE`
+takes one path segment: a letter or digit first, then letters, digits, `.`,
+`_` or `-`, at most 64 characters. These sites apply it:
+
+1. The session upsert refuses a bad name with 422.
+2. `_agent_clone_dir` gives no clone dir for a bad name. A candidate must
+   also resolve strictly below its `repos/` root, so a link out fails.
+3. `_canonical_workspace_dir`, `agent_code_dir` and `agent_state_dir`
+   raise `InvalidAgentName`.
+4. The artifact upload answers 422.
+5. Step 2 passes its result through the same read check as a stored root.
+
+**Fix round 2 mutations.**
+
+| Mutation | Tests that fail |
+|---|---|
+| the upsert check removed | 1 |
+| the name check in `_agent_clone_dir` removed | 2 |
+| the containment check in `_agent_clone_dir` removed | 1 |
+| the read check on step 2 removed | 1 |
+| both checks in `_agent_clone_dir` removed | 2 |
+| the upload check removed | 1 |
+| the rule removed from `_canonical_workspace_dir` | 1 |
+| the rule removed from `agent_state_dir` | 1 |
+| the rule widened to any string | 5 |
+| `_safe_resolve` back to `str.startswith` (verifier) | 1 |
+| the relay applier passes the owner, not its channel (verifier) | 1 |
+
+**Verification.**
+
+```bash
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/acb_tenant
+uv run pytest tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_chat_write_under_rls.py \
+  tests/unit/test_mt0c1_no_raw_sql_agent_tools.py \
+  tests/unit/test_documents_pdf_route.py tests/unit/test_ask_user_hitl.py \
+  tests/unit/test_genui_hitl.py -q -rs
+```
+
+The `-rs` output must show no skip in the first two files.

@@ -47,7 +47,7 @@ from gateway.rooms import (
     resolve_room_access,
     session_exists_elsewhere,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 _log = get_logger("gateway.chat")
 
@@ -66,6 +66,17 @@ class SessionUpsertRequest(BaseModel):
     title: str | None = None
     last_preview: str | None = None
     message_count: int = 0
+
+    @field_validator("agent_name")
+    @classmethod
+    def _one_safe_segment(cls, value: str) -> str:
+        """H-201 fix round 2 (P0). The workspace routes join the session's
+        agent name onto ``repos/``, so ``../../..`` reached ``/``. The name
+        must pass the one rule, ``agent_paths.AGENT_NAME_RE``. FastAPI turns
+        the ``ValueError`` into a 422."""
+        from acb_skills.agent_paths import require_agent_name
+
+        return require_agent_name(value)
 
 
 class SessionPatchRequest(BaseModel):

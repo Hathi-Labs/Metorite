@@ -314,16 +314,20 @@ def test_native_streaming_emits_tool_call_and_result_events(monkeypatch):
 # that round-trip (the branch the batch/native tests don't exercise).
 
 def test_resolve_user_input_unknown_request_returns_false():
-    assert executor.resolve_user_input("no-such-request", "x") is False
+    assert executor.resolve_user_input("no-such-request", "x", thread_id="t-1") is False
 
 
 def test_resolve_user_input_sets_the_pending_future():
     async def _run() -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        executor._pending_user_input["req-1"] = fut
+        executor._pending_user_input.park("req-1", fut, "t-1")
         try:
-            assert executor.resolve_user_input("req-1", "the answer", was_freeform=True)
+            # H-201: only the thread that owns the request may answer it.
+            assert not executor.resolve_user_input(
+                "req-1", "the answer", was_freeform=True, thread_id="t-2")
+            assert executor.resolve_user_input(
+                "req-1", "the answer", was_freeform=True, thread_id="t-1")
             return await asyncio.wait_for(fut, timeout=1)
         finally:
             executor._pending_user_input.pop("req-1", None)
@@ -353,7 +357,8 @@ def test_hitl_handler_emits_prompt_parks_then_returns_answer(monkeypatch):
                 break
             await asyncio.sleep(0.005)
         assert req_id, "handler never parked a pending request"
-        assert executor.resolve_user_input(req_id, "b", was_freeform=False)
+        assert executor.resolve_user_input(req_id, "b", was_freeform=False,
+                                           thread_id="thread-x")
         return await asyncio.wait_for(task, timeout=2)
 
     result = asyncio.run(_run())

@@ -55,11 +55,15 @@ import re
 from pathlib import Path
 
 __all__ = [
+    "AGENT_NAME_RE",
+    "InvalidAgentName",
     "agent_code_dir",
     "agent_state_dir",
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_valid_agent_name",
+    "require_agent_name",
     "state_root",
     "workspace_blob_key",
 ]
@@ -70,6 +74,32 @@ __all__ = [
 # from "whoever is asking" breaks the moment a shared session lets a second
 # person open the first person's workspace.
 _INSTANCE_MARKER = ".cc-instance"
+
+#: The ONE rule for an agent name that becomes a path segment (H-201 fix
+#: round 2). One segment: a letter or digit first, then letters, digits,
+#: ``.``, ``_`` or ``-``, at most 64 characters. So ``.``, ``..``, a slash, a
+#: NUL and an absolute path can never pass. A name arrives as data from a
+#: request, a session row or a registry row, and ``repos/{name}`` must stay
+#: inside ``repos/``. Every filesystem use of an agent name goes through
+#: :func:`require_agent_name` or :func:`is_valid_agent_name`.
+AGENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+class InvalidAgentName(ValueError):
+    """An agent name that is not one safe path segment."""
+
+
+def is_valid_agent_name(name: object) -> bool:
+    """True when *name* is one safe path segment (:data:`AGENT_NAME_RE`)."""
+    return isinstance(name, str) and AGENT_NAME_RE.fullmatch(name) is not None
+
+
+def require_agent_name(name: object) -> str:
+    """*name*, or :class:`InvalidAgentName` when it is not one safe segment."""
+    if not is_valid_agent_name(name):
+        raise InvalidAgentName(f"not a valid agent name: {str(name)[:80]!r}")
+    return str(name)
+
 
 # Anything outside this set is replaced in a slug. ':' (in ``u:``/``t:``) is
 # illegal in Windows filenames and awkward in shell paths everywhere.
@@ -130,7 +160,7 @@ def agent_code_dir(agent_name: str) -> Path:
     ``loader.load_agent`` always clones to and what
     ``gateway.routes.workspace._canonical_workspace_dir`` already returns.
     """
-    return clone_root() / agent_name
+    return clone_root() / require_agent_name(agent_name)
 
 
 def agent_state_dir(agent_name: str, instance: str = "") -> Path:
@@ -146,7 +176,7 @@ def agent_state_dir(agent_name: str, instance: str = "") -> Path:
     """
     if not instance:
         return agent_code_dir(agent_name)
-    return state_root() / agent_name / instance_slug(instance)
+    return state_root() / require_agent_name(agent_name) / instance_slug(instance)
 
 
 def ensure_state_dir(agent_name: str, instance: str = "") -> Path:

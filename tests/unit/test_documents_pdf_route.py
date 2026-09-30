@@ -48,12 +48,24 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "outputs" / "chart.png").write_bytes(b"\x89PNG\r\n")
     (root / ".env").write_text("SECRET=1", encoding="utf-8")
     (tmp_path / "outside.md").write_text("# outside", encoding="utf-8")
-    monkeypatch.setattr(workspace, "_get_workspace_path", lambda sid, email=None: root)
+    monkeypatch.setattr(workspace, "_get_workspace_path",
+                        lambda sid, email, organization_id: root)
 
     async def _no_store(*_a: object, **_k: object) -> bool:
         return False
 
     monkeypatch.setattr(workspace, "_faultin_from_store", _no_store)
+
+    # H-201: each workspace route checks the room first. This suite tests the
+    # PDF render, so the room answers yes. The R8 room cases live in
+    # test_h201_readers_under_rls.py.
+    class _Room:
+        can_read = can_send = True
+
+    async def _in_room(*_a: object, **_k: object) -> _Room:
+        return _Room()
+
+    monkeypatch.setattr(workspace, "_room_for", _in_room)
     return root
 
 

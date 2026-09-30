@@ -3502,19 +3502,58 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-28 · the WS-27bn R5d session
 
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
-- **Check:** `grep -rn "with get_session() as\|with _db_session() as" apps/services/gateway/gateway/routes/workspace.py packages/acb_skills/acb_skills/history_tools.py apps/services/gateway/gateway/routes/observability.py`.
+- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
-- **What happens.** S15 bound the chat save path (`projects_ai_chat.md`
-  §21). These modules still open the unbound `acb_graph.get_session()` on a
-  FORCE-RLS table. In production a read there sees no row, and a write there
-  is refused.
-- **The verdicts, one per module.**
-  - `routes/workspace.py` reads and writes `chat_session.workspace_path`.
-    Tenant-scoped. It is on the chat path, so it is first.
-  - `acb_skills/history_tools.py` (`query_history`) reads `chat_message`.
-    Tenant-scoped. Take the run's tenant from the executor opener.
-  - `routes/agent.py` reads and writes `dynamic_agents`, `pending_commit`
-    and `audit_event`. All three are tenant-scoped.
+- **⚠️ NEXT PRIORITY: the global artifact routes check no room and no
+  tenant.** This hole is older than this work, and it is live in production
+  today. PR #547 does not change it.
+  - **The routes.** `GET /agent/artifacts`, `GET /agent/artifacts/file`,
+    `PUT /agent/artifacts/file` and `POST /agent/artifacts/upload`. On main
+    they are in `routes/workspace.py` near lines 1403, 1453, 1508 and 867.
+    Each one resolves its folder through `_discover_agent_workspaces
+    (user.email)` or `_agent_workspace_dir(agent, user.email)`. No step
+    checks a room, and no step checks a tenant.
+  - **Why it leaks.** For an agent that is NOT instanced, the folder is the
+    shared clone, `{agents_clone_dir}/repos/{agent}`. One folder serves
+    every member of every org. Any member can read that agent's `inputs/`,
+    `outputs/` and `agent-data/` and write there. Those folders can hold
+    the run output of another tenant.
+  - **Which agents.** `acb_skills.manifest` reads `sharing.instancing` from
+    each `config.json`, and the default is `shared`. Only `personal` gives
+    each member a private folder, keyed `u:<email>`. In `apps/agents/`
+    these are shared: `agent-apis-config`, `agent-app-builder`, `agent-crm`,
+    `agent-orchestrator`, `agent-projects` and `agent-task-manager`. Two are
+    personal: `agent-email-assistant` and `agent-whatsapp-assistant`. The
+    code cannot tell for a registry agent that lives only on the box. Read
+    its `config.json` there. A `team` agent is keyed by the team name alone,
+    so two tenants with one team name share a folder.
+  - **Do:** key the folder of a shared agent by tenant, or refuse these
+    routes for a shared agent until it has one. Add an R8 test in which
+    org B cannot read or write org A's artifact.
+- **Done in part 1 (2026-09-30, `projects_ai_chat.md` §21.13).** Part 1
+  bound the workspace read and PATCH, `query_history`, and the
+  `pending_commit` and `audit_event` routes in `routes/agent.py`. It also
+  added the room check on `POST /agent/respond-input`. Fix round 1 added
+  four more. Do not do them again.
+  - The workspace path check.
+  - The room check on each workspace route.
+  - The member scope of `query_history`.
+  - The owner thread of each `ask_user` request.
+  - Fix round 2: the one agent-name rule, `agent_paths.AGENT_NAME_RE`.
+- **What happens.** These modules still open the unbound
+  `acb_graph.get_session()` on a FORCE-RLS table. In production a read there
+  sees no row, and the database refuses a write there.
+- **Still open, one verdict per module.**
+  - `routes/agent.py` `_load_dynamic_agents`, `_sync_file_into_db`,
+    `_save_dynamic_agents` and `remove_agent` use `dynamic_agents`, which is
+    tenant-scoped. The gateway lifespan and the executor also read it, with
+    no request. First record whether the Agent Registry is per tenant or per
+    deployment. Today an unbound read finds nothing, and the code falls back
+    to `agents.json`.
+  - `routes/projects/assignees.py:269` reads `dynamic_agents` through the
+    bound `get_db`. The Agent Registry reads it unbound and so falls back to
+    `agents.json`. So the assignee picker and the registry can disagree
+    about which agents exist. Resolve both with the registry-scope decision.
   - `routes/observability.py` reads `agent_run`, `agent_avatars` and `apps`.
     Tenant-scoped. Its feed shows no run in production.
   - `routes/debug.py` reads `agent_run`. Tenant-scoped.
@@ -3526,32 +3565,42 @@ line — never reclaim a number by deleting the other entry.
   - `acb_skills/loader.py` writes `pending_commit`. Tenant-scoped.
   - Already bound behind `ACB_GRAPH_TENANT_BIND`, no work: `executor.py`,
     `mutation.py`, `_tool_injection.py` and `acb_audit/log.py`.
-- **The stream relay keys (S15 fix round 1).** `cc:stream`, `cc:active`,
-  `cc:runactor`, `cc:runsource`, `cc:runfloor` and `cc:steer` carry the bare
-  thread id, with no tenant prefix. The room check now denies another
-  tenant's id, and that check is the boundary. A prefix is defence in depth.
-  It reaches 10 importing modules and 16 client sites, and it moves the
-  `stream_relay.py`, `steer.py` and `room_stream.py` entries in the
+- **The stream relay keys (S15 fix round 1). Its own PR.** `cc:stream`,
+  `cc:active`, `cc:runactor`, `cc:runsource`, `cc:runfloor` and `cc:steer`
+  carry the bare thread id, with no tenant prefix. The room check denies
+  another tenant's id, and that check is the boundary. A prefix is defence
+  in depth. It reaches 10 importing modules and 16 client sites, and it moves
+  the `stream_relay.py`, `steer.py` and `room_stream.py` entries in the
   `tests/unit/test_tenant_redis.py` ratchet. Use `acb_common.tenant_redis`.
+  Choose the deploy shape first: read both key forms for one release, or
+  accept that a run in flight at the deploy loses its stream.
 - **Also found.** `acb_auth.access` records an unprovisioned sign-in into
   `access_request`. It has no tenant yet, so it needs its own design.
   `/chat/active-sessions` scans Redis keys with no tenant prefix. A thread
   of another org can appear there as "unknown".
-- **From the S15 fix-round review.**
-  - (P2) `POST /agent/respond-input` in `routes/agent.py` (near lines
-    2342-2389) has no room check. It relays through
-    `dispatch_control(req.thread_id, ...)`, which only the thread id keys.
-    Today no tenant can reach it across tenants. The `request_id` appears
-    only in the run's own stream, and the room check denies that stream.
-    Add `resolve_room_access(...).can_send` as defence in depth.
-  - (P3) `chat_session_exists` fails closed with NULL if its owner loses
-    BYPASSRLS. Then the gateway refuses every new chat. Add a startup
-    self-check or a smoke-check step, which asserts that a random id gives false.
+- **Found in fix round 2.** Four local agent-name regexes remain, in
+  `routes/apps/grants.py`, `routes/observability.py`, `routes/agent.py`
+  (`_sync_file_into_db`) and the executor registry path. Move each one to
+  `agent_paths.AGENT_NAME_RE`, so the product has one rule.
+  `import_artifact` in `routes/email/transport/send.py` also checks
+  containment with `startswith`. Use `is_relative_to`.
+- **Found in part 1 fix round 1.** The `write_artifact` tool PATCHes the
+  session workspace with the internal token and no member. That call has no
+  tenant, so the room check refuses it. It was already a no-op in production under
+  FORCE RLS. Give it the run's tenant and member, or drop the PATCH.
+  `tests/integration/test_chat_features.py::test_resolve_user_input_endpoint`
+  posts with no `thread_id`, so it now gets 422. It is a live-only test.
+  `apps` slugs are unique across the deployment, but the lookup reads them
+  in one tenant, so two tenants can collide on one app folder.
+- **From the S15 fix-round review.** (P3) `chat_session_exists` fails
+  closed with NULL if its owner loses BYPASSRLS. Then the gateway refuses
+  every new chat. Add a startup self-check or a smoke-check step, which
+  asserts that a random id gives false.
 - **Do:** give each module the tenant from the server-side identity or the
   run, and open `acb_graph.tenant_session`. Add each one to the R8 suite
-  `tests/unit/test_chat_write_under_rls.py` or a sibling of it.
-- **Authority:** `specs/projects_ai_chat.md` §21.9 · R5
-- **Added:** 2026-09-29 · the WS-27bm S15 session
+  `tests/unit/test_h201_readers_under_rls.py`.
+- **Authority:** `specs/projects_ai_chat.md` §21.9 and §21.13 · R5
+- **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
 - **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
