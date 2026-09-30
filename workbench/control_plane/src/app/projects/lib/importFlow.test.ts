@@ -214,6 +214,16 @@ describe("I-8: the tree, status names, columns and sharing", () => {
   });
 });
 
+describe("I-8: the Map step reads the plan of the chosen tree", () => {
+  it("the Spaces step's Next saves the mapping before Map shows", () => {
+    const dialog = readFileSync(join(__dirname, "..", "components", "ImportDialog.tsx"), "utf-8");
+    const save = dialog.slice(dialog.indexOf("const saveTree"), dialog.indexOf("const saveAndImport"));
+    expect(save).toContain("importApi.saveMapping(");
+    expect(save.indexOf("setRun(planned)")).toBeLessThan(save.indexOf('setStep("map")'));
+    expect(dialog).toContain("onClick={() => void saveTree()}");
+  });
+});
+
 describe("progress and the report", () => {
   it("follows the writer's cursor", () => {
     expect(progressOf(run({ state: "applying", progress: { cursor: 600 } }))).toEqual({

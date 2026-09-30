@@ -326,6 +326,29 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     });
   }, [run, people, stages, targetId, spaceName, grant, statusNames, containers, columns]);
 
+  // The Spaces step's Next SAVES and re-plans, so the Map step shows the
+  // statuses and people of the tree as chosen. A list ticked back in brings
+  // its own statuses, and without this they would import unseen (the I-8
+  // review).
+  const saveTree = useCallback(async () => {
+    const mapping = currentMapping();
+    if (!run || !mapping) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const planned = await importApi.saveMapping(run.id, mapping);
+      setRun(planned);
+      if (!planned.plan.ready && planned.plan.errors.length) {
+        setError(planned.plan.errors.join(" "));
+      }
+      setStep("map");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [run, currentMapping]);
+
   const saveAndImport = useCallback(async () => {
     const mapping = currentMapping();
     if (!run || !mapping) return;
@@ -666,9 +689,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
           {step === "tree" && (
             <Button
               variant="primary"
-              disabled={rows.length > 0 && totals.lists === 0}
+              disabled={busy || (rows.length > 0 && totals.lists === 0)}
               title={rows.length > 0 && totals.lists === 0 ? "Keep at least one list" : undefined}
-              onClick={() => setStep("map")}
+              loading={busy}
+              onClick={() => void saveTree()}
             >
               Next
             </Button>
