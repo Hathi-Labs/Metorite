@@ -3548,9 +3548,18 @@ line — never reclaim a number by deleting the other entry.
     `instance=''`. Two tenants can collide on the primary key there.
   - `notes/dispatch.py` writes its document draft into the clone of the
     document agent, and to the blob store with `instance=''`.
-  - The webhook route in `routes/agent.py` and the workflow agent node pass
-    no tenant, so a shared agent there is refused. Pass the tenant of the
-    webhook's record and `_workflow_organization`.
+  - Three background callers pass no tenant, so a shared agent there is
+    now refused. Each is best-effort.
+    - The webhook route in `routes/agent.py`. Pass the tenant of the
+      webhook's record.
+    - A CRON workflow run of an agent node. A manual run has the request's
+      tenant, so it is not refused. Pass `_workflow_organization`.
+      Workflows is `preview`.
+    - The background email specialist consult (`drafting.py:1526`). It runs
+      from `email_ingestion/scheduler.py` with no `bind_tenant`, and
+      `EMAIL_SYNC_ENABLED` is ON by default. The draft goes on without the
+      specialist's answer. Email is a `preview` pane. Pass the tenant of the
+      mailbox's account.
   - The Copilot sub-agent path mirrors its files under the parent's agent
     name and key. The link opens through the fault-in.
   - (P2-c of the part 3 review) A personal agent that runs as a sub-agent

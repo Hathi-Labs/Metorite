@@ -4121,8 +4121,11 @@ tests on the phase 4 catalog, as the NOBYPASSRLS app role.
   `instance=''`. Two tenants can collide on the primary key there.
 - `notes/dispatch.py` writes its document draft into the clone of the
   document agent, and to the blob store with `instance=''`.
-- The webhook route and the workflow agent node pass no tenant, so a
-  shared agent there is refused. Workflows is `preview`.
+- Three background callers pass no tenant, so a shared agent there is
+  refused. Each is best-effort. They are the webhook route and a CRON workflow
+  run. A manual run has the request's tenant. The third is the email
+  specialist consult (`drafting.py:1526`) that the email scheduler starts. Both
+  Workflows and Email are `preview`.
 - The Copilot sub-agent path mirrors its files under the parent's agent
   name and key. The link opens through the fault-in, but the rows are keyed
   to the parent.
