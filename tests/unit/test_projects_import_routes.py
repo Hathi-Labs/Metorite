@@ -682,3 +682,21 @@ async def test_a_body_cut_before_its_first_file_ended_gets_the_same_reason(db: R
     with pytest.raises(HTTPException) as err:
         await imports.create_import_run(None, _user())
     assert err.value.status_code == 400 and err.value.detail == imports.CUT_SHORT
+
+
+def test_an_inherited_unassigned_is_kept_only_when_it_was_a_choice() -> None:
+    """I-9: the wizard used to save "unassigned" for every person with no
+    member. Inherited as-is, it beat the proposal for someone added to People
+    later. It is kept only where the earlier plan proposed a member."""
+    from gateway.routes.projects.imports import chosen_people
+
+    earlier_plan = {
+        "people": [
+            {"ref": "name:priya", "proposed": None},
+            {"ref": "name:ann", "proposed": "ann@x.test"},
+        ]
+    }
+    got = chosen_people(
+        {"name:priya": None, "name:ann": None, "name:bo": "bo@x.test"}, earlier_plan
+    )
+    assert got == {"name:ann": None, "name:bo": "bo@x.test"}
