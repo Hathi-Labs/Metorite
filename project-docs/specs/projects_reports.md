@@ -33,9 +33,13 @@ makes each tile one line, and puts the HR grant into plain words. The email
 now matches the app.
 
 **CLOSE-OUT 2026-09-30 (§9 Q15).** The owner asked to conclude the feature
-with only what is necessary. One slice remains: **R-final**, in §8, the
+with only what is necessary. The last slice was **R-final**, in §8, the
 chat render by name. R4, R4b and R6 are CUT. R8's send and R9 move to
 Phase 2 (§9 Q16). R5c stays blocked and leaves this feature.
+
+**R-final BUILT 2026-09-30** (the chat renders a report by name, for example
+"team pulse for Design"). **Phase 1 is COMPLETE.** Phases 2 and 3 are not
+built.
 
 Written
 2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
@@ -1806,7 +1810,7 @@ R4 → R4b → R6 → R8 → R9. Inside R5, R5f comes after R5b.
 - R6 adds the AI summary.
 - R8 and R9 let the chat and the member send a report to one person.
 
-### R-final — The chat renders a report by name (owner, 2026-09-30) · AGENT-SAFE
+### R-final — The chat renders a report by name (owner, 2026-09-30) · BUILT 2026-09-30
 
 The owner asked to conclude the feature and keep only what is necessary
 (§9 Q15). This slice replaces the rest of Phase 1.
@@ -1843,6 +1847,16 @@ works with no saved report. With no id, the tool calls
 - A member who names a team they do not lead gets the 403 reason, not a
   render. A test proves this.
 - `test_projects_chat_coverage.py` passes with the new map.
+
+**As built (2026-09-30).** `render_report` reads `/templates` and
+`/subjects` and matches a key, a slug, an address or a name with no regard
+to case. When two entries match, the tool lists them and renders nothing.
+A name that matches none of the reader's subjects goes to the preview as it
+is, so the server gives its 422 or its 403 reason. A saved report and a
+preview use one formatter, `_draw_report`. `test_projects_report_chat_rfinal.py`
+proves the done-when on a real database. A mutation of the §7.1 team rule,
+of the fallback to the server, of the case rule and of the choice list each
+turns a test red.
 
 ---
 
@@ -1960,7 +1974,7 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_report_templates.py \
   tests/unit/test_projects_report_visuals.py \
   tests/unit/test_projects_analytics_outlook.py \
-  tests/unit/test_tenant_coverage.py   tests/unit/test_projects_agent_writes.py -q -rs
+  tests/unit/test_tenant_coverage.py   tests/unit/test_projects_agent_writes.py   tests/unit/test_projects_report_chat_rfinal.py -q -rs
 ```
 
 `test_projects_agent.py` holds the class-A reach fence. A manifest row that
@@ -1975,6 +1989,7 @@ names a built tool which never calls the route fails there.
 - `test_projects_analytics_load.py` holds the Load route and its body.
 - `test_projects_report_scope_r5.py` is R5a's file.
 - `test_projects_report_scope_r5b.py` is R5b's file.
+- `test_projects_report_chat_rfinal.py` is R-final's file.
 - `test_projects_report_overview_r5f.py` is R5f's file. Its client half is
   `reportsOverview.test.ts`.
 
