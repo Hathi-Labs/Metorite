@@ -642,12 +642,12 @@ The owner asked to read the live analytics at once, on the full page, with no ex
 **A. Full-page panels.**
 1. The controls card is not on the page by default.
 2. The KPI strip and the space table take the full width.
-3. The panels flow in a grid. It has one column below `xl` and two columns at `xl` and up. Each cell keeps its own height.
-4. "Forecast" and "How long it took" take both columns when they start a row. When the last row holds one panel, that panel takes both columns. So no row is half empty.
+3. The panels flow in a grid. It has one column below `xl` and two columns at `xl` and up. The two cards of a row have one height (round 1).
+4. "Forecast" and "How long it took" take both columns when they start a row. A clear row always takes both columns. When a row would hold one panel alone, that panel takes both columns. So no row is half empty.
 5. A saved report and the builder keep one readable column.
 
 **B. One slim toolbar.**
-1. On the left: the title "Overview" and one summary line, for example "Whole organization · The last 12 weeks · Updated 2 min ago".
+1. On the left: the title "Overview" and one summary line. An example is "Whole organization · The last 12 weeks · Updated 2 min ago".
 2. On the right: "Filters", "Refresh", "Save as report" and "New report". There is no menu and no dialog.
 3. "Filters" shows a small count when a choice differs from the Overview defaults.
 4. "Save as report" is optional. A member can read Overview and save nothing.
@@ -665,7 +665,7 @@ The owner asked to read the live analytics at once, on the full page, with no ex
 3. The last body stays on screen during a refresh. Only the Refresh spinner and the "Updated" time change.
 4. A refresh sends the key on screen. So Home still keeps the Overview state.
 
-**E. Home.** The gallery and "Your reports" stay under the dashboard. The template strip above the panels goes, because the gallery under the dashboard has the same heading and the same templates. The "Change what you see" button goes, because "Filters" replaces it.
+**E. Home.** The gallery and "Your reports" stay under the dashboard. The template strip above the panels goes. The gallery under the dashboard has the same heading and the same templates. The "Change what you see" button goes, because "Filters" replaces it.
 
 ## 7. Data and privacy rules
 
@@ -1777,7 +1777,7 @@ The review and the verifier found two defects, two weak fences and seven UX item
 - (ad) Vitest: the refresh rule. It waits 60 seconds on a return and 5 minutes on the timer. A hidden tab pauses it, a refresh keeps the key, and a late answer drops.
 - (ae) Vitest: a chip keeps `aria-pressed` and the blocked reason. The last chip is `aria-disabled` and says why.
 - (af) A mutation of each new fence turns it red.
-- (ag) A visual review finds no defect. It covers Filters closed and open, in light, dark, compact, a violet accent and 390 px, as an admin and as a member without the HR grant.
+- (ag) A visual review finds no defect. It covers Filters closed and open, in light, dark, compact, a violet accent and 390 px. It covers an admin and a member without the HR grant.
 
 **As built (2026-09-30).** Each rule has its fence. A mutation of each fence turns it red: 27 mutations, 27 red.
 
@@ -1788,6 +1788,30 @@ The review and the verifier found two defects, two weak fences and seven UX item
 - (ag) ran on 2026-09-30 with mocked routes, as an admin and as a member without the HR grant. It found no defect in the new layout. The 390 px space table scrolls sideways, as it did before R5g.
 
 ⚠️ `OrgBrandLockup.tsx` reads `window.localStorage` with no `try`. When a browser blocks storage, the sidebar throws before Overview renders. R5g did not change that file. So the in-browser check of a blocked storage could not run, and (ab) is a unit fence only.
+
+#### R5g repair round 1 (2026-09-30) · BUILT 2026-09-30
+
+The reviewer approved R5g with three small items. The verifier failed it, because five fences did not catch a break and two added lines broke the STE rules. This round fixes each item.
+
+**Rules:**
+1. The two cards of a grid row have one height. The grid has no `items-start`, and `PanelChrome.fill` gives the card `h-full`. A clear row takes a full row, so a one-line row never stretches beside a chart.
+2. Refresh is never disabled while it loads, so it keeps the focus. It shows `aria-busy` and a spinner. The controller ignores a second click. The Refresh spinner does not show a change of choices.
+3. `createPreviewController` in `lib/overviewLive.ts` owns each request: the first preview, a change and a refresh. One guard protects each answer and each error.
+4. A refresh does nothing while a change is in flight or waits for its delay. So a timer never drops the answer to a filter. A change supersedes a refresh, and the spinner then stops.
+5. A failed refresh keeps the body, stops the spinner and dims nothing.
+6. `startLive` refreshes on mount when the kept answer is more than 60 seconds old. So a return from a saved report refreshes an old Overview.
+7. `UpdatedAgo` holds the 30-second clock of "Updated …". So the clock renders that text only, and not the panels.
+8. `startTicker` takes a `LiveTimerEnv`: the clock, the timers and the visibility. The tests use a fake one.
+
+**Done when:**
+- (ah) Vitest drives the wiring with a fake clock, fake timers and a fake visibility. A hidden tab runs nothing and holds no timer. Unmount clears the timer and the listener.
+- (ai) Vitest: a refresh keeps the key and the body. It writes the same key on screen and to Home, and it never dims the body.
+- (aj) Vitest: a tick during a filter request asks nothing, and the filter answer lands. A late answer or error of an older request drops.
+- (ak) Vitest: items 1, 2, 4 and 5 of the rules above.
+- (al) Each surviving mutation of the verifier turns red: M2b, M2c, M2d, M6 and M7.
+- (am) New captures of the admin and the member show no defect.
+
+**As built, round 1 (2026-09-30).** `overviewLiveWiring.test.ts` holds (ah) to (aj). `reportsLiveOverview.test.ts` holds the markup of items 1, 2 and 5. 26 mutations of this round each turn a test red, and the verifier's five are among them. The captures are the admin in dark and light at 1440, the member at 390 px, and a clear row in the grid.
 
 ### R6 — The AI summary, on request · CUT 2026-09-30 (§9 Q15)
 
