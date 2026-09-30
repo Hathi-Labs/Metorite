@@ -4225,7 +4225,7 @@ member, the tenant binding, the credential binding and the relay thread
 reach them. A `call_agent` from a Copilot parent now streams its sub-agent
 through the relay, where it fell to the batch path before.
 
-**Acceptance.** `tests/unit/test_h201_run_context.py` holds 14 tests. The
+**Acceptance.** `tests/unit/test_h201_run_context.py` holds 17 tests. The
 R8 test runs on the phase 4 catalog, as the NOBYPASSRLS app role.
 
 - Two overlapping runs of org A and org B on one event loop each write to
@@ -4241,6 +4241,10 @@ R8 test runs on the phase 4 catalog, as the NOBYPASSRLS app role.
 - A delegated personal agent works in the parent member's `u:` dir, on the
   batch path and on the Copilot path. With no member it is refused.
 - A shared run stamps `o:<org>`, on the batch path and on the stream path.
+- The executor's own Copilot paths carry the context. A write_artifact call
+  from another thread lands in the run's tenant dir and reaches the run's
+  stream, through stream Tier 1.5 and through `_run_with_maf_agent`.
+- `write_artifact.py` holds no module-level dict, under any name.
 - With no context, nothing is written and no event reaches any stream.
 
 **Mutations.** Each one below fails at least one test.
@@ -4262,6 +4266,9 @@ R8 test runs on the phase 4 catalog, as the NOBYPASSRLS app role.
 | the temp-dir fallback put back in `write_artifact` | 2 |
 | the permission policy allows a write with no workspace | 2 |
 | the stream run's token never reset | 1 |
+| the carry loop removed from stream Tier 1.5 | 1 |
+| the carry loop removed from `_run_with_maf_agent` | 1 |
+| a module-level dict added to `write_artifact.py` | 1 |
 
 **What this part does not do.** H-201 in `HANDOFF.md` lists each item.
 

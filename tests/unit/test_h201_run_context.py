@@ -34,7 +34,9 @@ Mutations this suite catches (R7). The spec's table carries the counts.
 * the "single live run" fallback put back in ``resolve_run_queue`` or in
   ``resolve_relay_thread_id``;
 * the temp-dir fallback put back in ``write_artifact``;
-* the permission policy allows a write with no workspace.
+* the permission policy allows a write with no workspace;
+* the carry loop removed from stream Tier 1.5, or from ``_run_with_maf_agent``;
+* a module-level dict added to ``write_artifact.py``.
 
 The stream run's own reset, and its ``o:`` stamp, are fenced in
 ``test_h201_tenant_workdirs.py::test_a_stream_run_is_given_its_tenant_dir``.
@@ -55,6 +57,7 @@ import types
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -720,3 +723,172 @@ def test_the_global_dict_is_gone() -> None:
             if "_WRITE_ARTIFACT_CONTEXT" in p.read_text(encoding="utf-8", errors="replace"):
                 hits.append(p.relative_to(root).as_posix())
     assert hits == [], hits
+
+
+def test_write_artifact_keeps_no_module_level_run_state() -> None:
+    """No module-level mutable mapping in ``write_artifact.py`` may hold run
+    state, under any name. The one run store is the ContextVar."""
+    import ast
+
+    src = (Path(__file__).resolve().parents[2]
+           / "packages/acb_skills/acb_skills/write_artifact.py").read_text(encoding="utf-8")
+    bad = []
+    for node in ast.parse(src).body:
+        targets, value = [], None
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        mutable = isinstance(value, (ast.Dict, ast.DictComp)) or (
+            isinstance(value, ast.Call) and getattr(value.func, "id", "") in
+            {"dict", "defaultdict", "OrderedDict"})
+        if mutable:
+            bad += [ast.unparse(t) for t in targets]
+    assert bad == [], f"a module-level dict in write_artifact.py: {bad}"
+
+
+# ── The two live carry sites, through the executor itself ──────────────────
+#
+# The tests above call ``carry_run_context`` directly. These two drive the
+# executor's own Copilot paths, so deleting the carry loop at a call site
+# turns exactly one of them red: stream Tier 1.5, and ``_run_with_maf_agent``.
+
+def _sdk_agent_class():
+    """A ``GitHubCopilotAgent`` whose ``run`` stands in for the SDK session.
+
+    ``_prepare_tools`` is the REAL upstream adapter, so the handler is the
+    one the SDK would get. ``run`` calls the ``write_artifact`` handler from
+    another thread, as the SDK's JSON-RPC reader does. Nothing else of the
+    SDK runs, so no CLI is needed.
+    """
+    from agent_framework_github_copilot import GitHubCopilotAgent
+    from copilot.tools import ToolInvocation
+
+    class _SdkAgent(GitHubCopilotAgent):
+        rel = ""
+        results: ClassVar[list] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def _call_write_artifact(self) -> None:
+            tool = next(t for t in self._prepare_tools(self._tools)
+                        if t.name == "write_artifact")
+            out = await _sdk_dispatch(
+                asyncio.get_running_loop(), tool.handler, ToolInvocation(
+                    tool_name="write_artifact",
+                    arguments={"path": self.rel, "content": "SDK BODY",
+                               "overwrite": True}))
+            type(self).results.append(out.text_result_for_llm)
+            for _ in range(5):  # let the blob mirror and _notify run
+                await asyncio.sleep(0)
+
+        def run(self, _msg=None, *, stream=False, **_kw):
+            if stream:
+                async def _gen():
+                    await self._call_write_artifact()
+                    return
+                    yield  # pragma: no cover - an async generator
+                return _gen()
+
+            async def _once():
+                await self._call_write_artifact()
+                return types.SimpleNamespace(text="done")
+            return _once()
+
+    return _SdkAgent
+
+
+@pytest.fixture
+def sdk_run(disk, monkeypatch, mirrors):  # noqa: F811
+    """The executor with ``load_agent`` giving one Copilot SDK agent that
+    holds the real ``write_artifact``. The git helpers and the rehydrate are
+    stubbed. The executor's own tool injection still runs."""
+    import acb_memory
+    from acb_skills.write_artifact import write_artifact
+    from orchestrator import executor
+
+    cls = _sdk_agent_class()
+    cls.rel = f"outputs/sdk-{uuid.uuid4().hex[:6]}.md"
+    cls.results = []
+
+    async def _nothing(*_a, **_k):
+        return ""
+
+    async def _rehydrate(*_a, **_k):
+        return 0
+
+    class _Client:
+        async def get_last_session_id(self):
+            return None
+
+    def _build():
+        agent = cls(instructions="x", tools=[write_artifact])
+        agent._client = _Client()
+        return [agent]
+
+    @contextmanager
+    def _load(_name, **_k):
+        yield types.SimpleNamespace(agent_dir=disk.shared, config=_cfg(None),
+                                    build_agents=_build)
+
+    monkeypatch.setattr(acb_memory, "rehydrate_workspace", _rehydrate)
+    monkeypatch.setattr(executor, "_install_push_guard", _nothing)
+    monkeypatch.setattr(executor, "_get_current_head", _nothing)
+    monkeypatch.setattr(executor, "_detect_agent_commits", _nothing)
+    monkeypatch.setattr(executor, "load_agent", _load)
+    monkeypatch.setattr(executor, "_get_stored_session_id", lambda *_a, **_k: None)
+    return cls
+
+
+def test_the_stream_copilot_path_carries_the_run_context(disk, sdk_run, mirrors) -> None:  # noqa: F811
+    """``run_agent_stream`` down Tier 1.5. The file lands in the run's tenant
+    dir, the blob mirror carries the run's key, and the artifact event
+    reaches this run's own stream."""
+    from orchestrator import executor
+
+    tid = f"t15-{uuid.uuid4().hex[:6]}"
+
+    async def _collect() -> list[dict]:
+        out = []
+        async for line in executor.run_agent_stream(
+            _S, {"message": "write it"}, run_id="r-t15", thread_id=tid,
+            organization_id="org-t15",
+        ):
+            if line.startswith("data: "):
+                out.append(json.loads(line[6:]))
+        return out
+
+    events = asyncio.run(_collect())
+    rel = sdk_run.rel
+    assert sdk_run.results and f"/api/agent/workspace/{tid}/" in sdk_run.results[0], (
+        sdk_run.results, [e.get("type") for e in events])
+    assert (_tenant_dir("org-t15") / rel).read_text(encoding="utf-8") == "SDK BODY"
+    assert [m["instance"] for m in mirrors] == ["o:org-t15"]
+    created = [e["value"]["path"] for e in events
+               if e.get("type") == "CUSTOM" and e.get("name") == "artifact_created"]
+    assert created == [rel], [e.get("type") for e in events]
+
+
+def test_the_batch_copilot_path_carries_the_run_context(disk, sdk_run, mirrors, queues) -> None:  # noqa: F811
+    """``run_agent`` down ``_run_with_maf_agent``, the batch Copilot path."""
+    from orchestrator import executor
+
+    tid = f"b-{uuid.uuid4().hex[:6]}"
+
+    async def _main() -> list[str]:
+        q = queues(tid)
+        await executor.run_agent(_S, {"message": "write it"}, run_id="r-b",
+                                 thread_id=tid, organization_id="org-bt")
+        await _drain_tasks()
+        return _events(q)
+
+    got = asyncio.run(_main())
+    rel = sdk_run.rel
+    assert sdk_run.results and f"/api/agent/workspace/{tid}/" in sdk_run.results[0], sdk_run.results
+    assert (_tenant_dir("org-bt") / rel).read_text(encoding="utf-8") == "SDK BODY"
+    assert [m["instance"] for m in mirrors] == ["o:org-bt"]
+    assert got == [rel]
