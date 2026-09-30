@@ -241,14 +241,13 @@ def test_a_stored_path_is_checked_again_on_every_read(graph_as_app, roots):  # n
                 str(roots.app_b), str(roots.app_a / ".." / ".." / ".." / "outside")):
         sid = _seed_session(graph_as_app, a, _ALICE, bad)
         assert _get_workspace_path(sid, _ALICE, a) is None, bad
-    # A legacy write_artifact root, strictly below the clone root, still reads.
+    # H-201 part 3: a legacy write_artifact root in a shared clone no longer
+    # reads. Every tenant ran in that one folder, so it counts as absent.
     clone = roots.base / "agents" / "repos" / "agent-h201"
     clone.mkdir(parents=True)
-    sid = _seed_session(graph_as_app, a, _ALICE, str(clone))
-    assert _get_workspace_path(sid, _ALICE, a) == clone.resolve()
-    # But the clone root itself does not.
-    sid = _seed_session(graph_as_app, a, _ALICE, str(clone.parent))
-    assert _get_workspace_path(sid, _ALICE, a) is None
+    for stored in (clone, clone.parent):
+        sid = _seed_session(graph_as_app, a, _ALICE, str(stored))
+        assert _get_workspace_path(sid, _ALICE, a) is None, stored
 
 
 @_DB_GATE
@@ -480,7 +479,7 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
     from gateway.routes.workspace import _get_workspace_path, get_workspace_file
 
     a = graph_as_app.org_a
-    _repos, real, _outside = clone_roots
+    _repos, _real, _outside = clone_roots
     app = FastAPI()
     app.get("/workspace/{session_id}/file", response_model=None)(get_workspace_file)
     app.dependency_overrides[get_current_user] = lambda: _user(_ALICE, a)
@@ -492,27 +491,44 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
         got = client.get(f"/workspace/{sid}/file", params={"path": "notes.txt"})
         assert got.status_code == 404, (bad, got.status_code)
         assert "DATABASE_URL" not in got.text
-    # A real agent name still resolves, and its file reads.
+    # A real agent name still resolves. H-201 part 3: it resolves to the
+    # caller's tenant dir, never to the clone, so the clone's file is not
+    # served. A file in the tenant dir is.
+    from acb_skills.agent_paths import agent_state_dir, tenant_instance
+
     sid = _seed_session(graph_as_app, a, _ALICE, None, agent="agent-h201")
-    assert _get_workspace_path(sid, _ALICE, a) == real.resolve()
+    tenant = agent_state_dir("agent-h201", tenant_instance(a))
+    assert _get_workspace_path(sid, _ALICE, a) == tenant
     got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
-    assert got.status_code == 200 and "# ok" in got.text
+    assert got.status_code == 404 and "# ok" not in got.text
+    (tenant / "outputs").mkdir()
+    (tenant / "outputs" / "ok.md").write_text("# tenant ok", encoding="utf-8")
+    got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
+    assert got.status_code == 200 and "# tenant ok" in got.text
 
 
 @_DB_GATE
 def test_step_two_checks_the_derived_root_on_its_own(graph_as_app, clone_roots, monkeypatch):  # noqa: F811
     """Step 2 is defence in depth under the clone-dir rule. This proves the
-    layer alone: a derived root outside every allowed root counts as absent,
-    and a real clone root still reads."""
+    layer alone for a TEAM agent, the one kind that still derives through
+    ``_resolve_agent_workspace``: a derived root outside every allowed root
+    counts as absent, and so does a clone root (H-201 part 3). The team's own
+    state dir still reads."""
+    from acb_skills.agent_paths import ensure_state_dir
     from gateway.routes import workspace
 
     a = graph_as_app.org_a
     _repos, real, outside = clone_roots
+    (real / "config.json").write_text(json.dumps(
+        {"sharing": {"instancing": "team", "team": "ops"}}), encoding="utf-8")
     sid = _seed_session(graph_as_app, a, _ALICE, None, agent="agent-h201")
-    monkeypatch.setattr(workspace, "_resolve_agent_workspace", lambda *_a, **_k: outside)
-    assert workspace._get_workspace_path(sid, _ALICE, a) is None
-    monkeypatch.setattr(workspace, "_resolve_agent_workspace", lambda *_a, **_k: real)
-    assert workspace._get_workspace_path(sid, _ALICE, a) == real.resolve()
+    for derived in (outside, real):
+        monkeypatch.setattr(workspace, "_resolve_agent_workspace",
+                            lambda *_a, _d=derived, **_k: _d)
+        assert workspace._get_workspace_path(sid, _ALICE, a) is None, derived
+    team_dir = ensure_state_dir("agent-h201", "t:ops")
+    monkeypatch.setattr(workspace, "_resolve_agent_workspace", lambda *_a, **_k: team_dir)
+    assert workspace._get_workspace_path(sid, _ALICE, a) == team_dir.resolve()
 
 
 # ── acb_skills/history_tools.py — query_history ─────────────────────────────

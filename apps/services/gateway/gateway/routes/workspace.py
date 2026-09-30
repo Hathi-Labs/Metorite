@@ -155,16 +155,37 @@ async def _faultin_from_store(
     Returns True and writes the file to disk if the store had it, else False.
     Only applies to the three backed folders; a no-op otherwise.
     *organization_id* is the caller's tenant (see :func:`_mirror_gateway_write`).
+
+    H-201 part 3 (``projects_ai_chat.md`` §21.15):
+
+    * It never writes into a shared clone. That is a backstop, because no
+      session root lies in ``repos/`` any more.
+    * A tenant dir (``o:<org>``) restores only for a caller of that tenant.
+    * A tenant dir that misses its own key reads this tenant's older row
+      (``instance=''``). That row is how a document that the Projects chat
+      linked before the tenant dir existed still opens, for its own tenant
+      only. The read is in the caller's tenant, so another org's row is
+      never seen.
     """
     rel = rel_path.replace("\\", "/").lstrip("/")
     try:
         from acb_memory import get_file, is_stored_path
+        from acb_skills.agent_paths import is_tenant_instance, tenant_instance
     except ImportError:
         return False
     if not is_stored_path(rel):
         return False
+    if _is_shared_clone(workspace):
+        return False
     agent, instance = _blob_key_for_workspace(workspace)
+    tenant_dir = is_tenant_instance(instance)
+    if tenant_dir and (
+        not organization_id or instance != tenant_instance(organization_id)
+    ):
+        return False
     data = await get_file(agent, rel, instance=instance, organization_id=organization_id)
+    if data is None and tenant_dir:
+        data = await get_file(agent, rel, instance="", organization_id=organization_id)
     if data is None:
         return False
     dest = _safe_resolve(workspace, rel)
@@ -175,24 +196,34 @@ async def _faultin_from_store(
 
 
 async def _mirror_gateway_delete(
-    workspace: Path, rel_path: str, *, session_id: str | None
+    workspace: Path, rel_path: str, *, session_id: str | None,
+    organization_id: str | None = None,
 ) -> None:
-    """Write-through a gateway file delete into the blob store."""
+    """Write-through a gateway file delete into the blob store.
+
+    H-201 part 3: a delete in a tenant dir (``o:<org>``) also deletes this
+    tenant's older row at the same path (``instance=''``). Otherwise the next
+    rehydrate would bring the file back from that row.
+    """
     try:
         from acb_memory import delete_file, is_stored_path
+        from acb_skills.agent_paths import is_tenant_instance
     except ImportError:
         return
     rel = rel_path.replace("\\", "/")
     if not is_stored_path(rel):
         return
     agent, instance = _blob_key_for_workspace(workspace)
-    try:
-        await delete_file(
-            agent, rel,
-            session_id=session_id, actor="user", instance=instance,
-        )
-    except Exception as exc:
-        _log.warning("workspace.blob_delete_mirror_failed", path=rel, error=str(exc)[:200])
+    keys = [instance, ""] if is_tenant_instance(instance) else [instance]
+    for key in keys:
+        try:
+            await delete_file(
+                agent, rel,
+                session_id=session_id, actor="user", instance=key,
+                organization_id=organization_id,
+            )
+        except Exception as exc:
+            _log.warning("workspace.blob_delete_mirror_failed", path=rel, error=str(exc)[:200])
 
 
 def _is_under(path: Path, root: Path, *, strictly: bool = False) -> bool:
@@ -259,14 +290,18 @@ def _allowed_workspace(
     * **Write (the PATCH).** The browser is the only member writer. It binds
       the Workshop session to the workspace of an app that the member may
       edit, in the member's tenant. Nothing else is allowed.
-    * **Read.** A legacy writer (``write_artifact``) stored the run's own
-      directory. So a read also takes a directory strictly below an agent
-      clone root, the caller's own state directory for that agent, or this
-      session's scratch directory. Anything else counts as absent.
+    * **Read.** A writer (``write_artifact``) stores the run's own
+      directory. So a read also takes the caller's own state directory for
+      that agent, the caller's tenant dir for that agent, or this session's
+      scratch directory. Anything else counts as absent.
+
+    H-201 part 3 (``projects_ai_chat.md`` §21.15): a read no longer takes a
+    directory below an agent clone root, ``repos/``. A shared agent runs
+    each tenant in its own tenant dir, so a stored clone path of an older
+    session counts as absent. Step 2 of :func:`_get_workspace_path` then gives
+    the caller's tenant dir.
     """
     import tempfile
-
-    from acb_common import get_settings
 
     try:
         resolved = Path(raw).expanduser().resolve(strict=True)
@@ -283,17 +318,12 @@ def _allowed_workspace(
     if write:
         return None
 
-    settings = get_settings()
-    clone_root = Path(getattr(
-        settings, "agents_clone_dir", str(Path.home() / ".acb" / "agents")))
-    for repos in (clone_root / "repos", Path("/tmp/acb_agents") / "repos"):
-        try:
-            if _is_under(resolved, repos.resolve(), strictly=True):
-                return resolved
-        except OSError:
-            continue
-
-    from acb_skills.agent_paths import agent_state_dir, is_valid_agent_name, state_root
+    from acb_skills.agent_paths import (
+        agent_state_dir,
+        is_valid_agent_name,
+        state_root,
+        tenant_instance,
+    )
 
     try:
         state = state_root().resolve()
@@ -308,6 +338,10 @@ def _allowed_workspace(
             own = agent_state_dir(agent, instance).resolve()
             if _is_under(resolved, own):
                 return resolved
+        if organization_id:
+            tenant = agent_state_dir(agent, tenant_instance(organization_id)).resolve()
+            if _is_under(resolved, tenant):
+                return resolved
         return None
 
     scratch = (Path(tempfile.gettempdir()) / "acb_artifacts" / session_id).resolve()
@@ -319,10 +353,10 @@ def _allowed_workspace(
 def _is_shared_clone(workspace: Path) -> bool:
     """True when *workspace* lies under an agent clone root, ``repos/``.
 
-    That is a shared agent's one clone, which every tenant runs in. H-201
-    part 2, P0-A: no member may change it through a session route. A read
-    stays open for the Projects chat's documents (§14), and the next slice
-    moves a shared agent's run into a tenant-partitioned folder.
+    That is a shared agent's one clone, which holds its code for every
+    tenant. H-201 part 2, P0-A: no member may change it through a session
+    route. H-201 part 3 moved each run into a tenant dir, and no session
+    root lies in ``repos/`` any more. This check stays as a backstop.
     """
     from acb_common import get_settings
 
@@ -368,8 +402,14 @@ def _get_workspace_path(
        endpoint) — for an instanced agent this already points at the tenant
        state dir the run used, so no user is needed to resolve it.
     2. Agent workspace derived from the session's ``agent_name``, resolved
-       for the viewing member (``user_email``) so a personal agent's session
-       browser opens the viewer's own partition even before its first run.
+       for the viewer (H-201 part 3, ``projects_ai_chat.md`` §21.15):
+
+       * a ``personal`` agent gives the viewer's own state dir
+         (:func:`_member_agent_workspace`);
+       * a ``shared`` agent gives the viewer's tenant dir, keyed by
+         *organization_id* (:func:`_tenant_agent_workspace`). It is never
+         the clone;
+       * a ``team`` agent keeps the older rule.
     """
     from acb_graph import tenant_session
     from gateway.db import TenantUnbound
@@ -409,9 +449,18 @@ def _get_workspace_path(
         if not agent_name or agent_name in ("orchestrator", "default"):
             return None
 
-        # H-201 fix round 2 (P0): the derived root passes the same read check
-        # as a stored one. ``agent_name`` came from the session row, which a
-        # member wrote, and ``_agent_clone_dir`` already refuses a bad name.
+        # H-201 part 3: a personal agent gives the viewer's own folder, and a
+        # shared agent the viewer's tenant dir. Neither is ever the clone.
+        instance = _agent_instance_for(agent_name, user_email)
+        if not instance:
+            return _tenant_agent_workspace(agent_name, organization_id)
+        if user_email and instance == f"u:{user_email}":
+            return _member_agent_workspace(agent_name, user_email)
+
+        # A team agent. H-201 fix round 2 (P0): the derived root passes the
+        # same read check as a stored one. ``agent_name`` came from the
+        # session row, which a member wrote, and ``_agent_clone_dir`` already
+        # refuses a bad name.
         derived = _resolve_agent_workspace(agent_name, user_email)
         if derived is None:
             return None
@@ -642,6 +691,57 @@ def _member_agent_workspace(
     except Exception as exc:
         _log.warning(
             "workspace.member_workspace_failed", agent=agent_name, error=str(exc)[:200],
+        )
+        return None
+    return ws
+
+
+def _tenant_agent_workspace(
+    agent_name: str, organization_id: str | None,
+) -> Path | None:
+    """The caller's TENANT dir of a shared agent, or ``None``.
+
+    H-201 part 3 (``projects_ai_chat.md`` §21.15). A shared agent's run works
+    in ``state/<agent>/<slug of o:<org>>``, one folder per tenant, and never
+    in the clone. This is the same folder, keyed by the caller's
+    *organization_id*. The route passes ``user.organization_id``, which the
+    server resolves from the authenticated identity, never from the request.
+
+    * No tenant gives no folder.
+    * An agent with no clone gives no folder, as it has never run here.
+    * The folder must lie strictly below ``state_root()`` with every link
+      followed, and the check comes BEFORE ``ensure_state_dir``. So a link
+      planted at ``state/<agent>`` makes no folder and no marker in a clone.
+
+    Never raises.
+    """
+    if not organization_id:
+        return None
+    from acb_skills.agent_paths import (
+        agent_state_dir,
+        ensure_state_dir,
+        is_valid_agent_name,
+        state_root,
+        tenant_instance,
+    )
+
+    if not is_valid_agent_name(agent_name):
+        return None
+    try:
+        code_dir = _agent_clone_dir(agent_name)
+        if code_dir is None:
+            return None
+        key = tenant_instance(organization_id)
+        root = state_root().resolve()
+        planned = agent_state_dir(code_dir.name, key).resolve()
+        if not _is_under(planned, root, strictly=True):
+            return None
+        ws = ensure_state_dir(code_dir.name, key)
+        if not _is_under(ws.resolve(), root, strictly=True):
+            return None
+    except Exception as exc:
+        _log.warning(
+            "workspace.tenant_workspace_failed", agent=agent_name, error=str(exc)[:200],
         )
         return None
     return ws
@@ -899,7 +999,9 @@ async def get_workspace_file(
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
-        restored = await _faultin_from_store(workspace, path)
+        restored = await _faultin_from_store(
+            workspace, path, organization_id=_user.organization_id,
+        )
         if not restored:
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -1205,6 +1307,7 @@ async def upload_files(
         # Write-through: a user upload (inputs/) is durable state too.
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=session_id,
+            organization_id=_user.organization_id,
         )
 
         uploaded.append(FileEntry(
@@ -1358,7 +1461,10 @@ async def delete_workspace_file(
     # Write-through the delete to the authoritative store (records a delete
     # version in history).
     rel_del = str(file_path.relative_to(workspace)).replace("\\", "/")
-    await _mirror_gateway_delete(workspace, rel_del, session_id=session_id)
+    await _mirror_gateway_delete(
+        workspace, rel_del, session_id=session_id,
+        organization_id=_user.organization_id,
+    )
     _log.info(
         "workspace.file_deleted",
         session_id=session_id,
@@ -1418,8 +1524,12 @@ async def promote_input_to_agent_data(
     # Store: record the new agent-data version (promote) + the inputs delete.
     await _mirror_gateway_write(
         workspace, dest_rel, data, action="promote", session_id=session_id,
+        organization_id=_user.organization_id,
     )
-    await _mirror_gateway_delete(workspace, src_rel, session_id=session_id)
+    await _mirror_gateway_delete(
+        workspace, src_rel, session_id=session_id,
+        organization_id=_user.organization_id,
+    )
 
     stat = dest.stat()
     _log.info("workspace.promoted", session_id=session_id, src=src_rel, dest=dest_rel)
@@ -1464,7 +1574,10 @@ async def get_workspace_history(
     except ImportError:
         return {"history": []}
     agent, instance = _blob_key_for_workspace(workspace)
-    rows = await file_history(agent, path, limit, instance=instance)
+    rows = await file_history(
+        agent, path, limit, instance=instance,
+        organization_id=_user.organization_id,
+    )
     return {"history": rows}
 
 
@@ -1543,6 +1656,7 @@ async def write_workspace_file(
     await _mirror_gateway_write(
         workspace, rel_path, data,
         action="modify" if _existed else "create", session_id=session_id,
+        organization_id=_user.organization_id,
     )
 
     _log.info(
