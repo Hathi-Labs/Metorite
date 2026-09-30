@@ -26,6 +26,10 @@ import {
   pollDelay,
   STALL_MS,
   mappingFrom,
+  statusMerges,
+  treeRows,
+  treeTotals,
+  grantOptions,
   mustConfirmNewTree,
   progressOf,
   reportLines,
@@ -138,6 +142,59 @@ describe("the mapping the admin's edits make", () => {
   });
 });
 
+describe("I-8: the tree, status names, columns and sharing", () => {
+  const tree = [
+    { ref: "s", kind: "space" as const, name: "Space", parent_ref: null, tasks: 0 },
+    { ref: "f", kind: "folder" as const, name: "Folder", parent_ref: "s", tasks: 0 },
+    { ref: "l1", kind: "project" as const, name: "List 1", parent_ref: "f", tasks: 5 },
+    { ref: "l2", kind: "project" as const, name: "List 2", parent_ref: "s", tasks: 7 },
+  ];
+
+  it("reads the tree parents first, with depth", () => {
+    expect(treeRows(tree, {}).map((r) => `${r.depth}:${r.ref}`)).toEqual(["0:s", "1:f", "2:l1", "1:l2"]);
+  });
+  it("a skipped folder leaves out what is under it, and the totals follow", () => {
+    const rows = treeRows(tree, { f: { skip: true } });
+    const l1 = rows.find((r) => r.ref === "l1")!;
+    expect(l1.skipInherited).toBe(true);
+    expect(l1.skipSelf).toBe(false);
+    expect(treeTotals(rows)).toEqual({ lists: 1, skippedLists: 1, tasks: 7 });
+  });
+  it("a rename shows the new name, and blank spaces never make a name", () => {
+    const rows = treeRows(tree, { l2: { name: "  Launch   plan " }, l1: { name: "   " } });
+    expect(rows.find((r) => r.ref === "l2")!.shownName).toBe("Launch plan");
+    expect(rows.find((r) => r.ref === "l1")!.shownName).toBe("List 1");
+  });
+
+  it("two statuses given one name merge, without case", () => {
+    const merges = statusMerges(run().plan.statuses, { "to do": "closed" });
+    expect(merges["to do"]).toEqual(["Closed"]);
+    expect(merges["Closed"]).toEqual(["to do"]);
+    expect(statusMerges(run().plan.statuses, {})["Closed"]).toEqual([]);
+  });
+
+  it("carries the I-8 choices, and drops the ones that change nothing", () => {
+    const m = mappingFrom(run(), {}, {}, { kind: "new_space", name: null }, {
+      grant: "group:eng",
+      statusNames: { Closed: "  Done ", "to do": "" },
+      containers: { l1: { skip: true }, l2: { name: "  " }, f: { name: "Ops" } },
+      columns: { Sprint: "description", Points: "skip" },
+    });
+    expect(m.grant).toBe("group:eng");
+    expect(m.statuses["Closed"]).toEqual({ category: "done", name: "Done" });
+    expect(m.statuses["to do"]).toEqual({ category: "todo", name: null });
+    expect(m.containers).toEqual({ l1: { name: null, skip: true }, f: { name: "Ops", skip: false } });
+    expect(m.columns).toEqual({ Sprint: "description" });
+  });
+
+  it("offers everyone first, then each group", () => {
+    expect(grantOptions([{ slug: "eng", display_name: "Engineering" }]).map((o) => o.value)).toEqual([
+      "org",
+      "group:eng",
+    ]);
+  });
+});
+
 describe("progress and the report", () => {
   it("follows the writer's cursor", () => {
     expect(progressOf(run({ state: "applying", progress: { cursor: 600 } }))).toEqual({
@@ -196,6 +253,9 @@ describe("an export an earlier import already brought in", () => {
   it("reports statuses added to lists that were already there", () => {
     expect(reportLines({ lanes_added: 2 })).toEqual(["Added 2 statuses to lists that were already in Metorite."]);
     expect(reportLines({ lanes_added: 1 })).toEqual(["Added 1 status to lists that were already in Metorite."]);
+    expect(reportLines({ tasks_written: 1 }, { containers: 1, tasks: 36 })).toContain(
+      "Left out 36 tasks in the spaces and lists you unticked.",
+    );
   });
 });
 

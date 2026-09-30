@@ -79,6 +79,11 @@ class Task(BaseModel):
     estimate_mins: int | None = None
     time_spent_mins: int | None = None
     custom_values: dict[str, str] = Field(default_factory=dict)
+    #: I-8 — the values of the columns this importer does not read, by column
+    #: name, non-empty cells only. The admin keeps each column in the task's
+    #: description or leaves it out (`plan.choose`). Never a custom field: I-5
+    #: owns those.
+    extra_columns: dict[str, str] = Field(default_factory=dict)
     checklists: list[Checklist] = Field(default_factory=list)
     attachment_names: list[str] = Field(default_factory=list)
     blocks_refs: list[str] = Field(default_factory=list)

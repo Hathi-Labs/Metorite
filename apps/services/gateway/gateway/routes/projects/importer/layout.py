@@ -212,6 +212,13 @@ def description(task: Task, unassigned: list[str], source: str) -> str | None:
         parts.append("\n".join(lines))
     if task.attachment_names:
         parts.append(f"Attachments in {label}: " + ", ".join(task.attachment_names))
+    if task.extra_columns:
+        # I-8: the unknown columns the admin chose to keep. `plan.choose` has
+        # already dropped the ones left out, so every entry here is wanted.
+        lines = [f"**More from {label}**"] + [
+            f"- {col}: {value}" for col, value in task.extra_columns.items()
+        ]
+        parts.append("\n".join(lines))
     if unassigned:
         parts.append(f"Assigned in {label} to: " + ", ".join(unassigned))
     return "\n\n".join(parts) or None

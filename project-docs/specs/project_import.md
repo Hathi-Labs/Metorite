@@ -382,7 +382,8 @@ its own name.
 
 **Grants.** A new space gets the same `org` grant that `create_node` gives
 (`tree.py:833-842`). The admin can narrow it before apply to a
-`group:<slug>`. The importer never writes an email grant. It never proposes a
+`group:<slug>`, on the wizard's Spaces step (I-8), from the organization's
+groups (`GET /admin/groups`). The importer never writes an email grant. It never proposes a
 grant either. D-PM-10 (`project_management_app.md` §8) keeps a bulk grant
 the act of a person, not of the software.
 
@@ -498,6 +499,22 @@ The importer never writes `leveraged`.
 
   The admin can change a type on the plan screen. Values land through
   `land_custom_fields`. The importer never sets `required`.
+
+### 6.5b Columns the importer does not read (I-8)
+
+A ClickUp export can carry columns this importer does not know, most often
+custom fields. The adapter keeps each one's non-empty values on the task
+(`Task.extra_columns`, 500 characters a cell), and the plan lists each column
+with the count of tasks that fill it and up to three examples.
+
+The admin picks, per column:
+
+- **Leave out** — the default, and what every run before I-8 did.
+- **Keep in the description** — each task that has a value gets a block at
+  the end of its description, "**More from ClickUp**", one line a column.
+
+A kept column never becomes a custom field. That is I-5, which needs the view
+export for the types.
 
 ### 6.6 Dates, estimates and time
 
@@ -862,16 +879,18 @@ import UI". The entry shows only to a member with `admin:access:manage`, only
 when the flag is on, and only after access has loaded. The dialog mounts in the page's `overlays`, so it
 opens on a phone too (the H-120 defect).
 
-A four-step wizard, built from `src/components/ui/` primitives and the one
-look (`DESIGN_SYSTEM.md`):
+A five-step wizard, built from `src/components/ui/` primitives and the one
+look (`DESIGN_SYSTEM.md`). I-8 added step 3 and moved the target into it:
 
 1. **Upload** — the source picker, the file drop, and the export steps for
    the chosen tool, in plain words.
 2. **Review** — the counts per space and project, the warnings, and the
    losses, before any write.
-3. **Map** — the target, the people and the statuses. Custom field types
-   join in I-5.
-4. **Import** — the progress, then the report with a link to the new space.
+3. **Spaces** (I-8) — the target, who can see a new space, and the tree:
+   untick a Space, Folder or List to leave it out, or rename it.
+4. **Map** — the people, the statuses (stage and name, and two names merge),
+   and the columns the importer does not read. Custom field types join in I-5.
+5. **Import** — the progress, then the report with a link to the new space.
 
 **An earlier import of the same workspace (built in I-4).** The plan carries
 `inherited_from` and `continues`. The upload and the mapping route both ask
@@ -924,6 +943,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-5** ⏸ deferred 2026-09-28 | The ClickUp view-export join (custom fields) | Custom field values from the view file land on the right tasks. A count gap between the files is a warning. **Deferred:** customer zero uses no custom fields (owner, 2026-09-28), so the workspace export already carries all its data. The review step now says the file lacks custom fields only as a condition. Build this when a customer who uses them asks |
 | **I-6** ✅ built 2026-09-28 | Discard (§6.9) | Discard removes exactly the run's rows, and refuses after a member edit, a member's new work in an imported node, or a later import built on the run. A reused node and an earlier run's task survive it. The tombstones reach the delta feed. The wizard lists recent imports, so a run can be opened or discarded after a page reload. **Met:** `live_ws41_discard.py` passes 32 of 32 on a real Postgres. A discard removes the run's 2,423 tasks and 62 nodes, and writes a tombstone per task. A member's edit, comment, personal triage, node and saved view each refuse it and delete nothing. With the member work gone, the same run discards. A later update run refuses the earlier run's discard. Its own discard removes its comment, keeps its update, and leaves the earlier tasks, and then the earlier run discards cleanly. A browser walk with no stubs, against a real gateway and database, imported and discarded in light mode, found the run again from the list after a reload at compact density, showed the member-edit refusal by task name, and drew the list at 390 px, with no console error |
 | **I-7** ✅ live 2026-09-28 | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production. The owner asked for it on 2026-09-29 ("there is no UI/UX currently deployed"), and the `enforcement-flip` grant runs to 2026-11-30 | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed. **Built:** the sweep (§7.2) and a labelled entry (§7.7). The browser path is app.metorite.com, then the Next proxy, then the gateway on loopback, so it never meets Caddy's api host. The Next proxy caps it at 10 MiB, and the trailing fields of §7.4 refuse a cut body. The gateway caps an import upload at 260 MB BEFORE it is read (`import_body_limit.py`, a pure-ASGI wrapper), because FastAPI spools a whole body ahead of every dependency, sign-in included. The cap is not in Caddy: a new matcher there changes the sign-in lines `test_caddy_auth_gate.py` holds for the owner, and the browser path never passes Caddy's api host. `test_import_body_limit.py` fences it. The flip follows the merge, and its evidence is recorded here. **Flipped on 2026-09-28, box srv1914284.** `PROJECTS_IMPORT=1` went into `/opt/acb/app/.env`, and `NEXT_PUBLIC_PROJECTS_IMPORT=1` into `workbench/control_plane/.env.local`, before the merge of #526. Backups of both files sit beside them as `*.bak-pre-import-flip`. **Evidence:** `/version` serves `b35399b8`. The gateway process restarted at 19:38:33 UTC with the flag in its environment, and it logged `projects.import.sweep_started`. The workbench rebuilt at 19:40:22 UTC. Its static bundle holds no unset `NEXT_PUBLIC_PROJECTS_IMPORT` literal, so the value was inlined, and it holds the entry text |
+| **I-8** ✅ built 2026-09-30 | The mapping step, made complete (owner, 2026-09-30: "sort out the unknown fields"). A **Spaces** step between Review and Map shows every ClickUp Space, Folder and List. The admin unticks one to leave it out with everything under it, or renames it. The same step sets **who can see** a new space: the organization, or one group (§5.3). On **Map**, a status takes a new name, and two statuses given one name merge (§6.3). The columns the importer does not read are listed with their counts and examples, and each is left out or kept as a line in the task's description (§6.5b) | `plan.choose` is the ONE place the choices apply: the dry run and the writer both read through it (`test_import_choices.py`). A subtask of a skipped task stays out, wherever it lives. **Met:** `live_ws41_choices.py` passes 10/10 on Postgres. A skipped list creates no node and no task, a renamed list lands under its new name, a kept column reaches the description, and a second run that keeps everything adds the rest into the same space. The writer, import and discard live suites still pass (58, 21, 33). A browser walk against a real gateway ran the five steps on a fixture with two unknown columns |
 
 **Then one adapter per slice, in this order.** Each needs its own real sample
 file first, exactly like P-1:

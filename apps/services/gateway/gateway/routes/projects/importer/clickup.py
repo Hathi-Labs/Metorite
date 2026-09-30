@@ -43,6 +43,10 @@ REQUIRED = (
 
 READ = "read"
 
+#: I-8 — one unknown cell kept for the description is cut at this length. A
+#: cell is a value, not a document, and the description has its own cap.
+EXTRA_VALUE_MAX = 500
+
 #: Every column the measured export carries, and what becomes of it. A column
 #: is either READ into the bundle, or skipped for the reason given, so no
 #: column is dropped in silence (spec §9 I-1). Anything else is reported as
@@ -186,7 +190,14 @@ def parse(files: list[tuple[str, bytes]]) -> ImportBundle:
     _containers(bundle, merged)
     people: dict[str, Person] = {}
     for row in merged.values():
-        bundle.tasks.append(_task(bundle, row, people))
+        task = _task(bundle, row, people)
+        # I-8: keep what the unknown columns hold, so the admin can decide.
+        task.extra_columns = {
+            col: value.strip()[:EXTRA_VALUE_MAX]
+            for col in sorted(unknown)
+            if (value := row.get(col) or "").strip()
+        }
+        bundle.tasks.append(task)
     _parents(bundle)
     _statuses(bundle)
     bundle.people = sorted(people.values(), key=lambda p: p.ref)

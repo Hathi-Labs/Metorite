@@ -73,6 +73,28 @@ class Target(BaseModel):
     project_id: str | None = None
 
 
+ColumnChoice = Literal["skip", "description"]
+
+
+class ContainerChoice(BaseModel):
+    """What one source Space, Folder or List becomes (I-8). ``skip`` leaves
+    it out with everything under it. ``name`` renames the node the run
+    CREATES. A node an earlier run made keeps the name it has now."""
+
+    name: str | None = None
+    skip: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = " ".join(value.split())
+        if not value or len(value) > MAX_NAME:
+            raise ValueError(f"a name holds 1 to {MAX_NAME} characters")
+        return value
+
+
 class ImportMapping(BaseModel):
     #: Person ref → a member's email, or ``None`` for "leave unassigned".
     #: A ref absent from the map takes the proposal.
@@ -81,6 +103,71 @@ class ImportMapping(BaseModel):
     statuses: dict[str, StatusChoice] = Field(default_factory=dict)
     target: Target = Field(default_factory=Target)
     grant: str = "org"
+    #: I-8 — an unknown column → leave it out (the default, and what every run
+    #: before I-8 did) or keep it as a line in the task's description.
+    columns: dict[str, ColumnChoice] = Field(default_factory=dict)
+    #: I-8 — a container ref → its rename or its skip. Absent keeps it as is.
+    containers: dict[str, ContainerChoice] = Field(default_factory=dict)
+
+
+# ── the admin's tree and columns, applied (I-8) ─────────────────────────────
+
+
+def skipped_containers(bundle: ImportBundle, mapping: ImportMapping) -> set[str]:
+    """Every container the admin left out, with everything under it."""
+    children: dict[str, list[str]] = defaultdict(list)
+    for c in bundle.containers:
+        if c.parent_ref:
+            children[c.parent_ref].append(c.ref)
+    out: set[str] = set()
+    stack = [ref for ref, choice in mapping.containers.items() if choice.skip]
+    while stack:
+        ref = stack.pop()
+        if ref in out:
+            continue
+        out.add(ref)
+        stack.extend(children.get(ref, []))
+    return out
+
+
+def skipped_tasks(bundle: ImportBundle, containers: set[str]) -> set[str]:
+    """The tasks in a skipped container, and every subtask under one of them,
+    wherever that subtask lives. A subtask never lands without its parent."""
+    out = {t.ref for t in bundle.tasks if t.container_ref in containers}
+    changed = bool(out)
+    while changed:
+        changed = False
+        for t in bundle.tasks:
+            if t.ref not in out and t.parent_ref in out:
+                out.add(t.ref)
+                changed = True
+    return out
+
+
+def choose(bundle: ImportBundle, mapping: ImportMapping) -> ImportBundle:
+    """The bundle as the admin decided it: renamed containers, the skipped
+    ones gone with their tasks and comments, and ``extra_columns`` holding
+    only the columns kept for the description.
+
+    ⚠️ **The ONE place these choices apply.** The dry run and the writer both
+    read the bundle through here, so the plan the admin confirmed is the
+    write that happens. A second application in the writer could disagree.
+    It returns a copy, and the caller's bundle never changes."""
+    gone = skipped_containers(bundle, mapping)
+    dropped = skipped_tasks(bundle, gone)
+    kept = {col for col, how in mapping.columns.items() if how == "description"}
+    out = bundle.model_copy(deep=True)
+    out.containers = [c for c in out.containers if c.ref not in gone]
+    for c in out.containers:
+        choice = mapping.containers.get(c.ref)
+        if choice and choice.name:
+            c.name = choice.name
+    out.tasks = [t for t in out.tasks if t.ref not in dropped]
+    for t in out.tasks:
+        t.extra_columns = {k: v for k, v in t.extra_columns.items() if k in kept}
+    out.comments = [c for c in out.comments if c.task_ref not in dropped]
+    out.statuses = [st for st in out.statuses if st.container_ref not in gone]
+    return out
 
 
 # ── the plan ────────────────────────────────────────────────────────────────
@@ -107,9 +194,22 @@ def build_plan(
     legacy_refs = legacy_refs or set()
     errors: list[str] = []
 
+    # I-8: the tree and the columns are shown IN FULL, so a skipped List can be
+    # taken back. Everything the run writes is counted from the chosen bundle.
+    full = bundle
+    gone = skipped_containers(full, mapping)
+    dropped = skipped_tasks(full, gone)
+    tree = _tree(full, mapping, gone)
+    columns = _columns(full, mapping)
+    refs_in_file = {c.ref for c in full.containers}
+    if any(ref not in refs_in_file for ref in mapping.containers):
+        errors.append("The mapping names a space or list that the file does not hold.")
+    bundle = choose(full, mapping)
+    if full.tasks and not bundle.tasks:
+        errors.append("Everything is skipped. Keep at least one list to import.")
+
     people = _people(bundle, mapping, directory, errors)
     statuses, final = _statuses(bundle, mapping, errors)
-    tree = _tree(bundle)
 
     closed = [t for t in bundle.tasks if t.status_name and final[t.status_name][1] in CLOSED]
     refs = {t.ref for t in bundle.tasks}
@@ -147,6 +247,9 @@ def build_plan(
         "people": people,
         "statuses": statuses,
         "tree": tree,
+        "columns": columns,
+        # I-8: what the admin's skips leave out. Subtasks follow their parent.
+        "skipped_by_choice": {"containers": len(gone), "tasks": len(dropped)},
         "closed_tasks": len(closed),
         # §6.6 — the file carries no completion date, so every closed task
         # gets an estimated one. Never the import time.
@@ -268,17 +371,60 @@ def _statuses(
     return rows, final
 
 
-def _tree(bundle: ImportBundle) -> list[dict[str, Any]]:
+def _tree(
+    bundle: ImportBundle, mapping: ImportMapping | None = None, gone: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Every source container, with the admin's rename and skip (I-8).
+    ``skipped`` is true for a container left out by itself OR by a parent."""
     counts = Counter(t.container_ref for t in bundle.tasks)
+    choices = mapping.containers if mapping else {}
+    gone = gone or set()
+    rows = []
+    for c in bundle.containers:
+        choice = choices.get(c.ref)
+        rows.append(
+            {
+                "ref": c.ref,
+                "kind": c.kind,
+                "name": c.name,
+                "parent_ref": c.parent_ref,
+                "tasks": counts.get(c.ref, 0),
+                "becomes": choice.name if choice and choice.name else c.name,
+                "skip": bool(choice and choice.skip),
+                "skipped": c.ref in gone,
+            }
+        )
+    return rows
+
+
+#: I-8 — how many example values a column shows, and how long each may be.
+COLUMN_SAMPLES = 3
+COLUMN_SAMPLE_MAX = 60
+
+
+def _columns(bundle: ImportBundle, mapping: ImportMapping) -> list[dict[str, Any]]:
+    """The columns this importer does not read, each with how many tasks fill
+    it, a few example values, and the admin's choice (I-8)."""
+    unknown: set[str] = set()
+    for w in bundle.warnings:
+        if w.code == "unknown_columns":
+            unknown.update(w.sample_refs)
+    filled: Counter[str] = Counter()
+    samples: dict[str, list[str]] = defaultdict(list)
+    for t in bundle.tasks:
+        for col, value in t.extra_columns.items():
+            filled[col] += 1
+            short = value if len(value) <= COLUMN_SAMPLE_MAX else value[: COLUMN_SAMPLE_MAX - 1] + "…"
+            if len(samples[col]) < COLUMN_SAMPLES and short not in samples[col]:
+                samples[col].append(short)
     return [
         {
-            "ref": c.ref,
-            "kind": c.kind,
-            "name": c.name,
-            "parent_ref": c.parent_ref,
-            "tasks": counts.get(c.ref, 0),
+            "name": col,
+            "tasks": filled.get(col, 0),
+            "samples": samples.get(col, []),
+            "choice": mapping.columns.get(col, "skip"),
         }
-        for c in bundle.containers
+        for col in sorted(unknown | set(filled))
     ]
 
 

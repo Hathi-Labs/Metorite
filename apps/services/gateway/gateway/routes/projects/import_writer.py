@@ -79,6 +79,7 @@ from gateway.routes.projects.importer.layout import (
 from gateway.routes.projects.importer.plan import (
     ImportMapping,
     build_plan,
+    choose,
     resolve_people,
     resolve_statuses,
 )
@@ -317,6 +318,9 @@ async def apply_run(
     plan = build_plan(bundle, mapping, **facts)
     if not plan["ready"]:
         raise ImportRefused("; ".join(plan["errors"]))
+    # I-8: from here on, the bundle is what the admin chose. The plan above
+    # read it through the same `choose`, so the write matches what it showed.
+    bundle = choose(bundle, mapping)
     people = resolve_people(bundle, mapping, facts["directory"])
     final = resolve_statuses(bundle, mapping)
 

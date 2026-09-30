@@ -54,7 +54,7 @@ from gateway.routes.projects.core import (
 )
 from gateway.routes.projects.importer import clickup
 from gateway.routes.projects.importer.bundle import ImportBundle
-from gateway.routes.projects.importer.plan import ImportMapping, build_plan
+from gateway.routes.projects.importer.plan import ImportMapping, build_plan, choose
 from gateway.routes.projects.importer.text import decode, read_csv
 from sqlalchemy import text
 
@@ -273,7 +273,12 @@ async def create_import_run(
             plan = build_plan(bundle, mapping, **facts)
             plan["inherited_from"] = inherited
             plan["continues"] = await _continues(
-                db, organization_id, run_id, bundle, mapping, [_sha256(raw) for _, raw in uploads]
+                db,
+                organization_id,
+                run_id,
+                choose(bundle, mapping),
+                mapping,
+                [_sha256(raw) for _, raw in uploads],
             )
 
             stored = _store(organization_id, run_id, uploads)
@@ -388,7 +393,8 @@ async def save_import_mapping(
             db,
             organization_id,
             run_id,
-            bundle,
+            # The writer asks with the CHOSEN bundle (I-8), so the note does too.
+            choose(bundle, mapping),
             mapping,
             [str(f.get("sha256")) for f in (_json(row.files) or [])],
         )
