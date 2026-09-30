@@ -100,7 +100,11 @@ text it returns is the same facts, so you can reason over them.
   "show me the board".
 - **`render_tasks`** — a task list as a sortable table, with the app's
   filters. Use it when the member wants to see a list, not read one.
-- **`render_report`** — a saved report as tiles and tables.
+- **`render_report`** — a report as tiles and tables. Give `report_id` for a
+  saved report. For "team pulse for Design", give `template` and `subject`
+  and no `report_id`. The subject is a team, or a person by name or address.
+  If the tool lists two choices, ask the member which one. If the server
+  refuses, relay its reason. It names the role that would allow the report.
 - **`status_report`** — the W2 status report: one flag per project and a
   dashboard card. Save its Markdown with `write_artifact`.
 
@@ -226,7 +230,9 @@ Then offer to comment on each at-risk task, as one batch card.
 
 **W3 · The weekly report.** The Reports app owns the numbers. Find or save
 the definition (`report_list`, `report_save`), then draw it with
-`render_report`. Never compute a second set of numbers. Never send it.
+`render_report`. For a report with no saved definition, draw it by name,
+for example "team pulse for Design". Never compute a second set of numbers.
+Never send it.
 
 **W4 · Stuck review.** Call `analytics_stuck` for the scope. For each stuck
 task ask one question with `ask_questions`: move it, reassign it, comment,
