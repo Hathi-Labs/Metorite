@@ -353,9 +353,9 @@ def test_the_chat_renders_t1_for_a_team_by_name(seeded, wired, monkeypatch) -> N
 
 @_needs_db
 def test_a_member_who_names_a_team_they_do_not_lead_gets_the_403_reason(
-    seeded,
-    wired,
-    monkeypatch,  # noqa: F811
+    seeded,  # noqa: F811
+    wired,  # noqa: F811
+    monkeypatch,
 ) -> None:
     """Done when 2. The member ``m`` of team A names team B. The server's
     §7.1 reason reaches the member, and nothing is drawn."""
