@@ -1,9 +1,8 @@
 # Email App — Master Plan (single source of truth)
 
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
-> **Status (verified against the code and the box on 2026-10-01):** 🔴 **Email is OFF in
-> production.** The box sets `EMAIL_SYNC_ENABLED=false`. **§10 owns the return** of Email for every organization.
-> Nobody has set up a Microsoft app on the box.
+> **Status (verified on the box, 2026-10-01 17:57 UTC):** 🟢 **Email sync is ON in production.**
+> The interim Microsoft app is installed (§10.2, D-EM-2). **§10 owns** Email for every organization.
 > **§10 progress:** ✅ **EM-T1a is MERGED (#559) and serving since 2026-10-01.** The gateway
 > signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
 > ✅ **EM-T1b-1 is MERGED (#560) and serving since 2026-10-01** (§10.4.2). The scheduler and the
@@ -507,10 +506,10 @@ or API client to create a pattern by hand.
 
 ### 10.1 Measured state (2026-10-01)
 
-- **Email is OFF in production.** The box sets `EMAIL_SYNC_ENABLED=false`, and the journal logs
+- *(History. Sync is ON since 2026-10-01, see the header.)* **Email was OFF in production.** The box set `EMAIL_SYNC_ENABLED=false`, and the journal logs
   `sync.email_sync_disabled` at each gateway start. The cutover runbook turned it off because the
   email background paths bind no tenant (H4 slices 6b and 6c).
-- **No Microsoft app exists on the box.** `MSFT_OAUTH_CLIENT_ID` is empty, and nothing else
+- *(History. The interim app is installed since 2026-10-01.)* **No Microsoft app existed on the box.** `MSFT_OAUTH_CLIENT_ID` is empty, and nothing else
   supplies a client ID. Nobody can connect an Outlook mailbox today.
 - **The Outlook code is complete.** Graph sync, send, drafts, categories, the push webhook and
   the automation pipeline all exist. The gap is tenancy and onboarding, not provider code.
@@ -535,7 +534,8 @@ or API client to create a pattern by hand.
 1. **Empty state.** Email shows "Connect your email" with one large Microsoft 365 / Outlook
    button. No step asks the member to configure OAuth.
 2. **Sign-in.** Microsoft sign-in opens with the address of the member as the `login_hint`.
-3. **Consent.** Microsoft shows the verified Metorite app. The member accepts.
+3. **Consent.** Microsoft shows the verified Metorite app. The member accepts. With the interim app,
+   Microsoft shows "CommandCenter" by Fracktal Works, so this step passes only after §10.5.
 4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
    fills while the first sync runs.
 5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
@@ -545,19 +545,23 @@ or API client to create a pattern by hand.
 6. **Pre-approval (optional).** In Settings → Organization → Email, an org admin can approve the
    app for the company ahead of time. The admin then sees the connected-member count.
 7. **Reconnect.** When a refresh token fails, a banner offers one-click "Reconnect Outlook".
-8. **Disconnect.** One button in Settings removes the tokens and the synced data of the mailbox.
+8. **Disconnect.** One button in the account menu inside Email removes the tokens and the synced
+   data of the mailbox.
 
 ### 10.4 Slices
 
-Each slice ships dark. `EMAIL_SYNC_ENABLED` stays `false` on the box until EM-T1b-2 merges and the
-live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
+Each slice ships dark. `EMAIL_SYNC_ENABLED` is `true` on the box since 2026-10-01, after the live
+check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
-| **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
+| **EM-T3a** | 🟢 AGENT-SAFE | **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
+| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
+| **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
+| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
 | **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
@@ -832,6 +836,97 @@ The ten automation jobs of EM-T1b-2 also keep some I/O inside a block: the model
 The two halves are not safe apart: after EM-T1b-1 alone, the automation hooks fail closed.
 Do not flip between the two PRs.
 
+#### 10.4.3 EM-T3 in full
+
+**Order.** EM-T3a, then EM-T3b, then EM-T3c. EM-T3d waits for EM-T2. Each part is one PR.
+
+**What an agent cannot test.** Step 3 of §10.3 passes only after §10.5. With the interim app,
+Microsoft shows "CommandCenter" by Fracktal Works. Steps 5 and 6 need a real tenant that blocks
+consent by members, so the owner tests them by hand. The agent acceptance below replaces them.
+
+##### EM-T3a — the backend for the connect flow
+
+1. **The app credentials come from settings.** The OAuth callback stops copying `client_id`,
+   `client_secret` and `tenant_id` into the account blob. Delete `_provider_oauth_app_creds` in
+   `transport/oauth.py`. The providers in `email_ingestion/providers/` (`outlook.py`, `gmail.py`,
+   through `factory.py` `build_provider`) read the app credentials from `get_settings()` and ignore
+   any value in the blob. `export_credentials` writes token fields only. When settings hold no
+   credential, the provider does not fall back to the blob, because that is how a revoked secret
+   stays alive. No migration: a stale blob field does no harm, and the next token write removes it.
+2. **One authority for mail.** The Microsoft authority is `common`. The email code no longer reads
+   `AUTH_MICROSOFT_ENTRA_ID_TENANT` or `AUTH_MICROSOFT_TENANT_ID`, because a sign-in tenant must
+   not make mail single-tenant.
+3. **`login_hint`.** The authorize leg sends `login_hint`, by default the email of the session. An
+   optional `login_hint` query is accepted only when it parses as an address. It is a hint, never
+   an identity. No `prompt=select_account`.
+4. **Consent errors.** The gateway callback accepts `error_description` and takes only a code that
+   matches `AADSTS\d{5,6}` from it. It never echoes the text. AADSTS90094, 90095 and 65001 map to
+   `admin_consent_required`. AADSTS65004, and `access_denied` with no known code, map to
+   `consent_declined`. Every other error goes through `_provider_error_reason`.
+5. **First-sync flag.** `EmailAccountModel` in `transport/accounts.py` gains `initial_sync_done`,
+   and the three account reads return it.
+
+**Non-goals.** No UI. No change to `proxy.ts`. No admin-consent endpoint. No nav change.
+
+**Done when.**
+
+- A new account blob holds no `client_id`, `client_secret` or `tenant_id`.
+- A refresh with a blob that holds an old `client_secret` sends the secret from settings.
+- `export_credentials` after a refresh holds no app credential.
+- With the sign-in tenant set to a GUID, the authorize URL still uses `/common/`.
+- The authorize URL carries `login_hint` with the email of the session. A malformed hint is dropped.
+- `access_denied` with AADSTS90094 lands on `/email/oauth/callback?error=admin_consent_required`.
+  With AADSTS65004, and with no code, it lands on `error=consent_declined`. No description text
+  appears in the Location.
+- `GET /email/accounts` returns `initial_sync_done`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_oauth_state.py \
+  tests/unit/test_email_tenant_bind_rls.py tests/unit/test_email_webhook.py \
+  tests/unit/test_email_imports.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_manual_sync_parity.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_labels_upstream.py tests/unit/test_email_reply_threading.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_outlook_folders_move.py \
+  tests/unit/test_email_attachment_inline.py tests/unit/test_h201_email_artifact_sources.py \
+  <new EM-T3a tests> -q -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email tests/unit
+```
+
+**Risk R1 (H-207).** Each mailbox that connects before EM-T3a merges holds the secret in its blob.
+The owner must not delete the old secret (H-207 step 5) until EM-T3a serves.
+
+##### EM-T3b — the connect UI, and Email in the sidebar
+
+Files: `workbench/control_plane/src/app/email/page.tsx` (the status fetch, the onboarding modal,
+`handleConnect`, the reconnect banner, the add-account modal), `app/email/oauth/callback/page.tsx`,
+`app/email/components/AccountSidebar.tsx`, `app/email/lib/emailStore.ts`, `src/lib/nav.ts`,
+`src/lib/nav.test.ts` and `project-docs/specs/launch_surface.md` §2.
+
+**Done when.**
+
+- No path in `app/email` links to `/integrations`.
+- `page.tsx` holds no "Configure OAuth" text and no fetch of `/api/integrations/status`.
+- `handleConnect` has no IMAP branch. Gmail shows disabled, with "Coming soon".
+- A vitest proves that `admin_consent_required` and `consent_declined` each show guided copy, not
+  "unexpected error". The admin page offers a prefilled email and a copy of the admin-consent link.
+- An account with `initial_sync_done=false` shows "Connected as" with the address and a progress state.
+- The reconnect banner sends the mailbox address as `login_hint`.
+- Disconnect calls `DELETE /email/accounts/{id}` from the account menu inside Email (§10.3 step 8).
+- `nav.ts` marks Email `live`. `nav.test.ts` adds `["personal", "/email"]` to its live set. Its
+  preview-permission example moves from `/email` to `/whatsapp`.
+- `launch_surface.md` §2 lists Email as live, and HANDOFF H-21 gets a dated line.
+- The callback page uses status tokens, not raw `emerald-*` classes.
+- Visual review (the `visual-review` skill) in light mode, at compact density, with a changed
+  accent, at mobile width, and beside Calendar. The PR carries the screenshots.
+
+**Verify with.** `cd workbench/control_plane && npx tsc --noEmit && npx vitest run`.
+
+**Known limit.** When a tenant turns on the admin consent workflow (AADSTS90095), Microsoft can
+keep the member on its own "Approval required" form. Then no error returns to Metorite.
+
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
 These are one-time owner acts. No customer ever repeats them.
@@ -843,9 +938,8 @@ These are one-time owner acts. No customer ever repeats them.
 5. Add the web redirect URI `https://app.metorite.com/api/email/oauth/microsoft/callback`.
    This is the app domain, not `api.`, because the callback runs behind the session (EM-T1a).
    For local tests, you can also add `http://localhost:3001/api/email/oauth/microsoft/callback`.
-   ⚠️ EM-T1a moved this URI from `api.` to the app domain. Today the box has no
-   `MSFT_OAUTH_CLIENT_ID`, so no live registration breaks. Each registration, new or reused,
-   must list the new URI. Until it does, no Outlook connect can work.
+   ⚠️ EM-T1a moved this URI from `api.` to the app domain. Each registration, new or reused,
+   must list it. The interim app lists it since 2026-10-01.
 6. Under **API permissions**, add these delegated Microsoft Graph permissions: `Mail.ReadWrite`,
    `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read` and `offline_access`.
 7. Under **Branding**, add the Metorite logo, the home page, and the privacy and terms URLs on
