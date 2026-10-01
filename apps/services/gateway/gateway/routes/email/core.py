@@ -27,9 +27,10 @@ from gateway.db import get_session_factory as _get_session_factory
 # seam the hermetic tests patch per module. The tenant comes from the request
 # context — bound once in `_with_resolved_access` — so no call site passes
 # one (H2). A call outside a bound request raises `TenantUnbound` rather than
-# defaulting: fail closed, never "the usual org". Background jobs, webhooks
-# and the OAuth callback stay on `_get_db` below until H4/H6 thread an
-# explicit tenant to them — service identity binds NO ambient tenant.
+# defaulting: fail closed, never "the usual org". The OAuth callback and the
+# Graph webhook pass an explicit tenant (EM-T1a). Background jobs stay on
+# `_get_db` below until H4/H6 (EM-T1b) thread one to them — service identity
+# binds NO ambient tenant.
 from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -40,18 +41,15 @@ _log = get_logger("gateway.email")
 
 router = APIRouter(
     prefix="/email", tags=["email"],
-    # Org access control. The OAuth callback is exempt: it is a browser
-    # redirect from Google/Microsoft carrying no session, and its trust comes
-    # from the HMAC-signed state parameter. Gating it would break account
-    # linking. `authorize` is NOT exempt — that leg is user-initiated.
+    # Org access control. Both OAuth legs are GATED (EM-T1a). The browser
+    # reaches each one through a workbench BFF route that holds the session.
+    # The callback must see the member, because that member must be the
+    # member in the signed state (spec risk R-4).
     # Exempt: provider-initiated entrypoints with their own trust.
-    #   oauth callback   — browser redirect from Google/Microsoft; trust comes
-    #                      from the HMAC-signed `state`. The `authorize` leg is
-    #                      user-initiated and stays gated.
-    #   webhook/microsoft— Graph change notification; validationToken echo +
-    #                      clientState check.
+    #   webhook/microsoft— Graph change notification. It echoes the
+    #                      validationToken, verifies the signed `org` in its
+    #                      own URL, then checks clientState inside that tenant.
     dependencies=[require_feature_router("email", exempt=[
-        "/email/oauth/{provider}/callback",
         "/email/webhook/microsoft",
     ])],
 )

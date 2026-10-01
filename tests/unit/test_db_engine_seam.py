@@ -411,7 +411,11 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: 108 → 106: S8 PR 1 (2026-09-23) deleted `scheduler.py` and
 #: `broker_handlers.py`. routes/tasks keeps ONE unbound site: the rollover
 #: sweep's exempt `organization` enumeration in `calendar.py`.
-H2_BASELINE_ELSEWHERE = 106
+#: 106 → 103: WS-17 EM-T1a (2026-10-01). The email OAuth callback, the Graph
+#: webhook and `_ensure_subscription` moved to `tenant_session(org)`, with the
+#: org from the signed state, the signed `notificationUrl` and
+#: `current_tenant()`. routes/email/transport has no unbound site left.
+H2_BASELINE_ELSEWHERE = 103
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

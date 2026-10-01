@@ -580,13 +580,15 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # fails closed when unconfigured. See routes/agent.verify_webhook_signature.
     "/agent/webhook/{source}",
 
-    # OAuth callbacks: browser redirects from the provider carrying no session.
-    # Trust comes from the HMAC-signed `state`. The authorize legs are
-    # user-initiated and stay gated.
+    # OAuth callback of the integrations: a browser redirect from the provider
+    # that carries no session. The authorize legs are user-initiated and stay
+    # gated. ⚠️ The EMAIL callback is NOT here (EM-T1a). It runs behind the
+    # session through the BFF route /api/email/oauth/{provider}/callback,
+    # because its member must match the member in the signed state.
     "/integrations/oauth/callback/{service}",
-    "/email/oauth/{provider}/callback",
 
-    # Microsoft Graph change notification — validationToken echo + clientState.
+    # Microsoft Graph change notification — validationToken echo, then the
+    # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
 
     # Meta webhook — verify-token on GET, signature on POST.

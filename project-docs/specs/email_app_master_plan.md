@@ -4,13 +4,16 @@
 > **Status (verified against the code and the box on 2026-10-01):** 🔴 **Email is OFF in
 > production.** The box sets `EMAIL_SYNC_ENABLED=false`. **§10 owns the return** of Email for every organization.
 > Nobody has set up a Microsoft app on the box.
+> **§10 progress:** 🟡 **EM-T1a is BUILT (2026-10-01), not merged and not deployed.** The gateway
+> signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
+> EM-T1b to EM-T5 and the §10.5 owner acts are open. Email stays OFF until EM-T1b.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
 > the Connect button navigated the browser straight at the gateway, which default-deny 401s.
 > Fixed by routing the authorize leg through a Next BFF, and the `user_email` override — the
 > cross-tenant half of the same item — is closed with it. `_oauth_states` durability and the
-> unauthenticated callback remain open under §7.
+> unauthenticated callback stayed open under §7. EM-T1a closes both (§10.4.1).
 >
 > **This document supersedes and consolidates all prior email planning docs:**
 > - [`archive/email_ai_assistant.md`](./archive/email_ai_assistant.md) — the v2.0 feature inventory (2026-06-29; historical reference for architecture detail and the provider matrix)
@@ -413,8 +416,9 @@ or API client to create a pattern by hand.
 
    > **Superseded by §10.4 EM-T1a (2026-10-01).** A stateless signed state replaces the Redis
    > design below, and the callback moves behind the BFF session. Read §10 for the fix.
+   > EM-T1a built that fix on 2026-10-01, so the paragraph below is history.
 
-   **STILL OPEN.** `oauth_callback` is unauthenticated (no `get_current_user`) and its `state` is
+   **CLOSED by EM-T1a (history).** `oauth_callback` was unauthenticated (no `get_current_user`) and its `state` is
    an unsigned random token. `_oauth_states` (`oauth.py`) is still a module-level in-process dict:
    **every deploy restarts the gateway, so any flow in flight when a deploy lands loses its state
    and the callback fails validation** — the user is bounced to
@@ -546,7 +550,7 @@ live check passes. To set it `true` is gate `enforcement-flip`.
 
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
-| **EM-T1a** | 🟢 AGENT-SAFE | **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
+| **EM-T1a** | 🟢 AGENT-SAFE | 🟡 **BUILT 2026-10-01, not merged.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | **The sync scheduler and the sync pipeline bind a tenant.** The startup sweep reads `organization` (RLS-exempt), then opens `tenant_session(org)` per organization to list its accounts. Each account task binds its organization. The three private engines of the scheduler go, and every session comes from the shared seam. The `_get_db()` sites that the sync pipeline reaches convert to tenant-bound sessions. Recount them at dispatch. A session that commits part way must open a new tenant-bound transaction, because `SET LOCAL` ends at commit. | Two organizations with one account each sync under their own tenant. No email path in the sync pipeline opens an unbound session, and `test_db_engine_seam.py` ratchets the count down. Then a live check on the box, and then `EMAIL_SYNC_ENABLED=true`. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
@@ -555,6 +559,10 @@ live check passes. To set it `true` is gate `enforcement-flip`.
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
+
+**Status.** 🟡 Built on 2026-10-01, on branch `email-outlook-onboarding`. It is not merged and
+not deployed. The new fences are `test_email_oauth_state.py`, `test_email_tenant_bind_rls.py` (R8)
+and `callback/route.test.ts`. The signer is `transport/signing.py`.
 
 **Scope.**
 

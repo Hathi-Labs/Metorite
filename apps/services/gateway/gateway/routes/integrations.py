@@ -283,8 +283,8 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "2. Click 'Create Credentials' → 'OAuth client ID'.\n"
             "3. Choose 'Web application'.\n"
             "4. Add Authorized redirect URI:\n"
-            "   https://api.metorite.com/email/oauth/gmail/callback\n"
-            "   (or your gateway's public URL).\n"
+            "   https://app.metorite.com/api/email/oauth/gmail/callback\n"
+            "   (or your workbench's public URL).\n"
             "5. Copy the Client ID and Client Secret below.\n"
             "6. Also enable the Gmail API under 'Enabled APIs & Services'."
         ),
@@ -307,7 +307,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "you can reuse it — no separate registration needed. Just add these to it:\n\n"
             "1. Go to Azure Portal → App registrations → your existing Metorite app.\n"
             "2. Under 'Authentication', add Redirect URI (Web):\n"
-            "   https://api.metorite.com/email/oauth/microsoft/callback\n"
+            "   https://app.metorite.com/api/email/oauth/microsoft/callback\n"
             "3. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
             "   Mail.ReadWrite, User.Read\n"
             "4. Click 'Grant admin consent' if tenant-restricted.\n\n"
@@ -1371,7 +1371,7 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
                     "client_secret": client_secret,
                     "code": "dummy_test_code",
                     "grant_type": "authorization_code",
-                    "redirect_uri": "http://localhost:8000/email/oauth/gmail/callback",
+                    "redirect_uri": "http://localhost:3001/api/email/oauth/gmail/callback",
                 },
             )
             err = (resp.json() or {}).get("error", "")
@@ -1404,7 +1404,7 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
                     "client_secret": client_secret,
                     "code": "dummy_test_code",
                     "grant_type": "authorization_code",
-                    "redirect_uri": "http://localhost:8000/email/oauth/microsoft/callback",
+                    "redirect_uri": "http://localhost:3001/api/email/oauth/microsoft/callback",
                 },
             )
             err = (resp.json() or {}).get("error", "")

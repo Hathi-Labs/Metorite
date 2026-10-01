@@ -654,15 +654,26 @@ class OutlookProvider(BaseEmailProvider):
         return resp.json()
 
     async def renew_subscription(
-        self, subscription_id: str, minutes: int = 4000
+        self,
+        subscription_id: str,
+        minutes: int = 4000,
+        notification_url: str | None = None,
     ) -> dict[str, Any]:
-        """Extend a subscription's expiry."""
+        """Extend a subscription's expiry, and optionally move its URL.
+
+        Graph v1.0 accepts ``notificationUrl`` in the same PATCH. It validates
+        the new URL with a ``validationToken`` first. EM-T1a passes the signed
+        URL on every renewal, so a subscription made before EM-T1a gets one.
+        """
         from datetime import datetime, timedelta, timezone  # noqa: PLC0415
         exp = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        body: dict[str, Any] = {"expirationDateTime": exp}
+        if notification_url:
+            body["notificationUrl"] = notification_url
         client = await self._get_client()
         resp = await client.patch(
             f"/subscriptions/{subscription_id}",
-            json={"expirationDateTime": exp},
+            json=body,
         )
         resp.raise_for_status()
         return resp.json()
