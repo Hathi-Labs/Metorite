@@ -9,7 +9,7 @@ the run-scoped process env (executor ``_inject_integrations_to_env``) into
 """
 from __future__ import annotations
 
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import artifact_context
 
 
 async def list_integrations() -> str:
@@ -27,9 +27,10 @@ async def list_integrations() -> str:
     except ImportError:
         return "list_integrations unavailable: integration registry not importable."
 
-    raw = _WRITE_ARTIFACT_CONTEXT.get("integrations")
+    ctx = artifact_context()
+    raw = ctx.get("integrations")
     resolved = [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
-    warnings = _WRITE_ARTIFACT_CONTEXT.get("integration_warnings")
+    warnings = ctx.get("integration_warnings")
     warnings = warnings if isinstance(warnings, dict) else {}
 
     if not resolved and not warnings:

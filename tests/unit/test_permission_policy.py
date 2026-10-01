@@ -8,18 +8,20 @@ from __future__ import annotations
 import pytest
 from acb_skills import permission_policy as pp
 from acb_skills.tool_annotations import annotate
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import (
+    derive_artifact_context,
+)
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv("AGENT_PERMISSION_MODE", raising=False)
     monkeypatch.delenv("AGENT_PERMISSION_DENY_PATTERNS", raising=False)
-    _WRITE_ARTIFACT_CONTEXT.pop("workspace_root", None)
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(workspace_root=None)
+    derive_artifact_context(permission_check_root=None)
     yield
-    _WRITE_ARTIFACT_CONTEXT.pop("workspace_root", None)
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(workspace_root=None)
+    derive_artifact_context(permission_check_root=None)
 
 
 # ── decide(): the decision table ─────────────────────────────────────────────
@@ -88,7 +90,7 @@ def test_shell_from_commands_list():
 
 
 def test_write_outside_workspace_denied():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     ok, code, _ = pp.decide(
         {"has_write_file_redirection": True, "path": "/etc/passwd"},
     )
@@ -96,7 +98,7 @@ def test_write_outside_workspace_denied():
 
 
 def test_write_traversal_outside_workspace_denied():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     ok, code, _ = pp.decide(
         {"new_file_contents": "x", "path": "../../etc/cron.d/evil"},
     )
@@ -104,7 +106,7 @@ def test_write_traversal_outside_workspace_denied():
 
 
 def test_write_inside_workspace_approved():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     ok, code, _ = pp.decide(
         {"has_write_file_redirection": True,
          "path": "/opt/acb/repos/agent-x/outputs/r.md"},
@@ -116,8 +118,8 @@ def test_permission_check_root_overrides_workspace_root_when_sandboxed():
     # BO-7 phase 2: a sandboxed Copilot session reports CONTAINER paths
     # (/workspace/repo/...), not the host workspace_root — permission_check_root
     # is what the containment check must compare against when both are set.
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
-    _WRITE_ARTIFACT_CONTEXT["permission_check_root"] = "/workspace/repo"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
+    derive_artifact_context(permission_check_root="/workspace/repo")
     ok, code, _ = pp.decide(
         {"has_write_file_redirection": True, "path": "/workspace/repo/outputs/r.md"},
     )
@@ -133,17 +135,18 @@ def test_permission_check_root_overrides_workspace_root_when_sandboxed():
 
 
 def test_permission_check_root_falls_back_to_workspace_root_when_unset():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     ok, code, _ = pp.decide(
         {"has_write_file_redirection": True, "path": "/etc/passwd"},
     )
     assert ok is False and code == "write_out_of_workspace"
 
 
-def test_write_with_no_workspace_context_approves():
-    # No workspace root configured → can't prove out-of-bounds → approve.
+def test_write_with_no_workspace_context_is_refused():
+    # H-201 (§21.16): no run context → no workspace to be inside → refuse.
+    # This approved before, when the global dict always held SOME run's root.
     ok, code, _ = pp.decide({"has_write_file_redirection": True, "path": "/x"})
-    assert ok is True and code == "write_in_workspace"
+    assert ok is False and code == "write_without_workspace"
 
 
 def test_network_approved_and_logged():
@@ -169,7 +172,7 @@ def test_named_tool_with_dangerous_command_context_still_denied():
 
 
 def test_named_tool_with_out_of_workspace_path_still_denied():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     ok, code, _ = pp.decide({
         "tool_name": "run_script",
         "has_write_file_redirection": True,
@@ -334,6 +337,8 @@ def test_gate_wrapper_allows_run_script_on_benign_args(monkeypatch):
         return f"ran {path} {args}"
 
     gated = _gate_injected_tool(run_script)
+    # The tool runs inside a run, so the run's workspace is bound (H-201).
+    derive_artifact_context(workspace_root="/opt/acb/repos/agent-x")
     out = asyncio.run(
         gated(path="agent-data/scripts/report.py", args="--month 2026-07")
     )

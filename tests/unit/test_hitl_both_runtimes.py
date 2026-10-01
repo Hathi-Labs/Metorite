@@ -12,21 +12,24 @@ to the non-blocking path. The SAME bug affected ``request_confirmation`` (the
 send-email safety gate) — worse, it silently denied without showing the card.
 
 Fix: ``executor.resolve_relay_thread_id()`` resolves the thread_id from a
-thread-hop-surviving source (the ``_WRITE_ARTIFACT_CONTEXT`` module dict the
-executor sets on every run path) with the ContextVar as the first choice — so
-the Redis-relay blocking path (Path C) engages for BOTH runtimes.
+thread-hop-surviving source with the ContextVar as the first choice — so the
+Redis-relay blocking path (Path C) engages for BOTH runtimes. That source was a
+process-global dict until H-201 (§21.16). It is now the run's own artifact
+context, which ``carry_run_context`` carries into the Copilot SDK callbacks.
 """
 from __future__ import annotations
 
 import asyncio
 
 import orchestrator.executor as ex
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import (
+    derive_artifact_context,
+)
 
 
 def _clear_relay_state() -> None:
     ex._stream_relay_thread_id.set(None)
-    _WRITE_ARTIFACT_CONTEXT.pop("session_id", None)
+    derive_artifact_context(session_id=None)
     ex._RUN_QUEUES.clear()
 
 
@@ -44,40 +47,45 @@ def test_maf_path_uses_contextvar() -> None:
         _clear_relay_state()
 
 
-def test_copilot_path_survives_thread_hop_via_module_dict() -> None:
+def test_copilot_path_survives_thread_hop_via_run_context() -> None:
     """Copilot SDK: the ContextVar was RESET by the thread hop (None), but the
-    module dict still carries session_id → the resolver still finds the thread.
+    run artifact context still carries session_id → the resolver finds the thread.
 
     This is the core of the fix — the case that used to return None and break
     blocking on Copilot agents."""
     _clear_relay_state()
     # Simulate the thread hop: ContextVar reset to None...
     ex._stream_relay_thread_id.set(None)
-    # ...but the executor set the module dict on the run path (survives the hop).
-    _WRITE_ARTIFACT_CONTEXT["session_id"] = "thread-copilot"
+    # ...but carry_run_context gave the tool the run artifact context.
+    derive_artifact_context(session_id="thread-copilot")
     try:
         assert ex.resolve_relay_thread_id() == "thread-copilot"
     finally:
         _clear_relay_state()
 
 
-def test_contextvar_wins_over_module_dict() -> None:
+def test_contextvar_wins_over_run_context() -> None:
     """When both are set (native MAF with a stale dict), the live ContextVar wins."""
     _clear_relay_state()
     ex._stream_relay_thread_id.set("thread-live")
-    _WRITE_ARTIFACT_CONTEXT["session_id"] = "thread-stale"
+    derive_artifact_context(session_id="thread-stale")
     try:
         assert ex.resolve_relay_thread_id() == "thread-live"
     finally:
         _clear_relay_state()
 
 
-def test_single_active_run_fallback() -> None:
-    """No ContextVar, no dict, but exactly one run live → resolve to its key."""
+def test_no_context_never_guesses_the_single_active_run() -> None:
+    """No ContextVar and no run context, and one run live → ``None``.
+
+    H-201 (§21.16): the old third step answered "the single live run" for a
+    frame with no run. That frame's HITL card then parked in another run's
+    thread. It fails closed now.
+    """
     _clear_relay_state()
     ex._RUN_QUEUES["only-thread"] = asyncio.Queue()
     try:
-        assert ex.resolve_relay_thread_id() == "only-thread"
+        assert ex.resolve_relay_thread_id() is None
     finally:
         _clear_relay_state()
 
@@ -99,7 +107,7 @@ def test_ask_questions_blocks_on_copilot_thread_hop(monkeypatch) -> None:
 
     _clear_relay_state()
     ex._stream_relay_thread_id.set(None)          # thread hop reset it
-    _WRITE_ARTIFACT_CONTEXT["session_id"] = "t-copilot-aq"
+    derive_artifact_context(session_id="t-copilot-aq")
 
     pushed: list[str] = []
 
@@ -145,7 +153,7 @@ def test_request_confirmation_blocks_on_copilot_thread_hop(monkeypatch) -> None:
 
     _clear_relay_state()
     ex._stream_relay_thread_id.set(None)
-    _WRITE_ARTIFACT_CONTEXT["session_id"] = "t-copilot-rc"
+    derive_artifact_context(session_id="t-copilot-rc")
 
     pushed: list[str] = []
 

@@ -25,7 +25,6 @@ Usage by agents::
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,13 +32,10 @@ from pathlib import Path
 def _get_agent_dir() -> str:
     """Resolve the agent's workspace root."""
     try:
-        from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT  # noqa: PLC0415
-        root = _WRITE_ARTIFACT_CONTEXT.get("workspace_root", "")
-        if root:
-            return root
+        from acb_skills.write_artifact import artifact_context  # noqa: PLC0415
+        return str(artifact_context().get("workspace_root") or "")
     except Exception:  # noqa: BLE001
-        pass
-    return os.getcwd()
+        return ""
 
 
 async def save_note(path: str, fact: str) -> str:
@@ -62,7 +58,11 @@ async def save_note(path: str, fact: str) -> str:
     Returns:
         ``"Saved to agent-data/NOTES.md"`` or similar confirmation.
     """
-    root = Path(_get_agent_dir())
+    root_s = _get_agent_dir()
+    if not root_s:
+        # H-201 (§21.16): no run context, so no workspace. Fail closed.
+        return "No workspace is configured for this run, so nothing was saved."
+    root = Path(root_s)
 
     # Normalise path — ensure it lands in a visible workspace dir.
     clean = path.replace("\\", "/").lstrip("/.")
@@ -122,7 +122,11 @@ async def recall_notes(path: str, query: str = "") -> str:
         all_notes = await recall_notes("NOTES.md")
         abc_notes = await recall_notes("leads.md", "ABC Corp")
     """
-    root = Path(_get_agent_dir())
+    root_s = _get_agent_dir()
+    if not root_s:
+        # H-201 (§21.16): no run context, so no workspace. Fail closed.
+        return "No workspace is configured for this run, so nothing was read."
+    root = Path(root_s)
     clean = path.replace("\\", "/").lstrip("/.")
     # Apply the SAME visible-dir prefixing as save_note so the documented
     # round-trip works: recall_notes("NOTES.md") reads the agent-data/NOTES.md

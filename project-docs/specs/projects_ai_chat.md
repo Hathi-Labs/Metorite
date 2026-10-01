@@ -17,8 +17,9 @@ forged agent rows, §20) was built 2026-09-28. S15 (chat is saved on
 production, §21) was built 2026-09-29. S16 (every deploy proves that chat
 saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
 §21.10) was built 2026-09-29. H-201 part 1 (§21.13), part 2 (the
-artifact routes, §21.14) and part 3 (a tenant dir for a shared agent,
-§21.15) were built 2026-09-30. The owner answered the three
+artifact routes, §21.14), part 3 (a tenant dir for a shared agent,
+§21.15) and part 4 (a per-run artifact context, §21.16) were built
+2026-09-30. The owner answered the three
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -3939,6 +3940,9 @@ The `-rs` output must show no skip.
 shared clone through the session routes. That read was live. Part 2 closed
 the writes of those routes (§21.14, P0-A).
 
+✅ **Part 4 (§21.16) closed the race below on 2026-09-30.** The text below
+records the state when part 3 was built.
+
 ⚠️ **A concurrent-run race remains, and the next slice closes it.**
 `_WRITE_ARTIFACT_CONTEXT` is one dict for the whole process. The executor
 writes it at run start, and `write_artifact` reads it. Runs of two orgs can
@@ -4147,6 +4151,142 @@ uv run pytest tests/unit/test_h201_tenant_workdirs.py \
 DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant \
   uv run pytest tests/unit/test_blob_store_instance.py \
   tests/unit/test_blob_store_durability.py -q -rs
+```
+
+The `-rs` output must show no skip.
+
+### 21.16 H-201 part 4 — the run's artifact context is per run
+
+**Status: BUILT 2026-09-30.** This part closes the concurrent-run race that
+§21.15 recorded. It also closes P2-c of the part 3 review, and it stamps the
+`o:<org>` key of a shared run.
+
+**The defect.** `_WRITE_ARTIFACT_CONTEXT` was one dict for the whole gateway
+process. It held the workspace, the tenant key and the session of the run.
+The gateway is one uvicorn process. So when a run of org A and a run of
+org B overlapped, the later setup overwrote the earlier. Run A's
+`write_artifact` then wrote A's document into B's tenant dir, and it posted
+the event to B's session.
+
+**The fix.** The context is a ContextVar that holds an immutable mapping.
+`acb_skills.write_artifact.artifact_context()` is the one reader. The name
+`_WRITE_ARTIFACT_CONTEXT` is gone from the tree, and a test keeps it gone.
+
+| Function | What it does |
+|---|---|
+| `artifact_context()` | Reads the run's mapping. It is empty when no run is bound. |
+| `bind_artifact_context(**v)` | Sets a new mapping at the run boundary. |
+| `derive_artifact_context(**c)` | Sets a changed copy. `None` removes a key. |
+| `artifact_context_scope()` | Restores the value from before the block. |
+| `enter_artifact_context()` / `reset_artifact_context(t)` | The same scope for an async generator. |
+
+**Every path, and how it carries the context.**
+
+| Path | How |
+|---|---|
+| Stream run (`run_agent_stream`) | Binds after the workspace resolves. A token taken at the top resets it in the `finally`. |
+| Batch run (`run_agent`) | Binds in `_run_agent_inner`, inside `artifact_context_scope()`. A nested run gives the parent its value back. |
+| MAF tool call | Runs in the run's task, or in a copy that `gather` makes. No change was needed. |
+| A task that a run spawns | `ensure_future` and `create_task` copy the context. The blob mirror and `_notify` read their own run. |
+| Copilot SDK tool and permission callbacks | The SDK starts each call on its reader thread with no context. `copilot_agent.carry_run_context(agent)` wraps each prepared tool handler and the permission handler, so each call runs in a copy of the run's context. Every Copilot path calls it: the stream path, the batch path (`_run_with_maf_agent`), the Copilot sub-agent and `code_session`. |
+| `asyncio.to_thread` | Copies the context into the worker thread. `run_script` builds the script's env there. |
+| A bare `run_in_executor` | Copies nothing. A reader there sees an empty context and fails closed. No site reads the context that way. |
+| Sub-agent (`_run_sub_agent_streaming`) | Derives its OWN copy: its workspace, its store key, its agent name, its run id and its integrations. The session, the gateway and the member stay the parent's. Its token restores the parent's exact value. |
+| The sandbox root | `_maybe_sandbox_session_workspace` and `code_session` set `permission_check_root` in the run's own copy. |
+
+**Fail closed.** A frame with no run context writes nothing and emits to no
+session. `write_artifact` answers an error, where it used to write to a temp
+dir. `save_note`, `recall_notes` and `get_errors` refuse, where they used
+the gateway's cwd. The permission policy refuses a write to a path with no
+workspace (`write_without_workspace`). `resolve_run_queue` and
+`resolve_relay_thread_id` lost the "single live run" guess, which gave a
+frame with no run the stream of whatever run was live.
+
+**P2-c — a delegated personal agent.** A batch run that starts inside the
+artifact context of another run is a delegation. That covers `call_agent`,
+`delegate_to_agent` and the MAF sub-agent. Its member is the parent's bound
+`member`, never the payload's `user_email`. The Copilot sub-agent uses the
+same member. `executor._delegated_instance` keys a personal agent by that
+member, so it works in `u:<email>`. A personal agent with no member raises
+`RunWorkspaceRefused`. It never falls back to `o:<org>`.
+
+**Also closed.** §21.15 recorded that the Copilot sub-agent path mirrored
+its files under the parent's agent name and key. The sub-agent's own
+context now carries its own agent name and store key, so its blob rows are
+its own.
+
+**The `o:` stamp.** `_bind_run_instance` now stamps the key that the run
+works in, after `_resolve_run_workspace`. A shared run's logs and its
+presence key show `o:<org>`.
+
+**Behaviour that changes for a Copilot agent.** Its tools now see the
+whole context of their run, and not only the artifact context. The acting
+member, the tenant binding, the credential binding and the relay thread
+reach them. A `call_agent` from a Copilot parent now streams its sub-agent
+through the relay, where it fell to the batch path before.
+
+**Acceptance.** `tests/unit/test_h201_run_context.py` holds 17 tests. The
+R8 test runs on the phase 4 catalog, as the NOBYPASSRLS app role.
+
+- Two overlapping runs of org A and org B on one event loop each write to
+  their own tenant dir. Each blob mirror and each event reach their own run.
+  This holds on the MAF path and on the real Copilot tool adapter, called
+  from another thread as the SDK calls it.
+- The same pair through `run_agent` writes its own dir, its own blob row
+  and its own session on the R8 database.
+- A worker thread of a run keeps that run's context. A bare executor thread
+  sees none.
+- A sub-agent gets its own context. A sibling task of the parent, and the
+  parent after the sub-agent, still see the parent's own mapping.
+- A delegated personal agent works in the parent member's `u:` dir, on the
+  batch path and on the Copilot path. With no member it is refused.
+- A shared run stamps `o:<org>`, on the batch path and on the stream path.
+- The executor's own Copilot paths carry the context. A write_artifact call
+  from another thread lands in the run's tenant dir and reaches the run's
+  stream, through stream Tier 1.5 and through `_run_with_maf_agent`.
+- `write_artifact.py` holds no module-level dict, under any name.
+- With no context, nothing is written and no event reaches any stream.
+
+**Mutations.** Each one below fails at least one test.
+
+| Mutation | Tests that fail |
+|---|---|
+| the global dict put back | 8 |
+| `carry_run_context` made a no-op | 2 |
+| `asyncio.to_thread` in `run_script` swapped for a bare `run_in_executor` | 1 |
+| the sub-agent's token reset removed | 1 |
+| the sub-agent's derive removed | 2 |
+| the delegated batch run takes its member from the payload | 1 |
+| the Copilot sub-agent ignores the parent's member | 2 |
+| a personal agent with no member is not refused | 2 |
+| the batch run's `o:` stamp removed | 1 |
+| the stream run's `o:` stamp removed | 1 |
+| the "single live run" fallback put back in `resolve_run_queue` | 2 |
+| the "single live run" fallback put back in `resolve_relay_thread_id` | 2 |
+| the temp-dir fallback put back in `write_artifact` | 2 |
+| the permission policy allows a write with no workspace | 2 |
+| the stream run's token never reset | 1 |
+| the carry loop removed from stream Tier 1.5 | 1 |
+| the carry loop removed from `_run_with_maf_agent` | 1 |
+| a module-level dict added to `write_artifact.py` | 1 |
+
+**What this part does not do.** H-201 in `HANDOFF.md` lists each item.
+
+- `/copilot/chat` and the gateway's `/pull` routes run the orchestrator
+  agent with no artifact context. Its `delegate_to_agent` therefore starts
+  a batch run that is not seen as a delegation, so a personal agent there
+  resolves no member. That run then works in `o:<org>`, as before this part.
+  The orchestrator agent has no `write_artifact`.
+- The `_RUN_QUEUES` registry and `_RUN_ORG` are still plain dicts keyed by
+  thread id. They are keyed per run, so this part leaves them.
+- The items of §21.15 that this part does not name stay open.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h201_run_context.py \
+  tests/unit/test_h201_tenant_workdirs.py -q -rs
 ```
 
 The `-rs` output must show no skip.

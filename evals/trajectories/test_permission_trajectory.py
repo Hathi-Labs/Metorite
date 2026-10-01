@@ -10,12 +10,12 @@ See specs/permissions_sandbox_b6.md.
 from __future__ import annotations
 
 from acb_skills import permission_policy as pp
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
 
 def test_permission_decision_table_is_the_contract():
-    _WRITE_ARTIFACT_CONTEXT["workspace_root"] = "/opt/acb/repos/agent-x"
-    try:
+    with artifact_context_scope():
+        bind_artifact_context(workspace_root="/opt/acb/repos/agent-x")
         cases = [
             # (request, expected_approved, expected_code)
             ({"read_only": True}, True, "read_only"),
@@ -36,8 +36,6 @@ def test_permission_decision_table_is_the_contract():
                 f"policy drift for {req}: got ({ok},{code}), "
                 f"want ({want_ok},{want_code})"
             )
-    finally:
-        _WRITE_ARTIFACT_CONTEXT.pop("workspace_root", None)
 
 
 def test_dangerous_shell_is_always_denied_in_enforce():

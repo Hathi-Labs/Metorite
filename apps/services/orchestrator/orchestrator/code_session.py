@@ -108,7 +108,6 @@ async def run_copilot_code_session(
 
     scope = str(getattr(settings, "copilot_sandbox_scope", "") or "")
     sandbox_handle = None
-    permission_check_root_prev: str | None = None
     if "code_task" in {s.strip() for s in scope.split(",") if s.strip()}:
         from orchestrator.copilot_sandbox import (
             CONTAINER_WORKSPACE,
@@ -138,20 +137,27 @@ async def run_copilot_code_session(
         "code_session.start", workspace=workspace, model=model,
         task_preview=task[:120], sandboxed=sandbox_handle is not None,
     )
+    from acb_skills.write_artifact import (
+        derive_artifact_context,
+        enter_artifact_context,
+        reset_artifact_context,
+    )
+
+    from orchestrator.copilot_agent import carry_run_context
+
+    # H-201 (§21.16): the sandbox root lives in this call's own copy of the
+    # run's artifact context, and the token gives the run its exact context
+    # back. The code-task session's SDK callbacks run in that copy.
+    artifact_token = enter_artifact_context()
     try:
         if sandbox_handle is not None:
-            from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
-            permission_check_root_prev = _WRITE_ARTIFACT_CONTEXT.get("permission_check_root")
-            _WRITE_ARTIFACT_CONTEXT["permission_check_root"] = CONTAINER_WORKSPACE
+            derive_artifact_context(permission_check_root=CONTAINER_WORKSPACE)
+        carry_run_context(agent)
         async with agent:
             result = await asyncio.wait_for(agent.run(task), timeout=timeout)
     finally:
+        reset_artifact_context(artifact_token)
         if sandbox_handle is not None:
-            from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
-            if permission_check_root_prev is None:
-                _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
-            else:
-                _WRITE_ARTIFACT_CONTEXT["permission_check_root"] = permission_check_root_prev
             await stop_copilot_sandbox(sandbox_handle)
     text = getattr(result, "text", None) or str(result)
     _log.info("code_session.done", chars=len(text))

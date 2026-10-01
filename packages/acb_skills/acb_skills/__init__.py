@@ -2,7 +2,7 @@
 from acb_skills.agent_tools import call_agent, call_agent_background
 from acb_skills.web_tools import fetch_page, web_search
 from acb_skills.write_artifact import (
-    write_artifact, share_artifact, _WRITE_ARTIFACT_CONTEXT,
+    write_artifact, share_artifact, artifact_context,
 )
 from acb_skills.todo_tools import manage_todo_list
 from acb_skills.ask_tools import ask_questions
@@ -56,7 +56,7 @@ __all__ = [
     # File-writing tool (auto-injected; also importable explicitly)
     "write_artifact",
     "share_artifact",
-    "_WRITE_ARTIFACT_CONTEXT",
+    "artifact_context",
     # Todo-list management tool (auto-injected; also importable explicitly)
     "manage_todo_list",
     # HITL elicitation tool (auto-injected)

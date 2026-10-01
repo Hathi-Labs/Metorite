@@ -90,18 +90,17 @@ def _field(request: Any, name: str) -> Any:
 
 def _workspace_root() -> str | None:
     try:
-        from acb_skills.write_artifact import (
-            _WRITE_ARTIFACT_CONTEXT,
-        )
+        from acb_skills.write_artifact import artifact_context
         # BO-7 phase 2: a sandboxed Copilot session (copilot_sandbox.py) reports
         # PermissionRequest paths relative to the CONTAINER's fixed mount point
         # (/workspace/repo), not the host workspace_root — the call site sets
         # permission_check_root for the duration of that call so this containment
         # check compares against the right root. Unset everywhere else, so this
         # is a no-op for every non-sandboxed call.
+        ctx = artifact_context()
         return (
-            _WRITE_ARTIFACT_CONTEXT.get("permission_check_root")
-            or _WRITE_ARTIFACT_CONTEXT.get("workspace_root")
+            ctx.get("permission_check_root")
+            or ctx.get("workspace_root")
             or None
         )
     except Exception:
@@ -172,6 +171,11 @@ def decide(request: Any) -> tuple[bool, str, str]:
     #    same reasoning: a tool's own annotation cannot waive this.
     if has_write_redir or new_file is not None or path:
         root = _workspace_root()
+        # H-201 (§21.16): a write to a path with NO run context has no
+        # workspace to be inside, so it is refused. The old global dict hid
+        # this case, because it always held the workspace of SOME run.
+        if path and not root:
+            return False, "write_without_workspace", path[:200]
         if root and path and not _is_within(path, root):
             return False, "write_out_of_workspace", path[:200]
 

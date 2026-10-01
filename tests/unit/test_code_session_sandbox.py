@@ -13,7 +13,10 @@ import types
 from typing import ClassVar
 
 import pytest
-from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
+from acb_skills.write_artifact import (
+    artifact_context,
+    derive_artifact_context,
+)
 from orchestrator import copilot_sandbox
 from orchestrator.copilot_sandbox import CopilotSandboxHandle
 
@@ -48,12 +51,12 @@ class _FakeAgent:
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     _FakeAgent.instances = []
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(permission_check_root=None)
     monkeypatch.setattr(
         "orchestrator.copilot_agent.MetoriteCopilotAgent", _FakeAgent,
     )
     yield
-    _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
+    derive_artifact_context(permission_check_root=None)
 
 
 def _settings(**overrides) -> types.SimpleNamespace:
@@ -98,7 +101,7 @@ async def test_scope_off_never_touches_sandbox_or_working_directory(monkeypatch)
     agent = _FakeAgent.instances[0]
     assert agent.default_options["working_directory"] == "/tmp/ws"
     assert agent._sandbox_cli_url is None
-    assert "permission_check_root" not in _WRITE_ARTIFACT_CONTEXT
+    assert "permission_check_root" not in artifact_context()
 
 
 @pytest.mark.asyncio
@@ -127,7 +130,7 @@ async def test_scope_on_and_spawn_succeeds_redirects_workspace_and_cleans_up(mon
     real_aenter = _FakeAgent.__aenter__
 
     async def _capturing_aenter(self):
-        permission_root_during_call["value"] = _WRITE_ARTIFACT_CONTEXT.get("permission_check_root")
+        permission_root_during_call["value"] = artifact_context().get("permission_check_root")
         return await real_aenter(self)
 
     monkeypatch.setattr(_FakeAgent, "__aenter__", _capturing_aenter)
@@ -147,7 +150,7 @@ async def test_scope_on_and_spawn_succeeds_redirects_workspace_and_cleans_up(mon
 
     assert permission_root_during_call["value"] == copilot_sandbox.CONTAINER_WORKSPACE
     # Cleaned up after the call — no leakage into the next (unsandboxed) call.
-    assert "permission_check_root" not in _WRITE_ARTIFACT_CONTEXT
+    assert "permission_check_root" not in artifact_context()
     assert stop_calls == [handle]
 
 
@@ -177,7 +180,7 @@ async def test_scope_on_but_spawn_fails_falls_back_in_process(monkeypatch):
     assert agent.default_options["working_directory"] == "/tmp/ws"
     assert agent._sandbox_cli_url is None
     assert stop_calls == []  # nothing to stop — never spawned
-    assert "permission_check_root" not in _WRITE_ARTIFACT_CONTEXT
+    assert "permission_check_root" not in artifact_context()
 
 
 @pytest.mark.asyncio

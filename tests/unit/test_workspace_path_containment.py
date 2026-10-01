@@ -14,7 +14,7 @@ import pytest
 
 from acb_skills.note_tools import recall_notes, save_note
 from acb_skills.write_artifact import (
-    _WRITE_ARTIFACT_CONTEXT,
+    derive_artifact_context,
     resolve_in_workspace,
     write_artifact,
 )
@@ -32,12 +32,8 @@ def test_resolve_in_workspace_rejects_traversal_and_absolute(tmp_path):
 
 
 def _set_ws(monkeypatch, tmp_path):
-    monkeypatch.setitem(
-        _WRITE_ARTIFACT_CONTEXT, "workspace_root", str(tmp_path)
-    )
-    monkeypatch.setitem(
-        _WRITE_ARTIFACT_CONTEXT, "session_id", "sess-test"
-    )
+    derive_artifact_context(workspace_root=str(tmp_path))
+    derive_artifact_context(session_id="sess-test")
 
 
 def test_write_artifact_refuses_traversal(tmp_path, monkeypatch):

@@ -39,8 +39,7 @@ def _prepare(wa, monkeypatch, tmp_path) -> None:
     """
     monkeypatch.setattr(wa, "_notify", _noop_notify)
     monkeypatch.setattr(wa, "mirror_to_blob_store", _noop_mirror)
-    wa._WRITE_ARTIFACT_CONTEXT.clear()
-    wa._WRITE_ARTIFACT_CONTEXT.update(
+    wa.bind_artifact_context(**
         {"session_id": "sess-lint", "workspace_root": str(tmp_path)}
     )
 

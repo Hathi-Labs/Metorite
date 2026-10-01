@@ -82,6 +82,87 @@ def _hitl_pending() -> bool:
         return False
 
 
+# ── The run's context for the SDK callbacks (H-201, §21.16) ───────────────
+# The Copilot SDK reads its JSON-RPC stream on a thread of its own. It hands a
+# tool call or a permission request to the event loop with
+# ``call_soon_threadsafe`` / ``run_coroutine_threadsafe``, and those take the
+# context of THAT thread, which holds no value of any run. So a tool of a
+# Copilot agent saw no ContextVar of its run. The tools used to read the
+# workspace and the session from a process-global dict instead, which gave
+# them whatever run wrote the dict last.
+#
+# ``carry_run_context`` captures the context of the run that calls it, and
+# makes every tool handler and the permission handler of the agent run in a
+# COPY of it. Each call gets its own copy, so a tool cannot change what the
+# run or a parallel tool sees.
+
+_CARRIED = "_metorite_run_context_carried"
+
+
+def _in_run_context(fn: Any, ctx: Any) -> Any:
+    """*fn*, run in a fresh copy of *ctx* on every call.
+
+    A coroutine runs as its own task in that copy, and the caller awaits the
+    task. A plain result comes back as it is.
+    """
+    import functools
+    import inspect
+
+    @functools.wraps(fn)
+    def _call(*args: Any, **kwargs: Any) -> Any:
+        run_ctx = ctx.copy()
+        result = run_ctx.run(fn, *args, **kwargs)
+        if inspect.iscoroutine(result):
+            return asyncio.get_running_loop().create_task(result, context=run_ctx)
+        return result
+
+    return _call
+
+
+def _tool_in_run_context(tool: Any, ctx: Any) -> Any:
+    """A copy of one prepared SDK tool whose handler runs in *ctx*."""
+    import dataclasses
+
+    handler = getattr(tool, "handler", None)
+    if handler is not None and dataclasses.is_dataclass(tool):
+        return dataclasses.replace(tool, handler=_in_run_context(handler, ctx))
+    if isinstance(tool, dict) and callable(tool.get("handler")):
+        return {**tool, "handler": _in_run_context(tool["handler"], ctx)}
+    return tool
+
+
+def carry_run_context(agent: Any) -> None:
+    """Run the SDK callbacks of *agent* in the context of the calling run.
+
+    Call it on the run's own frame, AFTER the run binds its artifact context
+    and its permission handler, and BEFORE the agent opens a session. It
+    captures that context now. The tools are wrapped when the SDK prepares
+    them for a session, and the permission handler is wrapped here.
+
+    A no-op for an agent that is not a Copilot SDK agent, and for an agent
+    that already carries a context. It never raises: an agent it cannot wrap
+    runs as before, and its tools then read an empty context and fail closed.
+    """
+    import contextvars
+
+    prepare = getattr(agent, "_prepare_tools", None)
+    if prepare is None or getattr(agent, _CARRIED, False):
+        return
+    ctx = contextvars.copy_context()
+
+    def _prepare_in_run_context(tools: Any) -> Any:
+        return [_tool_in_run_context(t, ctx) for t in prepare(tools)]
+
+    try:
+        agent._prepare_tools = _prepare_in_run_context
+        handler = getattr(agent, "_permission_handler", None)
+        if handler is not None:
+            agent._permission_handler = _in_run_context(handler, ctx)
+        setattr(agent, _CARRIED, True)
+    except Exception:
+        logger.warning("carry_run_context: could not wrap agent %r", agent)
+
+
 class MetoriteCopilotAgent(GitHubCopilotAgent):
     """GitHubCopilotAgent with BYOK provider forwarding and rich event streaming.
 
