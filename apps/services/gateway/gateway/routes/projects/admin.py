@@ -47,6 +47,7 @@ from gateway.routes.projects.core import (
     remap_task_statuses,
     require_done_status,
     require_known_tenant,
+    require_same_tenant,
     require_org_vocabulary_edit,
     require_org_vocabulary_write,
     require_row,
@@ -1035,6 +1036,7 @@ async def patch_type(
             )
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "task type")
+            require_same_tenant(vis, existing)
             if "name" in values:
                 values["name"] = str(values["name"] or "").strip()
                 if not values["name"]:
@@ -1107,6 +1109,7 @@ async def delete_type(
             require_org_vocabulary_edit(user, existing.name)
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "task type")
+            require_same_tenant(vis, existing)
         else:
             vis = await resolve_visibility(db, user)
             await load_visible_project(db, vis, str(existing.project_id))

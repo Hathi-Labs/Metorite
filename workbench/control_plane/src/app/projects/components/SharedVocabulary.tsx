@@ -97,7 +97,8 @@ export default function SharedVocabulary({ onChanged, anchorSpaceId = null }: Pr
     };
   }, []);
 
-  const run = async (work: () => Promise<string>) => {
+  /** Runs one change. True when it landed, so a form clears only then. */
+  const run = async (work: () => Promise<string>): Promise<boolean> => {
     setError(null);
     setNotice(null);
     try {
@@ -105,8 +106,10 @@ export default function SharedVocabulary({ onChanged, anchorSpaceId = null }: Pr
       setEditing(null);
       setVocab(await projectsApi.vocabulary());
       onChanged();
+      return true;
     } catch (err) {
       setError(String((err as Error).message));
+      return false;
     }
   };
 
@@ -392,7 +395,7 @@ function AddShared({
   onAdd,
 }: {
   kind: VocabularyKind;
-  onAdd: (name: string, fieldType: FieldType, options: string[]) => Promise<void>;
+  onAdd: (name: string, fieldType: FieldType, options: string[]) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
   const [fieldType, setFieldType] = useState<FieldType>("text");
@@ -411,7 +414,9 @@ function AddShared({
               .map((o) => o.trim())
               .filter(Boolean)
           : [];
-        void onAdd(clean, fieldType, list).then(() => {
+        // A refused add keeps what the admin typed (the PS-3b review).
+        void onAdd(clean, fieldType, list).then((ok) => {
+          if (!ok) return;
           setName("");
           setOptions("");
         });

@@ -39,6 +39,7 @@ from sqlalchemy import text
 OWNER = "ws42r-owner@example.test"
 MEMBER = "ws42r-member@example.test"
 SLUG = "ws42retire"
+SLUG_B = "ws42retire-b"
 S1 = "42e00000-0000-4000-8000-0000000000a1"
 S2 = "42e00000-0000-4000-8000-0000000000a2"
 failures: list[str] = []
@@ -74,11 +75,11 @@ async def clean() -> None:
     for table in ("pm_tags", "pm_custom_fields", "pm_task_types"):
         await run(
             f"DELETE FROM {table} WHERE organization_id IN "
-            "(SELECT id FROM organization WHERE slug = :s)",
-            s=SLUG,
+            "(SELECT id FROM organization WHERE slug = ANY(:s))",
+            s=[SLUG, SLUG_B],
         )
     await run("DELETE FROM app_user WHERE email = ANY(:e)", e=[OWNER, MEMBER])
-    await run("DELETE FROM organization WHERE slug = :s", s=SLUG)
+    await run("DELETE FROM organization WHERE slug = ANY(:s)", s=[SLUG, SLUG_B])
 
 
 async def seed() -> tuple[str, dict[str, str]]:
@@ -193,6 +194,37 @@ async def seed() -> tuple[str, dict[str, str]]:
             .fetchone()
             .id  # type: ignore[attr-defined]
         )
+    # Another organization, with one shared tag of its own.
+    org_b = str(
+        (
+            await run(
+                "INSERT INTO organization (slug, display_name) VALUES (:s, :s) RETURNING id",
+                s=SLUG_B,
+            )
+        )
+        .fetchone()
+        .id  # type: ignore[attr-defined]
+    )
+    ids["tag_b"] = str(
+        (
+            await run(
+                "INSERT INTO pm_tags (project_id, organization_id, name, color, created_by) "
+                "VALUES (NULL, CAST(:o AS uuid), 'theirs', 'red', 'b@example.test') RETURNING id",
+                o=org_b,
+            )
+        )
+        .fetchone()
+        .id  # type: ignore[attr-defined]
+    )
+    # Space 1 keeps its own "kept" tag, which a shared merge must not fill.
+    await row(
+        "pm_tags",
+        tag_cols,
+        "CAST(:p AS uuid), CAST(:o AS uuid), 'kept', 'gray', :me",
+        "tag_kept_local",
+        p=S1,
+    )
+    await row("pm_tags", tag_cols, "NULL, CAST(:o AS uuid), 'kept', 'gray', :me", "tag_kept_shared")
     return org, ids
 
 
@@ -240,6 +272,42 @@ async def main() -> None:
             "a member may not delete a shared tag",
             await status_of(pm_tags.delete_tag(ids["tag_shared"], user=member)),
             403,
+        )
+
+        # The review's P0: another organization's shared tag is not found,
+        # for every act, and it survives.
+        theirs = ids["tag_b"]
+        for label, call in (
+            ("rename", pm_tags.patch_tag(theirs, pm_tags.TagIn(name="x"), user=owner)),
+            ("delete", pm_tags.delete_tag(theirs, user=owner)),
+            ("count", pm_vocab.vocabulary_impact("tags", theirs, user=owner)),
+            (
+                "merge",
+                pm_tags.merge_tag(
+                    ids["tag_other"], pm_tags.MergeIn(into_tag_id=theirs), user=owner
+                ),
+            ),
+        ):
+            check(
+                f"another organization's shared tag: {label} is not found",
+                await status_of(call),
+                404,
+            )
+        check(
+            "and it survives",
+            await one("SELECT count(*) FROM pm_tags WHERE id = CAST(:i AS uuid)", i=theirs),
+            1,
+        )
+        check(
+            "a merge onto a name a space keeps for itself is refused",
+            await status_of(
+                pm_tags.merge_tag(
+                    ids["tag_other"],
+                    pm_tags.MergeIn(into_tag_id=ids["tag_kept_shared"]),
+                    user=owner,
+                )
+            ),
+            409,
         )
 
         # The rename regression the scope fix closes: space 2's own "shared" stays.

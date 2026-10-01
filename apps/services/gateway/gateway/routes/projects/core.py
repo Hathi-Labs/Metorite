@@ -2159,6 +2159,23 @@ def require_known_tenant(vis: Visibility, what: str) -> None:
         )
 
 
+def require_same_tenant(vis: Visibility, row: Any) -> None:
+    """Refuse a shared row of ANOTHER organization, as 404 (R5).
+
+    🔴 **The PS-3b review's P0.** A shared row has no project, so no
+    ``load_visible_project`` fences it. ``require_row`` loads by id alone, and
+    the permission check asks only what the caller may do in THEIR
+    organization. FORCE RLS is the other fence, and it is not live on
+    production (work_plan.md H3). Without this, an admin of one organization
+    who knew the id of another's shared tag could rename it, strip it from
+    every task there, or read the count of that organization's tasks.
+    """
+    if vis.organization_id is None or str(getattr(row, "organization_id", "")) != str(
+        vis.organization_id
+    ):
+        raise HTTPException(status_code=404, detail="Not found.")
+
+
 def require_org_vocabulary_write(user: Any) -> None:
     """Both gates for minting an org-wide row: the flag, then the permission."""
     if not org_vocabularies_enabled():

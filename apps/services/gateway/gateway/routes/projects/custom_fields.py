@@ -39,6 +39,7 @@ from gateway.routes.projects.core import (
     refuse_org_wide_rescope,
     refuse_org_wide_write,
     require_known_tenant,
+    require_same_tenant,
     require_org_vocabulary_edit,
     require_known_tenant,
     require_org_vocabulary_write,
@@ -524,6 +525,7 @@ async def patch_field(
             )
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "custom field")
+            require_same_tenant(vis, existing)
         else:
             refuse_org_wide_write(existing, "custom field")
             vis = await resolve_visibility(db, user)
@@ -586,6 +588,7 @@ async def delete_field(
             require_org_vocabulary_edit(user, existing.name)
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "custom field")
+            require_same_tenant(vis, existing)
         else:
             vis = await resolve_visibility(db, user)
             await load_visible_project(db, vis, str(existing.project_id))

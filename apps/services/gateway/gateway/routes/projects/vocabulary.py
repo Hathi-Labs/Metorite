@@ -39,6 +39,7 @@ from gateway.routes.projects.core import (
     is_org_wide,
     org_vocabularies_enabled,
     require_known_tenant,
+    require_same_tenant,
     require_org_vocabulary_edit,
     require_row,
     resolve_visibility,
@@ -57,6 +58,10 @@ ORG_TAGS_SQL = (
     "  SELECT count(*) FROM pm_tasks t "
     "   WHERE t.organization_id = g.organization_id "
     "     AND t.archived_at IS NULL AND g.name = ANY(t.tags)"
+    # A space with its own tag of this name wears ITS tag, not the shared one.
+    "     AND t.root_project_id NOT IN (SELECT s.project_id FROM pm_tags s "
+    "          WHERE s.project_id IS NOT NULL AND s.organization_id = g.organization_id "
+    "            AND lower(s.name) = lower(g.name))"
     ") AS task_count "
     "  FROM pm_tags g "
     " WHERE g.project_id IS NULL AND g.organization_id = CAST(:org AS uuid) "
@@ -67,6 +72,9 @@ ORG_FIELDS_SQL = (
     "  SELECT count(*) FROM pm_tasks t "
     "   WHERE t.organization_id = g.organization_id "
     "     AND t.archived_at IS NULL AND t.custom_fields ? g.field_key"
+    "     AND t.root_project_id NOT IN (SELECT s.project_id FROM pm_custom_fields s "
+    "          WHERE s.project_id IS NOT NULL AND s.organization_id = g.organization_id "
+    "            AND s.field_key = g.field_key)"
     ") AS task_count "
     "  FROM pm_custom_fields g "
     " WHERE g.project_id IS NULL AND g.organization_id = CAST(:org AS uuid) "
@@ -153,7 +161,9 @@ async def vocabulary_impact(
         if not is_org_wide(row):
             raise HTTPException(status_code=409, detail="This entry belongs to one space.")
         require_org_vocabulary_edit(user, row.name)
-        require_known_tenant(await resolve_visibility(db, user), "entry")
+        vis = await resolve_visibility(db, user)
+        require_known_tenant(vis, "entry")
+        require_same_tenant(vis, row)
         where, params = governed_tasks_scope(row, table)
         counted = (
             await db.execute(

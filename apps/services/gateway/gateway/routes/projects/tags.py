@@ -46,6 +46,7 @@ from gateway.routes.projects.core import (
     refuse_org_wide_rescope,
     refuse_org_wide_write,
     require_known_tenant,
+    require_same_tenant,
     require_org_vocabulary_edit,
     require_known_tenant,
     require_org_vocabulary_write,
@@ -454,6 +455,7 @@ async def patch_tag(
             )
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "tag")
+            require_same_tenant(vis, existing)
         else:
             refuse_org_wide_write(existing, "tag")
             vis = await resolve_visibility(db, user)
@@ -535,6 +537,7 @@ async def tag_impact(
         if is_org_wide(existing):
             require_org_vocabulary_edit(user, existing.name)
             require_known_tenant(vis, "tag")
+            require_same_tenant(vis, existing)
         else:
             await load_visible_project(db, vis, str(existing.project_id))
         where, params = governed_tasks_scope(existing, "pm_tags")
@@ -585,9 +588,30 @@ async def merge_tag(
             require_org_vocabulary_edit(user, source.name)
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "tag")
+            require_same_tenant(vis, source)
         else:
             vis = await resolve_visibility(db, user)
             await load_visible_project(db, vis, str(source.project_id))
+        if is_org_wide(target):
+            require_same_tenant(vis, target)
+        if is_org_wide(source):
+            # The rename's own rule, at merge: a space with its OWN tag named
+            # like the target would absorb the merged tasks into ITS tag,
+            # because tags are text (the PS-3b review).
+            owned = (await db.execute(
+                text(
+                    "SELECT 1 FROM pm_tags WHERE project_id IS NOT NULL "
+                    "   AND organization_id = CAST(:org AS uuid) "
+                    "   AND lower(name) = lower(:name) LIMIT 1"
+                ),
+                {"org": str(target.organization_id), "name": target.name},
+            )).fetchone()
+            if owned is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A space has its own tag called '{target.name}'. Merging into "
+                           f"the shared one would fold tasks into that space's tag.",
+                )
         if str(source.project_id) != str(target.project_id):
             # 404-shaped rather than 403 (R5), but the reason is worth saying:
             # tags are root-scoped, so a cross-project merge would move a label
@@ -630,6 +654,7 @@ async def delete_tag(
             require_org_vocabulary_edit(user, existing.name)
             vis = await resolve_visibility(db, user)
             require_known_tenant(vis, "tag")
+            require_same_tenant(vis, existing)
         else:
             vis = await resolve_visibility(db, user)
             await load_visible_project(db, vis, str(existing.project_id))
