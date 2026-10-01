@@ -1,8 +1,11 @@
 # Email App — Master Plan (single source of truth)
 
 > **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
-> **Status:** 🟢 Live on the VPS, single Outlook account (`vjvarada@fracktal.in`), daily-driver. *(second mailbox Ishaanpilar@fracktal.in connected 2026-08-05 — re-verify §7's single-account premises at dispatch; noted 2026-08-09)*
-> **Last status change:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
+> **Status (verified against the code and the box on 2026-10-01):** 🔴 **Email is OFF in
+> production.** The box sets `EMAIL_SYNC_ENABLED=false`. **§10 owns the return** of Email for every organization.
+> Nobody has set up a Microsoft app on the box.
+> **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
+> **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
 > the Connect button navigated the browser straight at the gateway, which default-deny 401s.
 > Fixed by routing the authorize leg through a Next BFF, and the `user_email` override — the
@@ -408,6 +411,9 @@ or API client to create a pattern by hand.
    parameter survives only as a fallback for a caller with no header identity. The browser no
    longer sends it at all, and the BFF does not forward it.
 
+   > **Superseded by §10.4 EM-T1a (2026-10-01).** A stateless signed state replaces the Redis
+   > design below, and the callback moves behind the BFF session. Read §10 for the fix.
+
    **STILL OPEN.** `oauth_callback` is unauthenticated (no `get_current_user`) and its `state` is
    an unsigned random token. `_oauth_states` (`oauth.py`) is still a module-level in-process dict:
    **every deploy restarts the gateway, so any flow in flight when a deploy lands loses its state
@@ -481,3 +487,167 @@ or API client to create a pattern by hand.
 | [`archive/email_inbox_zero_parity_plan.md`](./archive/email_inbox_zero_parity_plan.md) | Historical parity roadmap; open items absorbed here. |
 | [`archive/email_tool_consolidation.md`](./archive/email_tool_consolidation.md) | Historical tool plan; closed at 42 tools (§6 decision). |
 | [`archive/email_app_review.md`](./archive/email_app_review.md) | M0→M9 build log. |
+
+---
+
+## 10. Outlook for every organization — tenancy, onboarding, triage (2026-10-01)
+
+> **Owner directive, 2026-10-01:** "Customers should not do complex things to integrate their
+> email." The setup that a customer does must feel like a consumer app. This section is the plan
+> that brings Email back to production for more than one organization. It wins over §1's
+> "one founder, one mailbox" premise and over §7 where the two disagree.
+
+### 10.1 Measured state (2026-10-01)
+
+- **Email is OFF in production.** The box sets `EMAIL_SYNC_ENABLED=false`, and the journal logs
+  `sync.email_sync_disabled` at each gateway start. The cutover runbook turned it off because the
+  email background paths bind no tenant (H4 slices 6b and 6c).
+- **No Microsoft app exists on the box.** `MSFT_OAUTH_CLIENT_ID` is empty, and nothing else
+  supplies a client ID. Nobody can connect an Outlook mailbox today.
+- **The Outlook code is complete.** Graph sync, send, drafts, categories, the push webhook and
+  the automation pipeline all exist. The gap is tenancy and onboarding, not provider code.
+- **Five service paths bind no tenant.** These are the OAuth callback, the Graph webhook,
+  subscription renewal, the sync scheduler, and the 29 `_get_db()` sites that the sync pipeline
+  reaches. Under FORCE RLS as `acb_app`, each one reads zero rows and each insert fails.
+- **The OAuth state is weak.** It is an unsigned token in an in-process dict
+  (`transport/oauth.py`). A restart loses it, a second worker cannot see it, and it never expires.
+
+### 10.2 Decisions (owner, 2026-10-01)
+
+| Id | Decision |
+|---|---|
+| **D-EM-1** | **Metorite owns ONE multi-tenant Microsoft app.** It accepts work accounts and personal Outlook.com accounts (authority `common`). Its credentials live on the operator side. A customer never registers an app, pastes a key, or opens Integrations. |
+| **D-EM-2** | **The app lives in a dedicated Metorite Entra directory**, not in `fracktal.in`. The directory of customer zero must not hold the product. |
+| **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
+| **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
+| **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
+
+### 10.3 The customer flow (the acceptance target for EM-T3)
+
+1. **Empty state.** Email shows "Connect your email" with one large Microsoft 365 / Outlook
+   button. No step asks the member to configure OAuth.
+2. **Sign-in.** Microsoft sign-in opens with the address of the member as the `login_hint`.
+3. **Consent.** Microsoft shows the verified Metorite app. The member accepts.
+4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
+   fills while the first sync runs.
+5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
+   error to the callback. Metorite shows a guided page, never a raw error. The page gives two
+   paths. "Ask your IT admin" sends a prefilled email or copies the admin-consent link. "I am the
+   admin" opens the admin-consent endpoint, and one approval covers the whole company.
+6. **Pre-approval (optional).** In Settings → Organization → Email, an org admin can approve the
+   app for the company ahead of time. The admin then sees the connected-member count.
+7. **Reconnect.** When a refresh token fails, a banner offers one-click "Reconnect Outlook".
+8. **Disconnect.** One button in Settings removes the tokens and the synced data of the mailbox.
+
+### 10.4 Slices
+
+Each slice ships dark. `EMAIL_SYNC_ENABLED` stays `false` on the box until EM-T1b merges and a
+live check passes. To set it `true` is gate `enforcement-flip`.
+
+| Slice | Gate | Scope | Done when |
+|---|---|---|---|
+| **EM-T1a** | 🟢 AGENT-SAFE | **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
+| **EM-T1b** | 🟢 AGENT-SAFE | **The sync scheduler and the sync pipeline bind a tenant.** The startup sweep reads `organization` (RLS-exempt), then opens `tenant_session(org)` per organization to list its accounts. Each account task binds its organization. The three private engines of the scheduler go, and every session comes from the shared seam. The `_get_db()` sites that the sync pipeline reaches convert to tenant-bound sessions. Recount them at dispatch. A session that commits part way must open a new tenant-bound transaction, because `SET LOCAL` ends at commit. | Two organizations with one account each sync under their own tenant. No email path in the sync pipeline opens an unbound session, and `test_db_engine_seam.py` ratchets the count down. Then a live check on the box, and then `EMAIL_SYNC_ENABLED=true`. |
+| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
+| **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
+| **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
+| **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
+| **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
+
+#### 10.4.1 EM-T1a in full
+
+**Scope.**
+
+1. **Signed state.** The authorize leg signs a state with HMAC-SHA256. The state holds a version,
+   a nonce, the organization, the member, the provider, `redirect_after` and an expiry of 10
+   minutes. The MAC input starts with the purpose `email-oauth-state:v1`, so no other token that
+   the same secret signs can pass as a state. The secret is `gateway_session_secret`, and the
+   signer refuses a value in `acb_auth.member_proof.PUBLIC_DEFAULT_SECRETS`. The in-process
+   `_oauth_states` dict goes.
+2. **The authorize leg takes the identity from the session only.** It reads the organization and
+   the member from `get_current_user`. When either is missing, it refuses with 403. The
+   `user_email` query fallback and the `anonymous` path go.
+3. **The callback runs behind the session (R-4).** The redirect URI moves to the BFF:
+   `https://app.metorite.com/api/email/oauth/{provider}/callback`. The BFF attaches the session,
+   calls the gateway callback, and passes on its 302. The gateway callback is no longer exempt
+   from the feature gate. It verifies the MAC, the expiry and the provider. It then checks that
+   the member of the session is the member in the state. Last, `resolve_identity` must return the
+   organization in the state. Every failure redirects with `error=invalid_state`.
+4. **The callback writes inside one `tenant_session(org)`.** The explicit `commit()` calls go,
+   because the seam commits on exit. `refresh_account_sync` runs after the block.
+5. **The webhook binds a tenant from a signed value (R11).** `_ensure_subscription` builds
+   `notificationUrl` as `…/email/webhook/microsoft?org=<uuid>&sig=<hmac>`, with the purpose
+   `email-graph-webhook:v1`. The webhook echoes `validationToken` first. It then parses `org` as a
+   UUID and verifies `sig`. On a failure it returns 202 and queues nothing. It matches the
+   subscription and the `clientState` inside one `tenant_session(org)`.
+6. **The webhook refuses a null `clientState`.** It compares with `hmac.compare_digest`.
+7. **`_ensure_subscription` binds a tenant or does nothing.** It reads `current_tenant()`. When no
+   tenant is bound, it logs `email.subscription_unbound` and makes no DB call and no Graph call.
+   A renewal also updates `notificationUrl`. When Graph refuses that update, the code deletes the
+   subscription and creates a new one.
+
+**Non-goals.** No Redis nonce store. No change to `_sync_account` or the scheduler, which is
+EM-T1b. No change to Gmail beyond the shared state. No new environment variable.
+
+**Done when.**
+
+- A tampered, expired, wrong-provider or wrong-purpose state redirects with `invalid_state`.
+- The default or an empty secret refuses to sign.
+- An authorize call with no organization returns 403.
+- A callback whose session member differs from the state member redirects with `invalid_state`.
+- A callback for a member of org B writes a row of org B, and org A cannot read that row.
+- A webhook with a missing, malformed or unsigned `org` queues nothing and returns 202.
+- A webhook that names org A with a subscription of org B matches nothing.
+- A notification for an account whose stored `clientState` is null queues no sync.
+- `_ensure_subscription` with no bound tenant makes no Graph call and no DB write. With a bound
+  tenant, the `notificationUrl` carries that organization and a valid signature.
+- R8: the callback and webhook SQL run against a real database as a non-owner role, for two
+  organizations.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_webhook.py \
+  tests/unit/test_email_imports.py tests/unit/test_db_engine_seam.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_member_proof.py <new EM-T1a tests> -q
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+The R8 tests must show PASSED, not SKIPPED. A skip means that the database is not up.
+
+**Recorded risks.**
+
+- **R-1.** The state and the webhook signature use `gateway_session_secret` with a purpose
+  prefix. A new secret would cost an `env-write` and buy nothing.
+- **R-3.** A Graph subscription made before EM-T1a has no `org` in its URL. The renewal path
+  repairs it, and §10.5 makes every mailbox reconnect in any case.
+- **R-4 (closed here).** A signed state alone can be replayed for 10 minutes and is not tied to a
+  browser. An attacker could start the flow and get a victim to consent, and the mailbox of the
+  victim would then attach to the attacker. The callback behind the session closes this, because
+  the member of the session must match the state.
+
+### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
+
+These are one-time owner acts. No customer ever repeats them.
+
+1. Create a Microsoft Entra directory for Metorite. Use an account that Metorite owns.
+2. In that directory, open **App registrations** and select **New registration**.
+3. Set the name to `Metorite`.
+4. Set the supported account types to **any organizational directory and personal Microsoft accounts**.
+5. Add the web redirect URI `https://app.metorite.com/api/email/oauth/microsoft/callback`.
+   This is the app domain, not `api.`, because the callback runs behind the session (EM-T1a).
+6. Under **API permissions**, add these delegated Microsoft Graph permissions: `Mail.ReadWrite`,
+   `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read` and `offline_access`.
+7. Under **Branding**, add the Metorite logo, the home page, and the privacy and terms URLs on
+   `metorite.com`.
+8. Under **Certificates & secrets**, create a client secret. Record its expiry date.
+9. Join the Microsoft AI Cloud Partner Program. Verify `metorite.com` as the publisher domain, and
+   complete publisher verification on the app.
+10. Give the client ID and the secret to an agent session. The agent writes `MSFT_OAUTH_CLIENT_ID`
+    and `MSFT_OAUTH_CLIENT_SECRET` to the box under gate `env-write`. Do not paste the secret into
+    a chat that a transcript keeps. Write it on the box yourself, or use a one-time channel.
+
+**Effect on mailboxes connected today.** A refresh token belongs to the app that issued it. Each
+mailbox connected through an earlier app must reconnect once, through the EM-T3 banner.
