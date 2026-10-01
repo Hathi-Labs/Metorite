@@ -6,7 +6,7 @@
 > Nobody has set up a Microsoft app on the box.
 > **§10 progress:** ✅ **EM-T1a is MERGED (#559) and serving since 2026-10-01.** The gateway
 > signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
-> 🟡 **EM-T1b-1 is BUILT, not merged** (branch `email-t1b`, §10.4.2). The scheduler and the
+> ✅ **EM-T1b-1 is MERGED (#560) and serving since 2026-10-01** (§10.4.2). The scheduler and the
 > sync core bind a tenant. EM-T1b-2 is next. Email stays OFF until EM-T1b-2 merges and the live check passes.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -552,7 +552,7 @@ live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
-| **EM-T1b** | 🟢 AGENT-SAFE | 🟡 **EM-T1b-1 BUILT, not merged (2026-10-01).** **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
+| **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 (2026-10-01).** 🟡 EM-T1b-2 in build. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
@@ -658,7 +658,7 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
 
 #### 10.4.2 EM-T1b in full
 
-**Status.** 🟡 EM-T1b-1 is BUILT, not merged (branch `email-t1b`, 2026-10-01). The new fence is
+**Status.** ✅ EM-T1b-1 is MERGED as #560 and serving (`bad592be`, 2026-10-01). The new fence is
 `tests/unit/test_email_scheduler_tenancy.py`, with R8 cases for the sweep, the sync core and
 `mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 102. EM-T1b-2 is not started.
 
@@ -675,7 +675,8 @@ ends `SET LOCAL`, and each statement after it runs with no tenant. EM-T1b uses *
 into phases**: each phase opens its own `tenant_session(org)` and calls no `commit()`. The seam
 of `acb_common.db` does not change in EM-T1b. The EM-T1b-2 audit may propose (B), a listener on
 the seam that applies `set_config` again on each new transaction. Only an edit to this section
-can choose (B).
+can choose (B). The EM-T1b-2 audit (2026-10-01) confirmed (A) for all 20 commits and did not
+propose (B).
 
 ##### EM-T1b-1 — the scheduler, the sync core and the scheduler hooks
 
@@ -715,12 +716,25 @@ can choose (B).
 
 ##### EM-T1b-2 — the automation sites that the pipeline reaches
 
-The ten functions are `runner._run_rules_job`, `cleanup.sweep_uncategorized`,
-`senders._categorize_senders_job`, `senders._maybe_auto_archive`, `senders._bulk_reconcile_provider`,
-`replyzero._maybe_classify_threads`, `replyzero._mark_thread_replied`,
-`replyzero.apply_thread_status_correction`, `digest._maybe_send_digest` and
-`followups._maybe_send_follow_up_reminders`. Each opens no unbound session after EM-T1b-2. They
-hold about 20 commits part way. Dispatch EM-T1b-2 after EM-T1b-1 merges, with its own audit.
+The ten functions, all under `apps/services/gateway/gateway/routes/email/`:
+
+| Function | File |
+|---|---|
+| `_run_rules_job` | `automation/runner.py` |
+| `sweep_uncategorized` | `automation/cleanup.py` |
+| `_categorize_senders_job`, `_maybe_auto_archive`, `_bulk_reconcile_provider` | `automation/senders.py` |
+| `_maybe_classify_threads`, `_mark_thread_replied`, `apply_thread_status_correction` | `automation/replyzero.py` |
+| `_maybe_send_digest` | `digest.py` |
+| `_maybe_send_follow_up_reminders` | `automation/followups.py` |
+
+Each one changes to `_tenant_session()` with the ambient tenant, and keeps no `_get_db()` and no
+`commit()`. They hold 20 commits today. Dispatch EM-T1b-2 after EM-T1b-1 merges.
+
+Two rules apply to each function:
+
+- The broad `except Exception` wraps the `async with` block, never the reverse. Otherwise a
+  swallowed DB error makes the seam commit an aborted transaction.
+- No block covers more external I/O than the code covers today. EM-T4 owns the I/O that stays.
 
 **Non-goals (both parts).** `inbound.py` (the gateway does not start it). The 12 request jobs. The
 work of EM-T4 on sessions across I/O, except the phase split of item 6. The organization lookup of
@@ -740,8 +754,22 @@ CRM auto-lead. The `TODO(WS-29 slice 6b)` of the orchestrator in `executor.py`.
 - `_ALLOWED` has no entry for `scheduler.py`, and `H2_BASELINE_ELSEWHERE` is lower.
 - With the flag OFF, `start_background_sync` returns `{}` and opens no session.
 
-**Done when (EM-T1b-2).** Each of the ten functions opens no unbound session. For each family, an
-R8 case proves that a write after a commit part way lands in the right organization.
+**Done when (EM-T1b-2).**
+
+- An AST fence finds no `await _get_db()` and no `.commit()` in any of the ten functions. A
+  companion test proves that the fence can fail.
+- With no tenant bound, each function opens no session and writes nothing.
+- A hermetic test proves that a FastAPI BackgroundTask sees `current_tenant()` equal to the
+  organization of the request, under `TenantScopeMiddleware`.
+- R8, as the non-owner role, for organizations A and B. In each family, the second write is the
+  one that came after a former commit part way. Organization A reads none of the rows of B.
+  - runner: two inbox rows get `rules_processed_at`. Their `email_executed_rules` rows carry B.
+  - cleanup: two decided messages give two `email_executed_rules` rows in B.
+  - senders: categorize writes `email_senders` rows in B. A failed auto-archive reverts in B.
+  - replyzero: one filed and one gap thread give two `email_thread_status` rows in B. A status
+    correction writes in B.
+  - digest and followups: `last_digest_at` and `follow_up_reminded_at` land in B.
+- `H2_BASELINE_ELSEWHERE` drops by the measured count, which the audit expects to be 10.
 
 **Verify with.**
 
@@ -753,7 +781,7 @@ uv run pytest tests/unit/test_db_engine_seam.py tests/unit/test_launch_defang_ki
   tests/unit/test_email_sync_backoff.py tests/unit/test_email_retry_and_uncategorized.py \
   tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_tool_consolidation.py \
   tests/unit/test_background_ai_member.py tests/unit/test_email_digest.py \
-  tests/unit/test_email_imports.py <new EM-T1b tests> -q -rs
+  tests/unit/test_email_imports.py tests/unit/test_email_scheduler_tenancy.py \n  tests/unit/test_email_bulk_apply.py tests/unit/test_email_categorization.py \n  tests/unit/test_email_cleanup_apply_cap.py tests/unit/test_email_cleanup_sweep.py \n  tests/unit/test_email_fix_feedback.py tests/unit/test_email_follow_up_scan.py \n  tests/unit/test_email_pattern_approval.py tests/unit/test_email_process_past_drafting.py \n  tests/unit/test_email_reclassify_resumable.py tests/unit/test_email_reply_zero.py \n  tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_thread_status_parity.py \n  tests/unit/test_crm_auto_lead.py <new EM-T1b tests> -q -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email tests/unit
 ```
 
@@ -772,7 +800,8 @@ The R8 tests must show PASSED, not SKIPPED.
    in the same message.
 6. Within 300 seconds, read the journal. Expect `sync.scheduler_started accounts=N`, with N equal to
    the count of step 3. Expect no `TenantUnbound`, no `organization_id` null error and no
-   `email.subscription_unbound`. Expect new `email_sync_log` rows with `status='success'`.
+   `email.subscription_unbound`. Also grep for `no tenant bound`, because the automation functions log a caught
+   `TenantUnbound` with that text. Expect new `email_sync_log` rows with `status='success'`.
 7. Rollback: set the flag to `false` and restart.
 
 **Risks.** The shared pool holds 8 sessions plus 4 overflow per process. A deep backfill that
