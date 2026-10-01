@@ -7,7 +7,10 @@
 > **§10 progress:** ✅ **EM-T1a is MERGED (#559) and serving since 2026-10-01.** The gateway
 > signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
 > ✅ **EM-T1b-1 is MERGED (#560) and serving since 2026-10-01** (§10.4.2). The scheduler and the
-> sync core bind a tenant. 🟡 **EM-T1b-2 is BUILT, not merged** (§10.4.2). Email stays OFF until EM-T1b-2 merges and the live check passes.
+> sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
+> ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
+> `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). EM-T3 is next.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -522,7 +525,7 @@ or API client to create a pattern by hand.
 | Id | Decision |
 |---|---|
 | **D-EM-1** | **Metorite owns ONE multi-tenant Microsoft app.** It accepts work accounts and personal Outlook.com accounts (authority `common`). Its credentials live on the operator side. A customer never registers an app, pastes a key, or opens Integrations. |
-| **D-EM-2** | **The app lives in a dedicated Metorite Entra directory**, not in `fracktal.in`. The directory of customer zero must not hold the product. |
+| **D-EM-2** | **The app lives in a dedicated Metorite Entra directory**, not in `fracktal.in`. The directory of customer zero must not hold the product. ⚠️ **Interim (owner, 2026-10-01):** until that app exists, Metorite uses the publisher-verified Fracktal Works app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` ("CommandCenter"), set to any Entra tenant plus personal accounts. The same app also serves Microsoft sign-in. A later move to a Hathi Labs app makes each mailbox reconnect once. |
 | **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
@@ -552,7 +555,7 @@ live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
-| **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 (2026-10-01).** 🟡 **EM-T1b-2 BUILT, not merged.** **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
+| **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
@@ -660,7 +663,7 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
 
 **Status.** ✅ EM-T1b-1 is MERGED as #560 and serving (`bad592be`, 2026-10-01). The new fence is
 `tests/unit/test_email_scheduler_tenancy.py`, with R8 cases for the sweep, the sync core and
-`mailbox_owner`. 🟡 **EM-T1b-2 is BUILT, not merged** (2026-10-01). The ten functions open `_tenant_session()` in phases and call no `commit()`. The new fence is `tests/unit/test_email_automation_tenancy.py`. It holds the AST fence over the ten, the case with no tenant, the BackgroundTask case and the five R8 families. `H2_BASELINE_ELSEWHERE` is now 92.
+`mailbox_owner`. ✅ **EM-T1b-2 is MERGED as #561** (`b467b6de`, 2026-10-01). The ten functions open `_tenant_session()` in phases and call no `commit()`. The new fence is `tests/unit/test_email_automation_tenancy.py`. It holds the AST fence over the ten, the case with no tenant, the BackgroundTask case and the five R8 families. `H2_BASELINE_ELSEWHERE` is now 92.
 
 **Fix round 1 (2026-10-01).** The cleanup sweep calls the provider half of `apply_label` (`push_label`) with no session open. Each item then writes its mirror and its audit row in its own block. A best-effort write that swallows its own failure now runs inside `_savepoint` (`routes/email/core.py`), so the failure rolls back only the savepoint and the block goes on. This covers the Reply Zero projection of the runner, the label mirror and the body hydrate of the follow-ups, `hydrate_message_body` and `_revert_unreconciled`. A failed filed write of the Reply Zero backfill no longer skips its sent threads. The fences are in `test_email_automation_tenancy.py`.
 
@@ -795,6 +798,11 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/ro
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+**Live check result (2026-10-01).** ✅ Passed. `/version` served `b467b6de`. The gateway role
+`acb_app` has no BYPASSRLS. All five organizations held 0 email accounts, so step 4 did not stop
+the flip. After the restart, the journal showed `sync.scheduler_started accounts=0` and no tenant
+error.
 
 **Live check, then the flip (after EM-T1b-2 merges).**
 
