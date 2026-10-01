@@ -67,12 +67,23 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - Launched UNCONDITIONALLY from the gateway lifespan; `start_background_sync()`
   carries its own default-ON launch-defang kill-switch `EMAIL_SYNC_ENABLED`
   INSIDE the function (WS-29) — OFF only on an explicit falsey token
-  (`0`/`false`/`no`/`off`), returning `{}` and opening no engine, so the
-  RLS-cutover runbook can stop this out-of-launch-scope, not-yet-tenant-bound
-  loop (H4 slice 6b). The gate lives in the start function, never at the call
-  site. R7: `tests/unit/test_launch_defang_kill_switches.py`.
+  (`0`/`false`/`no`/`off`), returning `{}` and opening no session. The gate
+  lives in the start function, never at the call site. R7:
+  `tests/unit/test_launch_defang_kill_switches.py`.
+- **Tenancy (WS-17 EM-T1b-1).** The scheduler opens no engine of its own. Every
+  session comes from `acb_common.db`. The startup sweep reads the RLS-exempt
+  `organization` table once, unbound. It then opens one `tenant_session(org)`
+  for each organization. Each loop binds its organization with `bind_tenant`.
+  `_sync_account` takes `organization_id` or reads `current_tenant()`, and
+  raises `TenantUnbound` when it has neither.
+- ⚠️ **No `commit()` inside a `tenant_session` block.** A commit ends
+  `SET LOCAL`, so each statement after it runs with no tenant. Split the work
+  into phases, and give each phase its own `tenant_session(org)`. R7:
+  `tests/unit/test_email_scheduler_tenancy.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
-- Account lifecycle: `refresh_account_sync()` / `remove_account_sync()` called from CRUD routes
+- Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
+  `remove_account_sync()` called from CRUD routes. The organization comes from
+  the session or the verified OAuth state, never from request input.
 - `get_scheduler_status()` returns state for health checks
 
 ## Dependencies

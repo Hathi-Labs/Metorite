@@ -12,6 +12,7 @@ restore the old dropped-on-the-floor behaviour).
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -48,37 +49,57 @@ def _msg(cats):
         from_address=SimpleNamespace(email="sender@x.com"))
 
 
+def _session(db: AsyncMock, opened: list[bool]):
+    """A fake ``_tenant_session`` that records each open (EM-T1b-1)."""
+    @asynccontextmanager
+    async def _ts(org=None):
+        opened.append(True)
+        yield db
+    return _ts
+
+
 async def test_orchestrator_noops_when_no_rules() -> None:
     db = AsyncMock()
-    with patch.object(sync_mod, "_build_label_rule_map",
-                      AsyncMock(return_value=({}, {}))), \
+    opened: list[bool] = []
+    with patch.object(sync_mod, "_tenant_session", _session(db, opened)), \
+            patch.object(sync_mod, "_build_label_rule_map",
+                         AsyncMock(return_value=({}, {}))), \
             patch.object(sync_mod, "_learn_from_label_changes",
                          AsyncMock()) as learn:
         await sync_mod.learn_from_label_change_events(
-            db, "acc", [(_msg(["New"]), ["Old"])])
+            "acc", [(_msg(["New"]), ["Old"])])
     learn.assert_not_awaited()  # nothing to trace a category to
 
 
 async def test_orchestrator_learns_each_change_then_applies_corrections() -> None:
     db = AsyncMock()
+    opened: list[bool] = []
     changes = [(_msg(["Receipt"]), []), (_msg(["Newsletter"]), ["Receipt"])]
-    with patch.object(sync_mod, "_build_label_rule_map",
-                      AsyncMock(return_value=({"receipt": "r1"}, {}))), \
+    with patch.object(sync_mod, "_tenant_session", _session(db, opened)), \
+            patch.object(sync_mod, "_build_label_rule_map",
+                         AsyncMock(return_value=({"receipt": "r1"}, {}))), \
             patch.object(sync_mod, "_learn_from_label_changes",
                          AsyncMock()) as learn, \
             patch.object(sync_mod, "_apply_label_status_corrections",
                          AsyncMock()) as apply_corr:
-        await sync_mod.learn_from_label_change_events(db, "acc", changes)
+        await sync_mod.learn_from_label_change_events("acc", changes)
     assert learn.await_count == 2  # one per captured change
     apply_corr.assert_awaited_once()  # queued reply-status corrections applied
+    assert opened == [True], "the pattern writes run in ONE tenant session"
+    # EM-T1b-1: the seam commits on exit. A commit inside the block would end
+    # SET LOCAL, so every write after it would run with no tenant.
+    db.commit.assert_not_awaited()
 
 
 async def test_orchestrator_noops_on_empty_changes() -> None:
-    db = AsyncMock()
-    with patch.object(sync_mod, "_build_label_rule_map",
-                      AsyncMock()) as build:
-        await sync_mod.learn_from_label_change_events(db, "acc", [])
+    opened: list[bool] = []
+    with patch.object(sync_mod, "_tenant_session",
+                      _session(AsyncMock(), opened)), \
+            patch.object(sync_mod, "_build_label_rule_map",
+                         AsyncMock()) as build:
+        await sync_mod.learn_from_label_change_events("acc", [])
     build.assert_not_awaited()
+    assert opened == [], "no change, no session"
 
 
 # ── the hook is actually wired ──────────────────────────────────────────────

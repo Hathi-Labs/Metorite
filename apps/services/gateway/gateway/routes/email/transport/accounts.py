@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, status
-from gateway.routes.email.core import _default_label, _tenant_session, router
+from gateway.routes.email.core import _default_label, _log, _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -167,25 +167,28 @@ async def create_account(
         )
         created_default = bool(is_default_row.scalar())
 
-        # Start background sync for this account
-        try:
-            from email_ingestion.scheduler import refresh_account_sync
-            await refresh_account_sync(account_id)
-        except Exception:
-            pass
+    # Start background sync for this account. It runs AFTER the tenant block,
+    # so the row is committed and the interval read of the scheduler sees it.
+    # The loop binds the organization of the session (EM-T1b-1 item 5).
+    try:
+        from email_ingestion.scheduler import refresh_account_sync
+        await refresh_account_sync(
+            account_id, organization_id=user.organization_id)
+    except Exception as exc:
+        _log.warning("email.refresh_sync_failed", error=str(exc)[:200])
 
-        return EmailAccountModel(
-            id=account_id,
-            provider=req.provider,
-            email_address=req.email_address,
-            label=req.label or _default_label(req.provider),
-            avatar_color="#6366f1",
-            sync_enabled=True,
-            sync_status="idle",
-            last_synced_at=None,
-            unread_count=0,
-            is_default=created_default,
-        )
+    return EmailAccountModel(
+        id=account_id,
+        provider=req.provider,
+        email_address=req.email_address,
+        label=req.label or _default_label(req.provider),
+        avatar_color="#6366f1",
+        sync_enabled=True,
+        sync_status="idle",
+        last_synced_at=None,
+        unread_count=0,
+        is_default=created_default,
+    )
 
 
 @router.post("/accounts/{account_id}/default", response_model=EmailAccountModel)
@@ -338,11 +341,12 @@ async def update_account(
         try:
             from email_ingestion.scheduler import refresh_account_sync, remove_account_sync
             if row.sync_enabled:
-                await refresh_account_sync(account_id)
+                await refresh_account_sync(
+                    account_id, organization_id=user.organization_id)
             else:
                 await remove_account_sync(account_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("email.refresh_sync_failed", error=str(exc)[:200])
 
         return EmailAccountModel(
             id=str(row.id),

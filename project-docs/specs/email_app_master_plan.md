@@ -6,7 +6,8 @@
 > Nobody has set up a Microsoft app on the box.
 > **§10 progress:** ✅ **EM-T1a is MERGED (#559) and serving since 2026-10-01.** The gateway
 > signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
-> EM-T1b-1 is next (§10.4.2). Email stays OFF until EM-T1b-2 merges and the live check passes.
+> 🟡 **EM-T1b-1 is BUILT, not merged** (branch `email-t1b`, §10.4.2). The scheduler and the
+> sync core bind a tenant. EM-T1b-2 is next. Email stays OFF until EM-T1b-2 merges and the live check passes.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -551,7 +552,7 @@ live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
-| **EM-T1b** | 🟢 AGENT-SAFE | **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
+| **EM-T1b** | 🟢 AGENT-SAFE | 🟡 **EM-T1b-1 BUILT, not merged (2026-10-01).** **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
@@ -656,6 +657,10 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
   the member of the session must match the state.
 
 #### 10.4.2 EM-T1b in full
+
+**Status.** 🟡 EM-T1b-1 is BUILT, not merged (branch `email-t1b`, 2026-10-01). The new fence is
+`tests/unit/test_email_scheduler_tenancy.py`, with R8 cases for the sweep, the sync core and
+`mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 102. EM-T1b-2 is not started.
 
 **Owner.** This slice IS WS-29 H4 slice 6b for the email scheduler and pipeline
 (`saas_multitenancy_handover.md`). This spec owns it from 2026-10-01.
