@@ -691,10 +691,14 @@ can choose (B).
    `TenantUnbound`.
 6. **`_sync_account` binds or refuses, and splits into phases.** It uses `organization_id` or
    `current_tenant()`. When it has neither, it raises `TenantUnbound` and writes nothing. The phases are:
-   (a) read the account, set `syncing`, and write `email_sync_log` (b) call the provider with NO session
-   open (c) write the rotated credentials, the messages, the labels and the reconcile (d) write the
-   final account and log rows (e) `backfill_missing_bodies` (f) `embed_pending_messages`. The error
-   path writes in a new `tenant_session(org)`.
+   - (a) Read the account, set `syncing`, and write `email_sync_log`.
+   - (b) Call the provider with NO session open.
+   - (c) Write the rotated credentials, the messages, the labels and the reconcile.
+   - (d) Write the final account and log rows.
+   - (e) Run `backfill_missing_bodies`.
+   - (f) Run `embed_pending_messages`.
+
+   The error path writes in a new `tenant_session(org)`.
 7. **The scheduler hooks bind.** `auto_run_rules_for_account` and `learn_label_changes` use
    `tenant_session()`. `learn_from_label_change_events` gets its own block or loses its commit.
    `mailbox_owner` reads inside `tenant_session()` when a tenant is bound. It keeps its one unbound
