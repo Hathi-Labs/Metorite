@@ -21,6 +21,8 @@ providers/
 ├── gmail.py       — Gmail REST API provider (OAuth 2.0)
 ├── outlook.py     — Microsoft Graph provider (OAuth 2.0)
 ├── imap.py        — IMAP/SMTP provider for generic email servers (imaplib + smtplib)
+├── factory.py     — build_provider, the one name-to-class seam
+├── app_credentials.py — oauth_app, the one reader of the OAuth app credentials
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 ```
@@ -47,7 +49,14 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - IMAP: `"{last_uid}:{uidvalidity}"` — on UIDVALIDITY change, forces full resync
 
 4. **Credentials** stored as AES-256-GCM encrypted JSONB in `email_accounts.credentials_encrypted`,
-   decrypted at sync time via `acb_llm.key_store`.
+   decrypted at sync time through `acb_llm.key_store`.
+   The blob holds the tokens of the member and nothing else (WS-17 EM-T3a).
+   The OAuth app credentials come from settings through `oauth_app`, and
+   `build_provider` passes them in. A provider ignores a `client_id` or
+   `client_secret` in the blob, and `export_credentials` drops them. Do not add
+   a fallback to the blob, because that keeps a revoked secret alive. The
+   Microsoft authority for mail is always `common`. Fence:
+   `tests/unit/test_email_connect_backend.py`.
 
 5. **received_at** must be parsed from provider-native format into timezone-aware datetime.
    Never leave it `None` — it's the primary sort key for the message list.

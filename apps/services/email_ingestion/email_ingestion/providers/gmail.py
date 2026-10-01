@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from .app_credentials import OAuthApp, token_fields
 from .base import (
     Attachment,
     BaseEmailProvider,
@@ -141,12 +142,15 @@ class GmailProvider(BaseEmailProvider):
     # Gmail can list message ids per label, so labels really can be read back.
     SUPPORTS_LABEL_READBACK = True
 
-    def __init__(self, credentials: dict[str, Any]):
+    def __init__(
+        self, credentials: dict[str, Any], *, app: OAuthApp | None = None,
+    ):
         super().__init__(credentials)
         self._access_token: str | None = credentials.get("access_token")
         self._refresh_token: str | None = credentials.get("refresh_token")
-        self._client_id: str | None = credentials.get("client_id")
-        self._client_secret: str | None = credentials.get("client_secret")
+        # The app credentials come from settings through the factory, never
+        # from the blob (EM-T3a item 1). With none, a refresh fails closed.
+        self._app: OAuthApp = app or OAuthApp()
         self._token_expiry: str | None = credentials.get("token_expiry")
         self._http: httpx.AsyncClient | None = None
         self._creds_dirty = False
@@ -162,9 +166,13 @@ class GmailProvider(BaseEmailProvider):
         return self._creds_dirty
 
     def export_credentials(self) -> dict[str, Any]:
-        """Return credentials with the latest (possibly refreshed) tokens."""
+        """Return the token fields with the latest (possibly refreshed) tokens.
+
+        No app credential is written, so the next token write removes one
+        that an old callback left in the blob (EM-T3a item 1).
+        """
         return {
-            **self.credentials,
+            **token_fields(self.credentials),
             "access_token": self._access_token,
             "refresh_token": self._refresh_token,
         }
@@ -184,15 +192,20 @@ class GmailProvider(BaseEmailProvider):
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
-        if not self._refresh_token or not self._client_id or not self._client_secret:
+        if not self._refresh_token:
             raise ValueError("Missing OAuth credentials for token refresh")
+        if not self._app.configured:
+            raise ValueError(
+                "Gmail OAuth app credentials are not configured "
+                "(GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET)"
+            )
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://oauth2.googleapis.com/token",
                 data={
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
+                    "client_id": self._app.client_id,
+                    "client_secret": self._app.client_secret,
                     "refresh_token": self._refresh_token,
                     "grant_type": "refresh_token",
                 },

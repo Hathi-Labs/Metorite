@@ -25,6 +25,9 @@ class EmailAccountModel(BaseModel):
     last_synced_at: str | None = None
     unread_count: int = 0
     is_default: bool = False
+    #: False until the first deep sync of the mailbox completes. The connect
+    #: UI shows first-sync progress from it (EM-T3a item 5).
+    initial_sync_done: bool = False
 
 
 class AccountUpdateModel(BaseModel):
@@ -50,7 +53,7 @@ async def list_accounts(
             text(
                 """SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
-                          is_default
+                          is_default, initial_sync_done
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -83,6 +86,7 @@ async def list_accounts(
                 if row.last_synced_at else None,
                 unread_count=unread,
                 is_default=bool(row.is_default),
+                initial_sync_done=bool(row.initial_sync_done),
             ))
         return accounts
 
@@ -227,7 +231,7 @@ async def set_default_account(
                    WHERE id = :id AND user_id = :uid
                    RETURNING id, provider, email_address, label, avatar_color,
                              sync_enabled, sync_status, sync_error,
-                             last_synced_at, is_default"""
+                             last_synced_at, is_default, initial_sync_done"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -254,6 +258,7 @@ async def set_default_account(
             if row.last_synced_at else None,
             unread_count=unread,
             is_default=bool(row.is_default),
+            initial_sync_done=bool(row.initial_sync_done),
         )
 
 
@@ -329,7 +334,8 @@ async def update_account(
                     SET {', '.join(set_clauses)}
                     WHERE id = :id AND user_id = :user_id
                     RETURNING id, provider, email_address, label, avatar_color,
-                              sync_enabled, sync_status, last_synced_at"""
+                              sync_enabled, sync_status, last_synced_at,
+                              initial_sync_done"""
             ),
             params,
         )
@@ -359,4 +365,5 @@ async def update_account(
         sync_status=row.sync_status or "idle",
         last_synced_at=row.last_synced_at.isoformat()
         if row.last_synced_at else None,
+        initial_sync_done=bool(row.initial_sync_done),
     )

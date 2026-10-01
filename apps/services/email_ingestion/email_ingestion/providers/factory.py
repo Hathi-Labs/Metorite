@@ -30,13 +30,19 @@ def build_provider(provider_name: str, creds: dict[str, Any]) -> BaseEmailProvid
     translate this into an HTTP 400 (see
     ``gateway.routes.email.core._instantiate_provider``); the ingestion
     scheduler surfaces it as a sync failure.
+
+    The OAuth providers get their app credentials here, from settings through
+    :func:`~email_ingestion.providers.app_credentials.oauth_app`. A
+    ``client_id`` or ``client_secret`` in ``creds`` is ignored (EM-T3a item 1).
     """
     if provider_name == "gmail":
+        from email_ingestion.providers.app_credentials import oauth_app
         from email_ingestion.providers.gmail import GmailProvider
-        return GmailProvider(creds)
+        return GmailProvider(creds, app=oauth_app("gmail"))
     if provider_name == "microsoft":
+        from email_ingestion.providers.app_credentials import oauth_app
         from email_ingestion.providers.outlook import OutlookProvider
-        return OutlookProvider(creds)
+        return OutlookProvider(creds, app=oauth_app("microsoft"))
     if provider_name == "imap":
         from email_ingestion.providers.imap import IMAPProvider
         return IMAPProvider(creds)
