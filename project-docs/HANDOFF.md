@@ -136,6 +136,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-152 · `specs/customer_console.md` §6A · PR #507 · PR #511
 - **Added:** 2026-09-28 · the deployment-key switch session
 
+### H-207 · 🔴 Rotate the Microsoft app secret that reached a chat transcript · [OWNER]
+- **Check:** in Entra, open the app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` →
+  Certificates & secrets. If a secret whose value ends `…scaAH` still exists,
+  this is open.
+- **Why.** On 2026-10-01 the owner pasted the client secret into an agent chat.
+  An agent then installed it on the box as `MSFT_OAUTH_CLIENT_SECRET` and
+  `AUTH_MICROSOFT_ENTRA_ID_SECRET`, in `/opt/acb/app/.env` and in
+  `workbench/control_plane/.env.local`.
+- **Do.**
+  1. In Entra, create a new client secret.
+  2. Write the new value into the four keys on the box. An agent can do this
+     under gate `env-write`. Do not paste the value into a chat.
+  3. Run `sudo systemctl restart acb-gateway acb-workbench`.
+  4. Connect a mailbox to prove the new secret.
+  5. Delete the old secret in Entra.
+- **Authority:** `specs/email_app_master_plan.md` §10.2 (D-EM-2, interim) · §10.5
+- **Added:** 2026-10-01 · the Outlook onboarding session
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
