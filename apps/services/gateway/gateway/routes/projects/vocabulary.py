@@ -158,12 +158,14 @@ async def vocabulary_impact(
     table, predicate, attr = IMPACT[kind]
     async with _tenant_session() as db:
         row = await require_row(db, table, row_id, "Entry")
-        if not is_org_wide(row):
-            raise HTTPException(status_code=409, detail="This entry belongs to one space.")
-        require_org_vocabulary_edit(user, row.name)
+        # The tenant fence FIRST, so another organization's id answers 404
+        # whatever its scope, and no answer says such a row exists.
         vis = await resolve_visibility(db, user)
         require_known_tenant(vis, "entry")
         require_same_tenant(vis, row)
+        if not is_org_wide(row):
+            raise HTTPException(status_code=409, detail="This entry belongs to one space.")
+        require_org_vocabulary_edit(user, row.name)
         where, params = governed_tasks_scope(row, table)
         counted = (
             await db.execute(
