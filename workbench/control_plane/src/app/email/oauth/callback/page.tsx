@@ -1,17 +1,47 @@
 "use client";
 
+/**
+ * Where a mailbox connect lands, success or failure (WS-17 EM-T3b).
+ *
+ * Spec: `project-docs/specs/email_app_master_plan.md` §10.3 and §10.4.3.
+ *
+ * The words for each result come from `callbackView` in
+ * `app/email/lib/connect.ts`, so a vitest can read them. This page only
+ * draws them. Two results get a guided page instead of an error:
+ *
+ * - `admin_consent_required`: the organization of the member lets only an IT
+ *   admin approve new apps. The page offers a prefilled email to the admin
+ *   and a copy of the admin-consent link. The client ID in that link comes
+ *   from the gateway (`GET /email/oauth/microsoft/app`), never from a
+ *   constant here.
+ * - `consent_declined`: the member said no. A friendly retry.
+ *
+ * ⚠️ No link on this page goes to Integrations. A member has nothing to
+ * configure there (EM-T3b done-when 1).
+ */
+
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { getMailAppInfo } from "../../lib/api";
+import {
+  adminConsentMailto,
+  adminConsentUrl,
+  callbackView,
+  retryTarget,
+  type CallbackView,
+  type ConnectProviderId,
+} from "../../lib/connect";
 
 /**
  * Normalise the post-auth redirect target to a safe internal path.
  *
  * `redirect_after` arrives as the full URL the user came from (e.g.
- * "https://app.metorite.com/integrations").  Reduce it to a
- * same-origin path so router.push() navigates correctly; reject anything
- * cross-origin or unparseable to avoid an open-redirect and the 404 that
- * results from pushing an absolute/encoded string as a relative path.
+ * "https://app.metorite.com/email"). Reduce it to a same-origin path so
+ * router.push() navigates correctly; reject anything cross-origin or
+ * unparseable to avoid an open-redirect and the 404 that results from
+ * pushing an absolute/encoded string as a relative path.
  */
 function safeRedirectTarget(raw: string | null): string {
   if (!raw) return "/email";
@@ -24,6 +54,115 @@ function safeRedirectTarget(raw: string | null): string {
   }
 }
 
+/** Start the connect again, through the BFF (never the gateway host). */
+function connectAgain(provider: ConnectProviderId): void {
+  window.location.href = retryTarget(provider, window.location.origin);
+}
+
+/** The icon and the status tone of each result. Tokens only. */
+const TONE: Record<CallbackView["kind"], { icon: string; className: string }> = {
+  loading: { icon: "Loader2", className: "bg-primary/10 text-primary" },
+  connected: { icon: "CheckCircle2", className: "bg-success/10 text-success" },
+  admin_consent_required: { icon: "ShieldCheck", className: "bg-warning/10 text-warning" },
+  consent_declined: { icon: "Undo2", className: "bg-muted text-muted-foreground" },
+  duplicate: { icon: "Info", className: "bg-info/10 text-info" },
+  retry: { icon: "RefreshCw", className: "bg-warning/10 text-warning" },
+  unknown: { icon: "AlertCircle", className: "bg-destructive/10 text-destructive" },
+};
+
+function AdminConsentSteps() {
+  // undefined: loading. null: the deployment has no app, or the read failed.
+  const [link, setLink] = useState<string | null | undefined>(undefined);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void getMailAppInfo().then((app) => {
+      if (live) setLink(app ? adminConsentUrl(app) : null);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const copy = async () => {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  if (link === undefined) {
+    return (
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Icon name="Loader2" size={14} className="animate-spin" /> Getting the approval link…
+      </p>
+    );
+  }
+  if (link === null) {
+    return (
+      <p className="rounded-md border border-border bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+        Metorite could not load the approval link. Ask your Metorite admin to send it to your IT
+        admin.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <ol className="space-y-1.5 text-xs text-muted-foreground">
+        <li className="flex gap-2">
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+            1
+          </span>
+          <span>Send the approval link to your IT admin.</span>
+        </li>
+        <li className="flex gap-2">
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+            2
+          </span>
+          <span>Your admin opens it and approves Metorite for the company.</span>
+        </li>
+        <li className="flex gap-2">
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+            3
+          </span>
+          <span>You connect your mailbox again.</span>
+        </li>
+      </ol>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button
+          variant="primary"
+          icon="Send"
+          className="flex-1"
+          onClick={() => {
+            window.location.href = adminConsentMailto(link);
+          }}
+        >
+          Email your IT admin
+        </Button>
+        <Button
+          variant="secondary"
+          icon={copied ? "Check" : "Copy"}
+          className="flex-1"
+          onClick={() => void copy()}
+        >
+          {copied ? "Link copied" : "Copy approval link"}
+        </Button>
+      </div>
+      <p
+        className="select-all break-all rounded-md border border-border bg-secondary/50 px-2.5 py-2 font-mono text-[10px] text-muted-foreground"
+        aria-label="Approval link"
+      >
+        {link}
+      </p>
+    </div>
+  );
+}
+
 function CallbackContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -31,13 +170,17 @@ function CallbackContent() {
   const error = searchParams.get("error");
   const accountId = searchParams.get("account_id");
   const email = searchParams.get("email");
-  const provider = searchParams.get("provider");
+  const providerParam = searchParams.get("provider");
   const redirectAfter = searchParams.get("redirect_after");
+  const provider: ConnectProviderId = providerParam === "gmail" ? "gmail" : "microsoft";
 
-  const [countdown, setCountdown] = useState(5);
-  const success = !error && !!accountId;
+  const view = callbackView({ error, accountId, email });
+  const tone = TONE[view.kind];
 
-  // Auto-redirect after success
+  const [countdown, setCountdown] = useState(3);
+  const success = view.kind === "connected";
+
+  // Into Email after a short pause, so the member reads which mailbox it was.
   useEffect(() => {
     if (!success) return;
     const target = safeRedirectTarget(redirectAfter);
@@ -49,95 +192,71 @@ function CallbackContent() {
     return () => clearTimeout(timer);
   }, [success, countdown, redirectAfter, router]);
 
-  const providerLabel = provider === "gmail" ? "Google / Gmail" : provider === "microsoft" ? "Microsoft / Outlook" : provider || "Unknown";
-  const errorLabel =
-    error === "invalid_state" ? "Invalid OAuth state — please try again." :
-    error === "token_exchange_failed" ? "Failed to exchange authorization code. Check your OAuth credentials." :
-    error === "email_fetch_failed" ? "Could not retrieve email address from provider." :
-    error === "duplicate" ? `Account ${email || ""} is already connected.` :
-    error ? `An unexpected error occurred: ${error}` : "";
+  const openEmail = () => router.push(success ? safeRedirectTarget(redirectAfter) : "/email");
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md">
-        {/* Card */}
-        <div className="bg-card border border-border rounded-2xl shadow-xl p-8 chat-fade-in">
-          {!error && !accountId && (
-            /* Loading state */
-            <div className="flex flex-col items-center gap-4 py-8">
-              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-muted-foreground">Completing authentication…</p>
+        <div className="rounded-lg border border-border bg-card p-6 shadow-lg chat-fade-in">
+          <div className="flex flex-col items-center text-center gap-3">
+            <span className={`flex h-12 w-12 items-center justify-center rounded-full ${tone.className}`}>
+              <Icon
+                name={tone.icon}
+                size={24}
+                className={view.kind === "loading" ? "animate-spin" : undefined}
+              />
+            </span>
+            <div>
+              <h2 className="text-base font-semibold text-foreground break-words">{view.title}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{view.body}</p>
+            </div>
+          </div>
+
+          {view.kind === "admin_consent_required" && (
+            <div className="mt-5 border-t border-border pt-4">
+              <AdminConsentSteps />
+            </div>
+          )}
+
+          {view.kind !== "loading" && (
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+              {success && (
+                <Button variant="primary" icon="Mail" onClick={openEmail}>
+                  Open Email
+                </Button>
+              )}
+              {(view.kind === "consent_declined" ||
+                view.kind === "retry" ||
+                view.kind === "unknown") && (
+                <Button variant="primary" icon="RefreshCw" onClick={() => connectAgain(provider)}>
+                  Try again
+                </Button>
+              )}
+              {view.kind === "admin_consent_required" && (
+                <Button variant="secondary" icon="RefreshCw" onClick={() => connectAgain(provider)}>
+                  Approved? Connect again
+                </Button>
+              )}
+              {!success && (
+                <Button variant="secondary" icon="ArrowLeft" onClick={openEmail}>
+                  Back to Email
+                </Button>
+              )}
             </div>
           )}
 
           {success && (
-            /* Success */
-            <div className="flex flex-col items-center text-center gap-4">
-              <div className="w-14 h-14 rounded-full bg-emerald-500/15 flex items-center justify-center">
-                <Icon name="CheckCircle2" className="w-8 h-8 text-emerald-400" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-foreground">Account Connected</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {providerLabel}
-                </p>
-              </div>
-              {email && (
-                <div className="bg-secondary rounded-lg px-4 py-2 text-sm font-mono text-foreground">
-                  {email}
-                </div>
-              )}
-              <p className="text-xs text-muted-foreground">
-                Redirecting in {countdown}s…
-              </p>
-              <div className="flex gap-2 mt-2">
-                <a
-                  href="/email"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-                >
-                  <Icon name="Mail" size={14} /> Open Email
-                </a>
-                <a
-                  href="/integrations"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-secondary transition-colors"
-                >
-                  <Icon name="Settings" size={14} /> Integrations
-                </a>
-              </div>
-            </div>
+            <p className="mt-3 text-center text-xs text-muted-foreground">
+              Opening Email in {countdown}s…
+            </p>
           )}
 
-          {error && (
-            /* Error */
-            <div className="flex flex-col items-center text-center gap-4">
-              <div className="w-14 h-14 rounded-full bg-destructive/15 flex items-center justify-center">
-                <Icon name="XCircle" className="w-8 h-8 text-destructive" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-foreground">Connection Failed</h2>
-                <p className="text-sm text-muted-foreground mt-1">{errorLabel}</p>
-              </div>
-              <div className="flex gap-2 mt-2">
-                <a
-                  href="/integrations"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-                >
-                  <Icon name="ArrowRight" size={14} /> Try Again
-                </a>
-                <a
-                  href="/email"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-secondary transition-colors"
-                >
-                  <Icon name="Mail" size={14} /> Email Client
-                </a>
-              </div>
-            </div>
+          {view.reference && (
+            <p className="mt-4 text-center text-[11px] text-muted-foreground">
+              Reference: <span className="font-mono">{view.reference}</span>
+            </p>
           )}
         </div>
-
-        <p className="text-[10px] text-muted-foreground text-center mt-4">
-          Credentials are encrypted at rest with AES-256-GCM
-        </p>
       </div>
     </div>
   );
@@ -148,7 +267,7 @@ export default function OAuthCallbackPage() {
     <Suspense
       fallback={
         <div className="min-h-screen flex items-center justify-center bg-background">
-          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+          <Icon name="Loader2" size={32} className="animate-spin text-primary" />
         </div>
       }
     >

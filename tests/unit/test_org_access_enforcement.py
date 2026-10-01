@@ -317,3 +317,42 @@ def test_exemptions_match_real_routes(module: str, exempt: set[str]) -> None:
     """A typo'd exemption is dead text that silently gates a machine callback."""
     live = {r.path for r in _routes(module)}
     assert exempt <= live, f"{module}: exemptions not matching any route: {exempt - live}"
+
+
+def _wired_exemptions(module: str) -> set[str]:
+    """The ``exempt=[...]`` list a router really passes to the gate.
+
+    ``require_feature_router`` keeps it in the closure of ``_check`` as
+    ``exempt_paths``. Reading it there means the test sees the code, not a
+    copy of it.
+    """
+    found: set[frozenset[str]] = set()
+    for route in _routes(module):
+        for dep in getattr(route, "dependencies", []):
+            fn = getattr(dep, "dependency", None)
+            if not getattr(fn, "__qualname__", "").startswith("require_feature_router"):
+                continue
+            paths = inspect.getclosurevars(fn).nonlocals.get("exempt_paths")
+            if paths is not None:
+                found.add(frozenset(paths))
+    assert len(found) == 1, f"{module}: expected one gate, found {len(found)}"
+    return set(next(iter(found)))
+
+
+#: Routers this fence covers. Only email so far: run over every router on
+#: 2026-10-02, it also found ``gateway.routes.notes`` declaring
+#: ``/notes/meetings/{meeting_id}/live/wanted`` exempt while its router does
+#: not exempt it. That is a notes finding for the board, not fixed here.
+_WIRED_CHECKED = ("gateway.routes.email",)
+
+
+@pytest.mark.parametrize("module", _WIRED_CHECKED)
+def test_the_wired_exemptions_equal_the_declared_ones(module: str) -> None:
+    """R7 fence (EM-T3b review F1). ``GATED_ROUTERS`` is the registry of
+    record, and the router's own ``exempt=[...]`` must equal it both ways.
+
+    Before this, the registry only had to name real routes. An exemption
+    added in code, such as ``/email/oauth/{provider}/app``, left every case
+    green while it took a route out of the feature gate.
+    """
+    assert _wired_exemptions(module) == GATED_ROUTERS[module]

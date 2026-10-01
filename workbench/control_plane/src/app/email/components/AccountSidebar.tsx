@@ -1,6 +1,8 @@
 "use client";
 
 import AppIcon, { themedIcon } from "@/components/Icon";
+import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 
@@ -14,6 +16,11 @@ interface AccountSidebarProps {
   onAddAccount?: () => void;
   /** Make an account the user's default mailbox (the inbox the UI opens on). */
   onSetDefault?: (id: string) => void;
+  /**
+   * Ask to disconnect a mailbox (§10.3 step 8). The page owns the confirm
+   * dialog. Without this prop the account menu is not drawn.
+   */
+  onDisconnect?: (account: EmailAccount) => void;
   /** Open one of the Email Automation feature views. */
   onOpenAutomation?: (feature: AutomationFeature) => void;
   /** Currently-open automation feature, for highlighting. */
@@ -47,12 +54,38 @@ export function AccountSidebar({
   onFolderSelect,
   onAddAccount,
   onSetDefault,
+  onDisconnect,
   onOpenAutomation,
   activeAutomation,
   showMailbox = true,
   showAutomation = true,
 }: AccountSidebarProps) {
   const [accountsExpanded, setAccountsExpanded] = useState(true);
+  // The account menu: which account, and where to draw it.
+  const [menu, setMenu] = useState<{ account: EmailAccount; x: number; y: number } | null>(null);
+
+  const menuItems = (account: EmailAccount): CtxItem[] => {
+    const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
+    if (!account.isDefault && onSetDefault) {
+      items.push({
+        kind: "item",
+        label: "Set as default mailbox",
+        icon: themedIcon("Star"),
+        onSelect: () => onSetDefault(account.id),
+      });
+    }
+    if (onDisconnect) {
+      items.push({ kind: "sep" });
+      items.push({
+        kind: "item",
+        label: "Disconnect mailbox",
+        icon: themedIcon("Unplug"),
+        danger: true,
+        onSelect: () => onDisconnect(account),
+      });
+    }
+    return items;
+  };
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -139,6 +172,22 @@ export function AccountSidebar({
                 {selectedAccountId === account.id && (
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
+                {onDisconnect && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    icon="MoreHorizontal"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenu({ account, x: r.left, y: r.bottom + 4 });
+                    }}
+                    aria-label={`Account menu for ${account.emailAddress}`}
+                    aria-haspopup="menu"
+                    title="Account menu"
+                    className="flex-shrink-0"
+                  />
+                )}
                 {account.unreadCount > 0 && selectedAccountId !== account.id && (
                   <span className="bg-primary text-primary-foreground text-[9px] rounded-full px-1.5 py-0.5 flex-shrink-0">
                     {account.unreadCount}
@@ -149,6 +198,15 @@ export function AccountSidebar({
           </div>
         )}
       </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.account)}
+          onClose={() => setMenu(null)}
+        />
+      )}
 
       <div className="border-t border-sidebar-border mx-3 mb-2 flex-shrink-0" />
       </>

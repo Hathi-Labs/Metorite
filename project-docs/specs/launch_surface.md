@@ -102,6 +102,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
+| **Personal Center** | Email | `/email` | `feature:email` | 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
@@ -109,10 +110,10 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-**Ten** entries, four sections, in that order. The set held eight until 2026-08-24,
-and nine until 2026-09-20. D54 added Calendar. The owner then promoted People.
-`nav.test.ts`'s count fence moved 8 → 9 → 10 in the same pull request as each pane.
-That is what the fence is for.
+**Eleven** entries, four sections, in that order. The set held eight until 2026-08-24,
+nine until 2026-09-20 and ten until 2026-10-02. D54 added Calendar. The owner then
+promoted People, and then Email. `nav.test.ts`'s count fence moved 8 → 9 → 10 → 11 in
+the same pull request as each pane. That is what the fence is for.
 
 **"Personal Center" survives as a
 section label and nothing else.** It is a category of apps mapped one-to-one to
@@ -127,7 +128,6 @@ answer rather than a diff:
 | Section it will return to | App | Route | Held back because |
 |---|---|---|---|
 | Personal Center | Dashboard | `/dashboard` | Company-view-only today; the personal view is WS-15 |
-| Personal Center | Email | `/email` | WS-17 incomplete |
 | Personal Center | WhatsApp | `/whatsapp` | WS-20 incomplete |
 | Personal Center | Notes | `/notes` | WS-19 incomplete |
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
@@ -142,12 +142,12 @@ answer rather than a diff:
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **ten** rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **eleven** rows
 above are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 
-*(It worked twice. Neither D54's Calendar pane nor the People pane could land
-until somebody edited this table and that assertion on purpose.)*
+*(It worked three times. The Calendar pane, the People pane and the Email pane
+could not land until somebody edited this table and that assertion on purpose.)*
 
 ---
 
@@ -420,7 +420,8 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 
 **Done when:** `nav.test.ts` asserts all four of these.
 
-- (a) The live set is exactly §2's **ten** `(section, href)` pairs.
+- (a) The live set is exactly §2's **eleven** `(section, href)` pairs (Email joined
+  on 2026-10-02).
 - (b) Every pane carries an explicit `launch`.
 - (c) No section is named "Centers".
 - (d) `visibleSections` drops `preview` panes when the preview flag is off, and

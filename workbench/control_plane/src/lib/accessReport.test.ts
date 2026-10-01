@@ -117,14 +117,15 @@ describe("unmappedFeatures", () => {
 describe("launch status is reported apart from access (LS-3 · D49)", () => {
   it("says NOT AVAILABLE YET for a preview pane the member actually holds", () => {
     // The case that makes this status worth having: the member has
-    // `feature:email`, so the old report said "granted" for a pane that is not
-    // in the menu — or, if we had hidden it by revoking the grant, "you need
-    // feature:email", which is advice that would not have worked either.
-    const rows = paneReport(signedIn({ features: ["email", "chat"], features_denied: [] }));
-    const email = rows.find((r) => r.href === "/email");
-    expect(email?.status).toBe("not-launched");
-    expect(email?.reason).toMatch(/not available yet/i);
-    expect(email?.reason).toMatch(/grant will not reveal it/i);
+    // `feature:whatsapp`, so the old report said "granted" for a pane that is
+    // not in the menu — or, if we had hidden it by revoking the grant, "you
+    // need feature:whatsapp", which is advice that would not have worked
+    // either. (The example was Email until it went live on 2026-10-02.)
+    const rows = paneReport(signedIn({ features: ["whatsapp", "chat"], features_denied: [] }));
+    const whatsapp = rows.find((r) => r.href === "/whatsapp");
+    expect(whatsapp?.status).toBe("not-launched");
+    expect(whatsapp?.reason).toMatch(/not available yet/i);
+    expect(whatsapp?.reason).toMatch(/grant will not reveal it/i);
 
     // ...while a live pane with the same grant is plainly granted.
     expect(rows.find((r) => r.href === "/chat")?.status).toBe("granted");

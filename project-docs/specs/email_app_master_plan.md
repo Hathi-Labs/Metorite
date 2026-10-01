@@ -537,7 +537,9 @@ or API client to create a pattern by hand.
 3. **Consent.** Microsoft shows the verified Metorite app. The member accepts. With the interim app,
    Microsoft shows "CommandCenter" by Fracktal Works, so this step passes only after §10.5.
 4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
-   fills while the first sync runs.
+   appears when the first sync finishes. The scheduler commits the messages of a sync in one
+   transaction at the end, so the inbox does not fill bit by bit (corrected 2026-10-02, EM-T3b).
+   A first sync that fails shows the reconnect banner, not the progress state.
 5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
    error to the callback. Metorite shows a guided page, never a raw error. The page gives two
    paths. "Ask your IT admin" sends a prefilled email or copies the admin-consent link. "I am the
@@ -559,7 +561,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3a** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (branch `email-t3`, 2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
-| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
+| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | 🔨 **BUILT, not merged (branch `email-t3b`, stacked on `email-t3`, 2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
@@ -926,6 +928,26 @@ Files: `workbench/control_plane/src/app/email/page.tsx` (the status fetch, the o
 
 **Known limit.** When a tenant turns on the admin consent workflow (AADSTS90095), Microsoft can
 keep the member on its own "Approval required" form. Then no error returns to Metorite.
+
+**As built (2026-10-02).** The decisions live in `app/email/lib/connect.ts`, and
+`connect.test.ts` holds each item above. The client ID of the admin-consent link comes from a
+new gateway route, `GET /email/oauth/{provider}/app`. It returns the client ID and the redirect
+URI of the Microsoft app, and never the secret (fence `tests/unit/test_email_oauth_app_info.py`).
+The BFF authorize route forwards `login_hint`.
+
+⚠️ **Until EM-T3c merges, the return leg of an admin approval fails.** Microsoft sends the admin
+to the redirect URI with `admin_consent` and `tenant`, and no `code`. The gateway callback then
+answers `invalid_state`, and the page says "The connection did not finish". Microsoft keeps the
+approval all the same, so the member can connect after it. For this reason the guided page
+has no "I am the admin" button yet. The prefilled email tells the admin that this page can
+appear and that the approval still counts. EM-T3c removes that sentence.
+
+**Fix round 1 (2026-10-02).** A first sync with `sync_status = 'error'` is not pending, so the
+poll stops and the reconnect banner owns that state. A hidden tab makes no poll request. The
+page draws "Connect your email" only after the first account read settles. The mobile bottom
+bar hides its email tabs while the empty state shows. "Try again" for Gmail goes back to the
+connect choices (`/email?connect=1`). The email router's real `exempt=[...]` list must equal
+`GATED_ROUTERS` (fence in `tests/unit/test_org_access_enforcement.py`).
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

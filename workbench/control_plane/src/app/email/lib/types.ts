@@ -66,6 +66,11 @@ export interface EmailAccount {
   syncError?: string;
   /** The user's default mailbox — the inbox the UI lands on. At most one. */
   isDefault?: boolean;
+  /**
+   * False while the first sync of a new mailbox runs (EM-T3a item 5). Absent
+   * from a gateway that predates the flag, and absent means "do not wait".
+   */
+  initialSyncDone?: boolean;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────

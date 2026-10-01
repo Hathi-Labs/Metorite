@@ -104,10 +104,17 @@ export async function GET(
 
   const headers = await gatewayHeaders();
 
-  // Only `redirect_after` is forwarded; see the header comment on `user_email`.
+  // Only `redirect_after` and `login_hint` are forwarded; see the header
+  // comment on `user_email`. `login_hint` is a HINT for the provider's sign-in
+  // page (the reconnect banner sends the mailbox address). The gateway drops a
+  // value that does not parse as one address, and the callback still binds the
+  // member of the session, so it can never choose whose mailbox is attached
+  // (EM-T3a item 3, EM-T3b).
   const forwarded = new URLSearchParams();
   const redirectAfter = req.nextUrl.searchParams.get("redirect_after");
   if (redirectAfter) forwarded.set("redirect_after", redirectAfter);
+  const loginHint = req.nextUrl.searchParams.get("login_hint")?.trim();
+  if (loginHint && loginHint.length <= 254) forwarded.set("login_hint", loginHint);
   const qs = forwarded.toString();
 
   const upstream =
