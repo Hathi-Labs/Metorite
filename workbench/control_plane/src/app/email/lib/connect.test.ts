@@ -18,6 +18,10 @@ import {
   callbackView,
   connectQuery,
   disconnectCopy,
+  emailSurface,
+  firstSyncTick,
+  retryTarget,
+  wantsConnectChoices,
   finishedFirstSync,
   firstSyncCopy,
   isFirstSyncPending,
@@ -230,15 +234,83 @@ describe("first sync shows progress (done-when 5)", () => {
     expect(finishedFirstSync(before, after)).toEqual(["a"]);
   });
 
-  it("reads Connected as <address>", () => {
-    expect(firstSyncCopy("ravi@contoso.test").title).toBe("Connected as ravi@contoso.test");
+  it("reads Connected as <address>, and promises no progressive inbox", () => {
+    const c = firstSyncCopy("ravi@contoso.test");
+    expect(c.title).toBe("Connected as ravi@contoso.test");
+    // The scheduler commits a sync in one transaction, so nothing shows first.
+    expect(c.body).not.toMatch(/come first|fills/i);
+    expect(c.body).toMatch(/a few minutes/);
   });
 
-  it("the page polls while pending and stops on unmount", () => {
-    expect(PAGE).toContain("shouldPollFirstSync(accounts)");
-    expect(PAGE).toMatch(/setInterval\([\s\S]*?refreshAccounts\(\)[\s\S]*?FIRST_SYNC_POLL_MS\)/);
-    expect(PAGE).toMatch(/return \(\) => \{\s*cancelled = true;\s*clearInterval\(id\);/);
+  it("the page polls while pending, ticks on visibility, and stops on unmount", () => {
+    expect(PAGE).toContain("const firstSyncPending = shouldPollFirstSync(accounts);");
+    expect(PAGE).toMatch(/if \(!firstSyncPending\) return;/);
+    expect(PAGE).toMatch(/firstSyncTick\(\{[\s\S]*?hidden: \(\) => cancelled \|\| document\.hidden/);
+    expect(PAGE).toContain("setInterval(tick, FIRST_SYNC_POLL_MS)");
+    expect(PAGE).toContain('document.addEventListener("visibilitychange", onVisible)');
+    expect(PAGE).toMatch(
+      /return \(\) => \{\s*cancelled = true;\s*clearInterval\(id\);\s*document\.removeEventListener\("visibilitychange", onVisible\);/,
+    );
+    // The banner follows the same rule as the poll, so an errored account shows no spinner.
+    expect(PAGE).toMatch(
+      /pendingAccount =[\s\S]*?isFirstSyncPending\(selectedAccount\)[\s\S]*?accounts\.find\(isFirstSyncPending\)/,
+    );
     expect(PAGE).toContain("<FirstSyncBanner address={pendingAccount.emailAddress} />");
+  });
+
+  it("an errored first sync is not pending, shows no spinner and stops the poll (fix round 1, P1)", () => {
+    const errored = { id: "a", initialSyncDone: false, syncStatus: "error" };
+    expect(isFirstSyncPending(errored)).toBe(false);
+    expect(shouldPollFirstSync([errored])).toBe(false);
+    expect(shouldPollFirstSync([errored, { initialSyncDone: true, syncStatus: "idle" }])).toBe(false);
+    // Still syncing (or idle between ticks) is pending.
+    expect(isFirstSyncPending({ initialSyncDone: false, syncStatus: "syncing" })).toBe(true);
+    expect(isFirstSyncPending({ initialSyncDone: false, syncStatus: "idle" })).toBe(true);
+  });
+
+  it("a hidden tab makes no request", async () => {
+    const refresh = vi.fn(async () => []);
+    const r = await firstSyncTick({
+      hidden: () => true,
+      before: () => [{ id: "a", initialSyncDone: false }],
+      refresh,
+      selected: () => "a",
+      onFinished: () => {},
+    });
+    expect(r).toBe("hidden");
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("a visible tick re-reads, and loads the inbox when the selected account finishes", async () => {
+    const onFinished = vi.fn();
+    const pending = await firstSyncTick({
+      hidden: () => false,
+      before: () => [{ id: "a", initialSyncDone: false }],
+      refresh: async () => [{ id: "a", initialSyncDone: false }],
+      selected: () => "a",
+      onFinished,
+    });
+    expect(pending).toBe("pending");
+    expect(onFinished).not.toHaveBeenCalled();
+
+    const done = await firstSyncTick({
+      hidden: () => false,
+      before: () => [{ id: "a", initialSyncDone: false }],
+      refresh: async () => [{ id: "a", initialSyncDone: true }],
+      selected: () => "a",
+      onFinished,
+    });
+    expect(done).toBe("finished");
+    expect(onFinished).toHaveBeenCalledWith("a");
+
+    const failed = await firstSyncTick({
+      hidden: () => false,
+      before: () => [],
+      refresh: async () => null,
+      selected: () => "a",
+      onFinished,
+    });
+    expect(failed).toBe("failed");
   });
 
   it("maps initial_sync_done from the accounts API", () => {
@@ -302,5 +374,61 @@ describe("disconnect from the account menu (done-when 7)", () => {
     expect(c.body).toContain("ravi@contoso.test");
     expect(c.body).toMatch(/deleted from Metorite/);
     expect(c.note).toMatch(/stays in your Microsoft or Google mailbox/);
+  });
+});
+
+describe("no flash of the empty state on a hard load (fix round 1, P2)", () => {
+  it("draws the empty state only after the first account read settles", () => {
+    expect(emailSurface({ loaded: false, loading: false, count: 0 })).toBe("loading");
+    expect(emailSurface({ loaded: false, loading: true, count: 0 })).toBe("loading");
+    expect(emailSurface({ loaded: true, loading: true, count: 0 })).toBe("loading");
+    expect(emailSurface({ loaded: true, loading: false, count: 0 })).toBe("empty");
+    expect(emailSurface({ loaded: true, loading: true, count: 2 })).toBe("mailbox");
+    expect(emailSurface({ loaded: false, loading: false, count: 1 })).toBe("mailbox");
+  });
+
+  it("the store starts not loaded and sets loaded on success and on failure", () => {
+    const store = codeOnly(read("lib/emailStore.ts"));
+    expect(store).toMatch(/accountsLoading: false,\s*accountsLoaded: false,/);
+    expect(store).toContain("set({ accounts, accountsLoading: false, accountsLoaded: true });");
+    expect(store).toMatch(/set\(\{ accountsLoading: false, accountsLoaded: true, error:/);
+    expect(PAGE).toMatch(/emailSurface\(\{\s*loaded: accountsLoaded,/);
+    expect(PAGE).toContain('const noAccounts = surface === "empty";');
+  });
+});
+
+describe("the mobile bottom bar over the empty state (fix round 1, P2)", () => {
+  it("the page announces the empty state, and AppShell hides the email tabs", () => {
+    expect(PAGE).toContain('new CustomEvent("cc-email-empty", { detail: noAccounts })');
+    expect(PAGE).toContain('new CustomEvent("cc-email-empty", { detail: false })');
+    const shell = codeOnly(
+      readFileSync(join(EMAIL_APP, "..", "..", "components", "AppShell.tsx"), { encoding: "utf-8" }),
+    );
+    expect(shell).toContain('window.addEventListener("cc-email-empty", h)');
+    expect(shell).toContain("{isEmailPage && !emailEmpty && (");
+  });
+});
+
+describe("the admin email and the retry (fix round 1)", () => {
+  it("tells the admin that a did-not-finish page can appear and the approval counts", () => {
+    const body = decodeURIComponent(adminConsentMailto("https://x.test").split("&body=")[1]);
+    expect(body).toMatch(/did not finish/);
+    expect(body).toMatch(/approval still counts/);
+  });
+
+  it("Try again for Gmail goes to the connect choices, never its OAuth leg", () => {
+    expect(retryTarget("gmail", "https://app.test")).toBe("/email?connect=1");
+    const ms = retryTarget("microsoft", "https://app.test");
+    expect(ms.startsWith("/api/email/oauth/microsoft/authorize?")).toBe(true);
+    expect(new URLSearchParams(ms.split("?")[1]).get("redirect_after")).toBe("https://app.test/email");
+    expect(CALLBACK_PAGE).toContain("retryTarget(provider, window.location.origin)");
+    expect(wantsConnectChoices("?connect=1")).toBe(true);
+    expect(wantsConnectChoices("?connect=0")).toBe(false);
+    expect(PAGE).toMatch(/wantsConnectChoices\(window\.location\.search\)[\s\S]*?setShowAddModal\(true\)/);
+  });
+
+  it("the account-menu trigger is the Button primitive", () => {
+    const sidebar = codeOnly(read("components/AccountSidebar.tsx"));
+    expect(sidebar).toMatch(/<Button\s+variant="ghost"\s+size="icon-sm"\s+icon="MoreHorizontal"/);
   });
 });

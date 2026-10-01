@@ -229,6 +229,12 @@ interface EmailState {
 
   // Loading states
   accountsLoading: boolean;
+  /**
+   * True once the first `fetchAccounts` has settled, success or failure.
+   * Before that, "no accounts" is not known, so the page must not draw the
+   * empty state (EM-T3b: no flash of "Connect your email" on a hard load).
+   */
+  accountsLoaded: boolean;
   emailsLoading: boolean;
   loadingMore: boolean;
   backfilling: boolean;
@@ -588,6 +594,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   // Loading states
   accountsLoading: false,
+  accountsLoaded: false,
   emailsLoading: false,
   loadingMore: false,
   backfilling: false,
@@ -629,7 +636,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       let accounts = await api.listEmailAccounts();
       // Demo fallback: no real accounts connected → show the mock set.
       if (accounts.length === 0 && DEMO) accounts = MOCK_ACCOUNTS;
-      set({ accounts, accountsLoading: false });
+      set({ accounts, accountsLoading: false, accountsLoaded: true });
       // Pick the initial mailbox when none is selected yet: a persisted/URL
       // choice wins, else the user's default account, else the first one — so a
       // refresh or shared ?account= link reopens the right inbox.
@@ -646,14 +653,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     } catch (err: any) {
       // Demo fallback: backend unreachable → seed mock accounts so the UI works.
       if (DEMO) {
-        set({ accounts: MOCK_ACCOUNTS, accountsLoading: false });
+        set({ accounts: MOCK_ACCOUNTS, accountsLoading: false, accountsLoaded: true });
         if (!get().selectedAccountId) {
           set({ selectedAccountId: MOCK_ACCOUNTS[0].id, folders: MOCK_FOLDERS });
           get().fetchEmails();
         }
         return;
       }
-      set({ accountsLoading: false, error: err.message || "Failed to load accounts" });
+      set({ accountsLoading: false, accountsLoaded: true, error: err.message || "Failed to load accounts" });
     }
   },
 

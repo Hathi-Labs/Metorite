@@ -26,7 +26,9 @@ import { useEmailStore, isRealFolder } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
-  finishedFirstSync,
+  emailSurface,
+  wantsConnectChoices,
+  firstSyncTick,
   FIRST_SYNC_POLL_MS,
   isFirstSyncPending,
   reconnectProvider,
@@ -63,6 +65,7 @@ export default function EmailPage() {
     emailsTotal,
     folders,
     accountsLoading,
+    accountsLoaded,
     emailsLoading,
     loadingMore,
     backfilling,
@@ -108,6 +111,17 @@ export default function EmailPage() {
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+
+  // /email?connect=1 opens the connect choices (the callback page's "Try
+  // again" for a provider that is not live). With no mailbox, the empty state
+  // already shows them.
+  const connectParamRef = useRef(false);
+  useEffect(() => {
+    if (connectParamRef.current || accounts.length === 0) return;
+    if (!wantsConnectChoices(window.location.search)) return;
+    connectParamRef.current = true;
+    setShowAddModal(true);
+  }, [accounts.length]);
 
   // Deep link: /email?account=<id>&email=<id> opens a SPECIFIC message —
   // the link tasks put on email-origin items ("Open"). The account param is
@@ -187,13 +201,32 @@ export default function EmailPage() {
   // ── No mailbox yet ──
   // The empty state replaces the panes. There is no setup step for a member:
   // the deployment owns the Microsoft app (EM-T3b, spec §10.3).
-  const noAccounts = !accountsLoading && accounts.length === 0;
+  const surface = emailSurface({
+    loaded: accountsLoaded,
+    loading: accountsLoading,
+    count: accounts.length,
+  });
+  const noAccounts = surface === "empty";
+
+  // Tell the mobile bottom bar, so it hides the email tabs that would open
+  // empty sheets (AppShell listens for `cc-email-empty`).
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: noAccounts }));
+  }, [noAccounts]);
+  useEffect(
+    () => () => {
+      window.dispatchEvent(new CustomEvent("cc-email-empty", { detail: false }));
+    },
+    []
+  );
 
   // ── First sync ──
   // A new mailbox reports initial_sync_done=false until its first sync ends.
-  // Re-read the accounts quietly until every flag is true, and refill the
-  // inbox on each tick so mail appears while the sync runs. The interval
-  // stops when nothing is pending and when the page unmounts.
+  // Re-read the accounts quietly until no account is pending. An errored
+  // account is not pending (isFirstSyncPending), so a failed first sync stops
+  // the poll and the reconnect banner takes over. A hidden tab makes no
+  // request, and the poll ticks once when the tab comes back. The interval
+  // stops when the page unmounts.
   const firstSyncPending = shouldPollFirstSync(accounts);
   const pendingAccount =
     (selectedAccount && isFirstSyncPending(selectedAccount) ? selectedAccount : null) ??
@@ -202,24 +235,29 @@ export default function EmailPage() {
   useEffect(() => {
     if (!firstSyncPending) return;
     let cancelled = false;
-    const id = setInterval(async () => {
-      const before = useEmailStore.getState().accounts;
-      const after = await refreshAccounts();
-      if (cancelled || !after) return;
-      const selected = useEmailStore.getState().selectedAccountId;
-      if (!selected) return;
-      if (finishedFirstSync(before, after).includes(selected)) {
-        void fetchFolders(selected);
-        void fetchEmails();
-      } else if (after.some((a) => a.id === selected && isFirstSyncPending(a))) {
-        void softRefresh();
-      }
-    }, FIRST_SYNC_POLL_MS);
+    const tick = () =>
+      void firstSyncTick({
+        hidden: () => cancelled || document.hidden,
+        before: () => useEmailStore.getState().accounts,
+        refresh: refreshAccounts,
+        selected: () => useEmailStore.getState().selectedAccountId,
+        onFinished: (id) => {
+          if (cancelled) return;
+          void fetchFolders(id);
+          void fetchEmails();
+        },
+      });
+    const id = setInterval(tick, FIRST_SYNC_POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [firstSyncPending, refreshAccounts, fetchFolders, fetchEmails, softRefresh]);
+  }, [firstSyncPending, refreshAccounts, fetchFolders, fetchEmails]);
 
   // ── Mobile drawer content builders ──
 
@@ -556,7 +594,7 @@ export default function EmailPage() {
   return (
     <div className="flex h-full w-full bg-background overflow-hidden select-none">
       {/* Loading overlay */}
-      {accountsLoading && (
+      {surface === "loading" && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
           <div className="flex gap-2 items-center text-sm text-muted-foreground">
             <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -796,7 +834,7 @@ export default function EmailPage() {
             <AppIcon name="AlertCircle" size={14} className="text-warning mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-foreground">
-                <span className="font-medium">{selectedAccount.emailAddress}</span> can&apos;t
+                <span className="font-medium">{selectedAccount.emailAddress}</span>{" "}can&apos;t
                 reach the provider — message bodies, folders and statuses may be stale.
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5 truncate">

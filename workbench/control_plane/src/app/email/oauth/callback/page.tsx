@@ -29,7 +29,7 @@ import {
   adminConsentMailto,
   adminConsentUrl,
   callbackView,
-  connectQuery,
+  retryTarget,
   type CallbackView,
   type ConnectProviderId,
 } from "../../lib/connect";
@@ -56,8 +56,7 @@ function safeRedirectTarget(raw: string | null): string {
 
 /** Start the connect again, through the BFF (never the gateway host). */
 function connectAgain(provider: ConnectProviderId): void {
-  const query = connectQuery(`${window.location.origin}/email`);
-  window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
+  window.location.href = retryTarget(provider, window.location.origin);
 }
 
 /** The icon and the status tone of each result. Tokens only. */

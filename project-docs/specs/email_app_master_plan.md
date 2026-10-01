@@ -537,7 +537,9 @@ or API client to create a pattern by hand.
 3. **Consent.** Microsoft shows the verified Metorite app. The member accepts. With the interim app,
    Microsoft shows "CommandCenter" by Fracktal Works, so this step passes only after §10.5.
 4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
-   fills while the first sync runs.
+   appears when the first sync finishes. The scheduler commits the messages of a sync in one
+   transaction at the end, so the inbox does not fill bit by bit (corrected 2026-10-02, EM-T3b).
+   A first sync that fails shows the reconnect banner, not the progress state.
 5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
    error to the callback. Metorite shows a guided page, never a raw error. The page gives two
    paths. "Ask your IT admin" sends a prefilled email or copies the admin-consent link. "I am the
@@ -937,7 +939,15 @@ The BFF authorize route forwards `login_hint`.
 to the redirect URI with `admin_consent` and `tenant`, and no `code`. The gateway callback then
 answers `invalid_state`, and the page says "The connection did not finish". Microsoft keeps the
 approval all the same, so the member can connect after it. For this reason the guided page
-has no "I am the admin" button yet.
+has no "I am the admin" button yet. The prefilled email tells the admin that this page can
+appear and that the approval still counts. EM-T3c removes that sentence.
+
+**Fix round 1 (2026-10-02).** A first sync with `sync_status = 'error'` is not pending, so the
+poll stops and the reconnect banner owns that state. A hidden tab makes no poll request. The
+page draws "Connect your email" only after the first account read settles. The mobile bottom
+bar hides its email tabs while the empty state shows. "Try again" for Gmail goes back to the
+connect choices (`/email?connect=1`). The email router's real `exempt=[...]` list must equal
+`GATED_ROUTERS` (fence in `tests/unit/test_org_access_enforcement.py`).
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

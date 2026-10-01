@@ -74,39 +74,111 @@ export function reconnectProvider(account: Pick<EmailAccount, "provider">): Conn
     : null;
 }
 
+// ── Which surface the page draws ───────────────────────────────────────────
+
+export type EmailSurface = "loading" | "empty" | "mailbox";
+
+/**
+ * What `/email` draws: the loading shell, "Connect your email", or the panes.
+ *
+ * ⚠️ "empty" needs the FIRST account read to have settled. Before it, the
+ * store holds `[]` because nothing was read yet, not because the member has
+ * no mailbox, and drawing the empty state then flashes it on every hard load.
+ */
+export function emailSurface(state: { loaded: boolean; loading: boolean; count: number }): EmailSurface {
+  if (state.count > 0) return "mailbox";
+  if (!state.loaded || state.loading) return "loading";
+  return "empty";
+}
+
+/**
+ * Where "Try again" on the callback page goes.
+ *
+ * A provider that is not available (Gmail, "Coming soon") goes back to the
+ * connect choices in Email, never into its own OAuth leg. `/email?connect=1`
+ * opens the add-account dialog, or the empty state shows the same choices.
+ */
+export function retryTarget(provider: ConnectProviderId, origin: string): string {
+  const live = CONNECT_PROVIDERS.find((p) => p.id === provider)?.available === true;
+  if (!live) return "/email?connect=1";
+  return `/api/email/oauth/${provider}/authorize?${connectQuery(`${origin}/email`)}`;
+}
+
+/** True when the URL asks the page to open the connect choices. */
+export function wantsConnectChoices(search: string): boolean {
+  return new URLSearchParams(search).get("connect") === "1";
+}
+
 // ── First sync ─────────────────────────────────────────────────────────────
 
 /** How often the page re-reads the accounts while a first sync runs. */
 export const FIRST_SYNC_POLL_MS = 5000;
 
+type SyncFlags = Pick<EmailAccount, "initialSyncDone" | "syncStatus">;
+
 /**
- * An account whose first sync has not finished.
+ * An account whose first sync is still running.
  *
  * Only an explicit `false` counts. A gateway that predates EM-T3a sends no
  * flag, and an account with no flag must not spin for ever.
+ *
+ * ⚠️ An account in `syncStatus === "error"` is NOT pending. A first sync that
+ * failed leaves `initial_sync_done` false for good, so counting it would poll
+ * every few seconds for ever and show "bringing in your mail" over a mailbox
+ * that brings in nothing. The reconnect banner owns that state.
  */
-export function isFirstSyncPending(account: Pick<EmailAccount, "initialSyncDone">): boolean {
-  return account.initialSyncDone === false;
+export function isFirstSyncPending(account: SyncFlags): boolean {
+  return account.initialSyncDone === false && account.syncStatus !== "error";
 }
 
 /** True while any account still runs its first sync, so the page polls. */
-export function shouldPollFirstSync(accounts: ReadonlyArray<Pick<EmailAccount, "initialSyncDone">>): boolean {
+export function shouldPollFirstSync(accounts: ReadonlyArray<SyncFlags>): boolean {
   return accounts.some(isFirstSyncPending);
 }
 
 /** Ids whose first sync finished between two reads of the account list. */
 export function finishedFirstSync(
-  before: ReadonlyArray<Pick<EmailAccount, "id" | "initialSyncDone">>,
+  before: ReadonlyArray<Pick<EmailAccount, "id"> & SyncFlags>,
   after: ReadonlyArray<Pick<EmailAccount, "id" | "initialSyncDone">>,
 ): string[] {
   const done = new Set(after.filter((a) => a.initialSyncDone === true).map((a) => a.id));
   return before.filter((a) => isFirstSyncPending(a) && done.has(a.id)).map((a) => a.id);
 }
 
+export type FirstSyncTickResult = "hidden" | "failed" | "finished" | "pending";
+
+/**
+ * One tick of the first-sync poll. The page calls it from its interval and
+ * again when the tab becomes visible.
+ *
+ * A hidden tab makes no request: a member who leaves the tab open overnight
+ * must not re-read the accounts every five seconds. When the selected account
+ * finishes, `onFinished` loads its folders and its mail. The scheduler commits
+ * a sync in one transaction, so there is nothing to show before that.
+ */
+export async function firstSyncTick(deps: {
+  hidden: () => boolean;
+  before: () => ReadonlyArray<Pick<EmailAccount, "id"> & SyncFlags>;
+  refresh: () => Promise<ReadonlyArray<Pick<EmailAccount, "id" | "initialSyncDone">> | null>;
+  selected: () => string | null;
+  onFinished: (id: string) => void;
+}): Promise<FirstSyncTickResult> {
+  if (deps.hidden()) return "hidden";
+  const before = deps.before();
+  const after = await deps.refresh();
+  if (!after) return "failed";
+  const selected = deps.selected();
+  if (selected && finishedFirstSync(before, after).includes(selected)) {
+    deps.onFinished(selected);
+    return "finished";
+  }
+  return "pending";
+}
+
 export function firstSyncCopy(address: string): { title: string; body: string } {
   return {
     title: `Connected as ${address}`,
-    body: "Metorite is bringing in your mail. Recent messages come first. This can take a few minutes, and you can keep working.",
+    body: "Metorite is bringing in your mail. This can take a few minutes for a large mailbox, and you can keep working.",
   };
 }
 
@@ -258,6 +330,8 @@ export function adminConsentMailto(link: string): string {
     link,
     "",
     "One approval covers everyone in our organization. Metorite asks for permission to read, send and organize the mail of each member who connects.",
+    "",
+    "After you approve, Microsoft may show a Metorite page that says the connection did not finish. The approval still counts, and you can close that page.",
     "",
     "Thank you.",
   ].join("\n");

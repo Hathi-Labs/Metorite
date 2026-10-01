@@ -386,6 +386,17 @@ function MobileBottomNavInner({
     return () => window.removeEventListener("cc-tasks-section", h);
   }, []);
 
+  // Email: with no mailbox the page shows only "Connect your email", so the
+  // Inbox / Automation / AI Chat tabs would open empty sheets. The page emits
+  // `cc-email-empty` (true while the empty state shows, false otherwise and on
+  // unmount), and the tabs hide while it is true (WS-17 EM-T3b).
+  const [emailEmpty, setEmailEmpty] = useState(false);
+  useEffect(() => {
+    const h = (e: Event) => setEmailEmpty((e as CustomEvent<boolean>).detail === true);
+    window.addEventListener("cc-email-empty", h);
+    return () => window.removeEventListener("cc-email-empty", h);
+  }, []);
+
   const dispatchNav = (detail: string) => {
     window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
   };
@@ -401,7 +412,7 @@ function MobileBottomNavInner({
           <AppIcon name="Menu" size={20} />
           <span className="text-[10px] font-medium leading-none">Menu</span>
         </button>
-        {isEmailPage && (
+        {isEmailPage && !emailEmpty && (
           <>
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-accounts")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
               <AppIcon name="Mail" size={20} />

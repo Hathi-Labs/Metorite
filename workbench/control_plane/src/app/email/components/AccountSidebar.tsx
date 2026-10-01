@@ -2,6 +2,7 @@
 
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 
@@ -172,8 +173,10 @@ export function AccountSidebar({
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
                 {onDisconnect && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    icon="MoreHorizontal"
                     onClick={(e) => {
                       e.stopPropagation();
                       const r = e.currentTarget.getBoundingClientRect();
@@ -182,10 +185,8 @@ export function AccountSidebar({
                     aria-label={`Account menu for ${account.emailAddress}`}
                     aria-haspopup="menu"
                     title="Account menu"
-                    className="p-1 rounded text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent flex-shrink-0"
-                  >
-                    <AppIcon name="MoreHorizontal" size={12} />
-                  </button>
+                    className="flex-shrink-0"
+                  />
                 )}
                 {account.unreadCount > 0 && selectedAccountId !== account.id && (
                   <span className="bg-primary text-primary-foreground text-[9px] rounded-full px-1.5 py-0.5 flex-shrink-0">
