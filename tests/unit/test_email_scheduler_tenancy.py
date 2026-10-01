@@ -42,8 +42,10 @@ import asyncio
 import inspect
 import json
 import uuid
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -365,6 +367,214 @@ class TestTheSweepBindsPerOrganization:
             _purge(p.admin_engine, [a_on, a_off, b_on])
 
 
+_RLS_TABLES = ("email_accounts", "email_sync_log")
+
+
+@contextmanager
+def _rls_off(admin_engine):
+    """Turn row security OFF on the sweep's two tables, then restore it.
+
+    This is the catalog without RLS: each per-org read sees every row. Only
+    the ``organization_id`` filter of the sweep can bind the right org."""
+    with admin_engine.begin() as c:
+        for t in _RLS_TABLES:
+            c.execute(text(f"ALTER TABLE {t} NO FORCE ROW LEVEL SECURITY"))
+            c.execute(text(f"ALTER TABLE {t} DISABLE ROW LEVEL SECURITY"))
+    try:
+        yield
+    finally:
+        with admin_engine.begin() as c:
+            for t in _RLS_TABLES:
+                c.execute(text(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY"))
+                c.execute(text(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY"))
+
+
+@_DB_GATE
+class TestTheSweepFiltersOnTheOwnerWithoutRls:
+    """Reviewer P1, fix round 1: on a catalog without RLS, an account binds
+    ONLY the organization that owns it, and the orphan close of one org
+    leaves the rows of another org alone."""
+
+    async def test_each_account_binds_only_its_owning_org(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        p = promoted
+        a_on = _seed_account(p.admin_engine, org=p.org_a, owner="a@em-t1b.test")
+        b_on = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b.test")
+        calls: list[tuple[str, str]] = []
+
+        async def _loop(account_id, interval, *, organization_id):
+            calls.append((account_id, organization_id))
+
+        monkeypatch.setenv("EMAIL_SYNC_ENABLED", "true")
+        monkeypatch.setattr(sched, "_scheduler_running", False)
+        monkeypatch.setattr(sched, "_account_sync_loop", _loop)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            with _rls_off(p.admin_engine):
+                # The mechanism: with RLS off, org A's session sees org B.
+                sql = ("SELECT count(*) FROM email_accounts "
+                       "WHERE id = CAST(:b AS uuid)")
+                assert _count_as(p.app_url, p.org_a, sql, {"b": b_on}) == 1
+                async with tenant_engine_scope(app_dsn):
+                    await sched.start_background_sync()
+                    await asyncio.gather(*sched._scheduler_tasks.values())
+            mine = sorted(c for c in calls if c[0] in (a_on, b_on))
+            assert mine == sorted([(a_on, p.org_a), (b_on, p.org_b)]), (
+                f"without RLS the sweep bound {mine}; each account must bind "
+                "only the organization that owns it, exactly once"
+            )
+        finally:
+            release_tenant(token)
+            sched._scheduler_tasks.clear()
+            _purge(p.admin_engine, [a_on, b_on])
+
+    async def test_the_orphan_close_of_one_org_leaves_another_alone(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        p = promoted
+        a_acc = _seed_account(p.admin_engine, org=p.org_a, owner="a@em-t1b.test",
+                              status="syncing")
+        b_acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b.test",
+                              status="syncing")
+        log_a = _seed_running_log(p.admin_engine, org=p.org_a, account_id=a_acc)
+        log_b = _seed_running_log(p.admin_engine, org=p.org_b, account_id=b_acc)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        try:
+            with _rls_off(p.admin_engine):
+                async with tenant_engine_scope(app_dsn):
+                    await sched._sweep_one_org(p.org_a)
+            with p.admin_engine.connect() as c:
+                logs = dict(c.execute(text(
+                    "SELECT id::text, status FROM email_sync_log "
+                    "WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                    {"a": log_a, "b": log_b}).all())
+                statuses = dict(c.execute(text(
+                    "SELECT id::text, sync_status FROM email_accounts "
+                    "WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                    {"a": a_acc, "b": b_acc}).all())
+            assert logs == {log_a: "error", log_b: "running"}, (
+                "the orphan close of org A touched a sync-log row of org B"
+            )
+            assert statuses == {a_acc: "idle", b_acc: "syncing"}
+        finally:
+            _purge(p.admin_engine, [a_acc, b_acc])
+
+
+async def test_one_org_failing_does_not_stop_the_sweep(monkeypatch, caplog):
+    """Reviewer P2: one organization's failure is logged with its id, and the
+    sweep goes on to the next organization."""
+    async def _orgs():
+        return ["org-1", "org-2", "org-3"]
+
+    async def _sweep(org):
+        if org == "org-2":
+            raise RuntimeError("org-2 is down")
+        return [(f"acc-{org}", 60)]
+
+    started: list[tuple[str, str]] = []
+
+    async def _loop(account_id, interval, *, organization_id):
+        started.append((account_id, organization_id))
+
+    monkeypatch.setenv("EMAIL_SYNC_ENABLED", "true")
+    monkeypatch.setattr(sched, "_scheduler_running", False)
+    monkeypatch.setattr(sched, "_list_organizations", _orgs)
+    monkeypatch.setattr(sched, "_sweep_one_org", _sweep)
+    monkeypatch.setattr(sched, "_account_sync_loop", _loop)
+    try:
+        with caplog.at_level("WARNING", logger=sched.logger.name):
+            launched = await sched.start_background_sync()
+            await asyncio.gather(*sched._scheduler_tasks.values())
+    finally:
+        sched._scheduler_tasks.clear()
+    assert launched == {"acc-org-1": 60, "acc-org-3": 60}
+    assert sorted(started) == [("acc-org-1", "org-1"), ("acc-org-3", "org-3")]
+    failed = [r.getMessage() for r in caplog.records
+              if "email.sync_sweep_org_failed" in r.getMessage()]
+    assert len(failed) == 1 and "org-2" in failed[0]
+
+
+# ── hermetic: no session across the provider calls (item 6(b)) ────────────
+
+
+class _Result:
+    def fetchone(self):
+        return SimpleNamespace(
+            id="log-1", provider="microsoft", credentials_encrypted="x",
+            last_history_id=None, sync_interval_secs=300,
+            initial_sync_done=True, categories=[], user_id="o@x.test")
+
+    def fetchall(self):
+        return []
+
+    def scalar(self):
+        return None
+
+
+class _Db:
+    async def execute(self, *_a, **_k):
+        return _Result()
+
+    async def commit(self):
+        return None
+
+
+async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
+    """R7 fence ``email-sync-no-session-across-provider-io``.
+
+    The fake provider asserts that no ``tenant_session`` is open while it
+    authenticates and while it fetches. The short creds-persist session
+    BETWEEN the two calls is allowed, and the provider makes it happen
+    (``credentials_dirty`` is True). A failed assertion lands in the error
+    path, so the test checks for a clean result."""
+    state = {"open": 0, "opens": 0}
+    seen: list[tuple[str, int]] = []
+
+    @asynccontextmanager
+    async def _ts(org=None):
+        state["open"] += 1
+        state["opens"] += 1
+        try:
+            yield _Db()
+        finally:
+            state["open"] -= 1
+
+    class _Watched(_FakeProvider):
+        async def authenticate(self) -> bool:
+            seen.append(("authenticate", state["open"]))
+            assert state["open"] == 0, "a session is open during authenticate"
+            return True
+
+        async def sync_messages(self, **kw) -> SyncResult:
+            seen.append(("sync_messages", state["open"]))
+            assert state["open"] == 0, "a session is open during sync_messages"
+            return await super().sync_messages(**kw)
+
+    async def _upsert(db, account_id, msg):
+        return None
+
+    async def _no_hook(*_a, **_k):
+        return None
+
+    from acb_llm import key_store
+
+    monkeypatch.setattr(sched, "tenant_session", _ts)
+    monkeypatch.setattr(sched, "upsert_message", _upsert)
+    monkeypatch.setattr(sched, "run_label_learn_hook", _no_hook)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider",
+                        lambda name, creds: _Watched([_message(1)]))
+    res = await sched._sync_account("acc-1", organization_id="org-1")
+    assert "error" not in res, f"the sync failed: {res}"
+    assert seen == [("authenticate", 0), ("sync_messages", 0)]
+    assert state["open"] == 0
+    assert state["opens"] >= 4, "the phases did not each open a session"
+
+
 # ── R8: the sync core ───────────────────────────────────────────────────────
 
 
@@ -480,6 +690,7 @@ class TestTheSyncCoreWritesItsOwnTenant:
     ):
         """The error path opens a NEW tenant_session(org), so the error
         status and the log row land under FORCE RLS."""
+        _assert_non_priv(app_engine)
         p = promoted
         account_id = _seed_account(p.admin_engine, org=p.org_a,
                                    owner="a@em-t1b.test")

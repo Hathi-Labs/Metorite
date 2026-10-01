@@ -47,9 +47,14 @@ def test_backoff_is_capped_around_one_hour() -> None:
 
 async def test_startup_closes_orphaned_running_sync_logs_and_statuses() -> None:
     db = AsyncMock()
-    await s._close_orphaned_syncs(db)
+    await s._close_orphaned_syncs(db, "org-1")
     stmts = [str(c[0][0]) for c in db.execute.call_args_list]
     assert len(stmts) == 2
+    # EM-T1b-1: both statements filter on the owning org, so a catalog
+    # without RLS still closes only the rows of that one organization.
+    for call in db.execute.call_args_list:
+        assert "organization_id = CAST(:org AS uuid)" in str(call[0][0])
+        assert call[0][1] == {"org": "org-1"}
     log_sql = next(x for x in stmts if "email_sync_log" in x)
     acc_sql = next(x for x in stmts if "email_accounts" in x)
     # sync-log: only the still-'running' rows, marked error + completed.

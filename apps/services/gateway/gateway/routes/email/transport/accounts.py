@@ -337,25 +337,26 @@ async def update_account(
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
 
-        # Refresh background sync: start/stop loop for this account
-        try:
-            from email_ingestion.scheduler import refresh_account_sync, remove_account_sync
-            if row.sync_enabled:
-                await refresh_account_sync(
-                    account_id, organization_id=user.organization_id)
-            else:
-                await remove_account_sync(account_id)
-        except Exception as exc:
-            _log.warning("email.refresh_sync_failed", error=str(exc)[:200])
+    # Refresh background sync: start/stop loop for this account. It runs AFTER
+    # the tenant block, so the update is committed first (EM-T1b-1 item 5).
+    try:
+        from email_ingestion.scheduler import refresh_account_sync, remove_account_sync
+        if row.sync_enabled:
+            await refresh_account_sync(
+                account_id, organization_id=user.organization_id)
+        else:
+            await remove_account_sync(account_id)
+    except Exception as exc:
+        _log.warning("email.refresh_sync_failed", error=str(exc)[:200])
 
-        return EmailAccountModel(
-            id=str(row.id),
-            provider=row.provider,
-            email_address=row.email_address,
-            label=row.label or "",
-            avatar_color=row.avatar_color or "#6366f1",
-            sync_enabled=row.sync_enabled,
-            sync_status=row.sync_status or "idle",
-            last_synced_at=row.last_synced_at.isoformat()
-            if row.last_synced_at else None,
-        )
+    return EmailAccountModel(
+        id=str(row.id),
+        provider=row.provider,
+        email_address=row.email_address,
+        label=row.label or "",
+        avatar_color=row.avatar_color or "#6366f1",
+        sync_enabled=row.sync_enabled,
+        sync_status=row.sync_status or "idle",
+        last_synced_at=row.last_synced_at.isoformat()
+        if row.last_synced_at else None,
+    )

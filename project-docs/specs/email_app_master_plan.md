@@ -555,7 +555,7 @@ live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
 | **EM-T1b** | 🟢 AGENT-SAFE | 🟡 **EM-T1b-1 BUILT, not merged (2026-10-01).** **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
-| **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
+| **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
 | **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -776,8 +776,14 @@ The R8 tests must show PASSED, not SKIPPED.
 7. Rollback: set the flag to `false` and restart.
 
 **Risks.** The shared pool holds 8 sessions plus 4 overflow per process. A deep backfill that
-holds one session across Graph I/O can starve the requests, and the phase split of item 6 stops
-that. The two halves are not safe apart: after EM-T1b-1 alone, the automation hooks fail closed.
+holds one session across Graph I/O can starve the requests. The phase split of item 6 makes this
+risk smaller, but it does not remove it. Phases (b) and (c) hold no session across the sync fetch.
+Two sessions still stay open across external I/O, and EM-T4 owns both:
+
+- Phase (e) holds its session across the Graph calls of `backfill_missing_bodies`.
+- Phase (f) holds its session across `litellm.aembedding` in `embed_pending_messages`.
+
+The two halves are not safe apart: after EM-T1b-1 alone, the automation hooks fail closed.
 Do not flip between the two PRs.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)

@@ -80,23 +80,27 @@ def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
     return min(current * 2 if current else interval * 2, _MAX_SYNC_BACKOFF_SECS)
 
 
-async def _close_orphaned_syncs(db: Any) -> None:
+async def _close_orphaned_syncs(db: Any, organization_id: str) -> None:
     """Close sync-log rows (and account statuses) left mid-flight by a process
     that crashed or restarted during a sync. Nothing completes them once that
     process is gone, so they linger 'running'/'syncing' forever and lie to any
     "is a sync in progress?" check. A fresh scheduler owns every sync now, so any
     pre-existing in-flight row is by definition orphaned.
 
-    The caller hands in a ``tenant_session(org)``, so under FORCE RLS this
-    closes the rows of that one organization. The startup sweep calls it once
-    per organization."""
+    The caller hands in a ``tenant_session(org)``. Both statements ALSO filter
+    on ``organization_id``, so on a catalog without RLS they still touch only
+    the rows of that one organization. The startup sweep calls it once per
+    organization."""
+    params = {"org": organization_id}
     await db.execute(text(
         "UPDATE email_sync_log SET status = 'error', "
         "error_message = 'interrupted by scheduler restart', "
-        "completed_at = now() WHERE status = 'running'"))
+        "completed_at = now() WHERE status = 'running' "
+        "AND organization_id = CAST(:org AS uuid)"), params)
     await db.execute(text(
         "UPDATE email_accounts SET sync_status = 'idle', "
-        "updated_at = now() WHERE sync_status = 'syncing'"))
+        "updated_at = now() WHERE sync_status = 'syncing' "
+        "AND organization_id = CAST(:org AS uuid)"), params)
 
 
 async def _list_organizations() -> list[str]:
@@ -104,14 +108,46 @@ async def _list_organizations() -> list[str]:
 
     The one unbound read of the scheduler: it answers "which tenants exist",
     so it cannot run inside one. Same shape as ``routes/tasks/calendar.py``
-    ``_run_rollover_sweep``.
+    ``_run_rollover_sweep``. Ordered, so the sweep is deterministic.
     """
     db = await get_db()
     try:
-        rows = (await db.execute(text("SELECT id FROM organization"))).fetchall()
+        rows = (await db.execute(
+            text("SELECT id FROM organization ORDER BY id"))).fetchall()
     finally:
         await db.close()
     return [str(r.id) for r in rows]
+
+
+async def _sweep_one_org(organization_id: str) -> list[tuple[str, int | None]]:
+    """Close the orphaned syncs of one organization and list its accounts
+    with ``sync_enabled``, inside ONE ``tenant_session(org)``.
+
+    The account read filters on ``organization_id`` as well as RLS, so an
+    account binds only the organization that owns it on every catalog."""
+    async with tenant_session(organization_id) as db:
+        await _close_orphaned_syncs(db, organization_id)
+        result = await db.execute(
+            text(
+                """SELECT id, sync_interval_secs
+                   FROM email_accounts
+                   WHERE sync_enabled = true
+                     AND organization_id = CAST(:org AS uuid)"""
+            ),
+            {"org": organization_id},
+        )
+        # str(), not row.id. asyncpg hands back a UUID OBJECT, and this
+        # value is the `account_id: str` threaded through the entire
+        # new-mail pipeline — sync, rules, drafting, memory scoping.
+        # Anything that merely puts it in a SQL parameter works fine, so
+        # the wrong type stayed invisible until something did string
+        # work with it: the reply drafter raised
+        # "'asyncpg.pgproto.pgproto.UUID' object has no attribute
+        # 'strip'" and silently produced no draft, while the LABEL
+        # action on the same rule succeeded. Every other entry point
+        # (routes, webhook) already passes a real str.
+        return [(str(row.id), row.sync_interval_secs)
+                for row in result.fetchall()]
 
 
 # -- Core sync logic (shared with manual /email/sync endpoint) ---------------
@@ -579,9 +615,14 @@ async def start_background_sync() -> dict[str, int]:
     The sweep binds per organization (EM-T1b-1 item 2). One unbound read lists
     the RLS-EXEMPT ``organization`` table. For each organization, one
     ``tenant_session(org)`` closes the orphaned syncs and lists the accounts
-    with ``sync_enabled``. Each loop starts with its own organization. Deduped
-    by account id (first organization wins) so a catalog without FORCE RLS,
-    where each per-org read sees every row, still starts one loop per account.
+    with ``sync_enabled``. Each loop starts with its own organization.
+
+    ⚠️ Every per-org statement ALSO filters on ``organization_id = :org``.
+    Under FORCE RLS the filter is redundant (defence in depth). On a catalog
+    without RLS, each per-org read would otherwise see every row, and an
+    account could bind an organization that does not own it. The filter makes
+    the binding correct on every catalog. A failure in one organization is
+    logged as ``email.sync_sweep_org_failed`` and the sweep goes on.
     """
     global _scheduler_running
 
@@ -596,34 +637,18 @@ async def start_background_sync() -> dict[str, int]:
             logger.info("sync.scheduler_already_running")
             return {}
 
-        seen: set[str] = set()
         accounts: list[tuple[str, int | None, str]] = []
         for org in await _list_organizations():
-            async with tenant_session(org) as db:
-                await _close_orphaned_syncs(db)
-                result = await db.execute(
-                    text(
-                        """SELECT id, sync_interval_secs
-                           FROM email_accounts
-                           WHERE sync_enabled = true"""
-                    )
+            try:
+                org_accounts = await _sweep_one_org(org)
+            except Exception as exc:
+                # One organization's failure must not stop the others.
+                logger.warning(
+                    "email.sync_sweep_org_failed org=%s error=%s",
+                    org, str(exc)[:200],
                 )
-                # str(), not row.id. asyncpg hands back a UUID OBJECT, and this
-                # value is the `account_id: str` threaded through the entire
-                # new-mail pipeline — sync, rules, drafting, memory scoping.
-                # Anything that merely puts it in a SQL parameter works fine, so
-                # the wrong type stayed invisible until something did string
-                # work with it: the reply drafter raised
-                # "'asyncpg.pgproto.pgproto.UUID' object has no attribute
-                # 'strip'" and silently produced no draft, while the LABEL
-                # action on the same rule succeeded. Every other entry point
-                # (routes, webhook) already passes a real str.
-                org_accounts = [(str(row.id), row.sync_interval_secs)
-                                for row in result.fetchall()]
+                continue
             for account_id, interval in org_accounts:
-                if account_id in seen:
-                    continue
-                seen.add(account_id)
                 accounts.append((account_id, interval, org))
 
         launched: dict[str, int] = {}

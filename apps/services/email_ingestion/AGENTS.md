@@ -73,7 +73,10 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - **Tenancy (WS-17 EM-T1b-1).** The scheduler opens no engine of its own. Every
   session comes from `acb_common.db`. The startup sweep reads the RLS-exempt
   `organization` table once, unbound. It then opens one `tenant_session(org)`
-  for each organization. Each loop binds its organization with `bind_tenant`.
+  for each organization. Each per-org statement also filters on
+  `organization_id`, so an account binds only its owning organization on a
+  catalog without RLS. A failure in one organization does not stop the sweep.
+  Each loop binds its organization with `bind_tenant`.
   `_sync_account` takes `organization_id` or reads `current_tenant()`, and
   raises `TenantUnbound` when it has neither.
 - ⚠️ **No `commit()` inside a `tenant_session` block.** A commit ends
