@@ -19,7 +19,12 @@ There is no new public surface, and this file exists to keep it that way:
    test_no_destructive_control_is_rendered_on_the_viewers_own_row``).
 2. ``/email/oauth/{provider}/authorize`` is STILL NOT in ``PUBLIC_ROUTES``.
    That is the dangerous "fix", and it is the one somebody reaches for first.
-3. The authenticated identity outranks the ``user_email`` query parameter.
+   Since EM-T1a the callback is not public either. It runs behind the session
+   through its own BFF route (``email_app_master_plan.md`` §10.4.1, risk R-4).
+3. The BFF callback route acts as the member, keeps the 302, forwards four
+   parameters only, and refuses a ``Location`` of another origin.
+4. The identity comes from the session only. The state is signed and carries
+   the organization and the member, and the ``user_email`` fallback is gone.
 """
 from __future__ import annotations
 
@@ -34,6 +39,10 @@ CONTROL_PLANE = REPO / "workbench" / "control_plane" / "src"
 BFF_ROUTE = (
     CONTROL_PLANE / "app" / "api" / "email" / "oauth" / "[provider]"
     / "authorize" / "route.ts"
+)
+BFF_CALLBACK_ROUTE = (
+    CONTROL_PLANE / "app" / "api" / "email" / "oauth" / "[provider]"
+    / "callback" / "route.ts"
 )
 #: The path the browser is navigated to, with the provider interpolated.
 BFF_NAVIGATION = "/api/email/oauth/${provider}/authorize"
@@ -271,10 +280,36 @@ def test_the_authorize_leg_is_not_public_and_must_not_become_public() -> None:
     assert AUTHORIZE_TEMPLATE not in _public_routes()
 
 
-def test_the_callback_leg_stays_public() -> None:
-    """The other half of the pin: the callback is a provider redirect carrying
-    no session, and removing it would break the flow at the last step."""
-    assert CALLBACK_TEMPLATE in _public_routes()
+def test_the_callback_leg_is_not_public() -> None:
+    """EM-T1a inverted this pin (spec §10.4.1, risk R-4).
+
+    The callback used to be public, with trust from the state alone. A signed
+    state is a bearer value for ten minutes, so an attacker could start the
+    flow and a victim's consent would attach the victim's mailbox to the
+    attacker. The callback now runs behind the session through the BFF, and
+    the member of the session must be the member in the state.
+    """
+    assert CALLBACK_TEMPLATE not in _public_routes()
+
+
+def test_the_callback_template_is_absent_from_every_exempt_list() -> None:
+    """The three lists named in §10.4.1: PUBLIC_ROUTES, the feature-router
+    exemption of the email package, and the enforcement test's own copy."""
+    from gateway.routes.email.core import router
+
+    from tests.unit.test_org_access_enforcement import GATED_ROUTERS
+
+    assert CALLBACK_TEMPLATE not in _public_routes()
+    assert CALLBACK_TEMPLATE not in GATED_ROUTERS["gateway.routes.email"]
+    core_src = _read(
+        REPO / "apps" / "services" / "gateway" / "gateway" / "routes" / "email"
+        / "core.py"
+    )
+    exempt_block = core_src.split("require_feature_router(", 1)[1].split("])", 1)[0]
+    assert CALLBACK_TEMPLATE not in exempt_block
+    # And it is still mounted, so the three absences mean "gated".
+    paths = {getattr(r, "path", "") for r in router.routes}
+    assert CALLBACK_TEMPLATE in paths
 
 
 def test_the_authorize_route_is_registered_and_behind_the_app_guard() -> None:
@@ -291,60 +326,148 @@ def test_the_authorize_route_is_registered_and_behind_the_app_guard() -> None:
     )
 
 
-# ── 3. Identity precedence ──────────────────────────────────────────────────
+# ── 3. The BFF callback route (EM-T1a) ──────────────────────────────────────
+
+
+def test_the_bff_callback_route_exists() -> None:
+    assert BFF_CALLBACK_ROUTE.is_file(), (
+        f"{BFF_CALLBACK_ROUTE} is missing — it is the redirect URI the "
+        "provider sends the browser to"
+    )
+
+
+def test_the_bff_callback_acts_as_the_member_and_keeps_the_redirect() -> None:
+    """The same three properties as the authorize route, plus the origin
+    check. ``route.test.ts`` beside the file runs the handler. This reads the
+    code, comments stripped, so a header comment cannot satisfy it."""
+    src = _code_only(_read(BFF_CALLBACK_ROUTE))
+    assert "gatewayHeaders" in src
+    assert "serviceHeaders" not in src, (
+        "serviceHeaders is bearer-only — the gateway would see the platform, "
+        "not the member, and the member check would refuse every connect"
+    )
+    assert 'redirect: "manual"' in src
+    assert 'headers.get("location")' in src
+    assert "target.pathname !== CALLBACK_PAGE" in src, (
+        "the BFF must refuse a Location that is not the callback page"
+    )
+    assert "WORKBENCH_PUBLIC_URL" in src, (
+        "with a configured public origin, the Location must also be on it"
+    )
+    assert '"callback_bad_location"' in src
+    assert "target.pathname + target.search" in src, "the Location sent on is relative"
+
+
+@pytest.mark.parametrize("route", ["authorize", "callback"])
+def test_no_bff_oauth_route_takes_the_public_origin_from_the_request(route: str) -> None:
+    """EM-T1a fix round 1 (F1, F3). In production Next runs behind Caddy, and a
+    route handler's ``req.nextUrl.origin`` is the bind host
+    (``https://localhost:3001``). A redirect built from it sends the member to
+    localhost, and an origin check against it refuses every connect. Both
+    routes send a RELATIVE Location to the callback page instead."""
+    path = BFF_ROUTE if route == "authorize" else BFF_CALLBACK_ROUTE
+    src = _code_only(_read(path))
+    assert "nextUrl.origin" not in src
+    assert "req.url" not in src
+    failed = src.split("function failed(", 1)[1].split("\n}", 1)[0]
+    assert "NextResponse.redirect" not in failed
+    assert "`${CALLBACK_PAGE}?${qs}`" in failed
+
+
+def test_the_bff_callback_forwards_only_the_four_oauth_parameters() -> None:
+    src = _code_only(_read(BFF_CALLBACK_ROUTE))
+    allow = src.split("FORWARDED_PARAMS = [", 1)[1].split("]", 1)[0]
+    named = sorted(p.strip().strip('"') for p in allow.split(",") if p.strip())
+    assert named == ["code", "error", "error_description", "state"]
+    handler = src.split("export async function GET", 1)[1]
+    # The handler reads the query through the allowlist and nowhere else.
+    assert handler.count("searchParams.get(") == 1
+    assert "searchParams.get(name)" in handler
+    assert "user_email" not in handler
+    # The code is a credential for a short time. Nothing logs it.
+    assert "console." not in src
+
+
+def test_the_authorize_url_carries_no_form_post() -> None:
+    """A cross-site POST drops the Lax session cookie, so the BFF callback
+    would not see the member. Read from the gateway code that builds the URL."""
+    src = _read(
+        REPO / "apps" / "services" / "gateway" / "gateway" / "routes" / "email"
+        / "transport" / "oauth.py"
+    )
+    code = "\n".join(
+        line.split("#", 1)[0] for line in src.splitlines()
+    )
+    assert "form_post" not in code
+    assert "response_mode" not in code
+
+
+# ── 4. Identity comes from the session only (EM-T1a item 2) ─────────────────
+
+ORG = "11111111-2222-3333-4444-555555555555"
+
 
 @pytest.fixture()
 def oauth_module(monkeypatch: pytest.MonkeyPatch):
+    from acb_common import get_settings
     from gateway.routes.email.transport import oauth as mod
 
-    # A configured client id, so the handler reaches the state write rather than
+    # A configured client id, so the handler reaches the state rather than
     # 400ing on "Microsoft OAuth is not configured".
     monkeypatch.setenv("MSFT_OAUTH_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(mod, "_oauth_states", {})
+    monkeypatch.setattr(
+        get_settings(), "gateway_session_secret", "wiring-test-secret", raising=False,
+    )
     return mod
 
 
-async def _authorize(mod, user: UserContext, user_email: str) -> dict[str, str]:
-    resp = await mod.oauth_authorize(
-        "microsoft", user=user, redirect_after="", user_email=user_email,
-    )
+async def _authorize_state(mod, user: UserContext) -> dict:
+    from urllib.parse import parse_qs, urlparse
+
+    from gateway.routes.email.transport.signing import verify_oauth_state
+
+    resp = await mod.oauth_authorize("microsoft", user=user, redirect_after="")
     assert resp.status_code == 302
-    assert len(mod._oauth_states) == 1
-    return next(iter(mod._oauth_states.values()))
+    query = parse_qs(urlparse(resp.headers["location"]).query)
+    claims = verify_oauth_state(query["state"][0])
+    assert claims is not None, "the authorize leg signed a state that does not verify"
+    return claims
 
 
-async def test_the_authenticated_identity_outranks_the_query_parameter(
-    oauth_module,
-) -> None:
-    """The second half of the live bug.
-
-    It used to read ``user_email or user.email``, so a crafted query parameter
-    decided whose account the mailbox attached to. Now that the BFF supplies a
-    real identity, the parameter must never be able to override it.
-    """
-    me = UserContext(email="colleague@fracktal.in", role=UserRole.EMPLOYEE)
-
-    state = await _authorize(oauth_module, me, "someone.else@fracktal.in")
-
-    assert state["user_id"] == "colleague@fracktal.in", (
-        "the query parameter overrode the authenticated identity — this is the "
-        "mailbox-hijack shape"
+async def test_the_state_carries_the_session_identity(oauth_module) -> None:
+    """The member and the organization in the state are the session's."""
+    me = UserContext(
+        email="Colleague@Fracktal.in", role=UserRole.EMPLOYEE, organization_id=ORG,
     )
 
+    claims = await _authorize_state(oauth_module, me)
 
-async def test_the_query_parameter_is_still_a_fallback(oauth_module) -> None:
-    """Kept for the legacy shape: an authenticated caller with no email of its
-    own may still name one. It is a fallback, never an override."""
-    nameless = UserContext(email=None, role=UserRole.AGENT)
-
-    state = await _authorize(oauth_module, nameless, "legacy@fracktal.in")
-
-    assert state["user_id"] == "legacy@fracktal.in"
+    assert claims["member"] == "colleague@fracktal.in"
+    assert claims["org"] == ORG
+    assert claims["provider"] == "microsoft"
 
 
-async def test_neither_identity_is_not_silently_attributed(oauth_module) -> None:
-    nameless = UserContext(email=None, role=UserRole.AGENT)
+def test_the_authorize_leg_takes_no_user_email_parameter(oauth_module) -> None:
+    """The query fallback is gone. A parameter cannot name the member."""
+    import inspect
 
-    state = await _authorize(oauth_module, nameless, "")
+    assert "user_email" not in inspect.signature(oauth_module.oauth_authorize).parameters
 
-    assert state["user_id"] == "anonymous"
+
+async def test_no_organization_is_refused_with_403(oauth_module) -> None:
+    from fastapi import HTTPException
+
+    orgless = UserContext(email="colleague@fracktal.in", role=UserRole.EMPLOYEE)
+    with pytest.raises(HTTPException) as exc:
+        await oauth_module.oauth_authorize("microsoft", user=orgless, redirect_after="")
+    assert exc.value.status_code == 403
+
+
+async def test_no_member_is_refused_with_403(oauth_module) -> None:
+    """The old ``anonymous`` member is gone with the fallback."""
+    from fastapi import HTTPException
+
+    nameless = UserContext(email=None, role=UserRole.AGENT, organization_id=ORG)
+    with pytest.raises(HTTPException) as exc:
+        await oauth_module.oauth_authorize("microsoft", user=nameless, redirect_after="")
+    assert exc.value.status_code == 403

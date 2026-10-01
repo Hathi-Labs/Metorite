@@ -3,24 +3,27 @@ webhook + change-subscription lifecycle."""
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_settings
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from gateway.db import bind_tenant, current_tenant, release_tenant
 from gateway.routes.email.core import (
-    _get_db,
-    _tenant_session,
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
+    _tenant_session,
     router,
 )
+from gateway.routes.email.transport.signing import sign_webhook_org, verify_webhook_org
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -289,133 +292,206 @@ async def resync_account(
             "messages_synced": result.get("messages_synced")}
 
 
-async def _webhook_sync(account_id: str) -> None:
+async def _webhook_sync(account_id: str, organization_id: str) -> None:
     """Triggered by a Graph notification: incremental sync, then the shared
     new-mail pipeline (auto-run rules → categorize → classify → auto-archive) —
     the same pipeline the scheduler and manual sync use, so push-delivered mail
-    is processed identically."""
+    is processed identically.
+
+    The webhook verified ``organization_id`` from the signed
+    ``notificationUrl`` and matched the account inside that tenant. This task
+    binds it for its whole run and resets it in ``finally``. ⚠️ Until EM-T1b,
+    ``_sync_account`` still opens the private engines of the scheduler, which
+    ignore the binding. The steps of ``process_new_mail`` that open
+    ``tenant_session()`` do read it.
+    """
+    token = bind_tenant(organization_id)
     try:
-        from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
+        from email_ingestion.scheduler import _sync_account
         from gateway.routes.email.scheduler_hooks import process_new_mail
         res = await _sync_account(account_id)
         if isinstance(res, dict) and res.get("synced", 0):
             await process_new_mail(account_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("email.webhook_sync_failed", account_id=account_id,
                      error=str(exc)[:200])
+    finally:
+        release_tenant(token)
+
+
+def _client_state_matches(sent: Any, stored: Any) -> bool:
+    """Whether a notification carries the ``clientState`` of the account.
+
+    A stored value that is NULL or empty refuses every notification (EM-T1a
+    item 6). The old check skipped the comparison when the stored value was
+    empty, so any caller who knew a subscription id could start a sync.
+    """
+    if not stored or not isinstance(sent, str) or not sent:
+        return False
+    return hmac.compare_digest(sent.encode("utf-8"), str(stored).encode("utf-8"))
 
 
 @router.api_route("/webhook/microsoft", methods=["GET", "POST"])
 async def microsoft_webhook(request: Request, background: BackgroundTasks):
-    """Public Microsoft Graph change-notification endpoint (no auth).
+    """Public Microsoft Graph change-notification endpoint (no session).
 
-    Handles the validation handshake (echo validationToken) and incoming
-    notifications (validate clientState → background incremental sync)."""
+    1. It echoes ``validationToken`` first and unchanged. Graph sends the
+       token when it creates a subscription, and it waits 10 seconds at most.
+    2. It reads ``org`` and ``sig`` from its own URL. ``_ensure_subscription``
+       wrote them into the ``notificationUrl``, and only a holder of the
+       secret can sign them. A missing, malformed or unsigned ``org`` answers
+       202 and queues nothing (EM-T1a item 5, R11).
+    3. It matches each subscription id and its ``clientState`` inside ONE
+       ``tenant_session(org)``. A subscription of another organization is
+       invisible there, so it matches nothing.
+    """
     token = request.query_params.get("validationToken")
     if token:
         return PlainTextResponse(content=token, status_code=200)
+    org = verify_webhook_org(
+        request.query_params.get("org"), request.query_params.get("sig"),
+    )
+    if org is None:
+        _log.warning("email.webhook_unsigned")
+        return PlainTextResponse("", status_code=202)
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return PlainTextResponse("", status_code=202)
     notifications = body.get("value", []) if isinstance(body, dict) else []
+    pending = [
+        (n.get("subscriptionId"), n.get("clientState"))
+        for n in notifications
+        if isinstance(n, dict) and n.get("subscriptionId")
+    ]
+    if not pending:
+        return PlainTextResponse("", status_code=202)
     affected: set[str] = set()
-    for n in notifications:
-        if not isinstance(n, dict):
-            continue
-        sub_id = n.get("subscriptionId")
-        client_state = n.get("clientState")
-        if not sub_id:
-            continue
-        # H4/H6: service-identity route — Graph change notification carries no
-        # member session, so no ambient tenant is bound; needs an explicit
-        # tenant derived from the email_accounts row matched by the
-        # subscription's clientState/account before conversion.
-        db = await _get_db()
-        try:
-            row = (await db.execute(text(
-                "SELECT id, webhook_client_state FROM email_accounts "
-                "WHERE webhook_subscription_id = :sid"
-            ), {"sid": sub_id})).fetchone()
-        finally:
-            await db.close()
-        if not row:
-            continue
-        if row.webhook_client_state and client_state != row.webhook_client_state:
-            _log.warning("email.webhook_bad_client_state", sub=str(sub_id)[:12])
-            continue
-        affected.add(str(row.id))
+    try:
+        async with _tenant_session(org) as db:
+            for sub_id, client_state in pending:
+                row = (await db.execute(text(
+                    "SELECT id, webhook_client_state FROM email_accounts "
+                    "WHERE webhook_subscription_id = :sid"
+                ), {"sid": str(sub_id)})).fetchone()
+                if not row:
+                    continue
+                if not _client_state_matches(client_state, row.webhook_client_state):
+                    _log.warning("email.webhook_bad_client_state",
+                                 sub=str(sub_id)[:12])
+                    continue
+                affected.add(str(row.id))
+    except Exception as exc:
+        _log.warning("email.webhook_lookup_failed", error=str(exc)[:200])
+        return PlainTextResponse("", status_code=202)
     for aid in affected:
-        background.add_task(_webhook_sync, aid)
+        background.add_task(_webhook_sync, aid, org)
     return PlainTextResponse("", status_code=202)
 
 
+def _notification_url(public: str, org: str) -> str:
+    """The ``notificationUrl`` of a Graph subscription for ``org``.
+
+    The path stays ``/email/webhook/microsoft``, so it still matches
+    ``PUBLIC_ROUTES`` and the feature-gate exemption. The organization rides
+    in the query with its signature.
+    """
+    query = urlencode({"org": org, "sig": sign_webhook_org(org)})
+    return f"{public}/email/webhook/microsoft?{query}"
+
+
 async def _ensure_subscription(account_id: str) -> None:
-    """Create or renew the account's Graph push subscription (Microsoft only)."""
+    """Create or renew the account's Graph push subscription (Microsoft only).
+
+    ⚠️ **It binds a tenant or does nothing (EM-T1a item 7).** It reads
+    ``current_tenant()``. When no tenant is bound, it logs
+    ``email.subscription_unbound`` and returns before any DB call and any
+    Graph call. The scheduler binds no tenant until EM-T1b, so the scheduled
+    hook does nothing until then. That is the safe failure.
+
+    A renewal also writes the ``notificationUrl``, so a subscription from
+    before EM-T1a gets the signed ``org`` (spec risk R-3). When Graph refuses
+    the renewal, the code deletes the subscription and creates a new one.
+    """
+    org = current_tenant()
+    if not org:
+        _log.warning("email.subscription_unbound", account_id=account_id)
+        return
     public = (
         os.environ.get("GATEWAY_PUBLIC_URL", "")
         or getattr(get_settings(), "gateway_public_url", "")
     ).rstrip("/")
     if not public:
         return
-    # H4: scheduler post-sync hook (_ensure_subscription); no ambient
-    # tenant to inherit.
-    db = await _get_db()
     try:
-        row = (await db.execute(text(
-            """SELECT provider, credentials_encrypted, webhook_subscription_id,
-                      webhook_client_state, webhook_expires_at
-               FROM email_accounts WHERE id = :id"""
-        ), {"id": account_id})).fetchone()
-        if not row or row.provider != "microsoft":
-            return
-        now = datetime.now(timezone.utc)
-        if (row.webhook_subscription_id and row.webhook_expires_at
-                and row.webhook_expires_at > now + timedelta(hours=12)):
-            return  # still valid, not expiring soon
+        notify_url = _notification_url(public, org)
+        async with _tenant_session(org) as db:
+            row = (await db.execute(text(
+                """SELECT provider, credentials_encrypted, webhook_subscription_id,
+                          webhook_client_state, webhook_expires_at
+                   FROM email_accounts WHERE id = :id"""
+            ), {"id": account_id})).fetchone()
+            if not row or row.provider != "microsoft":
+                return
+            now = datetime.now(timezone.utc)
+            if (row.webhook_subscription_id and row.webhook_expires_at
+                    and row.webhook_expires_at > now + timedelta(hours=12)):
+                return  # still valid, not expiring soon
 
-        from acb_llm.key_store import get_key_store  # noqa: PLC0415
-        store = get_key_store()
-        creds = json.loads(store.decrypt(row.credentials_encrypted))
-        provider = _instantiate_provider("microsoft", creds)
-        if not await provider.authenticate():
-            return
-        notify_url = f"{public}/email/webhook/microsoft"
-        client_state = row.webhook_client_state or secrets.token_urlsafe(24)
-
-        data = None
-        sub_id = row.webhook_subscription_id
-        if sub_id:
-            try:
-                data = await provider.renew_subscription(sub_id)
-            except Exception:  # noqa: BLE001
-                data = None
-        if data is None:
-            data = await provider.create_subscription(notify_url, client_state)
-            sub_id = data.get("id")
-        # Graph returns expirationDateTime as an ISO string; asyncpg needs a
-        # real datetime for the TIMESTAMPTZ column.
-        exp_raw = data.get("expirationDateTime")
-        exp_dt = None
-        if exp_raw:
-            try:
-                exp_dt = datetime.fromisoformat(
-                    str(exp_raw).replace("Z", "+00:00")
-                )
-            except Exception:  # noqa: BLE001
-                exp_dt = None
-        await _persist_rotated_creds(db, store, account_id, provider)
-        await db.execute(text(
-            """UPDATE email_accounts
-               SET webhook_subscription_id = :sid, webhook_client_state = :cs,
-                   webhook_expires_at = :exp, updated_at = now()
-               WHERE id = :id"""
-        ), {"id": account_id, "sid": sub_id, "cs": client_state, "exp": exp_dt})
-        await db.commit()
+            from acb_llm.key_store import get_key_store
+            store = get_key_store()
+            creds = json.loads(store.decrypt(row.credentials_encrypted))
+            provider = _instantiate_provider("microsoft", creds)
+            if not await provider.authenticate():
+                return
+            client_state = row.webhook_client_state or secrets.token_urlsafe(24)
+            data, sub_id = await _renew_or_replace(
+                provider, row.webhook_subscription_id, notify_url, client_state,
+            )
+            # Graph returns expirationDateTime as an ISO string; asyncpg needs a
+            # real datetime for the TIMESTAMPTZ column.
+            exp_raw = data.get("expirationDateTime")
+            exp_dt = None
+            if exp_raw:
+                try:
+                    exp_dt = datetime.fromisoformat(
+                        str(exp_raw).replace("Z", "+00:00")
+                    )
+                except Exception:
+                    exp_dt = None
+            await _persist_rotated_creds(db, store, account_id, provider)
+            await db.execute(text(
+                """UPDATE email_accounts
+                   SET webhook_subscription_id = :sid, webhook_client_state = :cs,
+                       webhook_expires_at = :exp, updated_at = now()
+                   WHERE id = :id"""
+            ), {"id": account_id, "sid": sub_id, "cs": client_state, "exp": exp_dt})
         _log.info("email.subscription_ready", account_id=account_id,
                   sub=str(sub_id)[:12], expires=exp_raw)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("email.subscription_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
+
+
+async def _renew_or_replace(
+    provider: Any, sub_id: str | None, notify_url: str, client_state: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Renew ``sub_id`` with the signed URL, or replace it.
+
+    Graph v1.0 accepts ``notificationUrl`` in a subscription PATCH. When the
+    PATCH fails for any reason, the old subscription is deleted (best effort)
+    and a new one is created, so a refused URL update cannot leave an
+    unsigned URL in place.
+    """
+    if sub_id:
+        try:
+            return (
+                await provider.renew_subscription(
+                    sub_id, notification_url=notify_url,
+                ),
+                sub_id,
+            )
+        except Exception:
+            await provider.delete_subscription(sub_id)
+    data = await provider.create_subscription(notify_url, client_state)
+    return data, data.get("id")

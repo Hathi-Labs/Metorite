@@ -60,11 +60,17 @@ const AUTHORIZE_TIMEOUT_MS = 30_000;
  * Hand a failure to the callback page rather than rendering JSON into the
  * address bar — this is a navigation, and the page already knows how to explain
  * an OAuth failure (it is where the gateway's own callback errors land).
+ *
+ * ⚠️ The Location is RELATIVE. Do not build it from `req.nextUrl.origin`: in
+ * production Next runs behind Caddy on `localhost:3001`, so a route handler's
+ * origin is the bind host, not the public origin (EM-T1a fix round 1, F3).
  */
-function failed(req: NextRequest, reason: string): NextResponse {
-  const url = new URL(CALLBACK_PAGE, req.nextUrl.origin);
-  url.searchParams.set("error", reason);
-  return NextResponse.redirect(url, 303);
+function failed(reason: string): NextResponse {
+  const qs = new URLSearchParams({ error: reason }).toString();
+  return new NextResponse(null, {
+    status: 303,
+    headers: { location: `${CALLBACK_PAGE}?${qs}` },
+  });
 }
 
 /** The gateway's `detail`, when it refused with one worth showing. */
@@ -85,7 +91,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { provider } = await params;
   if (!PROVIDER_SEGMENT.test(provider)) {
-    return failed(req, `unknown_provider`);
+    return failed(`unknown_provider`);
   }
 
   // Resolve the member BEFORE reaching for the bearer, so a signed-out caller is
@@ -116,15 +122,15 @@ export async function GET(
       signal: AbortSignal.timeout(AUTHORIZE_TIMEOUT_MS),
     });
   } catch {
-    return failed(req, "gateway_unreachable");
+    return failed("gateway_unreachable");
   }
 
   if (res.status < 300 || res.status >= 400) {
-    return failed(req, await refusalReason(res));
+    return failed(await refusalReason(res));
   }
 
   const location = res.headers.get("location");
-  if (!location) return failed(req, "authorize_no_location");
+  if (!location) return failed("authorize_no_location");
 
   // The provider consent URL is built by the gateway from configured provider
   // constants, so this is a sanity check rather than a trust boundary — but a
@@ -134,10 +140,10 @@ export async function GET(
   try {
     target = new URL(location);
   } catch {
-    return failed(req, "authorize_bad_location");
+    return failed("authorize_bad_location");
   }
   if (target.protocol !== "https:" && target.protocol !== "http:") {
-    return failed(req, "authorize_bad_location");
+    return failed("authorize_bad_location");
   }
 
   return NextResponse.redirect(target.toString(), 302);

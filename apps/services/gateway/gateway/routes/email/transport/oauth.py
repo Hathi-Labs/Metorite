@@ -1,11 +1,28 @@
 """Transport · OAuth — Gmail/Microsoft connect flow: authorize, callback, token
-exchange, and provider identity lookup."""
+exchange, and provider identity lookup.
+
+Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.1 (EM-T1a).
+
+Both legs run behind the member's session. The browser reaches each one
+through a workbench BFF route, which attaches the session and passes on the
+gateway's 302:
+
+* ``/api/email/oauth/{provider}/authorize`` calls :func:`oauth_authorize`.
+* ``/api/email/oauth/{provider}/callback`` calls :func:`oauth_callback`. It is
+  also the redirect URI that the provider sees (:func:`_build_redirect_uri`).
+
+⚠️ **Why the callback is not public (spec risk R-4).** A signed state alone is
+a bearer value for ten minutes and is not tied to a browser. An attacker could
+start the flow, get a victim to consent, and attach the mailbox of the victim
+to the account of the attacker. The callback closes that: the member of the
+session must be the member in the state.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import secrets
+import re
 from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -15,7 +32,12 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_settings
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from gateway.routes.email.core import _default_label, _get_db, _log, router
+from gateway.routes.email.core import _default_label, _log, _tenant_session, router
+from gateway.routes.email.transport.signing import (
+    SigningUnavailable,
+    sign_oauth_state,
+    verify_oauth_state,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -25,17 +47,15 @@ class OAuthCallbackRequest(BaseModel):
     state: str
 
 
-#: In-flight authorize→callback state, keyed by the CSRF nonce.
-#:
-#: ⚠️ KNOWN DEFECT (recorded, not fixed here — email_app_master_plan.md §7 Tier 1
-#: item 1): this is a module-level, in-process dict. Every deploy restarts the
-#: gateway, so any OAuth flow in flight when a deploy lands loses its state and
-#: the callback fails `state not in _oauth_states` → the user is bounced to
-#: /email/oauth/callback?error=invalid_state with no explanation. It is also not
-#: shared across workers (a second worker answering the callback has never seen
-#: the state) and entries are never expired, so an abandoned flow leaks forever.
-#: Fix is Redis + TTL, alongside signing the state.
-_oauth_states: dict[str, dict[str, str]] = {}
+#: A provider ``error`` is shown on the callback page, so only a plain code
+#: token passes. Anything else becomes ``provider_error``.
+_PROVIDER_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
+
+#: ``redirect_after`` rides inside the signed state, and the verifier refuses
+#: a state longer than 4096 characters. Past this cap the authorize leg answers
+#: 400, so a member never consents only to get ``invalid_state``. The signer
+#: also refuses an over-long state, which covers text that JSON escapes.
+_MAX_REDIRECT_AFTER = 2048
 
 
 @router.get("/oauth/{provider}/authorize")
@@ -43,7 +63,6 @@ async def oauth_authorize(
     provider: str,
     user: UserContext = Depends(get_current_user),
     redirect_after: str = Query(default=""),
-    user_email: str = Query(default=""),
 ):
     """Start OAuth flow for an email provider.
 
@@ -51,16 +70,46 @@ async def oauth_authorize(
     BFF (``/api/email/oauth/{provider}/authorize``), which holds the session,
     attaches the internal bearer plus ``X-User-Email``, and re-issues the 302 it
     gets back so the browser lands on the provider's consent screen. Adding it to
-    ``main.PUBLIC_ROUTES`` would be the dangerous repair: the state below binds
-    the mailbox to ``user_id``, so an anonymous authorize leg would let anyone
+    ``main.PUBLIC_ROUTES`` would be the dangerous repair: the state binds the
+    mailbox to its member, so an anonymous authorize leg would let anyone
     attach a mailbox to somebody else's account.
 
-    ``user_email`` is a **fallback only**, retained for the legacy
-    direct-navigation shape. The authenticated identity always wins — a query
-    parameter must never be able to name whose account the mailbox lands on.
+    The organization and the member come from the session and from nowhere
+    else (``user_management_contract.md`` R11). With either one missing, the
+    route refuses with 403. The ``user_email`` query fallback and the
+    ``anonymous`` member are gone (EM-T1a).
     """
-    state = secrets.token_urlsafe(32)
+    if not user.organization_id or not user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="Connecting a mailbox needs a signed-in member of an organization.",
+        )
     redirect_uri = _build_redirect_uri(provider)
+    if provider not in ("gmail", "microsoft"):
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    if len(redirect_after) > _MAX_REDIRECT_AFTER:
+        raise HTTPException(status_code=400, detail="redirect_after is too long.")
+    try:
+        state = sign_oauth_state(
+            org=str(user.organization_id),
+            member=user.email,
+            provider=provider,
+            redirect_after=redirect_after,
+        )
+    except SigningUnavailable:
+        _log.error("email.oauth_state_secret_unusable")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Email connect is unavailable: the gateway session secret is "
+                "not set. An operator must set GATEWAY_SESSION_SECRET."
+            ),
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="The connect request is too long or malformed.",
+        ) from None
 
     if provider == "gmail":
         settings = get_settings()
@@ -125,58 +174,64 @@ async def oauth_authorize(
             f"&redirect_uri={redirect_uri}"
             f"&state={state}"
         )
-    else:
+    else:  # pragma: no cover — refused above, before the state is signed
         raise HTTPException(
             status_code=400,
             detail=f"Unknown provider: {provider}"
         )
 
-    # The AUTHENTICATED identity wins. This used to read
-    # ``user_email or user.email``, i.e. a query parameter outranked the person
-    # the request was actually authenticated as — anyone who could reach the
-    # route could bind a mailbox to a colleague's account. `user_email` survives
-    # only as the fallback for a caller that has no header identity at all.
-    _oauth_states[state] = {
-        "provider": provider,
-        "user_id": user.email or user_email or "anonymous",
-        "redirect_after": redirect_after,
-    }
-
+    # ⚠️ No `response_mode=form_post`. The provider would then POST the code
+    # cross-site, and the browser drops the Lax session cookie on that POST, so
+    # the BFF callback could not see the member (EM-T1a item 3).
     return RedirectResponse(auth_url, status_code=302)
 
 
 @router.get("/oauth/{provider}/callback")
 async def oauth_callback(
     provider: str,
-    code: str = Query(...),
-    state: str = Query(...),
+    user: UserContext = Depends(get_current_user),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
 ):
-    """Handle OAuth callback — exchange code for tokens and redirect to workbench."""
-    gateway_public = os.environ.get("GATEWAY_PUBLIC_URL", "http://localhost:8000")
-    workbench_url = os.environ.get("WORKBENCH_PUBLIC_URL")
-    if not workbench_url:
-        # Auto-derive workbench URL from gateway. Since D40 the workbench is a
-        # SIBLING subdomain (api.<apex> → app.<apex>), no longer the bare apex
-        # — stripping "api." would aim the OAuth return at the marketing root.
-        if gateway_public == "http://localhost:8000":
-            workbench_url = "http://localhost:3001"
-        elif "://api." in gateway_public:
-            workbench_url = gateway_public.replace("://api.", "://app.", 1)
-        else:
-            workbench_url = gateway_public
+    """Handle OAuth callback — exchange code for tokens and redirect to workbench.
 
-    # Build the workbench callback page URL
-    callback_page = f"{workbench_url}/email/oauth/callback"
+    Reached through the BFF route ``/api/email/oauth/{provider}/callback``, so
+    the session is present here and ``user`` is the member who clicked
+    Connect. The checks run in this order, and each failure redirects with
+    ``error=invalid_state`` so that no failure tells a caller which check it
+    failed:
 
-    # Validate state
-    if state not in _oauth_states:
+    1. the MAC, the purpose and the expiry of the state;
+    2. the provider in the state is the provider in the path;
+    3. the member of the session is the member in the state (R-4);
+    4. ``resolve_identity`` of that member returns the organization in the
+       state. A failed read is a refusal, never a write.
+
+    Every write runs inside one ``tenant_session(org)``. The seam commits on
+    exit, so there is no ``commit()`` here. A statement after a commit in the
+    middle of the block would run with no tenant bound (``SET LOCAL`` ends at
+    commit).
+    """
+    callback_page = f"{_workbench_public_url()}/email/oauth/callback"
+
+    def _bounce(reason: str) -> RedirectResponse:
         return RedirectResponse(
-            f"{callback_page}?{urlencode({'error': 'invalid_state'})}",
-            status_code=302,
+            f"{callback_page}?{urlencode({'error': reason})}", status_code=302,
         )
 
-    oauth_data = _oauth_states.pop(state)
-    redirect_after = oauth_data.get("redirect_after", "")
+    if not code:
+        # The provider refused (for example, the tenant of the customer needs
+        # admin consent) and sent `error` with no `code`. Show the callback
+        # page, never a raw 422. EM-T3 owns the guided page for admin consent.
+        return _bounce(_provider_error_reason(error) if error else "invalid_state")
+
+    claims = await _verified_claims(provider, state, user)
+    if claims is None:
+        return _bounce("invalid_state")
+    org, member = claims["org"], claims["member"]
+
+    redirect_after = claims.get("redirect_after", "")
     redirect_uri = _build_redirect_uri(provider)
 
     # Exchange code for tokens
@@ -186,26 +241,17 @@ async def oauth_callback(
         elif provider == "microsoft":
             token_data = await _exchange_msft_token(code, redirect_uri)
         else:
-            return RedirectResponse(
-                f"{callback_page}?{urlencode({'error': f'unknown_provider_{provider}'})}",
-                status_code=302,
-            )
+            return _bounce(f"unknown_provider_{provider}")
     except Exception as exc:
         _log.error("Token exchange failed: %s", exc)
-        return RedirectResponse(
-            f"{callback_page}?{urlencode({'error': 'token_exchange_failed'})}",
-            status_code=302,
-        )
+        return _bounce("token_exchange_failed")
 
     # Get user email from provider
     try:
-        user_email = await _get_provider_email(provider, token_data["access_token"])
+        mailbox = await _get_provider_email(provider, token_data["access_token"])
     except Exception as exc:
         _log.error("Failed to get provider email: %s", exc)
-        return RedirectResponse(
-            f"{callback_page}?{urlencode({'error': 'email_fetch_failed'})}",
-            status_code=302,
-        )
+        return _bounce("email_fetch_failed")
 
     # Persist the OAuth *app* credentials (client_id/secret, tenant) alongside
     # the user's tokens.  Without these the provider cannot refresh the access
@@ -216,36 +262,115 @@ async def oauth_callback(
     # Store in encrypted DB
     from acb_llm.key_store import get_key_store
     store = get_key_store()
-    creds_json = json.dumps(token_data)
-    encrypted_creds = store.encrypt(creds_json)
+    encrypted_creds = store.encrypt(json.dumps(token_data))
 
-    # H4/H6: service-identity route — the OAuth callback is a provider
-    # browser redirect with no member session (trust = HMAC-signed state),
-    # so no ambient tenant is bound; needs an explicit tenant derived from
-    # the app_user row of the user encoded in the signed state before
-    # conversion.
-    db = await _get_db()
     try:
-        # Check if an account already exists for this user+email.  If so, this
-        # is a *reconnect*: refresh the stored credentials in place rather than
-        # rejecting as a duplicate (the old behaviour left users with no way to
-        # repair an account whose refresh token had gone stale).  Resetting
-        # last_history_id forces a full re-sync so messages persisted under the
-        # old code path (e.g. raw provider folder IDs) get re-normalised.
-        existing = await db.execute(
+        account_id = await _save_account(
+            org=org,
+            member=member,
+            owner=(user.email or "").strip(),
+            provider=provider,
+            mailbox=mailbox,
+            encrypted_creds=encrypted_creds,
+        )
+    except Exception as exc:
+        _log.error("email.oauth_account_save_failed", error=str(exc)[:200])
+        return _bounce("account_save_failed")
+
+    # Start (or restart) background sync for the account. This runs after the
+    # tenant block, so the row is committed first. ⚠️ The scheduler binds no
+    # tenant until EM-T1b, so this stays best effort.
+    try:
+        from email_ingestion.scheduler import refresh_account_sync
+        await refresh_account_sync(account_id)
+    except Exception:
+        pass
+
+    # Success redirect
+    params = {
+        "account_id": account_id,
+        "email": mailbox,
+        "provider": provider,
+    }
+    if redirect_after:
+        params["redirect_after"] = redirect_after
+
+    return RedirectResponse(
+        f"{callback_page}?{urlencode(params)}",
+        status_code=302,
+    )
+
+
+def _provider_error_reason(error: str) -> str:
+    """The provider ``error`` as the callback page may show it.
+
+    The text is not ours, so only a plain code passes. Anything else becomes
+    ``provider_error``.
+    """
+    raw = error.strip().lower()
+    return raw if _PROVIDER_ERROR.match(raw) else "provider_error"
+
+
+async def _verified_claims(
+    provider: str, state: str | None, user: UserContext,
+) -> dict[str, Any] | None:
+    """The claims of the state when every check passes, else ``None``.
+
+    The caller answers every ``None`` with ``invalid_state``, so a caller
+    cannot learn which check failed. The checks run in the order of the
+    docstring of :func:`oauth_callback`.
+    """
+    claims = verify_oauth_state(state)
+    if claims is None or claims["provider"] != provider:
+        return None
+    member = claims["member"]
+    if (user.email or "").strip().lower() != member:
+        _log.warning("email.oauth_member_mismatch", provider=provider)
+        return None
+    try:
+        from acb_auth.access import resolve_identity
+
+        _uid, resolved_org = await resolve_identity(member)
+    except Exception:
+        # A failed read refuses. It never writes.
+        _log.warning("email.oauth_identity_unavailable", provider=provider)
+        return None
+    if not resolved_org or str(resolved_org) != claims["org"]:
+        _log.warning("email.oauth_org_mismatch", provider=provider)
+        return None
+    return claims
+
+
+async def _save_account(
+    *,
+    org: str,
+    member: str,
+    owner: str,
+    provider: str,
+    mailbox: str,
+    encrypted_creds: str,
+) -> str:
+    """Create or refresh the mailbox row inside one ``tenant_session(org)``.
+
+    ``owner`` is the address of the session, verbatim. The reads of this
+    package compare ``user_id = :uid`` with that same address. The lookup
+    compares ``member`` in lower case, so a reconnect finds the row whatever
+    its case. The seam commits on exit, so there is no ``commit()`` here.
+    """
+    async with _tenant_session(org) as db:
+        # An account for this member and address already exists: this is a
+        # *reconnect*. Refresh the stored credentials in place rather than
+        # reject a duplicate. Resetting last_history_id forces a full re-sync
+        # so messages persisted under an old code path get re-normalised.
+        existing_row = (await db.execute(
             text(
                 """SELECT id FROM email_accounts
-                   WHERE user_id = :user_id
+                   WHERE lower(user_id) = :member
                      AND provider = :provider
                      AND email_address = :email"""
             ),
-            {
-                "user_id": oauth_data["user_id"],
-                "provider": provider,
-                "email": user_email,
-            },
-        )
-        existing_row = existing.fetchone()
+            {"member": member, "provider": provider, "email": mailbox},
+        )).fetchone()
         if existing_row:
             account_id = str(existing_row.id)
             await db.execute(
@@ -260,64 +385,64 @@ async def oauth_callback(
                 ),
                 {"creds": encrypted_creds, "id": account_id},
             )
-            await db.commit()
-        else:
-            # Create account
-            result = await db.execute(
-                text(
-                    """INSERT INTO email_accounts
-                       (id, user_id, provider, email_address, label,
-                        avatar_color, credentials_encrypted, is_default)
-                       VALUES (:id, :user_id, :provider, :email, :label,
-                                :color, :creds,
-                                NOT EXISTS (SELECT 1 FROM email_accounts
-                                            WHERE user_id = :user_id))
-                       RETURNING id"""
-                ),
-                {
-                    "id": str(uuid4()),
-                    "user_id": oauth_data["user_id"],
-                    "provider": provider,
-                    "email": user_email,
-                    "label": _default_label(provider),
-                    "color": "#6366f1",
-                    "creds": encrypted_creds,
-                },
-            )
-            await db.commit()
-            account_id = str(result.fetchone()[0])
-
-        # Start (or restart) background sync for the account
-        try:
-            from email_ingestion.scheduler import refresh_account_sync
-            await refresh_account_sync(account_id)
-        except Exception:
-            pass
-
-        # Success redirect
-        params = {
-            "account_id": account_id,
-            "email": user_email,
-            "provider": provider,
-        }
-        if redirect_after:
-            params["redirect_after"] = redirect_after
-
-        return RedirectResponse(
-            f"{callback_page}?{urlencode(params)}",
-            status_code=302,
+            return account_id
+        # organization_id is set explicitly. The column default reads the same
+        # GUC, but a write names its tenant (R5).
+        result = await db.execute(
+            text(
+                """INSERT INTO email_accounts
+                   (id, user_id, provider, email_address, label,
+                    avatar_color, credentials_encrypted, is_default,
+                    organization_id)
+                   VALUES (:id, :user_id, :provider, :email, :label,
+                            :color, :creds,
+                            NOT EXISTS (SELECT 1 FROM email_accounts
+                                        WHERE lower(user_id) = :member),
+                            CAST(:org AS uuid))
+                   RETURNING id"""
+            ),
+            {
+                "id": str(uuid4()),
+                "user_id": owner,
+                "member": member,
+                "provider": provider,
+                "email": mailbox,
+                "label": _default_label(provider),
+                "color": "#6366f1",
+                "creds": encrypted_creds,
+                "org": org,
+            },
         )
-    finally:
-        await db.close()
+        return str(result.fetchone()[0])
+
+
+def _workbench_public_url() -> str:
+    """The public origin of the workbench, with no trailing slash.
+
+    ``WORKBENCH_PUBLIC_URL`` when it is set. Otherwise it is derived from
+    ``GATEWAY_PUBLIC_URL``. Since D40 the workbench is a SIBLING subdomain
+    (``api.<apex>`` → ``app.<apex>``), not the bare apex, so stripping
+    ``api.`` would aim the return at the marketing root.
+    """
+    workbench_url = os.environ.get("WORKBENCH_PUBLIC_URL")
+    if not workbench_url:
+        gateway_public = os.environ.get("GATEWAY_PUBLIC_URL", "http://localhost:8000")
+        if gateway_public.rstrip("/") == "http://localhost:8000":
+            workbench_url = "http://localhost:3001"
+        elif "://api." in gateway_public:
+            workbench_url = gateway_public.replace("://api.", "://app.", 1)
+        else:
+            workbench_url = gateway_public
+    return workbench_url.rstrip("/")
 
 
 def _build_redirect_uri(provider: str) -> str:
-    """Build the OAuth redirect URI."""
-    base = os.environ.get(
-        "GATEWAY_PUBLIC_URL",
-        "http://localhost:8000",
-    )
-    return f"{base}/email/oauth/{provider}/callback"
+    """The OAuth redirect URI: the BFF callback route on the workbench origin.
+
+    The authorize leg and the token exchange both call this, and the provider
+    refuses the exchange unless the two values are identical.
+    """
+    return f"{_workbench_public_url()}/api/email/oauth/{provider}/callback"
 
 
 def _provider_oauth_app_creds(provider: str) -> dict[str, str]:

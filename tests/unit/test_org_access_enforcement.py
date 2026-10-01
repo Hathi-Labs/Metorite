@@ -128,7 +128,8 @@ GATED_ROUTERS: dict[str, set[str]] = {
         "/whatsapp/bridge/call-event",
     },
     "gateway.routes.email": {
-        "/email/oauth/{provider}/callback",
+        # The OAuth callback left this set in EM-T1a: it runs behind the
+        # session now (email_app_master_plan.md §10.4.1, risk R-4).
         "/email/webhook/microsoft",
     },
     "gateway.routes.notes": {

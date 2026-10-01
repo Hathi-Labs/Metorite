@@ -746,7 +746,7 @@ def require_feature_router(
     mode of per-route gating is the route someone forgets.
 
     ``exempt`` holds **route path templates** (e.g.
-    ``"/email/oauth/{provider}/callback"``) that must stay reachable without a
+    ``"/email/webhook/microsoft"``) that must stay reachable without a
     member. These are not oversights — a provider webhook and an OAuth
     redirect arrive with no session and no internal token, so gating them
     would break message ingestion and account linking rather than merely
