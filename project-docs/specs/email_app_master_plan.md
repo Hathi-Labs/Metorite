@@ -645,7 +645,12 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
 - **R-1.** The state and the webhook signature use `gateway_session_secret` with a purpose
   prefix. A new secret would cost an `env-write` and buy nothing.
 - **R-3.** A Graph subscription made before EM-T1a has no `org` in its URL. The renewal path
-  repairs it, and §10.5 makes every mailbox reconnect in any case.
+  writes the signed URL, but that path does not run yet. The only caller of
+  `_ensure_subscription` is the loop of the scheduler (`_account_sync_loop`). A manual sync or a
+  resync does not call it. Until EM-T1b binds the scheduler, the loop binds no tenant, so
+  `_ensure_subscription` returns at once. No push subscription exists for a new account or an
+  old one, and mail arrives only through the poll of the scheduler. Email sync is OFF in production in any case.
+  EM-T1b closes this risk.
 - **R-4 (closed here).** A signed state alone can be replayed for 10 minutes and is not tied to a
   browser. An attacker could start the flow and get a victim to consent, and the mailbox of the
   victim would then attach to the attacker. The callback behind the session closes this, because
@@ -662,6 +667,9 @@ These are one-time owner acts. No customer ever repeats them.
 5. Add the web redirect URI `https://app.metorite.com/api/email/oauth/microsoft/callback`.
    This is the app domain, not `api.`, because the callback runs behind the session (EM-T1a).
    For local tests, you can also add `http://localhost:3001/api/email/oauth/microsoft/callback`.
+   ⚠️ EM-T1a moved this URI from `api.` to the app domain. Today the box has no
+   `MSFT_OAUTH_CLIENT_ID`, so no live registration breaks. Each registration, new or reused,
+   must list the new URI. Until it does, no Outlook connect can work.
 6. Under **API permissions**, add these delegated Microsoft Graph permissions: `Mail.ReadWrite`,
    `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read` and `offline_access`.
 7. Under **Branding**, add the Metorite logo, the home page, and the privacy and terms URLs on

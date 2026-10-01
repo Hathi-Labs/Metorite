@@ -151,6 +151,31 @@ async def test_authorize_answers_503_when_the_secret_is_unusable(monkeypatch) ->
     assert "GATEWAY_SESSION_SECRET" in exc.value.detail
 
 
+@pytest.mark.parametrize("redirect_after", ["/" + "a" * 2048, "/" + "é" * 1500])
+async def test_authorize_refuses_a_state_that_could_not_verify(redirect_after) -> None:
+    """Fix round 1. The first case passes the length cap only by one
+    character. The second is under the cap, but JSON escapes each character
+    to six, so only the signer's own bound catches it."""
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "microsoft", user=_member(), redirect_after=redirect_after,
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_the_longest_accepted_redirect_after_still_verifies() -> None:
+    resp = await oauth.oauth_authorize(
+        "microsoft", user=_member(), redirect_after="/" + "a" * 2047,
+    )
+    state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+    assert signing.verify_oauth_state(state) is not None
+
+
+def test_the_signer_refuses_a_state_longer_than_the_verifier_accepts() -> None:
+    with pytest.raises(ValueError):
+        _state(redirect_after="/" + "é" * 3000)
+
+
 async def test_authorize_and_exchange_use_one_redirect_uri(monkeypatch) -> None:
     """The provider refuses the exchange unless both legs send one value. It
     is the BFF callback on the workbench origin."""

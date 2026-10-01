@@ -348,10 +348,30 @@ def test_the_bff_callback_acts_as_the_member_and_keeps_the_redirect() -> None:
     )
     assert 'redirect: "manual"' in src
     assert 'headers.get("location")' in src
-    assert "target.origin !== req.nextUrl.origin" in src, (
-        "the BFF must refuse a Location of another origin"
+    assert "target.pathname !== CALLBACK_PAGE" in src, (
+        "the BFF must refuse a Location that is not the callback page"
+    )
+    assert "WORKBENCH_PUBLIC_URL" in src, (
+        "with a configured public origin, the Location must also be on it"
     )
     assert '"callback_bad_location"' in src
+    assert "target.pathname + target.search" in src, "the Location sent on is relative"
+
+
+@pytest.mark.parametrize("route", ["authorize", "callback"])
+def test_no_bff_oauth_route_takes_the_public_origin_from_the_request(route: str) -> None:
+    """EM-T1a fix round 1 (F1, F3). In production Next runs behind Caddy, and a
+    route handler's ``req.nextUrl.origin`` is the bind host
+    (``https://localhost:3001``). A redirect built from it sends the member to
+    localhost, and an origin check against it refuses every connect. Both
+    routes send a RELATIVE Location to the callback page instead."""
+    path = BFF_ROUTE if route == "authorize" else BFF_CALLBACK_ROUTE
+    src = _code_only(_read(path))
+    assert "nextUrl.origin" not in src
+    assert "req.url" not in src
+    failed = src.split("function failed(", 1)[1].split("\n}", 1)[0]
+    assert "NextResponse.redirect" not in failed
+    assert "`${CALLBACK_PAGE}?${qs}`" in failed
 
 
 def test_the_bff_callback_forwards_only_the_four_oauth_parameters() -> None:

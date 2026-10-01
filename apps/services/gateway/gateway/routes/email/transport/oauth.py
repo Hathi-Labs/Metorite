@@ -51,6 +51,12 @@ class OAuthCallbackRequest(BaseModel):
 #: token passes. Anything else becomes ``provider_error``.
 _PROVIDER_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
 
+#: ``redirect_after`` rides inside the signed state, and the verifier refuses
+#: a state longer than 4096 characters. Past this cap the authorize leg answers
+#: 400, so a member never consents only to get ``invalid_state``. The signer
+#: also refuses an over-long state, which covers text that JSON escapes.
+_MAX_REDIRECT_AFTER = 2048
+
 
 @router.get("/oauth/{provider}/authorize")
 async def oauth_authorize(
@@ -81,6 +87,8 @@ async def oauth_authorize(
     redirect_uri = _build_redirect_uri(provider)
     if provider not in ("gmail", "microsoft"):
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    if len(redirect_after) > _MAX_REDIRECT_AFTER:
+        raise HTTPException(status_code=400, detail="redirect_after is too long.")
     try:
         state = sign_oauth_state(
             org=str(user.organization_id),
@@ -96,6 +104,11 @@ async def oauth_authorize(
                 "Email connect is unavailable: the gateway session secret is "
                 "not set. An operator must set GATEWAY_SESSION_SECRET."
             ),
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="The connect request is too long or malformed.",
         ) from None
 
     if provider == "gmail":

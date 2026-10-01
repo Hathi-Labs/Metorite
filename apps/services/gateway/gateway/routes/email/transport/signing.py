@@ -119,7 +119,8 @@ def sign_oauth_state(
 
     Raises:
         SigningUnavailable: the secret is empty or public.
-        ValueError: ``org`` is not a UUID, or ``member`` is empty.
+        ValueError: ``org`` is not a UUID, ``member`` is empty, or the state
+            would be longer than the verifier accepts.
     """
     who = (member or "").strip().lower()
     if not who:
@@ -135,7 +136,12 @@ def sign_oauth_state(
         "exp": int(issued) + OAUTH_STATE_TTL_SECONDS,
     }
     body = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
-    return f"{body}.{_mac(_secret(), OAUTH_STATE_PURPOSE, body)}"
+    token = f"{body}.{_mac(_secret(), OAUTH_STATE_PURPOSE, body)}"
+    if len(token) > _MAX_STATE_CHARS:
+        # The verifier refuses a state this long, so signing one would send
+        # the member through consent to a certain `invalid_state`.
+        raise ValueError("the state would be too long to verify")
+    return token
 
 
 def verify_oauth_state(token: str | None, *, now: float | None = None) -> dict[str, Any] | None:

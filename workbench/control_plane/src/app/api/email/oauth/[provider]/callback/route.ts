@@ -26,9 +26,16 @@
  * - Only `code`, `state`, `error` and `error_description` go upstream. The code
  *   is a credential for a short time: this file never logs it and never
  *   retries with it.
- * - The `Location` must be on OUR origin. The gateway always answers with the
- *   callback page of the workbench, so any other origin is a bug or an attack,
- *   and the member lands on the failure page instead.
+ * - The `Location` must name the callback page of the workbench. The gateway
+ *   always answers with that path, so any other path is a bug or an attack, and
+ *   the member lands on the failure page instead. When `WORKBENCH_PUBLIC_URL`
+ *   is set, the origin of the `Location` must also be that origin.
+ *
+ * ⚠️ NEVER USE `req.nextUrl.origin` AS THE PUBLIC ORIGIN. In production Next
+ * runs `next start -p 3001` behind Caddy, and a route handler builds its URL
+ * from the bind host, so the origin reads `https://localhost:3001`. Every
+ * redirect here is RELATIVE (`/email/oauth/callback?...`) for that reason, and
+ * the browser resolves it against the address bar it actually has.
  *
  * Do NOT add `response_mode=form_post` to the authorize URL. The provider would
  * then POST here cross-site, and the browser drops the Lax session cookie on
@@ -55,11 +62,26 @@ const FORWARDED_PARAMS = ["code", "state", "error", "error_description"] as cons
 
 const CALLBACK_TIMEOUT_MS = 30_000;
 
+/** A redirect with a RELATIVE Location. See the header on the public origin. */
+function relativeRedirect(location: string, status: number): NextResponse {
+  return new NextResponse(null, { status, headers: { location } });
+}
+
 /** Send a failure to the callback page, because this is a navigation. */
-function failed(req: NextRequest, reason: string): NextResponse {
-  const url = new URL(CALLBACK_PAGE, req.nextUrl.origin);
-  url.searchParams.set("error", reason);
-  return NextResponse.redirect(url, 303);
+function failed(reason: string): NextResponse {
+  const qs = new URLSearchParams({ error: reason }).toString();
+  return relativeRedirect(`${CALLBACK_PAGE}?${qs}`, 303);
+}
+
+/** The configured public origin of the workbench, or null when unset. */
+function workbenchOrigin(): string | null {
+  const raw = (process.env.WORKBENCH_PUBLIC_URL || "").trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(
@@ -68,7 +90,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { provider } = await params;
   if (!PROVIDER_SEGMENT.test(provider)) {
-    return failed(req, "unknown_provider");
+    return failed("unknown_provider");
   }
 
   const me = await requireIdentity();
@@ -94,25 +116,29 @@ export async function GET(
       signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
     });
   } catch {
-    return failed(req, "gateway_unreachable");
+    return failed("gateway_unreachable");
   }
 
   if (res.status < 300 || res.status >= 400) {
-    return failed(req, `callback_failed_${res.status}`);
+    return failed(`callback_failed_${res.status}`);
   }
 
   const location = res.headers.get("location");
-  if (!location) return failed(req, "callback_no_location");
+  if (!location) return failed("callback_no_location");
 
   let target: URL;
   try {
     target = new URL(location);
   } catch {
-    return failed(req, "callback_bad_location");
+    return failed("callback_bad_location");
   }
-  if (target.origin !== req.nextUrl.origin) {
-    return failed(req, "callback_bad_location");
+  if (target.pathname !== CALLBACK_PAGE) {
+    return failed("callback_bad_location");
+  }
+  const expected = workbenchOrigin();
+  if (expected !== null && target.origin !== expected) {
+    return failed("callback_bad_location");
   }
 
-  return NextResponse.redirect(target.toString(), 302);
+  return relativeRedirect(target.pathname + target.search, 302);
 }
