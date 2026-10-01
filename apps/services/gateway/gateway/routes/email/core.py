@@ -28,9 +28,12 @@ from gateway.db import get_session_factory as _get_session_factory
 # context — bound once in `_with_resolved_access` — so no call site passes
 # one (H2). A call outside a bound request raises `TenantUnbound` rather than
 # defaulting: fail closed, never "the usual org". The OAuth callback and the
-# Graph webhook pass an explicit tenant (EM-T1a). Background jobs stay on
-# `_get_db` below until H4/H6 (EM-T1b) thread one to them — service identity
-# binds NO ambient tenant.
+# Graph webhook pass an explicit tenant (EM-T1a). Since EM-T1b the sync loop
+# binds the organization of each mailbox, so the scheduler hooks and the ten
+# automation jobs they reach use `_tenant_session()` with that ambient tenant
+# (EM-T1b-2). None of them calls `commit()`: a commit inside a block ends
+# SET LOCAL. The request-started jobs that remain on `_get_db` below carry an
+# `# H4` marker each, and service identity binds NO ambient tenant.
 from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text

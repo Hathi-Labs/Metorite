@@ -424,7 +424,15 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `tenant_session()` (-2). `email_ingestion/scheduler.py` gained ONE unbound
 #: `get_db()`, the RLS-EXEMPT `organization` enumeration of the startup sweep
 #: (+1). Its private engines never counted here.
-H2_BASELINE_ELSEWHERE = 102
+#: 102 → 92: WS-17 EM-T1b-2 (2026-10-01). The ten automation jobs that the
+#: sync pipeline reaches moved to `tenant_session()` with the ambient tenant,
+#: in phases with no `commit()`: `_run_rules_job`, `sweep_uncategorized`,
+#: `_categorize_senders_job`, `_maybe_auto_archive`,
+#: `_bulk_reconcile_provider`, `_maybe_classify_threads`,
+#: `_mark_thread_replied`, `apply_thread_status_correction`,
+#: `_maybe_send_digest` and `_maybe_send_follow_up_reminders` (-10).
+#: `test_email_automation_tenancy.py` fences the ten by name.
+H2_BASELINE_ELSEWHERE = 92
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

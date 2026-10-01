@@ -515,6 +515,14 @@ async def sweep_uncategorized(
     how many carry no evidence at all (those need an actual rules run — see
     ``/email/rules/process-past``). ``exhausted`` says whether the mailbox
     actually ran dry, so the caller never implies "done" when it means "stopped".
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): the sweep runs in phases,
+    and each phase is its own ``_tenant_session()`` with the ambient tenant.
+    The sync loop binds it for the scheduler sweep, and the request binds it
+    for the BackgroundTask jobs and the dry run. No phase calls ``commit()``.
+    Phase 0 reads the evidence. The provider authenticates with no session
+    open. Each page reads in its own block, and each decided message applies
+    in its own block. A last block persists rotated credentials.
     """
     summary: dict[str, Any] = {
         "scanned": 0, "categorized": 0, "no_evidence": 0, "failed": 0,
@@ -525,58 +533,55 @@ async def sweep_uncategorized(
         # which means the mailbox actually ran dry.
         "apply_capped": False,
     }
-    # H4: mixed callers — sweep_uncategorized also runs from the scheduler's
-    # post-sync sweep and the backfill BackgroundTask, where no ambient
-    # tenant exists; needs an explicit tenant from the account row.
-    db = await _get_db()
     provider = None
     store = None
     try:
-        # Approved INCLUDE patterns only. A pattern is projected across every
-        # matching message in the mailbox, with archive/unsubscribe/delete
-        # offered on top of the result, so an unreviewed machine-inferred
-        # generalisation is not a safe thing to run at that scale. Excludes are
-        # unaffected — they only ever prevent a label. See _load_rule_patterns.
-        patterns = await _load_rule_patterns(
-            db, account_id, approved_includes_only=True)
-        rule_labels = await _rule_label_by_id(db, account_id)
-        # Tallies are read ONCE and held for the whole sweep. Refreshing them
-        # per page would let the sweep's own projections become evidence for
-        # further projections — one wrong guess compounding into a category
-        # applied across the mailbox. Evidence stays what the user and the rules
-        # decided, never what this run decided.
-        by_sender, by_domain = await _label_tallies(db, account_id)
-        # Your own company domain is a shared domain — see _decide step 3.
-        internal_domains = await _internal_domains(db, account_id)
+        async with _tenant_session() as db:
+            # Approved INCLUDE patterns only. A pattern is projected across
+            # every matching message in the mailbox, with archive/unsubscribe/
+            # delete offered on top of the result, so an unreviewed machine-
+            # inferred generalisation is not a safe thing to run at that scale.
+            # Excludes are unaffected — they only ever prevent a label. See
+            # _load_rule_patterns.
+            patterns = await _load_rule_patterns(
+                db, account_id, approved_includes_only=True)
+            rule_labels = await _rule_label_by_id(db, account_id)
+            # Tallies are read ONCE and held for the whole sweep. Refreshing
+            # them per page would let the sweep's own projections become
+            # evidence for further projections — one wrong guess compounding
+            # into a category applied across the mailbox. Evidence stays what
+            # the user and the rules decided, never what this run decided.
+            by_sender, by_domain = await _label_tallies(db, account_id)
+            # Your own company domain is a shared domain — see _decide step 3.
+            internal_domains = await _internal_domains(db, account_id)
 
-        if not dry_run:
-            # Unscoped loader (scheduler ticks + manual sweeps share this job;
-            # there is no request user here). The sweep keeps its own explicit
-            # auth/persist choreography — the auth-failure verdict goes into
-            # ``summary`` and the rotated-cred persist deliberately happens only
-            # on the success tail (see the end of this function).
-            try:
-                provider, store, _owner = await _provider_for_account_any(
-                    db, account_id)
-            except HTTPException:
-                summary["error"] = "account not found"
-                return summary
-            # Close the read transaction the loader just opened before the
-            # network round-trip. A session left `idle in transaction` across a
-            # provider call holds ACCESS SHARE on everything it touched, which
-            # is how a migration's ALTER TABLE ends up queued behind a sweep —
-            # see the 2026-08-06 write-up. Nothing is pending, so this only
-            # ends the transaction.
-            await db.commit()
-            if not await provider.authenticate():
-                # ABORT — do NOT continue with provider=None. A local-only label
-                # is logged APPLIED but Outlook (categories-authoritative) wipes
-                # it on the next sync, so the message re-enters scope and the
-                # sweep re-applies it every cycle, minting APPLIED audit rows
-                # that never reached the mailbox. Fail loudly instead.
-                summary["error"] = "provider authentication failed"
-                provider = None
-                return summary
+            if not dry_run:
+                # Unscoped loader (scheduler ticks + manual sweeps share this
+                # job; there is no request user here). The sweep keeps its own
+                # explicit auth/persist choreography — the auth-failure verdict
+                # goes into ``summary`` and the rotated-cred persist
+                # deliberately happens only on the success tail (see the end of
+                # this function).
+                try:
+                    provider, store, _owner = await _provider_for_account_any(
+                        db, account_id)
+                except HTTPException:
+                    summary["error"] = "account not found"
+                    return summary
+
+        # The block above ended before the network round-trip. A session left
+        # `idle in transaction` across a provider call holds ACCESS SHARE on
+        # everything it touched, which is how a migration's ALTER TABLE ends up
+        # queued behind a sweep — see the 2026-08-06 write-up.
+        if provider is not None and not await provider.authenticate():
+            # ABORT — do NOT continue with provider=None. A local-only label
+            # is logged APPLIED but Outlook (categories-authoritative) wipes
+            # it on the next sync, so the message re-enters scope and the
+            # sweep re-applies it every cycle, minting APPLIED audit rows
+            # that never reached the mailbox. Fail loudly instead.
+            summary["error"] = "provider authentication failed"
+            provider = None
+            return summary
 
         from gateway.routes.email.automation.runner import (  # noqa: PLC0415
             apply_label,
@@ -588,8 +593,9 @@ async def sweep_uncategorized(
                 summary["apply_capped"] = True
                 break
             page_size = min(_SWEEP_PAGE, limit - summary["scanned"])
-            rows = await _uncategorized_inbox(db, account_id, page_size, offset,
-                                              internal_domains)
+            async with _tenant_session() as db:
+                rows = await _uncategorized_inbox(
+                    db, account_id, page_size, offset, internal_domains)
             if not rows:
                 summary["exhausted"] = True
                 break
@@ -616,24 +622,29 @@ async def sweep_uncategorized(
             else:
                 page_applied = 0
                 for r, cat, reason in decisions:
+                    # The per-item try wraps the per-item block, so a failed
+                    # item rolls back its own block and never commits.
                     try:
-                        await apply_label(
-                            db, provider, str(r.id), r.provider_message_id, cat)
-                        frm = (r.from_address
-                               if isinstance(r.from_address, dict) else {})
-                        await db.execute(text(
-                            """INSERT INTO email_executed_rules
-                                 (account_id, rule_id, rule_name, message_id,
-                                  provider_message_id, subject, from_address,
-                                  status, automated, actions_taken, reason)
-                               VALUES (:aid, NULL, :rname, :mid, :pmid, :subj,
-                                       :frm, 'APPLIED', true, '["LABEL"]',
-                                       :reason)"""
-                        ), {"aid": account_id, "rname": f"Email Cleaner · {cat}",
-                            "mid": str(r.id), "pmid": r.provider_message_id,
-                            "subj": r.subject or "", "frm": frm.get("email", ""),
-                            "reason": f"Categorized as {cat} from {reason}."})
-                        await db.commit()
+                        async with _tenant_session() as db:
+                            await apply_label(
+                                db, provider, str(r.id), r.provider_message_id,
+                                cat)
+                            frm = (r.from_address
+                                   if isinstance(r.from_address, dict) else {})
+                            await db.execute(text(
+                                """INSERT INTO email_executed_rules
+                                     (account_id, rule_id, rule_name, message_id,
+                                      provider_message_id, subject, from_address,
+                                      status, automated, actions_taken, reason)
+                                   VALUES (:aid, NULL, :rname, :mid, :pmid, :subj,
+                                           :frm, 'APPLIED', true, '["LABEL"]',
+                                           :reason)"""
+                            ), {"aid": account_id,
+                                "rname": f"Email Cleaner · {cat}",
+                                "mid": str(r.id), "pmid": r.provider_message_id,
+                                "subj": r.subject or "",
+                                "frm": frm.get("email", ""),
+                                "reason": f"Categorized as {cat} from {reason}."})
                         applied += 1
                         page_applied += 1
                         _sweep_tick(account_id, applied, summary["scanned"],
@@ -659,8 +670,8 @@ async def sweep_uncategorized(
         if dry_run:
             return summary
         if provider is not None and store is not None:
-            await _persist_rotated_creds(db, store, account_id, provider)
-            await db.commit()
+            async with _tenant_session() as db:
+                await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.cleanup_sweep", account_id=account_id, owner=owner,
                   scanned=summary["scanned"], applied=applied,
                   no_evidence=summary["no_evidence"])
@@ -670,8 +681,6 @@ async def sweep_uncategorized(
                      error=str(exc)[:200])
         summary["error"] = str(exc)[:200]
         return summary
-    finally:
-        await db.close()
 
 
 def _sweep_tick(account_id: str, applied: int, scanned: int = 0,

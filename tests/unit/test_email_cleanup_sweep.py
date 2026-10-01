@@ -268,7 +268,7 @@ async def test_sweep_pages_until_the_mailbox_runs_dry() -> None:
     import gateway.routes.email.automation.runner as runner
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_persist_rotated_creds", AsyncMock()), \
@@ -320,7 +320,7 @@ async def test_live_sweep_aborts_when_provider_auth_fails() -> None:
     provider.authenticate = AsyncMock(return_value=False)  # auth fails
     import gateway.routes.email.automation.runner as runner
 
-    with patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
@@ -367,7 +367,7 @@ async def test_a_failed_apply_is_counted_not_swallowed() -> None:
     provider.authenticate = AsyncMock(return_value=True)
     import gateway.routes.email.automation.runner as runner
 
-    with patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_persist_rotated_creds", AsyncMock()), \
@@ -402,7 +402,7 @@ async def test_sweep_honours_an_explicit_limit_and_says_it_stopped_short() -> No
         async def close(self): ...
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
             patch.object(c, "_load_rule_patterns", AsyncMock(return_value={})), \
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
@@ -435,7 +435,7 @@ async def test_dry_run_pages_by_the_full_window() -> None:
         async def close(self): ...
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
             patch.object(c, "_load_rule_patterns", AsyncMock(return_value={})), \
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \

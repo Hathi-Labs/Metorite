@@ -7,7 +7,7 @@
 > **§10 progress:** ✅ **EM-T1a is MERGED (#559) and serving since 2026-10-01.** The gateway
 > signs the OAuth state, the callback runs behind the session, and the Graph webhook binds a tenant.
 > ✅ **EM-T1b-1 is MERGED (#560) and serving since 2026-10-01** (§10.4.2). The scheduler and the
-> sync core bind a tenant. EM-T1b-2 is next. Email stays OFF until EM-T1b-2 merges and the live check passes.
+> sync core bind a tenant. 🟡 **EM-T1b-2 is BUILT, not merged** (§10.4.2). Email stays OFF until EM-T1b-2 merges and the live check passes.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -552,7 +552,7 @@ live check of §10.4.2 passes. To set it `true` is gate `enforcement-flip`.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
-| **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 (2026-10-01).** 🟡 EM-T1b-2 in build. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
+| **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 (2026-10-01).** 🟡 **EM-T1b-2 BUILT, not merged.** **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
 | **EM-T3** | 🟢 AGENT-SAFE | **The connect flow in §10.3.** It includes the error branch of the callback for admin consent, the admin-consent endpoint, the first-sync progress state and the reconnect banner. It removes the "Configure OAuth" step. The callback stops copying the app credentials into the blob of each account, and the refresh path reads them from settings. | The flow in §10.3 works end to end in a browser, in light mode and at compact density. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
@@ -660,7 +660,7 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
 
 **Status.** ✅ EM-T1b-1 is MERGED as #560 and serving (`bad592be`, 2026-10-01). The new fence is
 `tests/unit/test_email_scheduler_tenancy.py`, with R8 cases for the sweep, the sync core and
-`mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 102. EM-T1b-2 is not started.
+`mailbox_owner`. 🟡 **EM-T1b-2 is BUILT, not merged** (2026-10-01). The ten functions open `_tenant_session()` in phases and call no `commit()`. The new fence is `tests/unit/test_email_automation_tenancy.py`. It holds the AST fence over the ten, the case with no tenant, the BackgroundTask case and the five R8 families. `H2_BASELINE_ELSEWHERE` is now 92.
 
 **Owner.** This slice IS WS-29 H4 slice 6b for the email scheduler and pipeline
 (`saas_multitenancy_handover.md`). This spec owns it from 2026-10-01.
@@ -781,7 +781,14 @@ uv run pytest tests/unit/test_db_engine_seam.py tests/unit/test_launch_defang_ki
   tests/unit/test_email_sync_backoff.py tests/unit/test_email_retry_and_uncategorized.py \
   tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_tool_consolidation.py \
   tests/unit/test_background_ai_member.py tests/unit/test_email_digest.py \
-  tests/unit/test_email_imports.py tests/unit/test_email_scheduler_tenancy.py \n  tests/unit/test_email_bulk_apply.py tests/unit/test_email_categorization.py \n  tests/unit/test_email_cleanup_apply_cap.py tests/unit/test_email_cleanup_sweep.py \n  tests/unit/test_email_fix_feedback.py tests/unit/test_email_follow_up_scan.py \n  tests/unit/test_email_pattern_approval.py tests/unit/test_email_process_past_drafting.py \n  tests/unit/test_email_reclassify_resumable.py tests/unit/test_email_reply_zero.py \n  tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_thread_status_parity.py \n  tests/unit/test_crm_auto_lead.py <new EM-T1b tests> -q -rs
+  tests/unit/test_email_imports.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_bulk_apply.py tests/unit/test_email_categorization.py \
+  tests/unit/test_email_cleanup_apply_cap.py tests/unit/test_email_cleanup_sweep.py \
+  tests/unit/test_email_fix_feedback.py tests/unit/test_email_follow_up_scan.py \
+  tests/unit/test_email_pattern_approval.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_reclassify_resumable.py tests/unit/test_email_reply_zero.py \
+  tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_thread_status_parity.py \
+  tests/unit/test_crm_auto_lead.py tests/unit/test_email_automation_tenancy.py -q -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email tests/unit
 ```
 

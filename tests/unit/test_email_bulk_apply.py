@@ -339,7 +339,7 @@ async def test_reconcile_retries_then_reverts_what_never_applied() -> None:
         async def __aenter__(self): return _Sess()
         async def __aexit__(self, *a): return False
 
-    with patch.object(s, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(s, "_tenant_session", bind_db(_DB())), \
             patch.object(s, "provider_session", lambda *a, **k: _Ctx()), \
             patch.object(s.asyncio, "sleep", AsyncMock()):
         await s._bulk_reconcile_provider("acc-1", ["m1"], "archive")
@@ -377,7 +377,7 @@ async def test_reconcile_leaves_the_mirror_alone_when_it_succeeds() -> None:
         async def __aenter__(self): return _Sess()
         async def __aexit__(self, *a): return False
 
-    with patch.object(s, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(s, "_tenant_session", bind_db(_DB())), \
             patch.object(s, "provider_session", lambda *a, **k: _Ctx()):
         await s._bulk_reconcile_provider("acc-1", ["m1"], "archive")
 
