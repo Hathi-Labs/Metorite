@@ -8,6 +8,7 @@ import {
   VoiceProfile, VoiceProfilePreview, VoiceProfileBuildStatus,
   ContactCard, SenderStatus,
 } from "./types";
+import { mapMailAppInfo, type MailAppInfo } from "./connect";
 
 // No NEXT_PUBLIC_GATEWAY_URL here on purpose: every call from this module goes
 // through the Next BFF at /api/**, which is the only path that carries the
@@ -70,6 +71,8 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     syncStatus: raw.sync_status ? String(raw.sync_status) : undefined,
     syncError: raw.sync_error ? String(raw.sync_error) : undefined,
     isDefault: Boolean(raw.is_default ?? false),
+    initialSyncDone:
+      typeof raw.initial_sync_done === "boolean" ? raw.initial_sync_done : undefined,
   };
 }
 
@@ -459,6 +462,19 @@ export async function createEmailAccount(
     { method: "POST", body: JSON.stringify(body) }
   );
   return mapAccount(raw);
+}
+
+/**
+ * The public facts of the Microsoft mail app, for the admin-consent link
+ * (EM-T3b). `null` when the deployment has no app or the read fails.
+ */
+export async function getMailAppInfo(): Promise<MailAppInfo | null> {
+  try {
+    const raw = await gatewayFetch<Record<string, unknown>>("/email/oauth/microsoft/app");
+    return mapMailAppInfo(raw);
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteEmailAccount(id: string): Promise<void> {

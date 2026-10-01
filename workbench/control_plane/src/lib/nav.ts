@@ -206,7 +206,10 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "Mail",
         note: "AI-powered inbox",
         feature: "email",
-        launch: "preview", // WS-17 incomplete
+        // `live` since 2026-10-02, by owner decision of 2026-10-01 (H-21,
+        // WS-17 EM-T3b). A member connects Microsoft 365 from inside the app,
+        // with no setup step. `launch_surface.md` §2 moved in the same change.
+        launch: "live",
       },
       {
         href: "/whatsapp",

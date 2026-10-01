@@ -1183,6 +1183,9 @@ line — never reclaim a number by deleting the other entry.
   call is made. ⚠️ **Never promote an app by granting its feature** — `preview` is
   not a permission (§3.4), and confusing the two makes a product decision into a
   data migration and makes `/access` lie about why a pane is missing.
+- **2026-10-02:** the owner promoted Email on 2026-10-01, and WS-17 EM-T3b
+  ships it. The live set is now **11**. `nav.test.ts` and §2 moved in the same
+  change. The `rg` count of the Check reads 11 on that tree.
 - **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
 - **Added:** 2026-08-24 · WS-34 build session
 

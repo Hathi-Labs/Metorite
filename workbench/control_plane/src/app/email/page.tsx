@@ -17,8 +17,22 @@ import { ComposePanel } from "./components/ComposePanel";
 import { CommandPalette, Command } from "./components/CommandPalette";
 import { TaskCaptureModal } from "./components/TaskCaptureModal";
 import { AutomationView } from "./components/automation/AutomationView";
+import { ConnectChoices } from "./components/ConnectChoices";
+import { ConnectEmptyState } from "./components/ConnectEmptyState";
+import { DisconnectDialog } from "./components/DisconnectDialog";
+import { FirstSyncBanner } from "./components/FirstSyncBanner";
+import Modal from "@/components/ui/Modal";
 import { useEmailStore, isRealFolder } from "./lib/emailStore";
-import { Email, AutomationFeature } from "./lib/types";
+import { Email, EmailAccount, AutomationFeature } from "./lib/types";
+import {
+  connectQuery,
+  finishedFirstSync,
+  FIRST_SYNC_POLL_MS,
+  isFirstSyncPending,
+  reconnectProvider,
+  shouldPollFirstSync,
+  type ConnectProviderId,
+} from "./lib/connect";
 import { folderLabel } from "./lib/utils";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -29,11 +43,9 @@ export default function EmailPage() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [listOpen, setListOpen] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [oauthStatus, setOauthStatus] = useState<{
-    gmail: boolean; microsoft: boolean; checked: boolean;
-  }>({ gmail: false, microsoft: false, checked: false });
+  // The mailbox the disconnect dialog asks about. `null` closes the dialog.
+  const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
 
   // Mobile-specific state
   const [mobileView, setMobileView] = useState<"inbox" | "detail">("inbox");
@@ -72,11 +84,14 @@ export default function EmailPage() {
     error,
     authErrors,
     fetchAccounts,
+    refreshAccounts,
+    fetchFolders,
     fetchEmails,
     loadMoreEmails,
     backfillOlder,
     selectAccount,
     setDefaultAccount,
+    deleteAccount,
     selectFolder,
     selectEmail,
     openCompose,
@@ -169,32 +184,42 @@ export default function EmailPage() {
     setMobileView("inbox");
   }, [selectedFolder, selectedAccountId]);
 
-  // ── Onboarding detection ──
-  // Check OAuth status and decide whether to show the setup guide
+  // ── No mailbox yet ──
+  // The empty state replaces the panes. There is no setup step for a member:
+  // the deployment owns the Microsoft app (EM-T3b, spec §10.3).
+  const noAccounts = !accountsLoading && accounts.length === 0;
+
+  // ── First sync ──
+  // A new mailbox reports initial_sync_done=false until its first sync ends.
+  // Re-read the accounts quietly until every flag is true, and refill the
+  // inbox on each tick so mail appears while the sync runs. The interval
+  // stops when nothing is pending and when the page unmounts.
+  const firstSyncPending = shouldPollFirstSync(accounts);
+  const pendingAccount =
+    (selectedAccount && isFirstSyncPending(selectedAccount) ? selectedAccount : null) ??
+    accounts.find(isFirstSyncPending) ??
+    null;
   useEffect(() => {
-    const check = async () => {
-      try {
-        const res = await fetch("/api/integrations/status");
-        if (!res.ok) return;
-        const data: Array<{ service: string; configured: boolean }> = await res.json();
-        const gmailOk = data.find((i) => i.service === "gmail-oauth")?.configured ?? false;
-        const msOk = data.find((i) => i.service === "microsoft-oauth")?.configured ?? false;
-        setOauthStatus({ gmail: gmailOk, microsoft: msOk, checked: true });
-      } catch {
-        setOauthStatus((prev) => ({ ...prev, checked: true }));
+    if (!firstSyncPending) return;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      const before = useEmailStore.getState().accounts;
+      const after = await refreshAccounts();
+      if (cancelled || !after) return;
+      const selected = useEmailStore.getState().selectedAccountId;
+      if (!selected) return;
+      if (finishedFirstSync(before, after).includes(selected)) {
+        void fetchFolders(selected);
+        void fetchEmails();
+      } else if (after.some((a) => a.id === selected && isFirstSyncPending(a))) {
+        void softRefresh();
       }
+    }, FIRST_SYNC_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
     };
-    void check();
-  }, []);
-
-  // Show onboarding when accounts fetched and none exist
-  useEffect(() => {
-    if (!accountsLoading && accounts.length === 0 && oauthStatus.checked) {
-      setShowOnboarding(true);
-    }
-  }, [accountsLoading, accounts.length, oauthStatus.checked]);
-
-  const dismissOnboarding = () => setShowOnboarding(false);
+  }, [firstSyncPending, refreshAccounts, fetchFolders, fetchEmails, softRefresh]);
 
   // ── Mobile drawer content builders ──
 
@@ -226,24 +251,31 @@ export default function EmailPage() {
     [selectFolder, isMobile, closeDrawer]
   );
 
-  const handleConnect = useCallback((provider: "gmail" | "microsoft" | "imap") => {
-    if (provider === "imap") {
-      window.location.href = "/email?addAccount=imap";
-    } else {
-      // Navigate to the BFF, never straight at the gateway host. A top-level
-      // navigation carries no Bearer and no X-User-Email (the session cookie is
-      // on this origin, not api.*), so the gated authorize route 401s every
-      // caller. api/email/oauth/[provider]/authorize runs server-side, attaches
-      // the identity, and re-issues the provider redirect. Identity now comes
-      // from the session on the server — never from a `user_email` parameter.
-      //
-      // URLSearchParams already percent-encodes values — don't pre-encode with
-      // encodeURIComponent or redirect_after ends up double-encoded and the
-      // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
-      const params = new URLSearchParams({ redirect_after: window.location.href });
-      window.location.href = `/api/email/oauth/${provider}/authorize?${params.toString()}`;
-    }
+  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string) => {
+    // Navigate to the BFF, never straight at the gateway host. A top-level
+    // navigation carries no Bearer and no X-User-Email (the session cookie is
+    // on this origin, not api.*), so the gated authorize route 401s every
+    // caller. api/email/oauth/[provider]/authorize runs server-side, attaches
+    // the identity, and re-issues the provider redirect. Identity now comes
+    // from the session on the server — never from a `user_email` parameter.
+    //
+    // `loginHint` is the mailbox address on a reconnect, so Microsoft opens
+    // on the right account. It is a hint, never an identity (EM-T3a item 3).
+    //
+    // connectQuery uses URLSearchParams, which already percent-encodes —
+    // don't pre-encode or redirect_after ends up double-encoded and the
+    // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
+    const query = connectQuery(window.location.href, loginHint);
+    window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
   }, []);
+
+  const handleDisconnectRequest = useCallback(
+    (account: EmailAccount) => {
+      setDisconnecting(account);
+      closeDrawer();
+    },
+    [closeDrawer]
+  );
 
   const handleAddAccount = useCallback(() => {
     setShowAddModal(true);
@@ -267,6 +299,7 @@ export default function EmailPage() {
       onFolderSelect={handleFolderSelect}
       onAddAccount={handleAddAccount}
       onSetDefault={setDefaultAccount}
+      onDisconnect={handleDisconnectRequest}
       showAutomation={false}
     />
   );
@@ -426,7 +459,7 @@ export default function EmailPage() {
           t.tagName === "TEXTAREA" ||
           t.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || showOnboarding || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || paletteOpen) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -474,8 +507,8 @@ export default function EmailPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
-    updateEmail, deleteEmail, composeOpen, showAddModal, showOnboarding,
-    paletteOpen, automationFeature,
+    updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
+    disconnecting, paletteOpen, automationFeature,
   ]);
 
   // Command palette entries (Cmd/Ctrl+K).
@@ -510,6 +543,16 @@ export default function EmailPage() {
 
   // ── Render ──
 
+  if (noAccounts) {
+    return (
+      <ConnectEmptyState
+        onConnect={handleConnect}
+        loadError={error}
+        onRetry={() => void fetchAccounts()}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full w-full bg-background overflow-hidden select-none">
       {/* Loading overlay */}
@@ -518,118 +561,6 @@ export default function EmailPage() {
           <div className="flex gap-2 items-center text-sm text-muted-foreground">
             <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
             Loading accounts…
-          </div>
-        </div>
-      )}
-
-      {/* Onboarding modal — shown when no accounts exist */}
-      {showOnboarding && !accountsLoading && accounts.length === 0 && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/85 backdrop-blur-sm">
-          <div className="bg-card border border-border rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4 chat-fade-in max-h-[90vh] overflow-y-auto">
-            {/* Header */}
-            <div className="text-center mb-5">
-              <div className="w-12 h-12 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-3">
-                <AppIcon name="Mail" className="w-6 h-6 text-primary" />
-              </div>
-              <h2 className="text-lg font-semibold text-foreground">Welcome to Email</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                A few setup steps to get your inbox connected.
-              </p>
-            </div>
-
-            {/* Steps */}
-            <div className="space-y-4 mb-5">
-              {/* Step 1: OAuth */}
-              <div className={`p-3 rounded-xl border ${oauthStatus.gmail && oauthStatus.microsoft ? "border-success/20 bg-success/5" : "border-warning/20 bg-warning/5"}`}>
-                <div className="flex items-start gap-3">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold ${oauthStatus.gmail && oauthStatus.microsoft ? "bg-success/20 text-success" : "bg-warning/20 text-warning"}`}>
-                    {oauthStatus.gmail && oauthStatus.microsoft ? <AppIcon name="CheckCircle2" size={14} /> : "1"}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-foreground">
-                      {oauthStatus.gmail && oauthStatus.microsoft
-                        ? "OAuth configured"
-                        : "Configure OAuth (one-time)"}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {oauthStatus.gmail && oauthStatus.microsoft
-                        ? "Google + Microsoft OAuth are ready."
-                        : "Register Metorite with Google and Microsoft so you can sign in with Gmail or Outlook."}
-                    </p>
-                    {(!oauthStatus.gmail || !oauthStatus.microsoft) && (
-                      <a
-                        href="/integrations?tab=apis&search=OAuth"
-                        className="inline-flex items-center gap-1 text-xs text-primary hover:opacity-80 mt-1.5 transition-opacity"
-                      >
-                        <AppIcon name="Settings" size={11} /> Open setup guides
-                        <AppIcon name="ExternalLink" size={10} />
-                      </a>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 2: Connect account */}
-              <div className="p-3 rounded-xl border border-border bg-secondary/30">
-                <div className="flex items-start gap-3">
-                  <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold text-muted-foreground">
-                    2
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-foreground">
-                      Connect your first account
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Choose a provider below. IMAP works immediately — no OAuth setup needed.
-                    </p>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <button
-                        onClick={() => handleConnect("gmail")}
-                        disabled={!oauthStatus.gmail}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        title={!oauthStatus.gmail ? "Configure Gmail OAuth first (Step 1)" : "Connect Gmail account"}
-                      >
-                        <span className="w-4 h-4 rounded-full bg-red-500/15 text-red-400 flex items-center justify-center text-[9px] font-bold">G</span>
-                        Gmail
-                      </button>
-                      <button
-                        onClick={() => handleConnect("microsoft")}
-                        disabled={!oauthStatus.microsoft}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        title={!oauthStatus.microsoft ? "Configure Microsoft OAuth first (Step 1)" : "Connect Outlook account"}
-                      >
-                        <span className="w-4 h-4 rounded-full bg-blue-500/15 text-blue-400 flex items-center justify-center text-[9px] font-bold">M</span>
-                        Outlook
-                      </button>
-                      <button
-                        onClick={() => handleConnect("imap")}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-secondary transition-colors"
-                      >
-                        <span className="w-4 h-4 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-[9px] font-bold">IM</span>
-                        IMAP/SMTP
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="flex gap-2">
-              <button
-                onClick={dismissOnboarding}
-                className="flex-1 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:bg-secondary transition-colors"
-              >
-                Maybe later
-              </button>
-              <a
-                href="/integrations?tab=email"
-                className="flex-1 py-2 rounded-lg bg-primary hover:opacity-90 text-xs font-medium text-primary-foreground text-center transition-colors flex items-center justify-center gap-1.5"
-              >
-                Manage in Integrations
-                <AppIcon name="ArrowRight" size={12} />
-              </a>
-            </div>
           </div>
         </div>
       )}
@@ -664,6 +595,7 @@ export default function EmailPage() {
               onFolderSelect={handleFolderSelect}
               onAddAccount={handleAddAccount}
               onSetDefault={setDefaultAccount}
+              onDisconnect={handleDisconnectRequest}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
             />
@@ -871,23 +803,32 @@ export default function EmailPage() {
                 {selectedAccount.syncError || authErrors[selectedAccount.id] || "The connection may have expired. Reconnect to restore full access."}
               </p>
             </div>
-            {(selectedAccount.provider === "gmail" || selectedAccount.provider === "microsoft") ? (
-              <button
-                onClick={() => handleConnect(selectedAccount.provider as "gmail" | "microsoft")}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-warning/20 text-warning hover:bg-warning/30 text-[11px] font-medium transition-colors flex-shrink-0"
-              >
-                <AppIcon name="ExternalLink" size={11} /> Reconnect
-              </button>
-            ) : (
-              <a
-                href="/integrations?tab=email"
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-warning/20 text-warning hover:bg-warning/30 text-[11px] font-medium transition-colors flex-shrink-0"
-              >
-                <AppIcon name="ExternalLink" size={11} /> Fix in Integrations
-              </a>
-            )}
+            {(() => {
+              const provider = reconnectProvider(selectedAccount);
+              if (!provider) {
+                return (
+                  <span className="text-[11px] text-muted-foreground flex-shrink-0 max-w-[40%]">
+                    Disconnect it from the account menu, then connect it again.
+                  </span>
+                );
+              }
+              return (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon="RefreshCw"
+                  className="flex-shrink-0"
+                  onClick={() => handleConnect(provider, selectedAccount.emailAddress)}
+                >
+                  {provider === "microsoft" ? "Reconnect Outlook" : "Reconnect Gmail"}
+                </Button>
+              );
+            })()}
           </div>
         )}
+
+        {/* ── First sync of a new mailbox ── */}
+        {pendingAccount && <FirstSyncBanner address={pendingAccount.emailAddress} />}
 
         {/* ── Unified action toolbar — spans the list + viewer columns, just
             below the top bar (desktop only; mobile keeps per-view toolbars). ── */}
@@ -1073,58 +1014,29 @@ export default function EmailPage() {
         initialArtifacts={composeDefaults?.artifacts}
       />
 
-      {/* Add Account Modal */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setShowAddModal(false)} />
-          <div className="relative bg-card border border-border rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-foreground">Add Email Account</h3>
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="p-1 rounded-md hover:bg-secondary text-muted-foreground transition-colors"
-              >
-                <AppIcon name="X" size={16} />
-              </button>
-            </div>
-            <div className="space-y-2">
-              <button
-                onClick={() => { setShowAddModal(false); handleConnect("gmail"); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-red-400/40 hover:bg-red-500/5 transition-colors text-left"
-              >
-                <span className="w-8 h-8 rounded-full bg-red-500/15 text-red-400 flex items-center justify-center text-xs font-bold">G</span>
-                <div>
-                  <div className="text-sm font-medium text-foreground">Google / Gmail</div>
-                  <div className="text-[11px] text-muted-foreground">Sign in with Google OAuth</div>
-                </div>
-              </button>
-              <button
-                onClick={() => { setShowAddModal(false); handleConnect("microsoft"); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-blue-400/40 hover:bg-blue-500/5 transition-colors text-left"
-              >
-                <span className="w-8 h-8 rounded-full bg-blue-500/15 text-blue-400 flex items-center justify-center text-xs font-bold">M</span>
-                <div>
-                  <div className="text-sm font-medium text-foreground">Microsoft / Outlook</div>
-                  <div className="text-[11px] text-muted-foreground">Sign in with Microsoft OAuth</div>
-                </div>
-              </button>
-              <button
-                onClick={() => { setShowAddModal(false); handleConnect("imap"); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-cat-12/40 hover:bg-cat-12/5 transition-colors text-left"
-              >
-                <span className="w-8 h-8 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-xs font-bold">IM</span>
-                <div>
-                  <div className="text-sm font-medium text-foreground">IMAP / SMTP</div>
-                  <div className="text-[11px] text-muted-foreground">Manual server configuration</div>
-                </div>
-              </button>
-            </div>
-            <p className="mt-4 text-[10px] text-muted-foreground text-center">
-              Credentials are encrypted at rest with AES-256-GCM
-            </p>
-          </div>
+      {/* Add a mailbox — the same choices as the empty state */}
+      <Modal
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        title="Connect a mailbox"
+        icon="Mail"
+        size="sm"
+      >
+        <div className="px-3 py-3">
+          <ConnectChoices
+            onConnect={(provider) => {
+              setShowAddModal(false);
+              handleConnect(provider);
+            }}
+          />
         </div>
-      )}
+      </Modal>
+
+      <DisconnectDialog
+        account={disconnecting}
+        onDisconnect={deleteAccount}
+        onClose={() => setDisconnecting(null)}
+      />
     </div>
   );
 }

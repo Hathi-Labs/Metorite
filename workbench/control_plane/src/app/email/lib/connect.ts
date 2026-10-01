@@ -1,0 +1,280 @@
+/**
+ * The connect flow of the Email app, as pure decisions (WS-17 EM-T3b).
+ *
+ * Spec: `project-docs/specs/email_app_master_plan.md` §10.3 and §10.4.3.
+ *
+ * Every choice the connect UI makes lives here, because vitest in this tree
+ * runs in the node environment and cannot render a component. The pages
+ * (`app/email/page.tsx`, `app/email/oauth/callback/page.tsx`) and
+ * `components/ConnectChoices.tsx` only draw what these functions return.
+ *
+ * Fence: `connect.test.ts`.
+ */
+
+import type { EmailAccount } from "./types";
+
+// ── The providers a member may connect ──────────────────────────────────────
+
+export type ConnectProviderId = "microsoft" | "gmail";
+
+export interface ConnectProvider {
+  id: ConnectProviderId;
+  label: string;
+  detail: string;
+  /** False draws the choice disabled, with `note` beside it. */
+  available: boolean;
+  note?: string;
+  /** A Lucide name. Never a brand colour (DESIGN_SYSTEM.md §1). */
+  icon: string;
+}
+
+/**
+ * The choices of the empty state and of the add-account dialog, in order.
+ *
+ * Microsoft is the one live path (D-EM-1). Google waits for its own app
+ * verification, so it shows and cannot be clicked. IMAP is not offered: the
+ * old button went to a URL that nothing read.
+ */
+export const CONNECT_PROVIDERS: readonly ConnectProvider[] = [
+  {
+    id: "microsoft",
+    label: "Microsoft 365 / Outlook",
+    detail: "Sign in with your work or personal Microsoft account",
+    available: true,
+    icon: "Building2",
+  },
+  {
+    id: "gmail",
+    label: "Google / Gmail",
+    detail: "Google Workspace and Gmail",
+    available: false,
+    note: "Coming soon",
+    icon: "Mail",
+  },
+];
+
+/**
+ * The query of the BFF authorize route.
+ *
+ * `login_hint` is a hint for the provider's sign-in page, never an identity:
+ * the gateway drops a value that does not parse as an address, and the
+ * callback still binds the member of the session (EM-T3a item 3).
+ */
+export function connectQuery(redirectAfter: string, loginHint?: string | null): string {
+  const params = new URLSearchParams({ redirect_after: redirectAfter });
+  const hint = (loginHint ?? "").trim();
+  if (hint) params.set("login_hint", hint);
+  return params.toString();
+}
+
+/** Which provider the reconnect banner may send the member back through. */
+export function reconnectProvider(account: Pick<EmailAccount, "provider">): ConnectProviderId | null {
+  return account.provider === "microsoft" || account.provider === "gmail"
+    ? account.provider
+    : null;
+}
+
+// ── First sync ─────────────────────────────────────────────────────────────
+
+/** How often the page re-reads the accounts while a first sync runs. */
+export const FIRST_SYNC_POLL_MS = 5000;
+
+/**
+ * An account whose first sync has not finished.
+ *
+ * Only an explicit `false` counts. A gateway that predates EM-T3a sends no
+ * flag, and an account with no flag must not spin for ever.
+ */
+export function isFirstSyncPending(account: Pick<EmailAccount, "initialSyncDone">): boolean {
+  return account.initialSyncDone === false;
+}
+
+/** True while any account still runs its first sync, so the page polls. */
+export function shouldPollFirstSync(accounts: ReadonlyArray<Pick<EmailAccount, "initialSyncDone">>): boolean {
+  return accounts.some(isFirstSyncPending);
+}
+
+/** Ids whose first sync finished between two reads of the account list. */
+export function finishedFirstSync(
+  before: ReadonlyArray<Pick<EmailAccount, "id" | "initialSyncDone">>,
+  after: ReadonlyArray<Pick<EmailAccount, "id" | "initialSyncDone">>,
+): string[] {
+  const done = new Set(after.filter((a) => a.initialSyncDone === true).map((a) => a.id));
+  return before.filter((a) => isFirstSyncPending(a) && done.has(a.id)).map((a) => a.id);
+}
+
+export function firstSyncCopy(address: string): { title: string; body: string } {
+  return {
+    title: `Connected as ${address}`,
+    body: "Metorite is bringing in your mail. Recent messages come first. This can take a few minutes, and you can keep working.",
+  };
+}
+
+// ── The callback page ─────────────────────────────────────────────────────
+
+export type CallbackKind =
+  | "loading"
+  | "connected"
+  | "admin_consent_required"
+  | "consent_declined"
+  | "duplicate"
+  | "retry"
+  | "unknown";
+
+export interface CallbackView {
+  kind: CallbackKind;
+  title: string;
+  body: string;
+  /** A short code the member can give to support. Never provider text. */
+  reference?: string;
+}
+
+/** A code that is safe to print: the gateway's own vocabulary. */
+const PLAIN_CODE = /^[a-z0-9_]{1,64}$/;
+
+/** Codes that a second try usually fixes. */
+const RETRY_CODES = new Set([
+  "invalid_state",
+  "token_exchange_failed",
+  "email_fetch_failed",
+  "account_save_failed",
+  "gateway_unreachable",
+]);
+
+/**
+ * What the callback page says, for each result the gateway can send.
+ *
+ * ⚠️ An unknown code never reaches the page as text. The BFF authorize route
+ * passes a refusal's `detail` as `error`, and that can be a whole sentence
+ * that names a screen the member cannot open. Only a plain code shows, and
+ * only as a reference.
+ */
+export function callbackView(params: {
+  error: string | null;
+  accountId: string | null;
+  email: string | null;
+}): CallbackView {
+  const { error, accountId, email } = params;
+  if (!error) {
+    if (!accountId) {
+      return { kind: "loading", title: "Finishing the connection", body: "One moment." };
+    }
+    return {
+      kind: "connected",
+      title: email ? `Connected as ${email}` : "Mailbox connected",
+      body: "Metorite starts to bring in your mail now. Recent messages come first.",
+    };
+  }
+  if (error === "admin_consent_required") {
+    return {
+      kind: "admin_consent_required",
+      title: "Your organization needs to approve Metorite",
+      body:
+        "Your Microsoft 365 organization lets only an IT admin approve new apps. " +
+        "Send your admin the approval link below. One approval covers everyone in your company. " +
+        "When it is done, connect again.",
+    };
+  }
+  if (error === "consent_declined") {
+    return {
+      kind: "consent_declined",
+      title: "You cancelled the connection",
+      body:
+        "Microsoft did not give Metorite access to your mailbox, so nothing was connected. " +
+        "Try again when you are ready. Metorite reads and sends mail only as you tell it to.",
+    };
+  }
+  if (error === "duplicate") {
+    return {
+      kind: "duplicate",
+      title: "This mailbox is already connected",
+      body: email
+        ? `${email} is already in your Email app.`
+        : "This mailbox is already in your Email app.",
+    };
+  }
+  const reference = PLAIN_CODE.test(error) ? error : undefined;
+  if (RETRY_CODES.has(error)) {
+    return {
+      kind: "retry",
+      title: "The connection did not finish",
+      body:
+        "Something interrupted the sign-in. This is usually temporary. " +
+        "Try again. If it happens again, tell your Metorite admin.",
+      reference,
+    };
+  }
+  return {
+    kind: "unknown",
+    title: "We could not connect your mailbox",
+    body:
+      "Microsoft or Metorite stopped the connection. Try again. " +
+      "If it happens again, give your Metorite admin the reference below.",
+    reference,
+  };
+}
+
+// ── Admin consent ──────────────────────────────────────────────────────────
+
+/** The public facts of the mail app, from `GET /email/oauth/microsoft/app`. */
+export interface MailAppInfo {
+  clientId: string;
+  redirectUri: string;
+}
+
+export function mapMailAppInfo(raw: unknown): MailAppInfo | null {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const clientId = typeof r.client_id === "string" ? r.client_id.trim() : "";
+  const redirectUri = typeof r.redirect_uri === "string" ? r.redirect_uri.trim() : "";
+  if (!clientId || !redirectUri) return null;
+  return { clientId, redirectUri };
+}
+
+/**
+ * The Microsoft admin-consent link for the mail app.
+ *
+ * `organizations`, not a tenant id: the admin signs in to their own
+ * directory, and Microsoft resolves it. `.default` asks for every permission
+ * the app registration lists, so the admin approves one complete set.
+ */
+export function adminConsentUrl(app: MailAppInfo): string {
+  const params = new URLSearchParams({
+    client_id: app.clientId,
+    scope: "https://graph.microsoft.com/.default",
+    redirect_uri: app.redirectUri,
+  });
+  return `https://login.microsoftonline.com/organizations/v2.0/adminconsent?${params.toString()}`;
+}
+
+/** The prefilled request to an IT admin, as a `mailto:` link. */
+export function adminConsentMailto(link: string): string {
+  const subject = "Please approve Metorite for Microsoft 365 mail";
+  const body = [
+    "Hello,",
+    "",
+    "I want to connect my Microsoft 365 mailbox to Metorite. Our organization lets only an admin approve new apps.",
+    "",
+    "Please open this link and sign in with an admin account to approve it:",
+    link,
+    "",
+    "One approval covers everyone in our organization. Metorite asks for permission to read, send and organize the mail of each member who connects.",
+    "",
+    "Thank you.",
+  ].join("\n");
+  // encodeURIComponent, not URLSearchParams: a mail client reads `+` as a
+  // plus sign, not as a space.
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
+// ── Disconnect ─────────────────────────────────────────────────────────────
+
+export function disconnectCopy(address: string): { title: string; body: string; note: string; confirm: string } {
+  return {
+    title: "Disconnect this mailbox?",
+    body:
+      `Metorite stops syncing ${address} and deletes its sign-in tokens. ` +
+      "The synced mail, rules and AI settings of this mailbox are deleted from Metorite.",
+    note: "Your mail stays in your Microsoft or Google mailbox. To use it here again, connect it again.",
+    confirm: "Disconnect",
+  };
+}

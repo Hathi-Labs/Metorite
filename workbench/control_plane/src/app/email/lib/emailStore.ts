@@ -319,6 +319,12 @@ interface EmailState {
 
   // Actions
   fetchAccounts: () => Promise<void>;
+  /**
+   * Re-read the accounts with no spinner and no error banner (EM-T3b). The
+   * first-sync poll calls it, so the loading overlay must not flash on every
+   * tick. Returns the accounts it read, or null when the read failed.
+   */
+  refreshAccounts: () => Promise<EmailAccount[] | null>;
   fetchFolders: (accountId?: string) => Promise<void>;
   fetchEmails: () => Promise<void>;
   /** Silent background refresh of the current folder's first page (no spinner),
@@ -410,7 +416,12 @@ interface EmailState {
   /** Clear cached per-message results (e.g. when switching Test↔Apply). */
   clearTestResults: () => void;
   triggerSync: (accountId: string) => Promise<void>;
-  deleteAccount: (id: string) => Promise<void>;
+  /**
+   * Disconnect a mailbox: `DELETE /email/accounts/{id}`. True on success. On
+   * a refusal it sets `error` and re-reads the accounts, so the list on
+   * screen is the server's.
+   */
+  deleteAccount: (id: string) => Promise<boolean>;
   /** Make an account the user's default mailbox (the inbox the UI opens on). */
   setDefaultAccount: (id: string) => Promise<void>;
   clearError: () => void;
@@ -643,6 +654,17 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         return;
       }
       set({ accountsLoading: false, error: err.message || "Failed to load accounts" });
+    }
+  },
+
+  refreshAccounts: async () => {
+    if (DEMO) return get().accounts;
+    try {
+      const accounts = await api.listEmailAccounts();
+      set({ accounts });
+      return accounts;
+    } catch {
+      return null;
     }
   },
 
@@ -1467,10 +1489,19 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           get().fetchFolders(next);
           get().fetchLabels(next);
           get().fetchEmails();
+        } else {
+          // The last mailbox left. Clear what it drew, or its mail stays on
+          // screen behind the empty state.
+          set({ emails: [], emailsTotal: 0, folders: [], selectedEmailId: null });
         }
       }
+      return true;
     } catch (err: any) {
-      set({ error: err.message || "Failed to delete account" });
+      set({ error: err.message || "Failed to disconnect the mailbox" });
+      // A refusal is about the row that was clicked. Re-read, so a stale row
+      // does not read as a success or as a failure that did not happen.
+      void get().refreshAccounts();
+      return false;
     }
   },
 

@@ -440,8 +440,6 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
     "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
-    "app/email/oauth/callback/page.tsx": 2,
-    "app/email/page.tsx": 12,
     "app/integrations/page.tsx": 87,
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,

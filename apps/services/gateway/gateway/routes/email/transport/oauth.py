@@ -181,6 +181,49 @@ async def oauth_authorize(
     return RedirectResponse(auth_url, status_code=302)
 
 
+class OAuthAppInfo(BaseModel):
+    """The public facts of the mail OAuth app. It never holds the secret."""
+
+    provider: str
+    client_id: str
+    redirect_uri: str
+
+
+@router.get("/oauth/{provider}/app")
+async def oauth_app_info(
+    provider: str,
+    user: UserContext = Depends(get_current_user),
+) -> OAuthAppInfo:
+    """The client ID and the redirect URI of the mail app (EM-T3b).
+
+    The guided page for admin approval builds the admin-consent link from
+    these two values, so the client ID is never a constant in the browser.
+    Both values are public: Microsoft shows them in every authorize URL. The
+    client secret never leaves settings.
+
+    Only Microsoft has an admin-consent step, so another provider is a 404.
+    With no client ID in settings, the route answers 503.
+    """
+    if not user.organization_id or not user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="This needs a signed-in member of an organization.",
+        )
+    if provider != "microsoft":
+        raise HTTPException(status_code=404, detail="Admin approval applies to Microsoft only.")
+    app = oauth_app(provider)
+    if not app.client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Microsoft mail is not set up on this deployment.",
+        )
+    return OAuthAppInfo(
+        provider=provider,
+        client_id=app.client_id,
+        redirect_uri=_build_redirect_uri(provider),
+    )
+
+
 @router.get("/oauth/{provider}/callback")
 async def oauth_callback(
     provider: str,
