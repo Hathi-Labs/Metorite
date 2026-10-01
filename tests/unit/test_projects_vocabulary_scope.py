@@ -751,21 +751,24 @@ async def test_a_rename_onto_a_name_ANY_project_uses_is_refused(
 # Its behaviour is proved in `tests/live/live_ws27bj_rename.py`.
 
 @pytest.mark.asyncio
-async def test_deleting_an_org_wide_tag_is_STILL_refused(db: FakeProjectsDB):
+async def test_an_org_wide_tag_is_deleted_only_by_an_admin(db: FakeProjectsDB):
+    """H-205 (owner, 2026-10-01): a shared tag may be deleted, and only by
+    somebody who can change organization settings."""
     db.seed_project()
     tag = db.seed("pm_tags", project_id=None, name="shared",
                   organization_id=ORG_A)
     with pytest.raises(HTTPException) as exc:
-        await pm_tags.delete_tag(tag.id, user=OWNER)
-    assert exc.value.status_code == 409
+        await pm_tags.delete_tag(tag.id, user=MEMBER)
+    assert exc.value.status_code == 403
     assert len(db.rows("pm_tags")) == 1
+    await pm_tags.delete_tag(tag.id, user=OWNER)
+    assert len(db.rows("pm_tags")) == 0
 
 
 @pytest.mark.asyncio
-async def test_merging_at_EITHER_end_is_STILL_refused(db: FakeProjectsDB):
-    """Merging INTO an org-wide tag would rewrite one project's tasks while
-    claiming an organization-wide result; merging one AWAY would delete a row
-    every other project is still using."""
+async def test_merging_a_shared_tag_with_a_space_tag_is_refused(db: FakeProjectsDB):
+    """H-205: shared into shared is allowed. A shared tag into a space's tag,
+    or the reverse, is refused: one end changes every space, the other one."""
     project = db.seed_project()
     org_tag = db.seed("pm_tags", project_id=None, name="shared",
                       organization_id=ORG_A)
@@ -831,7 +834,7 @@ async def test_the_per_PROJECT_attributes_are_refused_by_name(
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_field_or_a_type_org_wide_is_STILL_refused(
+async def test_an_org_wide_field_or_type_is_deleted_only_by_an_admin(
     db: FakeProjectsDB,
 ):
     db.seed_project()
@@ -841,12 +844,15 @@ async def test_deleting_a_field_or_a_type_org_wide_is_STILL_refused(
                        organization_id=ORG_A)
 
     for call in (
-        pm_fields.delete_field(field.id, user=OWNER),
-        pm_admin.delete_type(type_row.id, user=OWNER),
+        pm_fields.delete_field(field.id, user=MEMBER),
+        pm_admin.delete_type(type_row.id, user=MEMBER),
     ):
         with pytest.raises(HTTPException) as exc:
             await call
-        assert exc.value.status_code == 409
+        assert exc.value.status_code == 403
+    await pm_fields.delete_field(field.id, user=OWNER)
+    await pm_admin.delete_type(type_row.id, user=OWNER)
+    assert db.rows("pm_custom_fields") == [] and db.rows("pm_task_types") == []
 
 
 @pytest.mark.asyncio

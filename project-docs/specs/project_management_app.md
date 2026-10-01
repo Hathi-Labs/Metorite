@@ -4138,6 +4138,12 @@ The ruling has three parts, and each answers a question the seam left open.
 row every project is using and strips it off their tasks, and a merge destroys one of two rows.
 Those wait for the admin surface and a ruling of their own.
 
+> **Superseded 2026-10-01 by the owner's H-205 ruling** (WS-42 PS-3b,
+> `specs/projects_settings.md` §7). An admin may now delete a shared tag, field
+> or type, and merge a shared tag into another shared tag, after the count of
+> tasks and spaces. A space that keeps its own row of the same identity is left
+> out of every organization-wide rewrite (`governed_tasks_scope`).
+
 **The create flag does NOT gate the edit.** `PROJECTS_ORG_VOCABULARIES` guards the act that is
 hard to walk back. Turning creates off later must not strand the rows already minted as
 uneditable, which would be a worse state than either setting of the flag.

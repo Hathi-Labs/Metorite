@@ -8,6 +8,7 @@
  */
 
 import type { OrgVocabulary } from "./api";
+import type { DeleteCopy } from "./deleteCopy";
 
 export type VocabularyKind = "tags" | "fields" | "types";
 
@@ -40,7 +41,7 @@ export function vocabularyNotes(v: Pick<OrgVocabulary, "can_edit" | "can_create"
   ];
   notes.push(
     v.can_edit
-      ? "You can rename them, and recolour a tag. They cannot be merged or deleted yet."
+      ? "You can rename, recolour a tag, merge a tag into another shared tag, and delete."
       : "Only an organization owner or admin can change them.",
   );
   if (!v.can_create) notes.push("Adding new shared entries is not turned on for this organization.");
@@ -51,4 +52,50 @@ export function vocabularyNotes(v: Pick<OrgVocabulary, "can_edit" | "can_create"
 export function renamedNotice(noun: string, to: string, retagged?: number): string {
   const tasks = retagged ? ` It was rewritten on ${retagged} task${retagged === 1 ? "" : "s"}.` : "";
   return `Renamed the shared ${noun} to “${to}” in every space.${tasks}`;
+}
+
+export type Impact = { tasks: number; projects: number } | null;
+
+const tasks = (n: number) => `${n} task${n === 1 ? "" : "s"}`;
+const spaces = (n: number) => `${n} space${n === 1 ? "" : "s"}`;
+const WHAT_DELETE: Record<VocabularyKind, string> = {
+  tags: "It is taken off",
+  fields: "Its values are cleared from",
+  types: "It is taken off",
+};
+
+/**
+ * H-205 — the question before a shared entry is deleted. The count is the
+ * point (as for the shared rename, D-PM-33): it reaches spaces the admin may
+ * not open. A failed count asks with the size unknown, never as zero.
+ */
+export function sharedDeleteCopy(kind: VocabularyKind, name: string, impact: Impact): DeleteCopy {
+  const noun = VOCABULARY_GROUPS.find((g) => g.kind === kind)?.noun ?? "entry";
+  const reach = impact
+    ? impact.tasks === 0
+      ? "No task uses it. It is deleted for good."
+      : `${WHAT_DELETE[kind]} ${tasks(impact.tasks)} across ${spaces(impact.projects)}, and deleted for good.`
+    : `${WHAT_DELETE[kind]} every task that uses it, and deleted for good. The number could not be read.`;
+  return {
+    title: `Delete this shared ${noun}?`,
+    subject: name,
+    body: `${reach} The tasks stay. This cannot be undone.`,
+    note: "A space that has its own entry with this name keeps it. That includes spaces you may not be able to open.",
+    confirmLabel: "Delete",
+  };
+}
+
+/** H-205 — the question before one shared tag is merged into another. */
+export function sharedMergeCopy(from: string, into: string, impact: Impact): DeleteCopy {
+  return {
+    title: "Merge this shared tag?",
+    subject: from,
+    body: impact
+      ? impact.tasks === 0
+        ? `No task wears it. “${from}” is deleted, and “${into}” stays.`
+        : `${tasks(impact.tasks)} across ${spaces(impact.projects)} ${impact.tasks === 1 ? "wears" : "wear"} “${into}” instead, and “${from}” is deleted.`
+      : `Every task with it wears “${into}” instead, and “${from}” is deleted. The number could not be read.`,
+    note: "A space that has its own tag with this name keeps it. This cannot be undone.",
+    confirmLabel: "Merge",
+  };
 }

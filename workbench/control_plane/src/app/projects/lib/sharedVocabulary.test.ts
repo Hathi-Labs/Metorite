@@ -8,7 +8,14 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { renamedNotice, usageLine, vocabularyEmpty, vocabularyNotes } from "./sharedVocabulary";
+import {
+  renamedNotice,
+  sharedDeleteCopy,
+  sharedMergeCopy,
+  usageLine,
+  vocabularyEmpty,
+  vocabularyNotes,
+} from "./sharedVocabulary";
 
 describe("usageLine", () => {
   it("says nothing when the gateway sent no count, never a wrong zero", () => {
@@ -24,8 +31,8 @@ describe("usageLine", () => {
 describe("vocabularyNotes", () => {
   it("tells an admin what they can and cannot do", () => {
     const notes = vocabularyNotes({ can_edit: true, can_create: false });
-    expect(notes.join(" ")).toMatch(/rename them/);
-    expect(notes.join(" ")).toMatch(/cannot be merged or deleted/);
+    expect(notes.join(" ")).toMatch(/rename/);
+    expect(notes.join(" ")).toMatch(/merge a tag into another shared tag, and delete/);
     expect(notes.join(" ")).toMatch(/not turned on/);
   });
   it("tells a member who can change them", () => {
@@ -52,10 +59,23 @@ describe("renamedNotice", () => {
   });
 });
 
-describe("the section offers only what D-PM-33 allows", () => {
+describe("every delete and merge asks first, with the count (H-205)", () => {
   const src = readFileSync(join(__dirname, "..", "components", "SharedVocabulary.tsx"), "utf-8");
-  it("never deletes or merges an org-wide row", () => {
-    expect(src).not.toMatch(/deleteTag|deleteField|deleteType|mergeTag/);
+  it("reads the impact before a delete or merge is asked", () => {
+    expect(src).toMatch(/impactOf\(group\.kind, entry\.id\)\.then[\s\S]*?act: "delete"/);
+    expect(src).toMatch(/impactOf\("tags", entry\.id\)\.then[\s\S]*?act: "merge"/);
+    // The write happens only from the dialog's confirm.
+    expect(src.indexOf("deleteTag(")).toBeGreaterThan(src.indexOf("const remove"));
+  });
+  it("says what a delete reaches, and never a zero it did not read", () => {
+    expect(sharedDeleteCopy("tags", "bug", { tasks: 3, projects: 2 }).body).toBe(
+      "It is taken off 3 tasks across 2 spaces, and deleted for good. The tasks stay. This cannot be undone.",
+    );
+    expect(sharedDeleteCopy("fields", "Cost", null).body).toMatch(/could not be read/);
+    expect(sharedDeleteCopy("types", "Spike", { tasks: 0, projects: 0 }).body).toMatch(/^No task uses it\./);
+    expect(sharedMergeCopy("bug", "defect", { tasks: 1, projects: 1 }).body).toBe(
+      "1 task across 1 space wears “defect” instead, and “bug” is deleted.",
+    );
   });
   it("asks with the count before a tag rename", () => {
     expect(src).toMatch(/tagImpact\(/);

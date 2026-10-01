@@ -277,12 +277,14 @@ async def main():
             check("and the message names where it lives",
                   f"in '{MARK} tree 2'" in str(exc.detail), True)
 
-        # ── Delete and merge are still refused ────────────────────────────
+        # ── Delete: an admin's act since H-205 (owner, 2026-10-01) ─────────
+        # `live_ws42_retire.py` proves the admin's delete. Here: a member who
+        # cannot change organization settings is refused, and nothing moves.
         try:
-            await pm_tags.delete_tag(tag_id, user=owner())
-            check("delete is still refused", "allowed", "409")
+            await pm_tags.delete_tag(tag_id, user=member())
+            check("a member may not delete a shared tag", "allowed", "403")
         except HTTPException as exc:
-            check("delete is still refused", exc.status_code, 409)
+            check("a member may not delete a shared tag", exc.status_code, 403)
         still = await one(
             "SELECT count(*) AS n FROM pm_tags WHERE id = CAST(:i AS uuid)", i=tag_id)
         check("and the row survived the attempt", int(still.n), 1)

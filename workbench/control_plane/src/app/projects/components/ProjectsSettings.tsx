@@ -193,7 +193,8 @@ export default function ProjectsSettings({
   );
 
   const body = (() => {
-    if (current.id === "vocabulary") return <SharedVocabulary onChanged={onBoardStale} />;
+    if (current.id === "vocabulary")
+      return <SharedVocabulary onChanged={onBoardStale} anchorSpaceId={spaces[0]?.id ?? null} />;
     if (current.id === "import") {
       return (
         <div className="flex flex-col gap-4">
