@@ -351,7 +351,9 @@ async def test_an_empty_secret_refuses_every_callback(spy, monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("sent", "shown"),
     [
-        ("access_denied", "access_denied"),
+        # EM-T3a item 4: access_denied with no known AADSTS code is a
+        # declined consent. test_email_connect_backend.py owns the table.
+        ("access_denied", "consent_declined"),
         ("consent_required", "consent_required"),
         ("Interaction_Required", "interaction_required"),
         ("<script>alert(1)</script>", "provider_error"),

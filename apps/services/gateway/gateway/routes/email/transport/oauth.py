@@ -23,13 +23,15 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
 from acb_auth import UserContext, get_current_user
-from acb_common import get_settings
+from email_ingestion.providers.app_credentials import MICROSOFT_OAUTH_BASE, oauth_app
+from email_ingestion.providers.gmail import GMAIL_SCOPES
+from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from gateway.routes.email.core import _default_label, _log, _tenant_session, router
@@ -57,12 +59,41 @@ _PROVIDER_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
 #: also refuses an over-long state, which covers text that JSON escapes.
 _MAX_REDIRECT_AFTER = 2048
 
+#: A ``login_hint`` passes only when it parses as one plain address.
+_EMAIL_ADDRESS = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
+
+#: The callback reads only a Microsoft error code from ``error_description``.
+#: The rest of that text is not ours, and it never reaches the Location.
+_AADSTS_CODE = re.compile(r"AADSTS(\d{5,6})")
+#: The tenant of the customer must approve the app (EM-T3a item 4).
+_ADMIN_CONSENT_CODES = frozenset({"90094", "90095", "65001"})
+#: The member said no on the consent screen.
+_DECLINED_CODES = frozenset({"65004"})
+
+_NOT_CONFIGURED = {
+    "gmail": (
+        "Gmail OAuth is not configured. Go to Integrations → APIs → "
+        "'Gmail OAuth' and enter your Google Cloud OAuth client ID "
+        "and secret. Instructions are provided there."
+    ),
+    "microsoft": (
+        "Microsoft OAuth is not configured. Go to Integrations → APIs → "
+        "'Microsoft OAuth' and enter your Azure App client ID "
+        "and secret. Instructions are provided there."
+    ),
+}
+
 
 @router.get("/oauth/{provider}/authorize")
 async def oauth_authorize(
     provider: str,
     user: UserContext = Depends(get_current_user),
     redirect_after: str = Query(default=""),
+    login_hint: Annotated[str | None, Query()] = None,
 ):
     """Start OAuth flow for an email provider.
 
@@ -78,6 +109,10 @@ async def oauth_authorize(
     else (``user_management_contract.md`` R11). With either one missing, the
     route refuses with 403. The ``user_email`` query fallback and the
     ``anonymous`` member are gone (EM-T1a).
+
+    The URL carries ``login_hint``, by default the email of the session. A
+    ``login_hint`` query replaces it only when it parses as an address, and
+    a malformed one is dropped (EM-T3a item 3).
     """
     if not user.organization_id or not user.email:
         raise HTTPException(
@@ -111,74 +146,34 @@ async def oauth_authorize(
             detail="The connect request is too long or malformed.",
         ) from None
 
+    hint = _login_hint(login_hint) or _login_hint(user.email)
+    app = oauth_app(provider)
+    if not app.client_id:
+        raise HTTPException(status_code=400, detail=_NOT_CONFIGURED[provider])
+    params = {
+        "client_id": app.client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
     if provider == "gmail":
-        settings = get_settings()
-        client_id = settings.gmail_oauth_client_id or os.environ.get("GMAIL_OAUTH_CLIENT_ID", "")
-        if not client_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Gmail OAuth is not configured. Go to Integrations → APIs → "
-                    "'Gmail OAuth' and enter your Google Cloud OAuth client ID "
-                    "and secret. Instructions are provided there."
-                ),
-            )
-        auth_url = (
-            "https://accounts.google.com/o/oauth2/v2/auth"
-            f"?client_id={client_id}"
-            "&response_type=code"
-            "&scope=https://mail.google.com/"
-            f"&redirect_uri={redirect_uri}"
-            f"&state={state}"
-            "&access_type=offline"
-            "&prompt=consent"
-        )
-    elif provider == "microsoft":
-        settings = get_settings()
-        # Prefer dedicated email OAuth creds; fall back to sign-in auth creds (shared app registration)
-        client_id = (
-            settings.msft_oauth_client_id
-            or os.environ.get("MSFT_OAUTH_CLIENT_ID", "")
-            or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_ID", "")
-        )
-        # Tenant ID: use MICROSOFT_TENANT_ID (or AUTH_MICROSOFT_ENTRA_ID_TENANT /
-        # AUTH_MICROSOFT_TENANT_ID) for single-tenant apps. Falls back to
-        # 'common' for multi-tenant apps.
-        tenant_id = (
-            os.environ.get("MICROSOFT_TENANT_ID", "")
-            or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_TENANT", "")
-            or os.environ.get("AUTH_MICROSOFT_TENANT_ID", "")
-            or "common"
-        )
-        if not client_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Microsoft OAuth is not configured. Go to Integrations → APIs → "
-                    "'Microsoft OAuth' and enter your Azure App client ID "
-                    "and secret. Instructions are provided there."
-                ),
-            )
-        auth_url = (
-            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
-            f"?client_id={client_id}"
-            "&response_type=code"
-            "&scope=offline_access+https://graph.microsoft.com/Mail.ReadWrite"
-            "+https://graph.microsoft.com/Mail.Send"
-            "+https://graph.microsoft.com/User.Read"
-            # Required to create/manage Outlook master categories (coloured
-            # labels). Without it /me/outlook/masterCategories 403s and a rule's
-            # new label is only tagged on the message, never created as a real
-            # category. (inbox-zero requests the same scope.)
-            "+https://graph.microsoft.com/MailboxSettings.ReadWrite"
-            f"&redirect_uri={redirect_uri}"
-            f"&state={state}"
-        )
-    else:  # pragma: no cover — refused above, before the state is signed
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider: {provider}"
-        )
+        base = "https://accounts.google.com/o/oauth2/v2/auth"
+        params.update({
+            "scope": " ".join(GMAIL_SCOPES),
+            "access_type": "offline",
+            "prompt": "consent",
+        })
+    else:
+        # The authority is always `common`, so a sign-in tenant cannot make
+        # mail single-tenant (EM-T3a item 2). The scopes are the ones the
+        # provider asks for on refresh, so the two legs cannot drift.
+        base = f"{MICROSOFT_OAUTH_BASE}/authorize"
+        params["scope"] = " ".join(GRAPH_SCOPES)
+    if hint:
+        # A hint, never an identity: the callback still binds the member of
+        # the session. No `prompt=select_account` (EM-T3a item 3).
+        params["login_hint"] = hint
+    auth_url = f"{base}?{urlencode(params)}"
 
     # ⚠️ No `response_mode=form_post`. The provider would then POST the code
     # cross-site, and the browser drops the Lax session cookie on that POST, so
@@ -193,6 +188,7 @@ async def oauth_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
+    error_description: Annotated[str | None, Query()] = None,
 ):
     """Handle OAuth callback — exchange code for tokens and redirect to workbench.
 
@@ -223,8 +219,10 @@ async def oauth_callback(
     if not code:
         # The provider refused (for example, the tenant of the customer needs
         # admin consent) and sent `error` with no `code`. Show the callback
-        # page, never a raw 422. EM-T3 owns the guided page for admin consent.
-        return _bounce(_provider_error_reason(error) if error else "invalid_state")
+        # page, never a raw 422. EM-T3b owns the guided page for admin consent.
+        if not error:
+            return _bounce("invalid_state")
+        return _bounce(_consent_error_reason(error, error_description))
 
     claims = await _verified_claims(provider, state, user)
     if claims is None:
@@ -253,12 +251,8 @@ async def oauth_callback(
         _log.error("Failed to get provider email: %s", exc)
         return _bounce("email_fetch_failed")
 
-    # Persist the OAuth *app* credentials (client_id/secret, tenant) alongside
-    # the user's tokens.  Without these the provider cannot refresh the access
-    # token once it expires (~1h) and all sync/folder/message calls start
-    # failing with "authentication failed".
-    token_data.update(_provider_oauth_app_creds(provider))
-
+    # The blob holds the tokens of the member and nothing else. The providers
+    # read the app credentials from settings at refresh (EM-T3a item 1).
     # Store in encrypted DB
     from acb_llm.key_store import get_key_store
     store = get_key_store()
@@ -309,6 +303,34 @@ def _provider_error_reason(error: str) -> str:
     """
     raw = error.strip().lower()
     return raw if _PROVIDER_ERROR.match(raw) else "provider_error"
+
+
+def _consent_error_reason(error: str, error_description: str | None) -> str:
+    """The reason the callback page shows for a refusal (EM-T3a item 4).
+
+    Only an ``AADSTS`` code is read from ``error_description``. The text
+    itself is never echoed. An admin-consent code wins over ``error``. A
+    declined consent, or ``access_denied`` with no known code, reads as
+    ``consent_declined``. Every other error goes through
+    :func:`_provider_error_reason`.
+    """
+    match = _AADSTS_CODE.search(error_description or "")
+    code = match.group(1) if match else None
+    if code in _ADMIN_CONSENT_CODES:
+        return "admin_consent_required"
+    if code in _DECLINED_CODES:
+        return "consent_declined"
+    if error.strip().lower() == "access_denied":
+        return "consent_declined"
+    return _provider_error_reason(error)
+
+
+def _login_hint(value: str | None) -> str | None:
+    """``value`` when it parses as one address, else ``None``."""
+    hint = (value or "").strip()
+    if len(hint) > 254 or not _EMAIL_ADDRESS.match(hint):
+        return None
+    return hint
 
 
 async def _verified_claims(
@@ -445,48 +467,15 @@ def _build_redirect_uri(provider: str) -> str:
     return f"{_workbench_public_url()}/api/email/oauth/{provider}/callback"
 
 
-def _provider_oauth_app_creds(provider: str) -> dict[str, str]:
-    """Resolve the OAuth *app* credentials (client id/secret, tenant) for a provider.
-
-    These must be stored alongside the user's tokens so the provider can refresh
-    the access token later — Microsoft/Google access tokens expire in ~1 hour and
-    a refresh requires the client_id/client_secret used at authorize time.
-    """
-    settings = get_settings()
-    if provider == "gmail":
-        return {
-            "client_id": settings.gmail_oauth_client_id
-            or os.environ.get("GMAIL_OAUTH_CLIENT_ID", ""),
-            "client_secret": settings.gmail_oauth_client_secret
-            or os.environ.get("GMAIL_OAUTH_CLIENT_SECRET", ""),
-        }
-    if provider == "microsoft":
-        return {
-            "client_id": settings.msft_oauth_client_id
-            or os.environ.get("MSFT_OAUTH_CLIENT_ID", "")
-            or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_ID", ""),
-            "client_secret": settings.msft_oauth_client_secret
-            or os.environ.get("MSFT_OAUTH_CLIENT_SECRET", "")
-            or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_SECRET", ""),
-            "tenant_id": os.environ.get("MICROSOFT_TENANT_ID", "")
-            or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_TENANT", "")
-            or os.environ.get("AUTH_MICROSOFT_TENANT_ID", "")
-            or "common",
-        }
-    return {}
-
-
 async def _exchange_gmail_token(code: str, redirect_uri: str) -> dict[str, Any]:
     """Exchange authorization code for Gmail OAuth tokens."""
-    settings = get_settings()
-    client_id = settings.gmail_oauth_client_id or os.environ.get("GMAIL_OAUTH_CLIENT_ID", "")
-    client_secret = settings.gmail_oauth_client_secret or os.environ.get("GMAIL_OAUTH_CLIENT_SECRET", "")
+    app = oauth_app("gmail")
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://oauth2.googleapis.com/token",
             data={
-                "client_id": client_id,
-                "client_secret": client_secret,
+                "client_id": app.client_id,
+                "client_secret": app.client_secret,
                 "code": code,
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
@@ -497,34 +486,17 @@ async def _exchange_gmail_token(code: str, redirect_uri: str) -> dict[str, Any]:
 
 
 async def _exchange_msft_token(code: str, redirect_uri: str) -> dict[str, Any]:
-    """Exchange authorization code for Microsoft OAuth tokens."""
-    settings = get_settings()
-    # Prefer dedicated email OAuth creds; fall back to sign-in auth creds (shared app registration)
-    client_id = (
-        settings.msft_oauth_client_id
-        or os.environ.get("MSFT_OAUTH_CLIENT_ID", "")
-        or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_ID", "")
-    )
-    client_secret = (
-        settings.msft_oauth_client_secret
-        or os.environ.get("MSFT_OAUTH_CLIENT_SECRET", "")
-        or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_SECRET", "")
-    )
-    # Tenant ID: use MICROSOFT_TENANT_ID (or AUTH_MICROSOFT_ENTRA_ID_TENANT /
-    # AUTH_MICROSOFT_TENANT_ID) for single-tenant apps. Falls back to
-    # 'common' for multi-tenant apps.
-    tenant_id = (
-        os.environ.get("MICROSOFT_TENANT_ID", "")
-        or os.environ.get("AUTH_MICROSOFT_ENTRA_ID_TENANT", "")
-        or os.environ.get("AUTH_MICROSOFT_TENANT_ID", "")
-        or "common"
-    )
+    """Exchange authorization code for Microsoft OAuth tokens.
+
+    The authority is ``common``, the same one the authorize leg used.
+    """
+    app = oauth_app("microsoft")
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+            f"{MICROSOFT_OAUTH_BASE}/token",
             data={
-                "client_id": client_id,
-                "client_secret": client_secret,
+                "client_id": app.client_id,
+                "client_secret": app.client_secret,
                 "code": code,
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",

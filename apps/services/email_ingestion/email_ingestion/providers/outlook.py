@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from .app_credentials import MICROSOFT_OAUTH_BASE, OAuthApp, token_fields
 from .base import (
     Attachment,
     BaseEmailProvider,
@@ -89,13 +90,15 @@ GRAPH_SCOPES = [
 class OutlookProvider(BaseEmailProvider):
     """Microsoft Graph API email provider."""
 
-    def __init__(self, credentials: dict[str, Any]):
+    def __init__(
+        self, credentials: dict[str, Any], *, app: OAuthApp | None = None,
+    ):
         super().__init__(credentials)
         self._access_token: str | None = credentials.get("access_token")
         self._refresh_token: str | None = credentials.get("refresh_token")
-        self._client_id: str | None = credentials.get("client_id")
-        self._client_secret: str | None = credentials.get("client_secret")
-        self._tenant_id: str = credentials.get("tenant_id", "common")
+        # The app credentials come from settings through the factory, never
+        # from the blob (EM-T3a item 1). With none, a refresh fails closed.
+        self._app: OAuthApp = app or OAuthApp()
         self._http: httpx.AsyncClient | None = None
         self._creds_dirty = False
         # Lower-cased master-category names, fetched once per provider instance.
@@ -109,9 +112,13 @@ class OutlookProvider(BaseEmailProvider):
         return self._creds_dirty
 
     def export_credentials(self) -> dict[str, Any]:
-        """Return credentials with the latest (possibly refreshed) tokens."""
+        """Return the token fields with the latest (possibly refreshed) tokens.
+
+        No app credential is written, so the next token write removes one
+        that an old callback left in the blob (EM-T3a item 1).
+        """
         return {
-            **self.credentials,
+            **token_fields(self.credentials),
             "access_token": self._access_token,
             "refresh_token": self._refresh_token,
         }
@@ -174,18 +181,20 @@ class OutlookProvider(BaseEmailProvider):
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token."""
-        if not self._refresh_token or not self._client_id or not self._client_secret:
+        if not self._refresh_token:
             raise ValueError("Missing OAuth credentials for token refresh")
+        if not self._app.configured:
+            raise ValueError(
+                "Microsoft OAuth app credentials are not configured "
+                "(MSFT_OAUTH_CLIENT_ID and MSFT_OAUTH_CLIENT_SECRET)"
+            )
 
-        token_url = (
-            f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
-        )
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                token_url,
+                f"{MICROSOFT_OAUTH_BASE}/token",
                 data={
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
+                    "client_id": self._app.client_id,
+                    "client_secret": self._app.client_secret,
                     "refresh_token": self._refresh_token,
                     "grant_type": "refresh_token",
                     "scope": " ".join(GRAPH_SCOPES),
