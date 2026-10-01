@@ -1101,6 +1101,35 @@ def _split_backfill_rows(
     return sent_threads, gap_inbound, filed_rows
 
 
+async def _write_filed_fyi(account_id: str, filed_rows: list[Any]) -> None:
+    """The filed phase of the Reply Zero backfill: one block that writes every
+    filed thread as FYI. Its failure is logged and stays HERE, so the sent
+    threads that come after it still run (EM-T1b-2 fix round 1)."""
+    if not filed_rows:
+        return
+    try:
+        async with _tenant_session() as db:
+            for r in filed_rows:
+                # Inbound-last, but the user already FILED it (archived, or
+                # moved to one of their own folders). Filing it is the answer:
+                # they dealt with it, so it is FYI and stays out of the Reply
+                # view.
+                #
+                # Deterministic on purpose. These are the bulk of an old
+                # mailbox — 2,622 of 3,191 unclassified threads on the live
+                # account — and spending a model call apiece to re-litigate
+                # mail the user has already put away is exactly the token
+                # waste this pipeline was asked to stop. preserve_done keeps an
+                # explicit Done intact.
+                await _upsert_thread_status(
+                    db, account_id, r.thread_id, "FYI", r.id, r.received_at,
+                    "Filed without a reply — treated as handled.",
+                    preserve_done=True)
+    except Exception as exc:
+        _log.warning("email.classify_filed_failed", account_id=account_id,
+                     error=str(exc)[:200])
+
+
 async def _maybe_classify_threads(account_id: str) -> None:
     """Reply Zero BACKFILL: fill in per-thread status for threads the live rules
     pipeline hasn't classified yet — historical mail, accounts with auto-apply
@@ -1201,24 +1230,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
         sent_threads, gap_inbound, filed_rows = _split_backfill_rows(
             rows, existing)
 
-        if filed_rows:
-            async with _tenant_session() as db:
-                for r in filed_rows:
-                    # Inbound-last, but the user already FILED it (archived, or
-                    # moved to one of their own folders). Filing it is the
-                    # answer: they dealt with it, so it is FYI and stays out of
-                    # the Reply view.
-                    #
-                    # Deterministic on purpose. These are the bulk of an old
-                    # mailbox — 2,622 of 3,191 unclassified threads on the live
-                    # account — and spending a model call apiece to re-litigate
-                    # mail the user has already put away is exactly the token
-                    # waste this pipeline was asked to stop. preserve_done keeps
-                    # an explicit Done intact.
-                    await _upsert_thread_status(
-                        db, account_id, r.thread_id, "FYI", r.id, r.received_at,
-                        "Filed without a reply — treated as handled.",
-                        preserve_done=True)
+        # Its own phase with its own handler: a failed filed write must not
+        # skip the sent threads of this cycle.
+        await _write_filed_fyi(account_id, filed_rows)
 
         for tid in sent_threads:
             # NO session of ours is open here. `_mark_thread_replied` opens its

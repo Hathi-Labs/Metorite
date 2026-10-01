@@ -662,6 +662,8 @@ The R8 tests must show PASSED, not SKIPPED. A skip means that the database is no
 `tests/unit/test_email_scheduler_tenancy.py`, with R8 cases for the sweep, the sync core and
 `mailbox_owner`. 🟡 **EM-T1b-2 is BUILT, not merged** (2026-10-01). The ten functions open `_tenant_session()` in phases and call no `commit()`. The new fence is `tests/unit/test_email_automation_tenancy.py`. It holds the AST fence over the ten, the case with no tenant, the BackgroundTask case and the five R8 families. `H2_BASELINE_ELSEWHERE` is now 92.
 
+**Fix round 1 (2026-10-01).** The cleanup sweep calls the provider half of `apply_label` (`push_label`) with no session open. Each item then writes its mirror and its audit row in its own block. A best-effort write that swallows its own failure now runs inside `_savepoint` (`routes/email/core.py`), so the failure rolls back only the savepoint and the block goes on. This covers the Reply Zero projection of the runner, the label mirror and the body hydrate of the follow-ups, `hydrate_message_body` and `_revert_unreconciled`. A failed filed write of the Reply Zero backfill no longer skips its sent threads. The fences are in `test_email_automation_tenancy.py`.
+
 **Owner.** This slice IS WS-29 H4 slice 6b for the email scheduler and pipeline
 (`saas_multitenancy_handover.md`). This spec owns it from 2026-10-01.
 
@@ -814,7 +816,7 @@ The R8 tests must show PASSED, not SKIPPED.
 **Risks.** The shared pool holds 8 sessions plus 4 overflow per process. A deep backfill that
 holds one session across Graph I/O can starve the requests. The phase split of item 6 makes this
 risk smaller, but it does not remove it. Phases (b) and (c) hold no session across the sync fetch.
-Two sessions still stay open across external I/O, and EM-T4 owns both:
+The ten automation jobs of EM-T1b-2 also keep some I/O inside a block: the model call of each runner and backfill row, `bulk_apply`, the digest send and the follow-up draft. EM-T4 owns these too. Two sessions of the sync core still stay open across external I/O, and EM-T4 owns both:
 
 - Phase (e) holds its session across the Graph calls of `backfill_missing_bodies`.
 - Phase (f) holds its session across `litellm.aembedding` in `embed_pending_messages`.

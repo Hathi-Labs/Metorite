@@ -31,6 +31,8 @@ from gateway.routes.email.automation.actions import (  # noqa: F401
     _rule_label_values,
     apply_label,
     correct_applied_labels,
+    mirror_label,
+    push_label,
     remove_label,
 )
 from gateway.routes.email.automation.identity import resolve_org_domains
@@ -54,6 +56,7 @@ from gateway.routes.email.core import (
     _parse_iso_date,
     _persist_rotated_creds,
     _provider_for_account,
+    _savepoint,
     router,
 )
 from pydantic import BaseModel
@@ -1677,21 +1680,24 @@ async def _run_rules_job(
                 if not dry_run and r.thread_id \
                         and r.thread_id not in projected_threads:
                     projected_threads.add(r.thread_id)
+                    # The savepoint keeps a failed projection from aborting the
+                    # row block, so the watermark stamp below still lands.
                     try:
                         from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
                             _reconcile_thread_labels,
                             project_reply_status_from_matches,
                         )
-                        keep_label = await project_reply_status_from_matches(
-                            db, account_id, r, matches)
-                        # Collapse the thread to that one conversation label,
-                        # clearing any stale Reply / Awaiting / FYI / Follow-up
-                        # left on earlier messages (inbox-zero mutually-
-                        # exclusive labels).
-                        if keep_label and provider is not None:
-                            await _reconcile_thread_labels(
-                                db, provider, account_id, r.thread_id,
-                                keep_label)
+                        async with _savepoint(db):
+                            keep_label = await project_reply_status_from_matches(
+                                db, account_id, r, matches)
+                            # Collapse the thread to that one conversation
+                            # label, clearing any stale Reply / Awaiting / FYI /
+                            # Follow-up left on earlier messages (inbox-zero
+                            # mutually-exclusive labels).
+                            if keep_label and provider is not None:
+                                await _reconcile_thread_labels(
+                                    db, provider, account_id, r.thread_id,
+                                    keep_label)
                     except Exception as exc:  # noqa: BLE001
                         _log.warning("email.project_reply_status_failed",
                                      account_id=account_id,

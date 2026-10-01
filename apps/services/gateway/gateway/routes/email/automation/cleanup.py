@@ -584,7 +584,8 @@ async def sweep_uncategorized(
             return summary
 
         from gateway.routes.email.automation.runner import (  # noqa: PLC0415
-            apply_label,
+            mirror_label,
+            push_label,
         )
         applied = 0
         offset = 0
@@ -625,10 +626,13 @@ async def sweep_uncategorized(
                     # The per-item try wraps the per-item block, so a failed
                     # item rolls back its own block and never commits.
                     try:
+                        # The provider call runs with NO session open (R-b).
+                        # It goes first, as `apply_label` orders it, so a
+                        # provider failure writes nothing to the database.
+                        lbl = await push_label(
+                            provider, str(r.id), r.provider_message_id, cat)
                         async with _tenant_session() as db:
-                            await apply_label(
-                                db, provider, str(r.id), r.provider_message_id,
-                                cat)
+                            await mirror_label(db, str(r.id), lbl)
                             frm = (r.from_address
                                    if isinstance(r.from_address, dict) else {})
                             await db.execute(text(

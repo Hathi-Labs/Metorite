@@ -338,6 +338,29 @@ async def provider_session(
             await _persist_rotated_creds(db, sess.store, sess.account_id, provider)
 
 
+@asynccontextmanager
+async def _savepoint(db: Any):
+    """A SAVEPOINT around one best-effort write inside a ``_tenant_session``
+    block (EM-T1b-2 fix round 1).
+
+    A caller that swallows a failed statement leaves the transaction aborted,
+    and the seam then commits an aborted transaction: every write of the block
+    is lost in silence. Inside a savepoint, the failure rolls back only the
+    savepoint, and the block goes on. ``ROLLBACK TO SAVEPOINT`` keeps the
+    ``SET LOCAL`` tenant that the seam set before the savepoint.
+
+    Only a real ``AsyncSession`` gets a savepoint. A hermetic test double runs
+    the body as it is, because it has no transaction to abort.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    if isinstance(db, AsyncSession):
+        async with db.begin_nested():
+            yield
+    else:
+        yield
+
+
 async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str:
     """Ensure a message's full ``body_text`` is present, fetching it if needed.
 
@@ -364,7 +387,9 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         return row.body_text  # already hydrated
     # Header-only row: fetch the full body from the provider and persist it.
     try:
-        async with provider_session(
+        # The savepoint covers the UPDATE and the creds persist on exit, so a
+        # failed write here never aborts the caller's transaction.
+        async with _savepoint(db), provider_session(
             db, user_email, message_id=message_id, require_auth=False,
         ) as sess:
             if not sess.authed:

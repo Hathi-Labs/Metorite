@@ -724,3 +724,312 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
         assert reminded is not None, "follow_up_reminded_at did not land in B"
         _isolated(p, "email_assistant_settings", acc, expect_b=1)
         _isolated(p, "email_thread_status", acc, expect_b=1)
+
+
+# ── fix round 1: hermetic ───────────────────────────────────────────────────
+
+
+def _open_count_session(state: dict, db):
+    """A ``_tenant_session`` double that counts the blocks open right now."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _ts():
+        state["open"] += 1
+        try:
+            yield db
+        finally:
+            state["open"] -= 1
+    return _ts
+
+
+async def test_the_sweep_holds_no_session_across_set_labels(monkeypatch):
+    """R-b. The provider label call of each swept message runs with NO
+    session open. Each item then writes the mirror and the audit row in its
+    own block, so no pooled connection sits `idle in transaction` across Graph
+    I/O."""
+    from types import SimpleNamespace
+
+    state = {"open": 0}
+    seen: list[int] = []
+    writes: list[str] = []
+
+    class _Db:
+        async def execute(self, clause, params=None):
+            writes.append(str(clause).split()[0])
+
+    class _Provider:
+        async def authenticate(self):
+            return True
+
+        async def set_labels(self, pmid, add=None, remove=None):
+            seen.append(state["open"])
+
+        def credentials_dirty(self):
+            return False
+
+    rows = [SimpleNamespace(id=f"m{i}", provider_message_id=f"p-m{i}",
+                            subject="Hi", received_at=None,
+                            from_address={"email": "news@site.com"})
+            for i in (1, 2)]
+
+    async def _page(db, aid, limit, offset=0, internal=frozenset()):
+        return rows if offset == 0 else []
+
+    provider = _Provider()
+    monkeypatch.setattr(cleanup_mod, "_tenant_session",
+                        _open_count_session(state, _Db()))
+    monkeypatch.setattr(cleanup_mod, "_provider_for_account_any",
+                        AsyncMock(return_value=(provider, None, "o@x.test")))
+    monkeypatch.setattr(cleanup_mod, "_uncategorized_inbox", _page)
+    monkeypatch.setattr(cleanup_mod, "_load_rule_patterns",
+                        AsyncMock(return_value={}))
+    monkeypatch.setattr(cleanup_mod, "_rule_label_by_id",
+                        AsyncMock(return_value={}))
+    monkeypatch.setattr(cleanup_mod, "_label_tallies", AsyncMock(
+        return_value=({"news@site.com": {"Newsletter": 6}}, {})))
+    monkeypatch.setattr(cleanup_mod, "_internal_domains",
+                        AsyncMock(return_value=frozenset()))
+    res = await cleanup_mod.sweep_uncategorized(
+        "acc-1", 100, dry_run=False, owner="scheduler")
+
+    assert res["categorized"] == 2 and res["failed"] == 0, res
+    assert seen == [0, 0], f"a session was open during set_labels: {seen}"
+    assert writes.count("UPDATE") == 2 and writes.count("INSERT") == 2
+
+
+async def test_a_failed_filed_write_does_not_skip_the_sent_threads(monkeypatch):
+    """The filed phase has its own handler. One failed FYI write must not
+    skip the `_mark_thread_replied` calls of the same cycle."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    def _row(tid, folder):
+        return SimpleNamespace(
+            thread_id=tid, id=f"m-{tid}", subject="S",
+            from_address={"email": "a@b.test"}, to_addresses=[],
+            cc_addresses=[], body_text="", snippet="", folder=folder,
+            received_at=None)
+
+    def _res(*, one=None, many=None):
+        r = MagicMock()
+        r.fetchone.return_value = one
+        r.fetchall.return_value = many or []
+        return r
+
+    db = AsyncMock()
+    db.execute.side_effect = [
+        _res(many=[_row("t-filed", "archive"), _row("t-sent", "sent")]),
+        _res(many=[]),
+        _res(one=SimpleNamespace(email_address="me@x.test")),
+        _res(one=None),
+    ]
+    from tests.unit._email_fakes import bind_db
+
+    mark = AsyncMock()
+    monkeypatch.setattr(replyzero_mod, "_tenant_session", bind_db(db))
+    monkeypatch.setattr(replyzero_mod, "_load_assistant_about",
+                        AsyncMock(return_value=("", "")))
+    monkeypatch.setattr(replyzero_mod, "_upsert_thread_status",
+                        AsyncMock(side_effect=RuntimeError("db blip")))
+    monkeypatch.setattr(replyzero_mod, "_mark_thread_replied", mark)
+    await replyzero_mod._maybe_classify_threads("acc-1")
+    mark.assert_awaited_once_with("acc-1", "t-sent")
+
+
+async def test_the_session_double_rolls_back_a_block_that_raised():
+    """`bind_db` mirrors the real seam: a block that raised commits nothing
+    and awaits the fake's `rollback`, so a hermetic test cannot read an
+    aborted block as committed."""
+    from tests.unit._email_fakes import bind_db
+
+    db = AsyncMock()
+    session = bind_db(db)
+    with pytest.raises(RuntimeError):
+        async with session():
+            raise RuntimeError("statement failed")
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
+    assert session.rolled_back == [1]
+    async with session():
+        pass
+    db.commit.assert_awaited_once()
+
+
+# ── fix round 1: R8 ─────────────────────────────────────────────────────────
+
+
+@_DB_GATE
+class TestFixRoundOne:
+
+    async def test_a_savepoint_rollback_keeps_the_tenant(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """`ROLLBACK TO SAVEPOINT` keeps the `SET LOCAL` tenant that the seam
+        set before the savepoint, on the real seam as the non-owner role."""
+        from gateway.routes.email.core import _savepoint
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn),                 common_db.tenant_session(p.org_b) as db:
+            with pytest.raises(Exception):  # noqa: B017
+                async with _savepoint(db):
+                    await db.execute(text("SELECT 1/0"))
+            after = (await db.execute(text(
+                "SELECT current_setting('app.tenant_id', true)"))).scalar()
+        assert after == p.org_b
+
+    async def test_one_failed_item_leaves_the_other_items_of_the_sweep(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Per-item isolation. Item 2's block fails on a REAL statement. Item 1
+        still persists, and the counts are honest. If the items shared one
+        block, the failure would abort it and item 1 would be lost."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        mids = [
+            _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                          sender="news@shop-em-t1b2.test",
+                          unsubscribe="https://shop-em-t1b2.test/unsub",
+                          received_at=datetime.now(UTC) - timedelta(minutes=i))
+            for i in range(2)
+        ]
+        real_mirror = runner_mod.mirror_label
+
+        async def _mirror(db, message_id, lbl):
+            if message_id == mids[1]:
+                await db.execute(text("SELECT 1/0"))
+            await real_mirror(db, message_id, lbl)
+
+        _patch_providers(monkeypatch, _FakeProvider())
+        monkeypatch.setattr(runner_mod, "mirror_label", _mirror)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                res = await cleanup_mod.sweep_uncategorized(
+                    acc, 100, dry_run=False, owner="scheduler", max_apply=100)
+
+        assert res["categorized"] == 1 and res["failed"] == 1, res
+        logged = _rows(p.admin_engine,
+                       "SELECT message_id::text AS mid FROM "
+                       f"email_executed_rules {_BY_ACCOUNT}", {"a": acc})
+        assert [r["mid"] for r in logged] == [mids[0]], logged
+        cats = {r["id"]: r["categories"] for r in _rows(
+            p.admin_engine,
+            f"SELECT id::text AS id, categories FROM email_messages {_BY_ACCOUNT}",
+            {"a": acc})}
+        assert "Newsletter" in cats[mids[0]]
+        assert "Newsletter" not in cats[mids[1]]
+        _isolated(p, "email_executed_rules", acc, expect_b=1)
+
+    async def test_a_failed_send_leaves_last_digest_at_and_a_good_one_stamps(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The stamp lands only when the send returned. A stamp in a block of
+        its own before the send would land on a failed send."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_settings(p.admin_engine, org=p.org_b, account_id=acc,
+                       digest_frequency="DAILY", digest_time_of_day="00:00")
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                      sender="new@ext-em-t1b2.test")
+
+        class _SendFails(_FakeProvider):
+            async def send_message(self, **_kw):
+                raise RuntimeError("Graph 503")
+
+        stamp_sql = ("SELECT last_digest_at FROM email_assistant_settings "
+                     f"{_BY_ACCOUNT}")
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                _patch_providers(monkeypatch, _SendFails())
+                await digest_mod._maybe_send_digest(acc)
+                assert _scalar(p.admin_engine, stamp_sql, {"a": acc}) is None, (
+                    "a failed send stamped last_digest_at"
+                )
+                good = _FakeProvider()
+                _patch_providers(monkeypatch, good)
+                await digest_mod._maybe_send_digest(acc)
+        assert good.calls.count("send_message") == 1
+        assert _scalar(p.admin_engine, stamp_sql, {"a": acc}) is not None
+
+    async def test_a_failed_projection_keeps_the_runner_stamp_in_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The Reply Zero projection fails on a REAL statement inside the row
+        block. Its savepoint rolls back, and `rules_processed_at` still lands
+        in B. Without the savepoint the stamp fails on the aborted block."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                            thread_id=f"t-proj-{acc}")
+
+        async def _projection_fails(db, *_a, **_k):
+            await db.execute(text("SELECT 1/0"))
+
+        _patch_providers(monkeypatch, _FakeProvider())
+        monkeypatch.setattr(runner_mod, "classify_matches",
+                            AsyncMock(return_value=[]))
+        monkeypatch.setattr(replyzero_mod, "project_reply_status_from_matches",
+                            _projection_fails)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+
+        stamped = _scalar(p.admin_engine,
+                          "SELECT rules_processed_at FROM email_messages "
+                          "WHERE id = CAST(:m AS uuid)", {"m": mid})
+        assert stamped is not None, (
+            "the failed projection aborted the row block, so the stamp was lost"
+        )
+        _isolated(p, "email_executed_rules", acc, expect_b=1)
+
+    async def test_a_failed_label_mirror_keeps_the_reminder_stamp_in_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The follow-up label mirror fails on a REAL statement: a NUL byte in
+        the label, which Postgres refuses in `text`. The savepoint rolls it
+        back, and `follow_up_reminded_at` still lands in B."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_settings(p.admin_engine, org=p.org_b, account_id=acc,
+                       follow_up_awaiting_days=1, follow_up_auto_draft=False)
+        thread = f"t-nul-{acc}"
+        sent_mid = _seed_message(
+            p.admin_engine, org=p.org_b, account_id=acc, folder="sent",
+            sender="b@em-t1b2.test", thread_id=thread,
+            received_at=datetime.now(UTC) - timedelta(days=5))
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_thread_status (account_id, thread_id, "
+                "status, last_message_id, last_message_at, reason, "
+                "organization_id) VALUES (CAST(:a AS uuid), :t, 'AWAITING', "
+                "CAST(:m AS uuid), :at, 'seed', CAST(:o AS uuid))"),
+                {"a": acc, "t": thread, "m": sent_mid,
+                 "at": datetime.now(UTC) - timedelta(days=5), "o": p.org_b})
+        _patch_providers(monkeypatch, _FakeProvider())
+        monkeypatch.setattr(followups_mod, "_FOLLOW_UP_LABEL",
+                            "Follow-up" + chr(0))
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                result = await followups_mod._maybe_send_follow_up_reminders(acc)
+
+        assert result["scanned"] == 1, result
+        reminded = _scalar(p.admin_engine,
+                           "SELECT follow_up_reminded_at FROM "
+                           f"email_thread_status {_BY_ACCOUNT}", {"a": acc})
+        assert reminded is not None, (
+            "the failed label mirror aborted the block, so the stamp was lost"
+        )
+        cats = _scalar(p.admin_engine,
+                       "SELECT categories FROM email_messages "
+                       "WHERE id = CAST(:m AS uuid)", {"m": sent_mid})
+        assert not any("Follow-up" in c for c in cats)

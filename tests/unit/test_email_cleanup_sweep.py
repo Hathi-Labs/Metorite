@@ -15,6 +15,19 @@ from gateway.routes.email.automation import cleanup as c
 from tests.unit._email_fakes import bind_db
 
 
+def _as_push(fake_apply):
+    """Adapt an ``apply_label``-shaped fake to the sweep's ``push_label`` seam.
+
+    Since EM-T1b-2 fix round 1 the sweep calls the provider half
+    (``push_label``) with no session open, then mirrors in its own block. The
+    fake runs where the provider call runs, and a raise there still means
+    "nothing written"."""
+    async def _push(provider, mid, pmid, label):
+        await fake_apply(None, provider, mid, pmid, label)
+        return label
+    return _push
+
+
 def _msg(sender, subject="Hi", mid="m1"):
     return SimpleNamespace(
         id=mid, provider_message_id=f"p-{mid}", subject=subject,
@@ -277,7 +290,7 @@ async def test_sweep_pages_until_the_mailbox_runs_dry() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", fake_apply):
+            patch.object(runner, "push_label", _as_push(fake_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     # All five were scanned, each exactly once — no skips, no re-reads.
@@ -328,7 +341,7 @@ async def test_live_sweep_aborts_when_provider_auth_fails() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", fake_apply):
+            patch.object(runner, "push_label", _as_push(fake_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     assert res.get("error") == "provider authentication failed"
@@ -376,7 +389,7 @@ async def test_a_failed_apply_is_counted_not_swallowed() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", flaky_apply):
+            patch.object(runner, "push_label", _as_push(flaky_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     assert res["categorized"] == 1        # only m1 landed

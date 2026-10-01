@@ -30,6 +30,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     _llm_json,
     _log,
+    _savepoint,
     provider_session,
     router,
 )
@@ -544,12 +545,15 @@ async def _revert_unreconciled(
     alone rather than fighting a user who has since changed them by hand."""
     if action not in ("archive", "trash") or not provider_msg_ids:
         return
+    # A savepoint, because the failure is swallowed: without it the caller's
+    # block stays aborted and loses the re-key writes made before this one.
     with contextlib.suppress(Exception):
-        await db.execute(text(
-            "UPDATE email_messages SET folder = 'inbox', updated_at = now() "
-            "WHERE account_id = :aid AND provider_message_id = ANY(:pmids) "
-            f"AND LOWER(COALESCE(folder, '')) = '{action}'"
-        ), {"aid": account_id, "pmids": provider_msg_ids})
+        async with _savepoint(db):
+            await db.execute(text(
+                "UPDATE email_messages SET folder = 'inbox', updated_at = now() "
+                "WHERE account_id = :aid AND provider_message_id = ANY(:pmids) "
+                f"AND LOWER(COALESCE(folder, '')) = '{action}'"
+            ), {"aid": account_id, "pmids": provider_msg_ids})
 
 
 async def _maybe_auto_archive(account_id: str) -> None:

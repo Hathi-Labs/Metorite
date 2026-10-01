@@ -28,6 +28,7 @@ from gateway.routes.email.core import (
     _instantiate_provider,
     _log,
     _persist_rotated_creds,
+    _savepoint,
     router,
 )
 from pydantic import BaseModel
@@ -179,13 +180,17 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                 # best-effort on top.
                 labeled_ok = False
                 if r.last_message_id:
+                    # A savepoint, because the failure is swallowed: without it
+                    # the block stays aborted and the reminder stamp below is
+                    # lost with it.
                     with contextlib.suppress(Exception):
-                        await db.execute(text(
-                            "UPDATE email_messages SET categories = CASE "
-                            "WHEN :lbl = ANY(categories) THEN categories "
-                            "ELSE array_append(categories, :lbl) END, "
-                            "updated_at = now() WHERE id = :id"
-                        ), {"id": r.last_message_id, "lbl": _FOLLOW_UP_LABEL})
+                        async with _savepoint(db):
+                            await db.execute(text(
+                                "UPDATE email_messages SET categories = CASE "
+                                "WHEN :lbl = ANY(categories) THEN categories "
+                                "ELSE array_append(categories, :lbl) END, "
+                                "updated_at = now() WHERE id = :id"
+                            ), {"id": r.last_message_id, "lbl": _FOLLOW_UP_LABEL})
                         labeled_ok = True
                 with contextlib.suppress(Exception):
                     await provider.set_labels(
@@ -211,8 +216,10 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                             hb = ""
                             if r.last_message_id:
                                 with contextlib.suppress(Exception):
-                                    hb = await hydrate_message_body(
-                                        db, str(r.last_message_id), acc.user_id)
+                                    async with _savepoint(db):
+                                        hb = await hydrate_message_body(
+                                            db, str(r.last_message_id),
+                                            acc.user_id)
                             email = {
                                 "subject": r.subject or "",
                                 "from": to,  # nudging the recipient of our last msg
