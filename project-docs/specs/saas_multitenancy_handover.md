@@ -928,6 +928,9 @@ than defaulting; a test proves the refusal.
 > (the loader consults the flag before choosing its opener; flag OFF stays
 > byte-identical). **Explicitly OUT (later sub-slices, unchanged):** slice 6b
 > (email-automation + inbound webhooks), slice 6c (workflow cron / schedule sweep).
+>
+> ➡️ **2026-10-01: slice 6b for the email scheduler and pipeline runs as WS-17 EM-T1b**
+> (`email_app_master_plan.md` §10.4.2). That spec owns it from that date.
 
 > ✅ **mcp_servers cross-tenant read gap CLOSED 2026-08-23 (WS-29, DARK,
 > `ACB_GRAPH_TENANT_BIND`).** Slice 7 (above) explicitly left `_inject_mcp_servers`

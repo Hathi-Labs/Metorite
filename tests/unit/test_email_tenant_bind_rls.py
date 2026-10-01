@@ -138,7 +138,8 @@ def provider_fakes(monkeypatch):
     async def _mailbox(provider, token):
         return state["mailbox"]
 
-    async def _no_sync(account_id):
+    async def _no_sync(account_id, organization_id=None):
+        state["refreshed_org"] = organization_id
         return None
 
     store = _Store()
@@ -187,6 +188,10 @@ class TestTheCallbackWritesItsOwnTenant:
                 )
             assert _error(first) is None, (
                 f"the callback refused a valid member: {first.headers['location']}"
+            )
+            assert provider_fakes["refreshed_org"] == p.org_b, (
+                "the callback must start the sync loop with the organization "
+                "of the verified state (EM-T1b-1 item 5)"
             )
             rows = _admin_rows(p.admin_engine, mailbox)
             assert len(rows) == 1, "the INSERT did not land under FORCE RLS"

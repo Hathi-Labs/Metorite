@@ -57,12 +57,16 @@ _REPO = Path(__file__).resolve().parents[2]
 #:     disposes it when the run ends — a background job's engine has a
 #:     different lifetime from a request handler's and must not outlive it in
 #:     the shared pool.
+#:
+#: ⚠️ ``email_ingestion/scheduler.py`` LEFT this list on 2026-10-01 (WS-17
+#: EM-T1b-1). Its entry said "separate process", and that was false: the
+#: gateway lifespan starts the scheduler (``gateway/main.py``), so its three
+#: private engines ran in the gateway process and bound no tenant. Every
+#: scheduler session now comes from ``acb_common.db``.
 _ALLOWED: dict[str, str] = {
     "packages/acb_common/acb_common/db.py": "the shared seam itself",
     "apps/services/email_ingestion/email_ingestion/inbound.py":
         "separate process; per-call engine, disposed in a finally block",
-    "apps/services/email_ingestion/email_ingestion/scheduler.py":
-        "separate process; per-run engines, disposed when the run ends",
 }
 
 #: Every file allowed to call the **sync** ``create_engine``, and why.
@@ -415,7 +419,12 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: webhook and `_ensure_subscription` moved to `tenant_session(org)`, with the
 #: org from the signed state, the signed `notificationUrl` and
 #: `current_tenant()`. routes/email/transport has no unbound site left.
-H2_BASELINE_ELSEWHERE = 103
+#: 103 → 102: WS-17 EM-T1b-1 (2026-10-01). `auto_run_rules_for_account` and
+#: `learn_label_changes` in routes/email/scheduler_hooks.py moved to
+#: `tenant_session()` (-2). `email_ingestion/scheduler.py` gained ONE unbound
+#: `get_db()`, the RLS-EXEMPT `organization` enumeration of the startup sweep
+#: (+1). Its private engines never counted here.
+H2_BASELINE_ELSEWHERE = 102
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -658,7 +667,9 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
      "mailbox_owner"):
         "H-152: who pays for a mailbox job's model calls — the "
         "email_accounts owner. The member picks the organization the Router "
-        "bills, so this read decides the tenant",
+        "bills, so this read decides the tenant. Since EM-T1b-1 the read runs "
+        "in `tenant_session()` when a tenant is bound, and this one unbound "
+        "site serves only the case with no tenant",
 }
 
 

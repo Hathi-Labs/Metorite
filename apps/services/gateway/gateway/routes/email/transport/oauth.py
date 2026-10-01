@@ -278,13 +278,13 @@ async def oauth_callback(
         return _bounce("account_save_failed")
 
     # Start (or restart) background sync for the account. This runs after the
-    # tenant block, so the row is committed first. ⚠️ The scheduler binds no
-    # tenant until EM-T1b, so this stays best effort.
+    # tenant block, so the row is committed first. The loop binds the
+    # organization of the verified state (EM-T1b-1 item 5).
     try:
         from email_ingestion.scheduler import refresh_account_sync
-        await refresh_account_sync(account_id)
-    except Exception:
-        pass
+        await refresh_account_sync(account_id, organization_id=org)
+    except Exception as exc:
+        _log.warning("email.oauth_refresh_sync_failed", error=str(exc)[:200])
 
     # Success redirect
     params = {

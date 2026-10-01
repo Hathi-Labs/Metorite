@@ -21,7 +21,7 @@ means is how a loop ends up running with the flag off; this mirrors how
 Fences (R7):
   - ``email-sync-loop-gated``      — EMAIL_SYNC_ENABLED=false ⇒
     ``email_ingestion.scheduler.start_background_sync`` returns ``{}`` and opens
-    no engine; default/true ⇒ it proceeds to start as today.
+    no session; default/true ⇒ it proceeds to the organization read.
   - ``workflow-scheduler-gated``   — WORKFLOW_SCHEDULER_ENABLED=false ⇒ neither
     ``start_workflow_scheduler`` (the cron scanner) nor ``reconcile_orphaned_runs``
     (its sibling sweep) starts; default/true ⇒ both proceed.
@@ -57,20 +57,25 @@ class _PastGate(Exception):
 
 @pytest.fixture
 def email_probe(monkeypatch):
-    """``start_background_sync``'s first act past the gate is opening an engine.
+    """``start_background_sync``'s first act past the gate is the unbound
+    ``get_db()`` of the ``organization`` read (EM-T1b-1). The private engines
+    are gone, so the probe sits on the seam call instead.
 
     Make that raise ``_PastGate`` so "got past the gate" is observable without a
     DB. ``_scheduler_running`` is reset False so an ON call actually reaches the
-    engine open, and ``DATABASE_URL`` is set so ``_get_db_url`` returns before
-    the probe fires rather than consulting real settings.
+    organization read. The tenant-session opener raises too, so an OFF call
+    that opened ANY session fails the test.
     """
     monkeypatch.setattr(email_scheduler, "_scheduler_running", False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://probe/none")
 
-    def _boom(*_a, **_k):
+    async def _boom(*_a, **_k):
         raise _PastGate
 
-    monkeypatch.setattr(email_scheduler, "create_async_engine", _boom)
+    def _no_session(*_a, **_k):
+        raise _PastGate
+
+    monkeypatch.setattr(email_scheduler, "get_db", _boom)
+    monkeypatch.setattr(email_scheduler, "tenant_session", _no_session)
 
 
 async def test_email_sync_starts_by_default(monkeypatch, email_probe):

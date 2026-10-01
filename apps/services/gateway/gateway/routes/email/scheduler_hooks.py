@@ -12,7 +12,8 @@ import functools
 from typing import Any
 
 from email_ingestion.post_sync import register_post_sync_hooks
-from gateway.routes.email.core import _get_db, _log
+from gateway.db import current_tenant
+from gateway.routes.email.core import _get_db, _log, _tenant_session
 
 
 async def mailbox_owner(account_id: str) -> str | None:
@@ -22,25 +23,26 @@ async def mailbox_owner(account_id: str) -> str | None:
     job may bind it VERIFIED (H-73). ``None`` when the row is gone or the read
     fails, and the job then runs memberless rather than as a bystander.
 
-    ⚠️ **A TENANT-DISCOVERY read, so it is unbound on purpose.** The owner
-    decides which organization pays, so this read cannot run inside that
-    organization's session. ``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``
-    names it. Once FORCE RLS covers ``email_accounts`` it returns zero rows,
-    like every H4 resolver, and the job then fails CLOSED to memberless.
+    **Two paths (EM-T1b-1 item 7).** When a tenant is bound (the sync loop,
+    the webhook, a request job), the read runs inside ``tenant_session()``,
+    so it returns the owner under FORCE RLS. When no tenant is bound, it
+    keeps ONE unbound TENANT-DISCOVERY read
+    (``test_db_engine_seam.H2_TENANT_DISCOVERY_SITES``). Under FORCE RLS that
+    read returns zero rows, and the job fails CLOSED to memberless.
     """
     from sqlalchemy import text
 
+    sql = text("SELECT user_id FROM email_accounts WHERE id = :aid")
     try:
-        db = await _get_db()
-        try:
-            row = (
-                await db.execute(
-                    text("SELECT user_id FROM email_accounts WHERE id = :aid"),
-                    {"aid": account_id},
-                )
-            ).fetchone()
-        finally:
-            await db.close()
+        if current_tenant():
+            async with _tenant_session() as db:
+                row = (await db.execute(sql, {"aid": account_id})).fetchone()
+        else:
+            db = await _get_db()
+            try:
+                row = (await db.execute(sql, {"aid": account_id})).fetchone()
+            finally:
+                await db.close()
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.mailbox_owner_unresolved", account_id=account_id,
                      error=str(exc)[:200])
@@ -87,10 +89,10 @@ async def auto_run_rules_for_account(account_id: str) -> None:
     from gateway.routes.email.automation.runner import _run_rules_job
     from sqlalchemy import text
 
-    # H4: scheduler post-sync hook — runs outside any request; no ambient
-    # tenant to inherit (the runbook forbids jobs inheriting one).
-    db = await _get_db()
-    try:
+    # EM-T1b-1: the sync loop binds the organization of the mailbox, and the
+    # webhook and the request jobs run bound too. With no tenant bound this
+    # raises TenantUnbound, and `process_new_mail` logs it.
+    async with _tenant_session() as db:
         settings = (
             await db.execute(
                 text(
@@ -114,8 +116,6 @@ async def auto_run_rules_for_account(account_id: str) -> None:
         ).fetchone()
         if not has_rule:
             return
-    finally:
-        await db.close()
     await _run_rules_job(account_id, 50, False, "scheduler")
 
 
@@ -220,21 +220,19 @@ async def learn_label_changes(account_id: str, changes: list) -> None:
     pairs). Runs the SAME orchestration the manual-sync route uses, so the
     background sync path — which is what actually polls every ~300s — finally
     learns from label changes instead of dropping them.
+
+    EM-T1b-1: the orchestration opens its own ``tenant_session()`` for the
+    pattern writes, so it reads the organization the sync loop bound.
     """
     from gateway.routes.email.transport.sync import (
         learn_from_label_change_events,
     )
 
-    # H4: scheduler post-sync hook — runs outside any request; no ambient
-    # tenant to inherit.
-    db = await _get_db()
     try:
-        await learn_from_label_change_events(db, account_id, changes)
+        await learn_from_label_change_events(account_id, changes)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.label_learn_hook_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 def register_email_post_sync_hooks() -> None:
