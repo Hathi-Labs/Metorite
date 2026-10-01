@@ -573,6 +573,13 @@ live check passes. To set it `true` is gate `enforcement-flip`.
    from the feature gate. It verifies the MAC, the expiry and the provider. It then checks that
    the member of the session is the member in the state. Last, `resolve_identity` must return the
    organization in the state. Every failure redirects with `error=invalid_state`.
+   Anchors: the new route `workbench/control_plane/src/app/api/email/oauth/[provider]/callback/route.ts`
+   copies the authorize route beside it. Remove the callback template from the exempt list in
+   `routes/email/core.py`, from `PUBLIC_ROUTES` in `gateway/main.py`, and from
+   `tests/unit/test_org_access_enforcement.py`. Invert `test_the_callback_leg_stays_public` in
+   `tests/unit/test_email_oauth_authorize_wiring.py`. `_build_redirect_uri` returns the BFF path,
+   and the authorize leg and the token exchange must use the same value. Do not add
+   `response_mode=form_post`, because a cross-site POST drops the Lax session cookie.
 4. **The callback writes inside one `tenant_session(org)`.** The explicit `commit()` calls go,
    because the seam commits on exit. `refresh_account_sync` runs after the block.
 5. **The webhook binds a tenant from a signed value (R11).** `_ensure_subscription` builds
@@ -587,7 +594,10 @@ live check passes. To set it `true` is gate `enforcement-flip`.
    subscription and creates a new one.
 
 **Non-goals.** No Redis nonce store. No change to `_sync_account` or the scheduler, which is
-EM-T1b. No change to Gmail beyond the shared state. No new environment variable.
+EM-T1b. No new environment variable. The redirect URI of Gmail moves to the BFF with the URI of
+Microsoft, because the two share one template. Gmail stays hidden (D-EM-5), so no Google
+registration changes now. No change to `proxy.ts`: a member whose session ends inside the
+10-minute window sees a JSON 401, and EM-T3 owns that polish.
 
 **Done when.**
 
@@ -595,6 +605,11 @@ EM-T1b. No change to Gmail beyond the shared state. No new environment variable.
 - The default or an empty secret refuses to sign.
 - An authorize call with no organization returns 403.
 - A callback whose session member differs from the state member redirects with `invalid_state`.
+- A fence proves that the BFF callback uses `gatewayHeaders`, `redirect: "manual"` and the
+  `location` header, forwards only `code`, `state`, `error` and `error_description`, and refuses a
+  `Location` of another origin.
+- The callback template is absent from all three exempt lists.
+- A provider `error` with no `code` lands on `/email/oauth/callback?error=...`, never on a raw 422.
 - A callback for a member of org B writes a row of org B, and org A cannot read that row.
 - A webhook with a missing, malformed or unsigned `org` queues nothing and returns 202.
 - A webhook that names org A with a subscription of org B matches nothing.
@@ -638,6 +653,7 @@ These are one-time owner acts. No customer ever repeats them.
 4. Set the supported account types to **any organizational directory and personal Microsoft accounts**.
 5. Add the web redirect URI `https://app.metorite.com/api/email/oauth/microsoft/callback`.
    This is the app domain, not `api.`, because the callback runs behind the session (EM-T1a).
+   For local tests, you can also add `http://localhost:3001/api/email/oauth/microsoft/callback`.
 6. Under **API permissions**, add these delegated Microsoft Graph permissions: `Mail.ReadWrite`,
    `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read` and `offline_access`.
 7. Under **Branding**, add the Metorite logo, the home page, and the privacy and terms URLs on
