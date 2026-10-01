@@ -16,7 +16,6 @@ from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.automation.senders import canonical_cleanup_category
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _get_db,
     _tenant_session,
     _llm_json,
     _log,
@@ -698,78 +697,80 @@ async def _maybe_send_digest(account_id: str) -> None:
     Honors digest_frequency (DAILY/WEEKLY), digest_time_of_day (don't send
     before that UTC time), digest_day_of_week (WEEKLY only; 0=Sun…6=Sat),
     digest_categories (which categories to include) and digest_send_to_email.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): ONE ``_tenant_session()``
+    with the ambient tenant, which the sync loop binds, and no ``commit()``.
+    The send and the ``last_digest_at`` stamp stay in the one block, so the
+    stamp lands only when the send returned. EM-T4 owns the provider I/O that
+    stays inside the block.
     """
-    # H4: scheduler-run digest tick — no ambient tenant; needs an explicit
-    # tenant derived from the email_accounts row before conversion.
-    db = await _get_db()
     try:
-        row = (await db.execute(text(
-            """SELECT digest_frequency, last_digest_at, digest_time_of_day,
-                      digest_day_of_week, digest_categories, digest_send_to_email
-               FROM email_assistant_settings WHERE account_id = :aid"""
-        ), {"aid": account_id})).fetchone()
-        if not row or (row.digest_frequency or "OFF") == "OFF":
-            return
-        if not bool(getattr(row, "digest_send_to_email", True)):
-            return  # email is the only channel today; nothing to deliver
-        period_days = 7 if row.digest_frequency == "WEEKLY" else 1
-        now = datetime.now(timezone.utc)
-
-        # Parse the configured send time (HH:MM, treated as UTC).
-        try:
-            hh, mm = (getattr(row, "digest_time_of_day", None) or "09:00").split(":")
-            send_at = now.replace(
-                hour=int(hh), minute=int(mm), second=0, microsecond=0)
-        except (ValueError, AttributeError):
-            send_at = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        if now < send_at:
-            return  # too early in the day
-
-        if row.digest_frequency == "WEEKLY":
-            # email_assistant_settings uses JS weekdays (0=Sun); Python's
-            # weekday() is 0=Mon, so shift.
-            js_dow = (now.weekday() + 1) % 7
-            if js_dow != int(getattr(row, "digest_day_of_week", 1) or 1):
+        async with _tenant_session() as db:
+            row = (await db.execute(text(
+                """SELECT digest_frequency, last_digest_at, digest_time_of_day,
+                          digest_day_of_week, digest_categories, digest_send_to_email
+                   FROM email_assistant_settings WHERE account_id = :aid"""
+            ), {"aid": account_id})).fetchone()
+            if not row or (row.digest_frequency or "OFF") == "OFF":
                 return
-            min_gap = timedelta(days=6)
-        else:
-            min_gap = timedelta(hours=20)
+            if not bool(getattr(row, "digest_send_to_email", True)):
+                return  # email is the only channel today; nothing to deliver
+            period_days = 7 if row.digest_frequency == "WEEKLY" else 1
+            now = datetime.now(timezone.utc)
 
-        last = row.last_digest_at
-        if last is not None and (last > now - min_gap or last >= send_at):
-            return  # already sent recently / already sent today after send time
+            # Parse the configured send time (HH:MM, treated as UTC).
+            try:
+                hh, mm = (getattr(row, "digest_time_of_day", None) or "09:00").split(":")
+                send_at = now.replace(
+                    hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            except (ValueError, AttributeError):
+                send_at = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            if now < send_at:
+                return  # too early in the day
 
-        categories = list(getattr(row, "digest_categories", None) or [])
-        digest = await _generate_digest(db, account_id, period_days, categories)
-        # Empty-digest suppression: a scheduled digest with no new mail and
-        # nothing awaiting a reply is noise. Skip the send WITHOUT stamping
-        # last_digest_at, so the moment real mail arrives (still past the send
-        # time) the next cycle delivers one.
-        if _digest_is_empty(digest):
-            _log.info("email.digest_suppressed_empty", account_id=account_id)
-            return
-        # Unscoped session: this is a scheduler tick, no request user to scope
-        # by. Missing account raises 404 → caught by the broad handler below.
-        async with provider_session(
-            db, None, account_id=account_id, require_auth=False,
-        ) as sess:
-            if not sess.authed:
+            if row.digest_frequency == "WEEKLY":
+                # email_assistant_settings uses JS weekdays (0=Sun); Python's
+                # weekday() is 0=Mon, so shift.
+                js_dow = (now.weekday() + 1) % 7
+                if js_dow != int(getattr(row, "digest_day_of_week", 1) or 1):
+                    return
+                min_gap = timedelta(days=6)
+            else:
+                min_gap = timedelta(hours=20)
+
+            last = row.last_digest_at
+            if last is not None and (last > now - min_gap or last >= send_at):
+                return  # already sent recently / already sent today after send time
+
+            categories = list(getattr(row, "digest_categories", None) or [])
+            digest = await _generate_digest(db, account_id, period_days, categories)
+            # Empty-digest suppression: a scheduled digest with no new mail and
+            # nothing awaiting a reply is noise. Skip the send WITHOUT stamping
+            # last_digest_at, so the moment real mail arrives (still past the
+            # send time) the next cycle delivers one.
+            if _digest_is_empty(digest):
+                _log.info("email.digest_suppressed_empty", account_id=account_id)
                 return
-            await sess.provider.send_message(
-                to=[sess.owner_email],
-                subject=f"📥 Your inbox digest — last "
-                        f"{'week' if period_days > 1 else 'day'}",
-                body_text=digest["markdown"],
-                body_html=digest["html"],
-            )
-            await db.execute(text(
-                "UPDATE email_assistant_settings SET last_digest_at = now() "
-                "WHERE account_id = :aid"
-            ), {"aid": account_id})
-        await db.commit()
+            # Unscoped session: this is a scheduler tick, no request user to
+            # scope by. Missing account raises 404 → caught by the broad handler
+            # below.
+            async with provider_session(
+                db, None, account_id=account_id, require_auth=False,
+            ) as sess:
+                if not sess.authed:
+                    return
+                await sess.provider.send_message(
+                    to=[sess.owner_email],
+                    subject=f"📥 Your inbox digest — last "
+                            f"{'week' if period_days > 1 else 'day'}",
+                    body_text=digest["markdown"],
+                    body_html=digest["html"],
+                )
+                await db.execute(text(
+                    "UPDATE email_assistant_settings SET last_digest_at = now() "
+                    "WHERE account_id = :aid"
+                ), {"aid": account_id})
         _log.info("email.digest_sent", account_id=account_id)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.digest_send_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()

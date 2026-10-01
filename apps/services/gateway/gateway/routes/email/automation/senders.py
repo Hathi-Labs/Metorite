@@ -30,6 +30,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     _llm_json,
     _log,
+    _savepoint,
     provider_session,
     router,
 )
@@ -479,19 +480,22 @@ async def _bulk_reconcile_provider(
     collected, retried with backoff, and what still won't apply has its local
     folder reverted so the mirror matches the mailbox instead of lying until the
     next sync corrects it.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): ONE ``_tenant_session()``
+    with the ambient tenant, and no ``commit()``. The auto-archive hook runs
+    bound by the sync loop, and the bulk routes run it as a BackgroundTask
+    bound by the request. The block holds its session across ``bulk_apply``,
+    as the code did before, and EM-T4 owns that I/O.
     """
-    # H4: called from _maybe_auto_archive (scheduler post-sync path); no
-    # ambient tenant to inherit.
-    db = await _get_db()
     try:
-        # Unscoped session: background task, no request user. Missing account
-        # raises 404 → caught by the broad handler below.
-        async with provider_session(
+        # Unscoped provider session: background task, no request user. A
+        # missing account raises 404 → caught by the broad handler below.
+        async with _tenant_session() as db, provider_session(
             db, None, account_id=account_id, require_auth=False,
         ) as sess:
             if not sess.authed:
-                await _revert_unreconciled(db, account_id, provider_msg_ids, action)
-                await db.commit()
+                await _revert_unreconciled(
+                    db, account_id, provider_msg_ids, action)
                 _log.error("email.bulk_reconcile_unauthed",
                            account_id=account_id, action=action,
                            count=len(provider_msg_ids))
@@ -500,10 +504,10 @@ async def _bulk_reconcile_provider(
             for attempt in range(_RECONCILE_ATTEMPTS):
                 failed: list[str] = []
                 rekeys = await sess.provider.bulk_apply(pending, action, failed)
-                # Outlook's /move mints a NEW message id and invalidates the old
-                # one. Dropping these (as this job used to) leaves every
-                # bulk-archived Outlook message pointing at a dead id, so the next
-                # action on it 404s until a full re-sync happens to notice.
+                # Outlook's /move mints a NEW message id and invalidates the
+                # old one. Dropping these (as this job used to) leaves every
+                # bulk-archived Outlook message pointing at a dead id, so the
+                # next action on it 404s until a full re-sync happens to notice.
                 for old_id, new_id in rekeys.items():
                     await db.execute(text(
                         "UPDATE email_messages SET provider_message_id = :new, "
@@ -524,12 +528,9 @@ async def _bulk_reconcile_provider(
             else:
                 _log.info("email.bulk_reconcile_ok", account_id=account_id,
                           action=action, count=len(provider_msg_ids))
-        await db.commit()
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.bulk_reconcile_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 async def _revert_unreconciled(
@@ -544,39 +545,46 @@ async def _revert_unreconciled(
     alone rather than fighting a user who has since changed them by hand."""
     if action not in ("archive", "trash") or not provider_msg_ids:
         return
+    # A savepoint, because the failure is swallowed: without it the caller's
+    # block stays aborted and loses the re-key writes made before this one.
     with contextlib.suppress(Exception):
-        await db.execute(text(
-            "UPDATE email_messages SET folder = 'inbox', updated_at = now() "
-            "WHERE account_id = :aid AND provider_message_id = ANY(:pmids) "
-            f"AND LOWER(COALESCE(folder, '')) = '{action}'"
-        ), {"aid": account_id, "pmids": provider_msg_ids})
+        async with _savepoint(db):
+            await db.execute(text(
+                "UPDATE email_messages SET folder = 'inbox', updated_at = now() "
+                "WHERE account_id = :aid AND provider_message_id = ANY(:pmids) "
+                f"AND LOWER(COALESCE(folder, '')) = '{action}'"
+            ), {"aid": account_id, "pmids": provider_msg_ids})
 
 
 async def _maybe_auto_archive(account_id: str) -> None:
     """Archive freshly-synced inbox mail from senders marked AUTO_ARCHIVED (the
     bulk-archive 'Auto' action), then reconcile to the provider. This is what
-    makes auto-archive apply to FUTURE mail, not just existing. Idempotent."""
-    # H4: scheduler post-sync hook path; no ambient tenant to inherit.
-    db = await _get_db()
+    makes auto-archive apply to FUTURE mail, not just existing. Idempotent.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): the select and the folder
+    UPDATE run in ONE ``_tenant_session()`` with the ambient tenant, which the
+    sync loop binds. The block commits on exit, BEFORE the provider reconcile
+    starts, so the reconcile opens its own block and sees the committed rows.
+    """
     try:
-        rows = (await db.execute(text(
-            """SELECT em.id, em.provider_message_id
-               FROM email_messages em
-               JOIN email_newsletters nl
-                 ON nl.account_id = em.account_id
-                AND LOWER(nl.email) = LOWER(em.from_address->>'email')
-               WHERE em.account_id = :aid AND nl.status = 'AUTO_ARCHIVED'
-                 AND LOWER(em.folder) = 'inbox'"""
-        ), {"aid": account_id})).fetchall()
-        if not rows:
-            return
-        ids = [str(r.id) for r in rows]
-        pmids = [r.provider_message_id for r in rows if r.provider_message_id]
-        await db.execute(text(
-            "UPDATE email_messages SET folder = 'archive', updated_at = now() "
-            "WHERE id::text = ANY(:ids)"
-        ), {"ids": ids})
-        await db.commit()
+        async with _tenant_session() as db:
+            rows = (await db.execute(text(
+                """SELECT em.id, em.provider_message_id
+                   FROM email_messages em
+                   JOIN email_newsletters nl
+                     ON nl.account_id = em.account_id
+                    AND LOWER(nl.email) = LOWER(em.from_address->>'email')
+                   WHERE em.account_id = :aid AND nl.status = 'AUTO_ARCHIVED'
+                     AND LOWER(em.folder) = 'inbox'"""
+            ), {"aid": account_id})).fetchall()
+            if not rows:
+                return
+            ids = [str(r.id) for r in rows]
+            pmids = [r.provider_message_id for r in rows if r.provider_message_id]
+            await db.execute(text(
+                "UPDATE email_messages SET folder = 'archive', updated_at = now() "
+                "WHERE id::text = ANY(:ids)"
+            ), {"ids": ids})
         if pmids:
             await _bulk_reconcile_provider(account_id, pmids, "archive")
         _log.info("email.auto_archive_pass",
@@ -584,8 +592,6 @@ async def _maybe_auto_archive(account_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.auto_archive_failed",
                      account_id=account_id, error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 class NewsletterUpdate(BaseModel):
@@ -1053,102 +1059,109 @@ async def _categorize_senders_job(account_id: str, limit: int) -> None:
     stable per-sender column. ``/senders`` derives the same values on the fly
     through the same ``_LABEL_TALLY_SQL`` + ``_rule_category`` helpers, so the
     two views cannot disagree.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): two ``_tenant_session()``
+    blocks with the ambient tenant, and no ``commit()``. The sync loop binds
+    the tenant for the scheduler, and the request binds it for the
+    BackgroundTask. The two blocks keep the split that two commits made: the
+    projection lands even when the later ``inferred`` delete fails.
     """
-    # H4: background consumer — _categorize_senders_job runs as a
-    # BackgroundTask and from the scheduler; no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        # Busiest senders, with their CURRENT category/source so a 'user'
-        # override is never overwritten.
-        rows = (await db.execute(text(
-            """SELECT LOWER(em.from_address->>'email') AS email,
-                      MAX(em.from_address->>'name') AS name,
-                      COUNT(*) AS volume,
-                      MAX(se.category_source) AS cur_source
-               FROM email_messages em
-               LEFT JOIN email_senders se
-                 ON se.account_id = em.account_id
-                AND se.email = LOWER(em.from_address->>'email')
-               WHERE em.account_id = :aid
-                 AND COALESCE(em.from_address->>'email','') <> ''
-               GROUP BY LOWER(em.from_address->>'email')
-               ORDER BY COUNT(*) DESC LIMIT :limit"""
-        ), {"aid": account_id, "limit": limit})).fetchall()
-        if not rows:
-            return
-        # The account's own address + configured org domains → sender_scope, so we
-        # never bucket the user's own / same-org senders into a RECEIVE category.
-        acc = (await db.execute(text(
-            "SELECT email_address FROM email_accounts WHERE id = :id"
-        ), {"id": account_id})).fetchone()
-        self_email = (acc.email_address if acc else "") or ""
-        from gateway.routes.email.automation.identity import resolve_org_domains  # noqa: PLC0415
-        org_domains = await resolve_org_domains(db, account_id)
-
-        # Never categorize the user's OWN address as a "sender". Keep teammates
-        # ('internal') — they are legitimate senders. Also skip 'user' overrides.
-        cands = [
-            r for r in rows
-            if sender_scope(r.email, self_email, org_domains) != "self"
-            and (r.cur_source or "") != "user"
-        ]
-        if not cands:
-            return
-
-        # Roll up the rule engine's per-message labels for these senders in one
-        # pass: {email: {lowercased label: message count}}. Shares the exact SQL
-        # the /senders read path uses so the persisted column and the live
-        # derivation can never disagree.
-        emails = [r.email for r in cands]
-        tally_rows = (await db.execute(text(
-            _LABEL_TALLY_SQL.format(
-                scope="em.account_id = :aid",
-                extra=" AND LOWER(em.from_address->>'email') = ANY(:emails)",
+        async with _tenant_session() as db:
+            # Busiest senders, with their CURRENT category/source so a 'user'
+            # override is never overwritten.
+            rows = (await db.execute(text(
+                """SELECT LOWER(em.from_address->>'email') AS email,
+                          MAX(em.from_address->>'name') AS name,
+                          COUNT(*) AS volume,
+                          MAX(se.category_source) AS cur_source
+                   FROM email_messages em
+                   LEFT JOIN email_senders se
+                     ON se.account_id = em.account_id
+                    AND se.email = LOWER(em.from_address->>'email')
+                   WHERE em.account_id = :aid
+                     AND COALESCE(em.from_address->>'email','') <> ''
+                   GROUP BY LOWER(em.from_address->>'email')
+                   ORDER BY COUNT(*) DESC LIMIT :limit"""
+            ), {"aid": account_id, "limit": limit})).fetchall()
+            if not rows:
+                return
+            # The account's own address + configured org domains → sender_scope,
+            # so we never bucket the user's own / same-org senders into a
+            # RECEIVE category.
+            acc = (await db.execute(text(
+                "SELECT email_address FROM email_accounts WHERE id = :id"
+            ), {"id": account_id})).fetchone()
+            self_email = (acc.email_address if acc else "") or ""
+            from gateway.routes.email.automation.identity import (  # noqa: PLC0415
+                resolve_org_domains,
             )
-        ), {"aid": account_id, "emails": emails,
-            "labels": _KNOWN_LABELS_LOWER})).fetchall()
-        counts: dict[str, dict[str, int]] = {}
-        for t in tally_rows:
-            counts.setdefault(t.email, {})[t.label] = int(t.n)
+            org_domains = await resolve_org_domains(db, account_id)
 
-        # Project the rule engine's per-message labels into a sender category —
-        # the ONLY categorization there is. There is no cold-start LLM fallback:
-        # the old one persisted provisional 'inferred' guesses off a thin signal,
-        # never self-corrected, and misled the user. A sender the rules haven't
-        # labelled stays uncategorized until they do (the cleaner still lists it;
-        # it just carries no category chip, and the uncategorized sweep can fill
-        # it in from learned patterns).
-        stale: list[str] = []
-        for r in cands:
-            rcat = _rule_category(counts.get(r.email, {}))
-            if rcat:
-                await _upsert_sender_category(
-                    db, account_id, r.email, r.name or "", rcat, "rule")
-            else:
-                stale.append(r.email)
-        # A sender whose labels were since removed (rule deleted, user cleared
-        # the chips) must lose its projection too, else the digest and the
-        # sender_category search filter keep reporting a category /senders no
-        # longer shows. 'user' overrides are excluded from cands already.
-        if stale:
-            await db.execute(text(
-                "DELETE FROM email_senders WHERE account_id = :aid "
-                "AND email = ANY(:emails) AND category_source = 'rule'"
-            ), {"aid": account_id, "emails": stale})
-        await db.commit()
+            # Never categorize the user's OWN address as a "sender". Keep
+            # teammates ('internal') — they are legitimate senders. Also skip
+            # 'user' overrides.
+            cands = [
+                r for r in rows
+                if sender_scope(r.email, self_email, org_domains) != "self"
+                and (r.cur_source or "") != "user"
+            ]
+            if not cands:
+                return
+
+            # Roll up the rule engine's per-message labels for these senders in
+            # one pass: {email: {lowercased label: message count}}. Shares the
+            # exact SQL the /senders read path uses so the persisted column and
+            # the live derivation can never disagree.
+            emails = [r.email for r in cands]
+            tally_rows = (await db.execute(text(
+                _LABEL_TALLY_SQL.format(
+                    scope="em.account_id = :aid",
+                    extra=" AND LOWER(em.from_address->>'email') = ANY(:emails)",
+                )
+            ), {"aid": account_id, "emails": emails,
+                "labels": _KNOWN_LABELS_LOWER})).fetchall()
+            counts: dict[str, dict[str, int]] = {}
+            for t in tally_rows:
+                counts.setdefault(t.email, {})[t.label] = int(t.n)
+
+            # Project the rule engine's per-message labels into a sender
+            # category — the ONLY categorization there is. There is no
+            # cold-start LLM fallback: the old one persisted provisional
+            # 'inferred' guesses off a thin signal, never self-corrected, and
+            # misled the user. A sender the rules haven't labelled stays
+            # uncategorized until they do (the cleaner still lists it; it just
+            # carries no category chip, and the uncategorized sweep can fill it
+            # in from learned patterns).
+            stale: list[str] = []
+            for r in cands:
+                rcat = _rule_category(counts.get(r.email, {}))
+                if rcat:
+                    await _upsert_sender_category(
+                        db, account_id, r.email, r.name or "", rcat, "rule")
+                else:
+                    stale.append(r.email)
+            # A sender whose labels were since removed (rule deleted, user
+            # cleared the chips) must lose its projection too, else the digest
+            # and the sender_category search filter keep reporting a category
+            # /senders no longer shows. 'user' overrides are excluded from
+            # cands already.
+            if stale:
+                await db.execute(text(
+                    "DELETE FROM email_senders WHERE account_id = :aid "
+                    "AND email = ANY(:emails) AND category_source = 'rule'"
+                ), {"aid": account_id, "emails": stale})
 
         # One-time cleanup: retire any stale 'inferred' guesses left by earlier
         # runs so they stop surfacing (rule/user categories are untouched).
-        await db.execute(text(
-            "DELETE FROM email_senders WHERE account_id = :aid "
-            "AND category_source = 'inferred'"
-        ), {"aid": account_id})
-        await db.commit()
+        async with _tenant_session() as db:
+            await db.execute(text(
+                "DELETE FROM email_senders WHERE account_id = :aid "
+                "AND category_source = 'inferred'"
+            ), {"aid": account_id})
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.categorize_job_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 class CategorizeRequest(BaseModel):

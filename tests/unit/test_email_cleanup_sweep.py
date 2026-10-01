@@ -15,6 +15,19 @@ from gateway.routes.email.automation import cleanup as c
 from tests.unit._email_fakes import bind_db
 
 
+def _as_push(fake_apply):
+    """Adapt an ``apply_label``-shaped fake to the sweep's ``push_label`` seam.
+
+    Since EM-T1b-2 fix round 1 the sweep calls the provider half
+    (``push_label``) with no session open, then mirrors in its own block. The
+    fake runs where the provider call runs, and a raise there still means
+    "nothing written"."""
+    async def _push(provider, mid, pmid, label):
+        await fake_apply(None, provider, mid, pmid, label)
+        return label
+    return _push
+
+
 def _msg(sender, subject="Hi", mid="m1"):
     return SimpleNamespace(
         id=mid, provider_message_id=f"p-{mid}", subject=subject,
@@ -268,7 +281,7 @@ async def test_sweep_pages_until_the_mailbox_runs_dry() -> None:
     import gateway.routes.email.automation.runner as runner
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_persist_rotated_creds", AsyncMock()), \
@@ -277,7 +290,7 @@ async def test_sweep_pages_until_the_mailbox_runs_dry() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", fake_apply):
+            patch.object(runner, "push_label", _as_push(fake_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     # All five were scanned, each exactly once — no skips, no re-reads.
@@ -320,7 +333,7 @@ async def test_live_sweep_aborts_when_provider_auth_fails() -> None:
     provider.authenticate = AsyncMock(return_value=False)  # auth fails
     import gateway.routes.email.automation.runner as runner
 
-    with patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
@@ -328,7 +341,7 @@ async def test_live_sweep_aborts_when_provider_auth_fails() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", fake_apply):
+            patch.object(runner, "push_label", _as_push(fake_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     assert res.get("error") == "provider authentication failed"
@@ -367,7 +380,7 @@ async def test_a_failed_apply_is_counted_not_swallowed() -> None:
     provider.authenticate = AsyncMock(return_value=True)
     import gateway.routes.email.automation.runner as runner
 
-    with patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+    with patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_provider_for_account_any", AsyncMock(
                 return_value=(provider, MagicMock(), "own@x.com"))), \
             patch.object(c, "_persist_rotated_creds", AsyncMock()), \
@@ -376,7 +389,7 @@ async def test_a_failed_apply_is_counted_not_swallowed() -> None:
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
             patch.object(c, "_label_tallies", AsyncMock(return_value=(
                 {"news@site.com": {"Newsletter": 6}}, {}))), \
-            patch.object(runner, "apply_label", flaky_apply):
+            patch.object(runner, "push_label", _as_push(flaky_apply)):
         res = await c.sweep_uncategorized("acc-1", 100, dry_run=False)
 
     assert res["categorized"] == 1        # only m1 landed
@@ -402,7 +415,7 @@ async def test_sweep_honours_an_explicit_limit_and_says_it_stopped_short() -> No
         async def close(self): ...
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
             patch.object(c, "_load_rule_patterns", AsyncMock(return_value={})), \
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \
@@ -435,7 +448,7 @@ async def test_dry_run_pages_by_the_full_window() -> None:
         async def close(self): ...
 
     with patch.object(c, "_SWEEP_PAGE", 2), \
-            patch.object(c, "_get_db", AsyncMock(return_value=_DB())), \
+            patch.object(c, "_tenant_session", bind_db(_DB())), \
             patch.object(c, "_uncategorized_inbox", fake_page), \
             patch.object(c, "_load_rule_patterns", AsyncMock(return_value={})), \
             patch.object(c, "_rule_label_by_id", AsyncMock(return_value={})), \

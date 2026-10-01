@@ -136,7 +136,10 @@ def test_filed_threads_are_resolved_without_an_ai_call() -> None:
     """Inbound-last but already archived = the user dealt with it. Deterministic
     FYI: this is the bulk of an old mailbox and re-litigating it with a model
     would cost thousands of calls on mail already put away."""
-    src = inspect.getsource(rz._maybe_classify_threads)
+    # Since EM-T1b-2 fix round 1 the filed phase is its own helper, called
+    # from the backfill, so a failed filed write cannot skip the sent threads.
+    assert "_write_filed_fyi(" in inspect.getsource(rz._maybe_classify_threads)
+    src = inspect.getsource(rz._write_filed_fyi)
     assert "_upsert_thread_status(" in src
     assert "preserve_done=True" in src, (
         "a thread the user explicitly marked Done must not be reset to FYI"

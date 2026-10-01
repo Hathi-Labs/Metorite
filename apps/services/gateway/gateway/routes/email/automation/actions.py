@@ -56,19 +56,46 @@ async def apply_label(
     read-modify-write). Every categorizer — the rule engine's LABEL action and
     the uncategorized-inbox sweep — goes through here, so there is exactly one
     place that decides what "applying a label" means.
+
+    The two halves are also callable apart: ``push_label`` (provider only, no
+    session) and ``mirror_label`` (DB only). The cleanup sweep calls them
+    apart, so no session is open across the provider call (EM-T1b-2). This
+    function is the two of them in order, for every other caller.
+    """
+    lbl = await push_label(provider, message_id, provider_msg_id, label)
+    await mirror_label(db, message_id, lbl)
+
+
+async def push_label(
+    provider: Any, message_id: str, provider_msg_id: str, label: str,
+) -> str | None:
+    """The provider half of ``apply_label``. Touches no database.
+
+    Returns the cleaned label that the caller must mirror, or ``None`` when
+    the label is empty or reserved (then nothing is written anywhere). A
+    provider failure raises, so the caller writes no mirror for it.
     """
     lbl = (label or "").strip()
     if not lbl:
-        return
+        return None
     if lbl.lower() in RESERVED_INDICATORS:
         # "Uncategorized" is the ABSENCE of a category, not a category — an
         # AI-resolved label or a hand-authored rule could still produce it,
         # and writing it (provider or mirror) would make the state permanent.
         _log.warning("email.apply_label_reserved_indicator",
                      message_id=message_id, label=lbl)
-        return
+        return None
     if provider is not None and provider_msg_id:
         await provider.set_labels(provider_msg_id, add=[lbl], remove=[])
+    return lbl
+
+
+async def mirror_label(db: Any, message_id: str, lbl: str | None) -> None:
+    """The DB half of ``apply_label``: an atomic append-if-absent on the
+    ``categories`` mirror. Pass what ``push_label`` returned: ``None`` (an
+    empty or reserved label) writes nothing."""
+    if not lbl:
+        return
     await db.execute(text(
         "UPDATE email_messages SET categories = "
         "CASE WHEN :lbl = ANY(categories) THEN categories "

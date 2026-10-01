@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 from gateway.routes import email as m
 
+from tests.unit._email_fakes import bind_db
+
 
 def _srow(email, *, name="N", volume=10, cur_source=None):
     return SimpleNamespace(
@@ -75,8 +77,9 @@ class _FakeDB:
 
 
 def _run(db):
+    # EM-T1b-2: the job opens `_tenant_session()` blocks, never `_get_db`.
     return patch.object(
-        m.automation.senders, "_get_db", AsyncMock(return_value=db)
+        m.automation.senders, "_tenant_session", bind_db(db)
     ), patch.object(
         m.automation.identity, "resolve_org_domains",
         AsyncMock(return_value=frozenset())
@@ -192,7 +195,10 @@ async def test_no_work_when_nothing_to_categorize() -> None:
     p1, p2 = _run(db)
     with p1, p2:
         await m._categorize_senders_job("acc-1", 25)
-    assert db.commits == 0
+    # The seam commits the read block on exit. Nothing else may run: no
+    # upsert, no clear, and no second block for the `inferred` delete.
+    assert db.inserts == [] and db.cleared_rule == []
+    assert db.deleted_inferred is False
 
 
 async def test_failure_during_job_is_swallowed_and_cleans_up() -> None:
@@ -201,4 +207,8 @@ async def test_failure_during_job_is_swallowed_and_cleans_up() -> None:
     p1, p2 = _run(db)
     with p1, p2:
         await m._categorize_senders_job("acc-1", 25)  # must not raise
-    assert db.closed is True
+        opened = len(m.automation.senders._tenant_session.calls)
+    # The first block failed on exit, so the second block never opened. The
+    # seam closes the session itself, so the fake records no close.
+    assert opened == 1
+    assert db.deleted_inferred is False

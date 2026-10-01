@@ -902,39 +902,47 @@ async def _mark_thread_replied(
     isn't mirrored into email_messages yet (it lands on the next sync), so pass it
     here and we append it to the thread the AI reads — making the Awaiting-vs-
     Done call accurate immediately (inbox-zero sees the sent message at once)
-    instead of defaulting to Awaiting and only correcting on the next sync."""
+    instead of defaulting to Awaiting and only correcting on the next sync.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): two ``_tenant_session()``
+    blocks with the ambient tenant, and no ``commit()``. The Reply Zero
+    backfill calls this with no session of its own open, and the send and
+    draft routes run it as a BackgroundTask bound by the request. Block A reads
+    and writes the status (the model call stays inside, and EM-T4 owns it).
+    The provider authenticates with no session open. Block B reconciles the
+    labels and persists rotated credentials.
+    """
     if not thread_id:
         return
-    # H4: called only from _maybe_classify_threads (scheduler post-sync
-    # path); no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        # Thread-status classification only decides whether a thread needs a
-        # reply — the knowledge base is drafting facts, pure noise + token cost
-        # in this prompt. Drop it (3.5).
-        about, _sig = await _load_assistant_about(
-            db, account_id, include_kb=False)
-        acc = (await db.execute(text(
-            "SELECT email_address, provider, credentials_encrypted "
-            "FROM email_accounts WHERE id = :id"
-        ), {"id": account_id})).fetchone()
-        acc_email = (acc.email_address if acc else "") or ""
+        async with _tenant_session() as db:
+            # Thread-status classification only decides whether a thread needs
+            # a reply — the knowledge base is drafting facts, pure noise +
+            # token cost in this prompt. Drop it (3.5).
+            about, _sig = await _load_assistant_about(
+                db, account_id, include_kb=False)
+            acc = (await db.execute(text(
+                "SELECT email_address, provider, credentials_encrypted "
+                "FROM email_accounts WHERE id = :id"
+            ), {"id": account_id})).fetchone()
+            acc_email = (acc.email_address if acc else "") or ""
 
-        # The thread-status authority does the whole-thread determination + write
-        # (over the SAME context, with the just-sent reply folded in). Outbound
-        # trigger: the owner replied, so this may move a DONE thread.
-        result = await recompute_thread_status(
-            db, account_id, thread_id, trigger="outbound",
-            about=about, acc_email=acc_email,
-            pending_reply=(sent_body, sent_subject or "") if sent_body else None)
-        await db.commit()
+            # The thread-status authority does the whole-thread determination +
+            # write (over the SAME context, with the just-sent reply folded
+            # in). Outbound trigger: the owner replied, so this may move a DONE
+            # thread.
+            result = await recompute_thread_status(
+                db, account_id, thread_id, trigger="outbound",
+                about=about, acc_email=acc_email,
+                pending_reply=(sent_body, sent_subject or "") if sent_body else None)
         if result is None:
             return
         _rz_status, new_cat = result
 
-        # Reconcile the thread to a SINGLE conversation label (mutually exclusive,
-        # inbox-zero parity): clear any stale Reply / Awaiting / FYI / Follow-up
-        # across the thread and apply the new status label. Needs the provider.
+        # Reconcile the thread to a SINGLE conversation label (mutually
+        # exclusive, inbox-zero parity): clear any stale Reply / Awaiting / FYI /
+        # Follow-up across the thread and apply the new status label. Needs the
+        # provider.
         if not acc:
             return
         from acb_llm.key_store import get_key_store  # noqa: PLC0415
@@ -943,15 +951,13 @@ async def _mark_thread_replied(
         provider = _instantiate_provider(acc.provider, creds)
         if not await provider.authenticate():
             return
-        await _reconcile_thread_labels(
-            db, provider, account_id, thread_id, new_cat)
-        if provider.credentials_dirty():
-            await _persist_rotated_creds(db, store, account_id, provider)
-        await db.commit()
+        async with _tenant_session() as db:
+            await _reconcile_thread_labels(
+                db, provider, account_id, thread_id, new_cat)
+            if provider.credentials_dirty():
+                await _persist_rotated_creds(db, store, account_id, provider)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.mark_thread_replied_failed", error=str(exc)[:160])
-    finally:
-        await db.close()
 
 
 async def _reconcile_labels_bg(
@@ -1004,49 +1010,53 @@ async def apply_thread_status_correction(
     OVERRIDDEN — the only correction that sticks is to set the status directly and
     swap the labels. ``status_key`` is REPLY / AWAITING_REPLY / FYI / DONE
     (legacy TO_REPLY / ACTIONED still accepted).
-    Best-effort; returns ``{ok, status, label}``."""
+    Best-effort; returns ``{ok, status, label}``.
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): three ``_tenant_session()``
+    blocks with the ambient tenant, and no ``commit()``. The Fix route calls
+    this inside its request, and the label learner calls it after its own
+    block closes, inside the sync loop's binding. Block A writes the status.
+    Block B reads the account. The provider authenticates with no session
+    open. Block C swaps the labels and persists rotated credentials.
+    """
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status_key), ("", ""))
     if not rz_status or not thread_id:
         return {"ok": False}
-    # H4: mixed callers — apply_thread_status_correction also runs from the
-    # background sync's label learner (_apply_label_status_corrections);
-    # needs an explicit tenant from the account row.
-    db = await _get_db()
     try:
-        latest = (await db.execute(text(
-            "SELECT id, received_at FROM email_messages "
-            "WHERE account_id = :aid AND thread_id = :tid "
-            "ORDER BY received_at DESC NULLS LAST LIMIT 1"
-        ), {"aid": account_id, "tid": thread_id})).fetchone()
-        await _upsert_thread_status(
-            db, account_id, thread_id, rz_status,
-            latest.id if latest else None,
-            latest.received_at if latest else None, "Fix correction")
-        await db.commit()
+        async with _tenant_session() as db:
+            latest = (await db.execute(text(
+                "SELECT id, received_at FROM email_messages "
+                "WHERE account_id = :aid AND thread_id = :tid "
+                "ORDER BY received_at DESC NULLS LAST LIMIT 1"
+            ), {"aid": account_id, "tid": thread_id})).fetchone()
+            await _upsert_thread_status(
+                db, account_id, thread_id, rz_status,
+                latest.id if latest else None,
+                latest.received_at if latest else None, "Fix correction")
         # Best-effort: swap the provider/local labels to the corrected status.
-        acc = (await db.execute(text(
-            "SELECT provider, credentials_encrypted FROM email_accounts "
-            "WHERE id = :id"
-        ), {"id": account_id})).fetchone()
+        async with _tenant_session() as db:
+            acc = (await db.execute(text(
+                "SELECT provider, credentials_encrypted FROM email_accounts "
+                "WHERE id = :id"
+            ), {"id": account_id})).fetchone()
         if acc:
             from acb_llm.key_store import get_key_store  # noqa: PLC0415
             store = get_key_store()
             creds = json.loads(store.decrypt(acc.credentials_encrypted))
             provider = _instantiate_provider(acc.provider, creds)
             if await provider.authenticate():
-                await _reconcile_thread_labels(
-                    db, provider, account_id, thread_id, label)
-                if provider.credentials_dirty():
-                    await _persist_rotated_creds(db, store, account_id, provider)
-                await db.commit()
+                async with _tenant_session() as db:
+                    await _reconcile_thread_labels(
+                        db, provider, account_id, thread_id, label)
+                    if provider.credentials_dirty():
+                        await _persist_rotated_creds(
+                            db, store, account_id, provider)
         return {"ok": True, "status": rz_status, "label": label}
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.apply_status_correction_failed",
                      account_id=account_id, error=str(exc)[:160])
         return {"ok": False}
-    finally:
-        await db.close()
 
 
 # How many newly-detected outbound replies (sent threads) get the full AI status
@@ -1059,6 +1069,65 @@ async def apply_thread_status_correction(
 _REPLY_DETERMINE_CAP = 40
 # How many inbound gap threads get an engine match (classification) per cycle.
 _BACKFILL_INBOUND_CAP = 25
+
+
+def _split_backfill_rows(
+    rows: list[Any], existing: dict[str, tuple[str, str]],
+) -> tuple[list[str], list[Any], list[Any]]:
+    """Split the backfill rows into (sent thread ids, inbox gap rows, filed
+    rows). Pure: it touches no database, so the backfill can split its reads
+    before it opens its write phases (EM-T1b-2)."""
+    sent_threads: list[str] = []
+    gap_inbound: list[Any] = []
+    filed_rows: list[Any] = []
+    for r in rows:
+        prev = existing.get(r.thread_id)
+        provisional = bool(prev) and prev[1].endswith("· auto")
+        if prev and prev[0] == str(r.id) and not provisional:
+            continue  # latest message unchanged + confidently classified
+        folder = (r.folder or "").lower()
+        if folder == "sent":
+            # New outbound message (CC reply OR native-client reply) →
+            # re-determine status with the AI and swap labels, exactly like a
+            # CC send. Capped per cycle; threads past the cap are left
+            # UNWRITTEN (not blind-AWAITING) so they retry next cycle.
+            if len(sent_threads) < _REPLY_DETERMINE_CAP:
+                sent_threads.append(r.thread_id)
+            # else: overflow — leave it for the next cycle, never guess.
+        elif folder == "inbox":
+            gap_inbound.append(r)
+        else:
+            filed_rows.append(r)
+    return sent_threads, gap_inbound, filed_rows
+
+
+async def _write_filed_fyi(account_id: str, filed_rows: list[Any]) -> None:
+    """The filed phase of the Reply Zero backfill: one block that writes every
+    filed thread as FYI. Its failure is logged and stays HERE, so the sent
+    threads that come after it still run (EM-T1b-2 fix round 1)."""
+    if not filed_rows:
+        return
+    try:
+        async with _tenant_session() as db:
+            for r in filed_rows:
+                # Inbound-last, but the user already FILED it (archived, or
+                # moved to one of their own folders). Filing it is the answer:
+                # they dealt with it, so it is FYI and stays out of the Reply
+                # view.
+                #
+                # Deterministic on purpose. These are the bulk of an old
+                # mailbox — 2,622 of 3,191 unclassified threads on the live
+                # account — and spending a model call apiece to re-litigate
+                # mail the user has already put away is exactly the token
+                # waste this pipeline was asked to stop. preserve_done keeps an
+                # explicit Done intact.
+                await _upsert_thread_status(
+                    db, account_id, r.thread_id, "FYI", r.id, r.received_at,
+                    "Filed without a reply — treated as handled.",
+                    preserve_done=True)
+    except Exception as exc:
+        _log.warning("email.classify_filed_failed", account_id=account_id,
+                     error=str(exc)[:200])
 
 
 async def _maybe_classify_threads(account_id: str) -> None:
@@ -1080,186 +1149,163 @@ async def _maybe_classify_threads(account_id: str) -> None:
     broadcasts out of "Reply") and projected via the matched conversation-status
     rule (FYI when none matches). Touches threads whose latest message changed OR
     whose stored status is provisional ("· auto" — a prior LLM fallback), so a
-    guessed AWAITING self-heals. Caps work per cycle. Best-effort (never raises)."""
-    # H4: scheduler post-sync hook path; no ambient tenant to inherit.
-    db = await _get_db()
+    guessed AWAITING self-heals. Caps work per cycle. Best-effort (never raises).
+
+    EM-T1b-2 (``email_app_master_plan.md`` §10.4.2): the backfill runs in
+    phases, and each phase is its own ``_tenant_session()`` with the ambient
+    tenant, which the sync loop or the request binds. No phase calls
+    ``commit()``. Phase 0 reads, and the rows split in Python. Phase 1 writes
+    every filed thread as FYI. Each sent thread then goes to
+    ``_mark_thread_replied`` with NO session open, because that call spends a
+    model call in sessions of its own. Phase 2 reads the gap attachments and
+    the account. The provider authenticates with no session open. Each gap
+    thread gets one block, and a last block persists rotated credentials.
+    """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
             LLMUnavailable,
             classify_matches,
             email_dict_from_row,
         )
-        # Select threads that NEED WORK, not simply the newest ones.
-        #
-        # This used to take the 200 most recent threads from the last 30 days and
-        # skip the ones already classified. On a real mailbox those 200 are
-        # exactly the already-classified ones, so the backfill spun without
-        # reaching anything older — measured live: 295 of 3,487 threads (8.5%)
-        # had a status, and mail older than a month could never acquire one.
-        # Filtering in SQL means every cycle picks up 200 threads that actually
-        # need doing, and the backlog drains instead of standing still.
-        rows = (await db.execute(text(
-            """WITH latest AS (
-                 SELECT DISTINCT ON (thread_id) thread_id, id, subject,
-                        from_address, to_addresses, cc_addresses, body_text,
-                        snippet, folder, received_at
-                 FROM email_messages
-                 WHERE account_id = :aid AND thread_id IS NOT NULL
-                 ORDER BY thread_id, received_at DESC
-               )
-               SELECT l.* FROM latest l
-                 LEFT JOIN email_thread_status s
-                        ON s.account_id = :aid AND s.thread_id = l.thread_id
-                WHERE s.thread_id IS NULL
-                   OR s.last_message_id::text <> l.id::text
-                   OR COALESCE(s.reason, '') LIKE '%· auto'
-                -- Inbox first. Those are the threads that might still need a
-                -- reply, so they must not queue behind a filed backlog that is
-                -- both larger and already dealt with — ordering by date alone
-                -- put 2,622 archived threads ahead of the 273 live ones.
-                ORDER BY CASE LOWER(COALESCE(l.folder, ''))
-                           WHEN 'inbox' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END,
-                         l.received_at DESC
-                LIMIT 200"""
-        ), {"aid": account_id})).fetchall()
-        if not rows:
-            return
-        # Carry last_message_id + reason so we can both (a) skip threads whose
-        # latest message is unchanged, and (b) STILL re-determine a thread whose
-        # stored status is PROVISIONAL — a "· auto" reason means a prior LLM
-        # fallback guessed AWAITING. Those self-heal here instead of sticking.
-        existing = {
-            r.thread_id: (str(r.last_message_id), r.reason or "")
-            for r in (await db.execute(text(
-                "SELECT thread_id, last_message_id, reason "
-                "FROM email_thread_status WHERE account_id = :aid"
+        async with _tenant_session() as db:
+            # Select threads that NEED WORK, not simply the newest ones.
+            #
+            # This used to take the 200 most recent threads from the last 30
+            # days and skip the ones already classified. On a real mailbox those
+            # 200 are exactly the already-classified ones, so the backfill spun
+            # without reaching anything older — measured live: 295 of 3,487
+            # threads (8.5%) had a status, and mail older than a month could
+            # never acquire one. Filtering in SQL means every cycle picks up 200
+            # threads that actually need doing, and the backlog drains instead
+            # of standing still.
+            rows = (await db.execute(text(
+                """WITH latest AS (
+                     SELECT DISTINCT ON (thread_id) thread_id, id, subject,
+                            from_address, to_addresses, cc_addresses, body_text,
+                            snippet, folder, received_at
+                     FROM email_messages
+                     WHERE account_id = :aid AND thread_id IS NOT NULL
+                     ORDER BY thread_id, received_at DESC
+                   )
+                   SELECT l.* FROM latest l
+                     LEFT JOIN email_thread_status s
+                            ON s.account_id = :aid AND s.thread_id = l.thread_id
+                    WHERE s.thread_id IS NULL
+                       OR s.last_message_id::text <> l.id::text
+                       OR COALESCE(s.reason, '') LIKE '%· auto'
+                    -- Inbox first. Those are the threads that might still need a
+                    -- reply, so they must not queue behind a filed backlog that is
+                    -- both larger and already dealt with — ordering by date alone
+                    -- put 2,622 archived threads ahead of the 273 live ones.
+                    ORDER BY CASE LOWER(COALESCE(l.folder, ''))
+                               WHEN 'inbox' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END,
+                             l.received_at DESC
+                    LIMIT 200"""
             ), {"aid": account_id})).fetchall()
-        }
-        # Thread-status classification only decides whether a thread needs a
-        # reply — the knowledge base is drafting facts, pure noise + token cost
-        # in this prompt. Drop it (3.5).
-        about, _sig = await _load_assistant_about(
-            db, account_id, include_kb=False)
-        acc = (await db.execute(text(
-            "SELECT email_address FROM email_accounts WHERE id = :id"
-        ), {"id": account_id})).fetchone()
-        self_email = (acc.email_address if acc else "") or ""
-        extra_domains = await resolve_org_domains(db, account_id)
+            if not rows:
+                return
+            # Carry last_message_id + reason so we can both (a) skip threads
+            # whose latest message is unchanged, and (b) STILL re-determine a
+            # thread whose stored status is PROVISIONAL — a "· auto" reason
+            # means a prior LLM fallback guessed AWAITING. Those self-heal here
+            # instead of sticking.
+            existing = {
+                r.thread_id: (str(r.last_message_id), r.reason or "")
+                for r in (await db.execute(text(
+                    "SELECT thread_id, last_message_id, reason "
+                    "FROM email_thread_status WHERE account_id = :aid"
+                ), {"aid": account_id})).fetchall()
+            }
+            # Thread-status classification only decides whether a thread needs
+            # a reply — the knowledge base is drafting facts, pure noise +
+            # token cost in this prompt. Drop it (3.5).
+            about, _sig = await _load_assistant_about(
+                db, account_id, include_kb=False)
+            acc = (await db.execute(text(
+                "SELECT email_address FROM email_accounts WHERE id = :id"
+            ), {"id": account_id})).fetchone()
+            self_email = (acc.email_address if acc else "") or ""
+            extra_domains = await resolve_org_domains(db, account_id)
 
-        gap_inbound = []
-        sent_handled = 0
-        filed = 0
-        for r in rows:
-            prev = existing.get(r.thread_id)
-            provisional = bool(prev) and prev[1].endswith("· auto")
-            if prev and prev[0] == str(r.id) and not provisional:
-                continue  # latest message unchanged + confidently classified
-            folder = (r.folder or "").lower()
-            if folder == "sent":
-                # New outbound message (CC reply OR native-client reply) →
-                # re-determine status with the AI and swap labels, exactly like a
-                # CC send. Capped per cycle; threads past the cap are left
-                # UNWRITTEN (not blind-AWAITING) so they retry next cycle.
-                if sent_handled < _REPLY_DETERMINE_CAP:
-                    # End OUR transaction before the model call.
-                    #
-                    # `_mark_thread_replied` opens its own session and spends a
-                    # full LLM determination in it. Ours has been in a
-                    # transaction since the reads above, so without this commit
-                    # it sits `idle in transaction` — holding ACCESS SHARE on
-                    # every table it touched — for the length of that call,
-                    # times up to _REPLY_DETERMINE_CAP consecutive sent threads.
-                    #
-                    # That is the exact shape that took production down on
-                    # 2026-08-06: a session parked mid-LLM-call, a migration's
-                    # ALTER TABLE queued behind its lock, and Postgres's FIFO
-                    # lock queue then stalling every later reader of that table.
-                    #
-                    # The acb_llm wall-clock ceiling and the 600s
-                    # idle_in_transaction_session_timeout bound that damage;
-                    # this removes its cause. The ceiling alone is NOT enough
-                    # here — 40 capped calls idle well past 600s, at which point
-                    # Postgres kills this session and the upserts accumulated
-                    # below are lost with it. Committing first is what makes the
-                    # backstop and this loop safe together.
-                    await db.commit()
-                    await _mark_thread_replied(account_id, r.thread_id)
-                    sent_handled += 1
-                # else: overflow — leave it for the next cycle, never guess.
-            elif folder == "inbox":
-                gap_inbound.append(r)
-            else:
-                # Inbound-last, but the user already FILED it (archived, or moved
-                # to one of their own folders). Filing it is the answer: they
-                # dealt with it, so it is FYI and stays out of the Reply view.
-                #
-                # Deterministic on purpose. These are the bulk of an old mailbox
-                # — 2,622 of 3,191 unclassified threads on the live account — and
-                # spending a model call apiece to re-litigate mail the user has
-                # already put away is exactly the token waste this pipeline was
-                # asked to stop. preserve_done keeps an explicit Done intact.
-                await _upsert_thread_status(
-                    db, account_id, r.thread_id, "FYI", r.id, r.received_at,
-                    "Filed without a reply — treated as handled.",
-                    preserve_done=True)
-                filed += 1
-        await db.commit()
+        sent_threads, gap_inbound, filed_rows = _split_backfill_rows(
+            rows, existing)
+
+        # Its own phase with its own handler: a failed filed write must not
+        # skip the sent threads of this cycle.
+        await _write_filed_fyi(account_id, filed_rows)
+
+        for tid in sent_threads:
+            # NO session of ours is open here. `_mark_thread_replied` opens its
+            # own sessions and spends a full LLM determination in one.
+            #
+            # A session held open across that call sits `idle in transaction`,
+            # holding ACCESS SHARE on every table it touched, for the length of
+            # the call, times up to _REPLY_DETERMINE_CAP consecutive sent
+            # threads. That is the exact shape that took production down on
+            # 2026-08-06: a session parked mid-LLM-call, a migration's ALTER
+            # TABLE queued behind its lock, and Postgres's FIFO lock queue then
+            # stalling every later reader of that table.
+            await _mark_thread_replied(account_id, tid)
 
         gap = gap_inbound[:_BACKFILL_INBOUND_CAP]  # cap engine work per cycle
-        gap_attach = await _attachment_summaries(db, [r.id for r in gap])
+        if not gap:
+            return
         # The provider is needed to collapse a thread's labels upstream as well
         # as locally. Fetched once, and only when there is inbound work — an
         # auth failure must not stop the deterministic passes above.
-        provider = store = None
-        if gap:
+        async with _tenant_session() as db:
+            gap_attach = await _attachment_summaries(db, [r.id for r in gap])
             acc_row = (await db.execute(text(
                 "SELECT provider, credentials_encrypted FROM email_accounts "
                 "WHERE id = :id"
             ), {"id": account_id})).fetchone()
-            if acc_row:
-                from acb_llm.key_store import get_key_store  # noqa: PLC0415
-                store = get_key_store()
-                creds = json.loads(store.decrypt(acc_row.credentials_encrypted))
-                provider = _instantiate_provider(acc_row.provider, creds)
-                if not await provider.authenticate():
-                    provider = None
+        provider = store = None
+        if acc_row:
+            from acb_llm.key_store import get_key_store  # noqa: PLC0415
+            store = get_key_store()
+            creds = json.loads(store.decrypt(acc_row.credentials_encrypted))
+            provider = _instantiate_provider(acc_row.provider, creds)
+            if not await provider.authenticate():
+                provider = None
         for r in gap:
             # extra_domains is a KEYWORD arg (positional lands it in self_name).
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=extra_domains,
                 attachments=gap_attach.get(str(r.id), ""))
-            # Match + full-thread status determination through the shared
-            # enforcement point (the SAME #110 path the live runner uses).
-            try:
-                matches = await classify_matches(
-                    db, account_id, r, email,
-                    multi_rule=False, resolve=True, provider=provider)
-            except LLMUnavailable:
-                # Classifier down for this one — skip it (this backfill writes no
-                # watermark, so the gap query re-selects it next cycle) rather
-                # than abort the whole batch on the outer handler.
-                continue
-            keep_label = await project_reply_status_from_matches(
-                db, account_id, r, matches)
-            # Collapse the thread to that ONE conversation label. This backfill
-            # wrote the status row but never reconciled the labels, so earlier
-            # messages kept whatever they were tagged with and a thread ended up
-            # wearing Reply AND Awaiting AND Done at once — 68 threads on the
-            # live account. The status row and the labels are two views of one
-            # decision; writing only the first is what let them disagree.
-            if keep_label:
-                await _reconcile_thread_labels(
-                    db, provider, account_id, r.thread_id, keep_label)
-            await db.commit()
+            # One block per gap thread. It lands where the per-thread commit
+            # used to land. EM-T4 owns the model and provider I/O inside it.
+            async with _tenant_session() as db:
+                # Match + full-thread status determination through the shared
+                # enforcement point (the SAME #110 path the live runner uses).
+                try:
+                    matches = await classify_matches(
+                        db, account_id, r, email,
+                        multi_rule=False, resolve=True, provider=provider)
+                except LLMUnavailable:
+                    # Classifier down for this one — skip it (this backfill
+                    # writes no watermark, so the gap query re-selects it next
+                    # cycle) rather than abort the whole batch on the outer
+                    # handler.
+                    continue
+                keep_label = await project_reply_status_from_matches(
+                    db, account_id, r, matches)
+                # Collapse the thread to that ONE conversation label. This
+                # backfill wrote the status row but never reconciled the labels,
+                # so earlier messages kept whatever they were tagged with and a
+                # thread ended up wearing Reply AND Awaiting AND Done at once —
+                # 68 threads on the live account. The status row and the labels
+                # are two views of one decision; writing only the first is what
+                # let them disagree.
+                if keep_label:
+                    await _reconcile_thread_labels(
+                        db, provider, account_id, r.thread_id, keep_label)
         if provider is not None and store is not None \
                 and provider.credentials_dirty():
-            await _persist_rotated_creds(db, store, account_id, provider)
-            await db.commit()
+            async with _tenant_session() as db:
+                await _persist_rotated_creds(db, store, account_id, provider)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.classify_threads_failed",
                      account_id=account_id, error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 # Reclassify progress, so the UI (or a poller) can watch a whole-mailbox rebuild

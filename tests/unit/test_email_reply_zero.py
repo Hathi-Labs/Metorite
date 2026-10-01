@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.routes import email as m
 
+from tests.unit._email_fakes import bind_db
+
 _eng = m.automation.engine
 _rz = m.automation.replyzero
 
@@ -305,7 +307,7 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
     to_reply_match = {"rule": {"name": "Reply", "system_type": None},
                       "reason": "asks a question", "source": "ai"}
     mark = AsyncMock()
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", bind_db(db)), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
@@ -332,7 +334,7 @@ async def test_backfill_leaves_overflow_unwritten_for_retry() -> None:
     db = _backfill_db(latest, [])
     writes: list[tuple[str, str]] = []
     mark = AsyncMock()
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", bind_db(db)), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
@@ -358,7 +360,7 @@ async def test_backfill_reprocesses_provisional_auto_thread() -> None:
         reason="Replied — AWAITING_REPLY · auto")]
     db = _backfill_db(latest, existing)
     mark = AsyncMock()
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", bind_db(db)), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
@@ -438,7 +440,7 @@ async def test_backfill_marks_fyi_when_no_conversation_rule_matches() -> None:
     def rec(_db, _aid, tid, status, *_a, **_kw):
         recorded.append((tid, status))
 
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", bind_db(db)), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status",
@@ -461,7 +463,7 @@ async def test_backfill_skips_unchanged_threads() -> None:
         thread_id="t4", last_message_id="m4", reason="Auto-classified")]
     db = _backfill_db(latest, existing)
     match = AsyncMock()
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", bind_db(db)), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
@@ -614,43 +616,49 @@ async def test_recompute_inbound_preserves_done_and_flags_fallback() -> None:
     assert det.await_args.kwargs["user_sent_last"] is False
 
 
-async def test_backfill_commits_before_every_model_call() -> None:
+async def test_backfill_holds_no_session_across_a_model_call() -> None:
     """The backfill must not sit `idle in transaction` across an LLM call.
 
-    `_mark_thread_replied` opens its OWN session and spends a full LLM
-    determination in it. This function's session has been in a transaction since
-    the reads at the top, so without an explicit commit it sits `idle in
-    transaction` — holding ACCESS SHARE on every table it touched — for the
-    length of that call, times up to `_REPLY_DETERMINE_CAP` sent threads.
+    `_mark_thread_replied` opens its OWN sessions and spends a full LLM
+    determination in one. A session of the backfill held open across that call
+    sits `idle in transaction` — holding ACCESS SHARE on every table it touched
+    — for the length of the call, times up to `_REPLY_DETERMINE_CAP` sent
+    threads.
 
     That is the shape that took production down on 2026-08-06: a parked session,
     a migration's ALTER TABLE queued behind its lock, and Postgres's FIFO lock
     queue then stalling every later reader of the table — including the one the
-    send path makes. The acb_llm ceiling and the 600s
-    idle_in_transaction_session_timeout bound the damage; committing first
-    removes the cause. The ceiling alone is NOT sufficient here: 40 capped calls
-    idle well past 600s, at which point Postgres kills the session and the
-    upserts accumulated in this loop are lost with it.
+    send path makes.
 
-    Asserts ORDER, not merely that commit was called — a commit after the model
-    call would satisfy a presence check while leaving the lock held throughout.
+    EM-T1b-2 replaced the commit before each call with phases: every
+    `_tenant_session()` block closes before the first sent thread goes to
+    `_mark_thread_replied`. So this asserts that NO block is open during each
+    model call, which is stronger than "a commit came first".
     """
     latest = [
         _row("t1", "m1", "me@x.com", "sent"),
         _row("t2", "m2", "me@x.com", "sent"),
+        _row("t3", "m3", "a@b.com", "archive"),
     ]
     db = _backfill_db(latest, [])
-    order: list[str] = []
+    state = {"open": 0, "opens": 0}
+    seen: list[int] = []
 
-    async def _commit() -> None:
-        order.append("commit")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _ts():
+        state["open"] += 1
+        state["opens"] += 1
+        try:
+            yield db
+        finally:
+            state["open"] -= 1
 
     async def _mark(*_a, **_kw) -> None:
-        order.append("model-call")
+        seen.append(state["open"])
 
-    db.commit = AsyncMock(side_effect=_commit)
-
-    with patch.object(_rz, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_rz, "_tenant_session", _ts), \
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied",
@@ -659,10 +667,8 @@ async def test_backfill_commits_before_every_model_call() -> None:
             patch.object(_rz, "_reconcile_thread_labels", AsyncMock()):
         await m._maybe_classify_threads("acc-1")
 
-    assert "model-call" in order, "the sent-thread path never ran"
-    for i, event in enumerate(order):
-        if event == "model-call":
-            assert i > 0 and order[i - 1] == "commit", (
-                f"model call at position {i} is not immediately preceded by a "
-                f"commit — the transaction is held across it. Order: {order}"
-            )
+    assert seen == [0, 0], (
+        f"a session was open during a model call: open counts {seen}"
+    )
+    # The read phase and the filed-FYI phase each opened a block of their own.
+    assert state["opens"] == 2 and state["open"] == 0
