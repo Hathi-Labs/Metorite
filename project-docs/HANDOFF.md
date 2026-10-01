@@ -1197,35 +1197,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 · `specs/engineering_practice.md` (security)
 - **Added:** 2026-08-14 · carried from the session that refused them
 
-### H-5 · Flip `PROJECTS_ORG_VOCABULARIES` when org-wide creates should go live · [OWNER]
-- **2026-10-01 — the owner ruled YES, once removal ships.** WS-42 PS-3b
-  builds the delete, the merge and the Add form. The flip follows its deploy,
-  under the `enforcement-flip` grant, and this entry closes with it.
-- **2026-09-29 — the surface this entry waited for is built (WS-42 PS-3).**
-  Projects, Settings, Shared vocabulary lists every org-wide tag, field and
-  type, with rename and a tag colour. Two things stay true after a flip. No
-  settings screen creates an org-wide row yet. The flip opens the API and the
-  Projects chat, whose create writes send `scope: "org"`. A create in Shared
-  vocabulary is built in PS-3b, with delete and merge (H-205, ruled 2026-10-01).
-- **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
-  The flip waited for the admin surface (H-4, built as WS-42 PS-3). Creating an org-wide row is
-  easy and un-creating it is the hard part, so a member could mint rows
-  nobody can then manage. Measured the same day: the flag is unset in
-  production and both databases hold zero org-wide rows, so nothing is
-  reachable today either way.
-- **Check:** the variable's value on the box → unset or `0`/`off`/`false` means
-  still dark.
-- **Why:** Default OFF and it gates **only** the affordance that *creates* an
-  org-wide row, never the read union — which is already on and inert until a row
-  exists. Flipping it is a restart, not a release.
-  ⚠️ **Corrected 2026-08-26: this said "Requires H-1 first", and H-1 has been
-  deleted.** What it meant — *the code that reads the flag must be on the box* — is
-  now satisfied by construction: delivery is automatic again and the last deploy had
-  nothing to apply. The remaining precondition is the ordinary one: the flag is a
-  live env write, so it is owner-gated.
-- **Authority:** `specs/project_management_app.md` §9.11 · `work_plan.md` §6
-- **Added:** 2026-08-14 · session that built WS-27bj
-
 ### H-7 · `now()` can move backwards, and migration 168's keyset cursor assumes it cannot · [AGENT]
 - **Check:** `rg -n "updated_at, id" infra/postgres/168*.sql` → the delta feed's
   cursor still ordering on `(updated_at, id)` with no monotonic guarantee means
