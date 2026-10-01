@@ -537,7 +537,7 @@ async def tag_impact(
             require_known_tenant(vis, "tag")
         else:
             await load_visible_project(db, vis, str(existing.project_id))
-        where, params = governed_tasks_scope(existing)
+        where, params = governed_tasks_scope(existing, "pm_tags")
         row = (await db.execute(
             text(
                 f"SELECT count(*) AS tasks, "
@@ -569,13 +569,25 @@ async def merge_tag(
     async with _tenant_session() as db:
         source = await require_row(db, "pm_tags", tag_id, "Tag")
         target = await require_row(db, "pm_tags", payload.into_tag_id, "Tag")
-        # Both ends: merging INTO an org-wide tag would rewrite tasks across one
-        # project only while claiming an organization-wide result, and merging
-        # one AWAY would delete a row every other project is still using.
-        refuse_org_wide_write(source, "tag")
-        refuse_org_wide_write(target, "tag")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(source.project_id))
+        # H-205 (owner, 2026-10-01): a shared tag merges into another SHARED
+        # tag, organization-wide, by somebody who can change organization
+        # settings. A shared tag into a space's tag, or the reverse, stays
+        # refused: one end would change every space and the other only one.
+        if is_org_wide(source) != is_org_wide(target):
+            raise HTTPException(
+                status_code=409,
+                detail="A shared tag merges only into another shared tag, and a "
+                       "space's tag only into a tag of the same space.",
+            )
+        if is_org_wide(source):
+            # H-205 (owner, 2026-10-01): a shared tag may be merged by
+            # somebody who can change organization settings, after the count.
+            require_org_vocabulary_edit(user, source.name)
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "tag")
+        else:
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(source.project_id))
         if str(source.project_id) != str(target.project_id):
             # 404-shaped rather than 403 (R5), but the reason is worth saying:
             # tags are root-scoped, so a cross-project merge would move a label
@@ -612,10 +624,16 @@ async def delete_tag(
     """
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_tags", tag_id, "Tag")
-        refuse_org_wide_write(existing, "tag")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
-        where, params = governed_tasks_scope(existing)
+        if is_org_wide(existing):
+            # H-205 (owner, 2026-10-01): a shared tag may be deleted by
+            # somebody who can change organization settings, after the count.
+            require_org_vocabulary_edit(user, existing.name)
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "tag")
+        else:
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
+        where, params = governed_tasks_scope(existing, "pm_tags")
         stripped = (await db.execute(
             text(
                 f"UPDATE pm_tasks SET tags = array_remove(tags, :name) "
@@ -665,7 +683,7 @@ async def _rewrite(db: Any, owner: Any, before: str, after: str) -> int:
     sends the literal string ``"None"`` into a uuid cast. See
     :func:`governed_tasks_scope`.
     """
-    where, params = governed_tasks_scope(owner)
+    where, params = governed_tasks_scope(owner, "pm_tags")
     rows = (await db.execute(
         text(
             f"SELECT id, tags FROM pm_tasks WHERE {where} AND :before = ANY(tags)"

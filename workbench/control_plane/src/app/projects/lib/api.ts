@@ -2267,6 +2267,12 @@ export const projectsApi = {
   /** WS-42 PS-3 — the organization's shared vocabulary, for Projects settings. */
   vocabulary: () => call<OrgVocabulary>("vocabulary"),
 
+  /** H-205 — what deleting or merging one SHARED entry would change, first. */
+  vocabularyImpact: (kind: "tags" | "fields" | "types", id: string) =>
+    call<{ name: string; tasks: number; projects: number }>(
+      `vocabulary/${kind}/${encodeURIComponent(id)}/impact`,
+    ),
+
   createField: (projectId: string, payload: Record<string, unknown>) =>
     call<FieldRow>(`nodes/${projectId}/fields`, {
       method: "POST",

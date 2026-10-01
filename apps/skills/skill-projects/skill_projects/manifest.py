@@ -330,6 +330,14 @@ MANIFEST: tuple[Route, ...] = (
         "A settings list for people. The chat reads a space's effective tags, "
         "fields and types through the per-space reads, which include these rows.",
     ),
+    Route(
+        "GET",
+        "/projects/vocabulary/{kind}/{row_id}/impact",
+        "",
+        "X",
+        "The count shown before an admin deletes or merges a shared entry in "
+        "Projects settings. The chat neither deletes nor merges shared entries.",
+    ),
     # ── assignees.py ─────────────────────────────────────────────────────
     Route("GET", "/projects/people/names", "people_for", "A"),
     Route("GET", "/projects/assignees", "people_for", "A"),

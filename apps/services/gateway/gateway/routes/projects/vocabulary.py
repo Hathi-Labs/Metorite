@@ -4,6 +4,7 @@ Spec: ``project-docs/specs/projects_settings.md`` §7 row PS-3, and
 ``project_management_app.md`` §9.11.2 (D-PM-33).
 
     GET    /projects/vocabulary
+    GET    /projects/vocabulary/{kind}/{row_id}/impact
 
 Until this route, an org-wide row (``project_id IS NULL``, migration 175) was
 visible only as one member of a space's union, and no read listed the
@@ -26,15 +27,20 @@ read does the same, and a member without it gets the rows with no counts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     ORG_VOCABULARY_WRITE,
     TypeModel,
     _tenant_session,
+    governed_tasks_scope,
+    is_org_wide,
     org_vocabularies_enabled,
+    require_known_tenant,
+    require_org_vocabulary_edit,
+    require_row,
     resolve_visibility,
     router,
     row_to_dict,
@@ -114,7 +120,52 @@ async def org_vocabulary(user: UserContext = Depends(get_current_user)) -> dict:
         types = (await db.execute(text(ORG_TYPES_SQL), params)).fetchall()
     out["tags"] = [_with_count(_tag_row(r), r.task_count, can_edit) for r in tags]
     out["fields"] = [_with_count(_definition_row(r), r.task_count, can_edit) for r in fields]
-    out["types"] = [
-        _with_count(row_to_dict(r, TypeModel), r.task_count, can_edit) for r in types
-    ]
+    out["types"] = [_with_count(row_to_dict(r, TypeModel), r.task_count, can_edit) for r in types]
     return out
+
+
+#: H-205 — each kind's table, and the predicate on `pm_tasks` that finds the
+#: tasks a delete or merge of one row would change.
+IMPACT: dict[str, tuple[str, str, str]] = {
+    "tags": ("pm_tags", ":value = ANY(tags)", "name"),
+    "fields": ("pm_custom_fields", "custom_fields ? :value", "field_key"),
+    "types": ("pm_task_types", "type_id = CAST(:value AS uuid)", "id"),
+}
+
+
+@router.get("/vocabulary/{kind}/{row_id}/impact")
+async def vocabulary_impact(
+    kind: Literal["tags", "fields", "types"],
+    row_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """How many tasks, in how many spaces, a delete or merge of one SHARED row
+    would change (H-205), BEFORE it is asked for.
+
+    The same shape as ``GET /tags/{id}/impact`` (D-PM-33), widened to fields
+    and types. It counts archived tasks too, because the delete reaches them.
+    The scope is ``governed_tasks_scope``, so a space that keeps its own row
+    of the same identity is left out of the count, as it is of the write.
+    """
+    table, predicate, attr = IMPACT[kind]
+    async with _tenant_session() as db:
+        row = await require_row(db, table, row_id, "Entry")
+        if not is_org_wide(row):
+            raise HTTPException(status_code=409, detail="This entry belongs to one space.")
+        require_org_vocabulary_edit(user, row.name)
+        require_known_tenant(await resolve_visibility(db, user), "entry")
+        where, params = governed_tasks_scope(row, table)
+        counted = (
+            await db.execute(
+                text(
+                    "SELECT count(*) AS tasks, count(DISTINCT root_project_id) AS projects "
+                    f"  FROM pm_tasks WHERE {where} AND {predicate}"
+                ),
+                {**params, "value": str(getattr(row, attr))},
+            )
+        ).fetchone()
+    return {
+        "name": row.name,
+        "tasks": int(counted.tasks or 0),
+        "projects": int(counted.projects or 0),
+    }

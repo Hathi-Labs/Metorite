@@ -372,7 +372,7 @@ async def _count_with_key(db: Any, owner: Any, key: str) -> int:
     ``invalid UUID 'None': length must be between 32..36 characters, got 4``.
     The hermetic suite passed — it casts nothing (R8).
     """
-    where, params = governed_tasks_scope(owner)
+    where, params = governed_tasks_scope(owner, "pm_custom_fields")
     return int((await db.execute(
         text(
             f"SELECT count(*) FROM pm_tasks WHERE {where} AND custom_fields ? :key"
@@ -580,11 +580,16 @@ async def delete_field(
     """
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_custom_fields", field_id, "Custom field")
-        refuse_org_wide_write(existing, "custom field")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
-        root = str(existing.project_id)
-        where, params = governed_tasks_scope(existing)
+        if is_org_wide(existing):
+            # H-205 (owner, 2026-10-01): a shared custom field may be deleted by
+            # somebody who can change organization settings, after the count.
+            require_org_vocabulary_edit(user, existing.name)
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "custom field")
+        else:
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
+        where, params = governed_tasks_scope(existing, "pm_custom_fields")
         cleared = (await db.execute(
             text(
                 f"UPDATE pm_tasks SET custom_fields = custom_fields - :key "
@@ -616,7 +621,7 @@ async def _options_in_use(
     dropped = set(before) - set(after)
     if not dropped:
         return set()
-    where, params = governed_tasks_scope(owner)
+    where, params = governed_tasks_scope(owner, "pm_custom_fields")
     rows = (await db.execute(
         text(
             f"SELECT custom_fields -> :key AS value FROM pm_tasks "

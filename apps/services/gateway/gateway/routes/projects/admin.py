@@ -1101,9 +1101,15 @@ async def delete_type(
     """
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_types", type_id, "Task type")
-        refuse_org_wide_write(existing, "task type")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
+        if is_org_wide(existing):
+            # H-205 (owner, 2026-10-01): a shared task type may be deleted by
+            # somebody who can change organization settings, after the count.
+            require_org_vocabulary_edit(user, existing.name)
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "task type")
+        else:
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
         if getattr(existing, "is_system", False):
             raise HTTPException(
                 status_code=409,

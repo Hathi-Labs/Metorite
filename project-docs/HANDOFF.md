@@ -95,32 +95,6 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-205 · Decide how an organization-wide tag, field or type is retired · [OWNER]
-- **Check:** `rg -n "refuse_org_wide_write\(" apps/services/gateway/gateway/routes/projects/`
-  → present on the DELETE and MERGE paths means a shared row still cannot be retired.
-- **Why:** D-PM-33 allows a rename only. Shared vocabulary (WS-42 PS-3) now
-  lists every shared row, so an admin can see a wrong one and cannot remove it.
-  Two shapes exist. A delete strips the tag or field value off every task in
-  every space, and nothing restores it. A merge folds the row into another one.
-  Both reach spaces the admin may not open, so the owner rules first. Answer
-  this before H-5 flips, because a flip lets people mint rows.
-- **Authority:** `specs/project_management_app.md` §9.11.2 (D-PM-33), and
-  `specs/projects_settings.md` §7 row PS-3
-- **Added:** 2026-09-29 · WS-42 PS-3
-
-### H-203 · Decide whether a new task takes its space's default type · [OWNER]
-- **Check:** `rg -n "is_default" apps/services/gateway/gateway/routes/projects/tasks.py`
-  → no match means a new task still gets no type, whatever a space marks default.
-- **Why:** `pm_task_types.is_default` exists and every space seeds one default,
-  but `create_task` never reads it, so every new task is untyped. PS-2 dropped
-  its "make default" star, because the star promised "New tasks now start as
-  Bug" and nothing happened. Applying the default would put a type chip on
-  every new task in every organization, which is a product change and the
-  owner's to make. If yes, `create_task` fills `type_id` from the root's
-  default when the payload has none, and the star comes back.
-- **Authority:** `specs/projects_settings.md` §7 row PS-2, and the PS-2 review
-- **Added:** 2026-09-29 · WS-42 PS-2
-
 ### H-198 · 🟡 DEFERRED — agent webhooks need an owner before they can use AI · [OWNER+AGENT]
 - **Check:** `rg -n "^AGENT_WEBHOOK_SECRET" /opt/acb/app/.env` on the box. No
   hit means the door is still closed, and this stays deferred.
@@ -1224,12 +1198,15 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-14 · carried from the session that refused them
 
 ### H-5 · Flip `PROJECTS_ORG_VOCABULARIES` when org-wide creates should go live · [OWNER]
+- **2026-10-01 — the owner ruled YES, once removal ships.** WS-42 PS-3b
+  builds the delete, the merge and the Add form. The flip follows its deploy,
+  under the `enforcement-flip` grant, and this entry closes with it.
 - **2026-09-29 — the surface this entry waited for is built (WS-42 PS-3).**
   Projects, Settings, Shared vocabulary lists every org-wide tag, field and
   type, with rename and a tag colour. Two things stay true after a flip. No
   settings screen creates an org-wide row yet. The flip opens the API and the
   Projects chat, whose create writes send `scope: "org"`. A create in Shared
-  vocabulary is the next slice. A row still cannot be retired (H-205).
+  vocabulary is built in PS-3b, with delete and merge (H-205, ruled 2026-10-01).
 - **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
   The flip waited for the admin surface (H-4, built as WS-42 PS-3). Creating an org-wide row is
   easy and un-creating it is the hard part, so a member could mint rows

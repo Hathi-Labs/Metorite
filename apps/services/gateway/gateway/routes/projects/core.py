@@ -2057,7 +2057,7 @@ def require_org_vocabulary_edit(user: Any, what: str) -> None:
         )
 
 
-def governed_tasks_scope(row: Any) -> tuple[str, dict]:
+def governed_tasks_scope(row: Any, table: str | None = None) -> tuple[str, dict]:
     """The WHERE arm selecting the tasks a vocabulary row governs, and its params.
 
     🔴 **This replaces the bug ``refuse_org_wide_write`` was built to hide.**
@@ -2073,14 +2073,38 @@ def governed_tasks_scope(row: Any) -> tuple[str, dict]:
     the thing being renamed.
     """
     if is_org_wide(row):
-        return (
-            "organization_id = CAST(:scope AS uuid)",
-            {"scope": str(row.organization_id)},
-        )
+        where = "organization_id = CAST(:scope AS uuid)"
+        params: dict[str, Any] = {"scope": str(row.organization_id)}
+        if table in SHADOW_VALUE:
+            # ⚠️ H-205 — a space that holds its OWN row of this identity
+            # shadows the shared one (D-PM-16), and its tasks wear the space's
+            # tag or file under the space's field. Tags are TEXT and values
+            # are keyed by field_key, so an organization-wide rewrite would
+            # rename, strip or clear the space's own data. Those roots are
+            # left out. Task types need no exclusion: `type_id` is a key.
+            match, attr = SHADOW_VALUE[table]
+            where += (
+                " AND root_project_id NOT IN ("
+                f"  SELECT s.project_id FROM {table} s"
+                "   WHERE s.project_id IS NOT NULL"
+                "     AND s.organization_id = CAST(:scope AS uuid)"
+                f"    AND {match})"
+            )
+            params["shadow"] = getattr(row, attr)
+        return where, params
     return (
         "root_project_id = CAST(:scope AS uuid)",
         {"scope": str(row.project_id)},
     )
+
+
+#: The vocabularies whose task data is keyed by the row's identity, and the
+#: row attribute that identity reads (H-205). See `governed_tasks_scope`.
+#: Each mirrors that table's identity rule in `VOCABULARY_IDENTITY`.
+SHADOW_VALUE: dict[str, tuple[str, str]] = {
+    "pm_tags": ("lower(s.name) = lower(:shadow)", "name"),
+    "pm_custom_fields": ("s.field_key = :shadow", "field_key"),
+}
 
 
 #: The permission that may write the tenant's shared vocabulary.
