@@ -218,6 +218,11 @@ export interface PanelChrome {
   icon?: string;
   /** The section as a table. Absent, and the header has no table button. */
   table?: React.ReactNode;
+  /**
+   * WS-27bn R5g round 1. The card fills the height of its cell, so two
+   * cards in one row of the live Overview end at one line.
+   */
+  fill?: boolean;
 }
 
 export const PanelChromeContext = createContext<PanelChrome | null>(null);
@@ -262,7 +267,7 @@ function Panel({
   }, [tableOpen]);
   return (
     <section
-      className="rounded-lg border border-border bg-card p-3"
+      className={`rounded-lg border border-border bg-card p-3 ${chrome?.fill ? "h-full" : ""}`}
       aria-labelledby={titleId}
     >
       <header className="mb-3 flex items-start gap-2">

@@ -3659,6 +3659,18 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §6.5 · the UX pass verification, 2026-09-29
 - **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
+### H-206 · A browser that blocks storage breaks the whole app · [AGENT]
+- **Check:** `grep -n "window.localStorage" workbench/control_plane/src/components/OrgBrandLockup.tsx`
+  → an access with no try/catch around it means the entry is still open.
+- **Why:** `OrgBrandLockup.tsx` reads `window.localStorage` with no
+  try/catch. A browser can block site data, for example in a private window
+  or by policy. The access then throws, the sidebar fails, and no page
+  renders. The R5g implementer found this and could not run the
+  blocked-storage check of Overview in a browser. Wrap each access in
+  try/catch, and render the default when storage fails.
+- **Authority:** `specs/projects_reports.md` §8 R5g
+- **Added:** 2026-10-01 · the WS-27bn R5g session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

@@ -132,8 +132,6 @@ import {
   overviewState,
   overviewTableShown,
   parseReportLink,
-  previewNeeded,
-  initialShownKey,
   linkStep,
   REPORT_SECTIONS,
   reportsPane,
@@ -172,6 +170,24 @@ import {
   withSubject,
   yourReports,
 } from "../lib/reportBuilder";
+import {
+  BODY_ORDER,
+  type LiveTimerEnv,
+  type PreviewState,
+  bodyDimmed,
+  browserStorage,
+  browserTimerEnv,
+  createPreviewController,
+  gridSpans,
+  overviewFilterCount,
+  overviewSummary,
+  previewRequest,
+  readFiltersOpen,
+  startLive,
+  startTicker,
+  updatedLine,
+  writeFiltersOpen,
+} from "../lib/overviewLive";
 import { allClear, clearLine, sectionIsClear } from "../lib/sectionEmpty";
 import { sectionIcon } from "../lib/sectionIcons";
 import {
@@ -238,14 +254,17 @@ function Table({
 function SectionFrame({
   sectionKey,
   table,
+  fill,
   children,
 }: {
   sectionKey: string;
   table?: React.ReactNode;
+  /** R5g round 1. The card fills the height of its grid cell. */
+  fill?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <PanelChromeContext.Provider value={{ icon: sectionIcon(sectionKey), table }}>
+    <PanelChromeContext.Provider value={{ icon: sectionIcon(sectionKey), table, fill }}>
       {children}
     </PanelChromeContext.Provider>
   );
@@ -380,6 +399,7 @@ export function RenderedBody({
   hiddenHint,
   lead,
   showTitle = true,
+  layout = "column",
 }: {
   body: RenderedReportBody | PreviewReportBody;
   /**
@@ -400,10 +420,38 @@ export function RenderedBody({
    * shows the meta line only. A saved report shows its name.
    */
   showTitle?: boolean;
+  /**
+   * WS-27bn R5g (§6.7). `grid` is the live Overview: the panels flow in two
+   * columns at `xl`, and a wide panel spans both. The toolbar says the
+   * choices, so the header line goes. A saved report and the builder keep
+   * `column`, one readable measure.
+   */
+  layout?: "column" | "grid";
 }) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
+  const grid = layout === "grid";
+  // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
+  // with one panel alone.
+  const drawn = BODY_ORDER.filter((k) => (sections as Record<string, unknown>)[k]);
+  // R5g round 1. A clear row takes a full row. Stretched beside a chart, a
+  // one-line row reads as an empty card.
+  const clearKeys = new Set(
+    drawn.filter((k) => sectionIsClear(k, (sections as Record<string, never>)[k]))
+  );
+  const wide = grid ? gridSpans(drawn, clearKeys) : new Set<string>();
+  /** One cell of the Overview grid. In a column the section draws bare. */
+  // R5g round 1. The cells of one row stretch to one height, and each
+  // panel card fills its cell (`fill`), so a short card leaves no gap.
+  const cell = (key: string, node: React.ReactNode) =>
+    grid ? (
+      <div key={key} className={wide.has(key) ? "min-w-0 xl:col-span-2" : "min-w-0"}>
+        {node}
+      </div>
+    ) : (
+      node
+    );
   const tiles = reportTiles(sections);
   const tone = { done: done.text, late: late.text };
   // §6.6 D item 3. Every chosen section is clear: one calm card, and no row
@@ -415,12 +463,14 @@ export function RenderedBody({
 
   return (
     <div className="space-y-3">
-      <header className="space-y-1">
-        {showTitle && (
-          <h3 className="text-base font-semibold text-foreground">{body.report.name}</h3>
-        )}
-        <HeaderMeta line={line} />
-      </header>
+      {!grid && (
+        <header className="space-y-1">
+          {showTitle && (
+            <h3 className="text-base font-semibold text-foreground">{body.report.name}</h3>
+          )}
+          <HeaderMeta line={line} />
+        </header>
+      )}
 
       {tiles.length > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -447,14 +497,23 @@ export function RenderedBody({
       // 2026-09-17: at 1440 the rows ran the whole pane, so "Mobile App" sat
       // about 1200px from its own number and the eye could not join them. A
       // report body is a document, and a document has a column width.
-      <div className="max-w-3xl space-y-3">
+      // R5g: the live Overview is a dashboard, so its panels flow in a grid,
+      // and each cell is narrow enough to read.
+      <div
+        className={
+          grid ? "grid grid-cols-1 gap-3 xl:grid-cols-2" : "max-w-3xl space-y-3"
+        }
+      >
 
       {sections.finished &&
-        (sectionIsClear("finished", sections.finished) ? (
+        cell(
+          "finished",
+          sectionIsClear("finished", sections.finished) ? (
           <ClearRow sectionKey="finished" title="What we finished" />
         ) : (
           <SectionFrame
             sectionKey="finished"
+            fill={grid}
             table={
               <Table title="What we finished" count={sections.finished.projects.length}>
                 <p
@@ -497,11 +556,14 @@ export function RenderedBody({
         ))}
 
       {sections.throughput &&
-        (sectionIsClear("throughput", sections.throughput) ? (
+        cell(
+          "throughput",
+          sectionIsClear("throughput", sections.throughput) ? (
           <ClearRow sectionKey="throughput" title="How long it took" />
         ) : (
           <SectionFrame
             sectionKey="throughput"
+            fill={grid}
             table={
               <Table title="How long it took" count={sections.throughput.series.length}>
                 <p
@@ -544,11 +606,14 @@ export function RenderedBody({
       {/* WS-27bn R3a. Opt-in. The outlook route's own body, for this scope.
           The table says each figure the panel draws, in words. */}
       {sections.outlook &&
-        (sectionIsClear("outlook", sections.outlook) ? (
+        cell(
+          "outlook",
+          sectionIsClear("outlook", sections.outlook) ? (
           <ClearRow sectionKey="outlook" title="Forecast" />
         ) : (
           <SectionFrame
             sectionKey="outlook"
+            fill={grid}
             table={
               <Table title="Forecast">
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
@@ -582,11 +647,14 @@ export function RenderedBody({
         ))}
 
       {sections.stuck &&
-        (sectionIsClear("stuck", sections.stuck) ? (
+        cell(
+          "stuck",
+          sectionIsClear("stuck", sections.stuck) ? (
           <ClearRow sectionKey="stuck" title="Stuck work" />
         ) : (
           <SectionFrame
             sectionKey="stuck"
+            fill={grid}
             table={
               <Table title="Stuck work" count={sections.stuck.overdue.length}>
                 <p
@@ -616,11 +684,14 @@ export function RenderedBody({
         ))}
 
       {sections.load &&
-        (sectionIsClear("load", sections.load) ? (
+        cell(
+          "load",
+          sectionIsClear("load", sections.load) ? (
           <ClearRow sectionKey="load" title="Open work" />
         ) : (
           <SectionFrame
             sectionKey="load"
+            fill={grid}
             table={
               <Table title="Open work" count={sections.load.people.length}>
                 <p
@@ -657,11 +728,14 @@ export function RenderedBody({
       {/* WS-27bm S7a. Opt-in: only a report that asked for `capacity` has it.
           The rows and the hours are the capacity route's, verbatim. */}
       {sections.capacity &&
-        (sectionIsClear("capacity", sections.capacity) ? (
+        cell(
+          "capacity",
+          sectionIsClear("capacity", sections.capacity) ? (
           <ClearRow sectionKey="capacity" title="Who has the hours" />
         ) : (
           <SectionFrame
             sectionKey="capacity"
+            fill={grid}
             table={
               <Table title="Who has the hours" count={sections.capacity.people.length}>
                 <p
@@ -695,11 +769,14 @@ export function RenderedBody({
           period. The server removed the cards this reader may not see, and
           the table names each card and each focus task it sent. */}
       {sections.pulse &&
-        (sectionIsClear("pulse", sections.pulse) ? (
+        cell(
+          "pulse",
+          sectionIsClear("pulse", sections.pulse) ? (
           <ClearRow sectionKey="pulse" title="Team pulse" />
         ) : (
           <SectionFrame
             sectionKey="pulse"
+            fill={grid}
             table={
               <Table title="Team pulse" count={pulseRows(sections.pulse).length}>
                 <p
@@ -757,11 +834,14 @@ export function RenderedBody({
       {/* WS-27bn R3c. Opt-in. `hygiene_body`, read now and not over the
           period. The table names each task the server sent, kind by kind. */}
       {sections.hygiene &&
-        (sectionIsClear("hygiene", sections.hygiene) ? (
+        cell(
+          "hygiene",
+          sectionIsClear("hygiene", sections.hygiene) ? (
           <ClearRow sectionKey="hygiene" title="Data hygiene" />
         ) : (
           <SectionFrame
             sectionKey="hygiene"
+            fill={grid}
             table={
               <Table title="Data hygiene" count={sections.hygiene.rows.length}>
                 <p
@@ -814,11 +894,14 @@ export function RenderedBody({
       {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
           it. The rows and the sentences are the conflicts route's, verbatim. */}
       {sections.conflicts &&
-        (sectionIsClear("conflicts", sections.conflicts) ? (
+        cell(
+          "conflicts",
+          sectionIsClear("conflicts", sections.conflicts) ? (
           <ClearRow sectionKey="conflicts" title="Where the plan conflicts" />
         ) : (
           <SectionFrame
             sectionKey="conflicts"
+            fill={grid}
             table={
               <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
                 <p
@@ -854,11 +937,14 @@ export function RenderedBody({
       {/* WS-27bn R3b. Opt-in, and read only. The rebalance route's own body.
           Without the HR grant it has no lists, and the table says why. */}
       {sections.rebalance &&
-        (sectionIsClear("rebalance", sections.rebalance) ? (
+        cell(
+          "rebalance",
+          sectionIsClear("rebalance", sections.rebalance) ? (
           <ClearRow sectionKey="rebalance" title="Who could help" />
         ) : (
           <SectionFrame
             sectionKey="rebalance"
+            fill={grid}
             table={
               <Table title="Who could help" count={
                 rebalanceTasks(sections.rebalance).length +
@@ -1031,7 +1117,6 @@ export function ReportBuilder({
   onPreview,
   onOpenNode,
   onNewReport,
-  onStartTemplate,
   initialPreview = null,
   onDraft,
 }: {
@@ -1048,33 +1133,64 @@ export function ReportBuilder({
   mode?: "report" | "reportsOverview";
   /** R5f rule 10. Overview's "Save as report", with the state on screen. */
   onSaveAs?: (state: BuilderState) => void;
-  /** R5f. Each preview the server answers, with its key, for Home to keep. */
-  onPreview?: (body: PreviewReportBody, key: string) => void;
+  /**
+   * R5f. Each preview the server answers, with its key, for Home to keep.
+   * R5g adds `at`, the time of the answer, so "Updated …" survives a return.
+   */
+  onPreview?: (body: PreviewReportBody, key: string, at: number) => void;
   /** R5f. Open a row of the space table in the Projects page. */
   onOpenNode?: (id: string) => void;
-  /** R5f round 1 (§6.6 E). "New report" in the Overview header row. */
+  /** R5f round 1 (§6.6 E). "New report" in the Overview toolbar. */
   onNewReport?: () => void;
-  /** R5f round 1 (§6.6 E). A card of the template strip above Overview. */
-  onStartTemplate?: (template: ReportTemplate) => void;
   /**
    * R5f round 1, rule 6. The last preview Home kept. When its key equals
    * the key of the choices, the builder asks the server for nothing.
    */
-  initialPreview?: { key: string; body: PreviewReportBody } | null;
+  initialPreview?: { key: string; body: PreviewReportBody; at?: number } | null;
   /** R5f round 1, rule 6. Each change of the choices, for Home to keep. */
   onDraft?: (draft: BuilderState) => void;
 }) {
   const inOverview = mode === "reportsOverview";
   const [draft, setState] = useState<BuilderState>(initial);
-  const [preview, setPreview] = useState<{ key: string; body: PreviewReportBody } | null>(
-    initialPreview
+  /** R5g round 1. The key of the choices now, for the guard of a late answer. */
+  const keyRef = useRef("");
+  // A ref, so a new callback on each render of the parent does not ask the
+  // server again. It is written in an effect, never during render.
+  const onPreviewRef = useRef(onPreview);
+  /**
+   * R5g round 1. The one owner of the preview requests: the first preview, a
+   * change and a refresh (`createPreviewController`). Its guard drops each
+   * late answer, and its state is what the pane draws.
+   */
+  const [ctl] = useState(() =>
+    createPreviewController<PreviewReportBody>({
+      initial: initialPreview,
+      fetch: ({ project_id, config }) => projectsApi.previewReport({ project_id, name: "", config }),
+      now: () => Date.now(),
+      errorMessage: (e) => message(e, "The preview could not be drawn."),
+    })
   );
-  /** §6.6 E item 5. The Overview controls on a small screen. */
-  const [controlsOpen, setControlsOpen] = useState(false);
+  const [live, setLive] = useState<PreviewState<PreviewReportBody>>(() => ctl.state);
+  // The ports read refs, so they connect in an effect. It runs before the
+  // effect that sends the first request.
+  useEffect(() => {
+    ctl.bind({
+      currentKey: () => keyRef.current,
+      onChange: setLive,
+      onAnswer: (body, key, at) => onPreviewRef.current?.(body, key, at),
+    });
+    // No answer lands after unmount.
+    return () => ctl.dispose();
+  }, [ctl]);
+  const preview = live.preview;
+  const previewError = live.error;
+  /**
+   * R5g rule 3. The Overview Filters. Closed on the server and at the first
+   * render, on every screen. An effect then reads what the member left.
+   */
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const controlsId = useId();
-  const [previewError, setPreviewError] = useState<{ key: string; message: string } | null>(
-    null
-  );
+  const filtersButtonId = useId();
   /** Moves on "Try again", so the same config asks the server once more. */
   const [previewRound, setPreviewRound] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -1138,11 +1254,6 @@ export function ReportBuilder({
   // The first preview asks at once, so Overview does not wait for the delay
   // on each visit. A change after that waits, as before.
   const previewShown = useRef(initialPreview !== null);
-  /** The key of the preview on screen, so a return to Home asks nothing. */
-  const shownKey = useRef<string | null>(initialShownKey(initialPreview));
-  // A ref, so a new callback on each render of the parent does not ask the
-  // server again. It is written in an effect, never during render.
-  const onPreviewRef = useRef(onPreview);
   const onDraftRef = useRef(onDraft);
   useEffect(() => {
     onPreviewRef.current = onPreview;
@@ -1151,8 +1262,6 @@ export function ReportBuilder({
   useEffect(() => {
     onDraftRef.current?.(draft);
   }, [draft]);
-  const liveTemplates = (templates ?? []).filter((t) => t.available);
-
   // The name is not part of the key: the header shows the typed name, so a
   // keystroke in the name field asks the server for nothing.
   const previewKey = JSON.stringify({
@@ -1161,44 +1270,49 @@ export function ReportBuilder({
     blocked: prompt !== null,
     round: previewRound,
   });
+  useEffect(() => {
+    keyRef.current = previewKey;
+  });
 
   useEffect(() => {
-    let off = false;
-    const { project_id, config, blocked } = JSON.parse(previewKey) as {
-      project_id: string | null;
-      config: ReturnType<typeof configFor>;
-      blocked: boolean;
-    };
+    const { blocked } = previewRequest(previewKey);
     // A template about one person with no person yet, or about one project
     // with no project yet: the server would answer 422, so the preview asks
     // for nothing and says what to do.
     // R5f round 1, rule 6. The preview on screen already answers this key.
-    if (!previewNeeded(shownKey.current, previewKey, blocked)) return;
-    const timer = setTimeout(() => {
-      projectsApi.previewReport({ project_id, name: "", config }).then(
-        (body) => {
-          if (off) return;
-          previewShown.current = true;
-          shownKey.current = previewKey;
-          setPreview({ key: previewKey, body });
-          setPreviewError(null);
-          onPreviewRef.current?.(body, previewKey);
-        },
-        (e) => {
-          if (off) return;
-          // The last preview stays, dimmed. The error line says what failed.
-          setPreviewError({
-            key: previewKey,
-            message: message(e, "The preview could not be drawn."),
-          });
-        }
-      );
-    }, previewShown.current ? PREVIEW_DELAY_MS : 0);
-    return () => {
-      off = true;
-      clearTimeout(timer);
-    };
-  }, [previewKey]);
+    if (!ctl.needed(previewKey, blocked)) return;
+    const timer = setTimeout(
+      () => {
+        previewShown.current = true;
+        ctl.request(previewKey);
+      },
+      previewShown.current ? PREVIEW_DELAY_MS : 0
+    );
+    return () => clearTimeout(timer);
+  }, [previewKey, ctl]);
+
+  // R5g rule 4. Overview is live (`startLive`). A timer refreshes every 5
+  // minutes while the tab is visible, and a hidden tab stops it. A return to
+  // the tab, and a mount, refresh an answer over a minute old.
+  useEffect(() => {
+    if (!inOverview) return;
+    return startLive(browserTimerEnv(), ctl);
+  }, [inOverview, ctl]);
+
+  // R5g rule 3. Read what the member left once, after the first render, so
+  // the server and the first render agree: Filters closed.
+  useEffect(() => {
+    if (!inOverview) return;
+    // A stored preference is read once, as `panelMode` reads its own.
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
+    setFiltersOpen(readFiltersOpen(browserStorage));
+  }, [inOverview]);
+
+  function toggleFilters() {
+    const next = !filtersOpen;
+    setFiltersOpen(next);
+    writeFiltersOpen(browserStorage, next);
+  }
 
   async function save() {
     if (refusal || prompt) return;
@@ -1240,7 +1354,8 @@ export function ReportBuilder({
   const scopeError = errorAt === "scope" ? serverError : null;
   const otherSaveError = errorAt === "other" ? saveError : null;
   const chipPreviewError = currentError !== null && errorChip(currentError) !== "other";
-  const updating = !prompt && preview !== null && preview.key !== previewKey && !currentError;
+  // R5g round 1. Only other choices dim the body. A refresh keeps the key.
+  const updating = !prompt && bodyDimmed(live, previewKey);
   const sectionNote = subjectSectionNote(state);
   // A new project-only report asks for a project. An edit keeps its scope.
   const onlyProjects = projectOnly(template) && !isEdit;
@@ -1310,24 +1425,7 @@ export function ReportBuilder({
   const hiddenHint = hiddenTeamHint(answer, state.subject, chipShown);
   const saveDisabled = refusal !== null || prompt !== null;
 
-  const actions = inOverview ? (
-    <>
-      <Button
-        variant="secondary"
-        size="sm"
-        icon="Save"
-        disabled={prompt !== null}
-        onClick={() => onSaveAs?.(state)}
-      >
-        Save as report
-      </Button>
-      {onNewReport && (
-        <Button variant="primary" size="sm" icon="Plus" onClick={onNewReport}>
-          New report
-        </Button>
-      )}
-    </>
-  ) : (
+  const actions = (
     <>
       {/* §6.6 A item 3. Absent, never disabled, without the server's
           can_delete (R5d). Quiet, and apart from Save. */}
@@ -1357,74 +1455,113 @@ export function ReportBuilder({
     </>
   );
 
+  // ⚠️ R5g rule 3. ONE set of controls. The builder lays them out as three
+  // steps, and the Overview Filters lay them out in one row. The state, the
+  // handlers and the rules are the same, so the two cannot drift.
+  const workControl = (
+    <>
+      <ChipSlot error={scopeError}>
+        <SelectButton
+          label="Which work?"
+          prompt={onlyProjects ? "Choose a project" : undefined}
+          widthClass={CHIP_WIDTH}
+          value={state.projectId ?? WHOLE_ORGANIZATION}
+          defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
+          options={scopeChoices(scopes, template, isEdit)}
+          filterAbove={8}
+          disabled={isEdit}
+          onChange={(value) =>
+            setState((s) => ({
+              ...s,
+              projectId: value === WHOLE_ORGANIZATION ? null : value,
+            }))
+          }
+        />
+      </ChipSlot>
+      {isEdit && (
+        <p className="text-xs text-muted-foreground">
+          A saved report keeps its scope. Start a new report for another one.
+        </p>
+      )}
+      {state.projectId !== null && (
+        <label className="flex items-center gap-2 text-xs text-foreground">
+          <Checkbox
+            size="sm"
+            checked={state.includeSubtree}
+            onChange={(e) =>
+              setState((s) => ({ ...s, includeSubtree: e.target.checked }))
+            }
+          />
+          Include the projects under it
+        </label>
+      )}
+    </>
+  );
+
+  const timeControl = noPeriod ? (
+    // §6.6 B item 3. Every chosen section reads the state now, so a
+    // period chip would change nothing.
+    <p
+      className="inline-flex h-8 items-center gap-1.5 rounded-full bg-muted px-3 text-xs text-muted-foreground"
+      title="Each section you chose reads the state now. The period does not change this report."
+    >
+      <Icon name="Clock" className="h-3.5 w-3.5" />
+      {AS_OF_TODAY}
+    </p>
+  ) : (
+    <SelectButton
+      label="What time?"
+      widthClass={CHIP_WIDTH}
+      value={periodKey(state) ?? SAVED_PERIOD}
+      defaultValue="last_week"
+      options={periodOptions(state)}
+      onChange={(value) => setState((s) => withPeriod(s, value))}
+    />
+  );
+
+  /** The section toggles of one group: tiles in the builder, chips in Overview. */
+  const sectionToggles = (
+    sections: { key: string; label: string }[],
+    variant: "tile" | "chip"
+  ) =>
+    sections.map((section) => {
+      const blocked = sectionBlockedBySubject(state, section.key);
+      const on = !blocked && state.sections.includes(section.key);
+      const last =
+        on &&
+        state.sections.filter((k) => !sectionBlockedBySubject(state, k)).length === 1;
+      return (
+        <SectionTile
+          key={section.key}
+          sectionKey={section.key}
+          label={section.label}
+          on={on}
+          blocked={blocked}
+          last={last}
+          variant={variant}
+          onToggle={() =>
+            setState((s) => ({
+              ...s,
+              sections: toggleSection(s.sections, section.key),
+            }))
+          }
+        />
+      );
+    });
+
   const controls = (
     <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-      <p className="text-sm font-semibold text-foreground">
-        {inOverview ? "Change what you see" : "Build your report"}
-      </p>
+      <p className="text-sm font-semibold text-foreground">Build your report</p>
       {chipShown && (
         <Step n={1} label="Who is it about?">
           {subjectChip}
         </Step>
       )}
       <Step n={chipShown ? 2 : 1} label="Which work?">
-        <ChipSlot error={scopeError}>
-          <SelectButton
-            label="Which work?"
-            prompt={onlyProjects ? "Choose a project" : undefined}
-            widthClass={CHIP_WIDTH}
-            value={state.projectId ?? WHOLE_ORGANIZATION}
-            defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
-            options={scopeChoices(scopes, template, isEdit)}
-            filterAbove={8}
-            disabled={isEdit}
-            onChange={(value) =>
-              setState((s) => ({
-                ...s,
-                projectId: value === WHOLE_ORGANIZATION ? null : value,
-              }))
-            }
-          />
-        </ChipSlot>
-        {isEdit && (
-          <p className="text-xs text-muted-foreground">
-            A saved report keeps its scope. Start a new report for another one.
-          </p>
-        )}
-        {state.projectId !== null && (
-          <label className="flex items-center gap-2 text-xs text-foreground">
-            <Checkbox
-              size="sm"
-              checked={state.includeSubtree}
-              onChange={(e) =>
-                setState((s) => ({ ...s, includeSubtree: e.target.checked }))
-              }
-            />
-            Include the projects under it
-          </label>
-        )}
+        {workControl}
       </Step>
       <Step n={chipShown ? 3 : 2} label="What time?">
-        {noPeriod ? (
-          // §6.6 B item 3. Every chosen section reads the state now, so a
-          // period chip would change nothing.
-          <p
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-muted px-3 text-xs text-muted-foreground"
-            title="Each section you chose reads the state now. The period does not change this report."
-          >
-            <Icon name="Clock" className="h-3.5 w-3.5" />
-            {AS_OF_TODAY}
-          </p>
-        ) : (
-          <SelectButton
-            label="What time?"
-            widthClass={CHIP_WIDTH}
-            value={periodKey(state) ?? SAVED_PERIOD}
-            defaultValue="last_week"
-            options={periodOptions(state)}
-            onChange={(value) => setState((s) => withPeriod(s, value))}
-          />
-        )}
+        {timeControl}
       </Step>
 
       <div className="border-t border-border pt-3">
@@ -1440,30 +1577,7 @@ export function ReportBuilder({
           <div key={group.label} className="space-y-1">
             <p className="text-xs text-muted-foreground">{group.label}</p>
             <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-1">
-              {group.sections.map((section) => {
-                const blocked = sectionBlockedBySubject(state, section.key);
-                const on = !blocked && state.sections.includes(section.key);
-                const last =
-                  on &&
-                  state.sections.filter((k) => !sectionBlockedBySubject(state, k))
-                    .length === 1;
-                return (
-                  <SectionTile
-                    key={section.key}
-                    sectionKey={section.key}
-                    label={section.label}
-                    on={on}
-                    blocked={blocked}
-                    last={last}
-                    onToggle={() =>
-                      setState((s) => ({
-                        ...s,
-                        sections: toggleSection(s.sections, section.key),
-                      }))
-                    }
-                  />
-                );
-              })}
+              {sectionToggles(group.sections, "tile")}
             </div>
           </div>
         ))}
@@ -1478,23 +1592,142 @@ export function ReportBuilder({
     </div>
   );
 
+  const previewBody = prompt ? (
+    <PreviewPrompt icon={personPrompt ? "User" : "FolderKanban"} text={prompt} />
+  ) : currentError && chipPreviewError ? (
+    <p className="text-xs text-muted-foreground">
+      {inOverview
+        ? "Open Filters and change the marked choice to see Overview."
+        : "Change the choice marked on the left to see the preview."}
+    </p>
+  ) : currentError ? (
+    <p className="flex items-center gap-2 text-xs text-destructive" role="alert">
+      <span title={currentError}>The preview could not be drawn.</span>
+      <Button variant="text" size="sm" onClick={() => setPreviewRound((n) => n + 1)}>
+        Try again
+      </Button>
+    </p>
+  ) : preview ? (
+    // §6.5 item 9. During a change the last preview stays, dimmed,
+    // so the page does not jump. A skeleton only on the first load.
+    // R5g rule 4. A refresh does not dim it: only the spinner moves.
+    <div
+      className={`transition-opacity ${updating ? "opacity-60" : ""}`}
+      aria-busy={updating}
+    >
+      <RenderedBody
+        body={{
+          ...preview.body,
+          report: {
+            ...preview.body.report,
+            name: inOverview ? OVERVIEW_NAME : state.name.trim() || NEW_REPORT_NAME,
+          },
+        }}
+        headerLine={headerLine}
+        hiddenHint={hiddenHint}
+        // §6.6 D. The header row above names the report, so the
+        // preview does not say the name a second time.
+        showTitle={false}
+        layout={inOverview ? "grid" : "column"}
+        lead={
+          !tableShown ? null : summary.data ? (
+            <SpaceSummary
+              summary={summary.data}
+              onOpen={(id) => onOpenNode?.(id)}
+            />
+          ) : summary.loading ? (
+            <SkeletonRows count={2} />
+          ) : null
+        }
+      />
+    </div>
+  ) : (
+    <SkeletonRows count={3} />
+  );
+
+  if (inOverview) {
+    // R5g (§6.7). The live Overview, full page: one slim toolbar, Filters in
+    // place under it, and the panels across the page.
+    const filterCount = overviewFilterCount(state);
+    const periodText = noPeriod
+      ? AS_OF_TODAY
+      : (periodOptions(state).find((o) => o.value === (periodKey(state) ?? SAVED_PERIOD))
+          ?.label ?? "");
+    const summaryLine = overviewSummary({
+      subject: subjectLabel(state.subject, answer),
+      scope: scopePhrase(state.projectId, state.includeSubtree, scopes),
+      period: periodText,
+      updated: null,
+    });
+    return (
+      <div className="space-y-3">
+        <OverviewHeader
+          summary={summaryLine}
+          updated={
+            live.updatedAt !== null || live.refreshFailed ? (
+              <UpdatedAgo updatedAt={live.updatedAt} failed={live.refreshFailed} />
+            ) : null
+          }
+          summaryTitle={
+            preview ? periodLabel(preview.body.period_start, preview.body.period_end) : undefined
+          }
+          filtersOpen={filtersOpen}
+          filtersId={controlsId}
+          filtersButtonId={filtersButtonId}
+          filterCount={filterCount}
+          refreshing={live.refreshing}
+          saveDisabled={prompt !== null}
+          onToggleFilters={toggleFilters}
+          onRefresh={() => ctl.refresh()}
+          onSaveAs={() => onSaveAs?.(state)}
+          onNewReport={onNewReport}
+        />
+        <OverviewFilters
+          id={controlsId}
+          labelledBy={filtersButtonId}
+          open={filtersOpen}
+          who={chipShown ? subjectChip : null}
+          work={workControl}
+          time={timeControl}
+          sections={
+            <fieldset className="min-w-0 space-y-2">
+              <legend className="mb-1 text-xs font-medium text-muted-foreground">
+                What to include
+              </legend>
+              {sectionGroups().map((group) => (
+                <div key={group.label} className="flex flex-wrap items-center gap-1.5">
+                  <span className="w-full text-xs text-muted-foreground sm:w-36">
+                    {group.label}
+                  </span>
+                  {sectionToggles(group.sections, "chip")}
+                </div>
+              ))}
+              {sectionNote && <p className="text-xs text-muted-foreground">{sectionNote}</p>}
+            </fieldset>
+          }
+          resetShown={filterCount > 0}
+          onReset={() => setState(overviewState())}
+        />
+        <section className="min-w-0" aria-label={OVERVIEW_NAME} aria-busy={live.refreshing || updating}>
+          {previewBody}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <BuilderHeader
-        onBack={inOverview ? undefined : onCancel}
+        onBack={onCancel}
         title={
-          inOverview ? (
-            <h3 className="text-base font-semibold text-foreground">{OVERVIEW_NAME}</h3>
-          ) : (
-            <TitleField
-              value={state.name}
-              onChange={(name) => setState((s) => ({ ...s, name, nameTouched: true }))}
-            />
-          )
+          <TitleField
+            value={state.name}
+            onChange={(name) => setState((s) => ({ ...s, name, nameTouched: true }))}
+          />
         }
         actions={actions}
       />
-      {!inOverview && (state.template || editing) && (
+      {(state.template || editing) && (
         <div className="flex flex-wrap items-center gap-2">
           {state.template && template && (
             <Badge tone="neutral" icon="FileText">
@@ -1508,30 +1741,8 @@ export function ReportBuilder({
           )}
         </div>
       )}
-      {inOverview && liveTemplates.length > 0 && onStartTemplate && (
-        <TemplateStrip templates={liveTemplates} onStart={onStartTemplate} />
-      )}
-      {inOverview && (
-        <div className="xl:hidden">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="SlidersHorizontal"
-            aria-expanded={controlsOpen}
-            aria-controls={controlsId}
-            onClick={() => setControlsOpen((o) => !o)}
-          >
-            Change what you see
-          </Button>
-        </div>
-      )}
       <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start">
-        <div
-          id={controlsId}
-          className={`xl:sticky xl:top-0 ${inOverview && !controlsOpen ? "hidden xl:block" : ""}`}
-        >
-          {controls}
-        </div>
+        <div className="xl:sticky xl:top-0">{controls}</div>
 
         <section
           className="min-w-0 rounded-xl bg-muted/40 p-3 sm:p-4"
@@ -1550,54 +1761,7 @@ export function ReportBuilder({
               <span role="status">{updating ? "Updating" : "Live preview"}</span>
             </span>
           </div>
-          {prompt ? (
-            <PreviewPrompt icon={personPrompt ? "User" : "FolderKanban"} text={prompt} />
-          ) : currentError && chipPreviewError ? (
-            <p className="text-xs text-muted-foreground">
-              Change the choice marked on the left to see the preview.
-            </p>
-          ) : currentError ? (
-            <p className="flex items-center gap-2 text-xs text-destructive" role="alert">
-              <span title={currentError}>The preview could not be drawn.</span>
-              <Button variant="text" size="sm" onClick={() => setPreviewRound((n) => n + 1)}>
-                Try again
-              </Button>
-            </p>
-          ) : preview ? (
-            // §6.5 item 9. During a change the last preview stays, dimmed,
-            // so the page does not jump. A skeleton only on the first load.
-            <div
-              className={`transition-opacity ${updating ? "opacity-60" : ""}`}
-              aria-busy={updating}
-            >
-              <RenderedBody
-                body={{
-                  ...preview.body,
-                  report: {
-                    ...preview.body.report,
-                    name: inOverview ? OVERVIEW_NAME : state.name.trim() || NEW_REPORT_NAME,
-                  },
-                }}
-                headerLine={headerLine}
-                hiddenHint={hiddenHint}
-                // §6.6 D. The header row above names the report, so the
-                // preview does not say the name a second time.
-                showTitle={false}
-                lead={
-                  !tableShown ? null : summary.data ? (
-                    <SpaceSummary
-                      summary={summary.data}
-                      onOpen={(id) => onOpenNode?.(id)}
-                    />
-                  ) : summary.loading ? (
-                    <SkeletonRows count={2} />
-                  ) : null
-                }
-              />
-            </div>
-          ) : (
-            <SkeletonRows count={3} />
-          )}
+          {previewBody}
         </section>
       </div>
 
@@ -1711,6 +1875,7 @@ export function SectionTile({
   blocked,
   last,
   onToggle,
+  variant = "tile",
 }: {
   sectionKey: string;
   label: string;
@@ -1718,6 +1883,12 @@ export function SectionTile({
   blocked: boolean;
   last: boolean;
   onToggle: () => void;
+  /**
+   * WS-27bn R5g rule 3. `chip` is the small toggle of the Overview Filters.
+   * It keeps every rule of the tile: `aria-pressed`, the blocked reason, and
+   * the last chosen section `aria-disabled` with its reason.
+   */
+  variant?: "tile" | "chip";
 }) {
   const describedBy = useId();
   const line = blocked
@@ -1725,6 +1896,35 @@ export function SectionTile({
     : last
       ? "A report needs at least one section."
       : PANEL_HINTS[sectionKey];
+  if (variant === "chip") {
+    return (
+      <span className="inline-flex">
+        <Button
+          variant="secondary"
+          size="none"
+          radius="keep"
+          layout="inline-flex items-center gap-1.5"
+          className="rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
+          selected={on}
+          disabled={blocked}
+          aria-disabled={last ? "true" : undefined}
+          aria-describedby={describedBy}
+          title={line}
+          onClick={last ? undefined : onToggle}
+        >
+          {/* A chosen chip swaps its icon for a check, so the width holds. */}
+          <Icon
+            name={on ? "Check" : sectionIcon(sectionKey)}
+            className={`h-3.5 w-3.5 shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`}
+          />
+          <span className="whitespace-nowrap">{label}</span>
+        </Button>
+        <span id={describedBy} className="sr-only">
+          {line}
+        </span>
+      </span>
+    );
+  }
   // The hint span is a SIBLING of the button, not a child. A visually hidden
   // child still joins the accessible name, so a screen reader would read the
   // hint twice: once in the name and once as the description.
@@ -1764,34 +1964,188 @@ export function SectionTile({
 }
 
 /**
- * The compact strip of live templates above Overview (§6.6 E item 3). The
- * full gallery stays under Overview.
+ * The one slim toolbar of the live Overview (WS-27bn R5g rule 2, §6.7). The
+ * summary of the choices on the left. Filters, Refresh and "Save as report"
+ * on the right. No menu and no dialog.
  */
-export function TemplateStrip({
-  templates,
-  onStart,
+export function OverviewHeader({
+  summary,
+  updated,
+  summaryTitle,
+  filtersOpen,
+  filtersId,
+  filtersButtonId,
+  filterCount,
+  refreshing,
+  saveDisabled,
+  onToggleFilters,
+  onRefresh,
+  onSaveAs,
+  onNewReport,
 }: {
-  templates: ReportTemplate[];
-  onStart: (template: ReportTemplate) => void;
+  summary: string;
+  /**
+   * R5g round 1. "Updated …", as its own small component (`UpdatedAgo`).
+   * Its 30-second clock then renders only this text, and not the body.
+   */
+  updated?: React.ReactNode;
+  /** The dates of the period, as a tooltip on the summary. */
+  summaryTitle?: string;
+  filtersOpen: boolean;
+  filtersId: string;
+  filtersButtonId: string;
+  /** How many choices differ from the Overview defaults. */
+  filterCount: number;
+  refreshing: boolean;
+  saveDisabled: boolean;
+  onToggleFilters: () => void;
+  onRefresh: () => void;
+  onSaveAs: () => void;
+  onNewReport?: () => void;
+}) {
+  const changed = `${filterCount} ${filterCount === 1 ? "filter" : "filters"} changed`;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <h3 className="text-base font-semibold text-foreground">{OVERVIEW_NAME}</h3>
+        <p className="min-w-0 text-xs text-muted-foreground" title={summaryTitle}>
+          {summary}
+          {updated ? <> · {updated}</> : null}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          id={filtersButtonId}
+          variant="secondary"
+          size="sm"
+          icon="SlidersHorizontal"
+          aria-expanded={filtersOpen}
+          aria-controls={filtersId}
+          className={filtersOpen ? "border-primary/40 text-foreground" : ""}
+          onClick={onToggleFilters}
+        >
+          Filters
+          {filterCount > 0 && (
+            <Badge tone="primary" className="ml-0.5 tabular-nums">
+              <span aria-hidden>{filterCount}</span>
+              <span className="sr-only">{changed}</span>
+            </Badge>
+          )}
+        </Button>
+        {/* R5g round 1. Never disabled while it loads, so it keeps the
+            focus. The spinner and aria-busy say it works, and the
+            controller ignores a second click. */}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Refresh"
+          title="Refresh"
+          aria-busy={refreshing}
+          onClick={onRefresh}
+        >
+          <Icon
+            name={refreshing ? "Loader2" : "RefreshCw"}
+            size={14}
+            className={refreshing ? "animate-spin" : undefined}
+          />
+        </Button>
+        <Button variant="secondary" size="sm" icon="Save" disabled={saveDisabled} onClick={onSaveAs}>
+          Save as report
+        </Button>
+        {onNewReport && (
+          <Button variant="primary" size="sm" icon="Plus" onClick={onNewReport}>
+            New report
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The Overview Filters, open in place under the toolbar (WS-27bn R5g rule 3).
+ * The three choices sit in one row that wraps, and the sections are chips
+ * under it. The builder's own controls fill it, so the logic is not forked.
+ * It stays in the page when closed, as `hidden`, so the button's
+ * `aria-controls` names a real element.
+ */
+export function OverviewFilters({
+  id,
+  labelledBy,
+  open,
+  who,
+  work,
+  time,
+  sections,
+  resetShown,
+  onReset,
+}: {
+  id: string;
+  labelledBy: string;
+  open: boolean;
+  who: React.ReactNode;
+  work: React.ReactNode;
+  time: React.ReactNode;
+  sections: React.ReactNode;
+  resetShown: boolean;
+  onReset: () => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <p className="text-xs text-muted-foreground">Start from a question</p>
-      <ul className="flex gap-2 overflow-x-auto pb-1">
-        {templates.map((t) => (
-          <li key={t.key} className="shrink-0">
-            <Button
-              variant="secondary"
-              size="sm"
-              icon="FileText"
-              title={t.question}
-              onClick={() => onStart(t)}
-            >
-              {t.name}
+    <div
+      id={id}
+      role="region"
+      aria-labelledby={labelledBy}
+      hidden={!open}
+      className="space-y-3 rounded-xl border border-border bg-card p-3"
+    >
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+        {who && <FilterField label="Who is it about?">{who}</FilterField>}
+        <FilterField label="Which work?">{work}</FilterField>
+        <FilterField label="What time?">{time}</FilterField>
+        {resetShown && (
+          <div className="ml-auto self-end">
+            <Button variant="text" size="sm" icon="RotateCcw" onClick={onReset}>
+              Reset
             </Button>
-          </li>
-        ))}
-      </ul>
+          </div>
+        )}
+      </div>
+      <div className="border-t border-border pt-3">{sections}</div>
+    </div>
+  );
+}
+
+/**
+ * "Updated 2 min ago" (R5g round 1, item 5). It holds its own 30-second
+ * clock, which stops while the tab is hidden, so only this text renders
+ * again and not the panels.
+ */
+export function UpdatedAgo({
+  updatedAt,
+  failed,
+  env = browserTimerEnv,
+}: {
+  updatedAt: number | null;
+  failed: boolean;
+  env?: () => LiveTimerEnv;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const e = env();
+    const tick = () => setNow(e.now());
+    return startTicker(e, { intervalMs: 30_000, onTick: tick, onShow: tick });
+  }, [env]);
+  // A new answer can be newer than the clock. Its age is then zero.
+  const text = failed ? "Refresh failed" : updatedLine(updatedAt, Math.max(now, updatedAt ?? 0));
+  return text ? <span>{text}</span> : null;
+}
+
+/** One labelled choice of the Overview Filters. */
+function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="w-full space-y-1 sm:w-56">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      {children}
     </div>
   );
 }
@@ -2109,6 +2463,8 @@ export default function ReportsView({
   const [overviewPreview, setOverviewPreview] = useState<{
     key: string;
     body: PreviewReportBody;
+    /** R5g. When the server answered, for "Updated …" after a return. */
+    at: number;
   } | null>(null);
 
   // The scope chip lists the tree the caller can see. One read cache, the
@@ -2340,9 +2696,8 @@ export default function ReportsView({
                   setPane({ kind: "new", initial: saveAsReportState(state) })
                 }
                 onNewReport={() => setPane({ kind: "new", initial: newBuilderState() })}
-                onStartTemplate={start}
-                onPreview={(preview, key) => {
-                  setOverviewPreview({ key, body: preview });
+                onPreview={(preview, key, at) => {
+                  setOverviewPreview({ key, body: preview, at });
                   setOverviewFinished(preview.sections.finished?.total_completed ?? null);
                 }}
                 onOpenNode={onOpenNode}
