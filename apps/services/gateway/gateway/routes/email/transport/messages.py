@@ -937,8 +937,8 @@ async def get_full_body(
         try:
             result = await db.execute(
                 text(
-                    """SELECT em.provider_message_id, p.provider,
-                              p.credentials_encrypted
+                    """SELECT em.provider_message_id, em.account_id,
+                              p.provider, p.credentials_encrypted
                        FROM email_messages em
                        JOIN email_accounts p ON em.account_id = p.id
                        WHERE em.id = :mid AND p.user_id = :user_id"""
@@ -964,6 +964,9 @@ async def get_full_body(
                 )
 
             msg = await provider.get_message(row.provider_message_id)
+            # A 401 on the fetch refreshes the token (EM-T4c). Keep it.
+            await _persist_rotated_creds(
+                db, store, str(row.account_id), provider)
             return {
                 "message_id": message_id,
                 "body_text": msg.body_text,
