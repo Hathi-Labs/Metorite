@@ -371,6 +371,11 @@ def received_key(msg: EmailMessage) -> datetime:
 class BaseEmailProvider(ABC):
     """Abstract email provider interface."""
 
+    #: True when ``import_batches`` reads every folder of the sweep, so its
+    #: messages are a full snapshot of each folder back to the floor. The
+    #: deep sync of a member act then reconciles deletions from it (EM-T6b).
+    import_full_snapshot: bool = False
+
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
 

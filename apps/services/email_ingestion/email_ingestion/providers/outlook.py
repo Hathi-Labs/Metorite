@@ -9,6 +9,7 @@ API reference: https://learn.microsoft.com/en-us/graph/api/resources/mail-api-ov
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -34,6 +35,8 @@ from .base import (
 
 
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
+
+logger = logging.getLogger(__name__)
 
 # Cap on how long we'll honour a Graph 429 ``Retry-After`` before giving up on
 # the retry. Graph throttles bulk labelling; a short, bounded wait lets the apply
@@ -120,14 +123,53 @@ def _newer_than(messages: list[EmailMessage], watermark: datetime | None) -> boo
     return min(dated) > watermark
 
 
+#: The page statuses that a sync tries once more, after ``Retry-After``
+#: (EM-T6b fix round 1). Graph sends them for throttling and for a short
+#: outage.
+_RETRY_STATUSES = frozenset({429, 503, 504})
+
+
+def _status(exc: BaseException) -> int | None:
+    """The HTTP status of a failed Graph request, or None."""
+    return getattr(getattr(exc, "response", None), "status_code", None)
+
+
+def _retry_after(exc: BaseException) -> float:
+    """The wait that a failed page asks for, with the bound of ``_graph_send``."""
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    try:
+        delay = float(headers.get("Retry-After", "1") or 1)
+    except (TypeError, ValueError):
+        delay = 1.0
+    return min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS)
+
+
+class CatchUpIncomplete(RuntimeError):
+    """A recurring sweep stopped before it read back to its watermark.
+
+    The sync cycle then fails, and phase (d) does not move
+    ``last_synced_at``. So the next cycle catches up from the old watermark,
+    and the mail of the pause still arrives (EM-T6b fix round 1)."""
+
+
 @dataclass
 class _FolderStream:
     """One folder of an import: the messages of its current page, newest
-    first, and the link to its next page."""
+    first, and how to read the next page.
+
+    The next page is a new first page with ``receivedDateTime le bound``,
+    the oldest time of the last page. ``seen`` holds the ids already read at
+    that second, and the stream drops them. A ``$skip`` link would shift when
+    a message moves out of the folder, and the import would never read one
+    message at a page edge. ``link`` is used only while one second fills a
+    whole page."""
     folder: str
     canonical: str | None
     buffer: deque[EmailMessage] = field(default_factory=deque)
-    next_page: str | None = None
+    bound: datetime | None = None
+    seen: set[str] = field(default_factory=set)
+    link: str | None = None
+    more: bool = True
     pages: int = 0
 
 
@@ -1088,6 +1130,27 @@ class OutlookProvider(BaseEmailProvider):
     # pages until the $filter(since) window is exhausted, capped for safety.
     RECURRING_SYNC_MAX_PAGES = 2
     DEEP_SYNC_MAX_PAGES = 200  # ~20k/folder ceiling; since-filter normally exhausts first
+    #: The pages of one folder in an import (EM-T6b fix round 1). The merge
+    #: holds one page for each folder, so memory does not bound it. The cap
+    #: only guards against a server that never ends a folder.
+    IMPORT_MAX_PAGES = 5000
+    #: The import of Outlook reads every swept folder, so the deep sync of a
+    #: member act may reconcile deletions from it (EM-T6b fix round 1).
+    import_full_snapshot = True
+
+    async def _page_with_retry(
+        self, **kwargs: Any,
+    ) -> tuple[list[EmailMessage], str | None]:
+        """One page of ``list_messages``. A 429, 503 or 504 waits for
+        ``Retry-After``, bounded as in ``_graph_send``, and tries once more.
+        Any other failure raises at once."""
+        try:
+            return await self.list_messages(**kwargs)
+        except Exception as exc:
+            if _status(exc) not in _RETRY_STATUSES:
+                raise
+            await asyncio.sleep(_retry_after(exc))
+        return await self.list_messages(**kwargs)
 
     async def _sweep_folder(
         self,
@@ -1109,23 +1172,38 @@ class OutlookProvider(BaseEmailProvider):
         ``max_pages``, the sweep reads one more page while the oldest message
         of the last page is newer than it. ``DEEP_SYNC_MAX_PAGES`` caps the
         pages, and ``since`` still binds each page.
+
+        Each page tries once more on 429, 503 and 504. A page that fails
+        after the sweep read a page newer than the watermark raises
+        ``CatchUpIncomplete``, so the cycle fails and keeps its watermark. A
+        first page that fails raises as before, and the sweep skips the
+        folder.
         """
         out: list[EmailMessage] = []
         token: str | None = None
         pages = max_pages or self.RECURRING_SYNC_MAX_PAGES
         cap = pages if catch_up is None else max(pages, self.DEEP_SYNC_MAX_PAGES)
+        short = False
         for read in range(1, cap + 1):
-            msgs, token = await self.list_messages(
-                folder=folder,
-                max_results=max_results,
-                page_token=token,
-                canonical_override=canonical_override,
-                since=since,
-            )
+            try:
+                msgs, token = await self._page_with_retry(
+                    folder=folder,
+                    max_results=max_results,
+                    page_token=token,
+                    canonical_override=canonical_override,
+                    since=since,
+                )
+            except Exception as exc:
+                if short:
+                    raise CatchUpIncomplete(
+                        f"the sweep of {folder} failed on page {read}, before "
+                        "the catch-up watermark") from exc
+                raise
             out.extend(msgs)
+            short = _newer_than(msgs, catch_up)
             if not token:
                 break
-            if read >= pages and not _newer_than(msgs, catch_up):
+            if read >= pages and not short:
                 break
         return out
 
@@ -1229,6 +1307,9 @@ class OutlookProvider(BaseEmailProvider):
                         folder_key, max_results,
                         max_pages=max_pages, since=sweep_since, catch_up=catch_up,
                     ))
+                except CatchUpIncomplete:
+                    # The cycle fails and keeps its watermark (EM-T6b).
+                    raise
                 except Exception:
                     # A missing/forbidden folder shouldn't abort the whole sync.
                     continue
@@ -1239,6 +1320,8 @@ class OutlookProvider(BaseEmailProvider):
                         folder_id, max_results, canonical_override=canon,
                         max_pages=max_pages, since=sweep_since, catch_up=catch_up,
                     ))
+                except CatchUpIncomplete:
+                    raise
                 except Exception:
                     continue
 
@@ -1275,12 +1358,16 @@ class OutlookProvider(BaseEmailProvider):
         ``receivedDateTime le until`` when ``until`` is set. The merge always
         takes the newest head across the streams. It reads the next page of a
         folder only when that folder held the newest head and has no message
-        left. So a stop part way keeps the newest mail of every folder.
+        left. So a stop part way keeps the newest mail of every folder. Each
+        stream pages by time, not by offset (``_FolderStream``).
 
-        A folder whose first page fails is skipped, as in the sweep. A later
-        page that fails raises, and the import resumes from the point that it
-        reached. Before the first list, it awaits ``on_estimate`` with the sum
-        of the folder counts, or with ``None`` when a folder gives no count.
+        Only a 404 on the first page skips a folder, for a mailbox with no
+        Archive, and the log names the folder and the status. Any other
+        failure raises, after one more try on 429, 503 and 504. The import
+        then resumes from the point that it reached. With no folder left, it
+        raises, so the import is never ``done`` without a folder. Before the
+        first list, it awaits ``on_estimate`` with the sum of the folder
+        counts, or with ``None`` when a folder gives no count.
         """
         size = max(size, 1)
         streams: list[_FolderStream] = []
@@ -1289,10 +1376,15 @@ class OutlookProvider(BaseEmailProvider):
             stream = _FolderStream(folder, canon)
             try:
                 await self._read_page(stream, size, since=since, until=until)
-            except Exception:
-                # A missing/forbidden folder shouldn't abort the whole import.
+            except Exception as exc:
+                if _status(exc) != 404:
+                    raise
+                logger.info("sync.import_folder_skipped folder=%s status=%s",
+                            folder, 404)
                 continue
             streams.append(stream)
+        if not streams:
+            raise RuntimeError("the import found no folder of the mailbox")
         if on_estimate is not None:
             await on_estimate(await self._import_estimate(streams, since, until))
 
@@ -1301,8 +1393,8 @@ class OutlookProvider(BaseEmailProvider):
             for stream in streams:
                 # Only the folder whose head the merge took last can be empty
                 # with a page left, so this reads that folder alone.
-                while not stream.buffer and stream.next_page:
-                    await self._read_page(stream, size)
+                while not stream.buffer and stream.more:
+                    await self._read_page(stream, size, since=since, until=until)
             live = [s for s in streams if s.buffer]
             if not live:
                 break
@@ -1316,24 +1408,45 @@ class OutlookProvider(BaseEmailProvider):
 
     async def _read_page(
         self, stream: _FolderStream, size: int, *,
-        since: datetime | None = None, until: datetime | None = None,
+        since: datetime | None, until: datetime | None,
     ) -> None:
-        """Read the next page of *stream* into its buffer. The first page
-        takes the window. A later page follows ``@odata.nextLink``, which
-        carries the same ``$filter`` and ``$orderby``. A folder reads at most
-        ``DEEP_SYNC_MAX_PAGES`` pages, the bound of the deep sweep."""
-        msgs, stream.next_page = await self.list_messages(
-            folder=stream.folder,
-            max_results=size,
-            page_token=stream.next_page,
-            canonical_override=stream.canonical,
-            since=since,
-            until=until,
-        )
-        stream.buffer.extend(msgs)
+        """Read the next page of *stream* into its buffer.
+
+        The first page takes the window. Each later page is a new first page
+        with ``le`` the oldest time of the last page, and the stream drops
+        the ids that it already read at that second. When one second fills a
+        whole page, the time cannot move, so the stream follows
+        ``@odata.nextLink`` inside that second. A page that adds no message,
+        or ``IMPORT_MAX_PAGES`` pages, ends the folder and logs
+        ``sync.import_folder_capped``."""
+        if stream.link:
+            msgs, link = await self._page_with_retry(
+                folder=stream.folder, max_results=size,
+                page_token=stream.link, canonical_override=stream.canonical)
+        else:
+            msgs, link = await self._page_with_retry(
+                folder=stream.folder, max_results=size,
+                canonical_override=stream.canonical, since=since,
+                until=until if stream.bound is None else stream.bound)
         stream.pages += 1
-        if stream.pages >= self.DEEP_SYNC_MAX_PAGES:
-            stream.next_page = None
+        # A message newer than the bound came before it, so the stream read
+        # it already. Only a server that ignores ``le`` sends one.
+        fresh = [m for m in msgs if m.provider_message_id not in stream.seen
+                 and (stream.bound is None or received_key(m) <= stream.bound)]
+        stream.buffer.extend(fresh)
+        if not link or not msgs:
+            stream.more, stream.link = False, None
+            return
+        oldest = min(received_key(m) for m in msgs)
+        at_oldest = {m.provider_message_id for m in msgs
+                     if received_key(m) == oldest}
+        stream.seen = (stream.seen if oldest == stream.bound else set()) | at_oldest
+        stream.bound = oldest
+        stream.link = link if len(at_oldest) == len(msgs) else None
+        if not fresh or stream.pages >= self.IMPORT_MAX_PAGES:
+            stream.more, stream.link = False, None
+            logger.warning("sync.import_folder_capped folder=%s pages=%d new=%d",
+                           stream.folder, stream.pages, len(fresh))
 
     async def _import_estimate(
         self, streams: list[_FolderStream],

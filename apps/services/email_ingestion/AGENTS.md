@@ -152,10 +152,20 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   and the next sync resumes with `until = import_reached_at`. A deep sync of a
   member act (`deep=True`) imports in batches too, and writes no progress and
   no `initial_sync_done`. No import batch runs the reconcile or the label
-  learner. The recurring sweep runs after each import in the same call, so
-  new mail always syncs (D-EM-10). It reads back to `last_synced_at - 1 hour`,
-  or `created_at`, after a pause (D-EM-13). R7:
+  learner. When a member act ends with no error, one block reconciles
+  deletions against all that its import wrote. The recurring sweep runs
+  after each import in the same call, so new mail always syncs (owner answer
+  Q2, spec §10.2). It reads back to `last_synced_at - 1 hour`, or
+  `created_at`, after a pause (D-EM-13). R7:
   `tests/unit/test_email_import_batches.py`.
+- ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix
+  round 1).** Each next page is a new query with `le` the oldest time of the
+  last page. A `$skip` link shifts when a message moves out of a folder, and
+  one message is lost. The link is used only inside one second that fills a
+  page. Only a 404 on a first page skips a folder. A 429, 503 or 504 page
+  tries once more after `Retry-After`. Every other failure fails the cycle,
+  and the import resumes. A sweep page that fails short of the catch-up
+  watermark raises `CatchUpIncomplete`, so phase (d) keeps `last_synced_at`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

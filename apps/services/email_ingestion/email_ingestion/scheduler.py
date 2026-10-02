@@ -52,6 +52,7 @@ from sqlalchemy import text
 from email_ingestion import body_backfill, email_embeddings, import_window
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
+from email_ingestion.providers.base import EmailMessage, SyncResult
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import reconcile_full_snapshot
 
@@ -403,6 +404,31 @@ def _oldest_received(messages: list[Any]) -> datetime | None:
     return min(dated) if dated else None
 
 
+def _snapshot_entry(msg: Any) -> EmailMessage:
+    """What the reconcile reads of an imported message: id, folder, time."""
+    return EmailMessage(provider_message_id=msg.provider_message_id,
+                        thread_id=None, folder=msg.folder, subject=msg.subject,
+                        received_at=msg.received_at)
+
+
+async def _reconcile_import(org: str, account_id: str,
+                            snapshot: list[EmailMessage]) -> None:
+    """Reconcile deletions against the full snapshot of a member-act import.
+
+    Its own block, as the reconcile of the recurring sweep. A failure rolls
+    back only the reconcile, and the sync goes on (fix round 1)."""
+    try:
+        async with tenant_session(org) as db:
+            removed = await reconcile_full_snapshot(
+                db, account_id, SyncResult(messages=snapshot, full_snapshot=True))
+        if removed:
+            logger.info("sync.import_reconciled_deletions account=%s removed=%d",
+                        account_id, removed)
+    except Exception as exc:
+        logger.warning("sync.import_reconcile_failed account=%s err=%s",
+                       account_id, str(exc)[:160])
+
+
 async def _import_in_batches(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool,
@@ -423,7 +449,17 @@ async def _import_in_batches(
     the count. The upsert makes the overlap at that point harmless. The deep
     sync of a member act imports from now to the floor, and writes no
     progress column and no ``initial_sync_done``. An error raises past the
-    progress, which stays as the last batch left it."""
+    progress, which stays as the last batch left it.
+
+    When the deep sync of a member act ends with no error, and the provider
+    reads every folder (``import_full_snapshot``), one more block reconciles
+    deletions against the id, folder and time of each message the import
+    wrote (fix round 1). The recurring sweep reaches only its newest pages,
+    so a Resync otherwise kept older mail that the member deleted in Outlook.
+    A failed reconcile is logged and does not fail the sync."""
+    snapshot: list[EmailMessage] | None = (
+        [] if not progress and getattr(provider, "import_full_snapshot", False)
+        else None)
     until = getattr(row, "import_reached_at", None) if progress else None
     count = (getattr(row, "import_count", None) or 0) if until is not None else 0
     on_estimate = None
@@ -454,6 +490,10 @@ async def _import_in_batches(
                         "id": account_id, "reached": _oldest_received(kept),
                         "count": count})
             written += len(kept)
+            if snapshot is not None:
+                snapshot.extend(_snapshot_entry(m) for m in kept)
+    if snapshot is not None:
+        await _reconcile_import(org, account_id, snapshot)
     if progress:
         async with tenant_session(org) as db:
             await db.execute(_IMPORT_DONE, {"id": account_id})
@@ -835,8 +875,11 @@ async def _sync_cycle(
                 progress=first_import)
 
         # The recurring sweep runs in every call, after an import too, so new
-        # mail always syncs (D-EM-10). It reads past its newest pages back to
-        # the catch-up watermark after a pause (EM-T6b item 9, D-EM-13).
+        # mail always syncs (owner answer Q2, spec §10.2). It reads past its
+        # newest pages back to the catch-up watermark after a pause (EM-T6b
+        # item 9, D-EM-13). A page that fails short of the watermark raises
+        # ``CatchUpIncomplete``. The cycle then fails before phase (d), so
+        # ``last_synced_at`` keeps the old watermark.
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,

@@ -40,6 +40,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 pytest.importorskip("sqlalchemy")
@@ -112,53 +113,85 @@ def _parse_window(flt: str | None) -> tuple[datetime | None, datetime | None]:
 
 
 class _Resp:
-    def __init__(self, status: int, body: dict) -> None:
+    def __init__(self, status: int, body: dict, headers: dict | None = None) -> None:
         self.status_code = status
         self.body = body
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
+        """Raise as httpx does, so the provider can read the status."""
         if self.status_code >= 400:
-            raise RuntimeError(f"Graph answered {self.status_code}")
+            req = httpx.Request("GET", "https://graph.test/page")
+            raise httpx.HTTPStatusError(
+                f"Graph answered {self.status_code}", request=req,
+                response=httpx.Response(self.status_code, request=req,
+                                        headers=self.headers))
 
     def json(self) -> dict:
         return self.body
 
 
-def _graph_msg(path: str, i: int, at: datetime) -> dict:
-    return {"id": f"{path}-{i:04d}", "receivedDateTime": _iso(at),
-            "subject": f"{path} {i}", "conversationId": f"c-{path}-{i}",
-            "internetMessageId": f"<{path}-{i}@graph.test>"}
+def _graph_msg(mid: str, at: datetime) -> dict:
+    return {"id": mid, "receivedDateTime": _iso(at), "subject": f"s {mid}",
+            "conversationId": f"c-{mid}", "internetMessageId": f"<{mid}@graph.test>"}
 
 
 class _FakeGraph:
     """Each folder is a list of receive times. It honours ``$filter``
-    (``ge`` and ``le``), ``$top``, ``@odata.nextLink`` and ``$count``. A
-    folder that it does not hold answers 404."""
+    (``ge`` and ``le``), ``$top``, ``$count``, and ``@odata.nextLink`` as a
+    ``$skip`` offset over the LIVE list, as Graph does. A folder that it does
+    not hold answers 404.
+
+    ``pages`` holds ``(folder, n, filter)`` for each page request, where
+    ``n`` counts the requests of that folder. ``fail`` maps ``(folder, n)``
+    to the status that request answers. ``delete`` removes a message while
+    a sync runs."""
 
     LINK = "https://graph.test/next/"
 
     def __init__(self, folders: dict[str, list[datetime]], *,
                  page_size: int | None = None, no_count: tuple = (),
-                 fail_page: tuple | None = None) -> None:
-        self.mail = {p: sorted(ts, reverse=True) for p, ts in folders.items()}
+                 count_status: dict | None = None, fail: dict | None = None,
+                 retry_after: str | None = None, ignore_until: bool = False) -> None:
+        self.mail = {p: [(f"{p}-{i:04d}", t)
+                         for i, t in enumerate(sorted(ts, reverse=True))]
+                     for p, ts in folders.items()}
+        self._all = {p: [mid for mid, _ in v] for p, v in self.mail.items()}
         self.page_size = page_size
         self.no_count = set(no_count)
-        self.fail_page = fail_page
+        self.count_status = count_status or {}
+        self.fail = fail or {}
+        self.retry_after = retry_after
+        self.ignore_until = ignore_until
         self.pages: list[tuple[str, int, str | None]] = []
+        self.followed: list[tuple[str, int]] = []
+        self.answers: dict[str, list[list[str]]] = {}
         self.counts: list[tuple[str, dict, dict]] = []
         self.on_page = None
+        self._n: dict[str, int] = {}
         self._links: dict[str, tuple] = {}
 
     def ids(self, path: str) -> list[str]:
-        return [f"{path}-{i:04d}" for i in range(len(self.mail[path]))]
+        """Every id of *path*, newest first, deleted ones too."""
+        return list(self._all[path])
 
-    def _window(self, path: str, flt: str | None) -> list[tuple[int, datetime]]:
+    def times(self, path: str) -> dict[str, datetime]:
+        return dict(self.mail[path])
+
+    def delete(self, path: str, mid: str) -> None:
+        self.mail[path] = [(m, t) for m, t in self.mail[path] if m != mid]
+
+    def _window(self, path: str, flt: str | None) -> list[tuple[str, datetime]]:
         since, until = _parse_window(flt)
-        return [(i, t) for i, t in enumerate(self.mail[path])
+        if self.ignore_until:
+            until = None
+        return [(m, t) for m, t in self.mail[path]
                 if (since is None or t >= since) and (until is None or t <= until)]
 
     async def get(self, url, params=None, headers=None):
         if url.startswith(self.LINK):
+            path = self._links[url][0]
+            self.followed.append((path, self._n.get(path, 0) + 1))
             return self._page(*self._links[url])
         path = url.split("/")[3]
         if path not in self.mail:
@@ -167,25 +200,30 @@ class _FakeGraph:
         flt = params.get("$filter")
         if params.get("$count") == "true":
             self.counts.append((path, dict(params), dict(headers or {})))
+            if path in self.count_status:
+                return _Resp(self.count_status[path], {})
             if path in self.no_count:
                 return _Resp(200, {"value": []})
             return _Resp(200, {"@odata.count": len(self._window(path, flt)),
                                "value": []})
-        return self._page(path, flt, 0, int(params["$top"]), 1)
+        return self._page(path, flt, 0, int(params["$top"]))
 
-    def _page(self, path, flt, offset, top, page_no):
-        self.pages.append((path, page_no, flt))
+    def _page(self, path, flt, offset, top):
+        n = self._n[path] = self._n.get(path, 0) + 1
+        self.pages.append((path, n, flt))
         if self.on_page is not None:
-            self.on_page(path, page_no)
-        if self.fail_page == (path, page_no):
-            return _Resp(503, {})
+            self.on_page(path, n)
+        if (path, n) in self.fail:
+            headers = {"Retry-After": self.retry_after} if self.retry_after else {}
+            return _Resp(self.fail[(path, n)], {}, headers)
         size = self.page_size or top
         window = self._window(path, flt)
-        body: dict = {"value": [_graph_msg(path, i, t)
-                                for i, t in window[offset:offset + size]]}
+        chunk = window[offset:offset + size]
+        self.answers.setdefault(path, []).append([m for m, _ in chunk])
+        body: dict = {"value": [_graph_msg(m, t) for m, t in chunk]}
         if offset + size < len(window):
-            link = f"{self.LINK}{path}/{page_no + 1}/{len(self._links)}"
-            self._links[link] = (path, flt, offset + size, top, page_no + 1)
+            link = f"{self.LINK}{path}/{len(self._links)}"
+            self._links[link] = (path, flt, offset + size, top)
             body["@odata.nextLink"] = link
         return _Resp(200, body)
 
@@ -245,18 +283,21 @@ async def test_a_folder_gets_its_next_page_only_after_it_held_the_newest_head() 
     graph = _FakeGraph(_interleaved(T0, 7, _THREE), page_size=3)
     p = _outlook(graph, ("F-user",))
     taken: list[str] = []
-    late: list[tuple[str, int, str | None]] = []
-    graph.on_page = lambda path, page_no: late.append(
-        (path, page_no, taken[-1] if taken else None)) if page_no > 1 else None
+    late: list[tuple[str, int, list[str], list[str]]] = []
 
+    def _on_page(path, n):
+        if n > 1:
+            late.append((path, n, list(taken), list(graph.answers[path][-1])))
+
+    graph.on_page = _on_page
     async for batch in p.import_batches(since=FLOOR, size=1):
         taken.extend(m.provider_message_id for m in batch)
 
     assert len(late) == 6, "each folder of 7 messages reads 2 more pages"
-    for path, page_no, last in late:
-        assert last == f"{path}-{(page_no - 1) * 3 - 1:04d}", (
-            f"{path} got page {page_no} while it did not hold the newest head")
-    assert len(taken) == 21
+    for path, n, before, last_answer in late:
+        assert before[-1] in last_answer and set(last_answer) <= set(before), (
+            f"{path} got page {n} while it did not hold the newest head")
+    assert sorted(taken) == sorted(i for f in _THREE for i in graph.ids(f))
 
 
 async def test_each_stream_takes_the_window_and_a_resume_point() -> None:
@@ -267,11 +308,70 @@ async def test_each_stream_takes_the_window_and_a_resume_point() -> None:
     batches = await _collect(p.import_batches(since=FLOOR, until=until, size=5))
 
     want = f"receivedDateTime ge {_iso(FLOOR)} and receivedDateTime le {_iso(until)}"
-    firsts = [flt for _, page_no, flt in graph.pages if page_no == 1]
+    firsts = [flt for _, n, flt in graph.pages if n == 1]
     assert len(firsts) == 3 and all(flt == want for flt in firsts)
+    # Each later page is a new first page: the floor and a lower ``le``.
+    later = [flt for _, n, flt in graph.pages if n > 1]
+    assert later and all(flt.startswith(f"receivedDateTime ge {_iso(FLOOR)} and "
+                                         "receivedDateTime le ") for flt in later)
     got = [m.received_at for b in batches for m in b]
     assert max(got) == until, "the resume point itself is read again"
     assert len(got) == 21 - 9
+
+
+async def test_a_move_out_of_a_folder_during_the_import_loses_no_message() -> None:
+    """The case of the reviewer probe. A ``$skip`` link shifts when the member
+    moves a message out of the inbox, and the message at the page edge was
+    never read. Each page is now a new query by time."""
+    inbox = [T0 - timedelta(minutes=10 * k) for k in range(500)]
+    sent = [T0 - timedelta(minutes=10 * k + 5) for k in range(500)]
+    graph = _FakeGraph({"inbox": inbox, "sentitems": sent})
+    p = _outlook(graph)
+    moved: list[str] = []
+
+    def _member_archives_one(path, n):
+        if path == "inbox" and n == 4 and not moved:
+            moved.append(graph.ids("inbox")[5])
+            graph.delete("inbox", moved[0])
+
+    graph.on_page = _member_archives_one
+    seen: list[str] = []
+    async for batch in p.import_batches(since=T0 - timedelta(days=60), size=100):
+        seen.extend(m.provider_message_id for m in batch)
+
+    assert moved, "the probe did not move a message"
+    lost = sorted(set(graph.times("inbox")) - set(seen))
+    assert lost == [], f"the import never read {lost}"
+    assert len(seen) == len(set(seen)), "the import read a message twice"
+
+
+async def test_a_second_that_fills_a_page_follows_the_link_inside_it() -> None:
+    """Seven messages share one second, and a page holds three. The time
+    cannot move, so the stream follows the link inside that second."""
+    same = [T0 - timedelta(hours=1)] * 7
+    graph = _FakeGraph({"inbox": [T0, *same, T0 - timedelta(hours=2)]},
+                       page_size=3)
+    p = _outlook(graph)
+
+    batches = await _collect(p.import_batches(since=FLOOR, size=100))
+
+    got = [m.provider_message_id for b in batches for m in b]
+    assert sorted(got) == sorted(graph.ids("inbox"))
+    assert len(got) == len(set(got)) == 9
+    assert graph.followed == [("inbox", 3), ("inbox", 4)]
+
+
+async def test_a_server_that_ignores_the_bound_ends_the_folder(caplog) -> None:
+    """A page that adds no new message would repeat for ever. It ends the
+    folder and logs ``sync.import_folder_capped``."""
+    graph = _FakeGraph({"inbox": [T0 - timedelta(minutes=m) for m in range(9)]},
+                       page_size=3, ignore_until=True)
+    p = _outlook(graph)
+    with caplog.at_level("WARNING"):
+        batches = await _collect(p.import_batches(since=FLOOR, size=100))
+    assert sum(len(b) for b in batches) == 3
+    assert graph.page_count("inbox") == 2
+    assert any("sync.import_folder_capped" in r.getMessage() for r in caplog.records)
 
 
 async def test_the_estimate_is_the_sum_of_the_folder_counts() -> None:
@@ -308,25 +408,118 @@ async def test_a_folder_with_no_count_gives_no_estimate_and_the_import_goes_on()
     assert sum(len(b) for b in batches) == 12
 
 
-async def test_a_later_page_that_fails_raises_and_a_missing_folder_does_not() -> None:
+async def test_a_count_that_answers_503_gives_no_estimate_and_every_message() -> None:
+    """Verifier F1: a count request that fails is no failure of the import."""
+    graph = _FakeGraph(_interleaved(T0, 4, _THREE), count_status={"inbox": 503})
+    p = _outlook(graph, ("F-user",))
+    seen: list[int | None] = []
+
+    async def _estimate(n):
+        seen.append(n)
+
+    batches = await _collect(p.import_batches(since=FLOOR, on_estimate=_estimate))
+    assert seen == [None]
+    got = sorted(m.provider_message_id for b in batches for m in b)
+    assert got == sorted(i for f in _THREE for i in graph.ids(f))
+
+
+@pytest.fixture()
+def slept(monkeypatch) -> list[float]:
+    """Record the waits of a retry, and do not wait."""
+    from email_ingestion.providers import outlook
+
+    waits: list[float] = []
+
+    async def _sleep(delay, *_a, **_k):
+        waits.append(delay)
+
+    monkeypatch.setattr(outlook.asyncio, "sleep", _sleep)
+    return waits
+
+
+async def test_a_later_page_that_fails_raises(slept) -> None:
     graph = _FakeGraph(_interleaved(T0, 7, _THREE), page_size=3,
-                       fail_page=("inbox", 2))
+                       fail={("inbox", 2): 500})
     p = _outlook(graph, ("F-user",))
     taken: list[EmailMessage] = []
-    with pytest.raises(RuntimeError, match="503"):
+    with pytest.raises(httpx.HTTPStatusError, match="500"):
         async for batch in p.import_batches(since=FLOOR, size=2):
             taken.extend(batch)
     assert taken, "the import wrote nothing before the failed page"
+    assert slept == [], "a 500 was tried again"
 
 
-async def test_a_folder_reads_no_more_than_the_deep_page_cap(monkeypatch) -> None:
+@pytest.mark.parametrize("status", [429, 503, 504])
+async def test_a_page_tries_once_more_after_retry_after(slept, status) -> None:
+    graph = _FakeGraph(_interleaved(T0, 7, _THREE), page_size=3,
+                       fail={("inbox", 2): status}, retry_after="7")
+    p = _outlook(graph, ("F-user",))
+    batches = await _collect(p.import_batches(since=FLOOR, size=4))
+    assert sum(len(b) for b in batches) == 21
+    assert slept == [7.0]
+
+
+async def test_a_retry_waits_no_longer_than_the_bound(slept) -> None:
+    graph = _FakeGraph({"inbox": [T0]}, fail={("inbox", 1): 429},
+                       retry_after="900")
+    p = _outlook(graph)
+    await _collect(p.import_batches(since=FLOOR))
+    assert slept == [30.0]
+
+
+async def test_a_page_that_fails_twice_raises(slept) -> None:
+    graph = _FakeGraph(_interleaved(T0, 7, _THREE), page_size=3,
+                       fail={("inbox", 2): 503, ("inbox", 3): 503})
+    p = _outlook(graph, ("F-user",))
+    with pytest.raises(httpx.HTTPStatusError, match="503"):
+        await _collect(p.import_batches(since=FLOOR, size=4))
+    assert len(slept) == 1
+
+
+async def test_a_first_page_that_fails_with_another_status_raises(slept) -> None:
+    """Fix round 1, item 2: only a 404 skips a folder."""
+    graph = _FakeGraph(_interleaved(T0, 3, _THREE), fail={("sentitems", 1): 500})
+    p = _outlook(graph, ("F-user",))
+    with pytest.raises(httpx.HTTPStatusError, match="500"):
+        await _collect(p.import_batches(since=FLOOR))
+
+
+async def test_a_missing_folder_is_skipped_and_logged(caplog) -> None:
+    graph = _FakeGraph(_interleaved(T0, 3, ("inbox",)))
+    p = _outlook(graph)
+    with caplog.at_level("INFO"):
+        batches = await _collect(p.import_batches(since=FLOOR))
+    assert sum(len(b) for b in batches) == 3
+    skipped = [r.getMessage() for r in caplog.records
+               if "sync.import_folder_skipped" in r.getMessage()]
+    assert "sync.import_folder_skipped folder=archive status=404" in skipped
+    assert len(skipped) == 5
+
+
+async def test_with_no_folder_left_the_import_raises() -> None:
+    graph = _FakeGraph({})
+    p = _outlook(graph)
+    with pytest.raises(RuntimeError, match="no folder"):
+        await _collect(p.import_batches(since=FLOOR))
+
+
+async def test_a_folder_reads_no_more_than_the_import_page_cap(monkeypatch, caplog) -> None:
     graph = _FakeGraph({"inbox": [T0 - timedelta(minutes=m) for m in range(9)]},
                        page_size=2)
     p = _outlook(graph)
-    monkeypatch.setattr(OutlookProvider, "DEEP_SYNC_MAX_PAGES", 3)
-    batches = await _collect(p.import_batches(since=FLOOR, size=100))
+    monkeypatch.setattr(OutlookProvider, "IMPORT_MAX_PAGES", 3)
+    with caplog.at_level("WARNING"):
+        batches = await _collect(p.import_batches(since=FLOOR, size=100))
     assert graph.page_count("inbox") == 3
-    assert sum(len(b) for b in batches) == 6
+    # Each page after the first reads its boundary message again.
+    assert sum(len(b) for b in batches) == 4
+    assert any("sync.import_folder_capped folder=inbox pages=3" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_the_import_cap_is_far_above_the_deep_sweep() -> None:
+    """Fix round 1, item 7: 200 pages cut mail out of a large folder."""
+    assert OutlookProvider.IMPORT_MAX_PAGES >= 25 * OutlookProvider.DEEP_SYNC_MAX_PAGES
 
 
 async def test_the_default_import_sorts_cuts_and_drops_mail_newer_than_until() -> None:
@@ -593,6 +786,52 @@ async def test_no_import_batch_reaches_the_reconcile_or_the_label_learner(
     assert learned == [["r1"]]
 
 
+async def test_a_resync_reconciles_once_against_its_whole_import(core, monkeypatch) -> None:
+    """Fix round 1, item 6. After the deep sync of a member act, one block
+    reconciles against every message that the import wrote, before the
+    reconcile of the recurring sweep. The first import does not."""
+    now = _now()
+    reconciled: list[tuple[list[str], bool]] = []
+
+    async def _reconcile(db, account_id, sync_result):
+        reconciled.append((sorted(m.provider_message_id for m in sync_result.messages),
+                           sync_result.full_snapshot))
+        return 0
+
+    monkeypatch.setattr(sched, "reconcile_full_snapshot", _reconcile)
+    graph = _FakeGraph(_interleaved(now - timedelta(minutes=1), 30, _THREE))
+    p = _outlook(graph, ("F-user",))
+
+    await core.run(p, _row(initial_sync_done=True), deep=True)
+
+    every = sorted(i for f in _THREE for i in graph.ids(f))
+    assert len(reconciled) == 2
+    assert reconciled[0] == (every, True), "the resync did not reconcile its import"
+
+    reconciled.clear()
+    await core.run(p, _row(initial_sync_done=False))
+    assert len(reconciled) == 1, "the first import reconciled its batches"
+
+
+async def test_a_count_that_answers_503_still_writes_every_message(core) -> None:
+    """Verifier F1, through the core: the estimate is NULL and the import
+    writes each message."""
+    now = _now()
+    graph = _FakeGraph(_interleaved(now - timedelta(minutes=1), 40, _THREE),
+                       count_status={"sentitems": 503})
+    p = _outlook(graph, ("F-user",))
+
+    res = await core.run(p, _row())
+
+    assert "error" not in res, res
+    [(_, e_params)] = _stmts(core.log, "SET import_estimate = :estimate")
+    assert e_params["estimate"] is None
+    every = {i for f in _THREE for i in graph.ids(f)}
+    assert every <= {pid for _, pid in core.upserts}
+    [(_, done)] = _stmts(core.log, "import_phase = 'done'")
+    assert done == {"id": "acc-1"}
+
+
 # ── 3. The catch-up after a pause (hermetic, real Outlook) ─────────────────
 
 
@@ -650,14 +889,71 @@ async def test_after_21_days_off_the_sweep_requests_no_page_below_the_floor(core
     firsts = [flt for _, page_no, flt in graph.pages if page_no == 1]
     assert firsts == [f"receivedDateTime ge {_iso(floor)}"]
     written = {pid for _, pid in core.upserts}
-    paused = [pid for pid, t in zip(graph.ids("inbox"), graph.mail["inbox"],
-                                    strict=True)
-              if t >= now - timedelta(days=21)]
+    times = graph.times("inbox")
+    paused = [pid for pid, t in times.items() if t >= now - timedelta(days=21)]
     assert paused and set(paused) <= written, "the mail of the pause is missing"
-    old = [pid for pid, t in zip(graph.ids("inbox"), graph.mail["inbox"],
-                                 strict=True) if t < floor]
+    old = [pid for pid, t in times.items() if t < floor]
     assert not written & set(old), "a message below the floor was written"
     assert graph.page_count("inbox") == 3, "the sweep paged on to the floor"
+
+
+_PHASE_D = "SET sync_status = 'idle', last_synced_at = now()"
+
+
+async def test_a_catch_up_page_that_fails_keeps_the_watermark(core, slept) -> None:
+    """Verifier F3. Page 4 of the inbox fails during the catch-up of 21 days.
+    The cycle fails before phase (d), so ``last_synced_at`` keeps the old
+    watermark. The next cycle reads the whole pause."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail = {("inbox", 4): 500}
+    p = _outlook(graph, ("F-user",))
+    row = _row(initial_sync_done=True, import_since=None,
+               last_synced_at=now - timedelta(days=21))
+
+    res = await core.run(p, row)
+
+    assert "error" in res and "catch-up" in res["error"], res
+    assert not any(_PHASE_D in sql for _, sql, _ in core.log), (
+        "the failed catch-up moved last_synced_at")
+    assert any("sync_status = 'error'" in sql for _, sql, _ in core.log)
+
+    core.upserts.clear()
+    again = await core.run(p, row)
+    assert "error" not in again, again
+    assert set(graph.ids("inbox")[:600]) <= {pid for _, pid in core.upserts}
+
+
+async def test_a_normal_poll_skips_a_folder_whose_second_page_fails(core, slept) -> None:
+    """A page that fails after the sweep passed the watermark keeps the old
+    rule: the sweep skips that folder, and the cycle succeeds."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail = {("inbox", 2): 500}
+    p = _outlook(graph, ("F-user",))
+
+    res = await core.run(p, _row(initial_sync_done=True, import_since=None,
+                                 last_synced_at=now - timedelta(minutes=5)))
+
+    assert "error" not in res, res
+    written = {pid for _, pid in core.upserts}
+    assert not any(pid.startswith("inbox-") for pid in written)
+    assert set(graph.ids("sentitems")[:200]) <= written
+    assert any(_PHASE_D in sql for _, sql, _ in core.log)
+
+
+async def test_a_sweep_page_that_answers_503_once_is_read_again(core, slept) -> None:
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail = {("inbox", 2): 503}
+    p = _outlook(graph, ("F-user",))
+
+    res = await core.run(p, _row(initial_sync_done=True, import_since=None,
+                                 last_synced_at=now - timedelta(minutes=5)))
+
+    assert "error" not in res, res
+    assert set(graph.ids("inbox")[:200]) <= {pid for _, pid in core.upserts}
+    assert slept == [1.0]
 
 
 def test_the_watermark_is_the_last_sync_less_an_hour_or_the_connect() -> None:
@@ -916,6 +1212,59 @@ class TestTheImportOnARealDatabase:
             for col in ("import_phase", "import_count", "import_estimate",
                         "import_reached_at", "initial_sync_done"):
                 assert after[col] == before[col], col
+        finally:
+            release_tenant(token)
+            _drop(p.admin_engine, account_id)
+
+    async def test_a_resync_trashes_mail_deleted_in_outlook_in_org_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 1, item 6. A message that the member deleted in
+        Outlook lies inside the window of the import, beyond the newest
+        pages. The Resync moves it to trash in org B, and keeps the rest."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-t6b.test")
+        _set(p.admin_engine, account_id, import_since=now - timedelta(days=30),
+             initial_sync_done=True)
+        mail = _mail(250, now)
+        gone = f"pm-gone-{uuid.uuid4().hex[:8]}"
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_messages (account_id, provider_message_id, "
+                "folder, from_address, to_addresses, subject, received_at, "
+                "organization_id) VALUES (CAST(:a AS uuid), :pid, 'inbox', "
+                "'{}'::jsonb, '[]'::jsonb, 'deleted in Outlook', :r, "
+                "CAST(:o AS uuid))"),
+                {"a": account_id, "pid": gone, "r": mail[150].received_at
+                 + timedelta(minutes=3), "o": p.org_b})
+        provider = _Scripted(mail)
+        provider.import_full_snapshot = True
+
+        from acb_llm import key_store
+
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                res = await sched._sync_account(account_id,
+                                                organization_id=p.org_b, deep=True)
+            assert "error" not in res, res
+            with p.admin_engine.connect() as c:
+                folders = dict(c.execute(text(
+                    "SELECT provider_message_id, folder FROM email_messages "
+                    "WHERE account_id = CAST(:a AS uuid)"),
+                    {"a": account_id}).all())
+            assert folders.pop(gone) == "trash", "the resync kept a deleted message"
+            assert set(folders.values()) == {"inbox"} and len(folders) == 250
+            gone_sql = ("SELECT count(*) FROM email_messages WHERE account_id = "
+                        "CAST(:a AS uuid) AND folder = 'trash'")
+            assert _count_as(p.app_url, p.org_b, gone_sql, {"a": account_id}) == 1
+            assert _count_as(p.app_url, p.org_a, gone_sql, {"a": account_id}) == 0
         finally:
             release_tenant(token)
             _drop(p.admin_engine, account_id)
