@@ -16,7 +16,14 @@ import { featureForPath } from "@/lib/access";
 import { isChromeless } from "@/lib/nav";
 
 import ApprovedCard from "./ApprovedCard";
+import OAuthApprovedPage from "./page";
 import { APPROVED_COPY, approvedResult } from "./view";
+
+/** Render the REAL async page, with the query a browser would send. */
+async function pageHtml(query: { [key: string]: string | string[] | undefined }): Promise<string> {
+  const el = await OAuthApprovedPage({ searchParams: Promise.resolve(query) });
+  return renderToStaticMarkup(el);
+}
 
 const HERE = __dirname;
 
@@ -86,6 +93,44 @@ describe("the page copy (EM-T3c)", () => {
     for (const r of ["approved", "declined", "failed"]) {
       expect(html(r)).not.toMatch(/\b(?:bg|text|border)-(?:red|green|emerald|amber|sky|blue|zinc|slate|gray)-\d/);
     }
+  });
+});
+
+describe("the real page renders the token, never the value (EM-T3c, fix round 1)", () => {
+  it("no result renders Approved", async () => {
+    const out = await pageHtml({});
+    expect(out).toContain(`>${APPROVED_COPY.approved.title}<`);
+    expect(out).toContain(APPROVED_COPY.approved.body);
+  });
+
+  it("result=declined renders the declined copy", async () => {
+    const out = await pageHtml({ result: "declined" });
+    expect(out).toContain(APPROVED_COPY.declined.title);
+    expect(out).toContain(APPROVED_COPY.declined.body);
+    expect(out).not.toContain(APPROVED_COPY.approved.body);
+  });
+
+  it("result=<script> renders the failed copy and no trace of the value", async () => {
+    const out = await pageHtml({ result: "<script>" });
+    expect(out).toContain(APPROVED_COPY.failed.title);
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("&lt;script&gt;");
+    expect(out).not.toContain("script");
+  });
+
+  it("a repeated result renders the failed copy", async () => {
+    const out = await pageHtml({ result: ["declined", "approved"] });
+    expect(out).toContain(APPROVED_COPY.failed.title);
+    expect(out).not.toContain(APPROVED_COPY.approved.body);
+  });
+
+  it("ignores every other query value", async () => {
+    const out = await pageHtml({
+      tenant: "evil-tenant-value",
+      error_description: "evil-description-value",
+    });
+    expect(out).toContain(APPROVED_COPY.approved.title);
+    expect(out).not.toContain("evil-");
   });
 });
 

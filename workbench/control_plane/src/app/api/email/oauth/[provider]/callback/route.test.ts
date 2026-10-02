@@ -323,6 +323,25 @@ describe("the admin-consent return (EM-T3c)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("treats an EMPTY state or code as present: the member path runs", async () => {
+    identity.signedIn = false;
+    for (const query of ["error=x&state=", "admin_consent=True&code="]) {
+      resetSeam();
+      const res = await callback(query);
+      expect(res.status, query).toBe(401);
+      expect(res.headers.get("location"), query).toBeNull();
+      expect(seam.requireIdentity, query).toBe(1);
+      expect(seam.gatewayFetch, query).toBe(0);
+    }
+  });
+
+  it("an EMPTY error still blocks approved", async () => {
+    identity.signedIn = false;
+    const res = await callback("admin_consent=True&error=");
+    expect(res.headers.get("location")).toBe(FAILED);
+    expectNothingCalled();
+  });
+
   it("answers an admin return only for the Microsoft provider", async () => {
     identity.signedIn = false;
     const res = await callback("admin_consent=True&tenant=t", "gmail");

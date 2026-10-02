@@ -946,8 +946,10 @@ connect choices (`/email?connect=1`). The email router's real `exempt=[...]` lis
 
 **Problem.** The admin-consent link of EM-T3b sends no `state`. Microsoft returns the admin to the
 redirect URI with `admin_consent=True` and `tenant`, and with no `code`. On a refusal, Microsoft
-returns `error` and `error_description` instead. Today the BFF callback calls `requireIdentity()`
-first. An admin with no Metorite session gets a JSON 401. A signed-in admin gets `invalid_state`.
+returns `error` and `error_description` instead.
+
+Before EM-T3c, the BFF callback called `requireIdentity()` first. An admin with no Metorite
+session got a JSON 401. A signed-in admin got `invalid_state`.
 
 **Scope.**
 
@@ -1043,8 +1045,11 @@ node ../../.claude/hooks/ste-lint.mjs ../../project-docs/specs/email_app_master_
 
 **As built (2026-10-02).** The branch is `adminReturn()` in the BFF callback `route.ts`. It runs
 for the `microsoft` provider only, because only that provider has an admin-consent link. A
-Gmail request keeps the member path. The page is `src/app/oauth/approved/`. Its copy lives in
-`view.ts`, and `approved.test.ts` renders the card. The proxy fence is `src/proxy.test.ts`.
+Gmail request keeps the member path. A `code` or `state` with an empty value counts as present,
+so that request also keeps the member path.
+
+The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
+the real page. The proxy fence is `src/proxy.test.ts`.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

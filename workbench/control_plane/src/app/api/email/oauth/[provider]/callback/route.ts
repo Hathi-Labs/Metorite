@@ -111,15 +111,20 @@ const DECLINED_CODE = "AADSTS65004";
  * Null means "not an admin return", and the member path of EM-T1a runs with
  * no change. A request with a `code` is never an admin return. An `error`
  * WITH a `state` belongs to a member, so it goes to the gateway as before.
+ *
+ * Presence, not truthiness: `code=` or `state=` with an empty value still
+ * counts as present, so that request takes the member path. The spec says
+ * "absent", and an empty parameter is not absent.
  */
 function adminReturn(params: URLSearchParams): AdminReturn | null {
-  if (params.get("code")) return null;
-  const error = params.get("error");
-  const state = params.get("state");
+  if (params.has("code")) return null;
+  const hasError = params.has("error");
+  const hasState = params.has("state");
   const consent = params.get("admin_consent");
-  if (consent === null && !(error && !state)) return null;
+  if (consent === null && !(hasError && !hasState)) return null;
 
-  if (!error && (consent ?? "").toLowerCase() === "true") return "approved";
+  if (!hasError && (consent ?? "").toLowerCase() === "true") return "approved";
+  const error = params.get("error");
   // The description is only searched for the code. It is never echoed.
   const description = params.get("error_description") ?? "";
   if (error === "access_denied" || description.includes(DECLINED_CODE)) return "declined";
