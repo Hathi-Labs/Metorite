@@ -15,11 +15,11 @@ from tests.unit._email_fakes import bind_db
 # ── Settings model carries the new drafting fields ──────────────────────────
 
 def test_settings_defaults_include_drafting_fields() -> None:
-    # ON: this is LIVE drafting (DRAFT_EMAIL on the Reply rule), and a draft on
-    # mail that just arrived is the feature. The backfill is the one that
-    # defaults off. See test_email_auto_draft_defaults.py.
+    # OFF: LIVE drafting (DRAFT_EMAIL on the Needs Reply rule) is OFF for a new
+    # mailbox until a member turns it on (D-EM-6, 2026-10-02). See
+    # test_email_auto_draft_defaults.py.
     s = m.AssistantSettingsModel(account_id="acc-1")
-    assert s.draft_replies is True
+    assert s.draft_replies is False
     assert s.personal_instructions is None
     assert s.writing_style is None
 

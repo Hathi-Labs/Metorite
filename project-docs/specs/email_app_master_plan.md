@@ -12,6 +12,7 @@
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > 🔨 **EM-T5b-1 is BUILT on branch `email-t5b`, not merged (2026-10-02).** The four triage questions follow the System One conventions, and multi-rule runs in shadow (§10.4.8). The old LLM answer still acts.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -528,7 +529,7 @@ or API client to create a pattern by hand.
 | **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
-| D-EM-6 | *Gap. Not on `main` at 2026-10-02.* EM-T7 adds D-EM-6 (drafting off), on its own branch. |
+| **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
 | **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
 | **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
@@ -586,6 +587,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED, not built (2026-10-02).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -2662,6 +2664,64 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 - **R-8. `DECIDE_ENABLED` is box-wide.** On an org key, it also opens the chat `decide` tool on tenant content, which D-EM-9 does not name.
 - **R-9. Retry load in an outage.** The runner asks again for its newest 50 unsorted messages in each cycle. Each one costs one failed Console call and no vendor charge.
 - **R-10. A developer box decides nothing** after EM-T5b-3, unless it reaches a Console. The tests use the fake.
+
+#### 10.4.9 EM-T7 — automatic reply drafting is OFF by default
+
+**Status (2026-10-02).** ✅ MERGED #574, with fix round 1. Migration 224 sets the column default to false. The fence is `tests/unit/test_email_auto_draft_defaults.py`, with R8 on a private database.
+
+**Why (D-EM-6, §10.2).** Each automatic draft is a call on the drafting model. A member turns drafting on, and does not find it already on. Migration 81 set both defaults to false. Migration 82 set `draft_replies` back to true on 2026-07-20. D-EM-6 reverses 82 for a new mailbox.
+
+**Scope.**
+
+1. Add a migration that sets the default of `email_assistant_settings.draft_replies` to false.
+2. Take its number at build time (R1). It was 224. Make it expand only and idempotent.
+3. Set `AssistantSettingsModel.draft_replies` to false.
+4. With no settings row, make the GET answer `rules.py::reply_rule_drafts`.
+5. Make `reply_rule_drafts` true only when a reply rule of the mailbox carries `DRAFT_EMAIL`.
+6. Make `generate_writing_style` store that answer when it creates the first settings row.
+7. Remove `DRAFT_EMAIL` from the Needs Reply preset.
+8. Make "Add defaults" and "Reset rules" add `DRAFT_EMAIL` only when the stored `draft_replies` is true.
+9. Remove `DRAFT_EMAIL` from the preset copy in `RulesTab.tsx`.
+10. Make `SettingsTab.tsx` draw the switch through `assistantSettings.ts::autoDraftRepliesOn`.
+11. Make the PUT answer carry every key of the GET.
+12. Keep `follow_up_auto_draft` false, and pin it with a test.
+
+**Fix round 1 (2026-10-02).** A rule runs its own `DRAFT_EMAIL` and never reads the setting. A mailbox from before D-EM-6 got that action from the old presets. With no settings row, the GET read false while the engine drafted. The first save of another field then removed the action. So the GET now answers what the reply rule does, and a stored row still wins. A new mailbox has no rules, so it still reads false.
+
+The same round fixed an older defect in the PUT. Its answer left out `morning_brief_enabled`, `signature_text` and `learned_writing_style`. SettingsTab keeps that answer and saves it back, so the morning brief turned off at the next save.
+
+**Non-goals.** The migration changes no stored row. A sweep of all 5 production organizations on 2026-10-02 found 0 mailboxes, 0 settings rows and 0 rules. So no live row is at stake. The backfill does not change, because it was already OFF. This slice does not refresh `schema.generated.sql`.
+
+An AI settings tab that was open before the deploy can save the old ON value back. The window is short, so this slice accepts it. Reset rules does not keep drafting for a mailbox from before D-EM-6 with no settings row. It installs the new presets, as a reset should.
+
+The feature stays. A member can turn drafting on, and the save adds `DRAFT_EMAIL` to Needs Reply.
+
+**Done when.**
+
+- A new mailbox, with no settings row and no rules, reads `draft_replies: false` from the GET.
+- With no settings row, a Needs Reply rule that carries `DRAFT_EMAIL` reads true. A rule without it reads false.
+- A stored row wins over the rules in both directions.
+- A save that omits the field stores false.
+- The PUT answer carries every key of the GET.
+- R8: the migration sets the column default to false on a fresh ladder. A second run changes nothing.
+- R8: a row stored true before the migration stays true. A new row without the column gets false.
+- R8: the GET, `reply_rule_drafts`, `stored_draft_replies` and `generate_writing_style` run on the private database. Each one reads its own mailbox only.
+- No preset path and no new-mailbox path adds `DRAFT_EMAIL`. Each path has a test.
+- A vitest proves that SettingsTab draws the switch OFF for a new mailbox.
+
+**Files.** `infra/postgres/224_auto_draft_default_off.sql`, and `assistant.py` and `rules.py` in `routes/email/automation/`. In the control plane, `RulesTab.tsx`, `SettingsTab.tsx` and the new `app/email/lib/assistantSettings.ts`. The shared fixture is `tests/fixtures/email_new_mailbox_settings.json`. The tests are `test_email_auto_draft_defaults.py`, `test_email_presets.py`, `test_email_knowledge.py` and `assistantSettings.test.ts`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_auto_draft_defaults.py tests/unit/test_email_presets.py \
+  tests/unit/test_email_knowledge.py tests/unit/test_email_assistant_settings.py \
+  tests/unit/test_email_draft_replies_action.py tests/unit/test_email_rules_engine.py -q -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+```
+
+The R8 tests must show PASSED, not SKIPPED.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
