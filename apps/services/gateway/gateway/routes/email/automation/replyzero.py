@@ -286,7 +286,8 @@ def _clip_thread_for_prompt(thread_text: str, limit: int = _THREAD_PROMPT_BUDGET
 
 
 def _status_user_prompt(thread_text: str, user_email: str, about: str) -> str:
-    """The thread text the status call sends. The old call and ``decide`` share it."""
+    """The user message of the OLD status call. Since EM-T5b-1, ``decide``
+    does not use this text. It gets the thread as facts (`_status_state`)."""
     ctx = f"You are acting on behalf of: {user_email}\n"
     if (about or "").strip():
         ctx += f"{about.strip()[:1200]}\n"
@@ -351,17 +352,23 @@ _STATUS_FYI = (
 
 
 def _status_correction_notes(corrections: str) -> list[str]:
-    """The notes of a ``_status_corrections_block`` text, one for each line.
+    """The correction notes for the ``decide`` instructions, newest first.
 
-    The block is ours: a header line, then one ``- note`` for each
-    correction. Reading the notes back from it keeps the DB reads of the
-    status path unchanged, so the old call and ``decide`` see the same set.
+    ``_status_corrections_block`` returns a :class:`StatusCorrections`, which
+    carries the notes in their ``decide`` order with no rule-name prefix. The
+    status path makes no new DB read for them. A plain text (a caller with
+    no block of ours) falls back to its ``- note`` lines, newest first. The
+    block lists the account-wide notes first, so reversing it puts the
+    conversation-rule notes first too.
     """
+    notes = getattr(corrections, "decide_notes", None)
+    if notes is not None:
+        return [n.strip() for n in notes if n and n.strip()]
     start = (corrections or "").find("\n- ")
     if start == -1:
         return []
     body = corrections[start + 3:]
-    return [n.strip() for n in body.split("\n- ") if n.strip()]
+    return [n.strip() for n in reversed(body.split("\n- ")) if n.strip()]
 
 
 def _status_state(
@@ -393,8 +400,8 @@ def _status_state(
         "earlier_messages_omitted": len(messages) - len(kept),
         "last_message_side": last_side,
         "mailbox_owner": {
-            "address": decide_features.clip(user_email or "", 320),
-            "about": (about or "").strip()[:1200],
+            "address": decide_features.clip_fact(user_email, 320),
+            "about": decide_features.clip_fact(str(about or "").strip(), 1200),
         },
     }
 
@@ -536,7 +543,8 @@ async def _llm_determine_thread_status(
             user_sent_last=user_sent_last, corrections=corrections),
         compare=decide_features.compare_choice(
             lambda r: r[0], qid="status", options=options,
-            extra_of=lambda r: {"confident": bool(r[1])}),
+            extra_of=lambda r: {"confident": bool(r[1])},
+            keys=("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))),
     )
 
 
@@ -624,17 +632,20 @@ def _thread_message(
             self_email, getattr(r, "to_addresses", None),
             getattr(r, "cc_addresses", None)) == "cc"
     dt = getattr(r, "received_at", None)
-    clip = decide_features.clip
+    # `clip_fact` takes any value, so a name that is None or not text reads
+    # as text, as the f-string of `_fmt_thread_msg` reads it. It also bounds
+    # the JSON-escaped form that the Console measures.
+    fact = decide_features.clip_fact
     return {
         "side": _SIDE.get(scope, "other_party"),
-        "from": clip(frm.get("name") or frm.get("email") or "?", 320),
-        "to": clip(to, 1000),
-        "cc": clip(cc, 1000),
+        "from": fact(frm.get("name") or frm.get("email") or "?", 320),
+        "to": fact(to, 1000),
+        "cc": fact(cc, 1000),
         "owner_cc_only": cc_only,
         "date": dt.isoformat() if hasattr(dt, "isoformat") else "",
-        "subject": clip(r.subject or "", 500),
-        "attachments": clip(attach_line or "", 1000),
-        "body": (r.body_text or r.snippet or "").strip()[:1500],
+        "subject": fact(getattr(r, "subject", None), 500),
+        "attachments": fact(attach_line, 1000),
+        "body": fact(str(r.body_text or r.snippet or "").strip(), 1500),
     }
 
 
@@ -702,6 +713,28 @@ async def _thread_is_conversation(
     return bool(row and (row.n or 0) >= 2 and row.ours)
 
 
+class StatusCorrections(str):
+    """The corrections block of the old status prompt, plus the notes for
+    ``decide`` (EM-T5b-1).
+
+    The text is the block that the old system prompt carries, byte for byte,
+    so the live path does not change. ``decide_notes`` holds the same notes in
+    the order the ``decide`` instructions need: the conversation-rule notes
+    first, then the account-wide notes, each group newest first. The
+    corrections clip (1500 characters) cuts the end, so it drops the oldest
+    note and never the newest. The notes carry no ``[<rule name>]`` prefix,
+    because the preset rule named "FYI" would put an option key into the
+    instructions (§6A.14 "Question conventions").
+    """
+
+    decide_notes: tuple[str, ...]
+
+    def __new__(cls, text: str, decide_notes: tuple[str, ...] = ()) -> StatusCorrections:
+        obj = super().__new__(cls, text)
+        obj.decide_notes = tuple(decide_notes)
+        return obj
+
+
 async def _status_corrections_block(db: Any, account_id: str) -> str:
     """The user's taught corrections, rendered for the status determiner.
 
@@ -709,7 +742,10 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
     (Reply / Awaiting / FYI / Done). Cleanup-rule guidance is left out — "Zoho
     digests are Newsletter" has nothing to tell a determiner choosing between
     REPLY and DONE, and prompt space spent on it is pure noise. Best-effort:
-    guidance failing to load must never block a status call."""
+    guidance failing to load must never block a status call.
+
+    Returns a :class:`StatusCorrections`: the old text, plus the notes for
+    ``decide`` from the same read."""
     try:
         from gateway.routes.email.automation.engine import (
             _load_rule_guidance,
@@ -717,7 +753,9 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
         g = await _load_rule_guidance(db, account_id)
         if not g:
             return ""
-        notes = list(g.get("", []))
+        account_wide = list(g.get("", []))
+        notes = list(account_wide)
+        rule_notes: list[str] = []
         conv_ids = set()
         if any(k for k in g if k):
             from gateway.routes.email.automation.rules import (
@@ -727,13 +765,19 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
                 key = _match_conversation_key({"rule": r})
                 if key:
                     conv_ids.add(str(r.get("id")))
-                    for n in g.get(str(r.get("id")), []):
+                    own = g.get(str(r.get("id")), [])
+                    for n in own:
                         notes.append(f"[{r.get('name')}] {n}")
+                    # Newest first within the rule. `_load_rule_guidance`
+                    # gives each list oldest first.
+                    rule_notes.extend(reversed(own))
         if not notes:
             return ""
         body = "\n".join(f"- {n}" for n in notes)
-        return ("\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override "
-                f"your default reading):\n{body}")
+        return StatusCorrections(
+            "\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override "
+            f"your default reading):\n{body}",
+            (*rule_notes, *reversed(account_wide)))
     except Exception as exc:
         _log.warning("email.status_corrections_failed",
                      account_id=account_id, error=str(exc)[:160])
@@ -1021,8 +1065,6 @@ async def build_thread_context(
     attach = await _attachment_summaries(db, [r.id for r in rows])
     parts = [_fmt_thread_msg(r, self_email, extra_domains,
                              attach.get(str(r.id), "")) for r in rows]
-    messages = [_thread_message(r, self_email, extra_domains,
-                                attach.get(str(r.id), "")) for r in rows]
     scopes = [_msg_scope(r, self_email, extra_domains) for r in rows]
     has_external = any(s == "external" for s in scopes)
     our_side_last = scopes[-1] != "external"
@@ -1034,13 +1076,28 @@ async def build_thread_context(
         parts.append(
             f"From: {self_email} (you sent)\n"
             f"Subject: {subject or latest.subject or ''}\n{body[:1500]}")
-        messages.append({
-            "side": "owner", "from": decide_features.clip(self_email or "", 320),
-            "to": "", "cc": "", "owner_cc_only": False, "date": "",
-            "subject": decide_features.clip(subject or latest.subject or "", 500),
-            "attachments": "", "body": body[:1500],
-        })
         our_side_last = True
+
+    # The thread as facts serves the `decide` shadow only (EM-T5b-1). In `off`
+    # it is not built, so the live path does exactly what it did before. A
+    # failure here costs the shadow its question, never the status.
+    messages: list[dict[str, Any]] = []
+    if decide_features.mode_for("email.thread_status") != "off":
+        try:
+            messages = [_thread_message(r, self_email, extra_domains,
+                                        attach.get(str(r.id), "")) for r in rows]
+            if reply_pending:
+                fact = decide_features.clip_fact
+                messages.append({
+                    "side": "owner", "from": fact(self_email, 320),
+                    "to": "", "cc": "", "owner_cc_only": False, "date": "",
+                    "subject": fact(subject or latest.subject, 500),
+                    "attachments": "", "body": fact(body, 1500),
+                })
+        except Exception as exc:  # the shadow must never break the status
+            _log.warning("email.thread_facts_failed", account_id=account_id,
+                         error_type=type(exc).__name__)
+            messages = []
 
     # Anchor last activity to the just-sent reply (not yet in the DB) so the
     # follow-up clock starts from NOW, not the inbound message we replied to.

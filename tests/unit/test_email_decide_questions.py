@@ -767,11 +767,69 @@ def test_the_thread_keeps_its_newest_messages_within_the_budget() -> None:
     assert state["earlier_messages_omitted"] == 20 - len(kept) > 0
 
 
-def test_the_status_notes_come_from_the_corrections_block() -> None:
+def test_a_plain_corrections_text_falls_back_to_its_lines_newest_first() -> None:
     block = ("\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override your "
              "default reading):\n- First note.\n- [Reply] Second note.")
-    assert rz._status_correction_notes(block) == ["First note.", "[Reply] Second note."]
+    assert rz._status_correction_notes(block) == ["[Reply] Second note.", "First note."]
     assert rz._status_correction_notes("") == []
+
+
+def _guidance_env(monkeypatch, guidance: dict[str, list[str]],
+                  rules: list[dict[str, Any]]) -> None:
+    monkeypatch.setattr(eng, "_load_rule_guidance", AsyncMock(return_value=guidance))
+    monkeypatch.setattr(rules_mod, "_load_rules", AsyncMock(return_value=rules))
+
+
+_CONV_RULES = [
+    {"id": "r-reply", "name": "Needs Reply", "system_type": None, "enabled": True},
+    {"id": "r-fyi", "name": "FYI", "system_type": None, "enabled": True},
+    {"id": "r-news", "name": "Newsletter", "system_type": None, "enabled": True},
+]
+
+
+async def test_the_old_block_text_does_not_change(monkeypatch) -> None:
+    """The live prompt keeps its exact text: account-wide notes first, then
+    each conversation-rule note with its `[<rule name>]` prefix."""
+    _guidance_env(monkeypatch, {"": ["A1", "A2"], "r-fyi": ["F1"], "r-news": ["N1"]},
+                  _CONV_RULES)
+    block = await rz._status_corrections_block(AsyncMock(), ACC)
+    assert block == ("\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override "
+                     "your default reading):\n- A1\n- A2\n- [FYI] F1")
+
+
+async def test_the_status_notes_put_rule_notes_first_and_newest_first(monkeypatch) -> None:
+    _guidance_env(monkeypatch, {"": ["A-old", "A-new"], "r-reply": ["R-old", "R-new"],
+                                "r-fyi": ["F-only"]}, _CONV_RULES)
+    block = await rz._status_corrections_block(AsyncMock(), ACC)
+    assert rz._status_correction_notes(block) == [
+        "R-new", "R-old", "F-only", "A-new", "A-old"]
+
+
+async def test_the_newest_status_notes_survive_the_clip(monkeypatch) -> None:
+    """The clip of 1500 characters cuts the end, so the oldest note goes."""
+    notes = [f"NOTE-{i:02d} " + "x" * 290 for i in range(8)]  # NOTE-07 is newest
+    _guidance_env(monkeypatch, {"": notes}, _CONV_RULES)
+    block = await rz._status_corrections_block(AsyncMock(), ACC)
+    _state, questions = rz._status_question(
+        THREAD, SECRET_OWNER, "", user_sent_last=False, corrections=block)
+    text = questions["status"].instructions
+    assert "NOTE-07" in text and "NOTE-06" in text
+    assert "NOTE-00" not in text
+
+
+async def test_a_note_on_the_rule_named_fyi_names_no_key(monkeypatch) -> None:
+    """The preset rule named "FYI" must not put that key into the decide
+    instructions. The old prompt keeps its `[FYI]` prefix."""
+    _guidance_env(monkeypatch, {"r-fyi": ["Supplier chasers want an answer."]},
+                  _CONV_RULES)
+    block = await rz._status_corrections_block(AsyncMock(), ACC)
+    assert "[FYI] Supplier chasers want an answer." in block
+    _state, questions = rz._status_question(
+        THREAD, SECRET_OWNER, "", user_sent_last=False, corrections=block)
+    text = questions["status"].instructions
+    assert "Supplier chasers want an answer." in text
+    for key in KEYS:
+        assert key not in text, key
 
 
 # ── Done when: no instructions text names an option key ────────────────────
@@ -898,7 +956,71 @@ async def test_the_resolver_passes_the_messages_and_the_row_id(monkeypatch, tena
     assert _records(caps, "decide.shadow")[0]["message_id"] == "msg-55"
 
 
-async def test_build_thread_context_builds_the_messages_as_facts(monkeypatch) -> None:
+def _context_rows() -> list[Any]:
+    return [
+        SimpleNamespace(id="m1", from_address={"name": None, "email": None},
+                        to_addresses=[], cc_addresses=[], subject=None,
+                        body_text=None, snippet="first", folder="inbox", received_at=None),
+        SimpleNamespace(id="m2", from_address={}, to_addresses=[], cc_addresses=[],
+                        subject="s2", body_text="second", snippet="", folder="inbox",
+                        received_at=None),
+        SimpleNamespace(id="m3", from_address={"name": 123, "email": "x@other.com"},
+                        to_addresses=[], cc_addresses=[], subject="s3",
+                        body_text="third", snippet="", folder="inbox", received_at=None),
+    ]
+
+
+async def _context(monkeypatch, rows: list[Any]) -> Any:
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(fetchall=MagicMock(return_value=rows))
+    monkeypatch.setattr(rz, "_attachment_summaries", AsyncMock(return_value={}))
+    return await rz.build_thread_context(db, ACC, "t1", "me@acme.com",
+                                         extra_domains=frozenset())
+
+
+async def test_off_mode_builds_no_facts_and_the_same_context(monkeypatch, tenant) -> None:
+    """In `off` the facts are not built at all, so the live context is the
+    one the base built: the same text, and a name of None or no name at all
+    raises nothing."""
+    built: list[int] = []
+    real = rz._thread_message
+
+    def spy(*a, **kw):
+        built.append(1)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(rz, "_thread_message", spy)
+    rows = _context_rows()
+    ctx = await _context(monkeypatch, rows)
+    assert ctx.messages == [] and built == []
+    assert ctx.thread_text == "\n\n---\n\n".join(
+        rz._fmt_thread_msg(r, "me@acme.com", frozenset(), "") for r in rows)
+    assert ctx.thread_text.startswith("From: ?\n")
+
+
+async def test_shadow_facts_take_a_name_of_none_or_not_text(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
+    ctx = await _context(monkeypatch, _context_rows())
+    assert [m["from"] for m in ctx.messages] == ["?", "?", "123"]
+    assert ctx.messages[0]["subject"] == "" and ctx.messages[0]["body"] == "first"
+
+
+async def test_a_facts_failure_never_breaks_the_status(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
+
+    def boom(*a, **kw):
+        raise TypeError("bad row")
+
+    monkeypatch.setattr(rz, "_thread_message", boom)
+    with structlog.testing.capture_logs() as caps:
+        ctx = await _context(monkeypatch, _context_rows())
+    assert ctx.messages == []
+    assert ctx.thread_text.count("---") == 2
+    assert _records(caps, "email.thread_facts_failed")
+
+
+async def test_build_thread_context_builds_the_messages_as_facts(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
     rows = [
         SimpleNamespace(id="m1", from_address={"name": "Cust", "email": "cust@other.com"},
                         to_addresses=[{"email": "x@other.com"}],
@@ -933,6 +1055,198 @@ async def test_the_cold_gate_passes_its_message_id(monkeypatch, tenant) -> None:
         await snd._maybe_block_cold(db, object(), ACC, "msg-5", "pm-5", EMAIL, "LABEL")
     assert len(fake.calls) == 1
     assert _records(caps, "decide.shadow")[0]["message_id"] == "msg-5"
+
+
+# ── Fix round 1: the shadow log is not biased ──────────────────────────────
+
+
+def _multi_compare(picks: list[dict[str, Any]]) -> Any:
+    rules = _cleanup(3)
+    decision = _decision({"r0": 0.9, "r1": 0.9, "r2": 0.9}, {"best": "r0"})
+    return eng._rule_match_compare(rules, multi=True)(picks, decision)
+
+
+@pytest.mark.parametrize(("picks", "old"), [
+    # No primary: the live path sorts by the canonical order.
+    ([{"index": 2, "primary": False}, {"index": 0, "primary": False}], "r0"),
+    # Two primaries: both lead, in the canonical order.
+    ([{"index": 2, "primary": True}, {"index": 1, "primary": True},
+      {"index": 0, "primary": False}], "r1"),
+    ([{"index": 2, "primary": True}, {"index": 0, "primary": False}], "r2"),
+    ([], "none"),
+])
+def test_the_multi_rule_old_main_is_the_rule_the_live_path_puts_first(picks, old) -> None:
+    assert _multi_compare(picks).old == old
+
+
+async def test_the_old_main_matches_the_live_sort(monkeypatch, tenant) -> None:
+    """Tie the comparison to `_match_email_to_rules_multi` itself: the rule
+    the live path puts first is the one the log names as `old`."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
+    _fake(monkeypatch, p=0.9, choices={"best": "r0"})
+    rules = [{**r, "enabled": True} for r in _cleanup(3)]
+    _llm(monkeypatch, eng, {"matches": [
+        {"index": 2, "reason": "x", "primary": False},
+        {"index": 0, "reason": "y", "primary": False}]})
+    monkeypatch.setattr(eng, "_load_rules", AsyncMock(return_value=rules))
+    monkeypatch.setattr(eng, "_load_rule_patterns", AsyncMock(return_value={}))
+    monkeypatch.setattr(eng, "_is_reply_candidate", AsyncMock(return_value=(True, "")))
+    monkeypatch.setattr(eng, "_load_rule_guidance", AsyncMock(return_value={}))
+    monkeypatch.setattr(eng, "_fetch_sender_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(eng, "_account_models", AsyncMock(return_value={"rule": "m"}))
+    with structlog.testing.capture_logs() as caps:
+        matches = await eng._match_email_to_rules_multi(
+            AsyncMock(), ACC, EMAIL, message_id=MID)
+    first = rules.index(matches[0]["rule"])
+    (rec,) = _records(caps, "decide.shadow")
+    assert rec["old"] == f"r{first}" == "r0"
+
+
+async def test_a_reply_that_is_not_a_decision_never_raises(monkeypatch, tenant) -> None:
+    """`_ask_all` never raises, as its docstring says: a broken reply logs
+    `decide.shadow_failed`, and the site keeps the old answer."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
+
+    async def not_a_decision(state, questions, **kw):
+        return {"answers": "not a mapping"}
+
+    monkeypatch.setattr(decide_mod, "decide", not_a_decision)
+    with structlog.testing.capture_logs() as caps:
+        out = await _rule(monkeypatch)
+    assert out == {"index": 0, "reason": "x"}
+    rec = _records(caps, "decide.shadow_failed")
+    assert len(rec) == 1 and rec[0]["message_id"] == MID
+    assert _records(caps, "decide.shadow") == []
+
+
+async def test_a_facade_that_is_not_async_never_raises(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.cold_check=shadow", ORG)
+    monkeypatch.setattr(decide_mod, "decide", lambda state, questions, **kw: None)
+    with structlog.testing.capture_logs() as caps:
+        out = await _cold(monkeypatch)
+    assert out == (True, "r")
+    assert _records(caps, "decide.shadow_failed")
+
+
+def test_clip_fact_bounds_the_escaped_form() -> None:
+    fact = df.clip_fact
+    assert fact(None, 10) == "" and fact(123, 10) == "123"
+    assert fact("a" * 50, 10) == "a" * 10
+    # Ordinary text keeps its full raw length: a newline escapes to 2.
+    assert fact("\n" * 50, 10) == "\n" * 10
+    hostile = fact("\x01" * 5000, 1500)
+    assert len(json.dumps(hostile, ensure_ascii=False)) - 2 <= 3000
+    assert len(hostile) == 500
+
+
+def _hostile_email() -> dict[str, str]:
+    ctrl = "\x01\x02\x1f"
+    return {**EMAIL, **{k: ctrl * 7000 for k in (
+        "body", "about", "to", "cc", "subject", "attachments", "from_name",
+        "from", "self", "self_name", "date")}}
+
+
+def test_control_characters_in_every_field_pass_the_validator() -> None:
+    """The verifier's case: 254 rules, and control characters in every field.
+    The Console measures the JSON-escaped state, where each one takes six
+    characters. Before fix round 1 this measured about 36 000 tokens."""
+    ctrl = "\x01\x02\x1f"
+    rules = _conversation() + [
+        {"id": f"c{i}", "name": ctrl * 300, "instructions": ctrl * 3000,
+         "system_type": None, "actions": [{"type": "LABEL"}]} for i in range(250)]
+    guidance = {"": [ctrl * 400] * 50}
+    history = [{"rule": ctrl * 900, "count": 9}] * 5
+    requests = eng._rule_match_requests(_hostile_email(), rules, guidance, history)
+    assert "best" in requests[0][1]
+    for state, questions in requests:
+        assert _refusal(state, questions) is None
+
+    # The thread goes through `_thread_message`, as `build_thread_context`
+    # builds it in production.
+    row = SimpleNamespace(
+        id="m1", from_address={"name": ctrl * 5000, "email": "x@other.com"},
+        to_addresses=[{"name": ctrl * 5000, "email": "me@acme.com"}],
+        cc_addresses=[{"name": ctrl * 5000, "email": "c@other.com"}],
+        subject=ctrl * 5000, body_text=ctrl * 5000, snippet="", folder="inbox",
+        received_at=None)
+    thread = [rz._thread_message(row, "me@acme.com", frozenset(), ctrl * 5000)] * 30
+    others = [
+        snd._cold_question(_hostile_email()),
+        lrn._sender_pin_question(ctrl * 900 + "@gmail.com",
+                                 {"name": ctrl * 900, "instructions": ctrl * 9000},
+                                 _pin_rows(10, ctrl * 900, ctrl * 900)),
+        rz._status_question(thread, ctrl * 900, ctrl * 9000, user_sent_last=False),
+    ]
+    for state, questions in others:
+        assert _refusal(state, questions) is None
+
+
+def _escaped(state: Any) -> int:
+    return len(json.dumps(state, ensure_ascii=False))
+
+
+def test_each_state_keeps_its_escaped_size_within_twice_its_clips() -> None:
+    """A per-field fence. The window test above sees only the total, so one
+    field that goes back to a raw clip would hide inside the margin. Each
+    bound is two times the sum of the raw clips of the state, plus the JSON
+    keys."""
+    ctrl = "\x01\x02\x1f"
+    history = [{"rule": ctrl * 900, "count": 9}] * 5
+    rule_state = eng._rule_state(_hostile_email(), history)
+    # 2 x (from 320 + 320, to 2000, cc 2000, date 64, subject 500,
+    # attachments 1000, body 1500, owner 320 + 320, about 1200, 5 x 200).
+    assert _escaped(rule_state) <= 2 * 10_544 + 600
+    assert _escaped(snd._cold_question(_hostile_email())[0]) <= 2 * 7_704 + 400
+    row = SimpleNamespace(
+        id="m1", from_address={"name": ctrl * 5000, "email": "x@other.com"},
+        to_addresses=[{"name": ctrl * 5000, "email": "me@acme.com"}],
+        cc_addresses=[{"name": ctrl * 5000, "email": "c@other.com"}],
+        subject=ctrl * 5000, body_text=ctrl * 5000, snippet="", folder="inbox",
+        received_at=None)
+    message = rz._thread_message(row, "me@acme.com", frozenset(), ctrl * 5000)
+    # 2 x (from 320, to 1000, cc 1000, subject 500, attachments 1000, body 1500).
+    assert _escaped(message) <= 2 * 5_320 + 300
+    pin_state = lrn._sender_pin_question(
+        "news@gmail.com", {"name": "N", "instructions": "x"},
+        _pin_rows(10, ctrl * 900, ctrl * 900))[0]
+    assert _escaped(pin_state) <= 2 * (320 + 255 + 10 * (120 + 160)) + 600
+
+
+def test_the_rule_log_carries_our_keys_never_a_raw_vendor_choice() -> None:
+    rules = _conversation() + _cleanup(2)
+    weird = eng._read_rule_match(
+        _decision({"r4": 0.9, "r5": 0.1}, {"conv": "r4", "best": "R0 <script>"}), rules)
+    assert weird.fields["conv"] == "unknown"  # r4 is not a conversation rule
+    assert weird.fields["best"] == "unknown"
+    assert weird.matched == (4,)
+    padded = eng._read_rule_match(
+        _decision({"r4": 0.1, "r5": 0.1}, {"conv": "r01", "best": "r1"}), rules)
+    assert padded.fields["conv"] == "unknown" and padded.matched == ()
+    assert padded.fields["best"] == "r1"
+    plain = eng._read_rule_match(
+        _decision({"r4": 0.1, "r5": 0.1}, {"conv": "none", "best": "none"}), rules)
+    assert (plain.fields["conv"], plain.fields["best"], plain.fields["main"]) == (
+        "none", "none", "none")
+
+
+async def test_the_status_log_carries_our_keys_never_a_raw_vendor_choice(
+    monkeypatch, tenant
+) -> None:
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
+    _fake(monkeypatch, choices={"status": "maybe, said the vendor"})
+    with structlog.testing.capture_logs() as caps:
+        await _status(monkeypatch)
+    (rec,) = _records(caps, "decide.shadow")
+    assert rec["new"] == "unknown" and rec["agree"] is False
+
+
+def test_one_set_of_moving_actions() -> None:
+    """The rule match and the undo read ONE set (`engine._MOVE_ACTIONS`)."""
+    from gateway.routes.email.automation import runner as run_mod
+
+    assert run_mod._MOVE_ACTIONS is eng._MOVE_ACTIONS
+    src = (AUTOMATION / "runner.py").read_text(encoding="utf-8")
+    assert '"ARCHIVE", "MOVE_FOLDER", "TRASH", "MARK_SPAM"' not in src
 
 
 # ── A structural fence: each caller names the message ──────────────────────

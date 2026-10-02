@@ -82,16 +82,17 @@ def _sender_pin_question(
 
     address = (sender or "").strip().lower()
     domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+    fact = decide_features.clip_fact
     state = {
         "sender": {
-            "address": decide_features.clip(address, 320),
-            "domain": decide_features.clip(domain, 255),
+            "address": fact(address, 320),
+            "domain": fact(domain, 255),
             "public_mail_domain": domain in _SHARED_DOMAINS,
             "automated_local_part": any(address.startswith(p) for p in _NO_REPLY_PREFIXES),
         },
         "recent_messages": [
-            {"subject": (r.subject or "(no subject)")[:120],
-             "snippet": (r.snippet or "")[:160]}
+            {"subject": fact(r.subject or "(no subject)", 120),
+             "snippet": fact(r.snippet, 160)}
             for r in rows
         ],
     }

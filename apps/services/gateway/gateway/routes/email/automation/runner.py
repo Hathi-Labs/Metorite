@@ -11,6 +11,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.engine import (
+    _MOVE_ACTIONS,
     LLMUnavailable,
     _email_payload_from_id,
     _is_conversation_status_rule,
@@ -590,7 +591,9 @@ async def undo_execution(
 
         pmid = row.provider_message_id
         reversed_actions: list[str] = []
-        if any(t in ("ARCHIVE", "MOVE_FOLDER", "TRASH", "MARK_SPAM")
+        # The one set of moving actions. The rule match reads the same set for
+        # its higher threshold (`engine._MOVE_ACTIONS`).
+        if any(t in _MOVE_ACTIONS
                for t in taken):
             await provider.move_to_folder(pmid, "inbox")
             if row.message_id:

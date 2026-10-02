@@ -2238,10 +2238,13 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 **Status.** 🔨 EM-T5b-1 BUILT, not merged (branch `email-t5b`, 2026-10-02). EM-T5b-2 to EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
 
-**EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. Two choices of the build are not in the text above:
+**EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. `build_thread_context` builds them only when `email.thread_status` is not `off`, so in `off` the live context is the one from before. These choices of the build are not in the text above:
 
 - `decide_features.CHOICE_TEXT_BUDGET` (80 000 characters) is the text that all the options of one choice share. Without it, `best` over 254 long rules fails the window check of the Console.
-- The thread status reads its correction notes back from the text of `_status_corrections_block`. So the status path makes no new database read.
+- `decide_features.clip_fact` bounds each fact of a state twice: the raw text by the clip above, and its JSON-escaped form by two times that clip. The Console measures the escaped state, where one control character takes six characters.
+- `_status_corrections_block` keeps its text, and it returns a `StatusCorrections` that also carries the notes for `decide`. They are newest first, with the conversation-rule notes first, and with no `[<rule name>]` prefix. The status path makes no new database read.
+- The log names an answer by our own key (`r<i>`, `none` or `unknown`), never by the raw string of the vendor.
+- `engine._MOVE_ACTIONS` is the one set of moving actions. The undo in `runner.py` imports it.
 
 The fences are `tests/unit/test_email_decide_questions.py` and the updated `tests/unit/test_email_decide_shadow.py`.
 
@@ -2483,7 +2486,7 @@ It logs no rule name, subject, body, address or `about`.
 - `_read_rule_match`: probabilities of 0.7 and 0.2 match `r0` only. A `best` answer that did not match gives the matched rule with the highest probability. A tie goes to the canonical order.
 - `_read_rule_match`: with all probabilities under the threshold, one-rule mode gets None, and multi-rule gets `[]`. A rule that moves mail does not match at 0.6.
 - With `email.rule_match=shadow` and a listed organization, `_llm_pick_rules` makes one request and returns the LLM answer. The log holds both key sets.
-- No log line holds a seeded rule name, subject, body or address. Each line holds `message_id`.
+- No `decide.*` line that `decide_features` writes for a call holds a seeded rule name, subject, body or address, and each one holds `message_id`. `decide.mode_refused` and the lines of the facade itself carry no message id, by design: they do not belong to one email.
 - The thread status criteria hold "promised a follow-up", "the OTHER person's court" and "Taking ownership". FYI is an option only when `last_message_side` is `other_party`.
 - No instructions text holds `REPLY`, `AWAITING_REPLY`, `DONE`, `FYI`, `r0` or `none`.
 - The pin state marks `gmail.com` as a public mail domain, from `cleanup._SHARED_DOMAINS`. The rule text is in `criteria.true`, never in the state.
@@ -2501,7 +2504,9 @@ uv run pytest tests/unit/test_email_decide_questions.py tests/unit/test_email_de
   tests/unit/test_email_thread_single_classification.py tests/unit/test_email_thread_status_parity.py \
   tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
   tests/unit/test_email_classify_matches.py tests/unit/test_email_guidance_reaches_prompt.py \
-  tests/unit/test_email_rules_engine.py tests/unit/test_crm_auto_lead.py -q -rs
+  tests/unit/test_email_rules_engine.py tests/unit/test_crm_auto_lead.py \
+  tests/unit/test_email_process_past_cost_guard.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_process_past_idempotent.py tests/unit/test_email_process_past_progress.py -q -rs
 uv run ruff check apps/services/gateway/gateway/decide_features.py \
   tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py
 node .claude/hooks/ste-lint.mjs --staged

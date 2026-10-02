@@ -1208,7 +1208,8 @@ async def sender_categories(
 
 
 def _cold_user_prompt(email: dict[str, str]) -> str:
-    """The email text the cold check sends. The old call and ``decide`` share it."""
+    """The user message of the OLD cold check. Since EM-T5b-1, ``decide``
+    does not use this text. It gets the email as facts (`_cold_question`)."""
     # Richer envelope (the cold check reuses the classifier email dict, which
     # carries from_name/to/cc/date): a name + direct-vs-bulk addressing helps
     # tell a personal approach from a blast.

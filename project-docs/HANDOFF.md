@@ -511,6 +511,7 @@ line — never reclaim a number by deleting the other entry.
   5. Say whether D-EM-9 also covers the chat `decide` tool. On an org key, the switch opens that tool too. On the deployment key, the tool sends no member and stays dark.
   6. Accept or reject the D61.1 amendment (D75 clause 3). The build does not wait.
   7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
+- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
 - **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
 - **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
 - **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit

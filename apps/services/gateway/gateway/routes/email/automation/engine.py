@@ -320,8 +320,9 @@ def _hint_block(hints: str) -> str:
 # sees one. In EM-T5b-1 this runs in shadow only, and the old LLM answer is
 # the one acted on.
 
-#: The actions that move mail out of the inbox. The same set as the undo in
-#: `runner.py`. A rule with one of them needs a higher probability to match.
+#: The actions that move mail out of the inbox. The ONE copy: the undo in
+#: `runner.py` imports it. A rule with one of them needs a higher
+#: probability to match.
 _MOVE_ACTIONS = frozenset({"ARCHIVE", "MOVE_FOLDER", "TRASH", "MARK_SPAM"})
 
 #: The probability at which a rule boolean matches (§10.4.8 "Thresholds").
@@ -386,17 +387,21 @@ _BEST_NONE = "No rule fits this email."
 
 
 def _email_facts(email: dict[str, str]) -> dict[str, Any]:
-    """The ``email`` object of a ``decide`` state: facts, clipped."""
-    clip = decide_features.clip
+    """The ``email`` object of a ``decide`` state: facts, clipped.
+
+    Each clip also bounds the JSON-escaped form (``decide_features.
+    clip_fact``), because the Console measures the escaped state.
+    """
+    fact = decide_features.clip_fact
     return {
-        "from": {"name": clip(email.get("from_name") or "", _NAME_CLIP),
-                 "address": clip(email.get("from") or "", _NAME_CLIP)},
-        "to": clip(email.get("to") or "", _ADDRESS_LIST_CLIP),
-        "cc": clip(email.get("cc") or "", _ADDRESS_LIST_CLIP),
-        "date": clip(email.get("date") or "", 64),
-        "subject": clip(email.get("subject") or "", _SUBJECT_CLIP),
-        "attachments": clip(email.get("attachments") or "", _LINE_CLIP),
-        "body": (email.get("body") or "")[:_BODY_CLIP],
+        "from": {"name": fact(email.get("from_name"), _NAME_CLIP),
+                 "address": fact(email.get("from"), _NAME_CLIP)},
+        "to": fact(email.get("to"), _ADDRESS_LIST_CLIP),
+        "cc": fact(email.get("cc"), _ADDRESS_LIST_CLIP),
+        "date": fact(email.get("date"), 64),
+        "subject": fact(email.get("subject"), _SUBJECT_CLIP),
+        "attachments": fact(email.get("attachments"), _LINE_CLIP),
+        "body": fact(email.get("body"), _BODY_CLIP),
     }
 
 
@@ -421,19 +426,19 @@ def _rule_state(
     The owner's role, the direction and the sender history are facts here.
     The old prompt said them as orders ("you are acting on behalf of …").
     """
-    clip = decide_features.clip
+    fact = decide_features.clip_fact
     return {
         "email": _email_facts(email),
         "direction": _email_direction(email),
         "mailbox_owner": {
-            "address": clip(email.get("self") or "", _NAME_CLIP),
-            "name": clip(email.get("self_name") or "", _NAME_CLIP),
+            "address": fact(email.get("self"), _NAME_CLIP),
+            "name": fact(email.get("self_name"), _NAME_CLIP),
             "recipient_role": _RECIPIENT_ROLE.get(
                 email.get("recipient_role") or "", "other"),
-            "about": (email.get("about") or "").strip()[:_ABOUT_CLIP],
+            "about": fact(str(email.get("about") or "").strip(), _ABOUT_CLIP),
         },
         "sender_history": [
-            {"rule": clip(str(h.get("rule") or ""), 200),
+            {"rule": fact(h.get("rule"), 200),
              "count": _history_count(h.get("count"))}
             for h in history or []
         ],
@@ -575,8 +580,21 @@ class RuleMatch:
                 for i in self.matched]
 
 
-def _option_index(key: str) -> int | None:
-    return int(key[1:]) if key[:1] == "r" and key[1:].isdigit() else None
+def _option_index(key: Any) -> int | None:
+    """The candidate index of an exact option key ``r<i>``, else None."""
+    if not isinstance(key, str) or key[:1] != "r" or not key[1:].isdigit():
+        return None
+    index = int(key[1:])
+    return index if key == f"r{index}" else None
+
+
+def _logged_key(choice: Any, valid: set[int] | range) -> str:
+    """The option key to LOG for a choice answer. Never the vendor's raw
+    string: one of our ``r<i>`` keys, ``none``, or ``unknown``."""
+    if choice == "none":
+        return "none"
+    index = _option_index(choice)
+    return f"r{index}" if index is not None and index in valid else "unknown"
 
 
 def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
@@ -605,7 +623,8 @@ def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
         conv = decision["conv"]
         for i in plan.conv:
             probabilities[i] = float(conv.probabilities.get(f"r{i}", 0.0))
-        fields.update(conv=conv.choice, conv_confidence=conv.confidence,
+        fields.update(conv=_logged_key(conv.choice, set(plan.conv)),
+                      conv_confidence=conv.confidence,
                       conv_margin=decide_features.top_margin(conv.probabilities))
         picked = _option_index(conv.choice)
         if picked in plan.conv:
@@ -616,7 +635,8 @@ def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
     main: int | None = None
     if plan.best:
         best = decision["best"]
-        fields.update(best=best.choice, best_confidence=best.confidence,
+        fields.update(best=_logged_key(best.choice, range(len(rules))),
+                      best_confidence=best.confidence,
                       best_margin=decide_features.top_margin(best.probabilities))
         picked = _option_index(best.choice)
         if picked in matched:
@@ -645,6 +665,11 @@ def _rule_match_compare(
     ``agree_set``, ``agree_main`` and ``p_old``, the probability that
     ``decide`` gives to the old main rule. In one-rule mode ``agree`` is
     ``agree_main``. In multi-rule mode it needs both.
+
+    In multi-rule mode the old main rule is the one that the live path puts
+    first. `_match_email_to_rules_multi` sorts primary first, then by the
+    canonical order, which is the candidate index. So the old main rule is the
+    lowest index among the picks marked primary, else the lowest index of all.
     """
 
     def _compare(old_result: Any, decision: Any) -> decide_features.Comparison:
@@ -652,12 +677,11 @@ def _rule_match_compare(
         if multi:
             picks = list(old_result or [])
             old_set = {int(p["index"]) for p in picks}
-            primary = next((p for p in picks if p.get("primary")),
-                           picks[0] if picks else None)
+            primaries = {int(p["index"]) for p in picks if p.get("primary")}
+            old_main = min(primaries or old_set) if old_set else None
         else:
             old_set = {int(old_result["index"])} if old_result else set()
-            primary = old_result
-        old_main = int(primary["index"]) if primary else None
+            old_main = int(old_result["index"]) if old_result else None
         agree_set = old_set == set(reading.matched)
         agree_main = old_main == reading.main
         p_old = reading.probabilities.get(old_main) if old_main is not None else None

@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
@@ -74,6 +74,7 @@ __all__ = [
     "Comparison",
     "clip",
     "clip_choice",
+    "clip_fact",
     "compare_boolean",
     "compare_choice",
     "instructions",
@@ -138,6 +139,41 @@ _CORRECTIONS_HEADER = "Corrections from the user. They override the guidance:"
 def clip(text: str, limit: int = CRITERION_CLIP) -> str:
     """``text`` cut to ``limit`` characters."""
     return text if len(text) <= limit else text[:limit]
+
+
+#: The characters that JSON gives to each character it escapes. Every other
+#: control character becomes ``\\u00XX``, six characters.
+_SHORT_ESCAPES = frozenset('"\\\b\f\n\r\t')
+
+
+def _escaped_length(ch: str) -> int:
+    if ch in _SHORT_ESCAPES:
+        return 2
+    return 6 if ord(ch) < 0x20 else 1
+
+
+def clip_fact(value: Any, limit: int) -> str:
+    """A fact for a ``decide`` state, as text, bounded twice.
+
+    The text keeps ``limit`` characters or fewer, as the old prompt did. Its
+    JSON-escaped form also keeps ``2 * limit`` characters or fewer. The
+    Console measures a state as the JSON that it receives, where one control
+    character takes six characters. So a raw clip alone lets a hostile email
+    push a request past the window, and a refused request is a lost decision.
+    Ordinary text (newlines and quotes take two) keeps its full raw length.
+    A non-text value becomes text, and None becomes "".
+    """
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    text = clip(text, limit)
+    budget = 2 * limit
+    if len(text) * 6 <= budget:
+        return text
+    used = 0
+    for i, ch in enumerate(text):
+        used += _escaped_length(ch)
+        if used > budget:
+            return text[:i]
+    return text
 
 
 def clip_choice(criteria: Mapping[str, str]) -> dict[str, str]:
@@ -290,9 +326,12 @@ def compare_choice(
     qid: str,
     options: int,
     extra_of: Callable[[Any], Mapping[str, Any]] | None = None,
+    keys: Collection[str] | None = None,
 ) -> Callable[[Any, Any], Comparison]:
     """A comparison for one choice question. Keys are compared as given.
 
+    With ``keys``, an answer that is not one of our option keys logs as
+    ``"unknown"``, so the log never carries a raw string from the vendor.
     The log also gets the margin of the top two probabilities (§6A.14
     "Question conventions").
     """
@@ -300,10 +339,11 @@ def compare_choice(
     def _compare(old_result: Any, decision: Any) -> Comparison:
         answer = decision[qid]
         old = old_key_of(old_result)
+        new = answer.choice if keys is None or answer.choice in keys else "unknown"
         return Comparison(
             old=old,
-            new=answer.choice,
-            agree=old == answer.choice,
+            new=new,
+            agree=old == new,
             options=options,
             confidence=answer.confidence,
             extra=dict(extra_of(old_result)) if extra_of else {},
@@ -372,6 +412,9 @@ async def _ask_all(
     except TimeoutError:
         _log.info("decide.fallback", **ids, decide_reason="timeout")
         return None
+    except Exception as exc:  # a broken facade never stops triage
+        _log.warning("decide.shadow_failed", **ids, error_type=type(exc).__name__)
+        return None
 
     failures = [r for r in results if isinstance(r, BaseException)]
     if failures:
@@ -394,12 +437,17 @@ async def _ask_all(
             )
         return None
 
-    answers: dict[str, Any] = {}
-    for decision in results:
-        answers.update(decision.answers)
-    request_ids = tuple(getattr(d, "request_id", None) for d in results)
+    try:
+        answers: dict[str, Any] = {}
+        for decision in results:
+            answers.update(decision.answers)
+        request_ids = tuple(getattr(d, "request_id", None) for d in results)
+        merged = Decision(answers=MappingProxyType(answers), request_id=request_ids[0])
+    except Exception as exc:  # a reply that is not a Decision never stops triage
+        _log.warning("decide.shadow_failed", **ids, error_type=type(exc).__name__)
+        return None
     return _Asked(
-        decision=Decision(answers=MappingProxyType(answers), request_id=request_ids[0]),
+        decision=merged,
         request_ids=request_ids,
         latency_ms=_ms(started),
         questions=sum(len(q) for _, q in requests),
