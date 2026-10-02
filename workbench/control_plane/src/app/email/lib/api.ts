@@ -1506,8 +1506,10 @@ export async function processPastEmails(params: {
   skipProcessed?: boolean;
 }): Promise<{
   scheduled: boolean;
-  count: number;
-  dry_run: boolean;
+  /** True when a run is already going on this mailbox. Nothing new started. */
+  already_running?: boolean;
+  count?: number;
+  dry_run?: boolean;
   draft_replies?: boolean;
   skip_processed?: boolean;
   /** Excluded up front as already-processed. Distinguishes "already done" from

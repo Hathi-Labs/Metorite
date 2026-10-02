@@ -27,7 +27,6 @@ from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _get_db,
     _tenant_session,
     _llm_json,
     _log,
@@ -345,61 +344,69 @@ async def _build_voice_profile_job(
     Progress lands in _VOICE_JOBS (phase + processed/total batches); the
     profile row's status moves BUILDING → READY / FAILED so the state survives
     the tracker (which is in-memory and dies with the process).
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the build route starts
+    this as a BackgroundTask, which runs inside the tenant scope of its
+    request. The build is one ``_tenant_session()`` block with that ambient
+    tenant, and the seam commits it on a clean exit. A failed build rolls
+    that block back, and the FAILED row is a block of its own. Neither block
+    calls ``commit()``. With no tenant bound, the first block raises
+    ``TenantUnbound``. The second block raises it too and writes nothing, and
+    the handler records the refusal on the progress row. The model calls stay
+    inside the build block, as they did before, and EM-T4a-4 owns that I/O.
     """
-    # H4: background consumer — _build_voice_profile_job runs as a
-    # post-response BackgroundTask; no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        _VOICE_JOBS.update(account_id, token, phase="collecting")
-        bodies = await _fetch_sample_bodies(db, account_id, sources, start, end)
-        samples = _prep_samples(bodies)
-        if not samples:
-            raise ValueError(
-                "No usable emails in that range — nothing written by you was "
-                "found in the selected folders.")
+        async with _tenant_session() as db:
+            _VOICE_JOBS.update(account_id, token, phase="collecting")
+            bodies = await _fetch_sample_bodies(
+                db, account_id, sources, start, end)
+            samples = _prep_samples(bodies)
+            if not samples:
+                raise ValueError(
+                    "No usable emails in that range — nothing written by you "
+                    "was found in the selected folders.")
 
-        batches = [samples[i:i + _BATCH_SIZE]
-                   for i in range(0, len(samples), _BATCH_SIZE)]
-        _VOICE_JOBS.update(
-            account_id, token, phase="analyzing",
-            processed=0, total=len(batches), sample_count=len(samples))
-        observations: list[dict[str, Any]] = []
-        for i, batch in enumerate(batches):
-            try:
-                observations.append(
-                    await _llm_observe_batch(batch, extract_knowledge))
-            except Exception as exc:
-                _log.warning("email.voice_profile_batch_failed",
-                             account_id=account_id, batch=i,
-                             error=str(exc)[:160])
-            _VOICE_JOBS.update(account_id, token, processed=i + 1)
+            batches = [samples[i:i + _BATCH_SIZE]
+                       for i in range(0, len(samples), _BATCH_SIZE)]
+            _VOICE_JOBS.update(
+                account_id, token, phase="analyzing",
+                processed=0, total=len(batches), sample_count=len(samples))
+            observations: list[dict[str, Any]] = []
+            for i, batch in enumerate(batches):
+                try:
+                    observations.append(
+                        await _llm_observe_batch(batch, extract_knowledge))
+                except Exception as exc:
+                    _log.warning("email.voice_profile_batch_failed",
+                                 account_id=account_id, batch=i,
+                                 error=str(exc)[:160])
+                _VOICE_JOBS.update(account_id, token, processed=i + 1)
 
-        merged = _merge_observations(observations)
-        if not any(merged[k] for k in
-                   ("style_notes", "greetings", "signoffs", "phrases")):
-            raise ValueError("Could not extract any style signal from the "
-                             "selected emails.")
+            merged = _merge_observations(observations)
+            if not any(merged[k] for k in
+                       ("style_notes", "greetings", "signoffs", "phrases")):
+                raise ValueError("Could not extract any style signal from the "
+                                 "selected emails.")
 
-        _VOICE_JOBS.update(account_id, token, phase="synthesizing")
-        traits, guide = await _llm_synthesize_profile(merged, len(samples))
-        if not guide and not traits:
-            raise ValueError("Could not synthesize a style profile.")
+            _VOICE_JOBS.update(account_id, token, phase="synthesizing")
+            traits, guide = await _llm_synthesize_profile(merged, len(samples))
+            if not guide and not traits:
+                raise ValueError("Could not synthesize a style profile.")
 
-        suggested = 0
-        if extract_knowledge and merged["facts"]:
-            _VOICE_JOBS.update(account_id, token, phase="knowledge")
-            suggested = await _store_kb_suggestions(
-                db, account_id, merged["facts"])
+            suggested = 0
+            if extract_knowledge and merged["facts"]:
+                _VOICE_JOBS.update(account_id, token, phase="knowledge")
+                suggested = await _store_kb_suggestions(
+                    db, account_id, merged["facts"])
 
-        await db.execute(text(
-            """UPDATE email_voice_profiles SET
-                 status = 'READY', style_guide = :sg, traits = :tr,
-                 analyzed_count = :n, last_error = NULL,
-                 built_at = now(), updated_at = now()
-               WHERE account_id = :aid"""
-        ), {"aid": account_id, "sg": guide, "tr": json.dumps(traits),
-            "n": len(samples)})
-        await db.commit()
+            await db.execute(text(
+                """UPDATE email_voice_profiles SET
+                     status = 'READY', style_guide = :sg, traits = :tr,
+                     analyzed_count = :n, last_error = NULL,
+                     built_at = now(), updated_at = now()
+                   WHERE account_id = :aid"""
+            ), {"aid": account_id, "sg": guide, "tr": json.dumps(traits),
+                "n": len(samples)})
         _VOICE_JOBS.finish(
             account_id, token, status="done", phase="done",
             sample_count=len(samples), suggested_knowledge=suggested)
@@ -408,20 +415,17 @@ async def _build_voice_profile_job(
     except Exception as exc:
         msg = str(exc)[:300] or "Build failed."
         try:
-            await db.rollback()
-            await db.execute(text(
-                """UPDATE email_voice_profiles SET
-                     status = 'FAILED', last_error = :err, updated_at = now()
-                   WHERE account_id = :aid"""
-            ), {"aid": account_id, "err": msg})
-            await db.commit()
+            async with _tenant_session() as db:
+                await db.execute(text(
+                    """UPDATE email_voice_profiles SET
+                         status = 'FAILED', last_error = :err, updated_at = now()
+                       WHERE account_id = :aid"""
+                ), {"aid": account_id, "err": msg})
         except Exception:
             pass
         _VOICE_JOBS.finish(account_id, token, status="error", error=msg)
         _log.warning("email.voice_profile_build_failed",
                      account_id=account_id, error=msg)
-    finally:
-        await db.close()
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────

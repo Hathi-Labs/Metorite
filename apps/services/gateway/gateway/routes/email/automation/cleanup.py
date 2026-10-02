@@ -55,7 +55,6 @@ from gateway.routes.email.automation.senders import (
 )
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _get_db,
     _tenant_session,
     _instantiate_provider,
     _log,
@@ -849,6 +848,9 @@ async def _mark_history_held_back(
     only the automatic, unbounded, per-cycle run is kept off them. The
     deterministic sweep ignores the column entirely, so the mail stays fully
     cleanable — just not by the model.
+
+    No commit here: the caller holds a ``_tenant_session`` block, and the seam
+    commits on its clean exit (EM-T4a-0).
     """
     res = await db.execute(text(
         "UPDATE email_messages SET rules_held_back_at = now() "
@@ -856,7 +858,6 @@ async def _mark_history_held_back(
         "   AND rules_processed_at IS NULL AND rules_held_back_at IS NULL "
         "   AND created_at >= :started AND received_at < :started"
     ), {"aid": account_id, "started": job_started})
-    await db.commit()
     return int(getattr(res, "rowcount", 0) or 0)
 
 
@@ -881,35 +882,34 @@ async def _backfill_and_clean_job(
     Between the two, the downloaded history is held back from the model-driven
     rule run — without being marked rules-processed, so a deliberate "Process
     past emails" run can still reach it (migration 84).
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the backfill route starts
+    this as a BackgroundTask, which runs inside the tenant scope of its
+    request. Each count is its own ``_tenant_session()`` block with that
+    ambient tenant, and the sync runs with no session of ours open. The
+    second block also holds the history back, and the seam commits it. With
+    no tenant bound, the first block raises ``TenantUnbound``, and the
+    handler below records it on the progress row.
     """
     # The "running" row was seeded (and the token minted) by the endpoint, so a
     # second request sees this run in-flight before this task even starts.
     started = datetime.now(timezone.utc)
     try:
-        # H4: background consumer — _backfill_and_clean_job runs as a
-        # post-response BackgroundTask; no ambient tenant to inherit.
-        db = await _get_db()
-        try:
+        async with _tenant_session() as db:
             row = (await db.execute(text(
                 "SELECT COUNT(*) AS n FROM email_messages WHERE account_id = :aid"
             ), {"aid": account_id})).fetchone()
             count_before = int(getattr(row, "n", 0) or 0)
-        finally:
-            await db.close()
 
         from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
         await _sync_account(account_id, deep=True, since=since)
 
-        # H4: background consumer (see above) — second session of the same job.
-        db = await _get_db()
-        try:
+        async with _tenant_session() as db:
             after = (await db.execute(text(
                 "SELECT COUNT(*) AS n FROM email_messages WHERE account_id = :aid"
             ), {"aid": account_id})).fetchone()
             fetched = max(0, int(getattr(after, "n", 0) or 0) - count_before)
             held_back = await _mark_history_held_back(db, account_id, started)
-        finally:
-            await db.close()
 
         _SWEEP_JOBS.update(
             account_id, token, phase="cleaning", synced=fetched,

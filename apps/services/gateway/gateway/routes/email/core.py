@@ -32,8 +32,12 @@ from gateway.db import get_session_factory as _get_session_factory
 # binds the organization of each mailbox, so the scheduler hooks and the ten
 # automation jobs they reach use `_tenant_session()` with that ambient tenant
 # (EM-T1b-2). None of them calls `commit()`: a commit inside a block ends
-# SET LOCAL. The request-started jobs that remain on `_get_db` below carry an
-# `# H4` marker each, and service identity binds NO ambient tenant.
+# SET LOCAL. Since EM-T4a-0 the ten jobs that a request starts use
+# `_tenant_session()` too. A BackgroundTask runs inside the tenant scope of its
+# request, and a task that `asyncio.create_task` starts copies that context,
+# so the ambient tenant is the organization of the request. The one
+# `_get_db` site left in the package is the discovery read of
+# `scheduler_hooks.mailbox_owner` (fence: test_email_request_jobs_tenancy.py).
 from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -427,8 +431,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
 # `_get_session_factory` at the top of this module is a re-export of that seam.
 # `_get_db` stays a real function here only to keep its signature: callers pass
 # nothing today, but the parameter is part of the historical surface this
-# package flattens into ``gateway.routes.email`` (see __init__.py), and tests
-# monkeypatch `_get_db` on the sibling module they exercise.
+# package flattens into ``gateway.routes.email`` (see __init__.py). Since
+# EM-T4a-0 its one caller in the package is `scheduler_hooks.mailbox_owner`.
 
 
 async def _get_db(request_id: str | None = None):

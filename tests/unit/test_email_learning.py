@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.routes import email as m
 
+from tests.unit._email_fakes import bind_db
+
 
 def test_normalize_text_collapses_whitespace_and_case() -> None:
     assert m._normalize_text("  Hi   THERE\n\n") == "hi there"
@@ -26,7 +28,7 @@ async def test_learn_from_sent_stores_memories_when_edited() -> None:
         {"content": "Keep sign-offs to my first name.", "kind": "PREFERENCE",
          "scope": "GLOBAL", "topic": ""},
     ])
-    with patch.object(m.automation.drafting, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(m.automation.drafting, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.drafting, "_llm_extract_reply_memories",
                          memories):
         await m._learn_from_sent("acc-1", "t1", "Hi,\n\nThanks. Best, Vijay")
@@ -42,7 +44,7 @@ async def test_learn_skips_llm_when_unchanged() -> None:
     db = AsyncMock()
     db.execute.return_value = res
     llm = AsyncMock()
-    with patch.object(m.automation.drafting, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(m.automation.drafting, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.drafting, "_llm_extract_reply_memories", llm):
         # Same text (modulo whitespace) → nothing to learn.
         await m._learn_from_sent("acc-1", "t1", "Hi there,   thanks!")
@@ -65,7 +67,7 @@ async def test_learn_skips_llm_when_only_quote_was_appended() -> None:
         "On Mon, 21 Jul 2026, Alice <alice@acme.com> wrote:\n"
         "> Are you free Friday to review the quote?\n"
     )
-    with patch.object(m.automation.drafting, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(m.automation.drafting, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.drafting, "_llm_extract_reply_memories", llm):
         await m._learn_from_sent("acc-1", "t1", sent)
     llm.assert_not_awaited()
@@ -77,7 +79,7 @@ async def test_learn_noop_when_no_stored_draft() -> None:
     db = AsyncMock()
     db.execute.return_value = res
     llm = AsyncMock()
-    with patch.object(m.automation.drafting, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(m.automation.drafting, "_tenant_session", bind_db(db)), \
             patch.object(m.automation.drafting, "_llm_extract_reply_memories", llm):
         await m._learn_from_sent("acc-1", "t1", "anything")
     llm.assert_not_awaited()

@@ -24,14 +24,13 @@ class _User:
 
 @contextmanager
 def _mock_db_ctx():
-    """Both DB seams → an AsyncMock db whose execute/commit/close all no-op.
+    """The DB seam → an AsyncMock db whose execute/commit/close all no-op.
 
-    The routes here are converted to `_tenant_session` (H2) while the
-    background `_reclassify_reply_zero_job` deliberately stays on `_get_db`
-    until H4 — so this fixture doubles both.
+    The routes here are converted to `_tenant_session` (H2), and since
+    EM-T4a-0 the background `_reclassify_reply_zero_job` is too, so one
+    double serves both.
     """
-    with patch.object(r, "_get_db", AsyncMock(return_value=AsyncMock())), \
-            patch.object(r, "_tenant_session", bind_db(AsyncMock())):
+    with patch.object(r, "_tenant_session", bind_db(AsyncMock())):
         yield
 
 
