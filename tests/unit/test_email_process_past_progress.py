@@ -8,6 +8,7 @@ even when nothing is synced locally yet.
 """
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -131,6 +132,31 @@ async def test_handler_seeds_tracker_and_schedules_when_mail_exists() -> None:
     assert len(bg.tasks) == 1                       # background job scheduled
     job = runner._PAST_JOBS.get("acc-1")
     assert job["status"] == "running" and job["total"] == 4
+
+
+@pytest.mark.parametrize("is_test", [False, True])
+async def test_the_job_gets_dry_run_equal_to_is_test(is_test: bool) -> None:
+    """An apply (`is_test=False`) must reach the job as `dry_run=False`, and a
+    preview as `dry_run=True`. From f1a13861 to 2026-10-02 the handler passed
+    `not req.is_test`, so the UI's apply ran as a preview and a preview applied."""
+    db = AsyncMock()
+    result = MagicMock()
+    result.fetchone.return_value = SimpleNamespace(c=4)
+    db.execute.return_value = result
+    user = SimpleNamespace(email="u@example.com")
+    bg = BackgroundTasks()
+    req = m.RuleProcessPastRequest(
+        account_id="acc-1", start_date="2026-01-01", end_date="2026-01-31",
+        is_test=is_test, include_read=True)
+    with patch.object(runner, "_tenant_session", bind_db(db)), \
+            patch.object(runner, "_assert_account_owner", AsyncMock()):
+        await m.process_past_emails(req, background=bg, user=user)
+
+    task = bg.tasks[0]
+    assert task.func is runner._process_past_emails_job
+    sig = inspect.signature(runner._process_past_emails_job)
+    bound = sig.bind(*task.args, **task.kwargs)
+    assert bound.arguments["dry_run"] is is_test
 
 
 async def test_handler_schedules_download_even_when_nothing_local() -> None:

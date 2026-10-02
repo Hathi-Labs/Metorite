@@ -945,7 +945,9 @@ async def process_past_emails(
         downloading=True, already_processed=already_processed)
     background.add_task(
         _process_past_emails_job, req.account_id, start_dt, end_dt,
-        min(req.limit, 2000), not req.is_test, user.email or "anonymous",
+        # `dry_run` IS `is_test`. This passed `not req.is_test` from f1a13861
+        # until 2026-10-02, so an apply ran as a preview and a preview applied.
+        min(req.limit, 2000), req.is_test, user.email or "anonymous",
         only_unread, token, req.draft_replies, req.skip_processed,
     )
     return {"scheduled": True, "count": count, "dry_run": req.is_test,
