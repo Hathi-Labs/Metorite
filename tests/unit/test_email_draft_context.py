@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.routes import email as m
 
+from tests.unit._email_fakes import bind_db
+
 _drafting = m.automation.drafting
 
 
@@ -242,7 +244,7 @@ async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> No
         calls["compose"] = k
         return "unused"
 
-    with patch.object(_drafting, "_get_db", AsyncMock(return_value=AsyncMock())), \
+    with patch.object(_drafting, "_tenant_session", bind_db(AsyncMock())), \
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
@@ -282,7 +284,7 @@ async def test_compose_assist_improve_passes_reply_to_body() -> None:
     async def fake_agent_draft(*a, **k):
         raise AssertionError("improve mode must not use the reply drafter")
 
-    with patch.object(_drafting, "_get_db", AsyncMock(return_value=AsyncMock())), \
+    with patch.object(_drafting, "_tenant_session", bind_db(AsyncMock())), \
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
@@ -318,7 +320,7 @@ async def test_compose_assist_reply_empty_body_passes_user_instruction() -> None
         calls["kwargs"] = k
         return "steered draft"
 
-    with patch.object(_drafting, "_get_db", AsyncMock(return_value=AsyncMock())), \
+    with patch.object(_drafting, "_tenant_session", bind_db(AsyncMock())), \
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
@@ -376,7 +378,7 @@ async def test_compose_assist_signature_only_body_is_a_fresh_draft() -> None:
         calls["used"] = "compose"
         return "unused"
 
-    with patch.object(_drafting, "_get_db", AsyncMock(return_value=AsyncMock())), \
+    with patch.object(_drafting, "_tenant_session", bind_db(AsyncMock())), \
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "Best,\nVijay"))), \
@@ -411,7 +413,7 @@ async def test_learn_from_sent_is_signature_insensitive() -> None:
         _one(SimpleNamespace(draft_text="Hi A,\n\nThanks!")),  # stored, unsigned
         MagicMock(),  # DELETE of the consumed draft row
     ]
-    with patch.object(_drafting, "_get_db", AsyncMock(return_value=db)), \
+    with patch.object(_drafting, "_tenant_session", bind_db(db)), \
             patch.object(_drafting, "_account_signature",
                          AsyncMock(return_value="Best,\nVijay")), \
             patch.object(_drafting, "_llm_extract_reply_memories", fake_extract):

@@ -432,7 +432,16 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `_mark_thread_replied`, `apply_thread_status_correction`,
 #: `_maybe_send_digest` and `_maybe_send_follow_up_reminders` (-10).
 #: `test_email_automation_tenancy.py` fences the ten by name.
-H2_BASELINE_ELSEWHERE = 92
+#: 92 → 80: WS-17 EM-T4a-0 (2026-10-02). The ten jobs that a request starts
+#: moved their 12 sites to `tenant_session()` with the ambient tenant of the
+#: request, in phases with no `commit()`: `_cleanup_thread_drafts`,
+#: `_learn_from_sent`, `_compose_assist_run`, `_backfill_and_clean_job` (2),
+#: `_build_voice_profile_job`, `_reconcile_labels_bg`,
+#: `_reclassify_reply_zero_job` (2), `_create_block_filter`,
+#: `_remove_block_filter` and `_process_past_emails_job` (-12). routes/email
+#: keeps only the discovery read of `mailbox_owner`, which
+#: `test_email_request_jobs_tenancy.py` pins.
+H2_BASELINE_ELSEWHERE = 80
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

@@ -6,7 +6,7 @@
  * Owning spec: `project-docs/specs/launch_surface.md` §6.2 · LS-6 · LS-8.
  * Also: org_access_control.md §6 · colleague_onboarding.md §6 (Requests).
  *
- * Four tabs, one surface:
+ * Five tabs, one surface:
  *
  *   • **Members** — the roster. Invite, suspend, change roles, drill into one
  *     person's access (the per-person editor at `/settings/members/[email]` is
@@ -14,6 +14,8 @@
  *   • **Requests** — people who signed in and found no account.
  *   • **Seats**    — who holds a paid seat and who is Unassigned (§6.2).
  *   • **Branding** — the company's own mark inside the product.
+ *   • **Email**    — the Microsoft 365 pre-approval link, and how many members
+ *     connected a mailbox (`email_app_master_plan.md` §10.4.3, EM-T3d).
  *
  * This was `/settings/members`, which now redirects here. The owner asked for
  * "Members & Roles, Seat assignments become tabs in Organisation"; ONE tab strip
@@ -53,6 +55,7 @@ import {
   describeSeal,
 } from "./lib/sealPreview";
 import BrandingTab from "./BrandingTab";
+import EmailTab from "./EmailTab";
 import {
   afterInvite,
   describe as describeInvite,
@@ -438,7 +441,7 @@ export default function OrganizationAdmin() {
            there is one an admin eventually clicks on the wrong screen. */
         <div
           className="flex items-center gap-2"
-          hidden={tab === "branding" || tab === "seats"}
+          hidden={tab === "branding" || tab === "seats" || tab === "email"}
         >
           <button
             onClick={() => void load()}
@@ -502,6 +505,12 @@ export default function OrganizationAdmin() {
             count: queueError ? undefined : requests.length || undefined,
             note: queueError || "People who signed in and found no account",
           },
+          {
+            id: "email",
+            label: "Email",
+            icon: "Mail",
+            note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
+          },
         ]}
       />
 
@@ -554,6 +563,9 @@ export default function OrganizationAdmin() {
       <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
         {tab === "branding" ? (
           <BrandingTab />
+        ) : tab === "email" ? (
+          // Its own reads, so it does not wait on the roster below.
+          <EmailTab />
         ) : tab === "seats" ? (
           // The seat tab reads the ROSTER (`members`) this page already loaded,
           // so the two tabs cannot show different people, and refetches it after

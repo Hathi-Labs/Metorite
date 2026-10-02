@@ -1610,7 +1610,7 @@ function ProcessPastEmailsDialog({
       // Processing past emails always APPLIES the matched rules (there's nothing
       // to "test" against history) — progress shows in the banner above the tabs
       // and results stream into the History tab as they're applied.
-      await processPastEmails({
+      const res = await processPastEmails({
         accountId,
         startDate: start || undefined,
         endDate: end || undefined,
@@ -1619,6 +1619,10 @@ function ProcessPastEmailsDialog({
         draftReplies,
         skipProcessed,
       });
+      if (res.already_running) {
+        setError("Past emails are already being processed on this mailbox. Let that run finish first.");
+        return;
+      }
       // Always hand off to the live progress banner: the job downloads the range
       // from the provider first, so there's no meaningful up-front count to gate
       // on (the banner shows "Downloading…" then "Processing N of M…", and the

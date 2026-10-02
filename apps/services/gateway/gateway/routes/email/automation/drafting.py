@@ -22,7 +22,7 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
-    _get_db,
+    _savepoint,
     _tenant_session,
     _llm_json,
     _log,
@@ -322,41 +322,42 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
     """Trash any drafts left in a thread (upstream + local) after a reply is sent
     — e.g. an AI DRAFT_EMAIL draft a rule created (which the user never sent
     because they composed their own reply), or a Gmail-style auto-save that wasn't
-    the one consumed by the send. Best-effort background task."""
+    the one consumed by the send. Best-effort background task.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the send routes start this
+    as a BackgroundTask. Starlette runs the task inside the tenant scope of its
+    request, so ``_tenant_session()`` takes the organization of the request.
+    With no tenant bound it raises ``TenantUnbound``, and the handler below
+    logs it. One block, and the seam commits on a clean exit."""
     if not thread_id:
         return
-    # H4: background consumer — _cleanup_thread_drafts runs as a post-response
-    # BackgroundTask (send paths); no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        rows = (await db.execute(text(
-            "SELECT id, provider_message_id FROM email_messages "
-            "WHERE account_id = :aid AND thread_id = :tid "
-            "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
-        ), {"aid": account_id, "tid": thread_id})).fetchall()
-        if not rows:
-            return
-        # Unscoped session: background task, no request user. Missing account
-        # raises 404 → caught by the broad handler below.
-        async with provider_session(
-            db, None, account_id=account_id, require_auth=False,
-        ) as sess:
-            if not sess.authed:
+        async with _tenant_session() as db:
+            rows = (await db.execute(text(
+                "SELECT id, provider_message_id FROM email_messages "
+                "WHERE account_id = :aid AND thread_id = :tid "
+                "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
+            ), {"aid": account_id, "tid": thread_id})).fetchall()
+            if not rows:
                 return
-            for r in rows:
-                try:
-                    await sess.provider.trash_message(r.provider_message_id)
-                except Exception:  # noqa: BLE001 — one stuck draft: no abort
-                    pass
-                await db.execute(text(
-                    "DELETE FROM email_messages WHERE id = :id"), {"id": r.id})
-        await db.commit()
+            # No request user to scope by. A missing account raises 404, and
+            # the broad handler below catches it.
+            async with provider_session(
+                db, None, account_id=account_id, require_auth=False,
+            ) as sess:
+                if not sess.authed:
+                    return
+                for r in rows:
+                    try:
+                        await sess.provider.trash_message(r.provider_message_id)
+                    except Exception:  # noqa: BLE001 — one stuck draft: no abort
+                        pass
+                    await db.execute(text(
+                        "DELETE FROM email_messages WHERE id = :id"), {"id": r.id})
         _log.info("email.thread_drafts_cleaned",
                   account_id=account_id, count=len(rows))
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.cleanup_thread_drafts_failed", error=str(exc)[:160])
-    finally:
-        await db.close()
 
 
 async def _resolve_existing_thread_draft(
@@ -416,17 +417,22 @@ async def _store_ai_draft(
 
     ``commit=False`` is for callers holding a ``_tenant_session`` (H2): the
     wrapper commits on clean exit, and a mid-block commit would end that
-    transaction and drop the tenant GUC. Background callers on their own
-    `_get_db` session keep the default and commit here as before."""
+    transaction and drop the tenant GUC. Since EM-T4a-0 every caller in the
+    tree passes ``commit=False``.
+
+    The write is best-effort, so it runs in ``_savepoint``. A failed INSERT
+    then rolls back only the savepoint, and the caller's block still commits
+    its other writes (EM-T1b-2 fix round 1)."""
     if not account_id or not thread_id or not (draft_text or "").strip():
         return
     try:
-        await db.execute(text(
-            """INSERT INTO email_ai_drafts (account_id, thread_id, draft_text)
-               VALUES (:aid, :tid, :txt)
-               ON CONFLICT (account_id, thread_id) DO UPDATE SET
-                 draft_text = EXCLUDED.draft_text, created_at = now()"""
-        ), {"aid": account_id, "tid": thread_id, "txt": draft_text})
+        async with _savepoint(db):
+            await db.execute(text(
+                """INSERT INTO email_ai_drafts (account_id, thread_id, draft_text)
+                   VALUES (:aid, :tid, :txt)
+                   ON CONFLICT (account_id, thread_id) DO UPDATE SET
+                     draft_text = EXCLUDED.draft_text, created_at = now()"""
+            ), {"aid": account_id, "tid": thread_id, "txt": draft_text})
         if commit:
             await db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -519,7 +525,16 @@ def _resolve_memory_scope(
 async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> None:
     """Background: if the user edited the assistant's draft for this thread,
     extract scoped reply memories (sender/domain/topic/global) and store them
-    (best-effort)."""
+    (best-effort).
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the send routes start this
+    as a BackgroundTask, which runs inside the tenant scope of its request. Two
+    ``_tenant_session()`` blocks with that ambient tenant, and no ``commit()``.
+    Block A consumes the stored draft, where the first commit was. Block B
+    learns: the extraction, the pattern rows, Mem0 and the style refresh. The
+    swallowed read and the swallowed style write each run in ``_savepoint``,
+    so a failure there cannot abort the pattern rows. With no tenant bound,
+    block A raises ``TenantUnbound``, and the handler below logs it."""
     if not thread_id or not (sent_text or "").strip():
         return
     # The composer sends new-text + the quoted chain concatenated. The stored AI
@@ -528,92 +543,92 @@ async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> N
     # correspondent prose leaked into the learned preferences. Strip the quote so
     # both the unchanged-check and the extraction see only what the user wrote.
     sent_text = split_quoted_text(sent_text)[0]
-    # H4: background consumer — _learn_from_sent runs as a post-response
-    # BackgroundTask after a send; no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        # The signature now rides IN draft bodies, but the /send path's body may
-        # or may not carry it depending on where the send started. Strip it from
-        # BOTH sides so the unchanged-check diffs what the user wrote — never
-        # the boilerplate — and the signature never leaks into learned prefs.
-        sig = await _account_signature(db, account_id)
-        sent_text = strip_signature_text(sig, sent_text)
-        row = (await db.execute(text(
-            "SELECT draft_text FROM email_ai_drafts "
-            "WHERE account_id = :aid AND thread_id = :tid"
-        ), {"aid": account_id, "tid": thread_id})).fetchone()
-        if not row:
-            return
-        original = strip_signature_text(sig, row.draft_text or "")
-        await db.execute(text(
-            "DELETE FROM email_ai_drafts "
-            "WHERE account_id = :aid AND thread_id = :tid"
-        ), {"aid": account_id, "tid": thread_id})
-        await db.commit()
+        async with _tenant_session() as db:
+            # The signature now rides IN draft bodies, but the /send path's
+            # body may or may not carry it depending on where the send
+            # started. Strip it from BOTH sides so the unchanged-check diffs
+            # what the user wrote — never the boilerplate — and the signature
+            # never leaks into learned prefs.
+            sig = await _account_signature(db, account_id)
+            sent_text = strip_signature_text(sig, sent_text)
+            row = (await db.execute(text(
+                "SELECT draft_text FROM email_ai_drafts "
+                "WHERE account_id = :aid AND thread_id = :tid"
+            ), {"aid": account_id, "tid": thread_id})).fetchone()
+            if not row:
+                return
+            original = strip_signature_text(sig, row.draft_text or "")
+            await db.execute(text(
+                "DELETE FROM email_ai_drafts "
+                "WHERE account_id = :aid AND thread_id = :tid"
+            ), {"aid": account_id, "tid": thread_id})
         if not original.strip() or \
                 _normalize_text(original) == _normalize_text(sent_text):
             return  # unchanged → nothing to learn
 
-        # Sender + incoming content, to scope the extracted memories.
-        inb = (await db.execute(text(
-            """SELECT from_address, body_text, snippet FROM email_messages
-               WHERE account_id = :aid AND thread_id = :tid
-                 AND LOWER(COALESCE(folder, '')) <> 'sent'
-               ORDER BY received_at DESC NULLS LAST LIMIT 1"""
-        ), {"aid": account_id, "tid": thread_id})).fetchone()
-        sender_email, incoming = "", ""
-        if inb:
-            frm = inb.from_address if isinstance(inb.from_address, dict) \
-                else json.loads(inb.from_address or "{}")
-            sender_email = (frm.get("email") or "").strip().lower()
-            incoming = inb.body_text or inb.snippet or ""
-        domain = sender_email.split("@")[-1] if "@" in sender_email else ""
+        async with _tenant_session() as db:
+            # Sender + incoming content, to scope the extracted memories.
+            inb = (await db.execute(text(
+                """SELECT from_address, body_text, snippet FROM email_messages
+                   WHERE account_id = :aid AND thread_id = :tid
+                     AND LOWER(COALESCE(folder, '')) <> 'sent'
+                   ORDER BY received_at DESC NULLS LAST LIMIT 1"""
+            ), {"aid": account_id, "tid": thread_id})).fetchone()
+            sender_email, incoming = "", ""
+            if inb:
+                frm = inb.from_address if isinstance(inb.from_address, dict) \
+                    else json.loads(inb.from_address or "{}")
+                sender_email = (frm.get("email") or "").strip().lower()
+                incoming = inb.body_text or inb.snippet or ""
+            domain = sender_email.split("@")[-1] if "@" in sender_email else ""
 
-        memories = await _llm_extract_reply_memories(incoming, original, sent_text)
-        if not memories:
-            return
-        stored: list[str] = []
-        for m in memories:
-            scope_type, scope_value = _resolve_memory_scope(
-                m["scope"], m["topic"], sender_email, domain)
-            await db.execute(text(
-                """INSERT INTO email_learned_patterns
-                     (account_id, pattern, kind, scope_type, scope_value,
-                      is_style_evidence)
-                   VALUES (:aid, :p, :k, :st, :sv, :ev)
-                   ON CONFLICT (account_id, kind, scope_type, scope_value, pattern)
-                   DO UPDATE SET weight = email_learned_patterns.weight + 1,
-                                 updated_at = now()"""
-            ), {"aid": account_id, "p": m["content"], "k": m["kind"],
-                "st": scope_type, "sv": scope_value,
-                "ev": m["kind"] == "PREFERENCE"})
-            stored.append(m["content"])
-        await db.commit()
+            memories = await _llm_extract_reply_memories(
+                incoming, original, sent_text)
+            if not memories:
+                return
+            stored: list[str] = []
+            for m in memories:
+                scope_type, scope_value = _resolve_memory_scope(
+                    m["scope"], m["topic"], sender_email, domain)
+                await db.execute(text(
+                    """INSERT INTO email_learned_patterns
+                         (account_id, pattern, kind, scope_type, scope_value,
+                          is_style_evidence)
+                       VALUES (:aid, :p, :k, :st, :sv, :ev)
+                       ON CONFLICT (account_id, kind, scope_type, scope_value, pattern)
+                       DO UPDATE SET weight = email_learned_patterns.weight + 1,
+                                     updated_at = now()"""
+                ), {"aid": account_id, "p": m["content"], "k": m["kind"],
+                    "st": scope_type, "sv": scope_value,
+                    "ev": m["kind"] == "PREFERENCE"})
+                stored.append(m["content"])
+            # Also remember the strongest memory in Mem0 — scoped to THIS
+            # account (email_memory_scope) so future drafting retrieval on this
+            # inbox sees it and other inboxes don't. Surfaces during the
+            # drafter's remember() pass.
+            try:
+                async with _savepoint(db):
+                    urow = (await db.execute(text(
+                        "SELECT user_id FROM email_accounts WHERE id = :aid"
+                    ), {"aid": account_id})).fetchone()
+                uid = (urow.user_id if urow else None) or "default"
+                from acb_memory import add_memories_background  # noqa: PLC0415
+                await add_memories_background(
+                    email_memory_scope(uid, account_id),
+                    [{"role": "assistant",
+                      "content": f"Email reply preference: {stored[0]}"}],
+                    agent_id="email",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            # Regenerate the learned writing style once enough new evidence
+            # accrued.
+            await _maybe_refresh_learned_style(db, account_id)
         _log.info("email.learned_memories", account_id=account_id,
                   count=len(stored))
-        # Also remember the strongest memory in Mem0 — scoped to THIS account
-        # (email_memory_scope) so future drafting retrieval on this inbox sees it
-        # and other inboxes don't. Surfaces during the drafter's remember() pass.
-        try:
-            urow = (await db.execute(text(
-                "SELECT user_id FROM email_accounts WHERE id = :aid"
-            ), {"aid": account_id})).fetchone()
-            uid = (urow.user_id if urow else None) or "default"
-            from acb_memory import add_memories_background  # noqa: PLC0415
-            await add_memories_background(
-                email_memory_scope(uid, account_id),
-                [{"role": "assistant",
-                  "content": f"Email reply preference: {stored[0]}"}],
-                agent_id="email",
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        # Regenerate the learned writing style once enough new evidence accrued.
-        await _maybe_refresh_learned_style(db, account_id)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.learn_from_sent_failed", error=str(exc)[:160])
-    finally:
-        await db.close()
 
 
 _MIN_STYLE_EVIDENCE = 5
@@ -648,39 +663,43 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
 
 async def _maybe_refresh_learned_style(db: Any, account_id: str) -> None:
     """Regenerate the learned writing style once enough new PREFERENCE evidence
-    has accumulated since the last refresh (inbox-zero parity)."""
+    has accumulated since the last refresh (inbox-zero parity).
+
+    The caller holds a ``_tenant_session`` block, so this does not commit
+    (EM-T4a-0). It swallows its own failure, so its work runs in
+    ``_savepoint``: a failed statement rolls back only the savepoint."""
     try:
-        cnt = (await db.execute(text(
-            "SELECT COUNT(*) AS n FROM email_learned_patterns "
-            "WHERE account_id = :aid AND is_style_evidence = true"
-        ), {"aid": account_id})).fetchone()
-        cur = int(cnt.n) if cnt else 0
-        if cur == 0:
-            return
-        srow = (await db.execute(text(
-            "SELECT learned_writing_style, learned_style_evidence_count "
-            "FROM email_assistant_settings WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        have_style = bool(srow and (srow.learned_writing_style or "").strip())
-        last = int(getattr(srow, "learned_style_evidence_count", 0) or 0) if srow else 0
-        need = ((not have_style and cur >= _MIN_STYLE_EVIDENCE)
-                or (cur - last >= _STYLE_REFRESH_EVERY))
-        if not need:
-            return
-        prefs = [r.pattern for r in (await db.execute(text(
-            "SELECT pattern FROM email_learned_patterns "
-            "WHERE account_id = :aid AND is_style_evidence = true "
-            "ORDER BY weight DESC, updated_at DESC LIMIT 25"
-        ), {"aid": account_id})).fetchall() if r.pattern]
-        style = await _llm_summarize_writing_style(prefs)
-        if not style:
-            return
-        await db.execute(text(
-            "UPDATE email_assistant_settings SET learned_writing_style = :s, "
-            "learned_style_evidence_count = :c, updated_at = now() "
-            "WHERE account_id = :aid"
-        ), {"s": style, "c": cur, "aid": account_id})
-        await db.commit()
+        async with _savepoint(db):
+            cnt = (await db.execute(text(
+                "SELECT COUNT(*) AS n FROM email_learned_patterns "
+                "WHERE account_id = :aid AND is_style_evidence = true"
+            ), {"aid": account_id})).fetchone()
+            cur = int(cnt.n) if cnt else 0
+            if cur == 0:
+                return
+            srow = (await db.execute(text(
+                "SELECT learned_writing_style, learned_style_evidence_count "
+                "FROM email_assistant_settings WHERE account_id = :aid"
+            ), {"aid": account_id})).fetchone()
+            have_style = bool(srow and (srow.learned_writing_style or "").strip())
+            last = int(getattr(srow, "learned_style_evidence_count", 0) or 0) if srow else 0
+            need = ((not have_style and cur >= _MIN_STYLE_EVIDENCE)
+                    or (cur - last >= _STYLE_REFRESH_EVERY))
+            if not need:
+                return
+            prefs = [r.pattern for r in (await db.execute(text(
+                "SELECT pattern FROM email_learned_patterns "
+                "WHERE account_id = :aid AND is_style_evidence = true "
+                "ORDER BY weight DESC, updated_at DESC LIMIT 25"
+            ), {"aid": account_id})).fetchall() if r.pattern]
+            style = await _llm_summarize_writing_style(prefs)
+            if not style:
+                return
+            await db.execute(text(
+                "UPDATE email_assistant_settings SET learned_writing_style = :s, "
+                "learned_style_evidence_count = :c, updated_at = now() "
+                "WHERE account_id = :aid"
+            ), {"s": style, "c": cur, "aid": account_id})
         _log.info("email.learned_style_refreshed",
                   account_id=account_id, evidence=cur)
     except Exception as exc:  # noqa: BLE001
@@ -1774,12 +1793,17 @@ async def _compose_assist_run(
 ) -> dict[str, str]:
     """The ONE compose-assist implementation behind both the JSON endpoint and
     the SSE streaming endpoint. Returns {"draft": ...} or
-    {"draft": "", "skipped": "low_confidence"}."""
-    # H4: _compose_assist_run also runs via asyncio.create_task on the
-    # compose_assist_stream keep-alive path — a task must not inherit the
-    # ambient tenant; needs an explicit tenant threaded through the call.
-    db = await _get_db()
-    try:
+    {"draft": "", "skipped": "low_confidence"}.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): one ``_tenant_session()``
+    block with the ambient tenant, and no ``commit()``. The JSON route runs
+    this inside its request. The stream route runs it in a task that
+    ``asyncio.create_task`` starts inside the response, and that task copies
+    the context of the request, so the ambient tenant is the organization of
+    the member. With no tenant bound the block raises ``TenantUnbound``
+    before it opens a session. The model call stays inside the block, as it
+    did before, and EM-T4a-4 owns that I/O."""
+    async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         await _emit_activity(
             on_activity, kind="stage", id="context", status="start")
@@ -1834,9 +1858,11 @@ async def _compose_assist_run(
                 # edits it in the composer and sends, _learn_from_sent can diff
                 # the sent body against what the AI wrote. Without this the
                 # highest-traffic "Draft with AI" entry point taught nothing.
+                # commit=False: the block commits on its clean exit.
                 if ctx.get("thread_id"):
                     await _store_ai_draft(
-                        db, req.account_id, ctx["thread_id"], draft)
+                        db, req.account_id, ctx["thread_id"], draft,
+                        commit=False)
                 return {"draft": draft}
             subject = subject or ctx.get("subject", "")
             thread = ctx.get("thread", "")
@@ -1867,8 +1893,6 @@ async def _compose_assist_run(
         if _is_no_draft(draft):
             return {"draft": "", "skipped": "low_confidence"}
         return {"draft": append_signature_text(signature, draft)}
-    finally:
-        await db.close()
 
 
 @router.post("/compose-assist")
