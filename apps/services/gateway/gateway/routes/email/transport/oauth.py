@@ -453,9 +453,12 @@ async def _save_account(
         # *reconnect*. Refresh the stored credentials in place rather than
         # reject a duplicate. The reconnect keeps the sync point (D-EM-13):
         # it writes neither ``last_history_id`` nor ``initial_sync_done``, and
-        # it never imports the range again. Before EM-T6a it
-        # wrote ``last_history_id = NULL``. Outlook ignores that cursor and no
-        # code reset ``initial_sync_done``, so it never forced a full re-sync.
+        # it never imports the range again. Before EM-T6a it wrote
+        # ``last_history_id = NULL``. For OUTLOOK that changed nothing: Outlook
+        # ignores the cursor, and no code reset ``initial_sync_done``. For
+        # Gmail it cleared a stale history id. Now only a Resync clears it
+        # (``transport/sync.py``). The risk is low, because D-EM-5 keeps Gmail
+        # out of the connect flow.
         existing_row = (await db.execute(
             text(
                 """SELECT id FROM email_accounts

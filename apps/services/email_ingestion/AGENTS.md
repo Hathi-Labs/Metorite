@@ -132,14 +132,17 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   short block after phase (e) writes them again, but only when they changed
   after phase (d). That write never fails the sync. A failed write goes again
   once in a new block, and the log names the class of the error, never a token.
-- ⚠️ **The import floor binds every sync (WS-17 EM-T6a, D-EM-10).**
-  `import_window.py` is the one owner of the ceiling (180 days), the range
-  (0 to 6 months) and the floor. Do not write a second date rule.
-  `_sync_account` passes the floor on every sync, deep or shallow. An explicit
-  `since` of a member act binds when it is newer than the ceiling. Otherwise
-  `import_since` binds. Outlook sends the floor on each sweep. The core drops
-  a message below the floor before phase (c), unless Metorite holds its row. R7:
-  `tests/unit/test_email_import_floor.py`.
+- ⚠️ **The import floor binds every sync, and the ceiling binds every path
+  (WS-17 EM-T6a, D-EM-10).** `import_window.py` is the one owner of the
+  ceiling (180 days), the range (0 to 6 months) and the floor. Do not write a
+  second date rule. `_sync_account` passes the floor on every sync, deep or
+  shallow. An explicit `since` of a member act binds when it is newer than the
+  ceiling. Otherwise `import_since` binds. Outlook sends the floor on each
+  sweep. The core drops a message below the floor before phase (c), unless
+  Metorite holds its row. Clean older mail with no date passes the ceiling.
+  The "Load older" backfill of a folder (`gateway/routes/email/transport/folders.py`)
+  writes nothing below the ceiling and stops paging there. Every floor is in
+  UTC. R7: `tests/unit/test_email_import_floor.py`.
 - ⚠️ **The import runs in batches (WS-17 EM-T6b).** While `initial_sync_done`
   is false, `_import_in_batches` runs before the recurring sweep. It fetches
   each batch with no session open. One `tenant_session(org)` then writes the
