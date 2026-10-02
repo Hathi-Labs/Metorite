@@ -126,6 +126,10 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
                 decide_mode=mode[:20],
                 decide_reason="unknown",
             )
+            if feature in modes:
+                # A refused value turns a KNOWN feature off, also after an
+                # earlier valid pair for it, exactly as `on` does (item 2).
+                modes[feature] = "off"
             continue
         if mode == "on":
             # 🔴 EM-T5 has no confidence gate, so `on` is refused (item 3).

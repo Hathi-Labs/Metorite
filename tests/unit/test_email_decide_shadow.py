@@ -154,19 +154,21 @@ def _records(caps, event: str) -> list[dict[str, Any]]:
 # cold True vs p=0.0, pin True vs p=0.0, DONE vs the last key, r0 vs none.
 
 
-def _llm(monkeypatch, module, data: Any) -> list[Any]:
+def _llm(monkeypatch, module, data: Any, delay: float = 0.0) -> list[Any]:
     sent: list[Any] = []
 
     async def fake(model, messages, **kw):
         sent.append(messages)
+        if delay:
+            await asyncio.sleep(delay)
         return data, "{}", model
 
     monkeypatch.setattr(module, "_llm_json", fake)
     return sent
 
 
-async def _site_cold(monkeypatch):
-    _llm(monkeypatch, snd, {"cold": True, "reason": SECRET_REASON})
+async def _site_cold(monkeypatch, delay: float = 0.0):
+    _llm(monkeypatch, snd, {"cold": True, "reason": SECRET_REASON}, delay)
     return await snd._llm_is_cold(EMAIL, account_id=ACC), (True, SECRET_REASON)
 
 
@@ -177,14 +179,14 @@ def _pin_db() -> AsyncMock:
     return db
 
 
-async def _site_pin(monkeypatch):
-    _llm(monkeypatch, lrn, {"always": True, "why": SECRET_REASON})
+async def _site_pin(monkeypatch, delay: float = 0.0):
+    _llm(monkeypatch, lrn, {"always": True, "why": SECRET_REASON}, delay)
     out = await lrn._ai_confirms_sender_pattern(_pin_db(), ACC, SECRET_SENDER, RULES[0])
     return out, True
 
 
-async def _site_status(monkeypatch):
-    _llm(monkeypatch, rz, {"status": "DONE", "rationale": SECRET_REASON})
+async def _site_status(monkeypatch, delay: float = 0.0):
+    _llm(monkeypatch, rz, {"status": "DONE", "rationale": SECRET_REASON}, delay)
     out = await rz._llm_determine_thread_status(
         f"From: {SECRET_SENDER}\n{SECRET_BODY}", "owner@acme.com", "",
         user_sent_last=False, account_id=ACC,
@@ -192,8 +194,8 @@ async def _site_status(monkeypatch):
     return out, ("DONE", True)
 
 
-async def _site_rule(monkeypatch):
-    _llm(monkeypatch, eng, {"index": 0, "reason": SECRET_REASON})
+async def _site_rule(monkeypatch, delay: float = 0.0):
+    _llm(monkeypatch, eng, {"index": 0, "reason": SECRET_REASON}, delay)
     out = await eng._llm_pick_rule(EMAIL, RULES, account_id=ACC)
     return out, {"index": 0, "reason": SECRET_REASON}
 
@@ -307,6 +309,66 @@ async def test_the_state_is_the_same_text_the_old_call_sends(monkeypatch, tenant
     assert fake.calls[0]["state"] == sent[0][1]["content"]
 
 
+async def test_the_pin_state_is_the_old_user_message(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.sender_pin=shadow", ORG)
+    fake = _fake(monkeypatch)
+    sent = _llm(monkeypatch, lrn, {"always": False})
+    await lrn._ai_confirms_sender_pattern(_pin_db(), ACC, SECRET_SENDER, RULES[0])
+    assert fake.calls[0]["state"] == sent[0][1]["content"]
+
+
+async def test_the_status_state_is_the_old_user_message(monkeypatch, tenant) -> None:
+    """The corrections ride in the old SYSTEM prompt. The state carries the
+    user message only, exactly as the old call sends it (item 10)."""
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
+    fake = _fake(monkeypatch)
+    sent = _llm(monkeypatch, rz, {"status": "DONE"})
+    await rz._llm_determine_thread_status(
+        f"From: {SECRET_SENDER}\n{SECRET_BODY}", "owner@acme.com", "About me",
+        user_sent_last=False, corrections="\n\nCORRECTIONS: be strict",
+        account_id=ACC,
+    )
+    assert fake.calls[0]["state"] == sent[0][1]["content"]
+    assert "CORRECTIONS" not in fake.calls[0]["state"]
+
+
+async def test_the_rule_state_is_the_email_block_of_the_old_message(
+    monkeypatch, tenant
+) -> None:
+    """The old user message is the email block, then the rules, the guidance
+    and the hints. The state is the email block only: no more text."""
+    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+    fake = _fake(monkeypatch)
+    sent = _llm(monkeypatch, eng, {"index": -1})
+    await eng._llm_pick_rule(
+        EMAIL, RULES, hints="Receipt (x3)", guidance={"": ["be strict"]},
+        account_id=ACC,
+    )
+    state = fake.calls[0]["state"]
+    assert state == eng._email_block(EMAIL)
+    old_user = sent[0][1]["content"]
+    assert old_user.startswith(state) and len(old_user) > len(state)
+
+
+@pytest.mark.parametrize("feature", list(SITES))
+async def test_decide_runs_at_the_same_time_as_the_old_call(
+    monkeypatch, tenant, feature
+) -> None:
+    """Item 5. Both calls take 0.4 s. Concurrent is about 0.4 s and in
+    sequence is about 0.8 s, so the bound sits between them with margin."""
+    monkeypatch.setattr(df, "SHADOW_BOUND_S", 2.0)
+    _modes(monkeypatch, f"{feature}=shadow", ORG)
+    fake = _fake(monkeypatch, delay=0.4)
+    started = time.monotonic()
+    with structlog.testing.capture_logs() as caps:
+        got, old = await SITES[feature](monkeypatch, delay=0.4)
+    elapsed = time.monotonic() - started
+    assert got == old
+    assert len(fake.calls) == 1
+    assert _records(caps, "decide.shadow"), "decide must finish inside the bound"
+    assert elapsed < 0.7, f"old and decide ran in sequence ({elapsed:.2f}s)"
+
+
 async def test_the_old_exception_still_propagates(monkeypatch, tenant) -> None:
     _modes(monkeypatch, "email.rule_pick=shadow", ORG)
     _fake(monkeypatch, delay=10)
@@ -381,6 +443,9 @@ async def test_any_other_decide_error_never_stops_triage(monkeypatch, tenant) ->
         ("email.cold_check=sometimes", "unknown"),
         ("email.nonsense=shadow", "unknown"),
         ("email.cold_check", "unknown"),
+        # F3: a refused value AFTER a valid pair still turns the feature off.
+        ("email.cold_check=shadow,email.cold_check=bogus", "unknown"),
+        ("email.cold_check=shadow,email.cold_check=on", "on_refused"),
     ],
 )
 async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
@@ -596,3 +661,17 @@ def test_compare_boolean_reads_the_threshold() -> None:
     out = cmp(True, d)
     assert (out.old, out.new, out.agree, out.options) == (True, True, True, 2)
     assert out.probability == 0.95 and out.confidence is None
+
+
+# ── The limits match the Console's own ─────────────────────────────────────
+
+
+def test_the_limits_match_the_console() -> None:
+    """``decide_features`` copies the Console's option limit, because the
+    gateway may not import ``customer_console``
+    (``test_console_dependency_boundary.py``). A TEST may import it, so this
+    pins the copy to the source of record."""
+    from customer_console.decide import MAX_CHOICE_OPTIONS, MAX_CRITERION_CHARS
+
+    assert df.CHOICE_OPTION_LIMIT == MAX_CHOICE_OPTIONS
+    assert df.CRITERION_CLIP <= MAX_CRITERION_CHARS

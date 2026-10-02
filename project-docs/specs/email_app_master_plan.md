@@ -122,10 +122,10 @@ records only what the email app must keep true.
 
    | Order | Call | Now | Shape |
    |---|---|---|---|
-   | 1 | Cold-email check, `senders.py:1209` `_llm_is_cold` | `tier-fast` | boolean |
-   | 2 | Auto-learn sender pin, `learning.py:47` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
-   | 4 | Rule classifier, `engine.py:284` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
+   | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
+   | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
 3. **Each one runs in shadow first.** It logs both answers and acts on the old
    one, until the agreement on this mailbox is measured.
@@ -1051,11 +1051,15 @@ uv run pytest tests/unit/test_email_decide_shadow.py \
   tests/unit/test_crm_auto_lead.py \
   tests/unit/test_email_rules_engine.py -q -rs
 uv run ruff check apps/services/gateway/gateway/decide_features.py \
-  apps/services/gateway/gateway/routes/email/automation \
   packages/acb_llm/acb_llm/routed.py \
   packages/acb_common/acb_common/settings.py \
   tests/unit/test_email_decide_shadow.py
 ```
+
+The four files above must show no ruff finding. The `routes/email/automation`
+directory already has findings on `main`. Run ruff on it on the branch and on
+the base, and compare the counts per file and per code. The branch must show
+no new finding in any file.
 
 EM-T5 writes no SQL, so R8 does not apply. If the slice adds SQL, start
 `scripts/dev_db.sh` and confirm that no test skips.
