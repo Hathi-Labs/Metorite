@@ -18,8 +18,10 @@ import { isKnownIcon } from "@/lib/icons";
 import { ConnectChoices } from "../components/ConnectChoices";
 import { ImportRangeStep } from "../components/ImportRangeStep";
 import {
+  ADMIN_APPROVAL_AFTER_DECLINE,
   CONNECT_PROVIDERS,
   DEFAULT_IMPORT_MONTHS,
+  adminApprovalHelp,
   IMPORT_MONTHS_STORAGE_KEY,
   IMPORT_RANGE_CHOICES,
   IMPORT_RANGE_COPY,
@@ -761,5 +763,66 @@ describe("the handlers of the range step (fix round 1, P3)", () => {
     expect(cont[0]).not.toMatch(/onBack|onChange/);
     expect(back[0]).toMatch(/\bonClick=\{onBack\}/);
     expect(back[0]).not.toMatch(/onContinue|onChange/);
+  });
+});
+
+// ── A Microsoft decline also offers admin approval (2026-10-02) ────────────
+// A test customer met Microsoft's "Need admin approval" screen and chose
+// "Return to the application without granting consent". Microsoft sends a
+// bare `access_denied` with no AADSTS code, and the gateway reads it as
+// `consent_declined`. The callback page cannot render in this node-env
+// vitest (it reads `useSearchParams`), so the decision runs here and the
+// page's wiring is held by source scans with comments stripped.
+
+describe("a Microsoft decline also shows the admin-approval help", () => {
+  it("consent_declined for Microsoft gets the help, after the declined words", () => {
+    expect(adminApprovalHelp("consent_declined", "microsoft")).toEqual({ lead: ADMIN_APPROVAL_AFTER_DECLINE });
+    expect(ADMIN_APPROVAL_AFTER_DECLINE).toContain('"Need admin approval"');
+    expect(ADMIN_APPROVAL_AFTER_DECLINE).toMatch(/IT admin approves Metorite once for your company/);
+  });
+
+  it("admin_consent_required is unchanged: the help, with no extra line", () => {
+    expect(adminApprovalHelp("admin_consent_required", "microsoft")).toEqual({ lead: null });
+    expect(adminApprovalHelp("admin_consent_required", "gmail")).toEqual({ lead: null });
+  });
+
+  it("a Gmail decline shows no Microsoft admin text", () => {
+    expect(adminApprovalHelp("consent_declined", "gmail")).toBeNull();
+  });
+
+  it("no other result shows the help", () => {
+    for (const kind of ["loading", "connected", "duplicate", "retry", "unknown"] as const) {
+      expect(adminApprovalHelp(kind, "microsoft"), kind).toBeNull();
+    }
+  });
+
+  it("the page draws the declined words first, then the lead, then the one AdminConsentSteps", () => {
+    expect(CALLBACK_PAGE).toContain("const approvalHelp = adminApprovalHelp(view.kind, provider);");
+    expect(CALLBACK_PAGE).toMatch(
+      /\{approvalHelp && \(\s*<div[^>]*>\s*\{approvalHelp\.lead && \(\s*<p[^>]*>\{approvalHelp\.lead\}<\/p>\s*\)\}\s*<AdminConsentSteps \/>/,
+    );
+    // Reused, not copied: one component, drawn in one place.
+    expect(CALLBACK_PAGE.match(/function AdminConsentSteps\(/g)).toHaveLength(1);
+    expect(CALLBACK_PAGE.match(/<AdminConsentSteps \/>/g)).toHaveLength(1);
+    expect(CALLBACK_PAGE.indexOf("{view.body}")).toBeLessThan(CALLBACK_PAGE.indexOf("{approvalHelp && ("));
+  });
+
+  it("the help holds the approval link, the mail to the admin and the copy action", () => {
+    const steps = CALLBACK_PAGE.slice(
+      CALLBACK_PAGE.indexOf("function AdminConsentSteps("),
+      CALLBACK_PAGE.indexOf("function CallbackContent("),
+    );
+    expect(steps).toContain("setLink(app ? adminConsentUrl(app) : null)");
+    expect(steps).toContain("adminConsentMailto(link)");
+    expect(steps).toContain("Email your IT admin");
+    expect(steps).toContain("navigator.clipboard.writeText(link)");
+    expect(steps).toContain('"Copy approval link"');
+    expect(steps).toMatch(/<a\b[^>]*\bhref=\{link\}/);
+  });
+
+  it("a decline keeps Try again, which reopens the range step", () => {
+    expect(CALLBACK_PAGE).toMatch(
+      /view\.kind === "consent_declined" \|\|[\s\S]*?onClick=\{\(\) => connectAgain\(provider\)\}>\s*Try again/,
+    );
   });
 });

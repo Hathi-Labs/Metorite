@@ -15,7 +15,10 @@
  *   from the gateway (`GET /email/oauth/microsoft/app`), never from a
  *   constant here. A member who is the admin opens the link here with
  *   "I am the admin" (EM-T3c), and Microsoft returns to `/oauth/approved`.
- * - `consent_declined`: the member said no. A friendly retry.
+ * - `consent_declined`: the member said no. A friendly retry. For Microsoft
+ *   the page also shows the admin-approval help, because "Return to the
+ *   application without granting consent" on Microsoft's "Need admin
+ *   approval" screen also lands here (`adminApprovalHelp`).
  *
  * ⚠️ No link on this page goes to Integrations. A member has nothing to
  * configure there (EM-T3b done-when 1).
@@ -27,6 +30,7 @@ import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { getMailAppInfo } from "../../lib/api";
 import {
+  adminApprovalHelp,
   adminConsentMailto,
   adminConsentUrl,
   callbackView,
@@ -188,6 +192,7 @@ function CallbackContent() {
 
   const view = callbackView({ error, accountId, email });
   const tone = TONE[view.kind];
+  const approvalHelp = adminApprovalHelp(view.kind, provider);
 
   const [countdown, setCountdown] = useState(3);
   const success = view.kind === "connected";
@@ -224,8 +229,11 @@ function CallbackContent() {
             </div>
           </div>
 
-          {view.kind === "admin_consent_required" && (
+          {approvalHelp && (
             <div className="mt-5 border-t border-border pt-4">
+              {approvalHelp.lead && (
+                <p className="mb-3 text-xs text-muted-foreground">{approvalHelp.lead}</p>
+              )}
               <AdminConsentSteps />
             </div>
           )}

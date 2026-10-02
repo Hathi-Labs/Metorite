@@ -405,6 +405,32 @@ export function callbackView(params: {
   };
 }
 
+/** The line above the admin-approval help after a Microsoft decline. */
+export const ADMIN_APPROVAL_AFTER_DECLINE =
+  'Did Microsoft say "Need admin approval"? Your IT admin approves Metorite once for your company.';
+
+/**
+ * Whether the callback page shows the admin-approval help, and its lead line.
+ *
+ * `admin_consent_required` shows the help with no lead, as before. A
+ * Microsoft `consent_declined` shows it too, after the declined words. The
+ * reason: on Microsoft's "Need admin approval" screen, "Return to the
+ * application without granting consent" sends a bare `access_denied`. That
+ * carries no AADSTS code, so the gateway reads it as `consent_declined`
+ * (`_consent_error_reason`). In practice the company needs its admin. A
+ * decline from any other provider shows no Microsoft text.
+ */
+export function adminApprovalHelp(
+  kind: CallbackKind,
+  provider: ConnectProviderId,
+): { lead: string | null } | null {
+  if (kind === "admin_consent_required") return { lead: null };
+  if (kind === "consent_declined" && provider === "microsoft") {
+    return { lead: ADMIN_APPROVAL_AFTER_DECLINE };
+  }
+  return null;
+}
+
 // ── Admin consent ──────────────────────────────────────────────────────────
 
 /** The public facts of the mail app, from `GET /email/oauth/microsoft/app`. */
