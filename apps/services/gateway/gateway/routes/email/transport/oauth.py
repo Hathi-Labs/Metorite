@@ -452,8 +452,8 @@ async def _save_account(
         # An account for this member and address already exists: this is a
         # *reconnect*. Refresh the stored credentials in place rather than
         # reject a duplicate. The reconnect keeps the sync point (D-EM-13):
-        # it writes neither ``last_history_id`` nor ``initial_sync_done``, so
-        # the next sync continues from ``last_synced_at``. Before EM-T6a it
+        # it writes neither ``last_history_id`` nor ``initial_sync_done``, and
+        # it never imports the range again. Before EM-T6a it
         # wrote ``last_history_id = NULL``. Outlook ignores that cursor and no
         # code reset ``initial_sync_done``, so it never forced a full re-sync.
         existing_row = (await db.execute(
