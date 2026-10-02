@@ -10,12 +10,12 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
     _tenant_session,
-    _get_redis,
     _log,
     provider_session,
     router,
@@ -167,24 +167,33 @@ async def download_attachment(
             # ── Ownership confirmed — NOW it's safe to serve from the Redis cache.
             #    Reading the cache before this check was an IDOR: any caller who knew
             #    an attachment_id could pull another user's cached bytes. ──
-            redis = await _get_redis()
-            if redis:
+            #    The key carries the tenant (MT-1e, EM-T2b): the session's org is
+            #    bound for each Redis call, so org B never reads org A's entry for
+            #    the same attachment id. No org in the session → no cache at all,
+            #    and no Redis call. The binary pool returns bytes unchanged.
+            org_id = user.organization_id
+            use_cache = bool(org_id)
+            cached: bytes | None = None
+            if use_cache:
                 try:
-                    cached = await redis.get(f"email:att:cache:{attachment_id}")
-                    if cached:
-                        return StreamingResponse(
-                            io.BytesIO(cached),
-                            media_type=row.mime_type or "application/octet-stream",
-                            headers={
-                                "Content-Disposition": (
-                                    f'attachment; filename="{safe_name}"'
-                                ),
-                                "Content-Length": str(len(cached)),
-                                "X-Cache": "HIT",
-                            },
+                    with organization_scope(org_id):
+                        cached = await get_tenant_redis(binary=True).get(
+                            key("email-att", attachment_id)
                         )
                 except Exception:
-                    redis = None  # fall through to provider fetch
+                    use_cache = False  # fall through to provider fetch
+            if cached:
+                return StreamingResponse(
+                    io.BytesIO(cached),
+                    media_type=row.mime_type or "application/octet-stream",
+                    headers={
+                        "Content-Disposition": (
+                            f'attachment; filename="{safe_name}"'
+                        ),
+                        "Content-Length": str(len(cached)),
+                        "X-Cache": "HIT",
+                    },
+                )
 
             # Fetch through the ONE provider dance. This path used to instantiate
             # the provider raw — never authenticating (an expired access token just
@@ -198,12 +207,14 @@ async def download_attachment(
                 )
 
             # ── Store in Redis cache ──
-            if redis and content:
+            if use_cache and content:
                 try:
-                    cache_key = f"email:att:cache:{attachment_id}"
-                    await redis.setex(
-                        cache_key, ATTACHMENT_CACHE_TTL_SECS, content
-                    )
+                    with organization_scope(org_id):
+                        await get_tenant_redis(binary=True).setex(
+                            key("email-att", attachment_id),
+                            ATTACHMENT_CACHE_TTL_SECS,
+                            content,
+                        )
                 except Exception:
                     pass
 
