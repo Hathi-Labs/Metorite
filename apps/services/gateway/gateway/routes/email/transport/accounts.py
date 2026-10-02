@@ -1,4 +1,8 @@
-"""Transport · accounts — connected-mailbox CRUD (list/create/update/delete)."""
+"""Transport · accounts — connected-mailbox CRUD (list/create/update/delete).
+
+Also the admin count of connected mailboxes (``GET /email/admin/connections``,
+EM-T3d), which returns integers only.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import _default_label, _log, _tenant_session, router
 from pydantic import BaseModel
@@ -41,6 +45,44 @@ class CreateAccountRequest(BaseModel):
     email_address: str
     label: str = ""
     credentials: dict[str, Any]  # Provider-specific credential dict
+
+
+class OrgConnectionCounts(BaseModel):
+    """How many members of the organization connected a mailbox (EM-T3d).
+
+    D-EM-4: an admin sees this count and never the mail. Every field is an
+    ``int`` on purpose. A string field could carry an address, a member or an
+    account id out of a read across members, so
+    ``tests/unit/test_email_org_connection_counts.py`` fails on one.
+    """
+    #: Distinct members, by ``lower(user_id)``. A removed member counts until
+    #: a purge deletes their mailbox (no join to ``app_user``).
+    members: int
+    mailboxes: int
+    microsoft: int
+    gmail: int
+    imap: int
+    #: Mailboxes in sync status ``error``. The error text never leaves.
+    sync_errors: int
+    #: Mailboxes whose first deep sync has not finished.
+    first_sync_pending: int
+
+
+#: One SELECT for all seven counts. The organization predicate holds on top of
+#: FORCE RLS, so a binding that disagrees with the session reads no row. The
+#: owner predicate of every other email route is absent on purpose: this read
+#: crosses members, and the admin gate on the route is what permits that.
+_ORG_CONNECTION_COUNTS_SQL = """
+    SELECT count(DISTINCT lower(user_id))                      AS members,
+           count(*)                                            AS mailboxes,
+           count(*) FILTER (WHERE provider = 'microsoft')      AS microsoft,
+           count(*) FILTER (WHERE provider = 'gmail')          AS gmail,
+           count(*) FILTER (WHERE provider = 'imap')           AS imap,
+           count(*) FILTER (WHERE sync_status = 'error')       AS sync_errors,
+           count(*) FILTER (WHERE NOT initial_sync_done)       AS first_sync_pending
+      FROM email_accounts
+     WHERE organization_id = CAST(:org AS uuid)
+"""
 
 
 @router.get("/accounts", response_model=list[EmailAccountModel])
@@ -89,6 +131,43 @@ async def list_accounts(
                 initial_sync_done=bool(row.initial_sync_done),
             ))
         return accounts
+
+
+@router.get(
+    "/admin/connections",
+    response_model=OrgConnectionCounts,
+    dependencies=[require_permission("admin:members:read")],
+)
+async def org_connection_counts(
+    user: UserContext = Depends(get_current_user),
+) -> OrgConnectionCounts:
+    """How many members of the caller's organization connected a mailbox.
+
+    Owning spec: ``email_app_master_plan.md`` §10.4.3, EM-T3d. The one email
+    route that reads every mailbox row of an organization, so three things
+    limit it. ``admin:members:read`` is the gate, the same test that
+    ``/auth/me`` reports as ``is_admin``. The router adds ``feature:email``.
+    The organization comes from the session only (R11). The SQL names it on
+    top of FORCE RLS. The answer is seven integers and nothing else.
+    """
+    if not user.organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Mailbox counts need a signed-in admin of an organization.",
+        )
+    org = str(user.organization_id)
+    async with _tenant_session() as db:
+        row = (await db.execute(
+            text(_ORG_CONNECTION_COUNTS_SQL), {"org": org})).one()
+    return OrgConnectionCounts(
+        members=int(row.members),
+        mailboxes=int(row.mailboxes),
+        microsoft=int(row.microsoft),
+        gmail=int(row.gmail),
+        imap=int(row.imap),
+        sync_errors=int(row.sync_errors),
+        first_sync_pending=int(row.first_sync_pending),
+    )
 
 
 @router.post("/accounts", response_model=EmailAccountModel, status_code=201)
