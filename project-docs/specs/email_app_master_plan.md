@@ -10,7 +10,8 @@
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
-> 🟡 **EM-T4a-1 is BUILT, not merged (2026-10-02, branch `email-t4a1`).** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
+> ✅ **EM-T4a-1 is MERGED (#570).** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
+> 🟡 **EM-T4c is BUILT, not merged (2026-10-02, branch `email-t4c`).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -565,7 +566,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | 🟡 **EM-T4a-1 BUILT, not merged (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED (#570).** 🟡 **EM-T4c BUILT, not merged (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | 🔨 **BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -1356,7 +1357,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** 🟡 EM-T4a-1 BUILT, not merged (2026-10-02, branch `email-t4a1`). The other parts are not built. Audited on 2026-10-02 against `ea9467a9`. Each anchor below was read in the code on that date. EM-T4 has eight parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 is MERGED (#570), and 🟡 EM-T4c is BUILT, not merged (2026-10-02, branch `email-t4c`). The other parts are not built. Audited on 2026-10-02 against `ea9467a9`. Each anchor below was read in the code on that date. EM-T4 has eight parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1673,6 +1674,25 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway pa
 - A fence fails when either `_get_client` sets an `Authorization` header.
 
 **Files.** `apps/services/email_ingestion/email_ingestion/providers/base.py`, `outlook.py`, `gmail.py` and `scheduler.py`. The test is a new `tests/unit/test_email_provider_401_retry.py`.
+
+**As built (2026-10-02).** `RefreshingBearer` in `providers/base.py` reads `_access_token` on each
+request. On a 401 it takes `_refresh_lock`, which each provider makes in `__init__`. It refreshes
+only when the token is still the one that the request used.
+
+**Bodies.** Today no request on either client sends a stream or a file. The flow reads each body
+into memory before the first try anyway, so a stream can go out a second time.
+
+**The error path.** It gets the new credentials from `_dirty_credentials` before its block opens.
+So a failure there cannot cancel the error status.
+
+**Measured before the change.** The token expired at page 3 of the inbox. The Outlook sweep and the
+Gmail sweep each returned no message, because each sweep drops a folder that raises. The scheduler
+then wrote a successful sync of 0 messages. `reconcile_full_snapshot` sends nothing to the trash,
+because it only reads the folders that the sweep returned.
+
+**Fences.** `tests/unit/test_email_provider_401_retry.py`: 22 tests, and one of them is R8. Eleven
+mutations each turn a test red. The two scheduler tests use the real `OutlookProvider`, the real
+refresh and the real error path.
 
 **Verify with.**
 

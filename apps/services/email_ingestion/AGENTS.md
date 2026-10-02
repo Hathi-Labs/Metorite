@@ -17,7 +17,7 @@ Also provides an aiosmtpd inbound SMTP server for receiving mail directly
 
 ```
 providers/
-├── base.py        — Abstract BaseEmailProvider + dataclasses (EmailMessage, SyncResult, etc.)
+├── base.py        — Abstract BaseEmailProvider, the dataclasses (EmailMessage, SyncResult and the others) and RefreshingBearer
 ├── gmail.py       — Gmail REST API provider (OAuth 2.0)
 ├── outlook.py     — Microsoft Graph provider (OAuth 2.0)
 ├── imap.py        — IMAP/SMTP provider for generic email servers (imaplib + smtplib)
@@ -61,6 +61,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
 5. **received_at** must be parsed from provider-native format into timezone-aware datetime.
    Never leave it `None` — it's the primary sort key for the message list.
 
+6. **The bearer goes on each request (WS-17 EM-T4c).** `_get_client` in Gmail and
+   Outlook sets no `Authorization` header. It passes `auth=RefreshingBearer(self)`,
+   which reads `_access_token` for each request. On a 401 it refreshes once under
+   `_refresh_lock` and sends the same request once more. A second 401 goes back to
+   the caller. Fence: `tests/unit/test_email_provider_401_retry.py`.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists
@@ -98,6 +104,11 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   open. Then they write in a second block. The steps in `body_backfill.py`
   and `email_embeddings.py` take a session, open none, and never call
   `commit()`. R7: `tests/unit/test_email_scheduler_tenancy.py`.
+- ⚠️ **The error path keeps refreshed credentials (WS-17 EM-T4c).** A refresh
+  during the sync makes the credentials dirty. The error path then writes them
+  in its own `tenant_session(org)`, beside the error status. Microsoft revokes
+  a refresh token on use, so a lost new token forces a reconnect. R7:
+  `tests/unit/test_email_provider_401_retry.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

@@ -200,6 +200,24 @@ async def _embed_messages(org: str, account_id: str) -> int:
             db, account_id, pending, vectors)
 
 
+def _dirty_credentials(provider: Any, store: Any) -> str | None:
+    """The encrypted credentials of *provider* when a refresh changed them.
+
+    The error path of ``_sync_account`` writes this value (EM-T4c). It is
+    ``None`` when no provider was built, or when nothing changed. A failure
+    to encrypt is logged and also gives ``None``, so the error status still
+    lands."""
+    if provider is None or store is None:
+        return None
+    try:
+        if not provider.credentials_dirty():
+            return None
+        return store.encrypt(json.dumps(provider.export_credentials()))
+    except Exception as exc:
+        logger.warning("sync.credentials_keep_failed error=%s", str(exc)[:160])
+        return None
+
+
 async def _sync_account(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
@@ -225,7 +243,9 @@ async def _sync_account(
         call the model with NO session open, and write the vectors in a
         second block.
 
-    The error path writes in a new ``tenant_session(org)``.
+    The error path writes in a new ``tenant_session(org)``. When a refresh
+    during the sync changed the credentials, it writes them in that block too
+    (EM-T4c), so a later failure cannot lose a rotated refresh token.
 
     ``deep``/``since`` override the automatic (first-sync) heuristic so a caller
     can force a deep backfill from an arbitrary date floor — e.g. historical
@@ -241,6 +261,10 @@ async def _sync_account(
         )
 
     sync_log_id: Any = None
+    # The error path reads these two, to keep the credentials that a refresh
+    # during the sync rotated (EM-T4c).
+    provider: Any = None
+    store: Any = None
     try:
         # ── (a) the account row, the 'syncing' status and the log row ──────
         async with tenant_session(org) as db:
@@ -486,6 +510,11 @@ async def _sync_account(
             account_id, str(exc),
         )
 
+        # A refresh during the sync may have rotated the tokens (EM-T4c).
+        # Encrypt them BEFORE the block opens, so a failure here cannot roll
+        # back the error status below.
+        creds_blob = _dirty_credentials(provider, store)
+
         # Mark account as error, in a NEW session: the phase that failed has
         # already rolled back.
         try:
@@ -508,6 +537,18 @@ async def _sync_account(
                                WHERE id = :log_id"""
                         ),
                         {"log_id": sync_log_id, "error": str(exc)},
+                    )
+                # Keep the rotated tokens. Microsoft revokes the old refresh
+                # token on use, so losing the new one forces a reconnect.
+                if creds_blob is not None:
+                    await db.execute(
+                        text(
+                            """UPDATE email_accounts
+                               SET credentials_encrypted = :creds,
+                                   updated_at = now()
+                               WHERE id = :id"""
+                        ),
+                        {"id": account_id, "creds": creds_blob},
                     )
         except Exception:
             pass

@@ -8,6 +8,7 @@ API reference: https://developers.google.com/gmail/api/reference/rest
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -24,6 +25,7 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
@@ -154,6 +156,9 @@ class GmailProvider(BaseEmailProvider):
         self._token_expiry: str | None = credentials.get("token_expiry")
         self._http: httpx.AsyncClient | None = None
         self._creds_dirty = False
+        # RefreshingBearer refreshes under this lock, so two requests that
+        # get a 401 at the same time cause one refresh (EM-T4c).
+        self._refresh_lock = asyncio.Lock()
         # Gmail returns opaque label IDs on every message; the *names* live in a
         # separate /labels listing. Cache both directions for the life of the
         # provider instance (one instance per sync/run) so parsing a message can
@@ -178,14 +183,14 @@ class GmailProvider(BaseEmailProvider):
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
+        # No Authorization header here. RefreshingBearer sets the current
+        # token on each request, and refreshes once on a 401 (EM-T4c).
         if self._http is None:
             await self.authenticate()
             self._http = httpx.AsyncClient(
                 base_url=GMAIL_API_BASE,
-                headers={
-                    "Authorization": f"Bearer {self._access_token}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Content-Type": "application/json"},
+                auth=RefreshingBearer(self),
                 timeout=30.0,
             )
         return self._http

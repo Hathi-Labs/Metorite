@@ -6,14 +6,83 @@ The sync engine calls these methods without knowing the provider details.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class _RefreshableProvider(Protocol):
+    """What :class:`RefreshingBearer` reads from an OAuth provider."""
+
+    _access_token: str | None
+    _refresh_token: str | None
+    _refresh_lock: asyncio.Lock
+
+    async def _refresh_access_token(self) -> None: ...
+
+
+class RefreshingBearer(httpx.Auth):
+    """The bearer of an OAuth mail provider, with one refresh on a 401.
+
+    WS-17 EM-T4c (``email_app_master_plan.md`` §10.4.6). The Gmail and the
+    Outlook client used to carry the bearer as a header, written once when
+    the client was built. A token that expired during a sync then failed each
+    later request, and the sweep dropped each folder after it.
+
+    This class reads ``provider._access_token`` on EACH request. On a 401,
+    when the provider holds a refresh token, it refreshes under
+    ``provider._refresh_lock`` and sends the same request once more. It
+    refreshes only when the token is still the one that the request used,
+    because another request may have refreshed it while this one waited.
+
+    * A second 401 goes back to the caller. There is no third try.
+    * A refresh that fails raises to the caller, which then fails as it did
+      on the 401 before.
+    * Every body on these clients is JSON or a query, so httpx can send it
+      again. The flow reads the body into memory before the first try, so a
+      stream cannot reach the second try empty.
+
+    The fence is ``tests/unit/test_email_provider_401_retry.py``.
+    """
+
+    def __init__(self, provider: _RefreshableProvider) -> None:
+        self._provider = provider
+
+    def sync_auth_flow(
+        self, request: httpx.Request,
+    ) -> Generator[httpx.Request, httpx.Response, None]:
+        raise RuntimeError("RefreshingBearer serves an httpx.AsyncClient only")
+
+    async def async_auth_flow(
+        self, request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        provider = self._provider
+        await request.aread()
+        used = provider._access_token
+        request.headers["Authorization"] = f"Bearer {used}"
+        response = yield request
+        if response.status_code != 401 or not provider._refresh_token:
+            return
+        async with provider._refresh_lock:
+            # Another request may have refreshed while this one waited.
+            if provider._access_token == used:
+                await provider._refresh_access_token()
+                logger.info(
+                    "provider.token_refreshed_on_401 provider=%s",
+                    provider.__class__.__name__,
+                )
+        request.headers["Authorization"] = f"Bearer {provider._access_token}"
+        yield request
+
 
 # Canonical folder keys shared by the whole stack (DB, gateway query, UI store).
 # Provider-specific folder names/IDs (Outlook ``parentFolderId``, Gmail label IDs,
