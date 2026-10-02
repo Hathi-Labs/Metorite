@@ -35,9 +35,13 @@ export function OnboardingPanel({
 }) {
   const title = firstSyncCopy(address).title;
   return (
+    // ⚠️ `bg-card`, not the `bg-primary/5` tint of FirstSyncBanner. In light
+    // mode `--muted` and that tint over white are both about 96% light, so the
+    // empty track of the bar vanished (visual review, 2026-10-02). `bg-card`
+    // is the surface of the first ProgressBar caller, the Projects import.
     <section
       aria-label="Mailbox import"
-      className="flex items-start gap-3 border-b border-primary/20 bg-primary/5 px-3 py-2.5 flex-shrink-0"
+      className="flex items-start gap-3 border-b border-border bg-card px-3 py-2.5 flex-shrink-0"
     >
       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
         <Icon name="Inbox" size={14} aria-hidden />

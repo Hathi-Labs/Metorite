@@ -211,6 +211,16 @@ describe("the phase line, and never a spinner alone (item 6)", () => {
     expect(src).toMatch(/import ProgressBar from "@\/components\/ui\/ProgressBar"/);
   });
 
+  it("draws on bg-card, where the empty track of the bar stays visible in light mode", () => {
+    // Visual review, 2026-10-02: on the `bg-primary/5` tint the light-mode
+    // track (`bg-muted`) had the same lightness as the panel and vanished.
+    const out = panel({ ...IMPORTING, importPhase: "importing", importCount: 10, importEstimate: 100 });
+    const section = out.match(/<section\b[^>]*class="([^"]*)"/)?.[1] ?? "";
+    expect(section.split(/\s+/)).toContain("bg-card");
+    expect(section).not.toMatch(/\bbg-primary\//);
+    expect(section).not.toMatch(/\bbg-muted\b/);
+  });
+
   it("only the phase line is a live region, so a poll does not speak each time", () => {
     const out = panel({ ...IMPORTING, importPhase: "importing", importCount: 10, importEstimate: 100 });
     const live = [...out.matchAll(/<[^>]*aria-live="polite"[^>]*>([^<]*)</g)].map((m) => m[1]);
