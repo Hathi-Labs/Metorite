@@ -419,9 +419,9 @@ async def delete_account(
 
     Then, with no block open, a best-effort Graph call removes the push
     subscription of a Microsoft mailbox. Each phase is one block with no
-    ``commit()`` (mechanism (A) of §10.4.2). Part 2 (one sync for each
-    mailbox) is not built. The fence is
-    ``tests/unit/test_email_disconnect_order.py``.
+    ``commit()`` (mechanism (A) of §10.4.2). EM-T4f part 2 makes one sync
+    run at a time for each mailbox (``email_ingestion.scheduler``). The fence
+    is ``tests/unit/test_email_disconnect_order.py``.
     """
     owner = user.email or "anonymous"
 
@@ -479,8 +479,10 @@ async def delete_account(
         raise
     except (Exception, asyncio.CancelledError) as exc:
         # A cancel rolls the DELETE back too, so it also starts the loop again.
+        # The restart is shielded: a cancel scope can cancel each later await
+        # of this task again, and the restart must still finish.
         if had_loop:
-            await _restart_sync(account_id, org)
+            await _restart_sync_shielded(account_id, org)
         if _is_lock_timeout(exc):
             _log.warning("email.disconnect.busy", account_id=account_id)
             raise HTTPException(
@@ -510,6 +512,27 @@ async def _stop_sync(account_id: str) -> bool:
                      account_id=account_id, error=type(exc).__name__)
         return False
     return had_loop
+
+
+#: Restarts of a sync loop that a failed disconnect started. The set holds a
+#: strong reference to each task until it ends, so a shielded restart runs on
+#: after the request that started it is cancelled.
+_RESTARTS: set[asyncio.Task[None]] = set()
+
+
+async def _restart_sync_shielded(account_id: str, org: str | None) -> None:
+    """Run ``_restart_sync`` in its own task, and shield the wait for it.
+
+    A failed disconnect restarts the loop from inside an ``except`` block,
+    and that block can run because the request was cancelled. Under a cancel
+    scope, each later await of the request task is cancelled again. So the
+    restart runs as a task of its own, and ``asyncio.shield`` keeps a second
+    cancel of the request from cancelling it (EM-T4f fix round 2).
+    """
+    task = asyncio.ensure_future(_restart_sync(account_id, org))
+    _RESTARTS.add(task)
+    task.add_done_callback(_RESTARTS.discard)
+    await asyncio.shield(task)
 
 
 async def _restart_sync(account_id: str, org: str | None) -> None:

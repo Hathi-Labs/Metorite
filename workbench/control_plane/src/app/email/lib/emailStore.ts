@@ -1471,8 +1471,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       }, 6000);
       _postSyncTimers[accountId] = [t1, t2];
     } catch (err: any) {
+      // 409: another sync of this mailbox runs now (EM-T4f). The mailbox is
+      // not in error, and the detail of the gateway says when new mail appears.
+      const busy = err?.status === 409;
       set({
-        syncStatus: { ...get().syncStatus, [accountId]: "error" },
+        syncStatus: { ...get().syncStatus, [accountId]: busy ? "idle" : "error" },
         error: err.message || "Sync failed",
       });
     }
