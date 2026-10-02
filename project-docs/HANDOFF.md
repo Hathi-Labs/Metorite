@@ -503,6 +503,8 @@ line — never reclaim a number by deleting the other entry.
 ### H-166 · Turn on `decide` for email on the box · [OWNER]
 - **Check:** on the box, run `grep -E 'DECIDE_ENABLED|CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY' /opt/acb/app/.env`. Two lines with `true` mean steps 2 and 3 are done. Then look for one `decide.shadow` line in the gateway journal. A line means the box gets answers.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
+- **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
+- **Next, after EM-T5b ships:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` on the box (decisions (b) and (c)). Then it reports one `decide.decided` line with a `request_id`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
