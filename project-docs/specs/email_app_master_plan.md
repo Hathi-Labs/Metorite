@@ -1053,7 +1053,7 @@ the real page. The proxy fence is `src/proxy.test.ts`.
 
 #### 10.4.5 EM-T2 in full
 
-**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). EM-T2c is not built. Audited against
+**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). 🔨 EM-T2c BUILT, not merged (branch `email-t2c`). Audited against
 `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
 each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
@@ -1206,6 +1206,15 @@ covers the leak that it cannot see.
 - The fence fails on a synthetic handler that reads `email_messages` with no owner proof.
 - The fence fails on a new module outside `routes/email` that reads an email child table.
 - A stale entry, or an entry with no reason, fails the fence.
+
+**As built (2026-10-02).** `_build_chat_context` starts with no resolved id. It keeps the body's
+`account_id` only when the member owns it. `ai_chat` reads `_account_models` with that resolved id.
+`propagate_task_done_to_thread` takes the keyword `closer_email` with no default.
+`_closer_owns_mailbox` compares `user_id` with no regard to case, because the closer's email
+arrives in lowercase. When the closer does not own the mailbox, the code logs
+`tasks.email_link.not_owner` and writes nothing. The outside list also names
+`routes/notes/dispatch.py`. That module reads `email_assistant_settings` for an account that it
+selects with `user_id`, and the measurement of 2026-10-02 did not list it.
 
 **Fences.** `tests/unit/test_email_owner_scope_fence.py` and
 `tests/unit/test_email_chat_context_owner.py`.
