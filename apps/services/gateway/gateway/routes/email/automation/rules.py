@@ -106,6 +106,18 @@ def _sort_rules_canonical(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ))
 
 
+#: The new-mail floor of a mailbox (owner decision (d), 2026-10-02): the
+#: creation time of its oldest ENABLED rule. The automatic paths touch only
+#: mail that arrived at or after it. Older mail changes only through "Process
+#: past emails". NULL when no rule is enabled, so a `>=` against it selects
+#: nothing. Binds `:aid`. The ONE copy: `runner._NEW_MAIL_ONLY` and the Reply
+#: Zero backfill read it.
+NEW_MAIL_FLOOR_SQL = (
+    "(SELECT MIN(r.created_at) FROM email_rules r "
+    "WHERE r.account_id = :aid AND r.enabled)"
+)
+
+
 async def _load_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
     """Load rules + their actions for an account, in canonical system order."""
     rule_rows = (await db.execute(text(

@@ -602,7 +602,13 @@ def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
 
     - A boolean matches at its threshold or above: 0.7 for a rule that moves
       mail, 0.5 for every other rule.
-    - ``conv`` matches its answer, unless the answer is ``none``.
+    - ``conv`` matches its answer, unless the answer is ``none``. A
+      label-only conversation rule matches by plurality. A conversation rule
+      that MOVES mail (a member can add ARCHIVE to "Done") must also reach
+      the 0.7 bar with the probability of its option (fix round 2).
+    - At most ONE rule that moves mail matches: the one with the highest
+      probability, and a tie goes to the canonical order. A second move
+      would act on a provider id that the first move made stale.
     - The main rule is the ``best`` answer when that rule matched. If not, it
       is the matched rule with the highest probability, and a tie goes to the
       canonical order. ``best`` never adds a match.
@@ -628,9 +634,20 @@ def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
                       conv_margin=decide_features.top_margin(conv.probabilities))
         picked = _option_index(conv.choice)
         if picked in plan.conv:
-            matched.add(picked)
             if conv.choice not in conv.probabilities:
                 probabilities[picked] = float(conv.confidence or 0.0)
+            # A moving conversation rule needs the same bar as a moving
+            # boolean. A label-only one keeps the plurality of the choice.
+            if (not _moves_mail(rules[picked])
+                    or probabilities[picked] >= _rule_threshold(rules[picked])):
+                matched.add(picked)
+
+    moving = [i for i in matched if _moves_mail(rules[i])]
+    if len(moving) > 1:
+        keep = min(moving, key=lambda i: (-probabilities.get(i, 0.0), i))
+        dropped = sorted(i for i in moving if i != keep)
+        matched.difference_update(dropped)
+        fields["dropped_moves"] = [f"r{i}" for i in dropped]
 
     main: int | None = None
     if plan.best:

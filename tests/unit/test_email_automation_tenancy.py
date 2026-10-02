@@ -403,11 +403,10 @@ class _FakeProvider:
 def _seed_enabled_rule(admin, *, org: str, account_id: str) -> None:
     """One enabled rule, created a day before any seeded message.
 
-    The AUTOMATIC run (caller "scheduler") touches only mail received after
-    the first enabled rule of the mailbox was created (EM-T5b-2 item 7, owner
-    decision (d) of 2026-10-02). The runner cases below call the job as the
-    scheduler, so they need this rule for their rows to be selected. The
-    rule changes nothing else: those cases patch `classify_matches`."""
+    The AUTOMATIC run (caller "scheduler") and the Reply Zero backfill touch
+    only mail received after the first enabled rule of the mailbox was
+    created (EM-T5b-2, owner decision (d) of 2026-10-02). The cases below
+    need this rule for their inbox rows to be selected."""
     with admin.begin() as c:
         c.execute(text(
             "INSERT INTO email_rules (account_id, name, instructions, enabled, "
@@ -653,6 +652,9 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        # The backfill selects an INBOX gap thread only after the first
+        # enabled rule (the new-mail floor, EM-T5b-2 fix round 2).
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         filed_tid, gap_tid = f"t-filed-{acc}", f"t-gap-{acc}"
         _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                       folder="archive", sender="x@ext-em-t1b2.test",

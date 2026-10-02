@@ -44,7 +44,10 @@ from gateway.routes.email.automation.learning import (
     _sender_consistent_for_rule,
     _sender_is_a_correspondent,
 )
-from gateway.routes.email.automation.rules import _upsert_rule_pattern
+from gateway.routes.email.automation.rules import (
+    NEW_MAIL_FLOOR_SQL,
+    _upsert_rule_pattern,
+)
 from gateway.routes.email.automation.senders import _maybe_block_cold
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -1088,9 +1091,15 @@ async def run_rules_on_message(
                 multi_rule=multi_rule, resolve=True, provider=provider,
             ) or [match]
         except LLMUnavailable:
-            # Already have the primary single match; apply just that rather than
-            # failing the whole apply on a second classifier call.
-            matches = [match]
+            # §10.4.8 EM-T5b-2 item 6: a missing SECOND answer is the same as
+            # a missing first one. Apply nothing and stamp nothing, so the
+            # message stays undecided and a later run asks again (D-EM-8).
+            # It used to apply the first match anyway.
+            await _persist_rotated_creds(db, store, req.account_id, provider)
+            return {"matched": False, "applied": False, "rule": None,
+                    "reason": "The AI classifier is temporarily unavailable — "
+                              "try again in a moment.",
+                    "actions": [], "unavailable": True}
         # An apply (never a dry-run) with a guaranteed fallback match, so
         # log_no_match is off — this path always has something to apply.
         await _apply_matches(
@@ -1610,9 +1619,8 @@ _SCHEDULER = "scheduler"
 #: which the member starts. With no enabled rule, the bound is NULL and the
 #: run selects nothing (the hook already returns early then). The manual run
 #: and Process past keep no bound.
-_NEW_MAIL_ONLY = """
-       AND em.received_at >= (SELECT MIN(r.created_at) FROM email_rules r
-                               WHERE r.account_id = :aid AND r.enabled)"""
+_NEW_MAIL_ONLY = f"""
+       AND em.received_at >= {NEW_MAIL_FLOOR_SQL}"""
 
 
 async def _run_rules_job(

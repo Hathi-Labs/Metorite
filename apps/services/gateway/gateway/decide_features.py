@@ -126,6 +126,38 @@ SHADOW_BOUND_S: float = 5.0
 #: it. Past it, the email stays undecided (D-EM-8).
 ON_BOUND_S: float = 10.0
 
+#: After a 402 (no credit) or a 403 (forbidden) verdict, :func:`ask` makes
+#: no Router call for the organization for this long (fix round 2). Each
+#: email stays undecided with the reason ``cooldown``, and a later cycle asks
+#: again. Without it, an outage of credit costs one refused call for each
+#: email of each cycle. The gateway runs as ONE process, so an in-process map
+#: is the whole state.
+REFUSAL_COOLDOWN_S: float = 15 * 60
+
+#: The verdicts that start a cool-down.
+_COOLDOWN_STATUSES = frozenset({402, 403})
+
+#: Organization id → the monotonic time at which its cool-down ends.
+_cooldown_until: dict[str, float] = {}
+
+
+def _now() -> float:
+    """The clock of the cool-down. A test may replace it."""
+    return time.monotonic()
+
+
+def _cooling(org: Any) -> bool:
+    return bool(org) and _cooldown_until.get(str(org), 0.0) > _now()
+
+
+def _start_cooldown(ids: Mapping[str, Any], status: int | None) -> None:
+    org = current_tenant()
+    if not org:
+        return
+    _cooldown_until[str(org)] = _now() + REFUSAL_COOLDOWN_S
+    _log.warning("decide.cooldown_started", **ids, decide_status=status,
+                 cooldown_s=int(REFUSAL_COOLDOWN_S))
+
 #: The Console's limit on the options of one choice question
 #: (``customer_console/decide.py`` ``MAX_CHOICE_OPTIONS``). A choice over N
 #: rules has N + 1 options, so N may not be more than 254.
@@ -482,6 +514,8 @@ async def _ask_all(
         elif unavailable is not None:
             _no_answer(ids, on=on, shadow_event="decide.fallback",
                        reason=unavailable.reason)
+            if getattr(unavailable, "status", None) in _COOLDOWN_STATUSES:
+                _start_cooldown(ids, unavailable.status)
         else:
             # The type name only. A message can quote the request.
             _no_answer(ids, on=on, shadow_event="decide.shadow_failed",
@@ -536,6 +570,8 @@ async def ask[R](
       A deployment Router key refuses a call that names no member. None keeps
       the member of the run context.
 
+    Returns None with no Router call while the organization is in its
+    cool-down (:data:`REFUSAL_COOLDOWN_S` after a 402 or 403 verdict).
     Returns None on every failure: a timeout past :data:`ON_BOUND_S`,
     ``DecideUnavailable``, ``DecideRequestInvalid``, a reply that is not a
     ``Decision``, or a ``read`` that cannot read it. Each logs
@@ -547,6 +583,10 @@ async def ask[R](
         "account_id": account_id,
         "message_id": str(message_id) if message_id is not None else None,
     }
+    if _cooling(current_tenant()):
+        # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
+        _no_answer(ids, on=True, shadow_event="", reason="cooldown")
+        return None
     try:
         requests = _requests_of(build())
     except Exception as exc:  # a bad question is no decision, never a crash

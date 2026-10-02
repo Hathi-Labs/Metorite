@@ -2346,9 +2346,22 @@ The fences are `tests/unit/test_email_decide_questions.py` and the updated `test
 4. In `on`, `_llm_pick_rule` returns `RuleMatch.as_pick` and `_llm_pick_rules` returns `RuleMatch.as_picks`. So every caller uses the Jev answer: the automatic run (`classify_matches`), Process past emails, the Test routes and the re-run of one message.
 5. With no decision, the matcher raises `DecisionUnavailable`, a subclass of `LLMUnavailable`. The callers already skip the `rules_processed_at` stamp on that signal, so the next cycle asks again (D-EM-8). The reasons are a timeout, `DecideUnavailable`, `DecideRequestInvalid` (also `decide.request_invalid` at error level), a reply that is not a `Decision`, and an answer that `_read_rule_match` cannot read.
 6. Each call in `on` names the mailbox owner, `email_accounts.user_id`, as a proven member (`engine._decide_member`). A deployment Router key refuses a call with no member, and a request job runs as its request member.
-7. The automatic run (caller `scheduler`) selects only mail that arrived at or after the oldest `created_at` of the enabled rules of the mailbox (`runner._NEW_MAIL_ONLY`). With no enabled rule it selects nothing, and the hook already returns early then. The manual run and Process past keep no floor.
+7. The automatic run (caller `scheduler`) selects only mail that arrived at or after the oldest `created_at` of the enabled rules of the mailbox (`rules.NEW_MAIL_FLOOR_SQL`, through `runner._NEW_MAIL_ONLY`). With no enabled rule it selects nothing, and the hook already returns early then. The manual run and Process past keep no floor. Fix round 2: the Reply Zero backfill (`_maybe_classify_threads`) applies the same floor to its INBOX gap threads, because it calls `classify_matches` and writes a status and provider labels. Its sent and filed rows keep no floor. The member's "Reclassify" reuses that backfill, so it no longer reaches older inbox threads either. The floor has two trade-offs:
+   - Disabling or deleting the oldest enabled rule, or "Reset rules", moves the floor forward. Mail between the old floor and the new floor is then reachable only through Process past.
+   - A rule that was made disabled and enabled later keeps its creation time as the floor.
+
+   A stored floor for each account, a nullable column, is the later fix.
 8. No member chooses the rules model (D-EM-7). The card is gone from Settings, and `rule_model` is gone from the settings model, the GET answer, the PUT SQL, `_account_models` and the email agent tool. The column stays (R6), and nothing reads or writes it. The old rule call that runs outside `on` uses `tier-fast`.
 9. `decide.decided` logs the keys, the probabilities, the `message_id` and each `request_id`, with no tenant text. `decide.unavailable` logs the feature, the account, the `message_id` and the reason.
+
+**Fix round 2 (2026-10-02).**
+
+- A conversation rule that moves mail needs 0.7 on its own `conv` option (item 8 of "The rule match request"). A label-only one keeps the plurality of the choice.
+- At most one rule that moves mail applies to an email: the most probable one. A tie goes to the canonical order. The log names the others in `dropped_moves`.
+- After a 402 or a 403 verdict, `ask` makes no Router call for that organization for 15 minutes (`REFUSAL_COOLDOWN_S`). Each email stays undecided with the reason `cooldown`, and the runner writes no stamp. The map lives in the one gateway process.
+- `run_rules_on_message` applies nothing and stamps nothing when it gets no second answer, as the table of EM-T5b-2 item 6 says.
+- The Reply Zero backfill keeps the new-mail floor (item 7 above).
+- On a new-mail cycle the scheduler runs the backfill twice: once inside `process_new_mail`, and once from the every-cycle hook (`scheduler.py`). For the scheduler, the first call adds only an earlier run before auto-archive and a second capped batch. For the manual sync and the Graph webhook, `process_new_mail` is the only call. Not refactored.
 
 Not built in this narrowing: the thread status, the cold check and the sender pin in `on`, the startup check (item 9 below), the `· auto` change (item 7 below) and the docstrings of `acb_llm/decide.py` (item 10 below).
 
@@ -2397,7 +2410,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 5. **The state** is the object under "State shapes". It holds facts only.
 6. **The instructions** hold the question and the guidance of `_CLASSIFIER_GUIDELINES`. They also hold the account-wide corrections, newest first, clipped to 1500 characters.
 7. **Requests.** One request holds 16 questions or fewer. `conv` and `best` go in the first request. All requests run at the same time. When one request fails, the email is undecided.
-8. **A match.** A boolean matches at its threshold or above. A rule that moves mail has a threshold of 0.7. Such a rule has an `ARCHIVE`, `MOVE_FOLDER`, `TRASH` or `MARK_SPAM` action, the set of `runner.py:591`. Every other rule has 0.5. `conv` matches when its answer is not `none`.
+8. **A match.** A boolean matches at its threshold or above. A rule that moves mail has a threshold of 0.7. Such a rule has an `ARCHIVE`, `MOVE_FOLDER`, `TRASH` or `MARK_SPAM` action, the set of `runner.py:591`. Every other rule has 0.5. `conv` matches when its answer is not `none`. A conversation rule that moves mail also needs 0.7 on its own option, as the thresholds table says (fix round 2). At most one rule that moves mail matches, the one with the highest probability.
 9. **The main rule.** It is the `best` answer when that rule matched. If not, it is the matched rule with the highest probability. A tie goes to the canonical order of `_load_rules`.
 10. **The return shapes do not change.** One-rule mode returns the main rule as `{"index", "reason"}`, or None. Multi-rule returns each match as `{"index", "reason", "primary"}`. So `classify_matches`, `_apply_matches`, the runner and process-past need no change.
 11. **The reason** is `Matched by AI (probability 0.83).`, because System One returns no reason text.
@@ -2698,9 +2711,11 @@ uv run pytest tests/unit/test_email_decide_on.py tests/unit/test_email_assistant
   tests/unit/test_email_rules_engine.py tests/unit/test_acb_llm_decide.py \
   tests/unit/test_console_dependency_boundary.py tests/unit/test_email_layering.py -q -rs
 uv run ruff check apps/services/gateway/gateway/decide_features.py \
-  apps/services/gateway/gateway/routes/email/scheduler_hooks.py tests/unit/test_email_decide_on.py
+  tests/unit/test_email_decide_on.py tests/unit/test_email_assistant_settings.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/components/email
 ```
+
+The changed automation files carry old ruff findings, so compare them with the base for each file and code, as §10.4.4 says. `scheduler_hooks.py` does not change, and its 8 old RUF100 findings are not part of this check.
 
 The R8 case must show PASSED, not SKIPPED.
 

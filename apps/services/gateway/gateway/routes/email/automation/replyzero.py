@@ -1458,8 +1458,16 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # never acquire one. Filtering in SQL means every cycle picks up 200
             # threads that actually need doing, and the backlog drains instead
             # of standing still.
+            #
+            # 🔴 The new-mail floor (owner decision (d), EM-T5b-2 fix round
+            # 2): an INBOX gap thread is selected only when its latest message
+            # arrived at or after the oldest enabled rule. Those rows go to
+            # `classify_matches` (Jev in `on`), which writes a status and
+            # provider labels, and older mail changes only through "Process
+            # past emails". The sent and the filed rows keep no floor.
+            from gateway.routes.email.automation.rules import NEW_MAIL_FLOOR_SQL
             rows = (await db.execute(text(
-                """WITH latest AS (
+                f"""WITH latest AS (
                      SELECT DISTINCT ON (thread_id) thread_id, id, subject,
                             from_address, to_addresses, cc_addresses, body_text,
                             snippet, folder, received_at
@@ -1470,9 +1478,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
                    SELECT l.* FROM latest l
                      LEFT JOIN email_thread_status s
                             ON s.account_id = :aid AND s.thread_id = l.thread_id
-                    WHERE s.thread_id IS NULL
+                    WHERE (s.thread_id IS NULL
                        OR s.last_message_id::text <> l.id::text
-                       OR COALESCE(s.reason, '') LIKE '%· auto'
+                       OR COALESCE(s.reason, '') LIKE '%· auto')
+                      AND (LOWER(COALESCE(l.folder, '')) <> 'inbox'
+                           OR l.received_at >= {NEW_MAIL_FLOOR_SQL})
                     -- Inbox first. Those are the threads that might still need a
                     -- reply, so they must not queue behind a filed backlog that is
                     -- both larger and already dealt with — ordering by date alone
