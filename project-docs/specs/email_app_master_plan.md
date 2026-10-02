@@ -9,8 +9,9 @@
 > sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
-> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. 🔨 EM-T3d is BUILT, not merged.
-> ✅ **EM-T4a-1 MERGED (#570). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
+> ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
+> 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -529,6 +530,20 @@ or API client to create a pattern by hand.
 | **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
+| D-EM-6 to D-EM-9 | *Gap. Not on `main` at 2026-10-02.* EM-T7 adds D-EM-6 (drafting off), and EM-T5b adds D-EM-7 to D-EM-9 (the `decide` tier), each on its own branch. |
+| **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) |
+| **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) |
+| **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
+| **D-EM-13** | **A sync after a pause continues from the last sync point.** A pause is sync turned off, a token that failed, or a reconnect. The next sync gets the mail since the last sync point. It does not import the range again. (Owner, 2026-10-02.) |
+| **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
+| **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
+| **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
+
+**The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
+
+- **Q1 (owner, 2026-10-02).** The limit of 500 MB is for each mailbox, not for each member.
+- **Q2 (owner, 2026-10-02).** New mail continues to sync at the limit. Only the import of older mail stops.
+- **Q3 (owner, 2026-10-02).** At the limit, the body backfill and the embeddings stop. A message that the member opens still loads its body live from the provider.
 
 ### 10.3 The customer flow (the acceptance target for EM-T3)
 
@@ -564,9 +579,10 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
-| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | 🔨 **BUILT, not merged (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 (2026-10-02).** 🟡 **EM-T4a-0 BUILT, not merged.** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED, not built (2026-10-02).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1054,7 +1070,7 @@ the real page. The proxy fence is `src/proxy.test.ts`.
 
 ##### EM-T3d — pre-approval and the connected-member count
 
-**Status.** 🔨 BUILT, not merged (2026-10-02). Audited against `ea9467a9` on 2026-10-02. EM-T3d waits for EM-T2c only,
+**Status.** ✅ MERGED #571 (2026-10-02). Audited against `ea9467a9` on 2026-10-02. EM-T3d waits for EM-T2c only,
 because the fence of EM-T2c holds `OWNER_SCOPE_EXEMPT`. It does not need EM-T2a. Production has
 `email_accounts.organization_id`, and the scheduler already filters on it (EM-T1b-1).
 
@@ -1490,7 +1506,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). 🟡 EM-T4a-0 is BUILT, not merged (branch `email-t4`). The other seven parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). The other seven parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1501,13 +1517,13 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 2. EM-T4b waits for EM-T5 to merge, because it wraps the shadow helper.
 3. EM-T4a-2 waits for EM-T5, because both change `engine.py` and `replyzero.py`.
 4. EM-T4a-3 waits for EM-T4a-2. EM-T4a-4 waits for EM-T4a-0, EM-T4a-3 and EM-T4b.
-5. EM-T4d waits for EM-T4c, because both change `_get_client` in `outlook.py`.
+5. EM-T4d waits for EM-T4c and EM-T6b. EM-T4c also changes `_get_client` in `outlook.py`, and EM-T6b also changes `sync_messages` (§10.4.7).
 6. EM-T4e waits for EM-T2a, because both change `transport/accounts.py`. It takes the next free migration number at build time (R1).
 
 **Measured state: sessions across external I/O on the sync path.**
 
 - Phase (e) of `_sync_account` holds one `tenant_session(org)` across up to 25 `provider.get_message` calls (`scheduler.py:412-418`, `body_backfill.py:97-99`).
-- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:615`).
+- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:630`).
 - `_run_rules_job` opens one block for each row (`runner.py:1648`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
 - `_maybe_classify_threads` opens one block for each gap thread (`replyzero.py:1277`). `_mark_thread_replied` holds its first block across the status call (`replyzero.py:918-937`).
 - `_maybe_send_follow_up_reminders` holds one block for up to 50 threads (`followups.py:92-258`). The block covers `authenticate`, `set_labels`, the body fetch, the draft agent and `create_draft`.
@@ -1562,7 +1578,7 @@ Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and 
 
 ##### EM-T4a-0 — the request jobs bind a tenant (first, 2026-10-02)
 
-**Status (2026-10-02).** 🟡 BUILT, not merged. The ten jobs open `_tenant_session()` in phases and call no `commit()`. `routes/email` keeps one `_get_db()` site, the discovery read of `mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 80. The fence is `tests/unit/test_email_request_jobs_tenancy.py`: the AST fences, the cases with no tenant, the stream task and R8.
+**Status (2026-10-02).** ✅ MERGED #572. The ten jobs open `_tenant_session()` in phases and call no `commit()`. `routes/email` keeps one `_get_db()` site, the discovery read of `mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 80. The fence is `tests/unit/test_email_request_jobs_tenancy.py`: the AST fences, the cases with no tenant, the stream task and R8.
 
 **Build notes.** Three helpers lost their commit: `_mark_history_held_back`, `_maybe_refresh_learned_style` and `_project_thread_status_for_backfill`. `_store_ai_draft` and `_maybe_refresh_learned_style` swallow their own failure, so each now runs in `_savepoint`. `_learn_from_sent` uses two blocks, not three. Block B holds the pattern rows, Mem0 and the style refresh, so the commit count of `test_email_learning.py` stays at 2. An early return inside a block now commits that block. For the jobs that use `provider_session`, the only write that this adds is the rotated credentials.
 
@@ -1632,7 +1648,7 @@ The R8 tests must show PASSED, not SKIPPED.
 3. Split `embed_pending_messages` the same way. Phase (f) calls `_embed_batch` with no session open.
 4. The read and write steps take a session and open none. Each block lives in `scheduler.py`, so the existing fence counts it.
 5. No step calls `commit()`. The seam commits on exit.
-6. Extend `test_no_session_is_open_during_the_provider_calls` (`test_email_scheduler_tenancy.py:526`) to `get_message` and `_embed_batch`.
+6. Extend `test_no_session_is_open_during_the_provider_calls` (`test_email_scheduler_tenancy.py:665`) to `get_message` and `_embed_batch`.
 
 **Non-goals.** No change to the batch sizes, to phases (a) to (d), or to the gateway.
 
@@ -1842,7 +1858,7 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 8. It logs `email.delta_shadow` with three counts: in both, only in the sweep, and only in the delta.
 9. A new user folder gets a cursor on its next poll. A folder that is gone loses its cursor.
 
-**Non-goals.** No `on` mode. No delete rule for a tombstone. No change to Gmail, IMAP or the deep first sync. No new column and no migration.
+**Non-goals.** No `on` mode. No delete rule for a tombstone. No change to Gmail, IMAP or the deep first sync. No new column and no migration. Delta keeps the floor of EM-T6a, and a reconnect keeps the cursor (D-EM-13).
 
 **Done when.**
 
@@ -1902,6 +1918,312 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 - **R-4.** The 401 retry sends a request twice. Each body in both providers is JSON or form data, so httpx can send it again.
 - **R-5.** Delta stopped new mail once, and nobody found the cause. So EM-T4d builds shadow only, and the full sweep stays the source of truth.
 - **R-6.** A budget of 2000 calls is a guess for one mailbox. The `log` mode measures the real count before anyone sets `enforce`.
+
+#### 10.4.7 EM-T6 in full
+
+**Status.** SPECIFIED, not built (2026-10-02). The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+
+**Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
+
+**Order.**
+
+1. EM-T6a waits for EM-T4c to merge, because both change `_sync_account` and `providers/outlook.py`.
+2. EM-T6b waits for EM-T6a. EM-T6c waits for EM-T6b.
+3. EM-T6d waits for EM-T6a, EM-T6b and EM-T7. Before EM-T7, the recommended rules turn on drafting, and D-EM-15 forbids that.
+4. EM-T6e waits for EM-T6c and EM-T6d.
+5. EM-T4d waits for EM-T6b, because both change `sync_messages` in `providers/outlook.py`.
+6. EM-T4e and EM-T6a both change `transport/accounts.py`, and each takes a migration number. The second to merge rebases and takes its number again (R1).
+
+**Owner checks (answered, 2026-10-02).** §10.2 records each answer as a dated line. The reason for each check stays here.
+
+- **Q1. Per mailbox, or per member?** The owner wrote "every user". One member can connect two mailboxes. A sum for each member is one more SQL clause, but the notice must then name a mailbox. **Answer: per mailbox.**
+- **Q2. Does new mail still sync at the limit?** A mailbox that silently stops new mail is worse than a mailbox over its limit. **Answer: yes.** New mail continues to sync, and only the import of older mail stops.
+- **Q3. Do the body backfill and the embeddings stop at the limit?** Outlook syncs headers only, about 2 KB for each message. Phase (e) then adds 25 bodies at each sync, newest first. So the bodies are most of the copy, and the import alone seldom reaches 500 MB. **Answer: yes, both stop at the limit.** A message that the member opens still loads its body live.
+
+**Measured state (2026-10-02, `01d760e6`).**
+
+- **The first sync reaches back 365 days.** `INITIAL_SYNC_DAYS = 365` (`scheduler.py:59`) sets the floor of the deep sync (`scheduler.py:314-323`). Three more callers force a deep sync. They are Resync (`transport/sync.py:296`), Clean older mail (`automation/cleanup.py:905`) and Process past emails (`automation/runner.py:1418`). With no `since`, each one reaches back 365 days.
+- **The recurring poll has no time floor.** `sweep_since = since if deep else None` (`outlook.py:1111`). Each poll reads the newest 2 pages of 100 in each folder (`outlook.py:1012`), whatever their age. So a quiet user folder adds mail that is years old at the first poll. This breaks D-EM-10, and it breaks a range of 0 months.
+- **The order is newest first in one folder, not across folders.** Each folder page asks for `$orderby=receivedDateTime desc` (`outlook.py:395`). The sweep reads the six system folders one by one, and then the user folders (`outlook.py:1113-1142`). A stop part way would keep a full inbox and no sent mail.
+- **The sync holds every message in memory and writes them in one block at the end** (`scheduler.py:341-377`). A deep sweep can read 200 pages for each folder (`outlook.py:1013`). A crash part way loses the whole import, and the next sync starts again.
+- **A reconnect does NOT start a full import again.** `_save_account` writes `last_history_id = NULL` (`transport/oauth.py:447`). Outlook ignores that cursor (`outlook.py:1061`), and no code resets `initial_sync_done`. So the next sync is the shallow poll. The comment at `transport/oauth.py:428-429` says the opposite, and it is wrong.
+- **The real defect is a gap.** After a long pause, the poll reads only the newest 200 messages of each folder. The older mail of the pause never arrives. `last_synced_at` is the last sync point, and phase (d) writes it only on a success (`scheduler.py:425-438`).
+- **No meter exists.** No code measures the size of a mailbox. `email_attachments` holds metadata only (`17_email_accounts.sql:92-102`). The bytes of an attachment come from the provider on demand, through a cache of one hour (EM-T2b).
+- **A delete of `email_messages` reaches four tables.** `email_attachments` and `email_embeddings` cascade (`17_email_accounts.sql:94`, `73_email_embeddings.sql:21`). `email_executed_rules.message_id` and `email_rule_guidance.message_id` become NULL (`19_email_automation.sql:75`, `87_email_rule_guidance.sql:37`). `email_thread_status.last_message_id` and `email_contacts.source_message_id` have no foreign key (`27_email_reply_tracking.sql:18`, `119_email_contacts.sql:47`).
+- **The body backfill is newest first already** (`body_backfill.py:121`).
+- **An open stores the body that it loads.** When a member opens a message with no stored body, `get_message` fetches the body from the provider and writes it to the row (`transport/messages.py:624-654`).
+- **The rules wait for a rule.** `auto_run_rules_for_account` returns when the mailbox has no enabled rule (`scheduler_hooks.py:108-118`). After that, it runs over 50 inbox messages at each cycle, newest first, with no age bound (`scheduler_hooks.py:119`, `runner.py:1604-1608`).
+- **The recommended rules turn on drafting today.** The preset "Needs Reply" carries `DRAFT_EMAIL` (`rules.py:182-184`). EM-T7 changes that.
+- **The connect UI shows a spinner only.** `FirstSyncBanner.tsx` draws a spinner and fixed copy. The page polls `GET /email/accounts` every 5 seconds while a first sync runs (`page.tsx:223-260`, `FIRST_SYNC_POLL_MS` at `lib/connect.ts:115`). `src/components/ui/ProgressBar.tsx` exists, and its first caller is the Projects import.
+- **The OAuth state holds no range.** The signed state holds a version, a nonce, the organization, the member, the provider, `redirect_after` and an expiry (`transport/signing.py:129-137`). The BFF authorize route forwards `redirect_after` and `login_hint` only (`api/email/oauth/[provider]/authorize/route.ts:113-118`).
+
+##### EM-T6a — the import floor and the range choice (backend)
+
+**Scope.**
+
+1. **One migration.** Add one file in `infra/postgres/` with the next free number at build time (R1). Name it `<n>_email_import_onboarding.sql`. It adds eight columns to `email_accounts` with `ADD COLUMN IF NOT EXISTS`. Each column is nullable, with no default, no CHECK and no backfill (R6). The columns are `import_since TIMESTAMPTZ`, `import_reached_at TIMESTAMPTZ`, `import_phase TEXT`, `import_count INTEGER`, `import_estimate INTEGER`, `stored_bytes BIGINT`, `stored_bytes_at TIMESTAMPTZ` and `onboarding_done_at TIMESTAMPTZ`. EM-T6b to EM-T6e add no migration. Run `scripts/dump_schema.sh` and commit `schema.generated.sql`.
+2. **One floor function.** Add `email_ingestion/import_window.py`. It holds the ceiling, the floor and the conversion of a range to a date. A month is 30 days. The ceiling is `now - 180 days`. Delete `INITIAL_SYNC_DAYS`.
+3. **The floor rule.** A member act can pass an explicit `since`. Its floor is the later of that `since` and the ceiling. Every other sync takes the choice of the member. Its floor is the later of `import_since` and the ceiling. The ceiling alone binds a row with `import_since` NULL, because that mailbox connected before EM-T6.
+4. **`_sync_account` passes the floor on every sync**, deep or shallow. The explicit callers are Process past emails and Clean older mail. A Resync passes no `since`, so the choice of the member binds it.
+5. **Outlook applies the floor on every sweep.** `sync_messages` passes `since` to `_sweep_folder` for the recurring poll too (`outlook.py:1111`). The page count of the recurring poll does not change in EM-T6a.
+6. **The core is the backstop.** The core drops each message older than the floor before phase (c) writes. It keeps the message when its row is already stored. It keeps a message with no `received_at`. One query reads the stored ids of the old messages. The core logs `sync.dropped_below_floor` with the count.
+7. **The authorize leg takes `import_months`.** The value is an integer from 0 to 6, and it is 1 when absent. Any other value answers 400, and the route signs no state. The signed state carries it as `import_months`.
+8. **An old state still works.** `verify_oauth_state` accepts a state with no `import_months` and reads it as 1. A state signed before the deploy then completes. A state whose `import_months` is not an integer from 0 to 6 does not verify.
+9. **The callback writes the range for a new mailbox only.** The INSERT writes `import_since = now() - 30 * N days`. For N = 0, it writes `import_since = now()`, `initial_sync_done = true` and `import_phase = 'done'`.
+10. **A reconnect keeps the sync point (D-EM-13).** The UPDATE of a reconnect writes the credentials, `sync_status = 'idle'` and `sync_error = NULL`. It no longer writes `last_history_id = NULL`. It ignores `import_months`. Correct the comment at `transport/oauth.py:428-429`.
+11. **The member closes the guided setup through the PATCH.** `AccountUpdateModel` gains `onboarding_done: bool | None`. True writes `onboarding_done_at = now()`, and false writes NULL. The handler keeps its owner predicate.
+12. **The account API returns two fields.** `EmailAccountModel` gains `import_since` and `onboarding_done`. Each of the three reads of an account returns them.
+13. **Text that is false goes.** Remove each "1 year", "one-year" and "365 days" claim about the sync. They are in `scheduler.py:57-59` and `:310`, `outlook.py:1027` and `:1107`, `transport/sync.py:195`, `:232`, `:264` and `:288`, and `automation/cleanup.py:873-874`.
+
+**Non-goals.**
+
+- No batches, no progress and no resume. EM-T6b owns them.
+- No meter and no limit. EM-T6c owns them.
+- No UI. The BFF does not forward `import_months` until EM-T6d, so each new connect gets the default of 1 month.
+- No retention. Mail already stored that is older than the ceiling stays.
+- No change to Gmail or IMAP other than the backstop of the core (D-EM-5).
+- No change to the folder set of the sweep.
+
+**Done when.**
+
+- R8: the new migration applies to a fresh ladder database and to the promoted catalog. A second run changes nothing.
+- An authorize call with `import_months=3` signs a state that verifies with `import_months` 3. With no value, the state verifies with 1.
+- `import_months` of `7`, `-1` or `x` answers 400, and the test proves that `sign_oauth_state` was not called.
+- A state with no `import_months` claim gives a new mailbox an `import_since` 30 days back.
+- R8, as the non-owner role, for two organizations. A callback for a new mailbox in org B with `import_months=2` writes `import_since` 60 days back. The tolerance is 5 seconds. Org A reads none of it.
+- R8: with `import_months=0`, the new row has `initial_sync_done = true` and an `import_since` within 5 seconds of now.
+- R8: a reconnect leaves `import_since`, `initial_sync_done`, `last_synced_at` and `last_history_id` unchanged, and it writes the new credentials.
+- With a fake provider, `_sync_account` passes a `since` equal to the floor in six cases. The cases are the first import, a recurring poll and a Resync. They are also an explicit `since` older than the ceiling, an explicit `since` newer than it, and a row with `import_since` NULL.
+- A call with an explicit `since` 365 days back gives the provider a `since` 180 days back.
+- Against a fake Graph, a recurring poll sends `receivedDateTime ge <floor>` in the `$filter` of the first page of each folder.
+- R8: a fake provider that ignores `since` returns three messages older than the floor, and one of them is already stored. The sync inserts neither new one, and it updates the stored one.
+- A test finds no `INITIAL_SYNC_DAYS` in `email_ingestion` or `routes/email`.
+- `PATCH /email/accounts/{id}` with `onboarding_done: true` writes `onboarding_done_at`. A member who does not own the mailbox gets 404.
+- `GET /email/accounts` returns `import_since` and `onboarding_done`.
+- `test_email_owner_scope_fence.py` passes with no new entry.
+
+**Files.** A new `infra/postgres/<n>_email_import_onboarding.sql`, and `schema.generated.sql`. Under `apps/services/email_ingestion/email_ingestion/`: a new `import_window.py`, `scheduler.py` and `providers/outlook.py`. Under `apps/services/gateway/gateway/routes/email/`: `transport/oauth.py`, `transport/signing.py`, `transport/accounts.py`, `transport/sync.py` (text only) and `automation/cleanup.py` (text only). The tests are a new `tests/unit/test_email_import_floor.py`, with updates to `test_email_deep_sync.py` and `test_email_oauth_state.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_import_floor.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_oauth_authorize_wiring.py \
+  tests/unit/test_email_connect_backend.py tests/unit/test_email_tenant_bind_rls.py \
+  tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_manual_sync_parity.py \
+  tests/unit/test_email_sync_backoff.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_email_account_unique_per_tenant.py tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
+  tests/unit/test_tenancy_insert_fence.py tests/unit/test_db_engine_seam.py -q -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email/transport \
+  tests/unit/test_email_import_floor.py
+```
+
+The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line of the new migration and `\d email_accounts` on the box.
+
+##### EM-T6b — newest first, in batches, with progress and resume (backend)
+
+**Scope.**
+
+1. **One provider method.** `BaseEmailProvider` in `providers/base.py` gains `import_batches(since, until, size=100)`. It is an async iterator of lists. Each list is newest first, and the lists in sequence are newest first across every swept folder. The default calls `sync_messages(deep=True, since=since)`, drops each message newer than `until`, sorts and cuts. Gmail and IMAP use the default.
+2. **Outlook merges the folders.** `OutlookProvider.import_batches` opens one page stream for each folder of the deep sweep. Each stream filters on `receivedDateTime ge {since}`, and on `receivedDateTime le {until}` when `until` is set. The merge always takes the newest head across the streams. It reads the next page of a folder only when that folder holds the newest head. The folder set and the canonical folder names do not change.
+3. **The estimate.** Before the first batch, Outlook asks each folder for `$count=true` with the same filter and `$top=1`. The sum is the estimate. When a folder gives no count, the estimate stays NULL and the import goes on.
+4. **The first import runs in batches.** When `initial_sync_done` is false, `_sync_account` runs `import_batches` in place of the deep sweep. It fetches each batch with no session open. One `tenant_session(org)` then writes the messages of the batch and the progress. No block calls `commit()`.
+5. **The progress columns.** Before the first batch, the import writes `import_phase = 'counting'` and then `import_estimate`. With each batch, it writes `import_phase = 'importing'`, `import_reached_at` and `import_count`. `import_reached_at` is the oldest `received_at` in the batch. `import_count` adds the rows that the batch wrote.
+6. **The end of the import.** It writes `initial_sync_done = true` and `import_phase = 'done'`. The recurring sweep then runs in the same call, and phase (d) writes `last_synced_at` as today. An error leaves the progress as it is, and the error path writes `sync_status = 'error'` as today.
+7. **Resume.** When `import_reached_at` is set, the import starts there, with `until = import_reached_at`. The upsert makes the overlap at that point harmless. The import never reads again the mail that is newer than that point.
+8. **A deep sync runs in batches too.** Resync, Process past emails and Clean older mail use `import_batches` from now to the floor. They write no progress column, and they do not change `initial_sync_done`. The recurring sweep then runs in the same call, as after a first import.
+9. **Catch-up after a pause (D-EM-13).** The watermark is `last_synced_at - 1 hour`, or `created_at` when `last_synced_at` is NULL. The recurring sweep reads at least 2 pages of each folder, as today. It reads more pages while the oldest message of the last page is newer than the watermark. `DEEP_SYNC_MAX_PAGES` caps it, and the floor still binds.
+10. **The reconcile and the label learner stay on the recurring sweep.** An import batch runs neither.
+11. **The account API returns the progress.** `EmailAccountModel` gains `import_reached_at`, `import_phase`, `import_count` and `import_estimate`.
+12. **The docs.** §10.3 step 4 changes to: "The inbox fills batch by batch, newest first." Update `apps/services/email_ingestion/AGENTS.md`.
+
+**Non-goals.** No meter and no limit (EM-T6c). No UI (EM-T6d). No Graph delta (EM-T4d). No change to the page count of a normal poll. No change to the folder set.
+
+**Done when.**
+
+- Against a fake Graph with three folders whose dates interleave, the batches in sequence are in `received_at` order, newest first, across the folders.
+- The fake Graph records that a folder gets its second page only after that folder holds the newest head.
+- A watched fake provider gets each batch fetch with zero open sessions.
+- After each batch, `import_reached_at` equals the oldest `received_at` written, and `import_count` equals the rows written so far.
+- With the count calls answering, `import_estimate` equals the sum of the folder counts. When a count call fails, the estimate is NULL, and the import still writes each message.
+- A fake that raises on the third batch leaves the rows of two batches and `initial_sync_done = false`. The next sync asks for `until` equal to `import_reached_at`. It writes the rest and ends with `initial_sync_done = true` and `import_phase = 'done'`.
+- With `last_synced_at` 21 days back and 600 new messages in one folder, a sync writes all 600. With `last_synced_at` 5 minutes back, a sync reads 2 pages of each folder, as today.
+- After 21 days with sync turned off, a sync writes the mail of those days. It requests no page older than the floor.
+- A Resync writes in batches, and it does not change `initial_sync_done` or the progress columns.
+- No batch of an import calls `reconcile_full_snapshot`.
+- R8, as the non-owner role, for two organizations. An import in org B writes its rows and its progress in org B. Org A reads none of them.
+- The commit fence of `test_email_scheduler_tenancy.py` passes with the new blocks.
+
+**Files.** Under `apps/services/email_ingestion/email_ingestion/`: `providers/base.py`, `providers/outlook.py`, `scheduler.py` and `AGENTS.md`. Under `routes/email/`: `transport/accounts.py`. The tests are a new `tests/unit/test_email_import_batches.py`, with updates to `test_email_deep_sync.py` and `test_email_scheduler_tenancy.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_import_batches.py tests/unit/test_email_import_floor.py \
+  tests/unit/test_email_deep_sync.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_manual_sync_parity.py tests/unit/test_email_sync_backoff.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_db_engine_seam.py -q -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_email_import_batches.py
+```
+
+The R8 tests must show PASSED, not SKIPPED.
+
+##### EM-T6c — the storage meter, the limit, and "remove older mail from Metorite" (backend)
+
+**Waits for** EM-T6b. The owner answered Q1, Q2 and Q3 on 2026-10-02 (§10.2). The items marked (Q2) and (Q3) carry those answers.
+
+**Scope.**
+
+1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
+2. **The meter.** Add `measure_stored_bytes(db, account_id)` to a new `email_ingestion/storage.py`. One SELECT sums `pg_column_size` of each column of variable length in the `email_messages` rows of the mailbox. It adds the `email_attachments` rows and the `email_embeddings` rows of the mailbox. It writes `stored_bytes` and `stored_bytes_at`.
+3. **The meter reads no body.** `pg_column_size` of a stored value reads its size from the stored header, so the meter does not fetch the bodies. Do not use `octet_length`, and do not take the size of a whole row.
+4. **When the meter runs.** After each import batch, and at the end of each sync in phase (d).
+5. **The limit stops the import.** After a batch, when `stored_bytes` is at or over the limit, the import fetches no next batch. A first import then writes `import_phase = 'limit'` and `initial_sync_done = true`. A deep sync of a member act stops in the same way, and `_sync_account` returns `limit: true` in its result.
+6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
+7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
+8. **The preview route.** `GET /email/accounts/{id}/storage/older?before=<date>` returns the count of messages and the bytes that a removal would free. It writes nothing.
+9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400.
+10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row of the mailbox whose thread has no message left.
+11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders and the contacts.
+12. **After the removal.** `import_since` becomes the later of `import_since` and `before`, so a Resync does not import that mail again. The meter runs again. The answer holds the count removed and the new `stored_bytes`.
+13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
+14. **The account API.** `EmailAccountModel` gains `stored_bytes` and `storage_limit_bytes`.
+
+**Non-goals.** No limit for each member (Q1). No retention by age. No delete of an attachment file, because Metorite stores none. No UI (EM-T6e). No change to the mailbox in Outlook, ever (D-EM-14). No change to the open path of a message (`transport/messages.py:624-654`, risk R-10).
+
+**Done when.**
+
+- R8: a body of 100 KB of random base64 raises the meter of mailbox X by 100,000 bytes or more. The meter of mailbox Y does not change.
+- R8: an `email_embeddings` row raises the meter of its mailbox.
+- With a limit of 64 KB, a fake provider offers 50 messages with a body of 4 KB each. The import stops after the first batch that takes the meter to the limit, and it fetches no next batch. It writes `import_phase = 'limit'`. Each stored message is newer than each message that it did not store.
+- A Resync at the limit stops in the same way, and its result holds `limit: true`.
+- (Q3) At the limit, phases (e) and (f) make no provider call and no model call.
+- (Q3) At the limit, a member who opens a message with no stored body gets the body.
+- (Q2) At the limit, the next poll still writes a new message.
+- The preview returns the count and the bytes, and the count of `email_messages` rows does not change.
+- R8: a removal with `before` 30 days back deletes each message of the mailbox older than that date, and no message of another mailbox. It deletes their `email_executed_rules` rows, and it moves `import_since` to `before`.
+- After that removal, a Resync writes no message older than `before`.
+- With `build_provider` and `provider_session` patched to raise, a removal still succeeds.
+- An AST fence finds no import of `email_ingestion.providers`, `build_provider` or `provider_session` in `storage.py` or in the two handlers. A companion test proves that the fence can fail.
+- An AST fence finds no `.commit()` in `storage.py`.
+- R8, for two organizations: a member who does not own the mailbox gets 404 from both routes.
+- `test_email_owner_scope_fence.py` passes with no new entry.
+
+**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `transport/accounts.py`. The test is a new `tests/unit/test_email_storage_limit.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_storage_limit.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_embeddings_hash.py tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_org_purge_tenant.py -q -rs
+uv run ruff check apps/services/email_ingestion packages/acb_common \
+  apps/services/gateway/gateway/routes/email/transport tests/unit/test_email_storage_limit.py
+```
+
+The R8 tests must show PASSED, not SKIPPED.
+
+##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
+
+**Waits for** EM-T6a, EM-T6b and EM-T7. Before EM-T7, "Use the recommended rules" also turns on drafting, because the preset "Needs Reply" carries `DRAFT_EMAIL` (`rules.py:182-184`).
+
+**Scope.**
+
+1. **The stage model.** Add a pure `app/email/lib/onboarding.ts`. `onboardingStage(account)` returns `importing`, `rules` or `null`. It returns `null` when `onboarding_done` is true, or when `import_since` is NULL, which marks a mailbox connected before EM-T6. It also returns `null` while `sync_status` is `error`, because the reconnect banner owns that state (EM-T3b). It returns `importing` while `initial_sync_done` is false. Otherwise it returns `rules`. EM-T6e adds `storage`.
+2. **The range step.** A click on "Microsoft 365 / Outlook" in `ConnectChoices.tsx` opens a second step before the sign-in. The title is "How much of your mail should Metorite import?" It offers seven choices, 0 to 6 months, and the default is 1 month. The choice 0 reads "Only new mail". The copy says that Metorite never imports mail older than 6 months.
+3. **The range goes to the gateway.** "Continue to Microsoft" starts the authorize leg with `import_months`. `connectQuery` in `lib/connect.ts` gains `importMonths`. The BFF authorize route forwards `import_months` only when it matches `^[0-6]$`. The reconnect banner sends no `import_months`, because a reconnect keeps the range (D-EM-13).
+4. **The import step shows real progress (D-EM-16).** A panel in place of `FirstSyncBanner` draws `ProgressBar` from `src/components/ui/`. With an estimate, the percent is `import_count / import_estimate`, and the detail reads "1,240 of about 3,100 messages". With no estimate, the percent is the share of the range done, and the detail reads "back to 14 Sep".
+5. **The share of the range done** is `(now - import_reached_at) / (now - import_since)`. It is 0 until the first batch lands.
+6. **The phase line.** `counting` reads "Counting your mail". `importing` reads "Importing your mail, newest first". The panel never shows a spinner alone while the phase is `counting` or `importing`.
+7. **The source of the progress.** The panel reads the fields of `GET /email/accounts`. The first-sync poll of `page.tsx` already reads them every 5 seconds (`FIRST_SYNC_POLL_MS`). Add no endpoint and no stream.
+8. **The rules step (D-EM-15).** It opens when the import ends. The title is "Set up AI rules". It says that the rules run over the imported mail and sort it. It offers three actions: "Use the recommended rules", "Choose my own" and "Skip for now".
+9. **What the rules actions do.** "Use the recommended rules" calls `installPresetRules`. "Choose my own" opens AI Settings on its Rules tab, through `setAutomationFeature("ai-settings")`. After a choice, a "See insights" link opens the `analytics` view. The step names no model and offers no model choice (EM-T5b).
+10. **The drafting step is opt-in (D-EM-6).** It shows only after a rule exists, because the drafting action lives on the "Needs Reply" rule (`rules.py:409-441`). A switch "Draft replies for me" is off when it opens. To turn it on, the step reads `getAssistantSettings`, sets `draft_replies` to true, and saves with `saveAssistantSettings`. When the switch stays off, the step writes nothing.
+11. **Done.** "Done" and "Skip setup" send `PATCH /email/accounts/{id}` with `onboarding_done: true`. The setup then never shows again for that mailbox.
+12. **Where it draws.** The panel sits at the top of the mail pane, where `FirstSyncBanner` draws today (`page.tsx:869`). It is not a modal, so the member can read the mail that arrives.
+13. **Copy that promises a year goes.** `BulkUnsubscribeView.tsx:26` and `:1475` say that the first sync fetches one year. The choice "Last year" of Process past emails (`RulesTab.tsx:1511`) becomes "Last 6 months", because no import reaches further (D-EM-10).
+
+**Non-goals.**
+
+- No storage UI (EM-T6e).
+- No change to the rules editor. Process past emails changes its longest choice only (item 13).
+- No model picker, and no new gateway route.
+- No range step for Gmail, which shows "Coming soon".
+
+**Done when.**
+
+- A vitest for `onboardingStage` covers each stage. It also covers `null` for `import_since` NULL, for `onboarding_done` and for `sync_status = 'error'`.
+- The range step offers 0 to 6 months, and its default is 1.
+- `connectQuery` with `importMonths` 3 holds `import_months=3`.
+- The BFF authorize route forwards `import_months=3`. It drops `7`, `-1` and `x` (`route.test.ts`).
+- The reconnect target holds no `import_months`.
+- For `import_count` 1240 and `import_estimate` 3100, the panel draws a `progressbar` with `aria-valuenow` 40. The detail reads "1,240 of about 3,100 messages".
+- With no estimate, the panel draws a `progressbar` whose value is the share of the range done, and a "back to" date.
+- The markup holds a `progressbar` while the phase is `counting` or `importing`.
+- The markup of the rules step holds no "model", in any case.
+- "Use the recommended rules" calls `installPresetRules` once, with the account id.
+- The drafting switch is off when it opens. Turning it on saves `draft_replies: true` and changes no other field.
+- "Done" sends `onboarding_done: true`.
+- No copy in `app/email` says that the first sync fetches a year, and no choice of Process past emails reaches further than 6 months.
+- Do a visual review with the `visual-review` skill. Use light mode, compact density, a changed accent, mobile width, and a view beside Calendar. The PR carries a screenshot of each step.
+
+**Files.** Under `workbench/control_plane/src/app/email/`: a new `lib/onboarding.ts` with `onboarding.test.ts`, `lib/connect.ts` and `connect.test.ts`, `lib/api.ts`, `lib/types.ts`, `components/ConnectChoices.tsx`, a new `components/ImportRangeStep.tsx`, a new `components/OnboardingPanel.tsx`, `page.tsx`, `components/automation/BulkUnsubscribeView.tsx` and `components/automation/ai-settings/RulesTab.tsx`. Also `src/app/api/email/oauth/[provider]/authorize/route.ts` and `route.test.ts`. Vitest reads `*.test.ts` only, so a render test uses `createElement`, not JSX.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/email src/app/api/email/oauth src/lib/theme src/lib/nav.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs --staged
+```
+
+##### EM-T6e — the storage notice and the removal dialog (UI)
+
+**Waits for** EM-T6c and EM-T6d.
+
+**Scope.**
+
+1. **The notice.** Email shows a notice when `stored_bytes` is at or over `storage_limit_bytes`, or when `import_phase` is `limit`. An example: "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail." The action is "Remove older mail from Metorite".
+2. **The dialog.** The member picks a date. The choices keep the newest 1, 2, 3 or 6 months, or take a date from a picker. The dialog calls the preview route and shows "N messages, about X MB".
+3. **The words of the dialog.** It says: "This removes mail from Metorite only. Your Outlook mailbox does not change." The confirm button calls the removal route with `before`.
+4. **The stage.** `onboardingStage` gains `storage` between `importing` and `rules`. The panel offers the same dialog, and "Keep it as it is".
+
+**Non-goals.** No backend change. No removal without a preview.
+
+**Done when.**
+
+- The notice draws for `stored_bytes` at the limit, and for `import_phase = 'limit'`. It does not draw under the limit.
+- The dialog calls the preview before the member can confirm. The confirm sends `before` as the chosen date.
+- The dialog markup holds the sentence "Your Outlook mailbox does not change."
+- No copy in the notice or the dialog says that Metorite deletes mail in Outlook.
+- `onboardingStage` returns `storage` for `import_phase = 'limit'` when `onboarding_done` is false.
+- Do a visual review with the `visual-review` skill. Use light mode, compact density, a changed accent, mobile width, and a view beside Calendar. The PR carries the screenshots.
+
+**Files.** Under `workbench/control_plane/src/app/email/`: a new `components/StorageNotice.tsx`, a new `components/RemoveOlderMailDialog.tsx`, `components/OnboardingPanel.tsx`, `lib/onboarding.ts`, `lib/api.ts` and the tests.
+
+**Verify with.** The command of EM-T6d.
+
+##### Recorded risks (EM-T6)
+
+- **R-1. Cost.** After a rule exists, the rules run over 50 inbox messages at each cycle, with no age bound (`scheduler_hooks.py:119`). An import of 6 months can hold thousands of messages, at one model call each. EM-T4b measures the calls, and EM-T5b moves the rule pick to `decide`.
+- **R-2. The estimate.** A folder may give no `$count`. The estimate then stays NULL, and the panel shows the share of the range done.
+- **R-3. The meter is not the disk.** It leaves out the indexes, the full-text index and the vector index, and dead rows. It counts what a member can remove.
+- **R-4. The meter runs at each sync.** It reads the rows of the mailbox once, with no body. Measure its time on the box after EM-T6c.
+- **R-5. The inbox fills during the import.** A member can act on mail while older mail still arrives. The rules run newest first, so a decision on new mail does not wait for old mail.
+- **R-6. A removal deletes the history of the rules for that mail.** The analytics of the removed period change.
+- **R-7. A member act can import removed mail again.** Process past emails with an explicit date is bound by the ceiling only. The member asked for that mail, and the limit still binds.
+- **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
+- **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
+- **R-10. An open at the limit adds to the meter.** The open path stores the body that it loads (`transport/messages.py:624-654`). So each open at the limit adds one body, as new mail does (Q2). The Q3 answer keeps the live load and does not say if the open stores. EM-T6c keeps the path as it is. An owner call can change that before EM-T6c ships.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
