@@ -1308,6 +1308,32 @@ async def _llm_is_cold(
     )
 
 
+#: Has the owner ever sent mail TO this address? The address compares
+#: without case. JSONB containment (``@>``) is case-sensitive, and Outlook
+#: keeps the case of an address, so ``Jo.Smith@Acme.com`` in a sent message
+#: did not contain ``jo.smith@acme.com``, and a known contact read as cold
+#: (EM-T5b-1 fix round 1). The account and the sent folder bound the scan
+#: before any array is opened. The CASE keeps ``jsonb_array_elements`` from
+#: raising on a value that is not an array, which would abort the session.
+_PRIOR_CONTACT_SQL = """
+    SELECT 1
+      FROM email_messages em
+     CROSS JOIN LATERAL jsonb_array_elements(
+           CASE WHEN jsonb_typeof(em.to_addresses) = 'array'
+                THEN em.to_addresses ELSE '[]'::jsonb END) AS t(addr)
+     WHERE em.account_id = :aid
+       AND LOWER(em.folder) = 'sent'
+       AND LOWER(t.addr->>'email') = :e
+     LIMIT 1"""
+
+
+async def _has_prior_contact(db: Any, account_id: str, sender: str) -> bool:
+    """True when a sent message of the account names ``sender`` in To."""
+    row = (await db.execute(text(_PRIOR_CONTACT_SQL), {
+        "aid": account_id, "e": (sender or "").strip().lower()})).fetchone()
+    return row is not None
+
+
 async def _maybe_block_cold(
     db: Any, provider: Any, account_id: str, message_id: str,
     provider_msg_id: str, email: dict[str, str], blocker: str,
@@ -1324,13 +1350,9 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "e": sender})).fetchone()
     if seen:
         return
-    # Replied-to / known sender (we've emailed them) → not cold.
-    replied = (await db.execute(text(
-        """SELECT 1 FROM email_messages
-           WHERE account_id = :aid AND LOWER(folder) = 'sent'
-             AND to_addresses @> :tojson LIMIT 1"""
-    ), {"aid": account_id, "tojson": json.dumps([{"email": sender}])})).fetchone()
-    if replied:
+    # Replied-to / known sender (we've emailed them) → not cold. The address
+    # compares without case (`_PRIOR_CONTACT_SQL`).
+    if await _has_prior_contact(db, account_id, sender):
         return
     is_cold, reason = await _llm_is_cold(
         email, account_id=account_id, message_id=str(message_id))

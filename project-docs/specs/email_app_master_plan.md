@@ -2497,7 +2497,9 @@ It logs no rule name, subject, body, address or `about`.
 **Verify with.**
 
 ```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_cold_gate_case.py \
   tests/unit/test_customer_console_decide.py tests/unit/test_acb_llm_decide.py \
   tests/unit/test_console_dependency_boundary.py tests/unit/test_background_ai_member.py \
   tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_reply_zero.py \
@@ -2512,7 +2514,9 @@ uv run ruff check apps/services/gateway/gateway/decide_features.py \
 node .claude/hooks/ste-lint.mjs --staged
 ```
 
-Compare ruff on `routes/email/automation` with the base, for each file and code, as §10.4.4 says. EM-T5b-1 writes no SQL, so R8 does not apply.
+Compare ruff on `routes/email/automation` with the base, for each file and code, as §10.4.4 says.
+
+**One live path changes (fix round 1, 2026-10-02).** EM-T5b-1 changes one live path, the prior-contact read of the cold gate (`senders._PRIOR_CONTACT_SQL`), because the case-sensitive JSONB test read a contact with capitals as a stranger, and the `decide` state then said `prior_contact: false` as a fact. The read now compares addresses without case. `tests/unit/test_email_cold_gate_case.py` proves it on a real database (R8, as the non-owner role under FORCE RLS), so the run must show no skip.
 
 **The shadow window.** It starts after EM-T5b-1 merges and H-166 is done. Set all four features to `shadow` in `DECIDE_FEATURE_MODES`, and the Fracktal organization id in `DECIDE_FEATURE_ORGS`. Run it for 7 days or 300 decided emails, whichever ends later. Then report for each feature: the agreement rate, the `decide.unavailable` rate, the p50 and p95 latency, and the matched rules for each email. The owner reads 20 disagreements by `message_id`, because agreement with the LLM is not accuracy.
 
