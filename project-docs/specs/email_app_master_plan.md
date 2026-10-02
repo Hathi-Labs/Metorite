@@ -12,6 +12,7 @@
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> ✅ **EM-T4f is BUILT, not merged (2026-10-02).** A disconnect stops the sync with no session open, then deletes, then removes the Graph subscription (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -1913,7 +1914,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
 
-**Status (2026-10-02).** 📝 Specified, not built. This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
+**Status (2026-10-02).** ✅ BUILT on branch `email-t4f`, not merged. All four done-when cases and the R8 case pass. The Graph delete shipped, with no follow-up. This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
 
 **The defect (production, 2026-10-02).** A member connected Outlook, and the first sync stored 6410 messages. The member clicked Disconnect while the sync ran. The journal shows this order:
 

@@ -6,15 +6,26 @@ EM-T3d), which returns integers only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, status
-from gateway.routes.email.core import _default_label, _log, _tenant_session, router
+from gateway.routes.email.core import (
+    _default_label,
+    _instantiate_provider,
+    _log,
+    _tenant_session,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
+
+#: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
+#: failed call must never hold back the 204 of the route.
+SUBSCRIPTION_DELETE_TIMEOUT_S = 5.0
 
 
 class EmailAccountModel(BaseModel):
@@ -367,14 +378,53 @@ async def delete_account(
     account_id: str,
     user: UserContext = Depends(get_current_user),
 ):
-    """Remove an email account and all its synced messages."""
+    """Remove an email account and all its synced messages.
+
+    EM-T4f (``email_app_master_plan.md`` §10.4.6). The order is the fix:
+
+    1. A short block reads the row with the owner predicate. A row that is
+       absent, or that another member owns, gives 404 and stops no loop.
+    2. With NO block open, the sync loop stops. ``remove_account_sync`` waits
+       for the task. Before EM-T4f that wait ran inside the block of the
+       ``DELETE``, and the task waited on a lock of that ``DELETE``. Postgres
+       cannot see a cycle with one half in the app, so only the statement
+       timeout broke it.
+    3. A new block runs the ``DELETE`` and the default re-election. Its
+       ``RETURNING`` reads the subscription id after the loop stopped, because
+       the loop can replace the subscription until then.
+
+    Then, with no block open, a best-effort Graph call removes the push
+    subscription of a Microsoft mailbox. Each phase is one block with no
+    ``commit()`` (mechanism (A) of §10.4.2). The fence is
+    ``tests/unit/test_email_disconnect_order.py``.
+    """
+    owner = user.email or "anonymous"
+
+    # ── 1. the ownership read ───────────────────────────────────────────────
     async with _tenant_session() as db:
-        owner = user.email or "anonymous"
+        owned = await db.execute(
+            text("SELECT 1 FROM email_accounts WHERE id = :id AND user_id = :uid"),
+            {"id": account_id, "uid": owner},
+        )
+        if not owned.fetchone():
+            raise HTTPException(status_code=404, detail="Account not found")
+
+    # ── 2. stop the sync loop, with no session open ─────────────────────────
+    try:
+        from email_ingestion.scheduler import remove_account_sync
+        await remove_account_sync(account_id)
+    except Exception as exc:
+        _log.warning("email.disconnect.stop_sync_failed",
+                     account_id=account_id, error=type(exc).__name__)
+
+    # ── 3. the delete and the default re-election ───────────────────────────
+    async with _tenant_session() as db:
         result = await db.execute(
             text(
                 """DELETE FROM email_accounts
                    WHERE id = :id AND user_id = :user_id
-                   RETURNING is_default"""
+                   RETURNING is_default, provider, credentials_encrypted,
+                             webhook_subscription_id"""
             ),
             {"id": account_id, "user_id": owner},
         )
@@ -397,12 +447,42 @@ async def delete_account(
                 {"uid": owner},
             )
 
-        # Stop background sync for this account
-        try:
-            from email_ingestion.scheduler import remove_account_sync
-            await remove_account_sync(account_id)
-        except Exception:
-            pass
+    # ── 4. the Graph subscription, best effort, with no session open ────────
+    await _drop_graph_subscription(account_id, deleted)
+
+
+async def _drop_graph_subscription(account_id: str, row: Any) -> None:
+    """Remove the Graph push subscription of a deleted mailbox, best effort.
+
+    Only a ``microsoft`` row with a ``webhook_subscription_id`` gets a call.
+    The provider comes from ``_instantiate_provider``, the gateway adapter over
+    ``build_provider``, as ``_ensure_subscription`` builds it. The whole call
+    has a bound of ``SUBSCRIPTION_DELETE_TIMEOUT_S``. An error or a timeout
+    logs ``email.disconnect.subscription_delete_failed`` and returns, so the
+    route still answers 204. The log holds the error class and an HTTP status,
+    never a token or an error text. A refreshed token needs no write, because
+    the row is gone.
+    """
+    sub_id = row.webhook_subscription_id
+    if row.provider != "microsoft" or not sub_id:
+        return
+    try:
+        async with asyncio.timeout(SUBSCRIPTION_DELETE_TIMEOUT_S):
+            from acb_llm.key_store import get_key_store
+            creds = json.loads(get_key_store().decrypt(row.credentials_encrypted))
+            provider = _instantiate_provider(row.provider, creds)
+            await provider.delete_subscription(str(sub_id))
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        _log.warning(
+            "email.disconnect.subscription_delete_failed",
+            account_id=account_id,
+            error=type(exc).__name__,
+            status=getattr(response, "status_code", None),
+        )
+        return
+    _log.info("email.disconnect.subscription_delete_sent",
+              account_id=account_id, sub=str(sub_id)[:12])
 
 
 @router.patch("/accounts/{account_id}", response_model=EmailAccountModel)

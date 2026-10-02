@@ -102,6 +102,11 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
   the session or the verified OAuth state, never from request input.
+- ⚠️ **Call `remove_account_sync` with no session open (WS-17 EM-T4f).** It
+  waits for the loop task. A caller that holds a lock in an open block can
+  make the task wait on that lock, and Postgres cannot see that cycle. A
+  disconnect reads the row first, then stops the loop, then deletes in a new
+  block. R7: `tests/unit/test_email_disconnect_order.py`.
 - `get_scheduler_status()` returns state for health checks
 
 ## Dependencies
