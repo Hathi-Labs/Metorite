@@ -905,9 +905,24 @@ async def _backfill_and_clean_job(
             ), {"aid": account_id})).fetchone()
             count_before = int(getattr(row, "n", 0) or 0)
 
-        from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
-        await _sync_account(account_id, deep=True,
-                            since=since or import_window.ceiling())
+        from email_ingestion.scheduler import (  # noqa: PLC0415
+            _sync_account,
+            download_failure,
+        )
+        # Waits for a sync of this mailbox that runs now, with no session
+        # open, then runs (EM-T4f part 2). A wait that reaches its bound, or
+        # a failed download, ends the job as an error (fix round 2). Before,
+        # the job said "done" with 0 fetched.
+        res = await _sync_account(account_id, deep=True,
+                                  since=since or import_window.ceiling())
+        failure = download_failure(res)
+        if failure:
+            _SWEEP_JOBS.finish(
+                account_id, token, owner=owner,
+                status="error", phase="error", error=failure)
+            _log.warning("email.cleanup_backfill_failed",
+                         account_id=account_id, error=failure)
+            return
 
         async with _tenant_session() as db:
             after = (await db.execute(text(

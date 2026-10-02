@@ -51,7 +51,9 @@ def test_resync_routes_through_the_shared_helper() -> None:
 # ── the two historical defects, pinned on the single core ───────────────────
 
 def _core_src() -> str:
-    return inspect.getsource(sched._sync_account)
+    # EM-T4f part 2: ``_sync_account`` is now the per-mailbox lock, and the
+    # cycle it runs is ``_sync_cycle``.
+    return inspect.getsource(sched._sync_cycle)
 
 
 def test_rotated_creds_are_persisted_immediately_after_auth() -> None:

@@ -139,7 +139,33 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
   the session or the verified OAuth state, never from request input.
-- `get_scheduler_status()` returns state for health checks
+- ⚠️ **Call `remove_account_sync` with no session open (WS-17 EM-T4f).** It
+  waits for the loop task. A caller with an open block holds its locks for as
+  long as the task runs. A disconnect reads the row first, then stops the
+  loop, then deletes in a new block. R7:
+  `tests/unit/test_email_disconnect_order.py`.
+- ⚠️ **One sync at a time for each mailbox (WS-17 EM-T4f part 2).**
+  `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
+  `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
+  of one mailbox upsert the same keys and one waits on the uncommitted rows
+  of the other. The lock key is the id in lower case. The loop, the webhook,
+  the manual sync and the resync pass `if_busy="skip"` and get
+  `SYNC_SKIPPED_BUSY`. A skip marks the mailbox, and the holder then runs ONE
+  more shallow cycle under the lock (`_rerun_once`). The deep downloads wait
+  up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and `download_failure` turns a
+  busy or failed result into a job error. A resync passes `purge` and
+  `reset_cursor`, and phase (a) applies them under the lock. A new call must
+  pass a constant mode. The lock lives in this process, which is enough while
+  the gateway is one uvicorn process. Call it with no session open. R7:
+  `tests/unit/test_email_sync_one_at_a_time.py`.
+- The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
+  from `_scheduler_tasks` only while the entry is its own task, and it takes
+  no `_scheduler_lock` for that.
+- `OutlookProvider.delete_subscription` returns the HTTP status of Graph and
+  raises on a transport error. The caller decides what a status means.
+- `get_scheduler_status()` returns state for health checks. A disconnect
+  reads it to know whether a loop ran, so a failed disconnect starts only a
+  loop that ran before.
 
 ## Dependencies
 

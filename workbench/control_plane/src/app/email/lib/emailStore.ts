@@ -10,6 +10,7 @@ import {
 } from "./searchFilters";
 import { QUICK_ACTIONS, MOCK_ACCOUNTS, MOCK_EMAILS, MOCK_FOLDERS } from "./mockData";
 import { splitQuotedText } from "./quoting";
+import { disconnectFailureText, type DisconnectOutcome } from "./connect";
 
 /**
  * Dev-only demo mode. With NEXT_PUBLIC_EMAIL_DEMO=1 (set in .env.local) the
@@ -423,11 +424,12 @@ interface EmailState {
   clearTestResults: () => void;
   triggerSync: (accountId: string) => Promise<void>;
   /**
-   * Disconnect a mailbox: `DELETE /email/accounts/{id}`. True on success. On
-   * a refusal it sets `error` and re-reads the accounts, so the list on
-   * screen is the server's.
+   * Disconnect a mailbox: `DELETE /email/accounts/{id}`. `{ ok: true }` on
+   * success. On a refusal it sets `error`, re-reads the accounts so the list on
+   * screen is the server's, and gives back the text of the refusal. A 409 says
+   * that a sync is still writing mail (EM-T4f).
    */
-  deleteAccount: (id: string) => Promise<boolean>;
+  deleteAccount: (id: string) => Promise<DisconnectOutcome>;
   /** Make an account the user's default mailbox (the inbox the UI opens on). */
   setDefaultAccount: (id: string) => Promise<void>;
   clearError: () => void;
@@ -1469,8 +1471,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       }, 6000);
       _postSyncTimers[accountId] = [t1, t2];
     } catch (err: any) {
+      // 409: another sync of this mailbox runs now (EM-T4f). The mailbox is
+      // not in error, and the detail of the gateway says when new mail appears.
+      const busy = err?.status === 409;
       set({
-        syncStatus: { ...get().syncStatus, [accountId]: "error" },
+        syncStatus: { ...get().syncStatus, [accountId]: busy ? "idle" : "error" },
         error: err.message || "Sync failed",
       });
     }
@@ -1502,13 +1507,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           set({ emails: [], emailsTotal: 0, folders: [], selectedEmailId: null });
         }
       }
-      return true;
-    } catch (err: any) {
-      set({ error: err.message || "Failed to disconnect the mailbox" });
+      return { ok: true };
+    } catch (err: unknown) {
+      const detail = disconnectFailureText(err);
+      set({ error: detail });
       // A refusal is about the row that was clicked. Re-read, so a stale row
       // does not read as a success or as a failure that did not happen.
       void get().refreshAccounts();
-      return false;
+      return { ok: false, detail };
     }
   },
 

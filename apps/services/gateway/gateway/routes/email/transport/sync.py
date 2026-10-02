@@ -27,6 +27,20 @@ from gateway.routes.email.transport.signing import sign_webhook_org, verify_webh
 from pydantic import BaseModel
 from sqlalchemy import text
 
+#: The 409 detail of a manual sync or a resync while another sync of the same
+#: mailbox runs (EM-T4f fix round 2). A member reads it. It is true because
+#: the refused call marks the mailbox for one rerun after the running sync.
+SYNC_BUSY_DETAIL = (
+    "A sync is already running for this mailbox. "
+    "New mail appears when it finishes."
+)
+#: The same refusal for a full sync or a resync. The rerun is shallow, so the
+#: member must start the full sync again.
+FULL_SYNC_BUSY_DETAIL = (
+    "A sync is already running for this mailbox. "
+    "Start the full sync again when it finishes."
+)
+
 
 async def _build_label_rule_map(
     db: Any, account_id: str,
@@ -226,6 +240,7 @@ async def trigger_sync(
 
 async def _run_manual_sync(
     account_id: str, background: BackgroundTasks, *, full: bool,
+    purge: bool = False, reset_cursor: bool = False,
 ) -> dict[str, Any]:
     """Run one manual sync through the shared core and shape the API response.
 
@@ -236,10 +251,23 @@ async def _run_manual_sync(
     like the scheduler and webhook paths (H1). A core-reported failure (auth,
     provider, DB) surfaces as the same 500 the old inline body raised; the core
     has already stamped sync_status='error' and the sync-log row itself.
+
+    EM-T4f fix round 2. A manual sync never waits for another sync of the
+    mailbox: the Control Plane proxy gives this POST 30 seconds, and each
+    waiter would run one more full cycle later. ``if_busy="skip"`` answers at
+    once and marks the mailbox for one rerun, so the 409 is true when it says
+    that new mail appears after the running sync. ``purge`` and
+    ``reset_cursor`` (the resync) run inside the cycle, under the lock.
     """
     from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
 
-    res = await _sync_account(account_id, deep=True if full else None)
+    res = await _sync_account(
+        account_id, deep=True if full else None, if_busy="skip",
+        purge=purge, reset_cursor=reset_cursor)
+    if isinstance(res, dict) and res.get("skipped") == "busy":
+        raise HTTPException(
+            status_code=409,
+            detail=FULL_SYNC_BUSY_DETAIL if full else SYNC_BUSY_DETAIL)
     if not isinstance(res, dict) or res.get("error"):
         err = res.get("error") if isinstance(res, dict) else "unknown"
         raise HTTPException(status_code=500, detail=f"Sync failed: {err}")
@@ -278,16 +306,11 @@ async def resync_account(
         ), {"id": account_id, "uid": user.email or "anonymous"})).fetchone()
         if not own:
             raise HTTPException(status_code=404, detail="Account not found")
-        if purge:
-            await db.execute(text(
-                "DELETE FROM email_messages WHERE account_id = :id"
-            ), {"id": account_id})
-        # Reset the cursor so the provider does a full sweep (defensive — sync is
-        # full-sweep regardless, but this also clears any stale delta token).
-        await db.execute(text(
-            "UPDATE email_accounts SET last_history_id = NULL, updated_at = now() "
-            "WHERE id = :id"
-        ), {"id": account_id})
+    # The purge and the cursor reset run inside the sync cycle, under the
+    # mailbox lock (EM-T4f fix round 2). Here, before the lock, a running
+    # tick could write the old cursor back, and the resync then fetched
+    # nothing new. When a sync runs, the resync answers 409 and purges
+    # nothing. The cursor reset makes the provider do a full sweep.
     # Re-fetch through the shared core, forcing the DEEP (all-folder) backfill
     # to the import floor — ``full=True`` overrides the ``initial_sync_done``
     # gate so an already-initialised account actually pulls its older mail
@@ -297,7 +320,8 @@ async def resync_account(
     # ``background`` slot and ``user`` stayed an unresolved Depends — so every
     # direct resync crashed with a 500 before reaching the provider. Calling
     # the shared helper instead of a route handler is the structural fix.)
-    result = await _run_manual_sync(account_id, background, full=True)
+    result = await _run_manual_sync(
+        account_id, background, full=True, purge=purge, reset_cursor=True)
     return {"resynced": True, "purged": purge,
             "messages_synced": result.get("messages_synced")}
 
@@ -318,7 +342,9 @@ async def _webhook_sync(account_id: str, organization_id: str) -> None:
     try:
         from email_ingestion.scheduler import _sync_account
         from gateway.routes.email.scheduler_hooks import process_new_mail
-        res = await _sync_account(account_id)
+        # A sync that runs now fetches the new mail, or the next tick of the
+        # loop does. So the webhook skips, and never queues (EM-T4f part 2).
+        res = await _sync_account(account_id, if_busy="skip")
         if isinstance(res, dict) and res.get("synced", 0):
             await process_new_mail(account_id)
     except Exception as exc:
@@ -501,6 +527,12 @@ async def _renew_or_replace(
                 sub_id,
             )
         except Exception:
-            await provider.delete_subscription(sub_id)
+            # Best effort, as before EM-T4f: the delete now raises on a
+            # transport error, and a failed delete must not stop the create.
+            try:
+                await provider.delete_subscription(sub_id)
+            except Exception as exc:
+                _log.warning("email.subscription_delete_failed",
+                             sub=str(sub_id)[:12], error=type(exc).__name__)
     data = await provider.create_subscription(notify_url, client_state)
     return data, data.get("id")
