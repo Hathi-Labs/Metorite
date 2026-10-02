@@ -565,7 +565,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
-| **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
+| **EM-T5** | 🟢 build · 🔴 real mail | 🔨 **BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -951,9 +951,12 @@ connect choices (`/email?connect=1`). The email router's real `exempt=[...]` lis
 
 #### 10.4.4 EM-T5 in full
 
-**Status.** Spec only, audited 2026-10-02 against `0e2cfa8a`. EM-T5 is CP-13e
+**Status.** 🔨 BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).
+The audit ran on 2026-10-02 against `0e2cfa8a`. EM-T5 is CP-13e
 (`customer_console.md` §6A.14). That section keeps the four adoption rules.
-This section is the build contract.
+This section is the build contract. Every mode stays `off` on every box, and
+`DECIDE_ENABLED` stays off. The registry is `gateway/decide_features.py`, and
+the fence is `tests/unit/test_email_decide_shadow.py`.
 
 **Gate.** 🟢 AGENT-SAFE: the code, in modes `off` and `shadow`, against a fake
 `decide`. 🔴 OWNER-GATE (`work_plan.md` §6.1 WS-31 (i), H-166): `DECIDE_ENABLED`

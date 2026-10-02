@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from gateway import decide_features
 from gateway.routes.email.core import _llm_json, _log
 from sqlalchemy import text
 
@@ -42,6 +43,25 @@ def _is_auto_learnable_rule(rule: dict[str, Any]) -> bool:
     name = (rule.get("name") or "").strip().lower()
     system = (rule.get("system_type") or "").strip().lower().replace("_", " ")
     return name in _AUTO_LEARNABLE_RULES or system in _AUTO_LEARNABLE_RULES
+
+
+def _sender_pin_question(user_content: str) -> tuple[str, dict[str, Any]]:
+    """The ``decide`` request for the sender pin (EM-T5, shadow only)."""
+    from acb_llm import BooleanQuestion  # shadow mode only
+
+    return user_content, {"always": BooleanQuestion(
+        instructions=(
+            "Will EVERY future email from this sender serve the same purpose "
+            "as the proposed rule? A person, a generic-domain address, or a "
+            "sender of mixed content is a no."
+        ),
+        criteria={
+            "true": "A list or no-reply address that only ever sends one "
+                    "kind of message.",
+            "false": "A person, or a sender that might send something that "
+                     "needs a reply.",
+        },
+    )}
 
 
 async def _ai_confirms_sender_pattern(
@@ -78,41 +98,53 @@ async def _ai_confirms_sender_pattern(
         f"- {(r.subject or '(no subject)')[:120]}"
         f" — {(r.snippet or '')[:160]}" for r in rows)
     rule_name = rule.get("name") or ""
-    try:
-        data, _content, _used = await _llm_json(
-            "tier-balanced",
-            [{"role": "system", "content": (
-                "You decide whether a sender's mail should ALWAYS be filed "
-                "under one rule, without the classifier ever looking at it "
-                "again. Say yes ONLY if you are 90%+ confident that EVERY "
-                "future email from this address will serve the same purpose.\n"
-                "Yes: list and no-reply addresses whose whole reason to exist "
-                "is one kind of message — newsletter@, marketing@, an "
-                "outreach account that only ever pitches.\n"
-                "No: a person. No: an address at a generic domain "
-                "(gmail.com, outlook.com, yahoo.com) unless it is plainly an "
-                "automated sender. No: anyone who might also send something "
-                "that needs a reply. No: mixed content across the samples.\n"
-                "Be conservative. Any doubt at all is a no.\n"
-                'Respond with ONLY {"always": true|false, "why": "<short>"}.'
-            )},
-             {"role": "user", "content": (
-                 f"Sender: {sender}\n"
-                 f'Proposed rule: "{rule_name}" — '
-                 f'{rule.get("instructions") or "(no description)"}\n\n'
-                 f"Their {len(rows)} most recent messages:\n{samples}"
-             )}],
-            max_tokens=200,
-        )
-    except Exception as exc:  # never fail a rule run on this
-        _log.warning("email.auto_learn_verdict_failed",
-                     account_id=account_id, error=str(exc)[:160])
-        return False
-    ok = bool(isinstance(data, dict) and data.get("always") is True)
-    _log.info("email.auto_learn_verdict", account_id=account_id,
-              sender=sender, rule=rule_name, confirmed=ok,
-              why=str((data or {}).get("why", ""))[:120])
-    return ok
+    # The same text for the old call and for `decide` (EM-T5 item 10).
+    user_content = (
+        f"Sender: {sender}\n"
+        f'Proposed rule: "{rule_name}" — '
+        f'{rule.get("instructions") or "(no description)"}\n\n'
+        f"Their {len(rows)} most recent messages:\n{samples}"
+    )
+
+    async def _old() -> bool:
+        try:
+            data, _content, _used = await _llm_json(
+                "tier-balanced",
+                [{"role": "system", "content": (
+                    "You decide whether a sender's mail should ALWAYS be filed "
+                    "under one rule, without the classifier ever looking at it "
+                    "again. Say yes ONLY if you are 90%+ confident that EVERY "
+                    "future email from this address will serve the same purpose.\n"
+                    "Yes: list and no-reply addresses whose whole reason to exist "
+                    "is one kind of message — newsletter@, marketing@, an "
+                    "outreach account that only ever pitches.\n"
+                    "No: a person. No: an address at a generic domain "
+                    "(gmail.com, outlook.com, yahoo.com) unless it is plainly an "
+                    "automated sender. No: anyone who might also send something "
+                    "that needs a reply. No: mixed content across the samples.\n"
+                    "Be conservative. Any doubt at all is a no.\n"
+                    'Respond with ONLY {"always": true|false, "why": "<short>"}.'
+                )},
+                 {"role": "user", "content": user_content}],
+                max_tokens=200,
+            )
+        except Exception as exc:  # never fail a rule run on this
+            _log.warning("email.auto_learn_verdict_failed",
+                         account_id=account_id, error=str(exc)[:160])
+            return False
+        ok = bool(isinstance(data, dict) and data.get("always") is True)
+        _log.info("email.auto_learn_verdict", account_id=account_id,
+                  sender=sender, rule=rule_name, confirmed=ok,
+                  why=str((data or {}).get("why", ""))[:120])
+        return ok
+
+    return await decide_features.shadow(
+        "email.sender_pin", _old, account_id=account_id,
+        build=lambda: _sender_pin_question(user_content),
+        # The prompt asks for 90% sure, so `agree` is read at 0.9.
+        compare=decide_features.compare_boolean(
+            lambda r: r, qid="always", threshold=0.9),
+    )
 
 
 async def _sender_is_a_correspondent(
