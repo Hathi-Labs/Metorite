@@ -1418,6 +1418,8 @@ async def _process_past_emails_job(
     # a failed/partial backfill still applies over whatever IS present locally.
     try:
         from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
+        # Waits for a sync of this mailbox that runs now, with no session
+        # open, then runs (EM-T4f part 2).
         await _sync_account(account_id, deep=True, since=start)
     except Exception as e:  # noqa: BLE001 — never abort the apply on a backfill error
         _log.warning("email.process_past_sync_failed",

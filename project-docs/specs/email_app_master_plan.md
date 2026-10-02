@@ -13,7 +13,7 @@
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
-> 🟡 **EM-T4f part 1 is BUILT, not merged (2026-10-02).** A disconnect bounds its wait at 5 seconds and answers 409 when a sync holds the row. It also removes the Graph subscription. Part 2 (one sync for each mailbox) is not built, so the cause of the wait of 2 minutes stays (§10.4.6).
+> ✅ **EM-T4f parts 1 and 2 are BUILT, not merged (2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -1988,7 +1988,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
 
-**Status (2026-10-02).** 🟡 Part 1 is BUILT on branch `email-t4f`, not merged. Part 2 (one sync for each mailbox) is not built, and it waits for EM-T4c to merge. Part 1 does not fix the cause of the wait of 2 minutes. It bounds the wait of the `DELETE` at 5 seconds and answers 409, so the member tries again.
+**Status (2026-10-02).** ✅ Part 1 and part 2 are BUILT on branch `email-t4f`, not merged. The branch has EM-T4c (#575) merged in. Part 2 fixes the cause of the wait of 2 minutes: one sync runs at a time for each mailbox. Part 1 keeps its bound of 5 seconds on the `DELETE` for a sync that holds the row.
 
 This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
 
@@ -2029,18 +2029,28 @@ The `statement_timeout` in production is 2 minutes.
 8. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
 9. Both disconnect surfaces keep the mailbox on a refusal, and they show the reason of the gateway. The surfaces are the `DisconnectDialog` of the Email app and Remove on the Email tab of Integrations.
 
-**Part 2 scope (not built, after EM-T4c merges).**
+**Part 2 scope (built).**
 
-1. A per-mailbox `asyncio.Lock`, so one `_sync_account` runs for each mailbox. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`).
-2. The loop stops when its row is gone.
+1. `_sync_account` takes an `asyncio.Lock` for each mailbox, and then it runs `_sync_cycle`, which holds the old body. Nothing else calls `_sync_cycle`. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`), so a lock in the process is enough.
+2. Each caller has a busy mode. The loop and the webhook pass `if_busy="skip"`. They get `{"skipped": "busy", "synced": 0}` at once, and the log says `sync.skipped_busy`. A skip is a success with nothing synced, so the loop adds no backoff.
+3. The manual sync, the resync and the deep downloads of cleanup and Process past use the default, `"wait"`. They wait up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and then they run.
+4. After the bound, a waiter logs `sync.busy_wait_timeout` and gets the busy result. The manual sync and the resync then answer 409: "Another sync of this mailbox is still running. Try again in a moment."
+5. Why 600 seconds: in production, the first sync of 6410 messages fell inside a window of about 4 minutes. Ten minutes is more than twice that. A longer wait means the holder is stuck.
+6. No caller holds a session while it waits. The wrapper opens none, the cycle opens its own blocks after the lock, and no gateway caller calls `_sync_account` inside a block.
+7. The wrapper releases the lock on each exit of the cycle, a cancel included. A cancelled waiter leaves with no lock.
+8. A count of holders and waiters goes with each lock. At zero, both entries go, so the dicts hold only the mailboxes that sync now.
+9. The cycle returns `{"error": "Account not found", "gone": True}` when the row is gone. The loop then stops and logs `sync.loop_row_gone`. It drops its entry from `_scheduler_tasks` only while the entry is its own task.
 
-Part 2 changes `scheduler.py`, and EM-T4c changes that file now.
+**Part 2 trade-offs (recorded).**
+
+- A webhook that arrives during a sync skips. The sync that runs fetches the new mail, or the next tick of the loop does, so the delay is one interval at most.
+- The lock lives in one process. A second gateway process needs a database lock in its place.
 
 **Why the Graph call comes after the delete.** The loop renews the subscription, and `_renew_or_replace` can replace it with a new id. A read before the loop stops can hold an old id. The `RETURNING` of phase 2 reads the id after the stop. A token that `authenticate()` refreshes needs no write, because the row is gone.
 
 **Non-goals.**
 
-- No change to `update_account` or to `scheduler.py` in part 1.
+- No change to `update_account`.
 - No migration.
 
 **Follow-ups (recorded, not built).**
@@ -2060,19 +2070,33 @@ Part 2 changes `scheduler.py`, and EM-T4c changes that file now.
 - g. Both disconnect surfaces keep the mailbox on a refusal and show the detail of the gateway.
 - R8: the blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404. When a second connection holds a KEY SHARE lock on the row, the route answers 409 after about 5 seconds. The row stays, and a new loop runs with the organization of the row.
 
-**Fence (R7).** `tests/unit/test_email_disconnect_order.py`, `workbench/control_plane/src/app/email/lib/connect.test.ts` and `workbench/control_plane/src/app/integrations/emailRemove.test.ts`.
+**Done when (part 2).**
 
-**Files.** `transport/accounts.py`, `transport/sync.py`, `providers/outlook.py`, and in the Control Plane `email/components/DisconnectDialog.tsx`, `email/lib/connect.ts`, `email/lib/emailStore.ts` and `integrations/page.tsx`. Plus the three tests.
+- h. While a sync of a mailbox runs, a skip call returns the busy result and runs no cycle. A waiting call runs after the first one ends. A second mailbox syncs at the same time.
+- i. The wrapper releases the lock after an exception, after a cancel of the holder and after a cancel of a waiter. A waiter gives up at the bound. After 25 syncs, the dicts are empty.
+- j. The loop passes `if_busy="skip"`, and a skip adds no backoff. The loop stops when its row is gone, and it keeps the entry of a newer loop.
+- k. A manual sync that waited its bound answers 409.
+- l. Structure: only `_sync_account` calls `_sync_cycle`. The wrapper opens no session. Each caller has a decided busy mode, and no gateway caller waits inside a block.
+- R8: sync A parks inside phase (c) with an uncommitted row. Sync B of the same mailbox does not reach the provider until A ends, and a skip call returns busy. Both then finish with 3 rows and no duplicate.
+
+**Fence (R7).** `tests/unit/test_email_disconnect_order.py`, `tests/unit/test_email_sync_one_at_a_time.py`, `workbench/control_plane/src/app/email/lib/connect.test.ts` and `workbench/control_plane/src/app/integrations/emailRemove.test.ts`.
+
+**Files.** `transport/accounts.py`, `transport/sync.py`, `providers/outlook.py`, `scheduler.py`, `automation/cleanup.py` and `automation/runner.py`. In the Control Plane: `email/components/DisconnectDialog.tsx`, `email/lib/connect.ts`, `email/lib/emailStore.ts` and `integrations/page.tsx`. Plus the four tests, and the updated `test_email_webhook.py` and `test_email_manual_sync_parity.py`.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_email_disconnect_order.py tests/unit/test_email_request_jobs_tenancy.py \
-  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_webhook.py -q -rs
-uv run ruff check apps/services/gateway/gateway/routes/email/transport/accounts.py tests/unit/test_email_disconnect_order.py
+uv run pytest tests/unit/test_email_disconnect_order.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_request_jobs_tenancy.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_email_webhook.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_process_past_progress.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/accounts.py \
+  tests/unit/test_email_disconnect_order.py tests/unit/test_email_sync_one_at_a_time.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/integrations
 ```
+
+⚠️ The `promoted` fixture always takes the same database name, `<ladder database>_h3rls`. Another worktree that runs an R8 suite on the same scratch server drops it. To run alone, point `TENANT_LADDER_DATABASE_URL` at a database name of your own on that server.
 
 **Recorded risks.**
 

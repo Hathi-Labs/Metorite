@@ -27,6 +27,12 @@ from gateway.routes.email.transport.signing import sign_webhook_org, verify_webh
 from pydantic import BaseModel
 from sqlalchemy import text
 
+#: The 409 detail of a manual sync that waited its bound for another sync of
+#: the same mailbox (EM-T4f part 2). A member reads it.
+SYNC_BUSY_DETAIL = (
+    "Another sync of this mailbox is still running. Try again in a moment."
+)
+
 
 async def _build_label_rule_map(
     db: Any, account_id: str,
@@ -238,7 +244,12 @@ async def _run_manual_sync(
     """
     from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
 
+    # The default ``if_busy="wait"``: a sync that runs now finishes first, and
+    # then this one runs (EM-T4f part 2). After the bound of the wait, the
+    # member gets a 409 and tries again.
     res = await _sync_account(account_id, deep=True if full else None)
+    if isinstance(res, dict) and res.get("skipped") == "busy":
+        raise HTTPException(status_code=409, detail=SYNC_BUSY_DETAIL)
     if not isinstance(res, dict) or res.get("error"):
         err = res.get("error") if isinstance(res, dict) else "unknown"
         raise HTTPException(status_code=500, detail=f"Sync failed: {err}")
@@ -314,7 +325,9 @@ async def _webhook_sync(account_id: str, organization_id: str) -> None:
     try:
         from email_ingestion.scheduler import _sync_account
         from gateway.routes.email.scheduler_hooks import process_new_mail
-        res = await _sync_account(account_id)
+        # A sync that runs now fetches the new mail, or the next tick of the
+        # loop does. So the webhook skips, and never queues (EM-T4f part 2).
+        res = await _sync_account(account_id, if_busy="skip")
         if isinstance(res, dict) and res.get("synced", 0):
             await process_new_mail(account_id)
     except Exception as exc:

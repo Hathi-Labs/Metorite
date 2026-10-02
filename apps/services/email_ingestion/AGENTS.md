@@ -132,11 +132,18 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   long as the task runs. A disconnect reads the row first, then stops the
   loop, then deletes in a new block. R7:
   `tests/unit/test_email_disconnect_order.py`.
-- ⚠️ **Nothing makes `_sync_account` run once at a time for each mailbox.**
-  `_scheduler_tasks` tracks the loop only. The manual sync, the resync, the
-  webhook sync and two deep backfills call `_sync_account` directly. Two
-  syncs of one mailbox upsert the same keys, and one waits for the other.
-  EM-T4f part 2 owns the fix (`email_app_master_plan.md` §10.4.6).
+- ⚠️ **One sync at a time for each mailbox (WS-17 EM-T4f part 2).**
+  `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
+  `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
+  of one mailbox upsert the same keys and one waits on the uncommitted rows
+  of the other. The loop and the webhook pass `if_busy="skip"` and get
+  `SYNC_SKIPPED_BUSY`. Every other caller waits up to `SYNC_LOCK_WAIT_SECS`
+  (600 seconds). A new caller must choose its mode. The lock lives in this
+  process, which is enough while the gateway is one uvicorn process.
+  Call it with no session open. R7: `tests/unit/test_email_sync_one_at_a_time.py`.
+- The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
+  from `_scheduler_tasks` only while the entry is its own task, and it takes
+  no `_scheduler_lock` for that.
 - `OutlookProvider.delete_subscription` returns the HTTP status of Graph and
   raises on a transport error. The caller decides what a status means.
 - `get_scheduler_status()` returns state for health checks. A disconnect
