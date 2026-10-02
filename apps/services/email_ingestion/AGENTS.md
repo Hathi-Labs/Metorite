@@ -169,11 +169,16 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
   `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
   of one mailbox upsert the same keys and one waits on the uncommitted rows
-  of the other. The loop and the webhook pass `if_busy="skip"` and get
-  `SYNC_SKIPPED_BUSY`. Every other caller waits up to `SYNC_LOCK_WAIT_SECS`
-  (600 seconds). A new caller must choose its mode. The lock lives in this
-  process, which is enough while the gateway is one uvicorn process.
-  Call it with no session open. R7: `tests/unit/test_email_sync_one_at_a_time.py`.
+  of the other. The lock key is the id in lower case. The loop, the webhook,
+  the manual sync and the resync pass `if_busy="skip"` and get
+  `SYNC_SKIPPED_BUSY`. A skip marks the mailbox, and the holder then runs ONE
+  more shallow cycle under the lock (`_rerun_once`). The deep downloads wait
+  up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and `download_failure` turns a
+  busy or failed result into a job error. A resync passes `purge` and
+  `reset_cursor`, and phase (a) applies them under the lock. A new call must
+  pass a constant mode. The lock lives in this process, which is enough while
+  the gateway is one uvicorn process. Call it with no session open. R7:
+  `tests/unit/test_email_sync_one_at_a_time.py`.
 - The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
   from `_scheduler_tasks` only while the entry is its own task, and it takes
   no `_scheduler_lock` for that.

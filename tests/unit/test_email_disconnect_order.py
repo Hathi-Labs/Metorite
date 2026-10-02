@@ -8,7 +8,7 @@ posting for the deleted mailbox. Two syncs of one mailbox ran at once, and the
 old route waited for the loop task inside the block of its ``DELETE``. Part 1
 (this file) bounds the wait of the ``DELETE``, starts the loop again when the
 delete fails, and reads the Graph status. Part 2 (one sync for each mailbox)
-is not built.
+has its fence in ``test_email_sync_one_at_a_time.py``.
 
 R7 fence named here: ``email-disconnect-order``.
 
@@ -28,7 +28,8 @@ fake records that count when it runs.
 * e. The ``DELETE`` runs under ``SET LOCAL lock_timeout``. A lock timeout
   answers 409, and any failure of the delete block starts the loop again with
   the organization of the row. With the real scheduler, a failed ``DELETE``
-  leaves a running loop.
+  leaves a running loop. A cancel, and a second cancel during the restart,
+  still let the restart finish (fix round 2).
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``
@@ -136,10 +137,14 @@ class _FakeDB:
     """Answers the statements of ``delete_account`` from a dict."""
 
     def __init__(self, ledger: _Ledger, rows: dict[str, dict[str, Any]],
-                 delete_fails: BaseException | None) -> None:
+                 delete_fails: BaseException | None,
+                 delete_gate: asyncio.Event | None = None) -> None:
         self.ledger = ledger
         self.rows = rows
         self.delete_fails = delete_fails
+        # When set, the DELETE waits on this event, so a test can cancel the
+        # route while the DELETE runs.
+        self.delete_gate = delete_gate
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = " ".join(str(stmt).split())
@@ -154,6 +159,8 @@ class _FakeDB:
             return _Result(None)
         if sql.startswith("DELETE FROM email_accounts"):
             self.ledger.events.append(("delete", self.ledger.open))
+            if self.delete_gate is not None:
+                await self.delete_gate.wait()
             if self.delete_fails is not None:
                 raise self.delete_fails
             row = self.rows.get(p["id"])
@@ -233,9 +240,10 @@ def wired(monkeypatch):
                stop_raises: bool = False, decrypt_raises: bool = False,
                delete_fails: BaseException | None = None,
                loops: tuple[str, ...] = ("acc-1",),
-               fake_scheduler: bool = True):
+               fake_scheduler: bool = True,
+               delete_gate: asyncio.Event | None = None):
         ledger = _Ledger()
-        db = _FakeDB(ledger, rows, delete_fails)
+        db = _FakeDB(ledger, rows, delete_fails, delete_gate)
         monkeypatch.setattr(accounts, "_tenant_session", _watched_session(ledger, db))
         monkeypatch.setattr(accounts, "_log", _RecordingLog(ledger))
 
@@ -579,6 +587,40 @@ class TestAFailedDeleteStartsTheLoopAgain:
             if not old.done():
                 old.cancel()
 
+    async def test_a_cancel_and_a_second_cancel_still_restart_the_loop(
+        self, wired, monkeypatch,
+    ):
+        """Fix round 2 (F-4). A cancel during the DELETE restarts the loop. A
+        cancel scope can cancel each later await again, so the test cancels
+        the route a second time while the restart runs. The restart must
+        still finish."""
+        gate = asyncio.Event()
+        rows = {"acc-1": _row()}
+        ledger = wired(rows, delete_gate=gate)
+        restart_began = asyncio.Event()
+        restarted: list[str | None] = []
+
+        async def _slow_refresh(account_id: str, organization_id: str | None = None):
+            restart_began.set()
+            await asyncio.sleep(0.2)
+            restarted.append(organization_id)
+
+        monkeypatch.setattr(sched, "refresh_account_sync", _slow_refresh)
+        route = asyncio.create_task(accounts.delete_account("acc-1", user=_user()))
+        while "delete" not in ledger.kinds():
+            await asyncio.sleep(0)
+        route.cancel()
+        await asyncio.wait_for(restart_began.wait(), timeout=5)
+        route.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await route
+        await asyncio.wait_for(
+            asyncio.gather(*accounts._RESTARTS), timeout=5)
+        assert restarted == [ROW_ORG], (
+            "the second cancel stopped the restart, so the mailbox has no loop")
+        assert "acc-1" in rows, "the cancelled DELETE removed the mailbox"
+        assert not accounts._RESTARTS, "a finished restart kept its task"
+
 
 # ── R8: the real SQL under FORCE RLS ─────────────────────────────────────────
 
@@ -755,25 +797,36 @@ class TestTheDisconnectUnderForceRLS:
                 "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid) "
                 "FOR KEY SHARE"), {"a": acc})
             async with tenant_engine_scope(app_dsn):
-                t0 = time.monotonic()
-                with pytest.raises(HTTPException) as err:
-                    await accounts.delete_account(acc, user=user)
-                waited = time.monotonic() - t0
-                await asyncio.sleep(0)
-                assert err.value.status_code == 409
-                assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
-                assert 3.0 < waited < 30.0, f"the DELETE waited {waited:.1f}s"
-                assert old.cancelled(), "step 2 did not stop the old loop"
-                new = sched._scheduler_tasks.get(acc)
-                assert new is not None and new is not old and not new.done(), (
-                    "the refused disconnect left the mailbox with no loop")
-                assert started and started[0][0] == acc
-                assert started[0][2] == str(p.org_b)
+                try:
+                    t0 = time.monotonic()
+                    with pytest.raises(HTTPException) as err:
+                        # Fix round 2 (F-2): a bound on the call, so a route
+                        # with no lock_timeout fails here in 20 seconds and
+                        # never hangs the suite.
+                        await asyncio.wait_for(
+                            accounts.delete_account(acc, user=user), timeout=20)
+                    waited = time.monotonic() - t0
+                    await asyncio.sleep(0)
+                    assert err.value.status_code == 409
+                    assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
+                    assert 3.0 < waited < 15.0, f"the DELETE waited {waited:.1f}s"
+                    assert old.cancelled(), "step 2 did not stop the old loop"
+                    new = sched._scheduler_tasks.get(acc)
+                    assert new is not None and new is not old and not new.done(), (
+                        "the refused disconnect left the mailbox with no loop")
+                    assert started and started[0][0] == acc
+                    assert started[0][2] == str(p.org_b)
+                finally:
+                    # Free the row before the scope closes its engine, so a
+                    # failed case cannot leave a DELETE blocked on it.
+                    if held.is_active:
+                        held.rollback()
             assert _admin_read(p.admin_engine,
                                "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
                                a=acc) != [], "the refused DELETE removed the row"
         finally:
-            held.rollback()
+            if held.is_active:
+                held.rollback()
             holder.close()
             release_tenant(token)
             await sched.remove_account_sync(acc)

@@ -466,6 +466,27 @@ describe("a refused disconnect shows the reason of the gateway (EM-T4f)", () => 
     expect(useEmailStore.getState().accounts.map((a) => a.id)).toEqual(["acc-2"]);
   });
 
+  it("a manual sync refused with 409 shows the detail and is not an error", async () => {
+    // EM-T4f fix round 2: the gateway answers 409 at once while a sync runs.
+    const SYNC_BUSY = "A sync is already running for this mailbox. New mail appears when it finishes.";
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: SYNC_BUSY }), { status: 409 })));
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ syncStatus: {}, error: null } as never);
+    await useEmailStore.getState().triggerSync("acc-1");
+    expect(useEmailStore.getState().error).toBe(SYNC_BUSY);
+    expect(useEmailStore.getState().syncStatus["acc-1"]).toBe("idle");
+  });
+
+  it("a manual sync that fails another way still marks the mailbox", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "Sync failed: boom" }), { status: 500 })));
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ syncStatus: {}, error: null } as never);
+    await useEmailStore.getState().triggerSync("acc-1");
+    expect(useEmailStore.getState().syncStatus["acc-1"]).toBe("error");
+  });
+
   it("the dialog shows the text of the outcome, not one fixed sentence", () => {
     const dialog = codeOnly(read("components/DisconnectDialog.tsx"));
     expect(dialog).toContain("onDisconnect: (id: string) => Promise<DisconnectOutcome>");

@@ -13,7 +13,7 @@
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** 🔨 **EM-T6b is BUILT, not merged** (branch `email-t6b`, no migration). The import runs newest first, in batches, with progress and resume.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
-> ✅ **EM-T4f parts 1 and 2 are BUILT, not merged (2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
+> ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -1990,7 +1990,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
 
-**Status (2026-10-02).** ✅ Part 1 and part 2 are BUILT on branch `email-t4f`, not merged. The branch has EM-T4c (#575) merged in. Part 2 fixes the cause of the wait of 2 minutes: one sync runs at a time for each mailbox. Part 1 keeps its bound of 5 seconds on the `DELETE` for a sync that holds the row.
+**Status (2026-10-02).** ✅ Part 1 and part 2 MERGED (#578), with fix round 2. Part 2 fixes the cause of the wait of 2 minutes: one sync runs at a time for each mailbox. Part 1 keeps its bound of 5 seconds on the `DELETE` for a sync that holds the row.
 
 This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
 
@@ -2025,27 +2025,30 @@ The `statement_timeout` in production is 2 minutes.
 2. With no block open, the route records whether a loop runs, and then it calls `remove_account_sync`.
 3. Phase 2 runs `SET LOCAL lock_timeout = '5s'`, the `DELETE` and the default re-election, in a new block. Its `RETURNING` gives the provider, the credentials and the subscription id.
 4. A lock timeout (SQLSTATE 55P03) answers 409: "A sync is still writing mail for this mailbox. Try again in a moment."
-5. On any failure of phase 2, the route starts the loop again with `refresh_account_sync` and the organization of the row. It does this only when a loop ran before step 2. So a paused mailbox, or a box with `EMAIL_SYNC_ENABLED` off, gets no loop.
+5. On any failure of phase 2, the route starts the loop again with `refresh_account_sync` and the organization of the row. It does this only when a loop ran before step 2. So a paused mailbox, or a box with `EMAIL_SYNC_ENABLED` off, gets no loop. The restart runs in a task of its own behind `asyncio.shield`, so a second cancel of the request cannot stop it (fix round 2).
 6. With no block open, a `microsoft` row with a subscription id gets `delete_subscription`, with a bound of 5 seconds. The route builds the provider through `_instantiate_provider`, the gateway adapter over `build_provider`.
 7. `delete_subscription` returns the HTTP status of Graph, and it raises on a transport error. 204 and 404 log `email.disconnect.subscription_deleted`. Each other status, error or timeout logs `email.disconnect.subscription_delete_failed`, and the route still returns 204. The log holds the status or the error class, and never a token. `_renew_or_replace` keeps its best effort around the delete.
 8. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
 9. Both disconnect surfaces keep the mailbox on a refusal, and they show the reason of the gateway. The surfaces are the `DisconnectDialog` of the Email app and Remove on the Email tab of Integrations.
 
-**Part 2 scope (built).**
+**Part 2 scope (built, with fix round 2).**
 
-1. `_sync_account` takes an `asyncio.Lock` for each mailbox, and then it runs `_sync_cycle`, which holds the old body. Nothing else calls `_sync_cycle`. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`), so a lock in the process is enough.
-2. Each caller has a busy mode. The loop and the webhook pass `if_busy="skip"`. They get `{"skipped": "busy", "synced": 0}` at once, and the log says `sync.skipped_busy`. A skip is a success with nothing synced, so the loop adds no backoff.
-3. The manual sync, the resync and the deep downloads of cleanup and Process past use the default, `"wait"`. They wait up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and then they run.
-4. After the bound, a waiter logs `sync.busy_wait_timeout` and gets the busy result. The manual sync and the resync then answer 409: "Another sync of this mailbox is still running. Try again in a moment."
-5. Why 600 seconds: in production, the first sync of 6410 messages fell inside a window of about 4 minutes. Ten minutes is more than twice that. A longer wait means the holder is stuck.
-6. No caller holds a session while it waits. The wrapper opens none, the cycle opens its own blocks after the lock, and no gateway caller calls `_sync_account` inside a block.
-7. The wrapper releases the lock on each exit of the cycle, a cancel included. A cancelled waiter leaves with no lock.
-8. A count of holders and waiters goes with each lock. At zero, both entries go, so the dicts hold only the mailboxes that sync now.
-9. The cycle returns `{"error": "Account not found", "gone": True}` when the row is gone. The loop then stops and logs `sync.loop_row_gone`. It drops its entry from `_scheduler_tasks` only while the entry is its own task.
+1. `_sync_account` takes an `asyncio.Lock` for each mailbox, and then it runs `_sync_cycle`, which holds the old body. The lock key is the account id in lower case, so an id in upper case gets the same lock. Nothing else calls `_sync_cycle`, except the one rerun below. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`), so a lock in the process is enough.
+2. Each call has a busy mode. The loop, the webhook, the manual sync and the resync pass `if_busy="skip"`. They get `{"skipped": "busy", "synced": 0}` at once, and the log says `sync.skipped_busy`. A skip is a success with nothing synced, so the loop adds no backoff.
+3. A skip marks the mailbox "rerun requested". The holder clears the mark when its cycle starts, because that cycle fetches after each earlier skip. The holder then runs ONE more shallow cycle (`deep=False`) under the lock. It does this only when its cycle ends with no error and no cancel, and no caller waits. The rerun keeps the tenant binding of the holder. Two skips cause one rerun.
+4. The manual sync and the resync never wait, because the Control Plane proxy gives each POST 30 seconds. While a sync runs, they answer 409 at once: "A sync is already running for this mailbox. New mail appears when it finishes." A full sync and the resync say "Start the full sync again when it finishes", because the rerun is shallow.
+5. The deep downloads of cleanup and Process past use the default, `"wait"`. They wait up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and then they run. After the bound, a waiter logs `sync.busy_wait_timeout` and gets the busy result.
+6. A busy result or an `error` result ends a deep download as an error, with the reason from `download_failure`. Before, the job said "done" with 0 fetched. A raised error in Process past stays best effort, as before.
+7. The resync passes `purge` and `reset_cursor` into `_sync_account`. Phase (a) of the cycle applies them, under the lock. Before, the route applied them before the lock, so a running tick could write the cursor back.
+8. Why 600 seconds: in production, the first sync of 6410 messages fell inside a window of about 4 minutes. Ten minutes is more than twice that. A longer wait means the holder is stuck.
+9. No caller holds a session while it waits. The wrapper opens none, and the cycle opens its own blocks after the lock. No caller calls `_sync_account` or `_run_manual_sync` inside a block.
+10. The wrapper releases the lock on each exit of the cycle, a cancel included. A cancelled waiter leaves with no lock. A count of holders and waiters goes with each lock. At zero, the lock, the count and the rerun mark all go.
+11. The cycle returns `{"error": "Account not found", "gone": True}` when the row is gone. The loop then stops and logs `sync.loop_row_gone`. It drops its entry from `_scheduler_tasks` only while the entry is its own task.
 
-**Part 2 trade-offs (recorded).**
+**Part 2 bounds and trade-offs (recorded).**
 
-- A webhook that arrives during a sync skips. The sync that runs fetches the new mail, or the next tick of the loop does, so the delay is one interval at most.
+- New mail that arrives during a sync appears when that sync ends, through the one rerun. Behind a long deep download, the mail appears when the download ends.
+- A skip during the rerun itself causes no second rerun. That mail appears at the next tick of the loop.
 - The lock lives in one process. A second gateway process needs a database lock in its place.
 
 **Why the Graph call comes after the delete.** The loop renews the subscription, and `_renew_or_replace` can replace it with a new id. A read before the loop stops can hold an old id. The `RETURNING` of phase 2 reads the id after the stop. A token that `authenticate()` refreshes needs no write, because the row is gone.
@@ -2060,6 +2063,7 @@ The `statement_timeout` in production is 2 minutes.
 - **F-1. An orphan subscription.** A cancel can stop the loop between `create_subscription` and the `UPDATE` that stores the id in `_ensure_subscription` (`transport/sync.py:453-473`). Then no row names the new subscription, and it lives until it expires.
 - **F-2. An open client.** `OutlookProvider` has no close method. The httpx client that `_get_client` opens for the Graph delete stays open until the process collects it.
 - **F-3. A second SQLSTATE walk.** `_is_lock_timeout` in `transport/accounts.py` copies the walk of `is_transient` in `routes/projects/import_writer.py`. A third copy must move the walk to a shared module.
+- **F-4. The loop registry keys.** `_scheduler_tasks` keeps the id as the caller gave it. The mailbox lock folds case (fix round 2), and this registry does not. A disconnect with an id in upper case then stops no loop. The loop stops by itself when it finds the row gone.
 
 **Done when (part 1).**
 
@@ -2068,18 +2072,20 @@ The `statement_timeout` in production is 2 minutes.
 - c. A `microsoft` row with a subscription id gets `delete_subscription` with that id. Against the real `OutlookProvider` and `httpx.MockTransport`, 204 and 404 log `subscription_deleted`, and 403 and 500 log `subscription_delete_failed` with the status. A Graph call that raises, or that is slower than the bound, still gives 204.
 - d. A row with no subscription id, or a `gmail` row, builds no provider and makes no Graph call.
 - e. The `DELETE` runs after `SET LOCAL lock_timeout` in the same block. A lock timeout gives 409 and starts the loop again with the organization of the row. Any other failure of phase 2 starts the loop again and raises. With no loop before step 2, nothing starts.
-- f. With the real scheduler, a failed `DELETE` leaves a running loop.
+- f. With the real scheduler, a failed `DELETE` leaves a running loop. A cancel during the `DELETE`, and a second cancel during the restart, still let the restart finish.
 - g. Both disconnect surfaces keep the mailbox on a refusal and show the detail of the gateway.
-- R8: the blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404. When a second connection holds a KEY SHARE lock on the row, the route answers 409 after about 5 seconds. The row stays, and a new loop runs with the organization of the row.
+- R8: the blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404. When a second connection holds a KEY SHARE lock on the row, the route answers 409 after about 5 seconds. The row stays, and a new loop runs with the organization of the row. The test bounds the call at 20 seconds, so a route with no `lock_timeout` fails it and does not hang.
 
 **Done when (part 2).**
 
-- h. While a sync of a mailbox runs, a skip call returns the busy result and runs no cycle. A waiting call runs after the first one ends. A second mailbox syncs at the same time.
+- h. While a sync of a mailbox runs, a skip call returns the busy result and runs no cycle. A waiting call runs after the first one ends. A second mailbox syncs at the same time. An id in upper case is the same mailbox.
 - i. The wrapper releases the lock after an exception, after a cancel of the holder and after a cancel of a waiter. A waiter gives up at the bound. After 25 syncs, the dicts are empty.
 - j. The loop passes `if_busy="skip"`, and a skip adds no backoff. The loop stops when its row is gone, and it keeps the entry of a newer loop.
-- k. A manual sync that waited its bound answers 409.
-- l. Structure: only `_sync_account` calls `_sync_cycle`. The wrapper opens no session. Each caller has a decided busy mode, and no gateway caller waits inside a block.
-- R8: sync A parks inside phase (c) with an uncommitted row. Sync B of the same mailbox does not reach the provider until A ends, and a skip call returns busy. Both then finish with 3 rows and no duplicate.
+- k. While a sync runs, the manual sync and the resync answer 409 at once, with no wait. The busy resync writes nothing.
+- l. A skip during a held sync causes exactly one shallow rerun after the holder ends, with the tenant of the holder. Two skips cause one rerun. A waiter, an error or a cancel of the holder causes none.
+- m. A busy or failed deep download ends the cleanup job and the Process past job as an error, with the reason.
+- n. Structure: only `_sync_account` and its rerun call `_sync_cycle`. The wrapper opens no session. Each call of `_sync_account` in a file that is not a test has a constant busy mode. A mode that is not a constant fails the check, and no call into the lock runs inside a block.
+- R8: sync A parks inside phase (c) with an uncommitted row. Sync B of the same mailbox does not reach the provider until A ends, and a skip call returns busy. Both then finish with 3 rows and no duplicate. A resync with `purge` and `reset_cursor` deletes the old rows and gives the provider no cursor.
 
 **Fence (R7).** `tests/unit/test_email_disconnect_order.py`, `tests/unit/test_email_sync_one_at_a_time.py`, `workbench/control_plane/src/app/email/lib/connect.test.ts` and `workbench/control_plane/src/app/integrations/emailRemove.test.ts`.
 
