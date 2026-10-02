@@ -32,6 +32,7 @@ from gateway.routes.email.core import (
     RESERVED_INDICATORS,
     _attachment_summaries,
     _log,
+    _persist_rotated_creds,
     _provider_for_message,
 )
 from sqlalchemy import text
@@ -150,8 +151,9 @@ async def correct_applied_labels(
     unwinding what ``rule_feedback`` already taught."""
     provider: Any = None
     pmid = ""
+    aid, store = "", None
     try:
-        provider, pmid, _aid, _store = await _provider_for_message(
+        provider, pmid, aid, store = await _provider_for_message(
             db, message_id, owner)
         if provider is not None and not await provider.authenticate():
             provider = None  # local-mirror only; can't reach the provider
@@ -175,6 +177,9 @@ async def correct_applied_labels(
     for lbl in add_labels:
         await apply_label(db, provider, message_id, pmid, lbl)
         added.append(lbl)
+    # A 401 on a label write refreshes the token (EM-T4c). Keep it.
+    if provider is not None and store is not None:
+        await _persist_rotated_creds(db, store, aid, provider)
     return {"removed": removed, "added": added}
 
 

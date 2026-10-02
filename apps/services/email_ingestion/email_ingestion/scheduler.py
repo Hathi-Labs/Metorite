@@ -241,15 +241,33 @@ async def _write_credentials_refreshed_since(
 
     Phase (d) writes the credentials with the account row. Phase (e) then
     fetches bodies, and a 401 there refreshes the token again (EM-T4c).
-    Microsoft revokes the old refresh token on use. So this short block
-    writes the new tokens, or the next sync starts with a dead one. With no
-    change since phase (d), it opens no session."""
+    Microsoft can rotate the refresh token on use. So this short block
+    writes the new tokens, and the next sync does not start with an old one.
+    With no change since phase (d), it opens no session.
+
+    It never raises (fix round 2). A failed write is tried once more in a
+    new block. The sync has done its work, so a failure here must not turn
+    it into an error: ``_webhook_sync`` would skip the new-mail pipeline,
+    and the loop would double its backoff. The log names the class of the
+    error and never a token."""
     now = _credentials_json(provider)
     if now is None or now == written:
         return
-    async with tenant_session(org) as db:
-        await db.execute(_WRITE_CREDENTIALS,
-                         {"id": account_id, "creds": store.encrypt(now)})
+    for attempt in (1, 2):
+        try:
+            creds = store.encrypt(now)
+            async with tenant_session(org) as db:
+                await db.execute(_WRITE_CREDENTIALS,
+                                 {"id": account_id, "creds": creds})
+        except Exception as exc:
+            logger.warning(
+                "sync.credentials_write_failed account=%s attempt=%d error=%s",
+                account_id, attempt, type(exc).__name__)
+            continue
+        if attempt > 1:
+            logger.info("sync.credentials_write_retried account=%s", account_id)
+        return
+    logger.error("sync.credentials_write_lost account=%s", account_id)
 
 
 async def _sync_account(
@@ -282,9 +300,10 @@ async def _sync_account(
 
     The error path writes in a new ``tenant_session(org)``. When a refresh
     during the sync changed the credentials, it writes them in that block too
-    (EM-T4c), so a later failure cannot lose a rotated refresh token. A
-    failed write of the credentials after phase (e) also reaches the error
-    path, which then tries that write again beside the error status.
+    (EM-T4c), so a later failure cannot lose a rotated refresh token. The
+    write after phase (e) never reaches the error path: it tries a failed
+    write once more in a new block, logs the result, and the sync keeps its
+    success.
 
     ``deep``/``since`` override the automatic (first-sync) heuristic so a caller
     can force a deep backfill from an arbitrary date floor — e.g. historical
@@ -520,7 +539,7 @@ async def _sync_account(
             logger.warning("sync.body_backfill_failed account=%s err=%s",
                            account_id, str(exc)[:160])
         # A 401 in phase (e) may have rotated the tokens after phase (d)
-        # wrote them (EM-T4c). A failure here reaches the error path.
+        # wrote them (EM-T4c). It never raises, so the sync keeps its success.
         await _write_credentials_refreshed_since(
             org, account_id, provider, store, written)
 

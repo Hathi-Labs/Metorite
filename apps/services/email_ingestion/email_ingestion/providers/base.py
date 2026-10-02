@@ -7,6 +7,7 @@ The sync engine calls these methods without knowing the provider details.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from abc import ABC, abstractmethod
@@ -28,6 +29,23 @@ class _RefreshableProvider(Protocol):
     _refresh_lock: asyncio.Lock
 
     async def _refresh_access_token(self) -> None: ...
+
+
+def _refresh_refused(exc: BaseException) -> bool:
+    """True when the token endpoint refused a refresh for good (EM-T4c).
+
+    ``_refresh_access_token`` sends one request, the POST to the token
+    endpoint. A 400 or a 401 from that endpoint refuses the refresh token or
+    the app. A ``ValueError`` means that the refresh token or the app
+    credentials are missing. Each of these fails again on the next try.
+
+    A timeout, a transport error, a 5xx or a body that is not JSON can pass,
+    so this gives ``False`` for them."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return (exc.response.status_code in (400, 401)
+                and exc.request.url.path.endswith("/token"))
+    return (isinstance(exc, ValueError)
+            and not isinstance(exc, json.JSONDecodeError))
 
 
 class RefreshingBearer(httpx.Auth):
@@ -54,10 +72,13 @@ class RefreshingBearer(httpx.Auth):
     **One refresh for each token that a refresh cannot help.** A mailbox can
     answer 401 to each request while the token endpoint still works. Then
     each request would post to the token endpoint. So the flow remembers a
-    token for which a refresh did not help: the refresh failed, or the new
-    token got a 401 too. Each later 401 with that token goes back to the
-    caller with no refresh and no second try. A success with that token
-    clears it, so a token that expires later can refresh again.
+    token for which a refresh did not help: the token endpoint refused the
+    refresh (:func:`_refresh_refused`), or the new token got a 401 too. Each
+    later 401 with that token goes back to the caller with no refresh and no
+    second try. A success with that token clears it, so a token that expires
+    later can refresh again. A timeout, a transport error or a 5xx of the
+    token endpoint is not remembered, so the next 401 tries the refresh
+    again (fix round 2).
 
     The fence is ``tests/unit/test_email_provider_401_retry.py``.
     """
@@ -92,8 +113,9 @@ class RefreshingBearer(httpx.Auth):
                 return
             try:
                 await provider._refresh_access_token()
-            except Exception:
-                self._no_refresh_for = used
+            except Exception as exc:
+                if _refresh_refused(exc):
+                    self._no_refresh_for = used
                 raise
             logger.info(
                 "provider.token_refreshed_on_401 provider=%s",
@@ -114,9 +136,9 @@ class RefreshingBearer(httpx.Auth):
         await self._refresh_once(used)
         fresh = provider._access_token
         if fresh == used:
-            # No new token: a refresh of this token failed in another
-            # request, or the token endpoint sent the same token back. A
-            # second try with that token gets the same 401.
+            # No new token: the token endpoint refused this token in another
+            # request, or it sent the same token back. A second try with
+            # that token gets the same 401.
             self._no_refresh_for = used
             return
         request.headers["Authorization"] = f"Bearer {fresh}"

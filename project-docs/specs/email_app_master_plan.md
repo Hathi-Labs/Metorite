@@ -1856,22 +1856,55 @@ because it only reads the folders that the sweep returned.
 
 1. A body fetch in phase (e) can refresh after phase (d) wrote the credentials. A successful sync then
    kept the old tokens. Now a short `tenant_session(org)` block after phase (e) writes them again, but
-   only when they changed after phase (d). Phase (f) makes no provider call. A failure of that write
-   reaches the error path, which writes the credentials beside the error status.
+   only when they changed after phase (d). Phase (f) makes no provider call. Fix round 2 changed
+   what a failure of that write does.
 2. A mailbox that refuses each request, with a token endpoint that works, posted to the token
    endpoint for each request. A probe saw 32 posts in one tick. Now `RefreshingBearer` keeps the
-   token whose refresh failed, or whose new token got a 401 too. Each later 401 with that token goes
-   back to the caller with no refresh and no second try. A success with that token clears it. Also,
+   token whose refresh the token endpoint refused, or whose new token got a 401 too. Each later 401
+   with that token goes back to the caller with no refresh and no second try. A success with that
+   token clears it. Also,
    `authenticate` does not refresh a token that a refresh on the same instance made. A sync calls
    `authenticate` two times. Without this rule, the token endpoint gets three posts in one tick. Now
    it gets two.
 3. `list_folders` took the 400 of a failed refresh for a rejected `$select`, and sent the request
    again. Now a 400 from the token endpoint goes back to the caller.
 
-**Fences.** `tests/unit/test_email_provider_401_retry.py`: 39 tests, and two of them are R8. Against
-the source before fix round 1, eleven of the new tests are red. Eleven mutations of the first round
-and ten of fix round 1 each turn a test red. The scheduler tests use the real `OutlookProvider`, the
-real refresh and the real error path.
+**Fix round 2 (2026-10-02).** This round repairs the one P2 and the three P3s of the second review.
+
+1. **Process past kept no rotated tokens.** Its apply loop builds its own provider. Before EM-T4c
+   that loop could not refresh, and now a 401 there refreshes. The job now writes the tokens with
+   `core._persist_rotated_creds` in its `finally`, in a short `_tenant_session()` block of its own.
+   So a job that fails keeps them too. Three older paths had the same gap, and each one now calls
+   the same helper after its last provider call: `undo_execution` (`runner.py`),
+   `correct_applied_labels` (`actions.py`) and `get_full_body` (`transport/messages.py`).
+2. **The flow remembers only a refusal.** `_refresh_refused` in `providers/base.py` says which failure of
+   a refresh is a refusal: a 400 or a 401 from the token endpoint, or missing app credentials. A
+   timeout, a transport error, a 5xx or a body that is not JSON can pass. So the next 401 tries the
+   refresh again, and process past does not stamp a message that it could not touch.
+3. **Two refreshes in one sync.** A test now refreshes before phase (d) and again in phase (e), and
+   it expects two writes. The mutation `if now is None or written is not None: return` passed every
+   test before this round.
+4. **A failed write after phase (e) no longer fails the sync.** Before, the sync returned an
+   error, so `_webhook_sync` skipped `process_new_mail`, a manual sync answered 500, and the loop
+   doubled its backoff. Now a failed write goes again once in a new `tenant_session(org)` block. The
+   log names the class of the error and no token, and the sync keeps its success.
+
+**Follow-ups (named, not built).**
+
+- **EM-T4c-f1, compare-and-set for the credential writes.** Phase (d) and the error path write
+  `credentials_encrypted` with `WHERE id = :id` only. A request job can rotate the tokens while a
+  sync runs, and then a stale write of the sync overwrites the newer tokens. The fix adds
+  `AND credentials_encrypted = :prev` to each write, where `:prev` is the value that the writer read.
+- **EM-T4c-f2, a premise to verify.** The comments say that Microsoft revokes the old refresh token
+  on use. Nothing has verified this. To write the new tokens is correct in both cases.
+- **EM-T4c-f3, a failed `authenticate` after a refresh.** Process past and the rules job set the
+  provider to `None` when `authenticate` returns false. A refresh inside that `authenticate` then
+  stays in memory.
+
+**Fences.** `tests/unit/test_email_provider_401_retry.py`: 68 tests, and four of them are R8. Against
+the source before fix round 2, nineteen of the new tests are red. Eleven mutations of the first
+round, ten of fix round 1 and twelve of fix round 2 each turn a test red. The scheduler tests and
+the process-past R8 test use the real `OutlookProvider` and the real refresh.
 
 **Verify with.**
 
@@ -1880,7 +1913,11 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_provider_401_retry.py tests/unit/test_outlook_labels_cache_and_429.py \
   tests/unit/test_outlook_drafts.py tests/unit/test_outlook_folders_move.py \
   tests/unit/test_gmail_normaliser.py tests/unit/test_email_connect_backend.py \
-  tests/unit/test_email_provider_session.py tests/unit/test_email_scheduler_tenancy.py -q -rs
+  tests/unit/test_email_provider_session.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_process_past_progress.py tests/unit/test_email_request_jobs_tenancy.py \
+  tests/unit/test_email_automation_tenancy.py tests/unit/test_email_fix_strips_label.py \
+  tests/unit/test_email_rules_admin.py tests/unit/test_email_tool_consolidation.py \
+  tests/unit/test_email_owner_scope_fence.py -q -rs
 uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_401_retry.py
 ```
 

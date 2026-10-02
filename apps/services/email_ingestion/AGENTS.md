@@ -67,9 +67,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
    `_refresh_lock` and sends the same request once more. A second 401 goes back to
    the caller. Fence: `tests/unit/test_email_provider_401_retry.py`.
    - **One refresh for each token that a refresh cannot help.** The flow keeps
-     the token whose refresh failed, or whose new token got a 401 too. Each later
-     401 with that token goes back to the caller with no refresh. A success with
-     that token clears it.
+     the token whose refresh the token endpoint refused, or whose new token got a
+     401 too. Each later 401 with that token goes back to the caller with no
+     refresh. A success with that token clears it.
+   - Only a 400 or a 401 from the token endpoint, or missing app credentials, is
+     a refusal (`_refresh_refused`). A timeout, a transport error or a 5xx can
+     pass, so the next 401 tries the refresh again.
    - `authenticate` does not refresh a token that a refresh on the same instance
      made. A sync calls `authenticate` two times, so without this rule a mailbox
      that refuses each request costs three token posts in one tick.
@@ -113,11 +116,13 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `commit()`. R7: `tests/unit/test_email_scheduler_tenancy.py`.
 - ⚠️ **The error path keeps refreshed credentials (WS-17 EM-T4c).** A refresh
   during the sync makes the credentials dirty. The error path then writes them
-  in its own `tenant_session(org)`, beside the error status. Microsoft revokes
-  a refresh token on use, so a lost new token forces a reconnect. A body fetch
-  in phase (e) can refresh after phase (d) wrote the credentials. So a short
-  block after phase (e) writes them again, but only when they changed after
-  phase (d). R7: `tests/unit/test_email_provider_401_retry.py`.
+  in its own `tenant_session(org)`, beside the error status. Microsoft can
+  rotate a refresh token on use, so a lost new token can force a reconnect.
+  R7: `tests/unit/test_email_provider_401_retry.py`.
+- ⚠️ **Phase (e) can refresh after phase (d) wrote the credentials.** So a
+  short block after phase (e) writes them again, but only when they changed
+  after phase (d). That write never fails the sync. A failed write goes again
+  once in a new block, and the log names the class of the error, never a token.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
