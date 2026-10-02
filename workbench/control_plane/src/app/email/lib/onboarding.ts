@@ -6,9 +6,8 @@
  * Vitest in this tree runs in the node environment, so each decision lives
  * here and `components/OnboardingPanel.tsx` only draws what it returns.
  *
- * ⚠️ Part 1 of EM-T6d has one stage, `importing`. The rules step (items 8 to
- * 11) and the storage step (EM-T6e) add `rules` and `storage` to
- * `OnboardingStage` later, and the function keeps its shape for them.
+ * Two stages: `importing` (part 1) and `rules` (part 2, items 8 to 11). The
+ * storage step of EM-T6e adds `storage` later.
  *
  * ⚠️ Every field this module reads is optional. A gateway before EM-T6a sends
  * no `importSince`, so the stage is `null`. A gateway with EM-T6a and before
@@ -20,17 +19,18 @@
  * Fence: `onboarding.test.ts`.
  */
 
-import type { EmailAccount } from "./types";
+import type { AssistantSettings, AutomationRule, EmailAccount } from "./types";
 
 // ── The stage ───────────────────────────────────────────────────────────────
 
 /** The step of the guided setup that a mailbox is in. `null` draws nothing. */
-export type OnboardingStage = "importing" | null;
+export type OnboardingStage = "importing" | "rules" | null;
 
 type StageFields = Pick<
   EmailAccount,
   "importSince" | "onboardingDone" | "syncStatus" | "initialSyncDone"
->;
+> &
+  Partial<Pick<EmailAccount, "syncEnabled">>;
 
 /**
  * Which step of the guided setup to draw for one mailbox.
@@ -40,15 +40,21 @@ type StageFields = Pick<
  * - `null` when the member closed the setup (`onboardingDone`).
  * - `null` while `syncStatus` is `error`. The reconnect banner owns that
  *   state (EM-T3b).
+ * - `null` while sync is off (`syncEnabled === false`). A paused mailbox
+ *   imports nothing, so a panel would freeze (EM-T6b review).
  * - `importing` while the first import runs. Only an explicit `false` counts,
  *   the same rule as `isFirstSyncPending` in `connect.ts`.
- * - Otherwise `null`. Part 2 of EM-T6d returns `rules` here.
+ * - `rules` when the import ended (`initialSyncDone === true`), until the
+ *   member closes the setup (items 8 to 11).
+ * - Otherwise `null`.
  */
 export function onboardingStage(account: StageFields): OnboardingStage {
   if (!account.importSince) return null;
   if (account.onboardingDone === true) return null;
   if (account.syncStatus === "error") return null;
+  if (account.syncEnabled === false) return null;
   if (account.initialSyncDone === false) return "importing";
+  if (account.initialSyncDone === true) return "rules";
   return null;
 }
 
@@ -186,4 +192,93 @@ export function importProgress(
     detail: reached ? `back to ${shortDate(reached, opts.now)}` : IMPORT_WAITING_DETAIL,
     basis: "range",
   };
+}
+
+// ── The rules step (items 8 to 11, D-EM-15) ─────────────────────────────────
+
+/**
+ * The words of the rules step. They name no model and offer no model
+ * choice: the rule engine is fixed (EM-T5b).
+ *
+ * ⚠️ The automatic rule run touches only mail that arrived after the first
+ * enabled rule (owner decision (d), #576). So the step says that the mail
+ * already imported is sorted by "Process past emails", and offers it.
+ */
+export const RULES_STEP_COPY = {
+  title: "Set up AI rules",
+  body:
+    "AI rules sort your mail into labels such as Needs Reply, Newsletter and Receipt. " +
+    "They sort each new message, and they can also sort the mail you imported.",
+  recommended: "Use the recommended rules",
+  chooseOwn: "Choose my own",
+  skipForNow: "Skip for now",
+  skipSetup: "Skip setup",
+  readyTitle: "Your AI rules are on",
+  readyBody: "They sort each new message. To sort the mail you imported, run them over it once.",
+  readyBodyNoImport: "They sort each new message as it arrives.",
+  processPast: "Sort my imported mail",
+  draftLabel: "Draft replies for me",
+  draftNote: "Metorite writes a draft for mail that needs a reply. It sends nothing.",
+  insights: "See insights",
+  done: "Done",
+  failed: "Metorite could not save that. Try again.",
+} as const;
+
+/** "Metorite added 10 rules." for the presets that the install added. */
+export function installedLine(installed: number): string | null {
+  if (installed <= 0) return null;
+  return installed === 1 ? "Metorite added 1 rule." : `Metorite added ${installed} rules.`;
+}
+
+/** What the rules step shows: still reading, the three choices, or the next actions. */
+export type RulesStepPhase = "checking" | "choose" | "ready";
+
+/**
+ * `ready` once an ENABLED rule exists, because the drafting step and the
+ * sort of past mail need one (item 10). `null` rules means the read is still
+ * in flight. A failed read gives `[]`, so the member still sees the choices.
+ */
+export function rulesStepPhase(rules: ReadonlyArray<Pick<AutomationRule, "enabled">> | null): RulesStepPhase {
+  if (rules === null) return "checking";
+  return rules.some((r) => r.enabled) ? "ready" : "choose";
+}
+
+/**
+ * The start date for "Process past emails" over the imported mail: the UTC
+ * date of `importSince`, as YYYY-MM-DD. Null when the range was "Only new
+ * mail" (under one day back), because then there is nothing to sort.
+ */
+export function processPastFrom(
+  account: Pick<EmailAccount, "importSince">,
+  now: Date,
+): string | null {
+  const since = parseDate(account.importSince);
+  if (!since) return null;
+  if (now.getTime() - since.getTime() < 86_400_000) return null;
+  return since.toISOString().slice(0, 10);
+}
+
+/** The calls of the rules step, so a test can pass fakes. */
+export interface RulesStepApi {
+  listRules(accountId: string): Promise<ReadonlyArray<Pick<AutomationRule, "enabled">>>;
+  installPresetRules(accountId: string): Promise<{ installed: string[] }>;
+  getAssistantSettings(accountId: string): Promise<AssistantSettings>;
+  saveAssistantSettings(settings: AssistantSettings): Promise<AssistantSettings>;
+  finishOnboarding(accountId: string): Promise<unknown>;
+}
+
+/** "Use the recommended rules": one install call. Returns how many it added. */
+export async function installRecommendedRules(api: RulesStepApi, accountId: string): Promise<number> {
+  const res = await api.installPresetRules(accountId);
+  return res.installed?.length ?? 0;
+}
+
+/**
+ * The drafting switch (item 10, D-EM-6). It reads the settings and saves them
+ * back with `draft_replies` changed and every other field as it was. The
+ * switch opens OFF and calls this only when the member moves it.
+ */
+export async function setDraftReplies(api: RulesStepApi, accountId: string, on: boolean): Promise<void> {
+  const current = await api.getAssistantSettings(accountId);
+  await api.saveAssistantSettings({ ...current, draft_replies: on });
 }

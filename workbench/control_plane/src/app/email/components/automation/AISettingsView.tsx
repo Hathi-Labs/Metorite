@@ -12,6 +12,8 @@ import { RulesTab, RuleEditorModalLoader } from "./ai-settings/RulesTab";
 interface AISettingsViewProps {
   accountId: string | null;
   selectedEmailId: string | null;
+  /** YYYY-MM-DD. The Rules tab opens "Process past emails" from this date (EM-T6d). */
+  processPastFrom?: string | null;
 }
 
 type Tab = "rules" | "test" | "history" | "settings";
@@ -158,7 +160,7 @@ function PastJobBanner({
   );
 }
 
-export function AISettingsView({ accountId }: AISettingsViewProps) {
+export function AISettingsView({ accountId, processPastFrom = null }: AISettingsViewProps) {
   const [tab, setTab] = useState<Tab>("rules");
   // When the user picks "See history" from a rule's ⋯ menu, jump to the History
   // tab pre-filtered to that rule.
@@ -231,6 +233,7 @@ export function AISettingsView({ accountId }: AISettingsViewProps) {
               accountId={accountId}
               onSeeHistory={seeHistory}
               onPastJobStarted={pingPastJob}
+              processPastFrom={processPastFrom}
             />
           )}
           {tab === "test" && <TestTab accountId={accountId} />}

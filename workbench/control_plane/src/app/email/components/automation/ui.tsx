@@ -84,8 +84,11 @@ export function Toggle({
       title={title}
       disabled={disabled}
       onClick={() => onChange(!enabled)}
+      // OFF is `bg-muted-foreground/30`, not `bg-secondary`. In light mode
+      // `--secondary` is about 96% light, so on a white card the OFF track
+      // and its white knob vanished (EM-T6d visual review, 2026-10-03).
       className={`relative flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-        enabled ? "bg-primary" : "bg-secondary"
+        enabled ? "bg-primary" : "bg-muted-foreground/30"
       }`}
       style={{ height: 18, width: 32 }}
     >

@@ -22,6 +22,7 @@ import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
+import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import Modal from "@/components/ui/Modal";
 import { useEmailStore, isRealFolder } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
@@ -37,7 +38,7 @@ import {
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { firstSyncSurface, importProgress } from "./lib/onboarding";
+import { firstSyncSurface, importProgress, onboardingStage } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -58,6 +59,10 @@ export default function EmailPage() {
   // Email Automation overlay (Assistant / Unsubscribe / Archive / Analytics)
   const [automationFeature, setAutomationFeature] =
     useState<AutomationFeature | null>(null);
+  // YYYY-MM-DD. The guided setup's "Sort my imported mail" opens AI Settings
+  // with "Process past emails" on this date (EM-T6d). Every other way into an
+  // automation view clears it, so the dialog opens once.
+  const [processPastFrom, setProcessPastFrom] = useState<string | null>(null);
 
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
 
@@ -336,6 +341,18 @@ export default function EmailPage() {
 
   const handleOpenAutomation = useCallback(
     (feature: AutomationFeature) => {
+      setProcessPastFrom(null);
+      setAutomationFeature(feature);
+      if (isMobile) closeDrawer();
+    },
+    [isMobile, closeDrawer]
+  );
+
+  // The guided setup opens an automation view (EM-T6d). Only its "Sort my
+  // imported mail" passes `pastFrom`, which opens Process past emails once.
+  const openFromSetup = useCallback(
+    (feature: AutomationFeature, pastFrom: string | null = null) => {
+      setProcessPastFrom(pastFrom);
       setAutomationFeature(feature);
       if (isMobile) closeDrawer();
     },
@@ -675,7 +692,11 @@ export default function EmailPage() {
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
             onArchived={fetchEmails}
-            onNavigate={setAutomationFeature}
+            onNavigate={(feature) => {
+              setProcessPastFrom(null);
+              setAutomationFeature(feature);
+            }}
+            processPastFrom={processPastFrom}
             onOpenEmail={(id) => {
               // A dashboard row navigates to its conversation: fetch/select the
               // message (it may live outside the loaded folder) and drop back
@@ -894,6 +915,17 @@ export default function EmailPage() {
           ) : (
             <FirstSyncBanner address={pendingAccount.emailAddress} />
           ))}
+
+        {/* ── The rules step of the guided setup (EM-T6d items 8 to 11) ──
+            For the mailbox in view, once its import ended. Not a modal. */}
+        {selectedAccount && onboardingStage(selectedAccount) === "rules" && (
+          <OnboardingRulesStep
+            key={selectedAccount.id}
+            account={selectedAccount}
+            onOpenAutomation={openFromSetup}
+            onFinished={() => void refreshAccounts()}
+          />
+        )}
 
         {/* ── Unified action toolbar — spans the list + viewer columns, just
             below the top bar (desktop only; mobile keeps per-view toolbars). ── */}

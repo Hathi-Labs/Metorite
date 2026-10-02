@@ -100,9 +100,9 @@ describe("onboardingStage (item 1)", () => {
     expect(onboardingStage({ ...IMPORTING, syncStatus: "error" })).toBeNull();
   });
 
-  it("is null after the import, until part 2 adds the rules step", () => {
-    expect(onboardingStage({ ...IMPORTING, initialSyncDone: true })).toBeNull();
-    // Only an explicit false is a running import.
+  it("is rules after the import (part 2), and null with no flag", () => {
+    expect(onboardingStage({ ...IMPORTING, initialSyncDone: true })).toBe("rules");
+    // Only an explicit false is a running import, and only an explicit true an ended one.
     expect(onboardingStage({ ...IMPORTING, initialSyncDone: undefined })).toBeNull();
   });
 });
@@ -344,8 +344,11 @@ describe("the page draws the panel where FirstSyncBanner drew (items 7 and 12)",
     expect(PAGE).toMatch(
       /\{pendingAccount &&\s*\(firstSyncSurface\(pendingAccount\) === "progress" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner address=\{pendingAccount\.emailAddress\} \/>/,
     );
-    // One decision: the page does not test the stage or the phase itself.
-    expect(PAGE).not.toMatch(/onboardingStage\(|importPhase/);
+    // One decision: the page does not test the phase itself. It reads the
+    // stage once, for the rules step of part 2.
+    expect(PAGE).not.toMatch(/importPhase/);
+    expect(PAGE.match(/onboardingStage\(/g)).toEqual(["onboardingStage("]);
+    expect(PAGE).toContain('onboardingStage(selectedAccount) === "rules"');
     expect(PAGE).toContain("progress={importProgress(pendingAccount, { now: new Date() })}");
   });
 
