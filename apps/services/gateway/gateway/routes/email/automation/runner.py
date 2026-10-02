@@ -49,7 +49,6 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _date_range_clause,
-    _get_db,
     _tenant_session,
     _instantiate_provider,
     _log,
@@ -1307,7 +1306,7 @@ async def _stamp_processed_watermark(
 
 
 async def _project_thread_status_for_backfill(
-    db: Any, provider: Any, account_id: str,
+    provider: Any, account_id: str,
     latest_by_thread: dict[str, tuple[Any, list[dict[str, Any]]]],
 ) -> None:
     """Record Reply Zero status + collapse labels for threads a backfill touched.
@@ -1331,6 +1330,11 @@ async def _project_thread_status_for_backfill(
       full text would be one model call per thread across a whole mailbox, on
       conversations that are usually long finished. The periodic classifier
       spends that budget where it pays — threads still sitting in the inbox.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the stale read is one
+    ``_tenant_session()`` block with the ambient tenant, and each thread is a
+    block of its own, where the per-thread commit was. The handler wraps each
+    thread's block, so a failed thread rolls back only its own writes.
     """
     from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
         _reconcile_thread_labels,
@@ -1338,29 +1342,30 @@ async def _project_thread_status_for_backfill(
     )
     tids = list(latest_by_thread)
     # Threads with mail newer than what this run saw — skip them.
-    stale = {
-        str(row.thread_id)
-        for row in (await db.execute(text(
-            """SELECT em.thread_id, MAX(em.received_at) AS newest
-                 FROM email_messages em
-                WHERE em.account_id = :aid AND em.thread_id = ANY(:tids)
-                GROUP BY em.thread_id"""
-        ), {"aid": account_id, "tids": tids})).fetchall()
-        if (seen := latest_by_thread.get(str(row.thread_id)))
-        and getattr(seen[0], "received_at", None) is not None
-        and row.newest is not None
-        and row.newest > seen[0].received_at
-    }
+    async with _tenant_session() as db:
+        stale = {
+            str(row.thread_id)
+            for row in (await db.execute(text(
+                """SELECT em.thread_id, MAX(em.received_at) AS newest
+                     FROM email_messages em
+                    WHERE em.account_id = :aid AND em.thread_id = ANY(:tids)
+                    GROUP BY em.thread_id"""
+            ), {"aid": account_id, "tids": tids})).fetchall()
+            if (seen := latest_by_thread.get(str(row.thread_id)))
+            and getattr(seen[0], "received_at", None) is not None
+            and row.newest is not None
+            and row.newest > seen[0].received_at
+        }
     for tid, (row, matches) in latest_by_thread.items():
         if tid in stale:
             continue
         try:
-            keep_label = await project_reply_status_from_matches(
-                db, account_id, row, matches)
-            if keep_label:
-                await _reconcile_thread_labels(
-                    db, provider, account_id, tid, keep_label)
-            await db.commit()
+            async with _tenant_session() as db:
+                keep_label = await project_reply_status_from_matches(
+                    db, account_id, row, matches)
+                if keep_label:
+                    await _reconcile_thread_labels(
+                        db, provider, account_id, tid, keep_label)
         except Exception as exc:  # noqa: BLE001 — one thread must not abort the rest
             _log.warning("email.past_project_status_failed",
                          account_id=account_id, thread_id=tid,
@@ -1384,7 +1389,17 @@ async def _process_past_emails_job(
     ``skip_processed=False`` to deliberately re-apply after changing a rule.
 
     Updates the in-memory progress tracker (_PAST_JOBS) per email so the UI's
-    'Processing N of M…' indicator advances live and History can auto-refresh."""
+    'Processing N of M…' indicator advances live and History can auto-refresh.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the process-past route
+    starts this as a BackgroundTask, which runs inside the tenant scope of its
+    request. The job runs in phases, and each phase is its own
+    ``_tenant_session()`` block with that ambient tenant. No block calls
+    ``commit()``. Phase 0 reads, and it ends where the commit before the
+    provider call was. The provider authenticates with no session open. Each
+    row is one block, where the per-row commit was. The thread projection
+    opens its own blocks. With no tenant bound, phase 0 raises
+    ``TenantUnbound``, and the handler records it on the progress row."""
     # Download the requested range from the provider BEFORE applying. The date
     # picker can reach back past what's been synced locally; without this the
     # range query below is simply empty and the feature no-ops ("No emails found
@@ -1397,80 +1412,80 @@ async def _process_past_emails_job(
     except Exception as e:  # noqa: BLE001 — never abort the apply on a backfill error
         _log.warning("email.process_past_sync_failed",
                      account_id=account_id, error=str(e)[:200])
-    # _get_db() is INSIDE the try: if the pool is exhausted or Postgres blips,
-    # the exception used to escape the BackgroundTask entirely, leaving the
-    # tracker stuck on {"status": "running"} forever. The UI then polls every
-    # 1.5s for the rest of the session behind a banner whose dismiss button is
-    # hidden precisely because it thinks a run is in flight.
-    db = None
+    # The first block is INSIDE the try: if the pool is exhausted or Postgres
+    # blips, the exception used to escape the BackgroundTask entirely, leaving
+    # the tracker stuck on {"status": "running"} forever. The UI then polls
+    # every 1.5s for the rest of the session behind a banner whose dismiss
+    # button is hidden precisely because it thinks a run is in flight.
     try:
-        # H4: background consumer — _process_past_emails_job runs as a
-        # post-response BackgroundTask; no ambient tenant to inherit.
-        db = await _get_db()
-        clause, params = _date_range_clause(
-            account_id, start, end, only_unread, skip_processed)
-        params["limit"] = limit
-        rows = (await db.execute(text(
-            f"""SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
-                       em.body_text, em.snippet, em.from_address,
-                       em.to_addresses, em.cc_addresses, em.received_at
-                FROM email_messages em
-                WHERE {clause}
-                ORDER BY em.received_at ASC LIMIT :limit"""
-        ), params)).fetchall()
-        # The backfill may have pulled in mail the pre-schedule count didn't see —
-        # record the real total and switch the tracker to per-email progress.
-        done_before = 0
-        if skip_processed:
-            seen_clause, seen_params = _date_range_clause(
-                account_id, start, end, only_unread)
-            seen_clause += " AND em.rules_processed_at IS NOT NULL"
-            seen = (await db.execute(text(
-                f"SELECT COUNT(*) AS c FROM email_messages em "
-                f"WHERE {seen_clause}"
-            ), seen_params)).fetchone()
-            done_before = int(seen.c) if seen else 0
-        _past_job_begin_processing(account_id, token=job_token, total=len(rows),
-                                   already_processed=done_before)
-        if not rows:
-            # Not an error, and not "no emails found": when done_before > 0 the
-            # range was simply already covered. The tracker carries the number so
-            # the UI can say which of the two it was.
-            _past_job_finish(account_id, token=job_token)
-            return
+        # Phase 0: every read the loop needs.
+        async with _tenant_session() as db:
+            clause, params = _date_range_clause(
+                account_id, start, end, only_unread, skip_processed)
+            params["limit"] = limit
+            rows = (await db.execute(text(
+                f"""SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
+                           em.body_text, em.snippet, em.from_address,
+                           em.to_addresses, em.cc_addresses, em.received_at
+                    FROM email_messages em
+                    WHERE {clause}
+                    ORDER BY em.received_at ASC LIMIT :limit"""
+            ), params)).fetchall()
+            # The backfill may have pulled in mail the pre-schedule count
+            # didn't see — record the real total and switch the tracker to
+            # per-email progress.
+            done_before = 0
+            if skip_processed:
+                seen_clause, seen_params = _date_range_clause(
+                    account_id, start, end, only_unread)
+                seen_clause += " AND em.rules_processed_at IS NOT NULL"
+                seen = (await db.execute(text(
+                    f"SELECT COUNT(*) AS c FROM email_messages em "
+                    f"WHERE {seen_clause}"
+                ), seen_params)).fetchone()
+                done_before = int(seen.c) if seen else 0
+            _past_job_begin_processing(account_id, token=job_token,
+                                       total=len(rows),
+                                       already_processed=done_before)
+            if not rows:
+                # Not an error, and not "no emails found": when done_before > 0
+                # the range was simply already covered. The tracker carries
+                # the number so the UI can say which of the two it was.
+                _past_job_finish(account_id, token=job_token)
+                return
 
-        about, signature = await _load_assistant_about(db, account_id)
-        owner_row = (await db.execute(text(
-            "SELECT user_id, email_address FROM email_accounts WHERE id = :aid"
-        ), {"aid": account_id})).fetchone()
-        account_user = owner_row.user_id if owner_row else (user_email or "")
-        self_email = (owner_row.email_address or "") if owner_row else ""
-        mr_row = (await db.execute(text(
-            "SELECT multi_rule_execution FROM email_assistant_settings "
-            "WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        multi_rule = bool(mr_row and getattr(mr_row, "multi_rule_execution", None))
-        org_domains = await resolve_org_domains(db, account_id)
-        attach = await _attachment_summaries(db, [r.id for r in rows])
+            about, signature = await _load_assistant_about(db, account_id)
+            owner_row = (await db.execute(text(
+                "SELECT user_id, email_address FROM email_accounts WHERE id = :aid"
+            ), {"aid": account_id})).fetchone()
+            account_user = owner_row.user_id if owner_row else (user_email or "")
+            self_email = (owner_row.email_address or "") if owner_row else ""
+            mr_row = (await db.execute(text(
+                "SELECT multi_rule_execution FROM email_assistant_settings "
+                "WHERE account_id = :aid"
+            ), {"aid": account_id})).fetchone()
+            multi_rule = bool(
+                mr_row and getattr(mr_row, "multi_rule_execution", None))
+            org_domains = await resolve_org_domains(db, account_id)
+            attach = await _attachment_summaries(db, [r.id for r in rows])
+            acc = None
+            if not dry_run:
+                acc = (await db.execute(text(
+                    "SELECT provider, credentials_encrypted FROM email_accounts "
+                    "WHERE id = :id"
+                ), {"id": account_id})).fetchone()
 
+        # The provider authenticates with NO session open — a session parked
+        # `idle in transaction` across a provider call is what queues a
+        # migration's ALTER TABLE behind it (2026-08-06).
         provider = None
-        if not dry_run:
-            acc = (await db.execute(text(
-                "SELECT provider, credentials_encrypted FROM email_accounts "
-                "WHERE id = :id"
-            ), {"id": account_id})).fetchone()
-            if acc:
-                from acb_llm.key_store import get_key_store
-                store = get_key_store()
-                creds = json.loads(store.decrypt(acc.credentials_encrypted))
-                provider = _instantiate_provider(acc.provider, creds)
-                # End the transaction the SELECT above opened before the network
-                # round-trip — a session parked `idle in transaction` across a
-                # provider call is what queues a migration's ALTER TABLE behind
-                # it (2026-08-06). Nothing pending; this only ends it.
-                await db.commit()
-                if not await provider.authenticate():
-                    provider = None
+        if acc:
+            from acb_llm.key_store import get_key_store
+            store = get_key_store()
+            creds = json.loads(store.decrypt(acc.credentials_encrypted))
+            provider = _instantiate_provider(acc.provider, creds)
+            if not await provider.authenticate():
+                provider = None
 
         # How many messages had a drafting action suppressed — surfaced on the
         # job tracker so the UI can say what was skipped rather than let the run
@@ -1490,42 +1505,47 @@ async def _process_past_emails_job(
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
                 attachments=attach.get(str(r.id), ""))
-            try:
-                if multi_rule:
-                    matches = await _match_email_to_rules_multi(
-                        db, account_id, email)
-                else:
-                    m = await _match_email_to_rule(db, account_id, email)
-                    matches = [m] if m else []
-            except LLMUnavailable as exc:
-                # Classifier down — don't stamp the watermark on mail it never
-                # evaluated (see _run_rules_job). The backfill can be re-run; the
-                # message stays rules_processed_at IS NULL and is picked up again.
-                _log.warning("email.process_past_classify_unavailable_skip",
-                             account_id=account_id, message_id=str(r.id),
-                             error=str(exc)[:160])
-                continue
-            apply = (not dry_run) and provider is not None
-            # Strip drafting unless the run explicitly asked for it, so a 90-day
-            # backfill files old mail without spending a drafting call per
-            # message on threads that ended months ago. Done as a pre-pass so the
-            # apply loop itself is the shared _apply_matches.
-            if matches and not draft_replies:
-                stripped_matches = []
-                for match in matches:
-                    match, stripped = _without_drafting(match)
-                    if stripped:
-                        drafts_skipped += 1
-                    stripped_matches.append(match)
-                matches = stripped_matches
-            await _apply_matches(
-                db, provider, r, frm, email, matches,
-                apply=apply, dry_run=dry_run, about=about, signature=signature,
-                account_user=account_user, account_id=account_id,
-            )
-            await _stamp_processed_watermark(
-                db, r.id, provider=provider, dry_run=dry_run)
-            await db.commit()
+            # One block per row. It lands where the per-row commit used to
+            # land. EM-T4a-4 owns the model and provider I/O inside it.
+            async with _tenant_session() as db:
+                try:
+                    if multi_rule:
+                        matches = await _match_email_to_rules_multi(
+                            db, account_id, email)
+                    else:
+                        m = await _match_email_to_rule(db, account_id, email)
+                        matches = [m] if m else []
+                except LLMUnavailable as exc:
+                    # Classifier down — don't stamp the watermark on mail it
+                    # never evaluated (see _run_rules_job). The backfill can
+                    # be re-run; the message stays rules_processed_at IS NULL
+                    # and is picked up again.
+                    _log.warning("email.process_past_classify_unavailable_skip",
+                                 account_id=account_id, message_id=str(r.id),
+                                 error=str(exc)[:160])
+                    continue
+                apply = (not dry_run) and provider is not None
+                # Strip drafting unless the run explicitly asked for it, so a
+                # 90-day backfill files old mail without spending a drafting
+                # call per message on threads that ended months ago. Done as a
+                # pre-pass so the apply loop itself is the shared
+                # _apply_matches.
+                if matches and not draft_replies:
+                    stripped_matches = []
+                    for match in matches:
+                        match, stripped = _without_drafting(match)
+                        if stripped:
+                            drafts_skipped += 1
+                        stripped_matches.append(match)
+                    matches = stripped_matches
+                await _apply_matches(
+                    db, provider, r, frm, email, matches,
+                    apply=apply, dry_run=dry_run, about=about,
+                    signature=signature, account_user=account_user,
+                    account_id=account_id,
+                )
+                await _stamp_processed_watermark(
+                    db, r.id, provider=provider, dry_run=dry_run)
             # Remember the NEWEST in-range message per thread and what it
             # matched. Rows are oldest-first (deliberately, so learning builds
             # chronologically), so the last write per thread is its newest.
@@ -1540,16 +1560,13 @@ async def _process_past_emails_job(
 
         if not dry_run and latest_by_thread:
             await _project_thread_status_for_backfill(
-                db, provider, account_id, latest_by_thread)
+                provider, account_id, latest_by_thread)
 
         _past_job_finish(account_id, token=job_token,
                          drafts_skipped=drafts_skipped)
     except Exception as e:  # noqa: BLE001 — record failure for the UI, don't crash the worker
         _log.warning("email.process_past_failed", account_id=account_id, error=str(e)[:200])
         _past_job_finish(account_id, token=job_token, error=str(e))
-    finally:
-        if db is not None:
-            await db.close()
 
 
 async def _run_rules_job(

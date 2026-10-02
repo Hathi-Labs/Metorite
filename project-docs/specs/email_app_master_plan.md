@@ -564,7 +564,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | 🟡 **EM-T4a-0 BUILT, not merged (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -1230,7 +1230,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** Not built. Audited on 2026-10-02 against `ea9467a9`. Each anchor below was read in the code on that date. EM-T4 has eight parts, and each part is one PR.
+**Status.** 🟡 EM-T4a-0 is BUILT, not merged (2026-10-02, branch `email-t4`). The other eight parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1301,6 +1301,10 @@ Option (B), a listener on the seam, stays rejected.
 Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and it gives a watched fake model and a watched fake provider. Each fake fails the test when a block is open during its call. Each part adds its functions to `tests/unit/test_email_no_session_across_io.py`. A companion test proves that the fence fails on a function that holds a block across a fake call.
 
 ##### EM-T4a-0 — the request jobs bind a tenant (first, 2026-10-02)
+
+**Status (2026-10-02).** 🟡 BUILT, not merged. The ten jobs open `_tenant_session()` in phases and call no `commit()`. `routes/email` keeps one `_get_db()` site, the discovery read of `mailbox_owner`. `H2_BASELINE_ELSEWHERE` is now 80. The fence is `tests/unit/test_email_request_jobs_tenancy.py`: the AST fences, the cases with no tenant, the stream task and R8.
+
+**Build notes.** Three helpers lost their commit: `_mark_history_held_back`, `_maybe_refresh_learned_style` and `_project_thread_status_for_backfill`. `_store_ai_draft` and `_maybe_refresh_learned_style` swallow their own failure, so each now runs in `_savepoint`. `_learn_from_sent` uses two blocks, not three. Block B holds the pattern rows, Mem0 and the style refresh, so the commit count of `test_email_learning.py` stays at 2. An early return inside a block now commits that block. For the jobs that use `provider_session`, the only write that this adds is the rotated credentials.
 
 **Why first.** Email is live in the nav since #564. The 12 request jobs below open `_get_db()`,
 which binds no tenant. Under FORCE RLS each one reads zero rows. So compose assist answers

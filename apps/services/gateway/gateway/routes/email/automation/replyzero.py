@@ -22,7 +22,6 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
-    _get_db,
     _tenant_session,
     _instantiate_provider,
     _llm_json,
@@ -969,35 +968,39 @@ async def _reconcile_labels_bg(
     Used by Mark Done / Reopen so the provider + local labels match the new
     status — without this the status row alone moved the thread in our view but
     left the stale Reply / Awaiting / Follow-up labels behind on the provider.
-    Best-effort."""
+    Best-effort.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the resolve route starts
+    this as a BackgroundTask, and the task-close hop of
+    ``routes/tasks/email_link.py`` awaits it inside its own request. Both run
+    inside the tenant scope of a request, so this opens one
+    ``_tenant_session()`` block with that ambient tenant, and the seam commits
+    it. With no tenant bound the block raises ``TenantUnbound``, and the
+    handler below logs it. The provider calls stay inside the block, as they
+    did before, and EM-T4a-4 owns that I/O."""
     if not thread_id:
         return
-    # H4: background consumer — _reconcile_labels_bg runs as a
-    # post-response BackgroundTask; no ambient tenant to inherit.
-    db = await _get_db()
     try:
-        acc = (await db.execute(text(
-            "SELECT provider, credentials_encrypted FROM email_accounts "
-            "WHERE id = :id"
-        ), {"id": account_id})).fetchone()
-        if not acc:
-            return
-        from acb_llm.key_store import get_key_store  # noqa: PLC0415
-        store = get_key_store()
-        creds = json.loads(store.decrypt(acc.credentials_encrypted))
-        provider = _instantiate_provider(acc.provider, creds)
-        if not await provider.authenticate():
-            return
-        await _reconcile_thread_labels(
-            db, provider, account_id, thread_id, keep_label)
-        if provider.credentials_dirty():
-            await _persist_rotated_creds(db, store, account_id, provider)
-        await db.commit()
+        async with _tenant_session() as db:
+            acc = (await db.execute(text(
+                "SELECT provider, credentials_encrypted FROM email_accounts "
+                "WHERE id = :id"
+            ), {"id": account_id})).fetchone()
+            if not acc:
+                return
+            from acb_llm.key_store import get_key_store  # noqa: PLC0415
+            store = get_key_store()
+            creds = json.loads(store.decrypt(acc.credentials_encrypted))
+            provider = _instantiate_provider(acc.provider, creds)
+            if not await provider.authenticate():
+                return
+            await _reconcile_thread_labels(
+                db, provider, account_id, thread_id, keep_label)
+            if provider.credentials_dirty():
+                await _persist_rotated_creds(db, store, account_id, provider)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.reconcile_labels_bg_failed",
                      account_id=account_id, error=str(exc)[:160])
-    finally:
-        await db.close()
 
 
 async def apply_thread_status_correction(
@@ -1376,37 +1379,36 @@ async def _reclassify_reply_zero_job(
     Resumable by construction: a pass that makes NO progress (LLM down, so the
     inbound remainder can't be classified) stops the drain rather than spinning —
     those threads keep their gap, so re-triggering reclassify picks up where this
-    left off. Progress is published per pass for the UI to poll. Best-effort."""
-    # H4: background consumer — _reclassify_reply_zero_job runs as a
-    # post-response BackgroundTask; no ambient tenant to inherit.
-    db = await _get_db()
+    left off. Progress is published per pass for the UI to poll. Best-effort.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the reclassify route
+    starts this as a BackgroundTask, which runs inside the tenant scope of its
+    request. Each step is its own ``_tenant_session()`` block with that ambient
+    tenant, and none calls ``commit()``. The reset DELETE is one block, and the
+    first count is a second block, where the commit between them was. Each
+    pass count is a block of its own. With no tenant bound, the first block
+    raises ``TenantUnbound``, and the handler records it on the progress row."""
     try:
-        await db.execute(text(
-            "DELETE FROM email_thread_status "
-            "WHERE account_id = :aid AND status <> 'DONE'"
-        ), {"aid": account_id})
-        await db.commit()
-        total = await _count_reply_zero_backlog(db, account_id)
+        async with _tenant_session() as db:
+            await db.execute(text(
+                "DELETE FROM email_thread_status "
+                "WHERE account_id = :aid AND status <> 'DONE'"
+            ), {"aid": account_id})
+        async with _tenant_session() as db:
+            total = await _count_reply_zero_backlog(db, account_id)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.reclassify_reset_failed",
                      account_id=account_id, error=str(exc)[:160])
         _RECLASSIFY_JOBS.finish(
             account_id, token, status="error", error=str(exc)[:160],
             finished_at=_dt_now_iso())
-        await db.close()
         return
-    finally:
-        await db.close()
 
     _RECLASSIFY_JOBS.update(account_id, token, total=total, remaining=total)
     prev_remaining: int | None = None
     for _ in range(_RECLASSIFY_MAX_PASSES):
-        # H4: background consumer (see above) — per-batch session of the same job.
-        db = await _get_db()
-        try:
+        async with _tenant_session() as db:
             remaining = await _count_reply_zero_backlog(db, account_id)
-        finally:
-            await db.close()
         _RECLASSIFY_JOBS.update(
             account_id, token, remaining=remaining,
             processed=max(0, total - remaining))

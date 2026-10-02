@@ -26,7 +26,6 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     _account_scope,
     _assert_account_owner,
-    _get_db,
     _tenant_session,
     _llm_json,
     _log,
@@ -806,14 +805,17 @@ async def _create_block_filter(
 ) -> None:
     """Best-effort background task: create a provider-native auto-archive filter
     for ``email`` and record its id on the newsletter row. No-ops gracefully for
-    providers without filters (IMAP) — the AUTO_ARCHIVED sweep covers those."""
-    # H4: background consumer — _create_block_filter runs as a
-    # post-response BackgroundTask; no ambient tenant to inherit.
-    db = await _get_db()
+    providers without filters (IMAP) — the AUTO_ARCHIVED sweep covers those.
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the newsletter routes
+    start this as a BackgroundTask, which runs inside the tenant scope of its
+    request. One ``_tenant_session()`` block with that ambient tenant, and the
+    seam commits it. With no tenant bound the block raises ``TenantUnbound``,
+    and the handler below logs it."""
     try:
-        # Unscoped session: background task, no request user. Missing account
-        # raises 404 → caught by the broad handler below.
-        async with provider_session(
+        # No request user to scope by. A missing account raises 404, and the
+        # broad handler below catches it.
+        async with _tenant_session() as db, provider_session(
             db, None, account_id=account_id, require_auth=False,
         ) as sess:
             if not sess.authed:
@@ -827,50 +829,48 @@ async def _create_block_filter(
                     "updated_at = now() WHERE account_id = :aid "
                     "AND LOWER(email) = LOWER(:email)"
                 ), {"fid": filter_id, "aid": account_id, "email": email})
-        await db.commit()
         _log.info("email.block_filter", account_id=account_id, email=email,
                   filter_id=filter_id or "none")
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.block_filter_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 async def _remove_block_filter(account_id: str, email: str) -> None:
     """Best-effort background task: delete the provider-native auto-archive
     filter recorded for ``email`` and clear it on the newsletter row. No-ops when
-    no filter is recorded (e.g. IMAP, or never auto-archived)."""
-    # H4: background consumer — _remove_block_filter runs as a
-    # post-response BackgroundTask; no ambient tenant to inherit.
-    db = await _get_db()
+    no filter is recorded (e.g. IMAP, or never auto-archived).
+
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): the newsletter routes
+    start this as a BackgroundTask, which runs inside the tenant scope of its
+    request. One ``_tenant_session()`` block with that ambient tenant, and the
+    seam commits it. With no tenant bound the block raises ``TenantUnbound``,
+    and the handler below logs it."""
     try:
-        row = (await db.execute(text(
-            """SELECT auto_archive_filter_id AS fid FROM email_newsletters
-               WHERE account_id = :aid AND LOWER(email) = LOWER(:email)"""
-        ), {"aid": account_id, "email": email})).fetchone()
-        if not row or not row.fid:
-            return
-        # Unscoped session: background task, no request user. The row is
-        # cleared even when auth fails — matching the pre-refactor behaviour
-        # (the filter id is stale either way once the user unblocked).
-        async with provider_session(
-            db, None, account_id=account_id, require_auth=False,
-        ) as sess:
-            if sess.authed:
-                await sess.provider.delete_filter(row.fid)
-            await db.execute(text(
-                "UPDATE email_newsletters SET auto_archive_filter_id = NULL, "
-                "updated_at = now() WHERE account_id = :aid "
-                "AND LOWER(email) = LOWER(:email)"
-            ), {"aid": account_id, "email": email})
-        await db.commit()
+        async with _tenant_session() as db:
+            row = (await db.execute(text(
+                """SELECT auto_archive_filter_id AS fid FROM email_newsletters
+                   WHERE account_id = :aid AND LOWER(email) = LOWER(:email)"""
+            ), {"aid": account_id, "email": email})).fetchone()
+            if not row or not row.fid:
+                return
+            # No request user to scope by. The row is cleared even when auth
+            # fails — matching the pre-refactor behaviour (the filter id is
+            # stale either way once the user unblocked).
+            async with provider_session(
+                db, None, account_id=account_id, require_auth=False,
+            ) as sess:
+                if sess.authed:
+                    await sess.provider.delete_filter(row.fid)
+                await db.execute(text(
+                    "UPDATE email_newsletters SET auto_archive_filter_id = NULL, "
+                    "updated_at = now() WHERE account_id = :aid "
+                    "AND LOWER(email) = LOWER(:email)"
+                ), {"aid": account_id, "email": email})
         _log.info("email.block_filter_removed", account_id=account_id, email=email)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.block_filter_remove_failed", account_id=account_id,
                      error=str(exc)[:200])
-    finally:
-        await db.close()
 
 
 class UnsubscribeRequest(BaseModel):
