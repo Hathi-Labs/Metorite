@@ -43,7 +43,9 @@ const PRESET_RULES: PresetRule[] = [
     automated: true,
     run_on_threads: true,
     conditional_operator: "AND",
-    actions: [{ type: "LABEL", label: "Needs Reply" }, { type: "DRAFT_EMAIL" }],
+    // No DRAFT_EMAIL here (D-EM-6). The gateway adds it to Needs Reply only
+    // when the mailbox has "Auto draft replies" on.
+    actions: [{ type: "LABEL", label: "Needs Reply" }],
   },
   {
     name: "Awaiting Reply",
