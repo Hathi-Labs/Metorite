@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
+from gateway import decide_features
 from gateway.routes.email.automation.identity import sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
@@ -1206,40 +1207,76 @@ async def sender_categories(
         }
 
 
-async def _llm_is_cold(email: dict[str, str]) -> tuple[bool, str]:
-    """Classify whether an email is cold outreach. (is_cold, reason)."""
-    try:
-        sys_prompt = (
-            "Decide if this is a COLD email: unsolicited sales, marketing, or "
-            "recruiting outreach from someone with no prior relationship to the "
-            'recipient. Respond ONLY JSON {"cold": <bool>, "reason": "<short>"}.'
-        )
-        # Richer envelope (the cold check reuses the classifier email dict, which
-        # carries from_name/to/cc/date): a name + direct-vs-bulk addressing helps
-        # tell a personal approach from a blast.
-        frm = email.get("from", "")
-        from_disp = (f"{email['from_name']} <{frm}>"
-                     if email.get("from_name") else frm)
-        to_line = f"To: {email['to']}\n" if email.get("to") else ""
-        cc_line = f"Cc: {email['cc']}\n" if email.get("cc") else ""
-        date_line = f"Date: {email['date']}\n" if email.get("date") else ""
-        user_prompt = (
-            f"From: {from_disp}\n{to_line}{cc_line}{date_line}"
-            f"Subject: {email.get('subject', '')}\n"
-            f"Body:\n{(email.get('body', '') or '')[:1500]}"
-        )
-        data, _content, _used = await _llm_json(
-            "tier-fast",
-            [{"role": "system", "content": sys_prompt},
-             {"role": "user", "content": user_prompt}],
-            max_tokens=500,
-        )
-        if isinstance(data, dict):
-            return bool(data.get("cold")), str(data.get("reason", ""))[:300]
-        return False, ""
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("email.cold_classify_failed", error=str(exc)[:200])
-        return False, ""
+def _cold_user_prompt(email: dict[str, str]) -> str:
+    """The email text the cold check sends. The old call and ``decide`` share it."""
+    # Richer envelope (the cold check reuses the classifier email dict, which
+    # carries from_name/to/cc/date): a name + direct-vs-bulk addressing helps
+    # tell a personal approach from a blast.
+    frm = email.get("from", "")
+    from_disp = (f"{email['from_name']} <{frm}>"
+                 if email.get("from_name") else frm)
+    to_line = f"To: {email['to']}\n" if email.get("to") else ""
+    cc_line = f"Cc: {email['cc']}\n" if email.get("cc") else ""
+    date_line = f"Date: {email['date']}\n" if email.get("date") else ""
+    return (
+        f"From: {from_disp}\n{to_line}{cc_line}{date_line}"
+        f"Subject: {email.get('subject', '')}\n"
+        f"Body:\n{(email.get('body', '') or '')[:1500]}"
+    )
+
+
+def _cold_question(email: dict[str, str]) -> tuple[str, dict[str, Any]]:
+    """The ``decide`` request for the cold check (EM-T5, shadow only)."""
+    from acb_llm import BooleanQuestion  # shadow mode only
+
+    return _cold_user_prompt(email), {"cold": BooleanQuestion(
+        instructions=(
+            "Is this a COLD email: unsolicited sales, marketing, or recruiting "
+            "outreach from someone with no prior relationship to the recipient?"
+        ),
+        criteria={
+            "true": "Unsolicited sales, marketing or recruiting outreach "
+                    "from someone with no prior relationship.",
+            "false": "Any other email.",
+        },
+    )}
+
+
+async def _llm_is_cold(
+    email: dict[str, str], *, account_id: str | None = None,
+) -> tuple[bool, str]:
+    """Classify whether an email is cold outreach. (is_cold, reason).
+
+    EM-T5: in ``shadow`` mode ``decide`` runs beside the old call, and the
+    result is always the old call's (``gateway/decide_features.py``).
+    """
+
+    async def _old() -> tuple[bool, str]:
+        try:
+            sys_prompt = (
+                "Decide if this is a COLD email: unsolicited sales, marketing, or "
+                "recruiting outreach from someone with no prior relationship to the "
+                'recipient. Respond ONLY JSON {"cold": <bool>, "reason": "<short>"}.'
+            )
+            user_prompt = _cold_user_prompt(email)
+            data, _content, _used = await _llm_json(
+                "tier-fast",
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": user_prompt}],
+                max_tokens=500,
+            )
+            if isinstance(data, dict):
+                return bool(data.get("cold")), str(data.get("reason", ""))[:300]
+            return False, ""
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("email.cold_classify_failed", error=str(exc)[:200])
+            return False, ""
+
+    return await decide_features.shadow(
+        "email.cold_check", _old, account_id=account_id,
+        build=lambda: _cold_question(email),
+        compare=decide_features.compare_boolean(lambda r: r[0], qid="cold"),
+    )
 
 
 async def _maybe_block_cold(
@@ -1266,7 +1303,7 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "tojson": json.dumps([{"email": sender}])})).fetchone()
     if replied:
         return
-    is_cold, reason = await _llm_is_cold(email)
+    is_cold, reason = await _llm_is_cold(email, account_id=account_id)
     if not is_cold:
         return
     await db.execute(text(
