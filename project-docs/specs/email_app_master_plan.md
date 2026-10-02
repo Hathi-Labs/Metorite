@@ -559,7 +559,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
-| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
+| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
 | **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
@@ -1050,6 +1050,165 @@ so that request also keeps the member path.
 
 The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
 the real page. The proxy fence is `src/proxy.test.ts`.
+
+#### 10.4.5 EM-T2 in full
+
+**Status.** EM-T2b is BUILT, not merged. EM-T2a and EM-T2c are not built. Audited against
+`0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
+each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
+
+**Measured state (2026-10-02).**
+
+- `17_email_accounts.sql:30` declares `UNIQUE(user_id, provider, email_address)` with no tenant.
+  `47_email_default_account.sql:17` declares `idx_email_accounts_one_default` on `(user_id)`
+  with no tenant either.
+- No numbered migration declares `email_accounts.organization_id`. Only
+  `generated/01_add_columns.sql` declares it, and the ladder does not replay that file (H-104).
+  Production has the column. A fresh developer database does not.
+- No code names the old constraint. `_save_account` (`transport/oauth.py`) and
+  `create_account` (`transport/accounts.py`) read first and then insert. Neither uses `ON CONFLICT`.
+- The collision is latent today, because `app_user` holds each address once. It fires when a
+  member moves to another organization and connects again. Row level security hides the old row,
+  so the read finds nothing and the insert fails with a unique violation.
+- `core.py` `_get_redis()` opens a raw client per call. The key `email:att:cache:{id}` in
+  `transport/attachments.py` has no tenant. No code binds the tenant of `tenant_redis`.
+- The pool of `get_tenant_redis()` decodes replies as UTF-8. A binary attachment does not decode,
+  so a plain conversion turns every cache read into a silent miss.
+- 107 route handlers exist in `routes/email/`. 94 carry an owner predicate or call an owner
+  helper. 13 carry neither, and each has a reason.
+- **One leak.** `_build_chat_context` (`automation/chat.py`) keeps an `account_id` that the
+  member does not own when the member has zero mailboxes or more than one. It then reads the
+  counts and sender categories of that mailbox into the prompt.
+
+##### EM-T2a — account uniqueness per organization (migration 223)
+
+1. Add `infra/postgres/223_email_accounts_unique_per_tenant.sql`. Copy the shape of migration 209.
+2. Declare `organization_id UUID REFERENCES organization (id) ON DELETE CASCADE DEFAULT
+   current_setting('app.tenant_id', true)::uuid`. Use `ADD COLUMN IF NOT EXISTS`. Write
+   `REFERENCES` before `DEFAULT`.
+3. Fill each NULL row from `app_user` where `lower(email) = lower(user_id)`. When only one
+   organization exists, give it the remaining rows. Report the rows left NULL with `RAISE WARNING`.
+4. Drop the constraint `email_accounts_user_id_provider_email_address_key`. Create
+   `uq_email_accounts_org_owner_mailbox` on `(organization_id, user_id, provider, email_address)`.
+5. Drop `idx_email_accounts_one_default`. Create `uq_email_accounts_org_one_default` on
+   `(organization_id, user_id) WHERE is_default`.
+6. Run the file between `BEGIN` and `COMMIT`. Do not use `CONCURRENTLY`. The table is small, and a
+   failed concurrent build leaves an INVALID index.
+7. `create_account` names `organization_id` in its INSERT, from the session. With no
+   organization in the session, it returns 403.
+
+**One file, not two releases (R6).** The drop makes the rule weaker, never stronger. Old code
+never names the constraint, so old code works on the new schema. Migration 209 did the same.
+
+**Done when.**
+
+- A member with a mailbox row in org A connects the same mailbox in org B. Both rows exist.
+- A second row with the same organization, member, provider and address raises a unique violation.
+- The first mailbox of a member in org B gets `is_default = true` while org A holds a default.
+- 223 applies to a database that has the generated tenancy phases and the old constraint.
+- 223 applies to a fresh ladder database with no tenancy phases. A second run changes nothing.
+- No unique index on `email_accounts`, other than the primary key, lacks `organization_id`.
+- No code and no migration names a conflict target on `email_accounts`.
+- R8: the cases above run against a real database as a non-owner role, for two organizations.
+
+**Fence.** `tests/unit/test_email_account_unique_per_tenant.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_account_unique_per_tenant.py \
+  tests/unit/test_email_tenant_bind_rls.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_org_purge_tenant.py tests/unit/test_tenant_coverage.py \
+  tests/unit/test_tenancy_insert_fence.py tests/unit/test_h3_rls_promotion_rehearsal.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+```
+
+The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line for 223 and
+`\d email_accounts` on the box.
+
+##### EM-T2b — the attachment cache goes through `tenant_redis`
+
+**Status.** BUILT, not merged (2026-10-02, branch `email-t2b`). EM-T2a and EM-T2c are not built.
+
+1. Extend the seam. `get_tenant_redis(binary=True)` returns the same wrapper over a second pool
+   with `decode_responses=False`. Do not add a second wrapper class. Size the second pool small.
+2. Delete `_get_redis()` from `core.py` and its import from `transport/attachments.py`.
+3. After the owner check, `download_attachment` binds with `organization_scope(user.organization_id)`.
+4. Build the key with `key("email-att", attachment_id)`.
+5. When the session has no organization, skip the cache and make no Redis call.
+6. Delete the `core.py` entry from `_ALLOWED_DIRECT_REDIS` in `test_tenant_redis.py`.
+7. Update the MT-1e status in `saas_multitenancy.md`.
+
+**Non-goals.** No size cap on the cache. No read of the old keys, because they expire in one
+hour. No change to the session that stays open across the provider call (EM-T4).
+
+**Done when.**
+
+- `core.py` and `attachments.py` import no `redis` package. The allowlist ratchet passes.
+- A cache entry that org A writes is a miss for org B with the same attachment id.
+- The key that the handler writes starts with `cc:<organization>:email-att:`.
+- Bytes that are not valid UTF-8 come back unchanged through the binary client.
+- A session with no organization gets the attachment from the provider, with no Redis call.
+
+**Fences.** `tests/unit/test_tenant_redis.py` (the ratchet and a new binary case) and
+`tests/unit/test_email_attachment_cache_tenancy.py`.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_tenant_redis.py tests/unit/test_email_attachment_cache_tenancy.py \
+  tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_inline.py -q
+uv run ruff check packages/acb_common apps/services/gateway/gateway/routes/email tests/unit
+```
+
+##### EM-T2c — the owner-scope fence (D-EM-4)
+
+1. In `_build_chat_context`, use `account_id` only when the member owns it. Otherwise use the one
+   mailbox of the member, or none.
+2. `ai_chat` reads `_account_models` with the resolved id only.
+3. Add `tests/unit/test_email_owner_scope_fence.py`. It parses each `@router` handler in
+   `gateway/routes/email/`.
+4. A handler passes when it carries an owner predicate on `user_id`. It also passes when it calls
+   `_account_scope`, `_assert_account_owner` or `provider_session`.
+5. Every other handler must have an entry in `OWNER_SCOPE_EXEMPT` with a reason.
+6. The list starts with the 13 handlers of 2026-10-02: `ai_chat`, `quick_action`,
+   `cleanup_status`, `compose_assist`, `compose_assist_stream`, `process_past_status`,
+   `voice_profile_status`, `image_proxy`, `oauth_authorize`, `oauth_app_info`, `oauth_callback`,
+   `import_artifact` and `microsoft_webhook`.
+7. A second list names each module outside `routes/email` that reads an email child table:
+   `crm/activities.py`, `crm/auto_lead.py`, `tasks/capture_email.py`, `tasks/email_link.py`
+   and the `email_ingestion` package. Each entry has a reason.
+8. `tasks/email_link.py` writes the thread status of the mailbox in the task origin. It does not
+   check who closes the task. Add an owner guard: when the member who closes the task does not own
+   the mailbox, the code skips the mailbox write and logs it.
+9. EM-T3d adds one entry for the connected-member count. The reason says that the query returns a
+   count and no address.
+
+**Limit.** The fence reads one function at a time. It does not follow data. The R8 case below
+covers the leak that it cannot see.
+
+**Done when.**
+
+- Member B sends the `account_id` of the mailbox of member A to `POST /email/ai/chat`. The
+  context holds no count, no category and no address of that mailbox (R8, one organization).
+- Member B closes a task whose origin is a mailbox of member A. The thread status of that mailbox
+  does not change.
+- The fence fails on a synthetic handler that reads `email_messages` with no owner proof.
+- The fence fails on a new module outside `routes/email` that reads an email child table.
+- A stale entry, or an entry with no reason, fails the fence.
+
+**Fences.** `tests/unit/test_email_owner_scope_fence.py` and
+`tests/unit/test_email_chat_context_owner.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_email_chat_context_owner.py tests/unit/test_email_imports.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+```
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
