@@ -9,12 +9,26 @@ blends cosine similarity with the full-text rank.
 Gated by ``email_semantic_search_enabled``: when off, this is a no-op and search
 stays pure lexical (Phase 1, complete on its own). content_hash skips re-embedding
 a message whose body hasn't changed since last time (embeddings cost tokens).
+
+Phase (f) of the scheduler runs three steps, so no session stays open across
+the model call (WS-17 EM-T4a-1, ``email_app_master_plan.md`` §10.4.6):
+
+1. ``select_pending_embeddings`` reads the candidates. It takes a session, and
+   it returns ``None`` when semantic search is off.
+2. ``compute_embeddings`` calls ``_embed_batch``. It takes NO session.
+3. ``write_embeddings`` writes the vectors. It takes a session.
+
+The read and write steps open no session and never commit. The scheduler opens
+one ``tenant_session(org)`` for each, and the seam commits when the block exits.
+R7: ``tests/unit/test_email_scheduler_tenancy.py``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import text
@@ -42,7 +56,7 @@ def _hash_source(subject: str | None, body: str | None) -> str:
     """The EXACT text whose sha256 is stored as content_hash.
 
     This must be byte-identical to what the SQL candidate predicate in
-    ``embed_pending_messages`` hashes, or a message's stored hash never matches
+    ``select_pending_embeddings`` hashes, or a message's stored hash never matches
     the predicate and it is re-selected + re-embedded every sweep tick, burning
     tokens and never settling. So this mirrors the SQL exactly:
 
@@ -104,17 +118,30 @@ async def embed_query(query: str) -> list[float] | None:
     return vecs[0] if vecs else None
 
 
-async def embed_pending_messages(
+@dataclass(frozen=True)
+class PendingEmbeddings:
+    """What the read step found: one entry per message, in the same order in
+    each tuple, and the model to embed them with."""
+
+    model: str
+    message_ids: tuple[str, ...]
+    hashes: tuple[str, ...]
+    texts: tuple[str, ...]
+
+
+async def select_pending_embeddings(
     db: Any, account_id: str, *, batch: int = DEFAULT_BATCH,
-) -> int:
-    """Embed up to ``batch`` of the account's messages that have no embedding yet
-    (or whose body changed since last embed). Returns how many were embedded.
-    No-op + returns 0 when semantic search is disabled. Caller owns the session;
-    this commits its own writes so progress survives a later failure."""
-    from acb_common.settings import get_settings  # noqa: PLC0415
+) -> PendingEmbeddings | None:
+    """The read step: up to ``batch`` of the account's messages that have no
+    embedding yet (or whose body changed since last embed).
+
+    Returns ``None`` when semantic search is disabled — with no statement —
+    or when no message waits. Takes the caller's session, opens none and never
+    commits."""
+    from acb_common.settings import get_settings
     settings = get_settings()
     if not settings.email_semantic_search_enabled:
-        return 0
+        return None
     model = settings.email_embedding_model
 
     # Candidates: messages with a body but no current embedding, OR whose stored
@@ -135,21 +162,49 @@ async def embed_pending_messages(
         {"aid": account_id, "lim": batch},
     )).fetchall()
     if not rows:
-        return 0
+        return None
 
     # content_hash MUST match the SQL candidate predicate above byte-for-byte
     # (see _hash_source): the SQL hashes the raw, UNstripped coalesce of the FULL
     # "subject\n\nbody" — so we hash the same here, uncapped and unstripped.
     # (The embedded text below is separately capped + stripped; only the hash
     # source has to agree with SQL.)
-    hashes = [_content_hash(_hash_source(r.subject, r.body_text)) for r in rows]
-    texts = [_embed_text(r.subject, r.body_text) for r in rows]
-    vectors = await _embed_batch(texts, model)
-    if vectors is None or len(vectors) != len(rows):
-        return 0
+    return PendingEmbeddings(
+        model=model,
+        message_ids=tuple(str(r.id) for r in rows),
+        hashes=tuple(_content_hash(_hash_source(r.subject, r.body_text))
+                     for r in rows),
+        texts=tuple(_embed_text(r.subject, r.body_text) for r in rows),
+    )
 
+
+async def compute_embeddings(
+    pending: PendingEmbeddings,
+) -> list[list[float]] | None:
+    """The model step: one vector per pending message, through ``_embed_batch``.
+
+    Takes NO session. The caller holds none open across the model call
+    (EM-T4a-1). Returns ``None`` when the call fails or answers the wrong
+    count, and the caller then writes nothing this tick."""
+    vectors = await _embed_batch(list(pending.texts), pending.model)
+    if vectors is None or len(vectors) != len(pending.message_ids):
+        return None
+    return vectors
+
+
+async def write_embeddings(
+    db: Any, account_id: str, pending: PendingEmbeddings,
+    vectors: Sequence[Sequence[float]],
+) -> int:
+    """The write step: upsert one embedding per message. Returns how many it
+    wrote.
+
+    Takes the caller's session, opens none and never commits. The seam commits
+    when the caller's ``tenant_session`` block exits, so each INSERT runs under
+    the tenant binding."""
     embedded = 0
-    for r, vec, h in zip(rows, vectors, hashes, strict=False):
+    for mid, vec, h in zip(pending.message_ids, vectors, pending.hashes,
+                           strict=False):
         # pgvector accepts the '[..]' text form for a vector literal.
         vec_literal = "[" + ",".join(f"{x:.7f}" for x in vec) + "]"
         await db.execute(text(
@@ -161,13 +216,12 @@ async def embed_pending_messages(
                        model = EXCLUDED.model,
                        content_hash = EXCLUDED.content_hash,
                        updated_at = now()"""),
-            {"mid": str(r.id), "aid": account_id, "emb": vec_literal,
-             "model": model, "hash": h},
+            {"mid": mid, "aid": account_id, "emb": vec_literal,
+             "model": pending.model, "hash": h},
         )
         embedded += 1
 
     if embedded:
-        await db.commit()
         logger.info("email_embed.done account=%s embedded=%d", account_id,
                     embedded)
     return embedded
