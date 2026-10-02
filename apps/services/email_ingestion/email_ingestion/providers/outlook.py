@@ -21,6 +21,7 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
@@ -101,6 +102,9 @@ class OutlookProvider(BaseEmailProvider):
         self._app: OAuthApp = app or OAuthApp()
         self._http: httpx.AsyncClient | None = None
         self._creds_dirty = False
+        # RefreshingBearer refreshes under this lock, so two requests that
+        # get a 401 at the same time cause one refresh (EM-T4c).
+        self._refresh_lock = asyncio.Lock()
         # Lower-cased master-category names, fetched once per provider instance.
         # A sweep or rule run applies labels to many messages through the SAME
         # instance; without this every apply re-GET the whole master list just to
@@ -124,14 +128,14 @@ class OutlookProvider(BaseEmailProvider):
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
+        # No Authorization header here. RefreshingBearer sets the current
+        # token on each request, and refreshes once on a 401 (EM-T4c).
         if self._http is None:
             await self.authenticate()
             self._http = httpx.AsyncClient(
                 base_url=GRAPH_API_BASE,
-                headers={
-                    "Authorization": f"Bearer {self._access_token}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Content-Type": "application/json"},
+                auth=RefreshingBearer(self),
                 timeout=30.0,
             )
         return self._http
@@ -223,7 +227,11 @@ class OutlookProvider(BaseEmailProvider):
                 timeout=10.0,
             ) as client:
                 resp = await client.get(f"{GRAPH_API_BASE}/me")
-                if resp.status_code == 401 and self._refresh_token:
+                # A token that a refresh on this instance made, and that
+                # still gets a 401, gets no second refresh (EM-T4c). A sync
+                # calls this twice, once itself and once in _get_client.
+                if (resp.status_code == 401 and self._refresh_token
+                        and not self._creds_dirty):
                     await self._refresh_access_token()
                     return True
                 return resp.is_success
@@ -265,11 +273,14 @@ class OutlookProvider(BaseEmailProvider):
             except httpx.HTTPStatusError as exc:
                 # Defensive: if a $select field is still rejected (400) on some
                 # account type, retry once with default properties so listing
-                # degrades instead of failing outright.
+                # degrades instead of failing outright. The 400 of a failed
+                # token refresh (EM-T4c) comes from the token endpoint, so it
+                # goes back to the caller.
                 if (
                     params and "$select" in params
                     and exc.response is not None
                     and exc.response.status_code == 400
+                    and not str(exc.request.url).startswith(MICROSOFT_OAUTH_BASE)
                 ):
                     params = {k: v for k, v in params.items() if k != "$select"}
                     resp = await client.get(url, params=params)

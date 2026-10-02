@@ -12,6 +12,7 @@
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > 🟡 **EM-T4f part 1 is BUILT, not merged (2026-10-02).** A disconnect bounds its wait at 5 seconds and answers 409 when a sync holds the row. It also removes the Graph subscription. Part 2 (one sync for each mailbox) is not built, so the cause of the wait of 2 minutes stays (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -582,7 +583,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED, not built (2026-10-02).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
@@ -1508,7 +1509,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). The other seven parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). The other six parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1837,6 +1838,75 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway pa
 
 **Files.** `apps/services/email_ingestion/email_ingestion/providers/base.py`, `outlook.py`, `gmail.py` and `scheduler.py`. The test is a new `tests/unit/test_email_provider_401_retry.py`.
 
+**As built (2026-10-02).** `RefreshingBearer` in `providers/base.py` reads `_access_token` on each
+request. On a 401 it takes `_refresh_lock`, which each provider makes in `__init__`. It refreshes
+only when the token is still the one that the request used.
+
+**Bodies.** Today no request on either client sends a stream or a file. The flow reads each body
+into memory before the first try anyway, so a stream can go out a second time.
+
+**The error path.** It gets the new credentials from `_dirty_credentials` before its block opens.
+So a failure there cannot cancel the error status.
+
+**Measured before the change.** The token expired at page 3 of the inbox. The Outlook sweep and the
+Gmail sweep each returned no message, because each sweep drops a folder that raises. The scheduler
+then wrote a successful sync of 0 messages. `reconcile_full_snapshot` sends nothing to the trash,
+because it only reads the folders that the sweep returned.
+
+**Fix round 1 (2026-10-02).** This round repairs the three defects that the review found.
+
+1. A body fetch in phase (e) can refresh after phase (d) wrote the credentials. A successful sync then
+   kept the old tokens. Now a short `tenant_session(org)` block after phase (e) writes them again, but
+   only when they changed after phase (d). Phase (f) makes no provider call. Fix round 2 changed
+   what a failure of that write does.
+2. A mailbox that refuses each request, with a token endpoint that works, posted to the token
+   endpoint for each request. A probe saw 32 posts in one tick. Now `RefreshingBearer` keeps the
+   token whose refresh the token endpoint refused, or whose new token got a 401 too. Each later 401
+   with that token goes back to the caller with no refresh and no second try. A success with that
+   token clears it. Also,
+   `authenticate` does not refresh a token that a refresh on the same instance made. A sync calls
+   `authenticate` two times. Without this rule, the token endpoint gets three posts in one tick. Now
+   it gets two.
+3. `list_folders` took the 400 of a failed refresh for a rejected `$select`, and sent the request
+   again. Now a 400 from the token endpoint goes back to the caller.
+
+**Fix round 2 (2026-10-02).** This round repairs the one P2 and the three P3s of the second review.
+
+1. **Process past kept no rotated tokens.** Its apply loop builds its own provider. Before EM-T4c
+   that loop could not refresh, and now a 401 there refreshes. The job now writes the tokens with
+   `core._persist_rotated_creds` in its `finally`, in a short `_tenant_session()` block of its own.
+   So a job that fails keeps them too. Three older paths had the same gap, and each one now calls
+   the same helper after its last provider call: `undo_execution` (`runner.py`),
+   `correct_applied_labels` (`actions.py`) and `get_full_body` (`transport/messages.py`).
+2. **The flow remembers only a refusal.** `_refresh_refused` in `providers/base.py` says which failure of
+   a refresh is a refusal: a 400 or a 401 from the token endpoint, or missing app credentials. A
+   timeout, a transport error, a 5xx or a body that is not JSON can pass. So the next 401 tries the
+   refresh again, and process past does not stamp a message that it could not touch.
+3. **Two refreshes in one sync.** A test now refreshes before phase (d) and again in phase (e), and
+   it expects two writes. The mutation `if now is None or written is not None: return` passed every
+   test before this round.
+4. **A failed write after phase (e) no longer fails the sync.** Before, the sync returned an
+   error, so `_webhook_sync` skipped `process_new_mail`, a manual sync answered 500, and the loop
+   doubled its backoff. Now a failed write goes again once in a new `tenant_session(org)` block. The
+   log names the class of the error and no token, and the sync keeps its success.
+
+**Follow-ups (named, not built).**
+
+- **EM-T4c-f1, compare-and-set for the credential writes.** Phase (d) and the error path write
+  `credentials_encrypted` with `WHERE id = :id` only. A request job can rotate the tokens while a
+  sync runs, and then a stale write of the sync overwrites the newer tokens. The fix adds
+  `AND credentials_encrypted = :prev` to each write, where `:prev` is the value that the writer read.
+- **EM-T4c-f2, a premise to verify.** The comments say that Microsoft revokes the old refresh token
+  on use. Nothing has verified this. To write the new tokens is correct in both cases.
+- **EM-T4c-f3, a failed `authenticate` after a refresh.** Process past and the rules job set the
+  provider to `None` when `authenticate` returns false. A refresh inside that `authenticate` then
+  stays in memory.
+
+**Fences.** `tests/unit/test_email_provider_401_retry.py`: 68 tests, and four of them are R8. Against
+the source before fix round 2, nineteen of the new tests are red. Eleven mutations of the first
+round, ten of fix round 1 and twelve of fix round 2 each turn a test red. The scheduler tests and
+the process-past R8 test use the real `OutlookProvider` and the real refresh.
+
 **Verify with.**
 
 ```bash
@@ -1844,7 +1914,11 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_provider_401_retry.py tests/unit/test_outlook_labels_cache_and_429.py \
   tests/unit/test_outlook_drafts.py tests/unit/test_outlook_folders_move.py \
   tests/unit/test_gmail_normaliser.py tests/unit/test_email_connect_backend.py \
-  tests/unit/test_email_provider_session.py tests/unit/test_email_scheduler_tenancy.py -q -rs
+  tests/unit/test_email_provider_session.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_process_past_progress.py tests/unit/test_email_request_jobs_tenancy.py \
+  tests/unit/test_email_automation_tenancy.py tests/unit/test_email_fix_strips_label.py \
+  tests/unit/test_email_rules_admin.py tests/unit/test_email_tool_consolidation.py \
+  tests/unit/test_email_owner_scope_fence.py -q -rs
 uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_401_retry.py
 ```
 
