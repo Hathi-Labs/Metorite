@@ -1911,6 +1911,66 @@ uv run pytest tests/unit/test_email_n_plus_one.py tests/unit/test_email_rules_en
 uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_n_plus_one.py
 ```
 
+##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
+
+**Status (2026-10-02).** 📝 Specified, not built. This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
+
+**The defect (production, 2026-10-02).** A member connected Outlook, and the first sync stored 6410 messages. The member clicked Disconnect while the sync ran. The journal shows this order:
+
+- 08:51:06 UTC: `sync.account_failed`, "canceling statement due to statement timeout", on `INSERT INTO email_messages`.
+- 08:51:08: `sync.backoff next_in=600`.
+- 08:51:10: `sync.loop_removed`. Then `DELETE /email/accounts/<id>` returned 204. Then `sync.account_done synced=6410`.
+- 08:57:48: Microsoft still sent a POST to `/email/webhook/microsoft` for the deleted mailbox.
+
+The `statement_timeout` in production is 2 minutes.
+
+**The cause (measured at `93a2092e`).**
+
+1. `delete_account` (`transport/accounts.py:365-405`) runs the `DELETE` in one `_tenant_session()` block. The delete locks the account row, and the cascade locks the messages.
+2. In the same block, it calls `remove_account_sync`. That function cancels the loop task and waits for it (`scheduler.py:778-791`).
+3. The task waits on an `INSERT` that needs a lock of the delete. The delete waits on the task. Half of the cycle is in the app, so Postgres sees no deadlock. Only the statement timeout stops it. The member waits up to 2 minutes, and the sync logs a false failure.
+4. No code calls `OutlookProvider.delete_subscription` (`outlook.py:690`). The Graph subscription stays until it expires, and Microsoft sends notifications for a mailbox that we deleted.
+
+`update_account` (`transport/accounts.py:408-469`) calls `remove_account_sync` after its block closes. It has no cycle, and EM-T4f does not change it.
+
+**Scope.**
+
+1. Phase 1 reads the row in a short block, with the owner predicate. A row that is absent, or that another member owns, gives 404. Then no loop stops.
+2. With no block open, the route calls `remove_account_sync`.
+3. Phase 2 runs the `DELETE` and the default re-election in a new block. Its `RETURNING` gives the provider, the credentials and the subscription id.
+4. With no block open, a `microsoft` row with a subscription id gets a best-effort `delete_subscription`. The route builds the provider through `_instantiate_provider`, the gateway adapter over `build_provider`.
+5. A bound of 5 seconds applies to the Graph call. An error or a timeout logs `email.disconnect.subscription_delete_failed`, and the route still returns 204. The log never holds a token.
+6. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
+
+**Why the Graph call comes after the delete.** The loop renews the subscription, and `_renew_or_replace` can replace it with a new id. A read before the loop stops can hold an old id. The `RETURNING` of phase 2 reads the id after the stop. A token that `authenticate()` refreshes needs no write, because the row is gone.
+
+**Non-goals.**
+
+- No change to `update_account`, `remove_account_sync` or the scheduler.
+- No stop for a sync outside the loop. The manual sync route, the webhook sync and the deep syncs of cleanup and the runner call `_sync_account` directly. A later part owns that.
+- No migration.
+
+**Done when.**
+
+- a. `remove_account_sync` runs with no block open, after the ownership read and before the `DELETE`.
+- b. A member who does not own the mailbox gets 404, and `remove_account_sync` does not run.
+- c. A `microsoft` row with a subscription id gets `delete_subscription` with that id. A Graph call that raises, or that is slower than the bound, still gives 204.
+- d. A row with no subscription id, or a `gmail` row, builds no provider and makes no Graph call.
+- R8: the two blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404.
+
+**Fence (R7).** `tests/unit/test_email_disconnect_order.py`.
+
+**Files.** `apps/services/gateway/gateway/routes/email/transport/accounts.py` and the new test.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_disconnect_order.py tests/unit/test_email_request_jobs_tenancy.py \
+  tests/unit/test_email_accounts_initial_sync_rls.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_disconnect_order.py
+```
+
 **Recorded risks.**
 
 - **R-1.** A split can write a decision that a newer message made stale. EM-T4a-2 checks `last_message_id` before the write.
