@@ -1504,13 +1504,15 @@ function VariablesHint() {
 
 // ── Process past emails (inbox-zero parity) ─────────────────────────────────
 
+/** The longest preset is 6 months, because no import reaches further
+ *  (EM-T6d item 13, D-EM-10). A month is 30 days, the rule of the gateway's
+ *  import window, so "Last 6 months" asks for exactly its ceiling. */
 const PAST_PRESETS: { label: string; days: number }[] = [
   { label: "Last 24 hours", days: 1 },
   { label: "Last 7 days", days: 7 },
   { label: "Last 30 days", days: 30 },
   { label: "Last 90 days", days: 90 },
-  { label: "Last 6 months", days: 182 },
-  { label: "Last year", days: 365 },
+  { label: "Last 6 months", days: 180 },
 ];
 
 /** Mirrors _PROCESS_PAST_MAX_SPAN_DAYS in the gateway, which is the real bound —

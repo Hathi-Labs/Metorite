@@ -13,6 +13,7 @@
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** EM-T6b is next.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
+> ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
@@ -2120,6 +2121,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 **Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b to EM-T6e are not merged. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
+**EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
+
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
 **Order.**
@@ -2349,6 +2352,17 @@ The R8 tests must show PASSED, not SKIPPED.
 ##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
 
 **Waits for** EM-T6a, EM-T6b and EM-T7. Before EM-T7, "Use the recommended rules" also turns on drafting, because the preset "Needs Reply" carries `DRAFT_EMAIL` (`rules.py:182-184`).
+
+**Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
+
+- **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is not dispatched.
+- **Part 1 degrades with no new field.** The progress panel draws only when the gateway sends `import_phase` (EM-T6b). Until then, the page keeps `FirstSyncBanner`, because its text is true and a bar held at 0% is not. That covers a mailbox with no `import_since` and a gateway with EM-T6a only (orchestrator, fix round 1).
+- **Merge part 1 after EM-T6a.** This branch merges after EM-T6a. Before it, the gateway drops import_months, and the step text is false.
+- **A retry is a first connect (fix round 1).** "Try again" and "Approved? Connect again" on the callback page open the range step again, through `/email?connect=1&provider=…`. The step shows the range that the member chose last in the tab, from `sessionStorage`, or 1.
+- **Clean older mail (EM-T6a review).** Every deep download stops at 180 days, so the choices are 1, 3 and 6 months. Each choice sends an explicit `since_date`, because EM-T6a reads a null as the member's import range. `lib/cleanOlderMail.ts` holds the choices.
+- **Follow-up: arrow keys.** The range step is a radio group of `Button`s, and Tab moves between them. Arrow keys belong in a shared radio-group primitive, because `SpaceSettings.tsx` has the same gap.
+- **Item 13.** "Last 6 months" was already a choice. So "Last year" goes, and "Last 6 months" asks for 180 days, the ceiling of EM-T6a.
 
 **Scope.**
 

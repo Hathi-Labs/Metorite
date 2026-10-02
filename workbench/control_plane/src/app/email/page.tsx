@@ -21,12 +21,14 @@ import { ConnectChoices } from "./components/ConnectChoices";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
+import { OnboardingPanel } from "./components/OnboardingPanel";
 import Modal from "@/components/ui/Modal";
 import { useEmailStore, isRealFolder } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
   emailSurface,
+  rangeStepProviderFrom,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
@@ -35,6 +37,7 @@ import {
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
+import { firstSyncSurface, importProgress } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -116,6 +119,14 @@ export default function EmailPage() {
   // again" for a provider that is not live). With no mailbox, the empty state
   // already shows them.
   const connectParamRef = useRef(false);
+  // /email?connect=1&provider=microsoft opens the range step of that
+  // provider at once. The callback page's "Try again" sends it, because that
+  // retry is a first connect and must carry the range (EM-T6d fix round 1).
+  // Read once on the client. The connect choices mount only after the first
+  // account read, so no server render shows them.
+  const [rangeStepProvider, setRangeStepProvider] = useState<ConnectProviderId | null>(() =>
+    typeof window === "undefined" ? null : rangeStepProviderFrom(window.location.search)
+  );
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
     if (!wantsConnectChoices(window.location.search)) return;
@@ -289,7 +300,7 @@ export default function EmailPage() {
     [selectFolder, isMobile, closeDrawer]
   );
 
-  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string) => {
+  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string, importMonths?: number) => {
     // Navigate to the BFF, never straight at the gateway host. A top-level
     // navigation carries no Bearer and no X-User-Email (the session cookie is
     // on this origin, not api.*), so the gated authorize route 401s every
@@ -300,10 +311,14 @@ export default function EmailPage() {
     // `loginHint` is the mailbox address on a reconnect, so Microsoft opens
     // on the right account. It is a hint, never an identity (EM-T3a item 3).
     //
+    // `importMonths` is the range of the first import, from the range step
+    // (EM-T6d). The reconnect banner passes none, because a reconnect keeps
+    // the range of the mailbox (D-EM-13).
+    //
     // connectQuery uses URLSearchParams, which already percent-encodes —
     // don't pre-encode or redirect_after ends up double-encoded and the
     // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
-    const query = connectQuery(window.location.href, loginHint);
+    const query = connectQuery(window.location.href, loginHint, importMonths);
     window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
   }, []);
 
@@ -584,7 +599,8 @@ export default function EmailPage() {
   if (noAccounts) {
     return (
       <ConnectEmptyState
-        onConnect={handleConnect}
+        onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
+        initialProvider={rangeStepProvider}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
@@ -865,8 +881,19 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── First sync of a new mailbox ── */}
-        {pendingAccount && <FirstSyncBanner address={pendingAccount.emailAddress} />}
+        {/* ── First sync of a new mailbox ──
+            The import panel draws only when the gateway reports progress
+            (`import_phase`, EM-T6b). Every other pending mailbox keeps the
+            banner: one from before EM-T6, or a gateway before EM-T6b. */}
+        {pendingAccount &&
+          (firstSyncSurface(pendingAccount) === "progress" ? (
+            <OnboardingPanel
+              address={pendingAccount.emailAddress}
+              progress={importProgress(pendingAccount, { now: new Date() })}
+            />
+          ) : (
+            <FirstSyncBanner address={pendingAccount.emailAddress} />
+          ))}
 
         {/* ── Unified action toolbar — spans the list + viewer columns, just
             below the top bar (desktop only; mobile keeps per-view toolbars). ── */}
@@ -1055,16 +1082,21 @@ export default function EmailPage() {
       {/* Add a mailbox — the same choices as the empty state */}
       <Modal
         open={showAddModal}
-        onClose={() => setShowAddModal(false)}
+        onClose={() => {
+          setShowAddModal(false);
+          // The next "Add account" opens the list, not the retry's step.
+          setRangeStepProvider(null);
+        }}
         title="Connect a mailbox"
         icon="Mail"
         size="sm"
       >
         <div className="px-3 py-3">
           <ConnectChoices
-            onConnect={(provider) => {
+            initialProvider={rangeStepProvider}
+            onConnect={(provider, importMonths) => {
               setShowAddModal(false);
-              handleConnect(provider);
+              handleConnect(provider, undefined, importMonths);
             }}
           />
         </div>
