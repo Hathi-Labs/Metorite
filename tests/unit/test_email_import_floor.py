@@ -39,7 +39,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -66,6 +66,7 @@ from gateway.routes.email.transport import accounts, oauth, signing
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit._email_fakes import bind_db
 from tests.unit._tenant_ladder import INIT_SCHEMA, _exec_file, ladder, tenant_engine_scope
 
 # ``promoted`` and ``app_engine`` are used by name for fixture injection, so
@@ -721,6 +722,27 @@ class TestTheCallbackWritesTheRange:
         )
         assert _count_as(c.p.app_url, c.p.org_b, c.mailbox) == 1
 
+    async def test_a_reconnect_of_an_old_mailbox_with_zero_months_keeps_it_old(
+        self, connect,
+    ):
+        """Fix round 1, item 3. A mailbox from before EM-T6 has no range and
+        an import that is not done. A reconnect with ``import_months=0`` must
+        not give it the "nothing old" shape of a NEW mailbox."""
+        c = connect
+        assert await c.run(c.state(import_months=2), code="c1") is None
+        with c.p.admin_engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE email_accounts SET import_since = NULL, "
+                "initial_sync_done = false, import_phase = NULL "
+                "WHERE email_address = :m"), {"m": c.mailbox})
+
+        assert await c.run(c.state(import_months=0), code="c2") is None
+        after = _account(c.p.admin_engine, c.mailbox)
+        assert after["import_since"] is None
+        assert after["initial_sync_done"] is False
+        assert after["import_phase"] is None
+        assert "at-c2" in after["credentials_encrypted"]
+
 
 # ── 7. R8: the backstop on a real database ─────────────────────────────────
 
@@ -898,3 +920,152 @@ class TestTheGuidedSetupFlag:
         finally:
             release_tenant(token)
             _delete_account(p.admin_engine, account_id)
+
+
+# ── 9. Fix round 1: every path, and the zone of the floor ──────────────────
+
+
+async def test_clean_older_mail_with_no_date_reaches_back_180_days(
+    core, monkeypatch,
+) -> None:
+    """Item 1. "Everything" sends no ``since_date``. The route maps it to the
+    ceiling, so the provider reads back 180 days, never the 30 days of
+    ``import_since``."""
+    from fastapi import BackgroundTasks
+    from gateway.routes.email.automation import cleanup as c
+
+    monkeypatch.setattr(c, "_tenant_session", bind_db(AsyncMock()))
+    monkeypatch.setattr(c, "_assert_account_owner", AsyncMock())
+    bg = BackgroundTasks()
+    try:
+        res = await c.cleanup_backfill(
+            c.CleanupBackfillRequest(account_id="acc-t6a-clean"),
+            background=bg, user=SimpleNamespace(email="u@x"))
+    finally:
+        c._SWEEP_JOBS.pop("acc-t6a-clean", None)
+    assert res["scheduled"] is True
+    since = bg.tasks[0].args[1]
+    assert since is not None and _near(since, _now() - timedelta(days=180))
+
+    call = await core(done=True, import_since=_now() - timedelta(days=30),
+                      deep=True, since=since)
+    assert _near(call["since"], _now() - timedelta(days=180))
+
+
+async def test_the_cleanup_job_with_no_since_passes_the_ceiling(monkeypatch) -> None:
+    """Item 1, the job half: a direct caller with no ``since`` gets the
+    ceiling too."""
+    from gateway.routes.email.automation import cleanup as c
+
+    seen: list = []
+
+    async def _sync(account_id, *, organization_id=None, deep=None, since=None):
+        seen.append(since)
+        return {"synced": 0}
+
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(fetchone=lambda: SimpleNamespace(n=0))
+    monkeypatch.setattr(sched, "_sync_account", _sync)
+    monkeypatch.setattr(c, "_tenant_session", bind_db(db))
+    monkeypatch.setattr(c, "_mark_history_held_back", AsyncMock(return_value=0))
+    monkeypatch.setattr(c, "sweep_uncategorized", AsyncMock(return_value={}))
+    token = c._SWEEP_JOBS.start("acc-t6a-job", owner="u@x", status="running")
+    try:
+        await c._backfill_and_clean_job("acc-t6a-job", None, "u@x", token)
+    finally:
+        c._SWEEP_JOBS.pop("acc-t6a-job", None)
+    assert len(seen) == 1
+    assert seen[0] is not None and _near(seen[0], _now() - timedelta(days=180))
+
+
+class _Pager:
+    """A provider whose folder pages run newest first, one page per token."""
+
+    def __init__(self, pages: list[list[EmailMessage]]) -> None:
+        self.pages = pages
+        self.asked: list[str | None] = []
+
+    async def authenticate(self) -> bool:
+        return True
+
+    async def list_folders(self):
+        return []
+
+    async def list_messages(self, *, folder, max_results, page_token,
+                            canonical_override):
+        self.asked.append(page_token)
+        i = 0 if page_token is None else int(page_token)
+        more = str(i + 1) if i + 1 < len(self.pages) else None
+        return list(self.pages[i]), more
+
+    def credentials_dirty(self) -> bool:
+        return False
+
+
+async def test_load_older_writes_nothing_past_the_ceiling_and_stops(
+    monkeypatch,
+) -> None:
+    """Item 2. ``POST /email/accounts/{id}/backfill`` drops each message older
+    than 180 days, and the first page that reaches below the ceiling is the
+    last page."""
+    from acb_llm import key_store
+    from gateway.routes.email.transport import folders
+
+    pager = _Pager([
+        [_msg("a", 10), _msg("b", 100)],
+        [_msg("c", 170), _msg("d", 185), _msg("e", 200)],
+        [_msg("f", 300)],
+    ])
+    written: list[str] = []
+
+    async def _upsert(db, account_id, msg):
+        written.append(msg.provider_message_id)
+
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(fetchone=lambda: SimpleNamespace(
+        provider="microsoft", credentials_encrypted="x"))
+    monkeypatch.setattr(folders, "_tenant_session", bind_db(db))
+    monkeypatch.setattr(folders, "_instantiate_provider", lambda name, creds: pager)
+    monkeypatch.setattr(folders, "_upsert_message", _upsert)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+
+    res = await folders.backfill_folder(
+        "acc-1", folders.BackfillRequest(folder="inbox", max_pages=10),
+        user=SimpleNamespace(email="u@x"))
+
+    assert written == ["a", "b", "c"], "the backfill wrote mail past the ceiling"
+    assert pager.asked == [None, "1"], "paging went on past the ceiling"
+    assert res == {"synced": 3, "next_page_token": None, "exhausted": True}
+
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def test_a_floor_in_another_zone_comes_back_in_utc() -> None:
+    """Item 4. Outlook writes the wall time of the floor with a ``Z``, so a
+    floor that kept +05:30 moved by five and a half hours."""
+    since = datetime(2026, 9, 20, 10, 0, tzinfo=_IST)
+    floor = import_window.sync_floor(since=since, import_since=None, now=NOW)
+    assert floor == since
+    assert floor.utcoffset() == timedelta(0)
+    assert floor.strftime("%Y-%m-%dT%H:%M:%SZ") == "2026-09-20T04:30:00Z"
+    stored = import_window.sync_floor(since=None, import_since=since, now=NOW)
+    assert stored.utcoffset() == timedelta(0)
+
+
+async def test_outlook_sends_the_utc_wall_time_of_a_non_utc_since(core) -> None:
+    """Item 4, end to end: the core hands the provider a UTC floor, and the
+    Graph ``$filter`` names that instant."""
+    asked = (_now() - timedelta(days=12)).astimezone(_IST)
+    call = await core(done=True, import_since=None, deep=True, since=asked)
+    assert call["since"].utcoffset() == timedelta(0)
+    assert call["since"] == asked
+
+    p = OutlookProvider({"access_token": "x", "refresh_token": "y"})
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=_graph([]))
+    p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+    await p.list_messages(folder="inbox", since=call["since"])
+    want = asked.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert client.get.await_args.kwargs["params"]["$filter"] == (
+        f"receivedDateTime ge {want}")

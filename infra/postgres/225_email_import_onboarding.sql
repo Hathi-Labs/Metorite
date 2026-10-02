@@ -4,8 +4,10 @@
 -- What: eight columns on `email_accounts`. Each one is nullable, with no
 --       default, no CHECK and no backfill.
 -- Why:  WS-17 EM-T6 (`project-docs/specs/email_app_master_plan.md` §10.4.7),
---       owner decisions D-EM-10 to D-EM-16 (§10.2). EM-T6a writes two of the
---       columns. EM-T6b to EM-T6e write the rest and add no migration.
+--       owner decisions D-EM-10 to D-EM-16 (§10.2). EM-T6a writes three of
+--       the columns: `import_since`, `import_phase` (for a range of 0 months)
+--       and `onboarding_done_at`. EM-T6b to EM-T6e write the rest and add no
+--       migration.
 --
 -- **The columns.**
 --   * `import_since` — the import floor that the member chose at the first

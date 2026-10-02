@@ -1,12 +1,14 @@
-"""The import window of a mailbox: how far back a sync may write mail.
+"""The import window of a mailbox: how far back a path may write mail.
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.7 (WS-17 EM-T6a).
 Owner decisions D-EM-10 and D-EM-11 (§10.2).
 
 This module is the ONE owner of three rules. Do not copy them:
 
-* **The ceiling (D-EM-10).** No sync writes a message older than 6 months. A
-  month is 30 days, so the ceiling is ``now - 180 days``.
+* **The ceiling (D-EM-10).** No path writes a message older than 6 months: the
+  sync core, Clean older mail, Process past emails and the "Load older"
+  backfill of a folder (``transport/folders.py``). A month is 30 days, so the
+  ceiling is ``now - 180 days``.
 * **The range (D-EM-11).** The member chooses 0 to 6 months at the first
   connect, and the default is 1. :func:`since_for_months` turns the choice
   into the date that the callback writes to ``email_accounts.import_since``.
@@ -57,8 +59,15 @@ def _now(now: datetime | None) -> datetime:
 
 
 def _aware(value: datetime) -> datetime:
-    """``value`` with a time zone. A naive value is read as UTC."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    """``value`` in UTC. A naive value is read as UTC.
+
+    Every value this module returns is in UTC, because a provider writes the
+    wall time of the floor with a ``Z`` (``outlook.py`` ``list_messages``). A
+    floor in another zone would then move by its offset.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def is_import_months(value: Any) -> bool:
@@ -102,6 +111,8 @@ def sync_floor(
     chosen = since if since is not None else import_since
     if chosen is None:
         return top
+    # ``_aware`` converts to UTC, so the floor is in UTC whatever the zone of
+    # ``since`` was.
     return max(_aware(chosen), top)
 
 

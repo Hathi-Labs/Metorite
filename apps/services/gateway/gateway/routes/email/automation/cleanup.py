@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion import import_window
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.engine import (
     _load_rule_patterns,
@@ -871,7 +872,8 @@ async def _backfill_and_clean_job(
 
     1. ``downloading`` — a deep provider sync from ``since``. The sync core
        never reaches back past 180 days (D-EM-10), so an older ``since`` stops
-       there. With no ``since``, the import range of the mailbox binds
+       there. "Everything" sends no ``since``, and the job then passes the
+       ceiling of 180 days, never the smaller import range of the mailbox
        (EM-T6a). The first sync of an account fetches only the range that the
        member chose, and every sync after it is incremental, so on a real
        mailbox much mail has never been seen locally. Measured on the live
@@ -904,7 +906,8 @@ async def _backfill_and_clean_job(
             count_before = int(getattr(row, "n", 0) or 0)
 
         from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
-        await _sync_account(account_id, deep=True, since=since)
+        await _sync_account(account_id, deep=True,
+                            since=since or import_window.ceiling())
 
         async with _tenant_session() as db:
             after = (await db.execute(text(
@@ -954,10 +957,12 @@ async def cleanup_backfill(
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, owner)
 
-    since = None
+    # "Everything" sends no date. It means "back to the ceiling" (D-EM-10),
+    # never "back to the import range", which can be 30 days (EM-T6a).
+    since = import_window.ceiling()
     if req.since_date:
         from gateway.routes.email.core import _parse_iso_date  # noqa: PLC0415
-        since = _parse_iso_date(req.since_date, end_of_day=False)
+        since = _parse_iso_date(req.since_date, end_of_day=False) or since
 
     if _SWEEP_JOBS.is_running(req.account_id):
         # Two concurrent deep syncs on one mailbox would race the provider and
