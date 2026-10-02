@@ -10,7 +10,9 @@
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d is MERGED (#571).
-> ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).> **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
+> ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
+> 🔨 **EM-T5b-1 is BUILT on branch `email-t5b`, not merged (2026-10-02).** The four triage questions follow the System One conventions, and multi-rule runs in shadow (§10.4.8). The old LLM answer still acts.
+> **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
 > the Connect button navigated the browser straight at the gateway, which default-deny 401s.
@@ -1909,7 +1911,14 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 #### 10.4.8 EM-T5b in full
 
-**Status.** SPEC ONLY (2026-10-02). The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
+**Status.** 🔨 EM-T5b-1 BUILT, not merged (branch `email-t5b`, 2026-10-02). EM-T5b-2 to EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
+
+**EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. Two choices of the build are not in the text above:
+
+- `decide_features.CHOICE_TEXT_BUDGET` (80 000 characters) is the text that all the options of one choice share. Without it, `best` over 254 long rules fails the window check of the Console.
+- The thread status reads its correction notes back from the text of `_status_corrections_block`. So the status path makes no new database read.
+
+The fences are `tests/unit/test_email_decide_questions.py` and the updated `tests/unit/test_email_decide_shadow.py`.
 
 **Gate.**
 

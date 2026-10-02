@@ -96,7 +96,8 @@ async def test_rules(
             email = {"subject": req.subject or "", "from": req.from_email or "",
                      "body": req.body or "", "to": ""}
         try:
-            match = await _match_email_to_rule(db, req.account_id, email)
+            match = await _match_email_to_rule(
+                db, req.account_id, email, message_id=req.email_id or None)
         except LLMUnavailable:
             return {"matched": False, "rule": None,
                     "reason": "The AI classifier is temporarily unavailable — "
@@ -149,7 +150,8 @@ async def test_rules_recent(
                 r, self_email, about, extra_domains=org_domains,
                 attachments=attach.get(str(r.id), ""))
             try:
-                match = await _match_email_to_rule(db, req.account_id, email)
+                match = await _match_email_to_rule(
+                    db, req.account_id, email, message_id=str(r.id))
             except LLMUnavailable:
                 match = None  # preview only — a transient outage, not a verdict
             results.append({
@@ -1015,7 +1017,8 @@ async def run_rules_on_message(
             row, await _account_self_email(db, req.account_id), about,
             extra_domains=org_domains, attachments=attach)
         try:
-            match = await _match_email_to_rule(db, req.account_id, email)
+            match = await _match_email_to_rule(
+                db, req.account_id, email, message_id=str(row.id))
         except LLMUnavailable:
             # Classifier down — don't log SKIPPED or stamp the watermark (that
             # would consume the message unseen). Report it so the user retries.
@@ -1213,7 +1216,7 @@ async def _apply_and_log_match(
                 and await _sender_consistent_for_rule(
                     db, account_id, sender, str(rule["id"]))
                 and await _ai_confirms_sender_pattern(
-                    db, account_id, sender, rule)):
+                    db, account_id, sender, rule, message_id=str(r.id))):
             try:
                 await _upsert_rule_pattern(
                     db, account_id, str(rule["id"]), sender, False, "AI",
@@ -1518,9 +1521,10 @@ async def _process_past_emails_job(
                 try:
                     if multi_rule:
                         matches = await _match_email_to_rules_multi(
-                            db, account_id, email)
+                            db, account_id, email, message_id=str(r.id))
                     else:
-                        m = await _match_email_to_rule(db, account_id, email)
+                        m = await _match_email_to_rule(
+                            db, account_id, email, message_id=str(r.id))
                         matches = [m] if m else []
                 except LLMUnavailable as exc:
                     # Classifier down — don't stamp the watermark on mail it

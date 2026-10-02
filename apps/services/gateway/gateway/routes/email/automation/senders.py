@@ -1225,15 +1225,40 @@ def _cold_user_prompt(email: dict[str, str]) -> str:
     )
 
 
-def _cold_question(email: dict[str, str]) -> tuple[str, dict[str, Any]]:
-    """The ``decide`` request for the cold check (EM-T5, shadow only)."""
-    from acb_llm import BooleanQuestion  # shadow mode only
+#: The probability at which ``decide`` calls an email cold (§10.4.8
+#: "Thresholds"). A start value: the old prompt asked for no margin.
+_COLD_THRESHOLD = 0.5
 
-    return _cold_user_prompt(email), {"cold": BooleanQuestion(
-        instructions=(
-            "Is this a COLD email: unsolicited sales, marketing, or recruiting "
-            "outreach from someone with no prior relationship to the recipient?"
-        ),
+_COLD_QUESTION = "Is the email in `email` cold outreach?"
+_COLD_GUIDANCE = (
+    "- Cold outreach is unsolicited sales, marketing or recruiting mail from "
+    "someone with no relationship with the mailbox owner.",
+    "- The owner has never sent mail to this sender, so `sender.prior_contact` "
+    "is false.",
+)
+
+
+def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ``decide`` request for the cold check (EM-T5b-1, shadow only).
+
+    The state is the ``email`` and ``direction`` facts of the rule match,
+    plus ``sender.prior_contact``. The only caller, ``_maybe_block_cold``,
+    asks only after it found no mail from the owner to this sender, so the
+    fact is always false.
+    """
+    from acb_llm import BooleanQuestion  # shadow mode only
+    from gateway.routes.email.automation.engine import (
+        _email_direction,
+        _email_facts,
+    )
+
+    state = {
+        "email": _email_facts(email),
+        "direction": _email_direction(email),
+        "sender": {"prior_contact": False},
+    }
+    return state, {"cold": BooleanQuestion(
+        instructions=decide_features.instructions(_COLD_QUESTION, _COLD_GUIDANCE),
         criteria={
             "true": "Unsolicited sales, marketing or recruiting outreach "
                     "from someone with no prior relationship.",
@@ -1244,11 +1269,13 @@ def _cold_question(email: dict[str, str]) -> tuple[str, dict[str, Any]]:
 
 async def _llm_is_cold(
     email: dict[str, str], *, account_id: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[bool, str]:
     """Classify whether an email is cold outreach. (is_cold, reason).
 
     EM-T5: in ``shadow`` mode ``decide`` runs beside the old call, and the
     result is always the old call's (``gateway/decide_features.py``).
+    ``message_id`` goes into each ``decide`` log line.
     """
 
     async def _old() -> tuple[bool, str]:
@@ -1273,9 +1300,10 @@ async def _llm_is_cold(
             return False, ""
 
     return await decide_features.shadow(
-        "email.cold_check", _old, account_id=account_id,
+        "email.cold_check", _old, account_id=account_id, message_id=message_id,
         build=lambda: _cold_question(email),
-        compare=decide_features.compare_boolean(lambda r: r[0], qid="cold"),
+        compare=decide_features.compare_boolean(
+            lambda r: r[0], qid="cold", threshold=_COLD_THRESHOLD),
     )
 
 
@@ -1303,7 +1331,8 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "tojson": json.dumps([{"email": sender}])})).fetchone()
     if replied:
         return
-    is_cold, reason = await _llm_is_cold(email, account_id=account_id)
+    is_cold, reason = await _llm_is_cold(
+        email, account_id=account_id, message_id=str(message_id))
     if not is_cold:
         return
     await db.execute(text(

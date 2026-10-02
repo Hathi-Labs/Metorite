@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from fastapi import HTTPException
@@ -185,15 +188,19 @@ _CLASSIFIER_GUIDELINES = (
 )
 
 
-async def _fetch_classification_hints(
+async def _fetch_sender_history(
     db: Any, account_id: str, sender_email: str, *, limit: int = 5,
-) -> str:
-    """How mail from this sender has been classified before — an ADVISORY hint
-    for the classifier (inbox-zero's classificationFeedback), NOT a hard rule.
-    Returns e.g. "Newsletter (x4), FYI (x1)" or "" when there's no history."""
+) -> list[dict[str, Any]]:
+    """How mail from this sender has been classified before, as ROWS.
+
+    An ADVISORY hint for the classifier (inbox-zero's classificationFeedback),
+    NOT a hard rule. Each row is ``{"rule": <rule name>, "count": <n>}``,
+    most frequent first, or ``[]`` when there is no history. The old call
+    renders it as text (:func:`_hints_text`). The ``decide`` state carries
+    the rows (EM-T5b-1, §10.4.8 "State shapes")."""
     sender = (sender_email or "").strip().lower()
     if not sender:
-        return ""
+        return []
     try:
         rows = (await db.execute(text(
             """SELECT rule_name, COUNT(*) AS n
@@ -204,10 +211,24 @@ async def _fetch_classification_hints(
                  AND LOWER(COALESCE(from_address, '')) LIKE :pat
                GROUP BY rule_name ORDER BY n DESC LIMIT :lim"""
         ), {"aid": account_id, "pat": f"%{sender}%", "lim": limit})).fetchall()
+        return [{"rule": r.rule_name, "count": r.n}
+                for r in rows if getattr(r, "rule_name", None)]
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.classification_hints_failed", error=str(exc)[:160])
-        return ""
-    return ", ".join(f"{r.rule_name} (x{r.n})" for r in rows if r.rule_name)
+        return []
+
+
+def _hints_text(history: list[dict[str, Any]]) -> str:
+    """The history rows as the old prompt's text: "Newsletter (x4), FYI (x1)"."""
+    return ", ".join(f"{h['rule']} (x{h['count']})" for h in history or [])
+
+
+async def _fetch_classification_hints(
+    db: Any, account_id: str, sender_email: str, *, limit: int = 5,
+) -> str:
+    """The sender history as text: e.g. "Newsletter (x4), FYI (x1)", or ""."""
+    return _hints_text(
+        await _fetch_sender_history(db, account_id, sender_email, limit=limit))
 
 
 async def _load_rule_guidance(db: Any, account_id: str) -> dict[str, list[str]]:
@@ -282,41 +303,382 @@ def _hint_block(hints: str) -> str:
     )
 
 
-def _rule_pick_key(pick: dict[str, Any] | None) -> str:
-    """The option key of an old pick: ``r<index>``, or ``none``."""
-    return f"r{pick['index']}" if pick else "none"
+# ── The rule match on `decide` (EM-T5b-1, §10.4.8) ────────────────────────────
+#
+# System One answers narrow questions about one state (§6A.14 "Question
+# conventions"). So the rule match asks ONE BOOLEAN for each candidate rule,
+# "does this rule apply?", plus two choices:
+#
+# - `conv` over the conversation-status rules, because Reply, Awaiting Reply,
+#   FYI and Done exclude each other,
+# - `best` over every candidate, which only RANKS the matched rules.
+#
+# The rubric that the old prompt carried in `_CLASSIFIER_GUIDELINES` is in the
+# instructions and the criteria. The state holds FACTS only: no persona, no
+# command and no question. Option keys are `r<i>`, the index into the
+# candidate list, and no instruction names a key, because the model never
+# sees one. In EM-T5b-1 this runs in shadow only, and the old LLM answer is
+# the one acted on.
+
+#: The actions that move mail out of the inbox. The same set as the undo in
+#: `runner.py`. A rule with one of them needs a higher probability to match.
+_MOVE_ACTIONS = frozenset({"ARCHIVE", "MOVE_FOLDER", "TRASH", "MARK_SPAM"})
+
+#: The probability at which a rule boolean matches (§10.4.8 "Thresholds").
+#: Start values. The shadow window tunes them.
+_RULE_MATCH_THRESHOLD = 0.5
+#: A wrong move hides real mail from the inbox, so a moving rule needs more.
+_RULE_MOVE_THRESHOLD = 0.7
+
+#: ``sender_scope`` → the ``direction`` fact of the state.
+_DIRECTION = {
+    "external": "received",
+    "self": "sent_by_owner",
+    "internal": "sent_by_owner_organisation",
+}
+#: ``_recipient_role`` → the ``recipient_role`` fact of the state.
+_RECIPIENT_ROLE = {"direct": "to", "cc": "cc"}
+
+# Clips on the state fields. The Console refuses a request whose state plus
+# its longest question passes its window, and a refused request is a lost
+# decision, so every free-text field has a ceiling.
+_BODY_CLIP = 1500
+_ABOUT_CLIP = 1200
+_ADDRESS_LIST_CLIP = 2000
+_SUBJECT_CLIP = 500
+_LINE_CLIP = 1000
+_NAME_CLIP = 320
+
+_RULE_QUESTION = "Does the rule that the criteria describe apply to the email in `email`?"
+_G_OWN_CONTENT = "- Judge `email` on its own content. `sender_history` is a hint only."
+_G_EXCLUDE = ("- When the rule text excludes some emails, an excluded email does "
+              "not meet the rule.")
+_G_DIRECTION = ("- When `direction` is not \"received\", the owner's side sent the "
+                "email. A rule for received mail (receipts, newsletters, "
+                "marketing, cold outreach) does not apply, unless the rule names "
+                "outbound mail.")
+_G_REPLY = ("- A rule about replying applies only when the email asks the owner "
+            "for a response. When `mailbox_owner.recipient_role` is \"cc\", a "
+            "reply is usually not needed.")
+_G_ABOUT = "- Use `mailbox_owner.about` to judge what matters to the owner."
+_RULE_GUIDANCE = (_G_OWN_CONTENT, _G_EXCLUDE, _G_DIRECTION, _G_REPLY, _G_ABOUT)
+_RULE_FALSE = "The email does not meet the rule, or the rule excludes it."
+
+_CONV_QUESTION = "Which conversation rule in the criteria fits the email in `email`?"
+_CONV_GUIDANCE = (
+    "- A conversation rule fits mail from a person that is part of an exchange.",
+    "- Bulk, automated and one-way mail fits no conversation rule.",
+    _G_DIRECTION,
+    _G_REPLY,
+)
+_CONV_NONE = "No conversation rule fits. The email is bulk, automated or one-way mail."
+
+_BEST_QUESTION = ("Which one rule in the criteria fits the email in `email` most "
+                  "specifically?")
+_BEST_GUIDANCE = (
+    "- Prefer the most specific rule. Choose a catch-all rule only when no "
+    "specific rule fits.",
+    _G_EXCLUDE,
+    _G_DIRECTION,
+    _G_REPLY,
+)
+_BEST_NONE = "No rule fits this email."
 
 
-def _rule_pick_question(
-    email: dict[str, str], rules: list[dict[str, Any]],
-    guidance: dict[str, list[str]] | None,
-) -> tuple[str, dict[str, Any]] | None:
-    """The ``decide`` request for the rule pick (EM-T5, shadow only).
+def _email_facts(email: dict[str, str]) -> dict[str, Any]:
+    """The ``email`` object of a ``decide`` state: facts, clipped."""
+    clip = decide_features.clip
+    return {
+        "from": {"name": clip(email.get("from_name") or "", _NAME_CLIP),
+                 "address": clip(email.get("from") or "", _NAME_CLIP)},
+        "to": clip(email.get("to") or "", _ADDRESS_LIST_CLIP),
+        "cc": clip(email.get("cc") or "", _ADDRESS_LIST_CLIP),
+        "date": clip(email.get("date") or "", 64),
+        "subject": clip(email.get("subject") or "", _SUBJECT_CLIP),
+        "attachments": clip(email.get("attachments") or "", _LINE_CLIP),
+        "body": (email.get("body") or "")[:_BODY_CLIP],
+    }
 
-    The options are ``r0`` .. ``r<N-1>`` for the N rules, plus ``none``. Each
-    criterion is the rule's own text and the user's corrections for it,
-    clipped to 1000 characters. Returns None (skip) when N + 1 options pass
-    the Console's limit, because a refused request would only log an error.
+
+def _email_direction(email: dict[str, str]) -> str:
+    """The ``direction`` fact. An email with no scope reads as received, as
+    ``sender_scope`` itself fails safe to ``external``."""
+    return _DIRECTION.get(email.get("sender_scope") or "external", "received")
+
+
+def _history_count(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rule_state(
+    email: dict[str, str], history: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """The state of the rule match: facts about the email, never a command.
+
+    The owner's role, the direction and the sender history are facts here.
+    The old prompt said them as orders ("you are acting on behalf of …").
     """
-    if len(rules) + 1 > decide_features.CHOICE_OPTION_LIMIT:
-        return None
-    from acb_llm import ChoiceQuestion  # shadow mode only
+    clip = decide_features.clip
+    return {
+        "email": _email_facts(email),
+        "direction": _email_direction(email),
+        "mailbox_owner": {
+            "address": clip(email.get("self") or "", _NAME_CLIP),
+            "name": clip(email.get("self_name") or "", _NAME_CLIP),
+            "recipient_role": _RECIPIENT_ROLE.get(
+                email.get("recipient_role") or "", "other"),
+            "about": (email.get("about") or "").strip()[:_ABOUT_CLIP],
+        },
+        "sender_history": [
+            {"rule": clip(str(h.get("rule") or ""), 200),
+             "count": _history_count(h.get("count"))}
+            for h in history or []
+        ],
+    }
+
+
+def _rule_text(rule: dict[str, Any], guidance: dict[str, list[str]]) -> str:
+    """A rule as one criterion: its name, its text, then the user's
+    corrections for it. The same words the old prompt's rule list carries."""
+    text_ = f"{rule['name']}: {rule.get('instructions') or '(no description)'}"
+    for note in guidance.get(str(rule.get("id")), []):
+        text_ += f"\n- correction from the user: {note}"
+    return text_
+
+
+def _moves_mail(rule: dict[str, Any]) -> bool:
+    return any((a.get("type") or "").upper() in _MOVE_ACTIONS
+               for a in rule.get("actions") or [] if isinstance(a, dict))
+
+
+def _rule_threshold(rule: dict[str, Any]) -> float:
+    """The probability at which this rule's boolean matches."""
+    return _RULE_MOVE_THRESHOLD if _moves_mail(rule) else _RULE_MATCH_THRESHOLD
+
+
+@dataclass(frozen=True)
+class _RulePlan:
+    """Which candidate asks which question. The request builder and the
+    reader both derive it from the candidates, so they cannot disagree."""
+
+    booleans: tuple[int, ...]
+    conv: tuple[int, ...]
+    best: bool
+
+
+def _rule_match_plan(rules: list[dict[str, Any]]) -> _RulePlan:
+    conv = tuple(i for i, r in enumerate(rules) if _is_conversation_status_rule(r))
+    if len(conv) + 1 > decide_features.CHOICE_OPTION_LIMIT:
+        conv = ()  # too many for one choice: each one asks its own boolean
+    in_conv = set(conv)
+    return _RulePlan(
+        booleans=tuple(i for i in range(len(rules)) if i not in in_conv),
+        conv=conv,
+        # A choice takes 255 options or fewer, `none` included (item 4).
+        best=2 <= len(rules) <= decide_features.CHOICE_OPTION_LIMIT - 1,
+    )
+
+
+def _rule_match_requests(
+    email: dict[str, str], rules: list[dict[str, Any]],
+    guidance: dict[str, list[str]] | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """The ``decide`` requests of the rule match (§10.4.8, items 1 to 7).
+
+    One boolean ``r<i>`` for each candidate that is not a conversation rule,
+    the choice ``conv`` over the conversation rules, and the choice ``best``
+    over every candidate when there are 2 to 254. ``conv`` and ``best`` go in
+    the first request. Each request holds 16 questions or fewer, and every
+    request carries the same state.
+    """
+    if not rules:
+        return []
+    from acb_llm import BooleanQuestion, ChoiceQuestion  # shadow mode only
 
     g = guidance or {}
-    criteria: dict[str, str] = {}
-    for i, r in enumerate(rules):
-        text_ = f"{r['name']}: {r.get('instructions') or '(no description)'}"
-        for note in g.get(str(r.get("id")), []):
-            text_ += f"\n- correction from the user: {note}"
-        criteria[f"r{i}"] = decide_features.clip(text_)
-    criteria["none"] = "No rule fits this email."
-    return _email_block(email), {"rule": ChoiceQuestion(
-        instructions=(
-            "You are an email classifier. Choose the single rule that best "
-            "matches this email, or none when no rule fits."
-        ),
-        criteria=criteria,
-    )}
+    # The account-wide corrections, newest first (`_load_rule_guidance`
+    # returns them oldest first).
+    corrections = list(reversed(g.get("", [])))
+    plan = _rule_match_plan(rules)
+    texts = [_rule_text(r, g) for r in rules]
+
+    first: dict[str, Any] = {}
+    if plan.conv:
+        first["conv"] = ChoiceQuestion(
+            instructions=decide_features.instructions(
+                _CONV_QUESTION, _CONV_GUIDANCE, corrections),
+            criteria=decide_features.clip_choice(
+                {**{f"r{i}": texts[i] for i in plan.conv}, "none": _CONV_NONE}),
+        )
+    if plan.best:
+        first["best"] = ChoiceQuestion(
+            instructions=decide_features.instructions(
+                _BEST_QUESTION, _BEST_GUIDANCE, corrections),
+            criteria=decide_features.clip_choice(
+                {**{f"r{i}": t for i, t in enumerate(texts)}, "none": _BEST_NONE}),
+        )
+    rule_instructions = decide_features.instructions(
+        _RULE_QUESTION, _RULE_GUIDANCE, corrections)
+
+    state = _rule_state(email, history)
+    requests: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    current = first
+    for i in plan.booleans:
+        if len(current) >= decide_features.QUESTION_LIMIT:
+            requests.append((state, current))
+            current = {}
+        current[f"r{i}"] = BooleanQuestion(
+            instructions=rule_instructions,
+            criteria={"true": decide_features.clip(texts[i]), "false": _RULE_FALSE},
+        )
+    if current:
+        requests.append((state, current))
+    return requests
+
+
+def _match_reason(probability: float) -> str:
+    """System One gives no reason text, so History shows the probability."""
+    return f"Matched by AI (probability {probability:.2f})."
+
+
+@dataclass(frozen=True)
+class RuleMatch:
+    """What ``decide`` said about the candidates (§10.4.8, items 8 to 11).
+
+    ``matched`` holds candidate indexes in the canonical order of
+    ``_load_rules``. ``main`` is the main rule, or None. ``probabilities``
+    holds the probability of each candidate that ``decide`` scored.
+    ``fields`` holds the log fields: keys and numbers only.
+    """
+
+    matched: tuple[int, ...]
+    main: int | None
+    probabilities: Mapping[int, float]
+    fields: Mapping[str, Any]
+
+    def as_pick(self) -> dict[str, Any] | None:
+        """The one-rule shape: ``{"index", "reason"}``, or None."""
+        if self.main is None:
+            return None
+        return {"index": self.main,
+                "reason": _match_reason(self.probabilities.get(self.main, 0.0))}
+
+    def as_picks(self) -> list[dict[str, Any]]:
+        """The multi-rule shape: ``{"index", "reason", "primary"}`` each."""
+        return [{"index": i,
+                 "reason": _match_reason(self.probabilities.get(i, 0.0)),
+                 "primary": i == self.main}
+                for i in self.matched]
+
+
+def _option_index(key: str) -> int | None:
+    return int(key[1:]) if key[:1] == "r" and key[1:].isdigit() else None
+
+
+def _read_rule_match(decision: Any, rules: list[dict[str, Any]]) -> RuleMatch:
+    """Read the answers to :func:`_rule_match_requests`. Pure.
+
+    - A boolean matches at its threshold or above: 0.7 for a rule that moves
+      mail, 0.5 for every other rule.
+    - ``conv`` matches its answer, unless the answer is ``none``.
+    - The main rule is the ``best`` answer when that rule matched. If not, it
+      is the matched rule with the highest probability, and a tie goes to the
+      canonical order. ``best`` never adds a match.
+    """
+    plan = _rule_match_plan(rules)
+    probabilities: dict[int, float] = {}
+    matched: set[int] = set()
+    fields: dict[str, Any] = {"rules": len(rules)}
+
+    for i in plan.booleans:
+        p = float(decision[f"r{i}"].probability)
+        probabilities[i] = p
+        fields[f"p_r{i}"] = round(p, 4)
+        if p >= _rule_threshold(rules[i]):
+            matched.add(i)
+
+    if plan.conv:
+        conv = decision["conv"]
+        for i in plan.conv:
+            probabilities[i] = float(conv.probabilities.get(f"r{i}", 0.0))
+        fields.update(conv=conv.choice, conv_confidence=conv.confidence,
+                      conv_margin=decide_features.top_margin(conv.probabilities))
+        picked = _option_index(conv.choice)
+        if picked in plan.conv:
+            matched.add(picked)
+            if conv.choice not in conv.probabilities:
+                probabilities[picked] = float(conv.confidence or 0.0)
+
+    main: int | None = None
+    if plan.best:
+        best = decision["best"]
+        fields.update(best=best.choice, best_confidence=best.confidence,
+                      best_margin=decide_features.top_margin(best.probabilities))
+        picked = _option_index(best.choice)
+        if picked in matched:
+            main = picked
+    if main is None and matched:
+        main = min(matched, key=lambda i: (-probabilities.get(i, 0.0), i))
+
+    ordered = tuple(sorted(matched))
+    fields.update(matched=[f"r{i}" for i in ordered],
+                  main=f"r{main}" if main is not None else "none")
+    return RuleMatch(matched=ordered, main=main,
+                     probabilities=MappingProxyType(probabilities),
+                     fields=MappingProxyType(fields))
+
+
+def _rule_key(index: int | None) -> str:
+    return f"r{index}" if index is not None else "none"
+
+
+def _rule_match_compare(
+    rules: list[dict[str, Any]], *, multi: bool,
+) -> Callable[[Any, Any], decide_features.Comparison]:
+    """The shadow comparison of the rule match, in keys and numbers only.
+
+    ``old`` and ``new`` are the main keys. The fields add the old key set,
+    ``agree_set``, ``agree_main`` and ``p_old``, the probability that
+    ``decide`` gives to the old main rule. In one-rule mode ``agree`` is
+    ``agree_main``. In multi-rule mode it needs both.
+    """
+
+    def _compare(old_result: Any, decision: Any) -> decide_features.Comparison:
+        reading = _read_rule_match(decision, rules)
+        if multi:
+            picks = list(old_result or [])
+            old_set = {int(p["index"]) for p in picks}
+            primary = next((p for p in picks if p.get("primary")),
+                           picks[0] if picks else None)
+        else:
+            old_set = {int(old_result["index"])} if old_result else set()
+            primary = old_result
+        old_main = int(primary["index"]) if primary else None
+        agree_set = old_set == set(reading.matched)
+        agree_main = old_main == reading.main
+        p_old = reading.probabilities.get(old_main) if old_main is not None else None
+        fields = dict(reading.fields)
+        fields.update(
+            old_keys=[f"r{i}" for i in sorted(old_set)],
+            agree_set=agree_set,
+            agree_main=agree_main,
+            p_old=round(p_old, 4) if p_old is not None else None,
+        )
+        return decide_features.Comparison(
+            old=_rule_key(old_main),
+            new=_rule_key(reading.main),
+            agree=(agree_set and agree_main) if multi else agree_main,
+            options=len(rules),
+            probability=(reading.probabilities.get(reading.main)
+                         if reading.main is not None else None),
+            fields=fields,
+        )
+
+    return _compare
 
 
 async def _llm_pick_rule(
@@ -324,6 +686,8 @@ async def _llm_pick_rule(
     *, model: str = "tier-fast",
     guidance: dict[str, list[str]] | None = None,
     account_id: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Ask the LLM which instruction-based rule matches the email.
 
@@ -334,6 +698,11 @@ async def _llm_pick_rule(
     Returns {"index": int, "reason": str} (index into `rules`) or None for a
     genuine "no rule fits". Raises LLMUnavailable when the model call itself
     fails, so the caller does NOT mistake an outage for a no-match.
+
+    EM-T5b-1: in ``shadow`` mode of ``email.rule_match``, the ``decide``
+    requests of :func:`_rule_match_requests` run beside it. ``history`` is
+    the sender history as rows, for the state. ``message_id`` goes into each
+    log line.
     """
     if not rules:
         return None
@@ -377,13 +746,12 @@ async def _llm_pick_rule(
             _log.warning("email.llm_pick_rule_failed", error=str(exc)[:200])
             raise LLMUnavailable(str(exc)[:200]) from exc
 
-    # EM-T5: in `shadow` mode `decide` runs beside the old call. The result is
-    # ALWAYS the old call's, and an LLMUnavailable from it still propagates.
+    # EM-T5b-1: in `shadow` mode `decide` runs beside the old call. The result
+    # is ALWAYS the old call's, and an LLMUnavailable from it still propagates.
     return await decide_features.shadow(
-        "email.rule_pick", _old, account_id=account_id,
-        build=lambda: _rule_pick_question(email, rules, guidance),
-        compare=decide_features.compare_choice(
-            _rule_pick_key, qid="rule", options=len(rules) + 1),
+        "email.rule_match", _old, account_id=account_id, message_id=message_id,
+        build=lambda: _rule_match_requests(email, rules, guidance, history),
+        compare=_rule_match_compare(rules, multi=False),
     )
 
 
@@ -391,6 +759,9 @@ async def _llm_pick_rules(
     email: dict[str, str], rules: list[dict[str, Any]], hints: str = "",
     *, model: str = "tier-fast",
     guidance: dict[str, list[str]] | None = None,
+    account_id: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Multi-rule selection (inbox-zero parity): ask the LLM for ALL instruction
     rules that apply to the email, not just the single best.
@@ -401,56 +772,68 @@ async def _llm_pick_rules(
     Returns a list of {"index": int, "reason": str} (indexes into `rules`) — an
     empty list for a genuine "none apply". Raises LLMUnavailable when the model
     call itself fails, so the caller doesn't mistake an outage for "no matches".
+
+    EM-T5b-1: multi-rule had no shadow before. It now asks the same
+    ``decide`` requests as :func:`_llm_pick_rule`, under the same feature,
+    ``email.rule_match``, and still returns the LLM answer.
     """
     if not rules:
         return []
-    try:
-        rule_lines = _rule_lines(rules, guidance)
-        sys_prompt = (
-            "You are an email classifier helping the user manage their inbox. "
-            "Given an email and a numbered list of rules, choose EVERY rule that "
-            "genuinely applies to the email (there may be more than one, or none). "
-            "Do not force a match. Mark exactly ONE match as the primary (the "
-            "single most specific rule that best fits the email) with "
-            '"primary": true. ' + _CLASSIFIER_GUIDELINES
-            + ' Respond with ONLY a JSON object: {"matches": [{"index": <number>, '
-            '"reason": "<short why>", "primary": <true|false>}]} — an empty list '
-            "if none apply."
-        )
-        user_prompt = (
-            f"{_email_block(email)}\n\nRULES\n{rule_lines}"
-            f"{_global_guidance_block(guidance)}{_hint_block(hints)}"
-        )
-        # Force structured output (see _llm_pick_rule); a generous budget so a
-        # multi-rule object with several reasons isn't truncated mid-JSON.
-        data, content, _used = await _llm_json(
-            model,
-            [{"role": "system", "content": sys_prompt},
-             {"role": "user", "content": user_prompt}],
-            max_tokens=1500,
-        )
-        out: list[dict[str, Any]] = []
-        seen: set[int] = set()
-        if isinstance(data, dict) and isinstance(data.get("matches"), list):
-            for m in data["matches"]:
-                if not isinstance(m, dict):
-                    continue
-                idx = m.get("index")
-                if isinstance(idx, int) and 0 <= idx < len(rules) and idx not in seen:
-                    seen.add(idx)
-                    out.append({"index": idx,
-                                "reason": str(m.get("reason", ""))[:300],
-                                "primary": bool(m.get("primary"))})
-        elif data is None and content.strip():
-            # Unparseable reply (truncation/prose) — log so it's not silently
-            # read as "no rules apply" (see _llm_pick_rule).
-            _log.warning("email.llm_pick_rules_unparseable",
-                         model=_used, sample=content[:200])
-        return out
-    except Exception as exc:  # noqa: BLE001
-        # The call failed — NOT "no rules apply". Signal it (see _llm_pick_rule).
-        _log.warning("email.llm_pick_rules_failed", error=str(exc)[:200])
-        raise LLMUnavailable(str(exc)[:200]) from exc
+
+    async def _old() -> list[dict[str, Any]]:
+        try:
+            rule_lines = _rule_lines(rules, guidance)
+            sys_prompt = (
+                "You are an email classifier helping the user manage their inbox. "
+                "Given an email and a numbered list of rules, choose EVERY rule that "
+                "genuinely applies to the email (there may be more than one, or none). "
+                "Do not force a match. Mark exactly ONE match as the primary (the "
+                "single most specific rule that best fits the email) with "
+                '"primary": true. ' + _CLASSIFIER_GUIDELINES
+                + ' Respond with ONLY a JSON object: {"matches": [{"index": <number>, '
+                '"reason": "<short why>", "primary": <true|false>}]} — an empty list '
+                "if none apply."
+            )
+            user_prompt = (
+                f"{_email_block(email)}\n\nRULES\n{rule_lines}"
+                f"{_global_guidance_block(guidance)}{_hint_block(hints)}"
+            )
+            # Force structured output (see _llm_pick_rule); a generous budget so a
+            # multi-rule object with several reasons isn't truncated mid-JSON.
+            data, content, _used = await _llm_json(
+                model,
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": user_prompt}],
+                max_tokens=1500,
+            )
+            out: list[dict[str, Any]] = []
+            seen: set[int] = set()
+            if isinstance(data, dict) and isinstance(data.get("matches"), list):
+                for m in data["matches"]:
+                    if not isinstance(m, dict):
+                        continue
+                    idx = m.get("index")
+                    if isinstance(idx, int) and 0 <= idx < len(rules) and idx not in seen:
+                        seen.add(idx)
+                        out.append({"index": idx,
+                                    "reason": str(m.get("reason", ""))[:300],
+                                    "primary": bool(m.get("primary"))})
+            elif data is None and content.strip():
+                # Unparseable reply (truncation/prose) — log so it's not silently
+                # read as "no rules apply" (see _llm_pick_rule).
+                _log.warning("email.llm_pick_rules_unparseable",
+                             model=_used, sample=content[:200])
+            return out
+        except Exception as exc:  # noqa: BLE001
+            # The call failed — NOT "no rules apply". Signal it (see _llm_pick_rule).
+            _log.warning("email.llm_pick_rules_failed", error=str(exc)[:200])
+            raise LLMUnavailable(str(exc)[:200]) from exc
+
+    return await decide_features.shadow(
+        "email.rule_match", _old, account_id=account_id, message_id=message_id,
+        build=lambda: _rule_match_requests(email, rules, guidance, history),
+        compare=_rule_match_compare(rules, multi=True),
+    )
 
 
 # ── Conversation-status (Reply Zero) pre-filter ───────────────────────────────
@@ -739,13 +1122,14 @@ def _patterns_included_rule(
 
 
 async def _match_email_to_rule(
-    db: Any, account_id: str, email: dict[str, str]
+    db: Any, account_id: str, email: dict[str, str],
+    *, message_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Return the first matching rule + reason, or None.
 
     Evaluation order per rule: static patterns (local) first, then NL
     instructions (one batched LLM call). Static-first keeps it cheap &
-    deterministic.
+    deterministic. ``message_id`` reaches the ``decide`` shadow log only.
     """
     rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
     if not rules:
@@ -791,11 +1175,12 @@ async def _match_email_to_rule(
         # No instructions and static didn't match → this rule doesn't apply.
 
     if instruction_rules:
-        hints = await _fetch_classification_hints(db, account_id, email.get("from", ""))
+        history = await _fetch_sender_history(db, account_id, email.get("from", ""))
         models = await _account_models(db, account_id)
         pick = await _llm_pick_rule(
-            email, instruction_rules, hints=hints, model=models["rule"],
-            guidance=guidance, account_id=account_id)
+            email, instruction_rules, hints=_hints_text(history),
+            model=models["rule"], guidance=guidance, account_id=account_id,
+            history=history, message_id=message_id)
         if pick:
             return {"rule": instruction_rules[pick["index"]],
                     "reason": pick["reason"] or "Matched by AI.", "source": "ai"}
@@ -803,14 +1188,16 @@ async def _match_email_to_rule(
 
 
 async def _match_email_to_rules_multi(
-    db: Any, account_id: str, email: dict[str, str]
+    db: Any, account_id: str, email: dict[str, str],
+    *, message_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Multi-rule selection (inbox-zero parity): return ALL matching rules, not
     just the best one. Each item is {"rule": ..., "reason": ...}.
 
     Static matches are collected locally; the LLM is asked once for EVERY
     instruction rule that applies (via _llm_pick_rules). De-duped by id and
-    returned in rule sort order.
+    returned in rule sort order. ``message_id`` reaches the ``decide`` shadow
+    log only.
     """
     rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
     if not rules:
@@ -859,11 +1246,12 @@ async def _match_email_to_rules_multi(
             _add(rule, "Matched static conditions.", "static")
 
     if instruction_rules:
-        hints = await _fetch_classification_hints(db, account_id, email.get("from", ""))
+        history = await _fetch_sender_history(db, account_id, email.get("from", ""))
         models = await _account_models(db, account_id)
         for pick in await _llm_pick_rules(
-            email, instruction_rules, hints=hints, model=models["rule"],
-            guidance=guidance,
+            email, instruction_rules, hints=_hints_text(history),
+            model=models["rule"], guidance=guidance, account_id=account_id,
+            history=history, message_id=message_id,
         ):
             _add(instruction_rules[pick["index"]],
                  pick["reason"] or "Matched by AI.", "ai",
@@ -902,10 +1290,15 @@ async def classify_matches(
     the caller can skip its ``rules_processed_at`` watermark and retry next cycle
     instead of burning the message unseen.
     """
+    # The message id for the `decide` shadow log (EM-T5b-1). It comes from the
+    # row, so no caller of this function changes.
+    row_id = getattr(message_row, "id", None)
+    message_id = str(row_id) if row_id is not None else None
     if multi_rule:
-        matches = await _match_email_to_rules_multi(db, account_id, email)
+        matches = await _match_email_to_rules_multi(
+            db, account_id, email, message_id=message_id)
     else:
-        m = await _match_email_to_rule(db, account_id, email)
+        m = await _match_email_to_rule(db, account_id, email, message_id=message_id)
         matches = [m] if m else []
     if not resolve:
         return matches
