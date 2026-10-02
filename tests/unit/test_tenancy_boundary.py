@@ -172,7 +172,10 @@ BASELINE_UNSCOPED = {
 # dynamic_*
     "dynamic_agents",
 # email_*
-    "email_accounts", "email_actions", "email_ai_drafts",
+    # ⚠️ `email_accounts` LEFT this list on 2026-10-02. Migration 223 (WS-17
+    # EM-T2a) put `organization_id` on the NUMBERED ladder for that one table,
+    # because the per-tenant unique index needs it, as 209 did for `people`.
+    "email_actions", "email_ai_drafts",
     "email_assistant_settings", "email_attachments", "email_cold_senders",
     "email_contacts", "email_embeddings", "email_executed_rules",
     "email_folders", "email_knowledge", "email_learned_patterns",
@@ -432,4 +435,4 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    assert len(BASELINE_UNSCOPED) == 107
+    assert len(BASELINE_UNSCOPED) == 106
