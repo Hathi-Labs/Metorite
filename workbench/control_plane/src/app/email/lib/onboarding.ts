@@ -11,9 +11,11 @@
  * `OnboardingStage` later, and the function keeps its shape for them.
  *
  * ⚠️ Every field this module reads is optional. A gateway before EM-T6a sends
- * no `importSince`, so the stage is `null` and the page keeps the old
- * `FirstSyncBanner`. A gateway with EM-T6a and before EM-T6b sends no
- * progress fields, so the panel shows the share of the range at 0.
+ * no `importSince`, so the stage is `null`. A gateway with EM-T6a and before
+ * EM-T6b sends no `importPhase`, so there is no progress to draw. In both
+ * cases `firstSyncSurface` keeps the old `FirstSyncBanner`, which is true
+ * for that gateway. A bar held at 0% would not be (orchestrator, fix
+ * round 1).
  *
  * Fence: `onboarding.test.ts`.
  */
@@ -50,13 +52,32 @@ export function onboardingStage(account: StageFields): OnboardingStage {
   return null;
 }
 
+// ── What the mail pane draws for a pending mailbox ─────────────────────────
+
+/**
+ * The progress panel, or the old banner, for a mailbox whose first sync runs.
+ *
+ * `progress` needs the stage `importing` AND an `importPhase` from the
+ * gateway. EM-T6b writes the phase before the first batch, so its presence
+ * means the gateway reports real progress. With no phase (a gateway with
+ * EM-T6a only), the banner draws, because its text stays true there.
+ *
+ * The stage says where the member is in the setup. This says whether the
+ * gateway gives a number to draw. Two questions, so two functions.
+ */
+export function firstSyncSurface(
+  account: StageFields & Pick<EmailAccount, "importPhase">,
+): "progress" | "banner" {
+  return onboardingStage(account) === "importing" && !!account.importPhase ? "progress" : "banner";
+}
+
 // ── The progress of the import (D-EM-16) ────────────────────────────────────
 
 /** The phase line for each phase of the import (EM-T6d item 6). */
 export const IMPORT_PHASE_LINES = {
   counting: "Counting your mail",
   importing: "Importing your mail, newest first",
-  /** A gateway before EM-T6b sends no phase, and claims no order. */
+  /** A phase this UI does not know claims no order. */
   unknown: "Importing your mail",
 } as const;
 

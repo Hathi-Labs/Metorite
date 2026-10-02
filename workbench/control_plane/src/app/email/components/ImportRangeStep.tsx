@@ -11,9 +11,18 @@
  * The choices are a radio group of `Button`s, the worked pattern of
  * `projects/components/SpaceSettings.tsx`: `selected` draws the state, and
  * `role="radio"` with `aria-checked` names it.
+ *
+ * Focus: when the step opens, the checked choice takes focus, so a keyboard
+ * starts where the member's range is. `ConnectChoices` puts focus back on
+ * the provider after "Back". `Button` takes no `ref`, so the step finds the
+ * checked choice inside a plain wrapper.
+ *
+ * ⚠️ Arrow keys do not move between the choices. Tab does. Arrow keys belong
+ * in a shared radio-group primitive, because `SpaceSettings.tsx` has the same
+ * gap. That is a follow-up, not a local fix here.
  */
 
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import {
@@ -38,6 +47,13 @@ export function ImportRangeStep({
 }) {
   const p = CONNECT_PROVIDERS.find((c) => c.id === provider);
   const titleId = useId();
+  const groupRef = useRef<HTMLDivElement>(null);
+
+  // Mount only. A click on a choice already moves focus to that choice.
+  useEffect(() => {
+    groupRef.current?.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]')?.focus();
+  }, []);
+
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-3">
       <div className="flex items-start gap-3">
@@ -53,7 +69,7 @@ export function ImportRangeStep({
       </div>
 
       {/* "Only new mail" takes the first row, then two rows of three. */}
-      <div role="radiogroup" aria-labelledby={titleId} className="grid grid-cols-3 gap-1.5">
+      <div ref={groupRef} role="radiogroup" aria-labelledby={titleId} className="grid grid-cols-3 gap-1.5">
         {IMPORT_RANGE_CHOICES.map((c) => (
           <Button
             key={c.months}

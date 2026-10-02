@@ -15,14 +15,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { isKnownIcon } from "@/lib/icons";
 
+import { ConnectChoices } from "../components/ConnectChoices";
 import { ImportRangeStep } from "../components/ImportRangeStep";
 import {
   CONNECT_PROVIDERS,
   DEFAULT_IMPORT_MONTHS,
+  IMPORT_MONTHS_STORAGE_KEY,
   IMPORT_RANGE_CHOICES,
   IMPORT_RANGE_COPY,
   MAX_IMPORT_MONTHS,
   isImportMonths,
+  rangeStepProviderFrom,
+  rememberImportMonths,
+  storedImportMonths,
   adminConsentMailto,
   adminConsentUrl,
   callbackView,
@@ -448,11 +453,9 @@ describe("the admin email and the retry (fix round 1)", () => {
   });
 
   it("Try again for Gmail goes to the connect choices, never its OAuth leg", () => {
-    expect(retryTarget("gmail", "https://app.test")).toBe("/email?connect=1");
-    const ms = retryTarget("microsoft", "https://app.test");
-    expect(ms.startsWith("/api/email/oauth/microsoft/authorize?")).toBe(true);
-    expect(new URLSearchParams(ms.split("?")[1]).get("redirect_after")).toBe("https://app.test/email");
-    expect(CALLBACK_PAGE).toContain("retryTarget(provider, window.location.origin)");
+    expect(retryTarget("gmail")).toBe("/email?connect=1");
+    expect(rangeStepProviderFrom("?connect=1")).toBeNull();
+    expect(CALLBACK_PAGE).toContain("retryTarget(provider)");
     expect(wantsConnectChoices("?connect=1")).toBe(true);
     expect(wantsConnectChoices("?connect=0")).toBe(false);
     expect(PAGE).toMatch(/wantsConnectChoices\(window\.location\.search\)[\s\S]*?setShowAddModal\(true\)/);
@@ -517,12 +520,14 @@ describe("the range step (EM-T6d item 2)", () => {
     expect(out).toMatch(/role="radiogroup"/);
   });
 
-  it("a click on a provider opens the step with the default, and Continue starts the sign-in", () => {
+  it("a click on a provider opens the step with the stored range, and Continue keeps it and starts the sign-in", () => {
     const src = codeOnly(read("components/ConnectChoices.tsx"));
-    expect(src).toContain("onClick={() => p.available && setStep({ provider: p.id, months: DEFAULT_IMPORT_MONTHS })}");
+    expect(src).toContain("onClick={() => p.available && setStep({ provider: p.id, months: storedImportMonths() })}");
     expect(src).toMatch(/if \(step\) \{\s*return \(\s*<ImportRangeStep/);
-    expect(src).toContain("onContinue={() => onConnect(step.provider, step.months)}");
-    expect(src).toContain("onBack={() => setStep(null)}");
+    expect(src).toMatch(
+      /onContinue=\{\(\) => \{\s*rememberImportMonths\(step\.months\);\s*onConnect\(step\.provider, step\.months\);\s*\}\}/,
+    );
+    expect(src).toMatch(/onBack=\{\(\) => \{\s*backFrom\.current = step\.provider;\s*setStep\(null\);\s*\}\}/);
     // The list click no longer starts the sign-in itself.
     expect(src).not.toMatch(/p\.available && onConnect\(/);
   });
@@ -532,7 +537,7 @@ describe("the range step (EM-T6d item 2)", () => {
       "onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}",
     );
     expect(PAGE).toMatch(
-      /<ConnectChoices\s*onConnect=\{\(provider, importMonths\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, undefined, importMonths\);/,
+      /<ConnectChoices\s+initialProvider=\{rangeStepProvider\}\s*onConnect=\{\(provider, importMonths\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, undefined, importMonths\);/,
     );
   });
 
@@ -569,8 +574,192 @@ describe("the range goes to the gateway (EM-T6d item 3)", () => {
     const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test"));
     expect(q.get("login_hint")).toBe("ravi@contoso.test");
     expect(q.has("import_months")).toBe(false);
-    // "Try again" on the callback page is not a first connect either.
-    const retry = retryTarget("microsoft", "https://app.test");
-    expect(new URLSearchParams(retry.split("?")[1]).has("import_months")).toBe(false);
+  });
+});
+
+// ── EM-T6d fix round 1 ─────────────────────────────────────────────────────
+
+/** A sessionStorage stand-in. `throws` makes every call throw. */
+function memoryStore(initial: Record<string, string> = {}, throws = false) {
+  const data = new Map(Object.entries(initial));
+  return {
+    data,
+    getItem: (k: string) => {
+      if (throws) throw new Error("SecurityError");
+      return data.has(k) ? data.get(k)! : null;
+    },
+    setItem: (k: string, v: string) => {
+      if (throws) throw new Error("QuotaExceededError");
+      data.set(k, v);
+    },
+  };
+}
+
+describe("a retry is a first connect, so it goes back to the range step (fix round 1, P1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("the retry target of a live provider opens its range step, never the OAuth leg", () => {
+    // The callback page shows "Try again" and "Approved? Connect again" before
+    // any mailbox row exists. A direct authorize call would carry no range,
+    // and the gateway default of 1 month would replace the member's choice.
+    const retry = retryTarget("microsoft");
+    expect(retry).toBe("/email?connect=1&provider=microsoft");
+    expect(retry).not.toContain("/api/email/oauth/");
+    expect(rangeStepProviderFrom(retry.slice(retry.indexOf("?")))).toBe("microsoft");
+  });
+
+  it("the URL opens a step for a live provider only", () => {
+    expect(rangeStepProviderFrom("?connect=1&provider=microsoft")).toBe("microsoft");
+    expect(rangeStepProviderFrom("?provider=microsoft")).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail")).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=imap")).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=%3Cscript%3E")).toBeNull();
+  });
+
+  it("both buttons of the callback page use the retry target, and no other connect path", () => {
+    const connectAgain = CALLBACK_PAGE.match(/function connectAgain\([^)]*\): void \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(connectAgain).toContain("window.location.href = retryTarget(provider);");
+    expect(CALLBACK_PAGE).not.toContain("/api/email/oauth/");
+    expect(CALLBACK_PAGE.match(/onClick=\{\(\) => connectAgain\(provider\)\}/g)).toHaveLength(2);
+  });
+
+  it("the page reads the provider once and opens the step in both places", () => {
+    expect(PAGE).toMatch(
+      /useState<ConnectProviderId \| null>\(\(\) =>\s*typeof window === "undefined" \? null : rangeStepProviderFrom\(window\.location\.search\)/,
+    );
+    expect(PAGE).toMatch(/<ConnectEmptyState[\s\S]*?initialProvider=\{rangeStepProvider\}/);
+    expect(PAGE).toMatch(/<ConnectChoices\s+initialProvider=\{rangeStepProvider\}/);
+    expect(PAGE).toMatch(/onClose=\{\(\) => \{\s*setShowAddModal\(false\);\s*setRangeStepProvider\(null\);/);
+    expect(codeOnly(read("components/ConnectEmptyState.tsx"))).toContain(
+      "<ConnectChoices onConnect={onConnect} initialProvider={initialProvider} />",
+    );
+  });
+
+  function choicesWith(stored: Record<string, string>, initialProvider: "microsoft" | null = "microsoft") {
+    vi.stubGlobal("window", { sessionStorage: memoryStore(stored) });
+    return radios(renderToStaticMarkup(createElement(ConnectChoices, { onConnect: () => {}, initialProvider })));
+  }
+
+  it("a stored 6 opens the step with 6 months checked", () => {
+    const r = choicesWith({ [IMPORT_MONTHS_STORAGE_KEY]: "6" });
+    expect(r).toHaveLength(7);
+    expect(r.filter((x) => x.checked === "true").map((x) => x.label)).toEqual(["6 months"]);
+  });
+
+  it("a stored x opens the step with 1 month checked", () => {
+    const r = choicesWith({ [IMPORT_MONTHS_STORAGE_KEY]: "x" });
+    expect(r.filter((x) => x.checked === "true").map((x) => x.label)).toEqual(["1 month"]);
+  });
+
+  it("with no initial provider the list draws, not the step", () => {
+    expect(choicesWith({ [IMPORT_MONTHS_STORAGE_KEY]: "6" }, null)).toEqual([]);
+  });
+});
+
+describe("the stored range (fix round 1, P1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads one digit from 0 to 6, and gives 1 for anything else", () => {
+    const at = (v: string) => storedImportMonths(memoryStore({ [IMPORT_MONTHS_STORAGE_KEY]: v }));
+    expect(at("0")).toBe(0);
+    expect(at("6")).toBe(6);
+    for (const bad of ["x", "7", "-1", "03", "3.0", " 3", ""]) expect(at(bad), bad).toBe(DEFAULT_IMPORT_MONTHS);
+    expect(storedImportMonths(memoryStore())).toBe(DEFAULT_IMPORT_MONTHS);
+  });
+
+  it("gives 1 when storage is absent or throws", () => {
+    expect(storedImportMonths(null)).toBe(DEFAULT_IMPORT_MONTHS);
+    expect(storedImportMonths(memoryStore({ [IMPORT_MONTHS_STORAGE_KEY]: "4" }, true))).toBe(DEFAULT_IMPORT_MONTHS);
+    // Node has no window: the default store is absent.
+    expect(storedImportMonths()).toBe(DEFAULT_IMPORT_MONTHS);
+    // A window whose sessionStorage getter throws.
+    vi.stubGlobal("window", {
+      get sessionStorage() {
+        throw new Error("SecurityError");
+      },
+    });
+    expect(storedImportMonths()).toBe(DEFAULT_IMPORT_MONTHS);
+    expect(() => rememberImportMonths(3)).not.toThrow();
+  });
+
+  it("keeps a valid range, and never throws", () => {
+    const store = memoryStore();
+    rememberImportMonths(3, store);
+    expect(store.data.get(IMPORT_MONTHS_STORAGE_KEY)).toBe("3");
+    rememberImportMonths(9, store);
+    rememberImportMonths(1.5, store);
+    expect(store.data.get(IMPORT_MONTHS_STORAGE_KEY)).toBe("3");
+    expect(() => rememberImportMonths(2, memoryStore({}, true))).not.toThrow();
+    expect(() => rememberImportMonths(2, null)).not.toThrow();
+  });
+
+  it("wraps each storage read and write in try/catch", () => {
+    // LF only, so the body slice below ends at the closing brace in any checkout.
+    const src = codeOnly(read("lib/connect.ts")).replace(/\r\n/g, "\n");
+    for (const fn of ["sessionStore", "storedImportMonths", "rememberImportMonths"]) {
+      const at = src.indexOf(`function ${fn}(`);
+      expect(at, fn).toBeGreaterThan(-1);
+      const body = src.slice(at, src.indexOf("\n}\n", at));
+      expect(body, fn).toMatch(/try \{[\s\S]*\} catch \{/);
+    }
+  });
+});
+
+describe("focus moves with the step (fix round 1, P3)", () => {
+  it("the step puts focus on the checked choice when it opens", () => {
+    const src = codeOnly(read("components/ImportRangeStep.tsx"));
+    expect(src).toMatch(
+      /useEffect\(\(\) => \{\s*groupRef\.current\?\.querySelector<HTMLButtonElement>\('\[role="radio"\]\[aria-checked="true"\]'\)\?\.focus\(\);\s*\}, \[\]\);/,
+    );
+    expect(src).toMatch(/<div ref=\{groupRef\} role="radiogroup"/);
+  });
+
+  it("after Back, focus goes back to the provider that opened the step", () => {
+    const src = codeOnly(read("components/ConnectChoices.tsx"));
+    expect(src).toMatch(/onBack=\{\(\) => \{\s*backFrom\.current = step\.provider;/);
+    expect(src).toMatch(
+      /useEffect\(\(\) => \{\s*if \(step !== null \|\| backFrom\.current === null\) return;\s*listRef\.current\s*\?\.querySelector<HTMLButtonElement>\(`\[data-provider="\$\{backFrom\.current\}"\]`\)\s*\?\.focus\(\);\s*backFrom\.current = null;\s*\}, \[step\]\);/,
+    );
+    expect(src).toContain("<ul ref={listRef}");
+    expect(src).toContain("data-provider={p.id}");
+  });
+});
+
+describe("the handlers of the range step (fix round 1, P3)", () => {
+  /** The source of each `<Button …>…</Button>` element, comments stripped. */
+  function buttonBlocks(): string[] {
+    const src = codeOnly(read("components/ImportRangeStep.tsx"));
+    return src
+      .split("<Button")
+      .slice(1)
+      .map((b) => b.slice(0, b.indexOf("</Button>")));
+  }
+
+  it("draws three Buttons: the choice in the map, Back and Continue", () => {
+    expect(buttonBlocks()).toHaveLength(3);
+  });
+
+  it("a choice calls onChange with its own months", () => {
+    const radio = buttonBlocks().filter((b) => b.includes('role="radio"'));
+    expect(radio).toHaveLength(1);
+    expect(radio[0]).toContain("onClick={() => onChange(c.months)}");
+    expect(radio[0]).toContain("aria-checked={c.months === months}");
+    expect(radio[0]).toContain("selected={c.months === months}");
+  });
+
+  it("Continue calls onContinue, and Back calls onBack", () => {
+    const blocks = buttonBlocks();
+    const cont = blocks.filter((b) => b.includes("IMPORT_RANGE_COPY.continueTo(provider)"));
+    const back = blocks.filter((b) => b.includes("IMPORT_RANGE_COPY.back"));
+    expect(cont).toHaveLength(1);
+    expect(back).toHaveLength(1);
+    expect(cont[0]).toMatch(/\bonClick=\{onContinue\}/);
+    expect(cont[0]).not.toMatch(/onBack|onChange/);
+    expect(back[0]).toMatch(/\bonClick=\{onBack\}/);
+    expect(back[0]).not.toMatch(/onContinue|onChange/);
   });
 });

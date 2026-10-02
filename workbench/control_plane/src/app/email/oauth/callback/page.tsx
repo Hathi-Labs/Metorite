@@ -55,9 +55,12 @@ function safeRedirectTarget(raw: string | null): string {
   }
 }
 
-/** Start the connect again, through the BFF (never the gateway host). */
+/**
+ * Start the connect again, through the range step in Email (EM-T6d fix
+ * round 1). This is a first connect, so the member's range must go with it.
+ */
 function connectAgain(provider: ConnectProviderId): void {
-  window.location.href = retryTarget(provider, window.location.origin);
+  window.location.href = retryTarget(provider);
 }
 
 /** The icon and the status tone of each result. Tokens only. */

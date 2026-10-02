@@ -116,6 +116,53 @@ export const IMPORT_RANGE_COPY = {
     provider === "microsoft" ? "Continue to Microsoft" : "Continue to Google",
 } as const;
 
+/**
+ * Where the range step keeps the last range the member chose (fix round 1).
+ *
+ * A convenience only. A failed connect sends the member back to the range
+ * step (`retryTarget`), and the step then shows the range they chose before.
+ * It is `sessionStorage`, so it ends with the tab. It holds one digit and no
+ * tenant data. The gateway never reads it: the range goes in the query.
+ */
+export const IMPORT_MONTHS_STORAGE_KEY = "metorite.email.importMonths";
+
+type MonthsStore = Pick<Storage, "getItem" | "setItem">;
+
+/** The session storage of this tab, or null where it is absent or refused. */
+function sessionStore(): MonthsStore | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    // A browser can refuse storage with a SecurityError.
+    return null;
+  }
+}
+
+/**
+ * The range the step selects when it opens: the stored one, or 1.
+ *
+ * Only one digit from 0 to 6 counts, the same rule as the BFF. Any other
+ * value, no value, no storage or a storage that throws gives the default.
+ */
+export function storedImportMonths(store: MonthsStore | null = sessionStore()): number {
+  try {
+    const raw = store?.getItem(IMPORT_MONTHS_STORAGE_KEY) ?? null;
+    return raw !== null && /^[0-6]$/.test(raw) ? Number(raw) : DEFAULT_IMPORT_MONTHS;
+  } catch {
+    return DEFAULT_IMPORT_MONTHS;
+  }
+}
+
+/** Keeps the chosen range for the next time the step opens. Never throws. */
+export function rememberImportMonths(months: number, store: MonthsStore | null = sessionStore()): void {
+  if (!isImportMonths(months)) return;
+  try {
+    store?.setItem(IMPORT_MONTHS_STORAGE_KEY, String(months));
+  } catch {
+    // A full or refused storage only costs the convenience.
+  }
+}
+
 /** Which provider the reconnect banner may send the member back through. */
 export function reconnectProvider(account: Pick<EmailAccount, "provider">): ConnectProviderId | null {
   return account.provider === "microsoft" || account.provider === "gmail"
@@ -140,22 +187,45 @@ export function emailSurface(state: { loaded: boolean; loading: boolean; count: 
   return "empty";
 }
 
+/** True for a provider that a member can connect today. */
+function isLiveProvider(id: string | null): id is ConnectProviderId {
+  return CONNECT_PROVIDERS.some((p) => p.id === id && p.available);
+}
+
 /**
- * Where "Try again" on the callback page goes.
+ * Where "Try again" and "Approved? Connect again" on the callback page go.
  *
- * A provider that is not available (Gmail, "Coming soon") goes back to the
- * connect choices in Email, never into its own OAuth leg. `/email?connect=1`
- * opens the add-account dialog, or the empty state shows the same choices.
+ * ⚠️ Never straight into the OAuth leg (fix round 1). The callback page shows
+ * those buttons before any mailbox row exists, so each one starts a FIRST
+ * connect. A direct authorize call carries no `import_months`, and the
+ * gateway default of 1 month then replaces the range the member chose. So a
+ * live provider goes back to the range step, which opens with the stored
+ * range (`storedImportMonths`). A provider that is not available (Gmail,
+ * "Coming soon") goes to the connect choices only.
+ *
+ * `/email?connect=1` opens the add-account dialog, or the empty state shows
+ * the same choices. `provider` opens the range step of that provider.
  */
-export function retryTarget(provider: ConnectProviderId, origin: string): string {
-  const live = CONNECT_PROVIDERS.find((p) => p.id === provider)?.available === true;
-  if (!live) return "/email?connect=1";
-  return `/api/email/oauth/${provider}/authorize?${connectQuery(`${origin}/email`)}`;
+export function retryTarget(provider: ConnectProviderId): string {
+  if (!isLiveProvider(provider)) return "/email?connect=1";
+  return `/email?${new URLSearchParams({ connect: "1", provider }).toString()}`;
 }
 
 /** True when the URL asks the page to open the connect choices. */
 export function wantsConnectChoices(search: string): boolean {
   return new URLSearchParams(search).get("connect") === "1";
+}
+
+/**
+ * The provider whose range step the URL asks to open, or null.
+ *
+ * Only with `connect=1`, and only for a live provider. Any other value is
+ * request input that names nothing, so it opens the list.
+ */
+export function rangeStepProviderFrom(search: string): ConnectProviderId | null {
+  if (!wantsConnectChoices(search)) return null;
+  const provider = new URLSearchParams(search).get("provider");
+  return isLiveProvider(provider) ? provider : null;
 }
 
 // ── First sync ─────────────────────────────────────────────────────────────

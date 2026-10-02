@@ -22,6 +22,7 @@ import {
   IMPORT_PHASE_LINES,
   IMPORT_PROGRESS_LABEL,
   IMPORT_WAITING_DETAIL,
+  firstSyncSurface,
   importProgress,
   onboardingStage,
   rangeDonePercent,
@@ -236,23 +237,44 @@ describe("the phase line, and never a spinner alone (item 6)", () => {
   });
 });
 
-describe("the degrade cases: a gateway before EM-T6a or EM-T6b", () => {
-  it("with no import_since, the stage is null, so the page keeps FirstSyncBanner", () => {
+describe("the degrade cases: a gateway before EM-T6a or EM-T6b (fix round 1, P2)", () => {
+  // Orchestrator decision: the progress panel draws only when the gateway
+  // sends `import_phase` (EM-T6b). Before that, FirstSyncBanner stays,
+  // because its text is true there and a bar held at 0% is not.
+
+  it("with no import_since (before EM-T6a), the stage is null and the banner draws", () => {
     const old = { syncStatus: "syncing", initialSyncDone: false };
     expect(onboardingStage(old)).toBeNull();
+    expect(firstSyncSurface(old)).toBe("banner");
+    // A phase without a range is not a guided mailbox either.
+    expect(firstSyncSurface({ ...old, importPhase: "importing" })).toBe("banner");
   });
 
-  it("with import_since and no progress field, the panel shows the range at 0", () => {
+  it("with import_since and no import_phase (EM-T6a only), the stage is importing and the banner draws", () => {
     const t6aOnly = { importSince: daysAgo(30), onboardingDone: false, initialSyncDone: false };
     expect(onboardingStage(t6aOnly)).toBe("importing");
-    const v = importProgress(t6aOnly, { now: NOW });
-    expect(v.basis).toBe("range");
-    expect(v.percent).toBe(0);
-    // No phase: the line claims no order, because EM-T6b owns "newest first".
+    expect(firstSyncSurface(t6aOnly)).toBe("banner");
+    expect(firstSyncSurface({ ...t6aOnly, importPhase: null })).toBe("banner");
+    expect(firstSyncSurface({ ...t6aOnly, importPhase: "" })).toBe("banner");
+  });
+
+  it("with import_phase (EM-T6b), the progress panel draws", () => {
+    for (const importPhase of ["counting", "importing"]) {
+      expect(firstSyncSurface({ ...IMPORTING, importPhase }), importPhase).toBe("progress");
+    }
+  });
+
+  it("an error, a closed setup or a finished import never draws the panel", () => {
+    const withPhase = { ...IMPORTING, importPhase: "importing" };
+    expect(firstSyncSurface({ ...withPhase, syncStatus: "error" })).toBe("banner");
+    expect(firstSyncSurface({ ...withPhase, onboardingDone: true })).toBe("banner");
+    expect(firstSyncSurface({ ...withPhase, initialSyncDone: true })).toBe("banner");
+  });
+
+  it("a phase this UI does not know draws the plain line, with no order claimed", () => {
+    const v = importProgress({ ...IMPORTING, importPhase: "something-new" }, { now: NOW });
     expect(v.phaseLine).toBe(IMPORT_PHASE_LINES.unknown);
-    const out = panel(t6aOnly);
-    expect(progressbars(out)[0]["aria-valuenow"]).toBe("0");
-    expect(out).not.toContain("newest first");
+    expect(v.phaseLine).not.toContain("newest first");
   });
 });
 
@@ -318,10 +340,12 @@ describe("the account API carries the fields (items 4 and 7)", () => {
 describe("the page draws the panel where FirstSyncBanner drew (items 7 and 12)", () => {
   const PAGE = codeOnly(read("page.tsx"));
 
-  it("draws the panel for the importing stage and the banner for each other pending mailbox", () => {
+  it("draws the panel only for progress, and the banner for each other pending mailbox", () => {
     expect(PAGE).toMatch(
-      /\{pendingAccount &&\s*\(onboardingStage\(pendingAccount\) === "importing" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner address=\{pendingAccount\.emailAddress\} \/>/,
+      /\{pendingAccount &&\s*\(firstSyncSurface\(pendingAccount\) === "progress" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner address=\{pendingAccount\.emailAddress\} \/>/,
     );
+    // One decision: the page does not test the stage or the phase itself.
+    expect(PAGE).not.toMatch(/onboardingStage\(|importPhase/);
     expect(PAGE).toContain("progress={importProgress(pendingAccount, { now: new Date() })}");
   });
 

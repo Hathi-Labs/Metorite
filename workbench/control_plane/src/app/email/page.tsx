@@ -28,6 +28,7 @@ import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
   emailSurface,
+  rangeStepProviderFrom,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
@@ -36,7 +37,7 @@ import {
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { importProgress, onboardingStage } from "./lib/onboarding";
+import { firstSyncSurface, importProgress } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -118,6 +119,14 @@ export default function EmailPage() {
   // again" for a provider that is not live). With no mailbox, the empty state
   // already shows them.
   const connectParamRef = useRef(false);
+  // /email?connect=1&provider=microsoft opens the range step of that
+  // provider at once. The callback page's "Try again" sends it, because that
+  // retry is a first connect and must carry the range (EM-T6d fix round 1).
+  // Read once on the client. The connect choices mount only after the first
+  // account read, so no server render shows them.
+  const [rangeStepProvider, setRangeStepProvider] = useState<ConnectProviderId | null>(() =>
+    typeof window === "undefined" ? null : rangeStepProviderFrom(window.location.search)
+  );
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
     if (!wantsConnectChoices(window.location.search)) return;
@@ -591,6 +600,7 @@ export default function EmailPage() {
     return (
       <ConnectEmptyState
         onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
+        initialProvider={rangeStepProvider}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
@@ -872,11 +882,11 @@ export default function EmailPage() {
         )}
 
         {/* ── First sync of a new mailbox ──
-            A mailbox with a chosen range (EM-T6a) draws the import panel with
-            real progress (EM-T6d). Every other pending mailbox keeps the
-            banner: one from before EM-T6, or a gateway before EM-T6a. */}
+            The import panel draws only when the gateway reports progress
+            (`import_phase`, EM-T6b). Every other pending mailbox keeps the
+            banner: one from before EM-T6, or a gateway before EM-T6b. */}
         {pendingAccount &&
-          (onboardingStage(pendingAccount) === "importing" ? (
+          (firstSyncSurface(pendingAccount) === "progress" ? (
             <OnboardingPanel
               address={pendingAccount.emailAddress}
               progress={importProgress(pendingAccount, { now: new Date() })}
@@ -1072,13 +1082,18 @@ export default function EmailPage() {
       {/* Add a mailbox — the same choices as the empty state */}
       <Modal
         open={showAddModal}
-        onClose={() => setShowAddModal(false)}
+        onClose={() => {
+          setShowAddModal(false);
+          // The next "Add account" opens the list, not the retry's step.
+          setRangeStepProvider(null);
+        }}
         title="Connect a mailbox"
         icon="Mail"
         size="sm"
       >
         <div className="px-3 py-3">
           <ConnectChoices
+            initialProvider={rangeStepProvider}
             onConnect={(provider, importMonths) => {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);

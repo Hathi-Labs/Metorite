@@ -2147,8 +2147,10 @@ The R8 tests must show PASSED, not SKIPPED.
 
 - **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
 - **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is not dispatched.
-- **Part 1 degrades with no new field.** With no `import_since`, the page keeps `FirstSyncBanner`. With `import_since` and no `import_phase`, the panel shows the share of the range.
-- **Merge part 1 after EM-T6a.** Before EM-T6a, the gateway ignores `import_months`, so the range step offers a choice that has no effect.
+- **Part 1 degrades with no new field.** The progress panel draws only when the gateway sends `import_phase` (EM-T6b). Until then, the page keeps `FirstSyncBanner`, because its text is true and a bar held at 0% is not. That covers a mailbox with no `import_since` and a gateway with EM-T6a only (orchestrator, fix round 1).
+- **Merge part 1 after EM-T6a.** This branch merges after EM-T6a. Before it, the gateway drops import_months, and the step text is false.
+- **A retry is a first connect (fix round 1).** "Try again" and "Approved? Connect again" on the callback page open the range step again, through `/email?connect=1&provider=…`. The step shows the range that the member chose last in the tab, from `sessionStorage`, or 1.
+- **Follow-up: arrow keys.** The range step is a radio group of `Button`s, and Tab moves between them. Arrow keys belong in a shared radio-group primitive, because `SpaceSettings.tsx` has the same gap.
 - **Item 13.** "Last 6 months" was already a choice. So "Last year" goes, and "Last 6 months" asks for 180 days, the ceiling of EM-T6a.
 
 **Scope.**
