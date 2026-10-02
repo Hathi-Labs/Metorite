@@ -1053,7 +1053,7 @@ the real page. The proxy fence is `src/proxy.test.ts`.
 
 #### 10.4.5 EM-T2 in full
 
-**Status.** EM-T2b is BUILT, not merged. EM-T2a and EM-T2c are not built. Audited against
+**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). EM-T2c is not built. Audited against
 `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
 each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
@@ -1126,6 +1126,15 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line for 223 and
 `\d email_accounts` on the box.
+
+**As built (2026-10-02).** `create_account` also puts the organization in its duplicate read
+and in the default test. Both then match the new indexes with or without row level security.
+The fence runs 223 in the production order on the promoted catalog, and on a dedicated
+database that holds the ladder up to 222.
+
+⚠️ **Residual.** A full replay (`MIGRATION_REPLAY_ALL=1`) runs 47 again before 223. When one
+member holds a default mailbox in two organizations, 47 then fails on its old index. Migration
+209 has the same shape for `people`. The ledger deploy does not replay 47.
 
 ##### EM-T2b — the attachment cache goes through `tenant_redis`
 
