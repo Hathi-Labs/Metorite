@@ -891,7 +891,10 @@ class GmailProvider(BaseEmailProvider):
         max_results: int = 100,
         deep: bool = False,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
     ) -> SyncResult:
+        # ``catch_up`` is ignored: the history cursor already reads every
+        # change since the last sync (EM-T6b item 9).
         client = await self._get_client()
 
         if deep:

@@ -35,7 +35,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from contextlib import aclosing
+from datetime import datetime, timedelta
 from typing import Any
 
 from acb_common.db import (
@@ -102,6 +103,60 @@ SYNC_SKIPPED_BUSY: dict[str, Any] = {"skipped": "busy", "synced": 0}
 #: What a sync cycle returns when the account row is gone. It is an error for
 #: each caller, and the loop stops on ``gone`` (EM-T4f part 2).
 ACCOUNT_GONE: dict[str, Any] = {"error": "Account not found", "gone": True}
+
+# -- The import in batches (WS-17 EM-T6b) -------------------------------------
+
+#: The messages in one batch of an import. One ``tenant_session(org)`` writes
+#: each batch and its progress.
+IMPORT_BATCH_SIZE = 100
+
+#: The margin of the catch-up watermark: the recurring sweep reads back to
+#: ``last_synced_at`` minus this (EM-T6b item 9, D-EM-13).
+CATCH_UP_MARGIN = timedelta(hours=1)
+
+#: Before the first batch. A fresh import starts its count at 0. A resume
+#: keeps the count that it reached. The estimate comes next.
+_IMPORT_COUNTING = text(
+    """UPDATE email_accounts
+       SET import_phase = 'counting', import_count = :count,
+           import_estimate = NULL, updated_at = now()
+       WHERE id = :id"""
+)
+
+_IMPORT_ESTIMATE = text(
+    """UPDATE email_accounts
+       SET import_estimate = :estimate, updated_at = now()
+       WHERE id = :id"""
+)
+
+#: With each batch, in the block that writes its messages. A batch that wrote
+#: no dated message keeps the point that the import reached.
+_IMPORT_BATCH = text(
+    """UPDATE email_accounts
+       SET import_phase = 'importing',
+           import_reached_at = COALESCE(CAST(:reached AS timestamptz),
+                                        import_reached_at),
+           import_count = :count, updated_at = now()
+       WHERE id = :id"""
+)
+
+_IMPORT_DONE = text(
+    """UPDATE email_accounts
+       SET initial_sync_done = true, import_phase = 'done', updated_at = now()
+       WHERE id = :id"""
+)
+
+_TRASH_DELETED = text(
+    """UPDATE email_messages
+       SET folder = 'TRASH', updated_at = now()
+       WHERE account_id = :account_id
+         AND provider_message_id = :provider_id"""
+)
+
+_STORED_CATEGORIES = text(
+    "SELECT categories FROM email_messages "
+    "WHERE account_id = :aid AND provider_message_id = :pid"
+)
 
 
 def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
@@ -267,6 +322,119 @@ async def _drop_below_floor(
     return kept
 
 
+async def _write_messages(
+    db: Any, account_id: str, messages: list[Any], floor: datetime, *,
+    learn_labels: bool = False,
+) -> tuple[list[Any], list[Any]]:
+    """Write *messages* in the session of the caller. Returns the messages
+    that it wrote, and the label changes.
+
+    The ONE write of phase (c) and of each import batch (EM-T6b). It drops
+    each message below the floor first (``_drop_below_floor``). A
+    ``[DELETED]`` marker moves its row to TRASH. Every other message goes
+    through the shared upsert. With ``learn_labels``, it reads the stored
+    categories of an existing row first, because the upsert overwrites them.
+    It never calls ``commit()``."""
+    kept = await _drop_below_floor(db, account_id, messages, floor)
+    label_changes: list[Any] = []
+    for msg in kept:
+        if msg.subject == "[DELETED]":
+            await db.execute(_TRASH_DELETED, {
+                "account_id": account_id,
+                "provider_id": msg.provider_message_id})
+            continue
+        old_categories = None
+        if learn_labels:
+            stored = (await db.execute(_STORED_CATEGORIES, {
+                "aid": account_id,
+                "pid": msg.provider_message_id})).fetchone()
+            # Existing rows only — a brand-new message has no prior
+            # categories to diff against.
+            old_categories = list(stored.categories or []) if stored else None
+        # ONE shared ingest upsert (message + attachments); see
+        # email_ingestion.persist.upsert_message.
+        await upsert_message(db, account_id, msg)
+        if old_categories is not None:
+            label_changes.append((msg, old_categories))
+    return kept, label_changes
+
+
+def _catch_up_watermark(row: Any) -> datetime | None:
+    """How far back the recurring sweep reads after a pause (EM-T6b item 9).
+
+    ``last_synced_at`` minus ``CATCH_UP_MARGIN``, or ``created_at`` when the
+    mailbox never finished a sync (D-EM-13). ``None`` when the row holds
+    neither, and the sweep then reads its normal pages."""
+    synced = getattr(row, "last_synced_at", None)
+    if synced is not None:
+        return synced - CATCH_UP_MARGIN
+    return getattr(row, "created_at", None)
+
+
+def _oldest_received(messages: list[Any]) -> datetime | None:
+    """The oldest ``received_at`` among *messages*, or None with no date."""
+    dated = [m.received_at for m in messages if m.received_at is not None]
+    return min(dated) if dated else None
+
+
+async def _import_in_batches(
+    org: str, account_id: str, provider: Any, row: Any, *,
+    floor: datetime, progress: bool,
+) -> int:
+    """Import the mail of the mailbox newest first, one batch at a time.
+    Returns the rows that it wrote. WS-17 EM-T6b items 4 to 8.
+
+    It fetches each batch with NO session open. One ``tenant_session(org)``
+    then writes the messages of the batch, and the progress when
+    ``progress`` is true. No block calls ``commit()``. An import batch runs
+    neither the reconcile nor the label learner (item 10).
+
+    ``progress`` is true for the first import only. That import writes
+    ``import_phase = 'counting'``, then the estimate, then ``'importing'``,
+    ``import_reached_at`` and ``import_count`` with each batch, and at the
+    end ``initial_sync_done = true`` and ``import_phase = 'done'``. A resume
+    starts at ``import_reached_at``, with that point as ``until``, and keeps
+    the count. The upsert makes the overlap at that point harmless. The deep
+    sync of a member act imports from now to the floor, and writes no
+    progress column and no ``initial_sync_done``. An error raises past the
+    progress, which stays as the last batch left it."""
+    until = getattr(row, "import_reached_at", None) if progress else None
+    count = (getattr(row, "import_count", None) or 0) if until is not None else 0
+    on_estimate = None
+    if progress:
+        async with tenant_session(org) as db:
+            await db.execute(_IMPORT_COUNTING, {"id": account_id, "count": count})
+        base = count
+
+        async def on_estimate(estimate: int | None) -> None:
+            # A resume counts only the mail below the point it reached.
+            total = None if estimate is None else base + estimate
+            if total is None:
+                logger.info("sync.import_estimate_unknown account=%s", account_id)
+            async with tenant_session(org) as db:
+                await db.execute(_IMPORT_ESTIMATE,
+                                 {"id": account_id, "estimate": total})
+
+    written = 0
+    async with aclosing(provider.import_batches(
+            since=floor, until=until, size=IMPORT_BATCH_SIZE,
+            on_estimate=on_estimate)) as batches:
+        async for batch in batches:
+            async with tenant_session(org) as db:
+                kept, _ = await _write_messages(db, account_id, batch, floor)
+                if progress:
+                    count += len(kept)
+                    await db.execute(_IMPORT_BATCH, {
+                        "id": account_id, "reached": _oldest_received(kept),
+                        "count": count})
+            written += len(kept)
+    if progress:
+        async with tenant_session(org) as db:
+            await db.execute(_IMPORT_DONE, {"id": account_id})
+        logger.info("sync.import_done account=%s count=%d", account_id, count)
+    return written
+
+
 def _credentials_json(provider: Any) -> str | None:
     """The credentials of *provider* as JSON when a refresh changed them.
 
@@ -413,7 +581,11 @@ async def _sync_cycle(
 
     (a) read the account, set ``syncing``, write the ``email_sync_log`` row;
     (b) authenticate and fetch from the provider with NO session open — a
-        rotated token is persisted in a short session between the two calls;
+        rotated token is persisted in a short session between the two calls.
+        The first import, or the deep sync of a member act, runs here in
+        batches (``_import_in_batches``, EM-T6b): it fetches each batch with
+        NO session open, and one block writes the batch and its progress.
+        The recurring sweep then fetches with NO session open;
     (c) drop each message below the floor that is not stored yet
         (``_drop_below_floor``), persist the messages, then the reconcile;
     (d) the credentials, account and sync-log rows;
@@ -434,8 +606,9 @@ async def _sync_cycle(
     write once more in a new block, logs the result, and the sync keeps its
     success.
 
-    ``deep`` overrides the automatic (first-sync) heuristic, so a caller can
-    force a deep backfill. ``since`` is the explicit floor of a member act
+    ``deep=None`` runs the first import while ``initial_sync_done`` is false.
+    ``deep=True`` forces the deep sync of a member act, which writes no
+    progress. ``since`` is the explicit floor of a member act
     (Process past emails, Clean older mail). Every sync passes a floor to the
     provider, deep or shallow (WS-17 EM-T6a, ``import_window.sync_floor``).
     With no ``since``, the floor is ``import_since``, the range that the member
@@ -460,7 +633,8 @@ async def _sync_cycle(
                 text(
                     """SELECT id, provider, credentials_encrypted, last_history_id,
                               sync_interval_secs, initial_sync_done,
-                              import_since
+                              import_since, import_reached_at, import_count,
+                              last_synced_at, created_at
                        FROM email_accounts
                        WHERE id = :id"""
                 ),
@@ -521,76 +695,49 @@ async def _sync_cycle(
                     },
                 )
 
-        # First-ever sync for this account → deep backfill across all folders,
-        # back to the floor. Afterwards stay shallow (cheap polls). A caller
-        # may force a deep sync.
-        do_deep = (
-            not bool(getattr(row, "initial_sync_done", False))
-            if deep is None else bool(deep)
-        )
         # The floor binds EVERY sync, deep or shallow (EM-T6a items 3 and 4).
         # An explicit ``since`` is a member act. Without one, the range that
         # the member chose binds. The ceiling of 180 days binds both.
         floor = import_window.sync_floor(
             since=since, import_since=getattr(row, "import_since", None))
+
+        # The first import, or the deep sync of a member act, runs in batches
+        # newest first, and only the first import writes progress (EM-T6b
+        # items 4 to 8). A caller forces a deep sync with ``deep=True``.
+        first_import = deep is None and not getattr(row, "initial_sync_done", False)
+        imported = 0
+        if first_import or deep:
+            imported = await _import_in_batches(
+                org, account_id, provider, row, floor=floor,
+                progress=first_import)
+
+        # The recurring sweep runs in every call, after an import too, so new
+        # mail always syncs (D-EM-10). It reads past its newest pages back to
+        # the catch-up watermark after a pause (EM-T6b item 9, D-EM-13).
         sync_result = await provider.sync_messages(
             history_id=row.last_history_id,
             max_results=100,
-            deep=do_deep,
+            deep=False,
             since=floor,
+            catch_up=_catch_up_watermark(row),
         )
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
         # overwrites categories on a categories-authoritative provider
-        # (Outlook), destroying the "before". Only when a learner is wired
-        # AND this is an incremental sync: a deep backfill replays history
-        # and would mislearn (the same gate the manual route uses).
-        learn_labels = hooks.learn_label_changes is not None and not do_deep
-        label_changes: list[Any] = []
+        # (Outlook), destroying the "before". The learner and the reconcile
+        # stay on the recurring sweep. An import batch runs neither, because
+        # a backfill replays history and would mislearn (EM-T6b item 10).
+        learn_labels = hooks.learn_label_changes is not None
 
         # ── (c) persist the messages ────────────────────────────────────────
-        persisted_count = 0
         async with tenant_session(org) as db:
             # The backstop of the floor, for a provider that ignores ``since``.
             # The reconcile below then reads the same list.
-            sync_result.messages = await _drop_below_floor(
-                db, account_id, sync_result.messages, floor)
-            for msg in sync_result.messages:
-                if msg.subject == "[DELETED]":
-                    await db.execute(
-                        text(
-                            """UPDATE email_messages
-                               SET folder = 'TRASH', updated_at = now()
-                               WHERE account_id = :account_id
-                                 AND provider_message_id = :provider_id"""
-                        ),
-                        {"account_id": account_id,
-                         "provider_id": msg.provider_message_id},
-                    )
-                    persisted_count += 1
-                else:
-                    old_categories = None
-                    if learn_labels:
-                        ocr = (await db.execute(
-                            text(
-                                "SELECT categories FROM email_messages "
-                                "WHERE account_id = :aid "
-                                "AND provider_message_id = :pid"
-                            ),
-                            {"aid": account_id,
-                             "pid": msg.provider_message_id},
-                        )).fetchone()
-                        # Existing rows only — a brand-new message has no prior
-                        # categories to diff against.
-                        old_categories = (
-                            list(ocr.categories or []) if ocr else None)
-                    # ONE shared ingest upsert (message + attachments); see
-                    # email_ingestion.persist.upsert_message.
-                    await upsert_message(db, account_id, msg)
-                    persisted_count += 1
-                    if old_categories is not None:
-                        label_changes.append((msg, old_categories))
+            sync_result.messages, label_changes = await _write_messages(
+                db, account_id, sync_result.messages, floor,
+                learn_labels=learn_labels)
+        persisted_count = imported + len(sync_result.messages)
 
         # Revive label-learning on the scheduler path (email item 2.1): the
         # gateway-registered hook learns FROM-classification patterns from
@@ -628,8 +775,9 @@ async def _sync_cycle(
                                  {"id": account_id,
                                   "creds": store.encrypt(written)})
 
-            # Update account sync state. Mark the one-time deep sync done so
-            # subsequent polls stay shallow.
+            # Update account sync state. The end of the first import writes
+            # ``initial_sync_done``, and a deep sync of a member act never
+            # does (EM-T6b items 6 and 8).
             await db.execute(
                 text(
                     """UPDATE email_accounts
@@ -637,12 +785,10 @@ async def _sync_cycle(
                            last_history_id = COALESCE(
                                :history_id, last_history_id),
                            sync_error = NULL,
-                           initial_sync_done = initial_sync_done OR :deep,
                            updated_at = now()
                        WHERE id = :id"""
                 ),
-                {"id": account_id, "history_id": sync_result.new_history_id,
-                 "deep": do_deep},
+                {"id": account_id, "history_id": sync_result.new_history_id},
             )
 
             # Mark sync log success

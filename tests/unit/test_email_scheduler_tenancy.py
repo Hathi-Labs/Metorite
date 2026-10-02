@@ -837,6 +837,12 @@ class _FakeProvider:
     async def sync_messages(self, **_kw) -> SyncResult:
         return SyncResult(messages=self.messages, new_history_id="h-1")
 
+    async def import_batches(self, **_kw):
+        """The first import finds no older mail (EM-T6b). The recurring
+        sweep in the same call returns the messages of this fake."""
+        for batch in ():
+            yield batch
+
     async def get_message(self, provider_message_id):
         raise RuntimeError("no body backfill in this test")
 

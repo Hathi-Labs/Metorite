@@ -68,6 +68,30 @@ class EmailAccountModel(BaseModel):
     import_since: str | None = None
     #: True when the member closed the guided setup (EM-T6a item 11).
     onboarding_done: bool = False
+    #: The progress of the first import (EM-T6b item 11). The phase is
+    #: ``counting``, ``importing`` or ``done``, and ``None`` before the first
+    #: import or for a mailbox from before EM-T6. ``import_reached_at`` is the
+    #: oldest mail written so far, as ISO text. ``import_estimate`` is
+    #: ``None`` when the provider gives no count.
+    import_phase: str | None = None
+    import_count: int | None = None
+    import_estimate: int | None = None
+    import_reached_at: str | None = None
+
+
+#: The account columns that every account read returns, after the base ones.
+_PROGRESS_COLUMNS = (
+    "import_phase, import_count, import_estimate, import_reached_at")
+
+
+def _progress(row: Any) -> dict[str, Any]:
+    """The import progress of an account row, for ``EmailAccountModel``."""
+    return {
+        "import_phase": row.import_phase,
+        "import_count": row.import_count,
+        "import_estimate": row.import_estimate,
+        "import_reached_at": _iso(row.import_reached_at),
+    }
 
 
 class AccountUpdateModel(BaseModel):
@@ -135,10 +159,10 @@ async def list_accounts(
     async with _tenant_session() as db:
         result = await db.execute(
             text(
-                """SELECT id, provider, email_address, label, avatar_color,
+                f"""SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
                           is_default, initial_sync_done, import_since,
-                          onboarding_done_at
+                          onboarding_done_at, {_PROGRESS_COLUMNS}
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -174,6 +198,7 @@ async def list_accounts(
                 initial_sync_done=bool(row.initial_sync_done),
                 import_since=_iso(row.import_since),
                 onboarding_done=row.onboarding_done_at is not None,
+                **_progress(row),
             ))
         return accounts
 
@@ -371,13 +396,14 @@ async def set_default_account(
         )
         result = await db.execute(
             text(
-                """UPDATE email_accounts
+                f"""UPDATE email_accounts
                    SET is_default = true, updated_at = now()
                    WHERE id = :id AND user_id = :uid
                    RETURNING id, provider, email_address, label, avatar_color,
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
-                             import_since, onboarding_done_at"""
+                             import_since, onboarding_done_at,
+                             {_PROGRESS_COLUMNS}"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -407,6 +433,7 @@ async def set_default_account(
             initial_sync_done=bool(row.initial_sync_done),
             import_since=_iso(row.import_since),
             onboarding_done=row.onboarding_done_at is not None,
+            **_progress(row),
         )
 
 
@@ -647,7 +674,7 @@ async def update_account(
                     RETURNING id, provider, email_address, label, avatar_color,
                               sync_enabled, sync_status, last_synced_at,
                               initial_sync_done, import_since,
-                              onboarding_done_at"""
+                              onboarding_done_at, {_PROGRESS_COLUMNS}"""
             ),
             params,
         )
@@ -668,6 +695,7 @@ async def update_account(
         initial_sync_done=bool(row.initial_sync_done),
         import_since=_iso(row.import_since),
         onboarding_done=row.onboarding_done_at is not None,
+        **_progress(row),
     )
     # Closing the guided setup changes nothing that the sync loop reads. A
     # restart cancels a sync in flight, so this PATCH does not restart it.

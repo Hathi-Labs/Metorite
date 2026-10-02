@@ -11,9 +11,9 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -345,6 +345,27 @@ class SyncResult:
     # incremental syncs (Gmail history, IMAP UIDNEXT) where absence means
     # "unchanged", not "deleted".
     full_snapshot: bool = False
+
+
+#: The callback that an import calls once, before its first batch, with the
+#: count of the messages that it expects to read. ``None`` means "unknown"
+#: (WS-17 EM-T6b item 3).
+EstimateCallback = Callable[[int | None], Awaitable[None]]
+
+#: The sort key of a message with no ``received_at``: older than any date.
+_NO_DATE = datetime.min.replace(tzinfo=UTC)
+
+
+def _aware(value: datetime) -> datetime:
+    """``value`` with a time zone. A naive value is read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def received_key(msg: EmailMessage) -> datetime:
+    """The time of *msg* for a newest-first order, always with a time zone.
+
+    A message with no date sorts as the oldest."""
+    return _NO_DATE if msg.received_at is None else _aware(msg.received_at)
 
 
 class BaseEmailProvider(ABC):
@@ -703,6 +724,7 @@ class BaseEmailProvider(ABC):
         max_results: int = 100,
         deep: bool = False,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
     ) -> SyncResult:
         """Incremental sync — fetch new/updated messages since history_id.
 
@@ -711,8 +733,43 @@ class BaseEmailProvider(ABC):
         False the sync stays shallow/incremental.  ``since`` is the import floor.
         The scheduler passes it on every sync, deep or shallow (EM-T6a).
         Providers that support a server-side date filter use it.
+
+        ``catch_up`` is the watermark of the recurring sweep after a pause
+        (WS-17 EM-T6b item 9, D-EM-13). A provider that pages newest first
+        reads more pages while its last page holds only mail newer than it.
+        A provider with an incremental cursor ignores it.
         """
         ...
+
+    async def import_batches(
+        self,
+        since: datetime | None,
+        until: datetime | None = None,
+        size: int = 100,
+        *,
+        on_estimate: EstimateCallback | None = None,
+    ) -> AsyncIterator[list[EmailMessage]]:
+        """The import of a mailbox, in lists of up to ``size`` messages.
+
+        WS-17 EM-T6b item 1. Each list is newest first, and the lists in
+        sequence are newest first across every swept folder. The import reads
+        no message older than ``since``, and none newer than ``until`` when
+        ``until`` is set. A resume passes the point that it reached as
+        ``until``.
+
+        ``on_estimate`` is awaited at most once, before the first list. This
+        default never calls it. It calls ``sync_messages(deep=True,
+        since=since)``, drops each message newer than ``until``, sorts and
+        cuts. Gmail and IMAP use it. Outlook merges its folders page by page.
+        """
+        size = max(size, 1)
+        result = await self.sync_messages(deep=True, since=since)
+        top = None if until is None else _aware(until)
+        kept = [m for m in result.messages
+                if top is None or m.received_at is None or received_key(m) <= top]
+        kept.sort(key=received_key, reverse=True)
+        for start in range(0, len(kept), size):
+            yield kept[start:start + size]
 
     @abstractmethod
     async def get_attachment(

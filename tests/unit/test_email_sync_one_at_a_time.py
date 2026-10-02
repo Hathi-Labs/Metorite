@@ -508,6 +508,11 @@ class _SameKeys:
         return SyncResult(messages=[_message(i) for i in range(3)],
                           new_history_id="h-1")
 
+    async def import_batches(self, **_kw):
+        """The first import finds no older mail (EM-T6b)."""
+        for batch in ():
+            yield batch
+
     async def get_message(self, provider_message_id):
         raise RuntimeError("no body backfill in this test")
 

@@ -33,7 +33,15 @@ import_window.py   — the import floor: the ceiling, the range and the floor (E
 All providers implement the `BaseEmailProvider` abstract interface:
 - `authenticate()`, `list_folders()`, `list_messages()`, `get_message()`
 - `send_message()`, `modify_message()`, `trash_message()`
-- `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list
+- `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list.
+  It takes `catch_up`, the watermark after a pause. Outlook reads more pages
+  back to it. Gmail and IMAP ignore it, because their cursors read each change.
+- `import_batches(since, until, size)` — the import in lists, newest first
+  across every folder (WS-17 EM-T6b). The default of the base class calls a
+  deep `sync_messages`, then sorts and cuts. Outlook merges one page stream
+  for each folder, and reads the next page of a folder only when that folder
+  held the newest head. It awaits `on_estimate` once with the sum of the
+  folder counts, or with `None`.
 - `get_attachment()`
 
 ## Key Contracts
@@ -132,6 +140,19 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `import_since` binds. Outlook sends the floor on each sweep. The core drops
   a message below the floor before phase (c), unless Metorite holds its row. R7:
   `tests/unit/test_email_import_floor.py`.
+- ⚠️ **The import runs in batches (WS-17 EM-T6b).** While `initial_sync_done`
+  is false, `_import_in_batches` runs before the recurring sweep. It fetches
+  each batch with no session open. One `tenant_session(org)` then writes the
+  batch and its progress, through `_write_messages`, the one write of phase
+  (c). The progress columns are `import_phase`, `import_count`,
+  `import_estimate` and `import_reached_at`. When an import fails, they stay,
+  and the next sync resumes with `until = import_reached_at`. A deep sync of a
+  member act (`deep=True`) imports in batches too, and writes no progress and
+  no `initial_sync_done`. No import batch runs the reconcile or the label
+  learner. The recurring sweep runs after each import in the same call, so
+  new mail always syncs (D-EM-10). It reads back to `last_synced_at - 1 hour`,
+  or `created_at`, after a pause (D-EM-13). R7:
+  `tests/unit/test_email_import_batches.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

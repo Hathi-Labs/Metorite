@@ -248,6 +248,13 @@ class _Recorder:
         self.calls.append(kw)
         return SyncResult(messages=list(self.messages), new_history_id=None)
 
+    async def import_batches(self, *, since, until=None, **_kw):
+        """Since EM-T6b, the first import and a deep sync read the mail in
+        batches before the recurring sweep."""
+        self.calls.append({"import": True, "since": since, "until": until})
+        if self.messages:
+            yield list(self.messages)
+
     async def get_message(self, provider_message_id):
         raise RuntimeError("no body backfill here")
 
@@ -275,7 +282,10 @@ def core(monkeypatch):
         monkeypatch.setattr(sched, "tenant_session", _fake_sessions(row))
         res = await sched._sync_account("acc-1", organization_id=_ORG, **kw)
         assert "error" not in res, res
-        return provider.calls[-1]
+        # The first call: the import of EM-T6b when one runs, or else the
+        # recurring sweep. Each call after an import is the recurring sweep.
+        assert all(c.get("deep") is False for c in provider.calls[1:])
+        return provider.calls[0]
 
     return _run
 
@@ -283,7 +293,7 @@ def core(monkeypatch):
 async def test_the_first_import_reads_back_to_the_chosen_range(core) -> None:
     chosen = _now() - timedelta(days=30)
     call = await core(done=False, import_since=chosen)
-    assert call["deep"] is True
+    assert call["import"] is True
     assert call["since"] == chosen
 
 
@@ -298,7 +308,7 @@ async def test_a_resync_takes_the_choice_of_the_member(core) -> None:
     """A Resync passes ``deep=True`` and no ``since`` (transport/sync.py)."""
     chosen = _now() - timedelta(days=90)
     call = await core(done=True, import_since=chosen, deep=True)
-    assert call["deep"] is True
+    assert call["import"] is True
     assert call["since"] == chosen
 
 

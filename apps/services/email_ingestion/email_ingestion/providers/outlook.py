@@ -9,7 +9,10 @@ API reference: https://learn.microsoft.com/en-us/graph/api/resources/mail-api-ov
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from collections import deque
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -21,10 +24,12 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    EstimateCallback,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    received_key,
 )
 
 
@@ -57,6 +62,73 @@ _OUTLOOK_SYSTEM_FOLDER_NAMES = frozenset({
 _OUTLOOK_HIDDEN_FOLDER_NAMES = frozenset({
     "sync issues", "conflicts", "local failures", "server failures",
 })
+
+
+#: The system folders of a full sweep, in the order of the sweep. The user
+#: folders follow them. The import reads the same set (EM-T6b item 2).
+SWEEP_SYSTEM_FOLDERS = ("inbox", "sent", "drafts", "archive", "junk", "trash")
+
+#: The Graph path of each folder key that is not a folder id.
+_WELL_KNOWN_PATHS: dict[str, str] = {
+    "inbox": "inbox",
+    "sent": "sentitems",
+    "sentitems": "sentitems",
+    "drafts": "drafts",
+    "trash": "deleteditems",
+    "deleteditems": "deleteditems",
+    "archive": "archive",
+    "junk": "junkemail",
+    "junkemail": "junkemail",
+}
+
+
+def _folder_path(folder: str) -> str:
+    """The Graph path of *folder*: a well-known name, or the folder id."""
+    return _WELL_KNOWN_PATHS.get(folder.lower(), folder)
+
+
+def _graph_time(value: datetime) -> str:
+    """*value* as the UTC text that a Graph ``$filter`` takes. A naive value
+    is read as UTC."""
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC)
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _received_filter(since: datetime | None, until: datetime | None) -> str | None:
+    """The ``$filter`` of a time window on ``receivedDateTime``, or None.
+
+    ``since`` is the import floor (EM-T6a). ``until`` is the point that an
+    import resumes from (EM-T6b item 7), and it is inclusive."""
+    parts = []
+    if since is not None:
+        parts.append(f"receivedDateTime ge {_graph_time(since)}")
+    if until is not None:
+        parts.append(f"receivedDateTime le {_graph_time(until)}")
+    return " and ".join(parts) or None
+
+
+def _newer_than(messages: list[EmailMessage], watermark: datetime | None) -> bool:
+    """True when the oldest dated message of *messages* is newer than
+    *watermark*. The catch-up of a recurring sweep then reads one more page
+    (EM-T6b item 9). False with no watermark, or with no dated message."""
+    dated = [received_key(m) for m in messages if m.received_at is not None]
+    if watermark is None or not dated:
+        return False
+    if watermark.tzinfo is None:
+        watermark = watermark.replace(tzinfo=UTC)
+    return min(dated) > watermark
+
+
+@dataclass
+class _FolderStream:
+    """One folder of an import: the messages of its current page, newest
+    first, and the link to its next page."""
+    folder: str
+    canonical: str | None
+    buffer: deque[EmailMessage] = field(default_factory=deque)
+    next_page: str | None = None
+    pages: int = 0
 
 
 def _classify_folder_type(folder: dict[str, Any]) -> str:
@@ -372,6 +444,7 @@ class OutlookProvider(BaseEmailProvider):
         page_token: str | None = None,
         canonical_override: str | None = None,
         since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[EmailMessage], str | None]:
         client = await self._get_client()
 
@@ -387,20 +460,7 @@ class OutlookProvider(BaseEmailProvider):
             resp = await client.get(page_token)
         else:
             # First page: build the query for the requested folder.
-            well_known: dict[str, str] = {
-                "inbox": "inbox",
-                "sent": "sentitems",
-                "sentitems": "sentitems",
-                "drafts": "drafts",
-                "trash": "deleteditems",
-                "deleteditems": "deleteditems",
-                "archive": "archive",
-                "junk": "junkemail",
-                "junkemail": "junkemail",
-            }
-            folder_path = well_known.get(folder.lower(), folder)
-
-            url = f"/me/mailFolders/{folder_path}/messages"
+            url = f"/me/mailFolders/{_folder_path(folder)}/messages"
             params: dict[str, Any] = {
                 "$top": min(max_results, 100),
                 "$orderby": "receivedDateTime desc",
@@ -412,14 +472,14 @@ class OutlookProvider(BaseEmailProvider):
             }
             if query:
                 params["$search"] = f'"{query}"'
-            elif since is not None:
+            elif since is not None or until is not None:
                 # Server-side time bound: the import floor of every sync sweep
-                # (EM-T6a). Filtering and ordering on the same property
+                # (EM-T6a), and the resume point of an import (EM-T6b).
+                # Filtering and ordering on the same property
                 # (receivedDateTime) is allowed by
                 # Graph; $search would NOT combine with $orderby, so they're
                 # mutually exclusive here (sync never passes a query).
-                iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-                params["$filter"] = f"receivedDateTime ge {iso}"
+                params["$filter"] = _received_filter(since, until)
             resp = await client.get(url, params=params)
 
         resp.raise_for_status()
@@ -1037,17 +1097,24 @@ class OutlookProvider(BaseEmailProvider):
         *,
         max_pages: int | None = None,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
     ) -> list[EmailMessage]:
         """Page a single folder (newest-first), following ``@odata.nextLink``.
 
         ``max_pages`` bounds the number of pages. ``since`` adds a server-side
         receivedDateTime floor, so a sweep stops at the import floor of the
         mailbox (EM-T6a).
+
+        ``catch_up`` is the watermark after a pause (EM-T6b item 9). After
+        ``max_pages``, the sweep reads one more page while the oldest message
+        of the last page is newer than it. ``DEEP_SYNC_MAX_PAGES`` caps the
+        pages, and ``since`` still binds each page.
         """
         out: list[EmailMessage] = []
         token: str | None = None
         pages = max_pages or self.RECURRING_SYNC_MAX_PAGES
-        for _ in range(pages):
+        cap = pages if catch_up is None else max(pages, self.DEEP_SYNC_MAX_PAGES)
+        for read in range(1, cap + 1):
             msgs, token = await self.list_messages(
                 folder=folder,
                 max_results=max_results,
@@ -1058,6 +1125,31 @@ class OutlookProvider(BaseEmailProvider):
             out.extend(msgs)
             if not token:
                 break
+            if read >= pages and not _newer_than(msgs, catch_up):
+                break
+        return out
+
+    async def _user_sweep_folders(self) -> list[tuple[str, str]]:
+        """The user folders of a full sweep: (folder id, canonical name).
+
+        Each Outlook message lives in exactly one folder, so storing
+        folder=canonical(displayName) is unambiguous and makes the user's own
+        folders openable in the UI. A folder whose canonical name is a system
+        folder is skipped, because the sweep reads it by its well-known name.
+        A failed folder list gives no user folder.
+        """
+        try:
+            folders = await self.list_folders()
+        except Exception:
+            return []
+        out: list[tuple[str, str]] = []
+        for f in folders:
+            if f.type == "system":
+                continue
+            canon = canonical_folder(f.name)
+            if canon in _CORE_CANONICAL:
+                continue
+            out.append((f.provider_folder_id, canon))
         return out
 
     async def sync_messages(
@@ -1066,6 +1158,7 @@ class OutlookProvider(BaseEmailProvider):
         max_results: int = 100,
         deep: bool = False,
         since: datetime | None = None,
+        catch_up: datetime | None = None,
     ) -> SyncResult:
         client = await self._get_client()
 
@@ -1125,37 +1218,26 @@ class OutlookProvider(BaseEmailProvider):
             # each folder back to the floor via the since-filter. RECURRING
             # polls read only the newest pages (cheap). The floor binds BOTH
             # (EM-T6a item 5): without it, the first poll of a quiet user
-            # folder added mail that was years old (D-EM-10).
+            # folder added mail that was years old (D-EM-10). ``catch_up``
+            # reads past the newest pages after a pause (EM-T6b item 9).
             max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
             sweep_since = since
             messages = []
-            for folder_key in ("inbox", "sent", "drafts", "archive", "junk", "trash"):
+            for folder_key in SWEEP_SYSTEM_FOLDERS:
                 try:
                     messages.extend(await self._sweep_folder(
                         folder_key, max_results,
-                        max_pages=max_pages, since=sweep_since,
+                        max_pages=max_pages, since=sweep_since, catch_up=catch_up,
                     ))
                 except Exception:
                     # A missing/forbidden folder shouldn't abort the whole sync.
                     continue
 
-            # User-created folders — each Outlook message lives in exactly one
-            # folder, so storing folder=canonical(displayName) is unambiguous and
-            # makes the user's own folders openable in the UI.
-            try:
-                folders = await self.list_folders()
-            except Exception:
-                folders = []
-            for f in folders:
-                if f.type == "system":
-                    continue
-                canon = canonical_folder(f.name)
-                if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    continue
+            for folder_id, canon in await self._user_sweep_folders():
                 try:
                     messages.extend(await self._sweep_folder(
-                        f.provider_folder_id, max_results, canonical_override=canon,
-                        max_pages=max_pages, since=sweep_since,
+                        folder_id, max_results, canonical_override=canon,
+                        max_pages=max_pages, since=sweep_since, catch_up=catch_up,
                     ))
                 except Exception:
                     continue
@@ -1177,6 +1259,112 @@ class OutlookProvider(BaseEmailProvider):
                 # provider-side deletions (messages gone from every folder).
                 full_snapshot=True,
             )
+
+    async def import_batches(
+        self,
+        since: datetime | None,
+        until: datetime | None = None,
+        size: int = 100,
+        *,
+        on_estimate: EstimateCallback | None = None,
+    ) -> AsyncIterator[list[EmailMessage]]:
+        """The import, newest first across every folder (EM-T6b items 2, 3).
+
+        It opens one page stream for each folder of the full sweep. Each
+        stream filters on ``receivedDateTime ge since``, and on
+        ``receivedDateTime le until`` when ``until`` is set. The merge always
+        takes the newest head across the streams. It reads the next page of a
+        folder only when that folder held the newest head and has no message
+        left. So a stop part way keeps the newest mail of every folder.
+
+        A folder whose first page fails is skipped, as in the sweep. A later
+        page that fails raises, and the import resumes from the point that it
+        reached. Before the first list, it awaits ``on_estimate`` with the sum
+        of the folder counts, or with ``None`` when a folder gives no count.
+        """
+        size = max(size, 1)
+        streams: list[_FolderStream] = []
+        folders = [(f, None) for f in SWEEP_SYSTEM_FOLDERS]
+        for folder, canon in folders + await self._user_sweep_folders():
+            stream = _FolderStream(folder, canon)
+            try:
+                await self._read_page(stream, size, since=since, until=until)
+            except Exception:
+                # A missing/forbidden folder shouldn't abort the whole import.
+                continue
+            streams.append(stream)
+        if on_estimate is not None:
+            await on_estimate(await self._import_estimate(streams, since, until))
+
+        batch: list[EmailMessage] = []
+        while True:
+            for stream in streams:
+                # Only the folder whose head the merge took last can be empty
+                # with a page left, so this reads that folder alone.
+                while not stream.buffer and stream.next_page:
+                    await self._read_page(stream, size)
+            live = [s for s in streams if s.buffer]
+            if not live:
+                break
+            newest = max(live, key=lambda s: received_key(s.buffer[0]))
+            batch.append(newest.buffer.popleft())
+            if len(batch) >= size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+    async def _read_page(
+        self, stream: _FolderStream, size: int, *,
+        since: datetime | None = None, until: datetime | None = None,
+    ) -> None:
+        """Read the next page of *stream* into its buffer. The first page
+        takes the window. A later page follows ``@odata.nextLink``, which
+        carries the same ``$filter`` and ``$orderby``. A folder reads at most
+        ``DEEP_SYNC_MAX_PAGES`` pages, the bound of the deep sweep."""
+        msgs, stream.next_page = await self.list_messages(
+            folder=stream.folder,
+            max_results=size,
+            page_token=stream.next_page,
+            canonical_override=stream.canonical,
+            since=since,
+            until=until,
+        )
+        stream.buffer.extend(msgs)
+        stream.pages += 1
+        if stream.pages >= self.DEEP_SYNC_MAX_PAGES:
+            stream.next_page = None
+
+    async def _import_estimate(
+        self, streams: list[_FolderStream],
+        since: datetime | None, until: datetime | None,
+    ) -> int | None:
+        """The sum of ``$count`` over the folders of an import (EM-T6b item 3).
+
+        Each request takes the window of the import and ``$top=1``. Graph
+        needs ``ConsistencyLevel: eventual`` for ``$count`` on some
+        collections, and a mail folder ignores it. A failed request, or an
+        answer with no ``@odata.count``, makes the whole estimate ``None``.
+        """
+        client = await self._get_client()
+        window = _received_filter(since, until)
+        total = 0
+        for stream in streams:
+            params: dict[str, Any] = {"$count": "true", "$top": 1, "$select": "id"}
+            if window:
+                params["$filter"] = window
+            try:
+                resp = await client.get(
+                    f"/me/mailFolders/{_folder_path(stream.folder)}/messages",
+                    params=params, headers={"ConsistencyLevel": "eventual"})
+                resp.raise_for_status()
+                count = resp.json().get("@odata.count")
+            except Exception:
+                return None
+            if not isinstance(count, int) or isinstance(count, bool):
+                return None
+            total += count
+        return total
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str

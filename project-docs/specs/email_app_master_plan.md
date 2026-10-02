@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). 🔨 **EM-T6a is BUILT, not merged** (branch `email-t6a`, migration 225). EM-T6b is next.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). 🔨 **EM-T6a is BUILT, not merged** (branch `email-t6a`, migration 225). 🔨 **EM-T6b is BUILT, not merged** (branch `email-t6b`, no migration). The import runs newest first, in batches, with progress and resume.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T4f parts 1 and 2 are BUILT, not merged (2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
@@ -558,8 +558,7 @@ or API client to create a pattern by hand.
 3. **Consent.** Microsoft shows the verified Metorite app. The member accepts. With the interim app,
    Microsoft shows "CommandCenter" by Fracktal Works, so this step passes only after §10.5.
 4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
-   appears when the first sync finishes. The scheduler commits the messages of a sync in one
-   transaction at the end, so the inbox does not fill bit by bit (corrected 2026-10-02, EM-T3b).
+   fills batch by batch, newest first (EM-T6b).
    A first sync that fails shows the reconnect banner, not the progress state.
 5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
    error to the callback. Metorite shows a guided page, never a raw error. The page gives two
@@ -2112,7 +2111,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED (2026-10-02). EM-T6a is BUILT, not merged (2026-10-02). EM-T6b to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** SPECIFIED (2026-10-02). EM-T6a and EM-T6b are BUILT, not merged (2026-10-02). EM-T6c to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
@@ -2225,6 +2224,22 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/ro
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line of the new migration and `\d email_accounts` on the box.
 
 ##### EM-T6b — newest first, in batches, with progress and resume (backend)
+
+**Status.** BUILT, not merged (2026-10-02, branch `email-t6b`). It sits on `email-t6a` and `email-t4f`.
+
+**As built.**
+
+- `import_batches` takes the keyword `on_estimate`. Outlook awaits it once, before the first batch. The core then writes the estimate in a block of its own.
+- The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
+- Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
+- A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
+- When a later page fails, the import stops, and the next sync resumes. When a first page fails, the import skips that folder, as the sweep does. A folder reads at most `DEEP_SYNC_MAX_PAGES` pages.
+- `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
+- A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.
+- The `synced` result and `messages_synced` count the rows of the import and of the recurring sweep together.
+- Phase (c) and each batch of an import use one write, `_write_messages`.
+- The EM-T6a tests of the first import and of a deep sync now read the import call. The R8 fakes of `test_email_scheduler_tenancy.py` and `test_email_sync_one_at_a_time.py` get an empty import.
+- The catch-up sweep is not in batches. After a long pause, it holds the new mail in memory and writes it in one block at phase (c).
 
 **Scope.**
 
