@@ -2160,11 +2160,16 @@ constructed without one **refuses to run** rather than defaulting.
 > the unbound seam, so it wants the task's own organization threaded from the
 > node config, not a loop. It belongs to WS-29's H4 slice, not to Projects.
 
-#### MT-1e · Redis: prefixes enforced by the client · ◐ **WRAPPER BUILT, CALL SITES NOT CONVERTED**
+#### MT-1e · Redis: prefixes enforced by the client · ◐ **WRAPPER BUILT, ONE CALL SITE CONVERTED (EM-T2b, BUILT, not merged)**
 
 > **Built:** `acb_common/tenant_redis.py` — a client that *cannot* express an unprefixed key,
-> plus two AST ratchets (direct `redis` import; hand-written `cc:` literals).
-> **NOT converted:** ~58 key sites across 10 clients. Deliberately separate — the docstring
+> plus two AST ratchets (a direct `redis` import, and a hand-written `cc:` literal).
+> **Converted (WS-17 EM-T2b, 2026-10-02, BUILT, not merged):** the email attachment cache.
+> `download_attachment` binds the organization of the session and writes
+> `cc:<org>:email-att:<id>` through `get_tenant_redis(binary=True)`. That is the same wrapper
+> over a second, small pool that does not decode replies. `routes/email/core.py` left the
+> import allow-list. Fence: `tests/unit/test_email_attachment_cache_tenancy.py`.
+> **NOT converted:** the other key sites, across 9 clients. Deliberately separate — the docstring
 > carries the migration path, including *not* writing a dual-read shim (every key is cache,
 > presence or a bounded stream, so conversion is a cache-cold event, not a data migration).
 >
@@ -2174,7 +2179,7 @@ constructed without one **refuses to run** rather than defaulting.
 > 2. `ingestion/consumer.py:95` — `_GROUP = "cc-ingest"` is **one consumer group shared by all
 >    tenants**; §1.9 requires one per tenant.
 > 3. **Untenanted non-`cc:` namespaces** invisible to the `cc:` ratchet:
->    `ingestion:{clickup,zoho,gmail,dlq}`, `session_mem:`, `email:att:cache:` — plus
+>    `ingestion:{clickup,zoho,gmail,dlq}`, `session_mem:`, ~~`email:att:cache:`~~ (EM-T2b) — plus
 >    `orchestrator/agents.py:436`, which hands `redis_url` to `agent_framework`'s
 >    `RedisHistoryProvider`, keying chat history **outside this wrapper entirely**. That one
 >    needs its own decision, not a conversion.

@@ -9,7 +9,7 @@
 > sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
-> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). 🔨 **EM-T3a is BUILT, not merged** (§10.4.3).
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -559,10 +559,10 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
-| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | Each fence names its test (R7). |
-| **EM-T3a** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (branch `email-t3`, 2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
-| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | 🔨 **BUILT, not merged (branch `email-t3b`, stacked on `email-t3`, 2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
-| **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
+| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
+| **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
+| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
+| **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
 | **EM-T5** | 🟢 build · 🔴 real mail | 🔨 **BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
@@ -935,19 +935,121 @@ new gateway route, `GET /email/oauth/{provider}/app`. It returns the client ID a
 URI of the Microsoft app, and never the secret (fence `tests/unit/test_email_oauth_app_info.py`).
 The BFF authorize route forwards `login_hint`.
 
-⚠️ **Until EM-T3c merges, the return leg of an admin approval fails.** Microsoft sends the admin
-to the redirect URI with `admin_consent` and `tenant`, and no `code`. The gateway callback then
-answers `invalid_state`, and the page says "The connection did not finish". Microsoft keeps the
-approval all the same, so the member can connect after it. For this reason the guided page
-has no "I am the admin" button yet. The prefilled email tells the admin that this page can
-appear and that the approval still counts. EM-T3c removes that sentence.
-
 **Fix round 1 (2026-10-02).** A first sync with `sync_status = 'error'` is not pending, so the
 poll stops and the reconnect banner owns that state. A hidden tab makes no poll request. The
 page draws "Connect your email" only after the first account read settles. The mobile bottom
 bar hides its email tabs while the empty state shows. "Try again" for Gmail goes back to the
 connect choices (`/email?connect=1`). The email router's real `exempt=[...]` list must equal
 `GATED_ROUTERS` (fence in `tests/unit/test_org_access_enforcement.py`).
+
+##### EM-T3c — the return leg of admin consent
+
+**Problem.** The admin-consent link of EM-T3b sends no `state`. Microsoft returns the admin to the
+redirect URI with `admin_consent=True` and `tenant`, and with no `code`. On a refusal, Microsoft
+returns `error` and `error_description` instead.
+
+Before EM-T3c, the BFF callback called `requireIdentity()` first. An admin with no Metorite
+session got a JSON 401. A signed-in admin got `invalid_state`.
+
+**Scope.**
+
+1. **An admin branch in the BFF callback.** The branch runs before `requireIdentity()`.
+   It never calls the gateway.
+   The branch runs when `code` is absent and one of these is true:
+   - `admin_consent` is present.
+   - `error` is present and `state` is absent.
+
+   Every other request takes the member path of EM-T1a, with no change.
+2. **The result.** The branch makes one token from a fixed set:
+   - `approved`, when `admin_consent` equals `true` in any case and `error` is absent.
+   - `declined`, when `error` is `access_denied`, or the description holds AADSTS65004.
+   - `failed`, for every other case.
+   The branch sends 303 with a RELATIVE `Location`.
+   For `approved`, the Location is `/oauth/approved`.
+   For the other two, it is `/oauth/approved?result=declined` or `/oauth/approved?result=failed`.
+3. **A public page at `/oauth/approved`.** The page holds no session and makes no fetch.
+   It reads `result` only, and it treats any value outside the set as `failed`.
+   For `approved`, it says "Approved". It also says that members of the organization can now
+   connect their mailbox. For the other two, it gives fixed guided copy.
+4. **The door.** Add `/oauth/approved` to `PUBLIC_PAGES` in `proxy.ts`. Add
+   `/oauth/approved` to `CHROMELESS_ROUTES` in `nav.ts`. Let the exact path
+   `/api/email/oauth/microsoft/callback` pass `proxy.ts` without a session. The route stays the
+   boundary for the member path: `requireIdentity()` still refuses a signed-out member.
+5. **"I am the admin".** The guided page for `admin_consent_required` gets a third action.
+   It opens `adminConsentUrl(app)` in the same tab.
+   Remove the "did not finish" sentence from `adminConsentMailto()`.
+   Remove the warning paragraph that starts "Until EM-T3c merges" from this section.
+
+**Non-goals.**
+
+- No gateway change, no migration, no table and no write of any kind.
+- No change to the redirect URI. A new URI is an Entra owner act (§10.5).
+- No `state` marker on the admin-consent link. Links already sent hold no state, and the branch
+  must accept them. The branch writes nothing, so a marker would protect nothing.
+- No record of the tenant GUID. EM-T3d owns pre-approval and the member count.
+- No change to the member path of EM-T1a, and no kinder page for a signed-out member.
+
+**Done when.**
+
+- A signed-out GET with `admin_consent=True&tenant=<guid>` returns 303 to `/oauth/approved`.
+- The same request with a session returns the same 303.
+- With `error=access_denied` and AADSTS65004 and no state, the Location is
+  `/oauth/approved?result=declined`.
+- With `error=server_error` and no state, the Location is `/oauth/approved?result=failed`.
+- In each admin case, the test proves that `gatewayFetch`, `gatewayHeaders` and
+  `requireIdentity` are not called.
+- No Location holds the tenant, the description or any other request value. The test
+  sends a hostile `tenant` and `error_description`, and the Location equals the expected constant.
+- A request with `code` and `state` and no session still answers 401 and never reaches the gateway.
+- A request with `error` and a `state` still goes to the gateway, as in EM-T1a.
+- `proxy()` passes a signed-out GET to `/oauth/approved` and to
+  `/api/email/oauth/microsoft/callback`. It still answers 401 for `/api/email/oauth/microsoft/authorize`
+  and for `/api/email/accounts`.
+- `isChromeless("/oauth/approved")` is true. `featureForPath("/oauth/approved")` is null.
+- The page shows "Approved" for no `result`. It shows the `failed` copy for `result=<script>`.
+- The guided page has an "I am the admin" link whose `href` equals `adminConsentUrl(app)`.
+- The `adminConsentMailto()` body does not contain "did not finish".
+- Visual review (the `visual-review` skill) of `/oauth/approved` when signed out, in light mode and at
+  mobile width. The PR carries the screenshots.
+
+**Files.** `workbench/control_plane/src/app/api/email/oauth/[provider]/callback/route.ts` and
+`route.test.ts`, `src/proxy.ts`, a new `src/proxy.test.ts`, a new `src/app/oauth/approved/page.tsx`
+with its test, `src/lib/nav.ts`, `src/lib/nav.test.ts`, `src/app/email/lib/connect.ts`,
+`connect.test.ts` and `src/app/email/oauth/callback/page.tsx`.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/api/email/oauth src/app/email src/app/oauth src/proxy.test.ts \
+  src/lib/nav.test.ts src/lib/authFailsClosed.test.ts src/lib/access.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs ../../project-docs/specs/email_app_master_plan.md
+```
+
+**Risks.**
+
+- **Open redirect.** The branch builds the Location from constants only. No request value
+  reaches it.
+- **Reflected content.** The page renders fixed copy. It reads one token from a fixed set and
+  never renders the tenant or the description.
+- **Enumeration.** The branch makes no lookup and no gateway call. Every tenant gets the same
+  answer, so the page tells nothing about who uses Metorite.
+- **A forged "Approved".** Anyone can open `/oauth/approved` by hand. It changes nothing, because
+  Microsoft holds the approval. The copy must not claim more than "Microsoft reported an approval".
+- **The proxy exemption.** It is one exact path. The route keeps `requireIdentity()` for every
+  request that is not an admin return, so the member path keeps its boundary.
+- **Known limit.** The admin consent workflow (AADSTS90095) can keep the admin on a Microsoft
+  form. Then nothing returns to Metorite.
+
+**As built (2026-10-02).** The branch is `adminReturn()` in the BFF callback `route.ts`. It runs
+for the `microsoft` provider only, because only that provider has an admin-consent link. A
+Gmail request keeps the member path. A `code` or `state` with an empty value counts as present,
+so that request also keeps the member path.
+
+The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
+the real page. The proxy fence is `src/proxy.test.ts`.
 
 #### 10.4.4 EM-T5 in full
 
@@ -1073,6 +1175,183 @@ EM-T5 writes no SQL, so R8 does not apply. If the slice adds SQL, start
 - **R-3.** The rule count has no cap. The log records the option count, so
   EM-T5b can measure accuracy against it.
 - **R-4.** A log rotation can lose the sample. EM-T5b decides whether a table is needed.
+
+#### 10.4.5 EM-T2 in full
+
+**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). 🔨 EM-T2c BUILT, not merged (branch `email-t2c`). Audited against
+`0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
+each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
+
+**Measured state (2026-10-02).**
+
+- `17_email_accounts.sql:30` declares `UNIQUE(user_id, provider, email_address)` with no tenant.
+  `47_email_default_account.sql:17` declares `idx_email_accounts_one_default` on `(user_id)`
+  with no tenant either.
+- No numbered migration declares `email_accounts.organization_id`. Only
+  `generated/01_add_columns.sql` declares it, and the ladder does not replay that file (H-104).
+  Production has the column. A fresh developer database does not.
+- No code names the old constraint. `_save_account` (`transport/oauth.py`) and
+  `create_account` (`transport/accounts.py`) read first and then insert. Neither uses `ON CONFLICT`.
+- The collision is latent today, because `app_user` holds each address once. It fires when a
+  member moves to another organization and connects again. Row level security hides the old row,
+  so the read finds nothing and the insert fails with a unique violation.
+- `core.py` `_get_redis()` opens a raw client per call. The key `email:att:cache:{id}` in
+  `transport/attachments.py` has no tenant. No code binds the tenant of `tenant_redis`.
+- The pool of `get_tenant_redis()` decodes replies as UTF-8. A binary attachment does not decode,
+  so a plain conversion turns every cache read into a silent miss.
+- 107 route handlers exist in `routes/email/`. 94 carry an owner predicate or call an owner
+  helper. 13 carry neither, and each has a reason.
+- **One leak.** `_build_chat_context` (`automation/chat.py`) keeps an `account_id` that the
+  member does not own when the member has zero mailboxes or more than one. It then reads the
+  counts and sender categories of that mailbox into the prompt.
+
+##### EM-T2a — account uniqueness per organization (migration 223)
+
+1. Add `infra/postgres/223_email_accounts_unique_per_tenant.sql`. Copy the shape of migration 209.
+2. Declare `organization_id UUID REFERENCES organization (id) ON DELETE CASCADE DEFAULT
+   current_setting('app.tenant_id', true)::uuid`. Use `ADD COLUMN IF NOT EXISTS`. Write
+   `REFERENCES` before `DEFAULT`.
+3. Fill each NULL row from `app_user` where `lower(email) = lower(user_id)`. When only one
+   organization exists, give it the remaining rows. Report the rows left NULL with `RAISE WARNING`.
+4. Drop the constraint `email_accounts_user_id_provider_email_address_key`. Create
+   `uq_email_accounts_org_owner_mailbox` on `(organization_id, user_id, provider, email_address)`.
+5. Drop `idx_email_accounts_one_default`. Create `uq_email_accounts_org_one_default` on
+   `(organization_id, user_id) WHERE is_default`.
+6. Run the file between `BEGIN` and `COMMIT`. Do not use `CONCURRENTLY`. The table is small, and a
+   failed concurrent build leaves an INVALID index.
+7. `create_account` names `organization_id` in its INSERT, from the session. With no
+   organization in the session, it returns 403.
+
+**One file, not two releases (R6).** The drop makes the rule weaker, never stronger. Old code
+never names the constraint, so old code works on the new schema. Migration 209 did the same.
+
+**Done when.**
+
+- A member with a mailbox row in org A connects the same mailbox in org B. Both rows exist.
+- A second row with the same organization, member, provider and address raises a unique violation.
+- The first mailbox of a member in org B gets `is_default = true` while org A holds a default.
+- 223 applies to a database that has the generated tenancy phases and the old constraint.
+- 223 applies to a fresh ladder database with no tenancy phases. A second run changes nothing.
+- No unique index on `email_accounts`, other than the primary key, lacks `organization_id`.
+- No code and no migration names a conflict target on `email_accounts`.
+- R8: the cases above run against a real database as a non-owner role, for two organizations.
+
+**Fence.** `tests/unit/test_email_account_unique_per_tenant.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_account_unique_per_tenant.py \
+  tests/unit/test_email_tenant_bind_rls.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_org_purge_tenant.py tests/unit/test_tenant_coverage.py \
+  tests/unit/test_tenancy_insert_fence.py tests/unit/test_h3_rls_promotion_rehearsal.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+```
+
+The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line for 223 and
+`\d email_accounts` on the box.
+
+**As built (2026-10-02).** `create_account` also puts the organization in its duplicate read
+and in the default test. Both then match the new indexes with or without row level security.
+The fence runs 223 in the production order on the promoted catalog, and on a dedicated
+database that holds the ladder up to 222.
+
+⚠️ **Residual.** A full replay (`MIGRATION_REPLAY_ALL=1`) runs 47 again before 223. When one
+member holds a default mailbox in two organizations, 47 then fails on its old index. Migration
+209 has the same shape for `people`. The ledger deploy does not replay 47.
+
+##### EM-T2b — the attachment cache goes through `tenant_redis`
+
+**Status.** BUILT, not merged (2026-10-02, branch `email-t2b`). EM-T2a and EM-T2c are not built.
+
+1. Extend the seam. `get_tenant_redis(binary=True)` returns the same wrapper over a second pool
+   with `decode_responses=False`. Do not add a second wrapper class. Size the second pool small.
+2. Delete `_get_redis()` from `core.py` and its import from `transport/attachments.py`.
+3. After the owner check, `download_attachment` binds with `organization_scope(user.organization_id)`.
+4. Build the key with `key("email-att", attachment_id)`.
+5. When the session has no organization, skip the cache and make no Redis call.
+6. Delete the `core.py` entry from `_ALLOWED_DIRECT_REDIS` in `test_tenant_redis.py`.
+7. Update the MT-1e status in `saas_multitenancy.md`.
+
+**Non-goals.** No size cap on the cache. No read of the old keys, because they expire in one
+hour. No change to the session that stays open across the provider call (EM-T4).
+
+**Done when.**
+
+- `core.py` and `attachments.py` import no `redis` package. The allowlist ratchet passes.
+- A cache entry that org A writes is a miss for org B with the same attachment id.
+- The key that the handler writes starts with `cc:<organization>:email-att:`.
+- Bytes that are not valid UTF-8 come back unchanged through the binary client.
+- A session with no organization gets the attachment from the provider, with no Redis call.
+
+**Fences.** `tests/unit/test_tenant_redis.py` (the ratchet and a new binary case) and
+`tests/unit/test_email_attachment_cache_tenancy.py`.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_tenant_redis.py tests/unit/test_email_attachment_cache_tenancy.py \
+  tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_inline.py -q
+uv run ruff check packages/acb_common apps/services/gateway/gateway/routes/email tests/unit
+```
+
+##### EM-T2c — the owner-scope fence (D-EM-4)
+
+1. In `_build_chat_context`, use `account_id` only when the member owns it. Otherwise use the one
+   mailbox of the member, or none.
+2. `ai_chat` reads `_account_models` with the resolved id only.
+3. Add `tests/unit/test_email_owner_scope_fence.py`. It parses each `@router` handler in
+   `gateway/routes/email/`.
+4. A handler passes when it carries an owner predicate on `user_id`. It also passes when it calls
+   `_account_scope`, `_assert_account_owner` or `provider_session`.
+5. Every other handler must have an entry in `OWNER_SCOPE_EXEMPT` with a reason.
+6. The list starts with the 13 handlers of 2026-10-02: `ai_chat`, `quick_action`,
+   `cleanup_status`, `compose_assist`, `compose_assist_stream`, `process_past_status`,
+   `voice_profile_status`, `image_proxy`, `oauth_authorize`, `oauth_app_info`, `oauth_callback`,
+   `import_artifact` and `microsoft_webhook`.
+7. A second list names each module outside `routes/email` that reads an email child table:
+   `crm/activities.py`, `crm/auto_lead.py`, `tasks/capture_email.py`, `tasks/email_link.py`
+   and the `email_ingestion` package. Each entry has a reason.
+8. `tasks/email_link.py` writes the thread status of the mailbox in the task origin. It does not
+   check who closes the task. Add an owner guard: when the member who closes the task does not own
+   the mailbox, the code skips the mailbox write and logs it.
+9. EM-T3d adds one entry for the connected-member count. The reason says that the query returns a
+   count and no address.
+
+**Limit.** The fence reads one function at a time. It does not follow data. The R8 case below
+covers the leak that it cannot see.
+
+**Done when.**
+
+- Member B sends the `account_id` of the mailbox of member A to `POST /email/ai/chat`. The
+  context holds no count, no category and no address of that mailbox (R8, one organization).
+- Member B closes a task whose origin is a mailbox of member A. The thread status of that mailbox
+  does not change.
+- The fence fails on a synthetic handler that reads `email_messages` with no owner proof.
+- The fence fails on a new module outside `routes/email` that reads an email child table.
+- A stale entry, or an entry with no reason, fails the fence.
+
+**As built (2026-10-02).** `_build_chat_context` starts with no resolved id. It keeps the body's
+`account_id` only when the member owns it. `ai_chat` reads `_account_models` with that resolved id.
+`propagate_task_done_to_thread` takes the keyword `closer_email` with no default.
+`_closer_owns_mailbox` compares `user_id` with no regard to case, because the closer's email
+arrives in lowercase. When the closer does not own the mailbox, the code logs
+`tasks.email_link.not_owner` and writes nothing. The outside list also names
+`routes/notes/dispatch.py`. That module reads `email_assistant_settings` for an account that it
+selects with `user_id`, and the measurement of 2026-10-02 did not list it.
+
+**Fences.** `tests/unit/test_email_owner_scope_fence.py` and
+`tests/unit/test_email_chat_context_owner.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_email_chat_context_owner.py tests/unit/test_email_imports.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+```
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

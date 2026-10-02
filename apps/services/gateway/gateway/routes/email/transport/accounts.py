@@ -100,7 +100,18 @@ async def create_account(
 
     For OAuth-based providers (gmail, microsoft), use the /oauth/{provider}/authorize
     flow instead — it handles token exchange automatically.
+
+    The organization and the member come from the session and from nowhere
+    else (``user_management_contract.md`` R11). With either one missing, the
+    route refuses with 403, as the OAuth authorize leg does (EM-T2a item 7).
     """
+    if not user.organization_id or not user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="Connecting a mailbox needs a signed-in member of an organization.",
+        )
+    org = str(user.organization_id)
+
     # Validate provider
     if req.provider not in ("gmail", "microsoft", "imap"):
         raise HTTPException(
@@ -124,17 +135,21 @@ async def create_account(
     store = get_key_store()
     encrypted_creds = store.encrypt(json.dumps(req.credentials))
 
-    async with _tenant_session() as db:
-        # Check for duplicate account
+    async with _tenant_session(org) as db:
+        # Check for duplicate account. The organization is in the predicate
+        # as well as in the bound tenant, so the check matches the per-tenant
+        # unique index of migration 223 with or without row level security.
         existing = await db.execute(
             text(
                 """SELECT id FROM email_accounts
-                   WHERE user_id = :user_id
+                   WHERE organization_id = CAST(:org AS uuid)
+                     AND user_id = :user_id
                      AND provider = :provider
                      AND email_address = :email"""
             ),
             {
-                "user_id": user.email or "anonymous",
+                "org": org,
+                "user_id": user.email,
                 "provider": req.provider,
                 "email": req.email_address,
             },
@@ -146,22 +161,28 @@ async def create_account(
             )
 
         account_id = str(uuid4())
-        # The user's FIRST connected mailbox becomes their default (the inbox the
-        # UI lands on). The partial unique index guarantees at most one default.
+        # The member's FIRST mailbox in this organization becomes the default
+        # (the inbox the UI lands on). The partial unique index of migration
+        # 223 allows one default per member per organization. The INSERT
+        # names organization_id: a write names its tenant (R5).
         is_default_row = await db.execute(
             text(
                 """INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
-                    avatar_color, credentials_encrypted, is_default)
+                    avatar_color, credentials_encrypted, is_default,
+                    organization_id)
                    VALUES (:id, :user_id, :provider, :email, :label,
                            :color, :creds,
                            NOT EXISTS (SELECT 1 FROM email_accounts
-                                       WHERE user_id = :user_id))
+                                       WHERE user_id = :user_id
+                                         AND organization_id = CAST(:org AS uuid)),
+                           CAST(:org AS uuid))
                    RETURNING is_default"""
             ),
             {
                 "id": account_id,
-                "user_id": user.email or "anonymous",
+                "user_id": user.email,
+                "org": org,
                 "provider": req.provider,
                 "email": req.email_address,
                 "label": req.label or _default_label(req.provider),
