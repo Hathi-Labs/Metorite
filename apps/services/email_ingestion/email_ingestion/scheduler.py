@@ -70,6 +70,39 @@ _scheduler_tasks: dict[str, asyncio.Task] = {}  # account_id -> running task
 _scheduler_lock = asyncio.Lock()
 _scheduler_running = False
 
+# -- One sync for each mailbox (WS-17 EM-T4f part 2) --------------------------
+#
+# ``_sync_account`` takes the lock of its mailbox, so one sync cycle runs for
+# each mailbox at a time. Two cycles of one mailbox upsert the same
+# ``(account_id, provider_message_id)`` keys, and one waited on the
+# uncommitted rows of the other until the statement timeout (production,
+# 2026-10-02). The gateway is one uvicorn process
+# (``deploy/hostinger/acb-gateway.service``), so a lock in this process is
+# enough. A second process would need a database lock instead.
+#
+# ``_sync_lock_users`` counts the holder and the waiters of each lock. When the
+# count goes to zero, both entries go, so the dicts hold only the mailboxes
+# that sync now.
+_sync_locks: dict[str, asyncio.Lock] = {}
+_sync_lock_users: dict[str, int] = {}
+
+#: How long a caller that waits (the manual sync, the resync and the deep
+#: downloads) waits for the sync that holds the mailbox. In production, the
+#: first sync of 6410 messages fell inside a window of about 4 minutes (08:47
+#: to 08:51 UTC, 2026-10-02). Ten minutes is more than twice that. A longer
+#: wait means the holder is stuck, and the waiter gives up rather than queue
+#: behind it. The statement timeout (2 minutes) bounds each phase of the
+#: holder, and the provider client bounds each request.
+SYNC_LOCK_WAIT_SECS = 600.0
+
+#: What ``_sync_account`` returns when it does not run because another sync
+#: holds the mailbox. A caller treats it as a success with nothing synced.
+SYNC_SKIPPED_BUSY: dict[str, Any] = {"skipped": "busy", "synced": 0}
+
+#: What a sync cycle returns when the account row is gone. It is an error for
+#: each caller, and the loop stops on ``gone`` (EM-T4f part 2).
+ACCOUNT_GONE: dict[str, Any] = {"error": "Account not found", "gone": True}
+
 
 def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
     """The next sleep length for a sync loop.
@@ -297,11 +330,79 @@ async def _write_credentials_refreshed_since(
     logger.error("sync.credentials_write_lost account=%s", account_id)
 
 
+def sync_busy(account_id: str) -> bool:
+    """True while a sync of the mailbox runs, or a caller waits to run one."""
+    return _sync_lock_users.get(account_id, 0) > 0
+
+
+def _leave_sync_lock(account_id: str) -> None:
+    """Count one holder or waiter out, and drop the lock when none is left."""
+    left = _sync_lock_users.get(account_id, 0) - 1
+    if left > 0:
+        _sync_lock_users[account_id] = left
+        return
+    _sync_lock_users.pop(account_id, None)
+    _sync_locks.pop(account_id, None)
+
+
 async def _sync_account(
+    account_id: str, *, organization_id: str | None = None,
+    deep: bool | None = None, since: datetime | None = None,
+    if_busy: str = "wait",
+) -> dict[str, Any]:
+    """Run one sync cycle of a mailbox, and never two at once (EM-T4f part 2).
+
+    Every caller comes through here: the loop, the manual sync, the resync,
+    the webhook sync, and the deep downloads of cleanup and of Process past.
+    The cycle itself is ``_sync_cycle``.
+
+    ``if_busy`` says what a caller does when another sync holds the mailbox:
+
+    * ``"skip"`` (the loop and the webhook): return ``SYNC_SKIPPED_BUSY`` at
+      once and log ``sync.skipped_busy``. The sync that runs now fetches the
+      new mail, or the next tick does.
+    * ``"wait"`` (the default: the manual sync, the resync and the deep
+      downloads): wait up to ``SYNC_LOCK_WAIT_SECS``, then run. After the
+      bound, log ``sync.busy_wait_timeout`` and return ``SYNC_SKIPPED_BUSY``.
+
+    No session is open while a caller waits, because the cycle opens its own
+    sessions after the lock. The lock is released on every exit of the cycle,
+    a cancel included, and a cancelled waiter leaves with no lock.
+    """
+    if if_busy not in ("wait", "skip"):
+        raise ValueError(f"if_busy must be 'wait' or 'skip', not {if_busy!r}")
+    if if_busy == "skip" and sync_busy(account_id):
+        logger.info("sync.skipped_busy account_id=%s", account_id)
+        return dict(SYNC_SKIPPED_BUSY)
+
+    lock = _sync_locks.setdefault(account_id, asyncio.Lock())
+    _sync_lock_users[account_id] = _sync_lock_users.get(account_id, 0) + 1
+    try:
+        try:
+            async with asyncio.timeout(SYNC_LOCK_WAIT_SECS):
+                await lock.acquire()
+        except TimeoutError:
+            logger.warning("sync.busy_wait_timeout account_id=%s waited=%s",
+                           account_id, SYNC_LOCK_WAIT_SECS)
+            return dict(SYNC_SKIPPED_BUSY)
+        try:
+            return await _sync_cycle(
+                account_id, organization_id=organization_id,
+                deep=deep, since=since)
+        finally:
+            lock.release()
+    finally:
+        _leave_sync_lock(account_id)
+
+
+async def _sync_cycle(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
 ) -> dict[str, Any]:
     """Run a full sync cycle for a single account.  Returns sync summary.
+
+    Call ``_sync_account``, never this, so one cycle runs for each mailbox at
+    a time (EM-T4f part 2).
 
     This is the same logic as POST /email/sync but usable from background tasks.
 
@@ -366,7 +467,8 @@ async def _sync_account(
                 {"id": account_id},
             )).fetchone()
             if not row:
-                return {"error": "Account not found"}
+                # ``gone`` tells the loop to stop (EM-T4f part 2).
+                return dict(ACCOUNT_GONE)
 
             await db.execute(
                 text(
@@ -638,6 +740,16 @@ async def _sync_account(
 # -- Per-account sync loop ----------------------------------------------------
 
 
+def _forget_this_loop(account_id: str) -> None:
+    """Drop the entry of *account_id* only when it is the calling task.
+
+    No ``await`` and no ``_scheduler_lock``: ``remove_account_sync`` holds that
+    lock while it waits for this task, so taking it here could hang both.
+    """
+    if _scheduler_tasks.get(account_id) is asyncio.current_task():
+        _scheduler_tasks.pop(account_id, None)
+
+
 async def _account_sync_loop(
     account_id: str, interval_secs: int, *, organization_id: str,
 ) -> None:
@@ -648,6 +760,12 @@ async def _account_sync_loop(
     (H4 forbids a forever-loop on a request context). Every hook below then
     runs bound, so ``_ensure_subscription`` can create the Graph push
     subscription again (§10.4.1 risk R-3).
+
+    EM-T4f part 2. A tick skips when another sync holds the mailbox
+    (``if_busy="skip"``): the skip is a success with nothing synced, so it
+    adds no backoff. When the account row is gone, the loop stops. It removes
+    its entry from ``_scheduler_tasks`` only while that entry is this task,
+    so it never drops a loop that ``refresh_account_sync`` started after it.
     """
     token = bind_tenant(organization_id)
     try:
@@ -660,7 +778,12 @@ async def _account_sync_loop(
             sync_failed = False
             try:
                 result = await _sync_account(
-                    account_id, organization_id=organization_id)
+                    account_id, organization_id=organization_id,
+                    if_busy="skip")
+                if isinstance(result, dict) and result.get("gone"):
+                    _forget_this_loop(account_id)
+                    logger.info("sync.loop_row_gone account_id=%s", account_id)
+                    return
                 # _sync_account returns {"error": ...} on a handled failure
                 # (auth, provider) rather than raising, so a bad sync is a dict
                 # with an "error" key — not an exception. Treat both as failure

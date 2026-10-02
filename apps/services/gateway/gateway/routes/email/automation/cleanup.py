@@ -904,6 +904,8 @@ async def _backfill_and_clean_job(
             count_before = int(getattr(row, "n", 0) or 0)
 
         from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
+        # Waits for a sync of this mailbox that runs now, with no session
+        # open, then runs (EM-T4f part 2).
         await _sync_account(account_id, deep=True, since=since)
 
         async with _tenant_session() as db:
