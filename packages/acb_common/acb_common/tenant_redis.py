@@ -676,15 +676,39 @@ class TenantPipeline:
 #: does. Mirrors ``activity.py``'s pooled client settings.
 _POOL: Any = None
 
+#: The second pool, for values that are bytes (WS-17 EM-T2b). The main pool
+#: decodes every reply as UTF-8, so a binary value (an email attachment) either
+#: raises on read or, caught, turns each cache read into a silent miss. This
+#: pool returns ``bytes``. It is small because its one caller today is the
+#: attachment cache, and it is the SAME wrapper over it — not a second client
+#: class — so the key discipline is identical.
+_BINARY_POOL: Any = None
 
-def get_tenant_redis() -> TenantRedis:
+#: Connection ceiling of the binary pool. One caller, short-lived commands.
+BINARY_POOL_MAX_CONNECTIONS = 4
+
+
+def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
     """The shared tenant-aware client for this process.
 
     Does **not** require a tenant to be bound — the client is tenant-agnostic;
     every *key* it accepts is not. Binding is checked at key-build and at
     command time, which is where a missing binding is actually a bug.
+
+    ``binary=True`` returns the same wrapper over a second, small pool with
+    ``decode_responses=False``: replies come back as ``bytes``, unchanged.
+    Use it only for values that are not text.
     """
-    global _POOL
+    global _POOL, _BINARY_POOL
+    if binary:
+        if _BINARY_POOL is None:
+            _BINARY_POOL = aioredis.from_url(
+                get_settings().redis_url,
+                decode_responses=False,
+                max_connections=BINARY_POOL_MAX_CONNECTIONS,
+                health_check_interval=30,
+            )
+        return TenantRedis(_BINARY_POOL)
     if _POOL is None:
         _POOL = aioredis.from_url(
             get_settings().redis_url,
@@ -696,6 +720,7 @@ def get_tenant_redis() -> TenantRedis:
 
 
 def reset_pool_for_tests() -> None:
-    """Drop the cached pool. Tests only — there is no runtime reason to call it."""
-    global _POOL
+    """Drop both cached pools. Tests only — there is no runtime reason to call it."""
+    global _POOL, _BINARY_POOL
     _POOL = None
+    _BINARY_POOL = None

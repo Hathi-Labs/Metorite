@@ -951,7 +951,8 @@ connect choices (`/email?connect=1`). The email router's real `exempt=[...]` lis
 
 #### 10.4.5 EM-T2 in full
 
-**Status.** Not built. Audited against `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
+**Status.** EM-T2b is BUILT, not merged. EM-T2a and EM-T2c are not built. Audited against
+`0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
 each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
 **Measured state (2026-10-02).**
@@ -1025,6 +1026,8 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 `\d email_accounts` on the box.
 
 ##### EM-T2b — the attachment cache goes through `tenant_redis`
+
+**Status.** BUILT, not merged (2026-10-02, branch `email-t2b`). EM-T2a and EM-T2c are not built.
 
 1. Extend the seam. `get_tenant_redis(binary=True)` returns the same wrapper over a second pool
    with `decode_responses=False`. Do not add a second wrapper class. Size the second pool small.

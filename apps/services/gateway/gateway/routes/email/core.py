@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from acb_common import get_logger, get_settings
+from acb_common import get_logger
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -127,16 +127,6 @@ def _truncate_body(text: str, max_bytes: int) -> str:
     while cut > 0 and (encoded[cut] & 0xC0) == 0x80:
         cut -= 1
     return encoded[:cut].decode("utf-8", errors="replace") + marker.decode()
-
-
-async def _get_redis():
-    """Get a Redis client for caching (skips if unavailable)."""
-    try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
-        settings = get_settings()
-        return aioredis.from_url(settings.redis_url, decode_responses=False)
-    except Exception:
-        return None
 
 
 def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
