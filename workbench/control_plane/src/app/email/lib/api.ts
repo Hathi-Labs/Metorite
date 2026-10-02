@@ -2049,16 +2049,19 @@ export async function getCleanupStatus(
  *  been seen locally. Runs in
  *  the background; poll `getCleanupStatus` for the two-phase progress.
  *
- *  `sinceDate` is YYYY-MM-DD; omit it to fetch the entire mailbox. */
+ *  `sinceDate` is YYYY-MM-DD, and it is required. After EM-T6a the gateway
+ *  reads a null as "back to the member's import range", which can be only
+ *  30 days, and it stops every download at 6 months. So the caller names the
+ *  date (`lib/cleanOlderMail.ts`). */
 export async function backfillAndClean(
   accountId: string,
-  sinceDate?: string
+  sinceDate: string
 ): Promise<{ scheduled: boolean; since?: string | null; reason?: string }> {
   return gatewayFetch("/email/cleanup/backfill", {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
-      since_date: sinceDate ?? null,
+      since_date: sinceDate,
     }),
   });
 }
