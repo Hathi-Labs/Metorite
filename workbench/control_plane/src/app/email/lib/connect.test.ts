@@ -34,7 +34,9 @@ import {
   adminConsentUrl,
   callbackView,
   connectQuery,
+  DISCONNECT_FALLBACK,
   disconnectCopy,
+  disconnectFailureText,
   emailSurface,
   firstSyncTick,
   retryTarget,
@@ -412,6 +414,104 @@ describe("disconnect from the account menu (done-when 7)", () => {
     expect(c.body).toContain("ravi@contoso.test");
     expect(c.body).toMatch(/deleted from Metorite/);
     expect(c.note).toMatch(/stays in your Microsoft or Google mailbox/);
+  });
+});
+
+// WS-17 EM-T4f, fix round 1: the gateway answers 409 while a sync still holds
+// the row. The member must read that reason, and the mailbox must stay.
+describe("a refused disconnect shows the reason of the gateway (EM-T4f)", () => {
+  const BUSY = "A sync is still writing mail for this mailbox. Try again in a moment.";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function gatewayError(message: string, status: number): Error {
+    return Object.assign(new Error(message), { status });
+  }
+
+  it("disconnectFailureText keeps a gateway detail and hides the rest", () => {
+    expect(disconnectFailureText(gatewayError(BUSY, 409))).toBe(BUSY);
+    expect(disconnectFailureText(gatewayError("Account not found", 404))).toBe("Account not found");
+    expect(disconnectFailureText(gatewayError("Gateway error 500", 500))).toBe(DISCONNECT_FALLBACK);
+    expect(disconnectFailureText(gatewayError("   ", 502))).toBe(DISCONNECT_FALLBACK);
+    // No status: the network failed, and its text is not for a member.
+    expect(disconnectFailureText(new TypeError("Failed to fetch"))).toBe(DISCONNECT_FALLBACK);
+    expect(disconnectFailureText(null)).toBe(DISCONNECT_FALLBACK);
+  });
+
+  it("deleteEmailAccount throws the 409 detail, and a 500 throws with no detail", async () => {
+    const api = await import("./api");
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: BUSY }), { status: 409 })));
+    const busy = await api.deleteEmailAccount("acc-1").then(() => null, (e: unknown) => e);
+    expect(disconnectFailureText(busy)).toBe(BUSY);
+
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response("Internal Server Error", { status: 500 })));
+    const broken = await api.deleteEmailAccount("acc-1").then(() => null, (e: unknown) => e);
+    expect(disconnectFailureText(broken)).toBe(DISCONNECT_FALLBACK);
+  });
+
+  it("the store keeps the mailbox on a 409 and gives back the detail", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+        if (init?.method === "DELETE") {
+          return new Response(JSON.stringify({ detail: BUSY }), { status: 409 });
+        }
+        return new Response("[]", { status: 200 });
+      }),
+    );
+    const { useEmailStore } = await import("./emailStore");
+    const kept = { id: "acc-1", emailAddress: "ravi@contoso.test" };
+    useEmailStore.setState({ accounts: [kept] as never, selectedAccountId: null });
+    const outcome = await useEmailStore.getState().deleteAccount("acc-1");
+    expect(outcome).toEqual({ ok: false, detail: BUSY });
+    expect(calls[0]).toBe("DELETE /api/email/accounts/acc-1");
+    expect(useEmailStore.getState().error).toBe(BUSY);
+  });
+
+  it("the store answers ok on a 204 and drops the mailbox", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({
+      accounts: [{ id: "acc-1" }, { id: "acc-2" }] as never,
+      selectedAccountId: null,
+    });
+    expect(await useEmailStore.getState().deleteAccount("acc-1")).toEqual({ ok: true });
+    expect(useEmailStore.getState().accounts.map((a) => a.id)).toEqual(["acc-2"]);
+  });
+
+  it("a manual sync refused with 409 shows the detail and is not an error", async () => {
+    // EM-T4f fix round 2: the gateway answers 409 at once while a sync runs.
+    const SYNC_BUSY = "A sync is already running for this mailbox. New mail appears when it finishes.";
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: SYNC_BUSY }), { status: 409 })));
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ syncStatus: {}, error: null } as never);
+    await useEmailStore.getState().triggerSync("acc-1");
+    expect(useEmailStore.getState().error).toBe(SYNC_BUSY);
+    expect(useEmailStore.getState().syncStatus["acc-1"]).toBe("idle");
+  });
+
+  it("a manual sync that fails another way still marks the mailbox", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "Sync failed: boom" }), { status: 500 })));
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ syncStatus: {}, error: null } as never);
+    await useEmailStore.getState().triggerSync("acc-1");
+    expect(useEmailStore.getState().syncStatus["acc-1"]).toBe("error");
+  });
+
+  it("the dialog shows the text of the outcome, not one fixed sentence", () => {
+    const dialog = codeOnly(read("components/DisconnectDialog.tsx"));
+    expect(dialog).toContain("onDisconnect: (id: string) => Promise<DisconnectOutcome>");
+    expect(dialog).toContain("else setFailure(outcome.detail);");
+    expect(dialog).toMatch(/role="alert"[^>]*>\s*\{failure\}/);
+    expect(dialog).not.toContain("could not disconnect the mailbox. Try again.");
   });
 });
 

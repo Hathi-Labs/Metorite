@@ -147,6 +147,18 @@ def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _decrypt_credentials(blob: str) -> tuple[dict, Any]:
+    """Decrypt a stored credential blob. Returns the credentials and the store.
+
+    The one decrypt site for this module and for the disconnect route. A caller
+    that keeps rotated tokens needs the store for ``_persist_rotated_creds``.
+    ``test_credential_tenant_threading.py`` caps the call sites of the store.
+    """
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    return json.loads(store.decrypt(blob)), store
+
+
 async def _provider_for_message(db: Any, message_id: str, user_email: str):
     """Load the provider + provider_message_id for a stored message.
 
@@ -167,9 +179,7 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Message not found")
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    creds = json.loads(store.decrypt(row.credentials_encrypted))
+    creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
     return provider, row.provider_message_id, str(row.account_id), store
 
@@ -190,9 +200,7 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
     )).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    creds = json.loads(store.decrypt(row.credentials_encrypted))
+    creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
     return provider, store, row.email_address
 
@@ -213,9 +221,7 @@ async def _provider_for_account_any(db: Any, account_id: str):
     )).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    creds = json.loads(store.decrypt(row.credentials_encrypted))
+    creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
     return provider, store, row.email_address
 

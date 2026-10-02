@@ -495,3 +495,26 @@ export function disconnectCopy(address: string): { title: string; body: string; 
     confirm: "Disconnect",
   };
 }
+
+/** What a disconnect gives back. On a refusal, `detail` is the text to show. */
+export type DisconnectOutcome = { ok: true } | { ok: false; detail: string };
+
+/** The text for a refusal that carries no reason of its own. */
+export const DISCONNECT_FALLBACK = "Metorite could not disconnect the mailbox. Try again.";
+
+/**
+ * The text a member reads when a disconnect fails (WS-17 EM-T4f).
+ *
+ * Only an answer of the gateway carries a `status`, and `gatewayFetch` puts
+ * its `detail` in the message. A 409 then says that a sync is still writing
+ * mail. A gateway answer with no detail ("Gateway error 500") and an error
+ * with no status (the network) get the fallback text.
+ */
+export function disconnectFailureText(err: unknown): string {
+  const e = (err ?? {}) as { status?: unknown; message?: unknown };
+  const detail = typeof e.message === "string" ? e.message.trim() : "";
+  if (typeof e.status !== "number" || !detail || /^Gateway error \d+$/.test(detail)) {
+    return DISCONNECT_FALLBACK;
+  }
+  return detail;
+}

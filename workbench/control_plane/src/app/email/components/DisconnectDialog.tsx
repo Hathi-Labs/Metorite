@@ -9,13 +9,15 @@
  * account row, and every synced table cascades from it.
  *
  * A refusal stays in the dialog as text, and the store re-reads the
- * accounts, so the list behind the dialog is the server's.
+ * accounts, so the list behind the dialog is the server's. The text is the
+ * reason of the gateway when it gives one: a 409 says that a sync is still
+ * writing mail, and the member can try again (EM-T4f).
  */
 
 import { useState } from "react";
 
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { disconnectCopy } from "../lib/connect";
+import { disconnectCopy, type DisconnectOutcome } from "../lib/connect";
 import type { EmailAccount } from "../lib/types";
 
 export function DisconnectDialog({
@@ -25,27 +27,27 @@ export function DisconnectDialog({
 }: {
   /** The mailbox to disconnect. `null` closes the dialog. */
   account: EmailAccount | null;
-  onDisconnect: (id: string) => Promise<boolean>;
+  onDisconnect: (id: string) => Promise<DisconnectOutcome>;
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const copy = disconnectCopy(account?.emailAddress ?? "this mailbox");
 
   const close = () => {
     if (busy) return;
-    setFailed(false);
+    setFailure(null);
     onClose();
   };
 
   const confirm = async () => {
     if (!account) return;
     setBusy(true);
-    setFailed(false);
-    const ok = await onDisconnect(account.id);
+    setFailure(null);
+    const outcome = await onDisconnect(account.id);
     setBusy(false);
-    if (ok) onClose();
-    else setFailed(true);
+    if (outcome.ok) onClose();
+    else setFailure(outcome.detail);
   };
 
   return (
@@ -61,9 +63,9 @@ export function DisconnectDialog({
       onConfirm={() => void confirm()}
       onCancel={close}
     >
-      {failed ? (
+      {failure ? (
         <p role="alert" className="text-xs text-destructive">
-          Metorite could not disconnect the mailbox. Try again.
+          {failure}
         </p>
       ) : null}
     </ConfirmDialog>

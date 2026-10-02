@@ -1383,6 +1383,36 @@ async def _project_thread_status_for_backfill(
                          error=str(exc)[:160])
 
 
+async def _download_past_range(
+    account_id: str, start: datetime | None,
+) -> str | None:
+    """The deep download before a Process past run. Returns why it failed.
+
+    A raised error stays best-effort: it is logged, and the apply runs over
+    the mail that IS present locally (``None``). A busy result or an
+    ``error`` result returns its reason, and the job ends as an error with it
+    (EM-T4f fix round 2). Before, the job said "done" over a range that the
+    download never fetched.
+    """
+    try:
+        from email_ingestion.scheduler import (  # noqa: PLC0415
+            _sync_account,
+            download_failure,
+        )
+        # Waits for a sync of this mailbox that runs now, with no session
+        # open, then runs (EM-T4f part 2).
+        res = await _sync_account(account_id, deep=True, since=start)
+    except Exception as e:  # noqa: BLE001 — never abort the apply on a backfill error
+        _log.warning("email.process_past_sync_failed",
+                     account_id=account_id, error=str(e)[:200])
+        return None
+    failure = download_failure(res)
+    if failure:
+        _log.warning("email.process_past_sync_failed",
+                     account_id=account_id, error=failure)
+    return failure
+
+
 async def _process_past_emails_job(
     account_id: str, start: datetime | None, end: datetime | None,
     limit: int, dry_run: bool, user_email: str, only_unread: bool = False,
@@ -1415,14 +1445,11 @@ async def _process_past_emails_job(
     # picker can reach back past what's been synced locally; without this the
     # range query below is simply empty and the feature no-ops ("No emails found
     # in that range."). A deep sync from the `start` floor backfills it; the apply
-    # itself stays bounded to [start, end] via _date_range_clause. Best-effort —
-    # a failed/partial backfill still applies over whatever IS present locally.
-    try:
-        from email_ingestion.scheduler import _sync_account  # noqa: PLC0415
-        await _sync_account(account_id, deep=True, since=start)
-    except Exception as e:  # noqa: BLE001 — never abort the apply on a backfill error
-        _log.warning("email.process_past_sync_failed",
-                     account_id=account_id, error=str(e)[:200])
+    # itself stays bounded to [start, end] via _date_range_clause.
+    failure = await _download_past_range(account_id, start)
+    if failure:
+        _past_job_finish(account_id, token=job_token, error=failure)
+        return
     # The ``finally`` below reads these two. A 401 in the apply loop refreshes
     # the token (EM-T4c), and the new tokens live in the provider only.
     provider: Any = None
