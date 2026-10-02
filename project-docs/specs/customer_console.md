@@ -10176,10 +10176,10 @@ clean cases.
 
 | Order | Call | File | Now | Shape |
 |---|---|---|---|---|
-| 1 | Cold-email check | `email/automation/senders.py:1196` | `tier-fast` | boolean |
+| 1 | Cold-email check | `email/automation/senders.py:1209` | `tier-fast` | boolean |
 | 2 | Auto-learn "pin this sender" | `email/automation/learning.py:47` | `tier-balanced` | boolean. The prompt asks for 90% sure, which is a threshold on a calibrated probability |
 | 3 | Thread status | `email/automation/replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4. The largest cost saving |
-| 4 | Rule classifier | `email/automation/engine.py:284` | the account's `rule_model` | choice of 10 presets plus none |
+| 4 | Rule classifier | `email/automation/engine.py:284` | the account's `rule_model` | choice of the enabled instruction rules, plus none |
 
 ⚠️ **The rule classifier has NO cap on the number of rules.** A user can
 write more than 20, and decision models lose accuracy as options grow. The
@@ -10190,6 +10190,8 @@ the feature stays on the LLM for that account.
 every label is a projection of the rules pipeline, never a parallel
 classifier. So `decide` replaces the AI step inside that pipeline. It does not
 add a second one.
+
+➡️ **The build contract for CP-13e is `email_app_master_plan.md` §10.4.4** (2026-10-02).
 
 **CP-13f · The inline gates.**
 

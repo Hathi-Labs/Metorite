@@ -122,10 +122,10 @@ records only what the email app must keep true.
 
    | Order | Call | Now | Shape |
    |---|---|---|---|
-   | 1 | Cold-email check, `senders.py:1196` `_llm_is_cold` | `tier-fast` | boolean |
-   | 2 | Auto-learn sender pin, `learning.py:47` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
-   | 4 | Rule classifier, `engine.py:284` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
+   | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
+   | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
 3. **Each one runs in shadow first.** It logs both answers and acts on the old
    one, until the agreement on this mailbox is measured.
@@ -565,7 +565,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
-| **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
+| **EM-T5** | 🟢 build · 🔴 real mail | 🔨 **BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1050,6 +1050,131 @@ so that request also keeps the member path.
 
 The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
 the real page. The proxy fence is `src/proxy.test.ts`.
+
+#### 10.4.4 EM-T5 in full
+
+**Status.** 🔨 BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).
+The audit ran on 2026-10-02 against `0e2cfa8a`. EM-T5 is CP-13e
+(`customer_console.md` §6A.14). That section keeps the four adoption rules.
+This section is the build contract. Every mode stays `off` on every box, and
+`DECIDE_ENABLED` stays off. The registry is `gateway/decide_features.py`, and
+the fence is `tests/unit/test_email_decide_shadow.py`.
+
+**Gate.** 🟢 AGENT-SAFE: the code, in modes `off` and `shadow`, against a fake
+`decide`. 🔴 OWNER-GATE (`work_plan.md` §6.1 WS-31 (i), H-166): `DECIDE_ENABLED`
+on a box, and any mode other than `off` on a box. The §3a window does not open
+either one.
+
+**Scope.**
+
+1. **The mode registry.** Create `apps/services/gateway/gateway/decide_features.py`.
+   It holds one mode for each feature: `off`, `shadow` or `on`. Every default is `off`.
+   The four features are `email.cold_check`, `email.sender_pin`,
+   `email.thread_status` and `email.rule_pick`.
+2. **The override.** Add `decide_feature_modes` and `decide_feature_orgs` to
+   `acb_common` settings. Both default to an empty string.
+   `decide_feature_modes` reads `feature=mode` pairs, with a comma between pairs.
+   `decide_feature_orgs` lists the organization ids that may run a mode other than `off`.
+   An empty list allows no organization.
+   An unknown feature or an unknown mode resolves to `off` and logs
+   `decide.mode_refused`.
+3. **`on` is refused in EM-T5.** A mode of `on` resolves to `off` and logs
+   `decide.mode_refused`. EM-T5b lifts this with measured thresholds.
+4. **One shadow helper.** The helper lives in `decide_features.py`. It asks the
+   registry for the mode of the feature and the organization from
+   `current_tenant()`. When the mode is `off`, it returns and makes no call.
+5. **Shadow runs beside the old call.** The helper runs `acb_llm.decide` at the
+   same time as the old LLM call, with a 5-second bound. The feature acts on the
+   old answer in every case.
+6. **The identity comes from the run context.** Rename
+   `acb_llm.routed._attribution` to `run_attribution`, and keep the old name as an alias.
+   The helper passes its fields to `decide()`. The helper reads no member from mail or a request.
+7. **The log line.** Each shadow call logs `decide.shadow` with the feature, the
+   account id, the old answer, the new answer, `agree`, the confidence or the
+   probability, the latency in ms, the option count and the `request_id`. It
+   logs no subject, body, sender, reason or rule name.
+8. **The errors.** `DecideUnavailable` logs `decide.fallback` with its reason.
+   In shadow mode, `DecideRequestInvalid` logs `decide.shadow_invalid` at error level with
+   its reason code, and the feature continues on the old answer. A request that
+   is not valid must never stop triage.
+9. **The four sites**, in this order:
+   - `automation/senders.py` `_llm_is_cold`: one boolean question.
+   - `automation/learning.py` `_ai_confirms_sender_pattern`: one boolean question.
+     The log records `agree` at the 0.9 probability threshold.
+   - `automation/replyzero.py` `_llm_determine_thread_status`: one choice
+     question. The options are REPLY, AWAITING_REPLY and DONE. FYI is an option
+     only when the user did not send last. Compare with the final answer after
+     the escalation, and log the old `confident` flag.
+   - `automation/engine.py` `_llm_pick_rule`: one choice question. The options
+     are the enabled instruction rules plus `none`. The option keys are
+     `r0`, `r1` and so on. Log the option count.
+10. **Clip to the Console limits.** Clip each criterion to 1000 characters.
+    Send the same email text that the old call sends. Do not send more.
+
+**Non-goals.**
+
+- No change to `DECIDE_ENABLED`, and no mode other than `off`, on any box.
+- No real mail. Every test uses a fake `decide`.
+- No `on` mode and no confidence gate. EM-T5b builds both after the owner acts.
+- No change to `_llm_pick_rules`. Multi-rule execution stays on the LLM.
+- No table for the shadow results.
+- No second classifier. Every answer that the feature acts on is the old answer.
+- No change to the concurrency cap. EM-T4 wraps the one helper.
+
+**Done when.**
+
+- With every mode `off`, a fake `decide` records zero calls on all four sites.
+- With a mode of `shadow` and an organization that is not on the list, the fake records zero calls.
+- With `shadow` and an organization on the list, each site makes one `decide` call.
+  The site returns the old answer when the two answers disagree.
+- A `DecideUnavailable` from the fake logs `decide.fallback`, and the site returns the old answer.
+- A `DecideRequestInvalid` from the fake logs `decide.shadow_invalid`, and the site returns the old answer.
+- A mode of `on`, or an unknown value, resolves to `off` and logs `decide.mode_refused`.
+- The `decide.shadow` record holds the listed fields. It holds no subject, body or sender.
+- Inside `job_member_scope("owner@acme.com")`, `decide()` gets that member with
+  `member_proven` True. With no scope, it gets no member.
+- The rule question for N enabled rules holds N + 1 options, and `none` is one of them.
+- The thread-status question holds FYI only when the user did not send last.
+- A shadow call that runs past 5 seconds does not delay the old answer by more than 5 seconds.
+- `test_console_dependency_boundary.py` passes unchanged.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_dependency_boundary.py \
+  tests/unit/test_background_ai_member.py \
+  tests/unit/test_email_auto_learn_gate.py \
+  tests/unit/test_email_reply_zero.py \
+  tests/unit/test_email_thread_single_classification.py \
+  tests/unit/test_email_classifier_unavailable.py \
+  tests/unit/test_email_apply_and_watermark.py \
+  tests/unit/test_crm_auto_lead.py \
+  tests/unit/test_email_rules_engine.py -q -rs
+uv run ruff check apps/services/gateway/gateway/decide_features.py \
+  packages/acb_llm/acb_llm/routed.py \
+  packages/acb_common/acb_common/settings.py \
+  tests/unit/test_email_decide_shadow.py
+```
+
+The four files above must show no ruff finding. The `routes/email/automation`
+directory already has findings on `main`. Run ruff on it on the branch and on
+the base, and compare the counts per file and per code. The branch must show
+no new finding in any file.
+
+EM-T5 writes no SQL, so R8 does not apply. If the slice adds SQL, start
+`scripts/dev_db.sh` and confirm that no test skips.
+
+**Recorded risks.**
+
+- **R-1.** Shadow on a box sends tenant mail to two sub-processors. The owner
+  answers this in H-166, and the organization list limits it.
+- **R-2.** Two sites hold a DB session across the LLM call. Shadow adds up to
+  5 seconds inside that session. EM-T4 item 2 removes the session hold.
+- **R-3.** The rule count has no cap. The log records the option count, so
+  EM-T5b can measure accuracy against it.
+- **R-4.** A log rotation can lose the sample. EM-T5b decides whether a table is needed.
 
 #### 10.4.5 EM-T2 in full
 

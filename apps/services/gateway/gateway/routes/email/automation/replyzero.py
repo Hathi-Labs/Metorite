@@ -11,6 +11,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, Query
+from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
@@ -285,9 +286,55 @@ def _clip_thread_for_prompt(thread_text: str, limit: int = _THREAD_PROMPT_BUDGET
     return "[… earlier messages omitted …]\n\n---\n\n" + tail
 
 
+def _status_user_prompt(thread_text: str, user_email: str, about: str) -> str:
+    """The thread text the status call sends. The old call and ``decide`` share it."""
+    ctx = f"You are acting on behalf of: {user_email}\n"
+    if (about or "").strip():
+        ctx += f"{about.strip()[:1200]}\n"
+    return (
+        f"{ctx}\nEmail thread (oldest to newest):\n"
+        f"{_clip_thread_for_prompt(thread_text)}\n\n"
+        "Determine the current status of this thread."
+    )
+
+
+def _status_question(
+    thread_text: str, user_email: str, about: str, *, user_sent_last: bool,
+) -> tuple[str, dict[str, Any]]:
+    """The ``decide`` request for the thread status (EM-T5, shadow only).
+
+    FYI is an option only when the user did NOT send last, as in the old call.
+    """
+    from acb_llm import ChoiceQuestion  # shadow mode only
+
+    criteria = {
+        "REPLY": "Someone asked the user a direct question or requested "
+                 "info or action that the user has not addressed, or the "
+                 "user promised a follow-up that is not sent.",
+        "AWAITING_REPLY": "The ball is in the OTHER person's court: the user "
+                          "is waiting, or someone else owes an action.",
+        "DONE": "All questions are answered and requests fulfilled, or the "
+                "conversation is concluded.",
+    }
+    if not user_sent_last:
+        criteria["FYI"] = ("No questions, requests or pending actions "
+                           "anywhere in the thread, and the user received "
+                           "the last message.")
+    return _status_user_prompt(thread_text, user_email, about), {
+        "status": ChoiceQuestion(
+            instructions=(
+                "Determine the current status of this email thread from the "
+                "user's perspective. The LAST message decides whose court "
+                "the ball is in."
+            ),
+            criteria={k: decide_features.clip(v) for k, v in criteria.items()},
+        )}
+
+
 async def _llm_determine_thread_status(
     thread_text: str, user_email: str, about: str, *, user_sent_last: bool = True,
     model: str = _STATUS_MODEL, corrections: str = "",
+    account_id: str | None = None,
 ) -> tuple[str, bool]:
     """Determine an email thread's status from the user's perspective — a faithful
     port of inbox-zero's aiDetermineThreadStatus.
@@ -299,87 +346,94 @@ async def _llm_determine_thread_status(
     should treat a non-confident status as PROVISIONAL (mark it for re-check)
     instead of trusting a fabricated AWAITING. One escalating retry to a stronger
     tier is attempted before falling back."""
-    fallback = "AWAITING_REPLY" if user_sent_last else "FYI"
-    try:
-        fyi_state = "" if user_sent_last else "\n* FYI - No reply needed"
-        fyi_opt = "" if user_sent_last else "FYI, "
-        fyi_rules = "" if user_sent_last else (
-            "\n- FYI: ONLY when there are absolutely no questions, requests, or "
-            "pending actions anywhere in the thread, and the user RECEIVED the "
-            "last message. A message where the user is only on Cc (not in To) "
-            "and isn't directly asked anything is FYI, not REPLY.")
-        last_rule = (
-            "\n- Because the user sent the last email, FYI is NOT an option: "
-            "choose AWAITING_REPLY if waiting on a response, or DONE if the "
-            "thread is complete. If the user's last message asks no question and "
-            "makes no commitment (e.g. a thank-you, acknowledgement, or 'sounds "
-            "good'), prefer DONE." if user_sent_last else "")
-        sys_prompt = (
-            "You analyze an email thread and determine its current status from "
-            "the user's perspective. It is in ONE of these mutually exclusive "
-            "states:\n"
-            "* REPLY - the user needs to reply\n"
-            "* AWAITING_REPLY - waiting for the other person to respond/act"
-            f"{fyi_state}\n* DONE - the thread is complete\n\n"
-            "CRITERIA:\n"
-            "- REPLY: someone asked the user a direct question or requested "
-            "info/action and the user hasn't addressed it; OR the user promised "
-            "a follow-up/deliverable and hasn't sent it. A clarifying question "
-            "that got answered while a commitment is still pending is still "
-            "REPLY.\n"
-            "- AWAITING_REPLY: the ball is in the OTHER person's court — the user "
-            "asked/requested and is still waiting, or someone else owes an "
-            "action. If the user's request was already fulfilled, they are NO "
-            "longer awaiting.\n"
-            "- DONE: all questions answered and requests fulfilled, the "
-            "conversation concluded, or the user sent info/recommendations and "
-            "isn't waiting for anything. Taking ownership ('I'll handle it') "
-            "fulfils a request unless it promises a later deliverable."
-            f"{fyi_rules}\n\n"
-            "RULES: weigh the WHOLE thread but the LAST message decides whose "
-            "court the ball is in now; an earlier unanswered question/request "
-            "still governs only if the last message didn't resolve it. A message "
-            "marked '(you sent)' or '(your organisation sent)' is from YOUR side — "
-            "a reply from the user's own organisation counts as your side having "
-            "acted, so the ball is then in the OTHER party's court. If "
-            "SOMEONE ELSE promised something → AWAITING_REPLY; if the USER "
-            "promised a future reply/deliverable → REPLY."
-            f"{last_rule}"
-            # The user's own corrections outrank the generic criteria — that is
-            # what a correction IS. Same contract as the classifier prompt
-            # (engine._global_guidance_block), so a lesson taught via Fix
-            # steers conversation-status calls too, not only cleanup picks.
-            f"{corrections}\n\n"
-            'Respond with ONLY a JSON object: {"status": "<one of REPLY, '
-            f'AWAITING_REPLY, {fyi_opt}DONE>", "rationale": "<one line>"}}.'
-        )
-        ctx = f"You are acting on behalf of: {user_email}\n"
-        if (about or "").strip():
-            ctx += f"{about.strip()[:1200]}\n"
-        user_prompt = (
-            f"{ctx}\nEmail thread (oldest to newest):\n"
-            f"{_clip_thread_for_prompt(thread_text)}\n\n"
-            "Determine the current status of this thread."
-        )
-        allowed = {"REPLY", "AWAITING_REPLY", "DONE"}
-        if not user_sent_last:
-            allowed.add("FYI")
-        messages = [{"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt}]
-        # Try the configured tier, then escalate once. A wrong/empty answer here
-        # always biases AWAITING, so a second stronger attempt is cheap insurance.
-        for attempt_model in (model, _STATUS_MODEL_ESCALATION):
-            data, _content, _used = await _llm_json(
-                attempt_model, messages, max_tokens=500,
+    async def _old() -> tuple[str, bool]:
+        fallback = "AWAITING_REPLY" if user_sent_last else "FYI"
+        try:
+            fyi_state = "" if user_sent_last else "\n* FYI - No reply needed"
+            fyi_opt = "" if user_sent_last else "FYI, "
+            fyi_rules = "" if user_sent_last else (
+                "\n- FYI: ONLY when there are absolutely no questions, requests, or "
+                "pending actions anywhere in the thread, and the user RECEIVED the "
+                "last message. A message where the user is only on Cc (not in To) "
+                "and isn't directly asked anything is FYI, not REPLY.")
+            last_rule = (
+                "\n- Because the user sent the last email, FYI is NOT an option: "
+                "choose AWAITING_REPLY if waiting on a response, or DONE if the "
+                "thread is complete. If the user's last message asks no question and "
+                "makes no commitment (e.g. a thank-you, acknowledgement, or 'sounds "
+                "good'), prefer DONE." if user_sent_last else "")
+            sys_prompt = (
+                "You analyze an email thread and determine its current status from "
+                "the user's perspective. It is in ONE of these mutually exclusive "
+                "states:\n"
+                "* REPLY - the user needs to reply\n"
+                "* AWAITING_REPLY - waiting for the other person to respond/act"
+                f"{fyi_state}\n* DONE - the thread is complete\n\n"
+                "CRITERIA:\n"
+                "- REPLY: someone asked the user a direct question or requested "
+                "info/action and the user hasn't addressed it; OR the user promised "
+                "a follow-up/deliverable and hasn't sent it. A clarifying question "
+                "that got answered while a commitment is still pending is still "
+                "REPLY.\n"
+                "- AWAITING_REPLY: the ball is in the OTHER person's court — the user "
+                "asked/requested and is still waiting, or someone else owes an "
+                "action. If the user's request was already fulfilled, they are NO "
+                "longer awaiting.\n"
+                "- DONE: all questions answered and requests fulfilled, the "
+                "conversation concluded, or the user sent info/recommendations and "
+                "isn't waiting for anything. Taking ownership ('I'll handle it') "
+                "fulfils a request unless it promises a later deliverable."
+                f"{fyi_rules}\n\n"
+                "RULES: weigh the WHOLE thread but the LAST message decides whose "
+                "court the ball is in now; an earlier unanswered question/request "
+                "still governs only if the last message didn't resolve it. A message "
+                "marked '(you sent)' or '(your organisation sent)' is from YOUR side — "
+                "a reply from the user's own organisation counts as your side having "
+                "acted, so the ball is then in the OTHER party's court. If "
+                "SOMEONE ELSE promised something → AWAITING_REPLY; if the USER "
+                "promised a future reply/deliverable → REPLY."
+                f"{last_rule}"
+                # The user's own corrections outrank the generic criteria — that is
+                # what a correction IS. Same contract as the classifier prompt
+                # (engine._global_guidance_block), so a lesson taught via Fix
+                # steers conversation-status calls too, not only cleanup picks.
+                f"{corrections}\n\n"
+                'Respond with ONLY a JSON object: {"status": "<one of REPLY, '
+                f'AWAITING_REPLY, {fyi_opt}DONE>", "rationale": "<one line>"}}.'
             )
-            st = ((data.get("status") if isinstance(data, dict) else "") or "")
-            st = _canon_status_key(st)  # tolerate a legacy TO_REPLY/ACTIONED reply
-            if st in allowed:
-                return st, True
-        return fallback, False
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("email.determine_status_failed", error=str(exc)[:160])
-        return fallback, False
+            user_prompt = _status_user_prompt(thread_text, user_email, about)
+            allowed = {"REPLY", "AWAITING_REPLY", "DONE"}
+            if not user_sent_last:
+                allowed.add("FYI")
+            messages = [{"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt}]
+            # Try the configured tier, then escalate once. A wrong/empty answer here
+            # always biases AWAITING, so a second stronger attempt is cheap insurance.
+            for attempt_model in (model, _STATUS_MODEL_ESCALATION):
+                data, _content, _used = await _llm_json(
+                    attempt_model, messages, max_tokens=500,
+                )
+                st = ((data.get("status") if isinstance(data, dict) else "") or "")
+                st = _canon_status_key(st)  # tolerate a legacy TO_REPLY/ACTIONED reply
+                if st in allowed:
+                    return st, True
+            return fallback, False
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("email.determine_status_failed", error=str(exc)[:160])
+            return fallback, False
+
+    # EM-T5: in `shadow` mode `decide` runs beside the old call. The result is
+    # ALWAYS the old call's, compared after the escalation, and the log keeps
+    # the old `confident` flag (§10.4.4 item 9).
+    options = 3 if user_sent_last else 4
+    return await decide_features.shadow(
+        "email.thread_status", _old, account_id=account_id,
+        build=lambda: _status_question(
+            thread_text, user_email, about, user_sent_last=user_sent_last),
+        compare=decide_features.compare_choice(
+            lambda r: r[0], qid="status", options=options,
+            extra_of=lambda r: {"confident": bool(r[1])}),
+    )
 
 
 def _msg_scope(
@@ -655,7 +709,8 @@ async def resolve_conversation_status_matches(
         status, _confident = await _llm_determine_thread_status(
             ctx.thread_text, acc_email, about,
             user_sent_last=ctx.our_side_last,
-            corrections=await _status_corrections_block(db, account_id))
+            corrections=await _status_corrections_block(db, account_id),
+            account_id=account_id)
         target = await _conversation_rule_for_status(db, account_id, status)
         if not target:
             return matches
@@ -862,7 +917,8 @@ async def recompute_thread_status(
     status, confident = await _llm_determine_thread_status(
         ctx.thread_text, acc_email, about,
         user_sent_last=ctx.our_side_last, model=model,
-        corrections=await _status_corrections_block(db, account_id))
+        corrections=await _status_corrections_block(db, account_id),
+        account_id=account_id)
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status), ("AWAITING", "Awaiting Reply"))
     # Whoever spoke last is a FACT, not a judgment call. The determiner

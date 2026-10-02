@@ -301,6 +301,21 @@ class Settings(BaseSettings):
     # customer_console.md §6A.14 CP-13c. Fence: tests/unit/test_acb_llm_decide.py.
     decide_enabled: bool = False
 
+    # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
+    #
+    # `decide_feature_modes` holds `feature=mode` pairs with a comma between
+    # pairs, for example `email.cold_check=shadow`. A mode is `off`, `shadow`
+    # or `on`. An unknown feature or mode resolves to `off`. EM-T5 refuses `on`
+    # and resolves it to `off`. `decide_feature_orgs` lists the organization
+    # ids that may run a mode other than `off`, with a comma between ids. An
+    # empty list allows no organization. The one reader is
+    # `gateway/decide_features.py`.
+    #
+    # 🔴 OWNER-GATE on a box (H-166): any value other than empty.
+    # Fence: tests/unit/test_email_decide_shadow.py.
+    decide_feature_modes: str = ""
+    decide_feature_orgs: str = ""
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,
