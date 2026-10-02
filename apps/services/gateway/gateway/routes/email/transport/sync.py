@@ -497,6 +497,12 @@ async def _renew_or_replace(
                 sub_id,
             )
         except Exception:
-            await provider.delete_subscription(sub_id)
+            # Best effort, as before EM-T4f: the delete now raises on a
+            # transport error, and a failed delete must not stop the create.
+            try:
+                await provider.delete_subscription(sub_id)
+            except Exception as exc:
+                _log.warning("email.subscription_delete_failed",
+                             sub=str(sub_id)[:12], error=type(exc).__name__)
     data = await provider.create_subscription(notify_url, client_state)
     return data, data.get("id")

@@ -12,7 +12,7 @@
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
-> ✅ **EM-T4f is BUILT, not merged (2026-10-02).** A disconnect stops the sync with no session open, then deletes, then removes the Graph subscription (§10.4.6).
+> 🟡 **EM-T4f part 1 is BUILT, not merged (2026-10-02).** A disconnect bounds its wait at 5 seconds and answers 409 when a sync holds the row. It also removes the Graph subscription. Part 2 (one sync for each mailbox) is not built, so the cause of the wait of 2 minutes stays (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -1914,7 +1914,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
 
-**Status (2026-10-02).** ✅ BUILT on branch `email-t4f`, not merged. All four done-when cases and the R8 case pass. The Graph delete shipped, with no follow-up. This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
+**Status (2026-10-02).** 🟡 Part 1 is BUILT on branch `email-t4f`, not merged. Part 2 (one sync for each mailbox) is not built, and it waits for EM-T4c to merge. Part 1 does not fix the cause of the wait of 2 minutes. It bounds the wait of the `DELETE` at 5 seconds and answers 409, so the member tries again.
+
+This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
 
 **The defect (production, 2026-10-02).** A member connected Outlook, and the first sync stored 6410 messages. The member clicked Disconnect while the sync ran. The journal shows this order:
 
@@ -1925,51 +1927,77 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 The `statement_timeout` in production is 2 minutes.
 
-**The cause (measured at `93a2092e`).**
+**The cause (corrected by the review of fix round 1, 2026-10-02).**
 
-1. `delete_account` (`transport/accounts.py:365-405`) runs the `DELETE` in one `_tenant_session()` block. The delete locks the account row, and the cascade locks the messages.
-2. In the same block, it calls `remove_account_sync`. That function cancels the loop task and waits for it (`scheduler.py:778-791`).
-3. The task waits on an `INSERT` that needs a lock of the delete. The delete waits on the task. Half of the cycle is in the app, so Postgres sees no deadlock. Only the statement timeout stops it. The member waits up to 2 minutes, and the sync logs a false failure.
-4. No code calls `OutlookProvider.delete_subscription` (`outlook.py:690`). The Graph subscription stays until it expires, and Microsoft sends notifications for a mailbox that we deleted.
+1. Nothing makes `_sync_account` run one at a time for each mailbox. `_scheduler_tasks` tracks the loop only. Five other callers run it:
+   - the manual sync (`transport/sync.py:241`)
+   - the resync (`transport/sync.py:296`, through `_run_manual_sync`)
+   - the webhook sync (`transport/sync.py:317`)
+   - the cleanup backfill (`automation/cleanup.py:905`)
+   - the runner backfill (`automation/runner.py:1418`)
+2. In production, the loop and a second first sync wrote the same keys, `(account_id, provider_message_id)`. The upsert is `ON CONFLICT ... DO UPDATE` (`persist.py:92`). So the `INSERT` of the loop waited for the uncommitted rows of the other run. It waited until the statement timeout of 2 minutes.
+3. The loop then logged `sync.backoff`. A cancelled task cannot log that, because `CancelledError` passes `except Exception`. So the run that logged `synced=6410` was not the loop.
+4. The old route also waited for the loop task inside the block of its `DELETE` (`transport/accounts.py:365-405`, `scheduler.py:778-791`). So the `DELETE` held its locks until the task ended. The new order fixes this part only.
+5. The `DELETE` still waits for the KEY SHARE lock of each sync outside the loop. Each foreign key check holds one until its phase commits. The reviewer reproduced this on the scratch database as `acb_app_h3rls`.
+6. No code called `OutlookProvider.delete_subscription` (`outlook.py:690`). That method also swallowed each error and read no status. The Graph subscription stayed until it expired, and Microsoft sent notifications for a mailbox that we deleted.
 
-`update_account` (`transport/accounts.py:408-469`) calls `remove_account_sync` after its block closes. It has no cycle, and EM-T4f does not change it.
+`update_account` (`transport/accounts.py:408-469`) calls `remove_account_sync` after its block closes, so it holds no lock during the wait. EM-T4f does not change it.
 
-**Scope.**
+**Part 1 scope (built).**
 
-1. Phase 1 reads the row in a short block, with the owner predicate. A row that is absent, or that another member owns, gives 404. Then no loop stops.
-2. With no block open, the route calls `remove_account_sync`.
-3. Phase 2 runs the `DELETE` and the default re-election in a new block. Its `RETURNING` gives the provider, the credentials and the subscription id.
-4. With no block open, a `microsoft` row with a subscription id gets a best-effort `delete_subscription`. The route builds the provider through `_instantiate_provider`, the gateway adapter over `build_provider`.
-5. A bound of 5 seconds applies to the Graph call. An error or a timeout logs `email.disconnect.subscription_delete_failed`, and the route still returns 204. The log never holds a token.
-6. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
+1. Phase 1 reads the row in a short block, with the owner predicate. A row that is absent, or that another member owns, gives 404, and no loop stops. Phase 1 also reads the organization of the row.
+2. With no block open, the route records whether a loop runs, and then it calls `remove_account_sync`.
+3. Phase 2 runs `SET LOCAL lock_timeout = '5s'`, the `DELETE` and the default re-election, in a new block. Its `RETURNING` gives the provider, the credentials and the subscription id.
+4. A lock timeout (SQLSTATE 55P03) answers 409: "A sync is still writing mail for this mailbox. Try again in a moment."
+5. On any failure of phase 2, the route starts the loop again with `refresh_account_sync` and the organization of the row. It does this only when a loop ran before step 2. So a paused mailbox, or a box with `EMAIL_SYNC_ENABLED` off, gets no loop.
+6. With no block open, a `microsoft` row with a subscription id gets `delete_subscription`, with a bound of 5 seconds. The route builds the provider through `_instantiate_provider`, the gateway adapter over `build_provider`.
+7. `delete_subscription` returns the HTTP status of Graph, and it raises on a transport error. 204 and 404 log `email.disconnect.subscription_deleted`. Each other status, error or timeout logs `email.disconnect.subscription_delete_failed`, and the route still returns 204. The log holds the status or the error class, and never a token. `_renew_or_replace` keeps its best effort around the delete.
+8. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
+9. Both disconnect surfaces keep the mailbox on a refusal, and they show the reason of the gateway. The surfaces are the `DisconnectDialog` of the Email app and Remove on the Email tab of Integrations.
+
+**Part 2 scope (not built, after EM-T4c merges).**
+
+1. A per-mailbox `asyncio.Lock`, so one `_sync_account` runs for each mailbox. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`).
+2. The loop stops when its row is gone.
+
+Part 2 changes `scheduler.py`, and EM-T4c changes that file now.
 
 **Why the Graph call comes after the delete.** The loop renews the subscription, and `_renew_or_replace` can replace it with a new id. A read before the loop stops can hold an old id. The `RETURNING` of phase 2 reads the id after the stop. A token that `authenticate()` refreshes needs no write, because the row is gone.
 
 **Non-goals.**
 
-- No change to `update_account`, `remove_account_sync` or the scheduler.
-- No stop for a sync outside the loop. The manual sync route, the webhook sync and the deep syncs of cleanup and the runner call `_sync_account` directly. A later part owns that.
+- No change to `update_account` or to `scheduler.py` in part 1.
 - No migration.
 
-**Done when.**
+**Follow-ups (recorded, not built).**
+
+- **F-1. An orphan subscription.** A cancel can stop the loop between `create_subscription` and the `UPDATE` that stores the id in `_ensure_subscription` (`transport/sync.py:453-473`). Then no row names the new subscription, and it lives until it expires.
+- **F-2. An open client.** `OutlookProvider` has no close method. The httpx client that `_get_client` opens for the Graph delete stays open until the process collects it.
+- **F-3. A second SQLSTATE walk.** `_is_lock_timeout` in `transport/accounts.py` copies the walk of `is_transient` in `routes/projects/import_writer.py`. A third copy must move the walk to a shared module.
+
+**Done when (part 1).**
 
 - a. `remove_account_sync` runs with no block open, after the ownership read and before the `DELETE`.
 - b. A member who does not own the mailbox gets 404, and `remove_account_sync` does not run.
-- c. A `microsoft` row with a subscription id gets `delete_subscription` with that id. A Graph call that raises, or that is slower than the bound, still gives 204.
+- c. A `microsoft` row with a subscription id gets `delete_subscription` with that id. Against the real `OutlookProvider` and `httpx.MockTransport`, 204 and 404 log `subscription_deleted`, and 403 and 500 log `subscription_delete_failed` with the status. A Graph call that raises, or that is slower than the bound, still gives 204.
 - d. A row with no subscription id, or a `gmail` row, builds no provider and makes no Graph call.
-- R8: the two blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404.
+- e. The `DELETE` runs after `SET LOCAL lock_timeout` in the same block. A lock timeout gives 409 and starts the loop again with the organization of the row. Any other failure of phase 2 starts the loop again and raises. With no loop before step 2, nothing starts.
+- f. With the real scheduler, a failed `DELETE` leaves a running loop.
+- g. Both disconnect surfaces keep the mailbox on a refusal and show the detail of the gateway.
+- R8: the blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404. When a second connection holds a KEY SHARE lock on the row, the route answers 409 after about 5 seconds. The row stays, and a new loop runs with the organization of the row.
 
-**Fence (R7).** `tests/unit/test_email_disconnect_order.py`.
+**Fence (R7).** `tests/unit/test_email_disconnect_order.py`, `workbench/control_plane/src/app/email/lib/connect.test.ts` and `workbench/control_plane/src/app/integrations/emailRemove.test.ts`.
 
-**Files.** `apps/services/gateway/gateway/routes/email/transport/accounts.py` and the new test.
+**Files.** `transport/accounts.py`, `transport/sync.py`, `providers/outlook.py`, and in the Control Plane `email/components/DisconnectDialog.tsx`, `email/lib/connect.ts`, `email/lib/emailStore.ts` and `integrations/page.tsx`. Plus the three tests.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_disconnect_order.py tests/unit/test_email_request_jobs_tenancy.py \
-  tests/unit/test_email_accounts_initial_sync_rls.py -q -rs
-uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_disconnect_order.py
+  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_webhook.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/accounts.py tests/unit/test_email_disconnect_order.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/integrations
 ```
 
 **Recorded risks.**

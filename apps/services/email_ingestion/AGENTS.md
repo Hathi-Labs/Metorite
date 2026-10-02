@@ -103,11 +103,20 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `remove_account_sync()` called from CRUD routes. The organization comes from
   the session or the verified OAuth state, never from request input.
 - ⚠️ **Call `remove_account_sync` with no session open (WS-17 EM-T4f).** It
-  waits for the loop task. A caller that holds a lock in an open block can
-  make the task wait on that lock, and Postgres cannot see that cycle. A
-  disconnect reads the row first, then stops the loop, then deletes in a new
-  block. R7: `tests/unit/test_email_disconnect_order.py`.
-- `get_scheduler_status()` returns state for health checks
+  waits for the loop task. A caller with an open block holds its locks for as
+  long as the task runs. A disconnect reads the row first, then stops the
+  loop, then deletes in a new block. R7:
+  `tests/unit/test_email_disconnect_order.py`.
+- ⚠️ **Nothing makes `_sync_account` run once at a time for each mailbox.**
+  `_scheduler_tasks` tracks the loop only. The manual sync, the resync, the
+  webhook sync and two deep backfills call `_sync_account` directly. Two
+  syncs of one mailbox upsert the same keys, and one waits for the other.
+  EM-T4f part 2 owns the fix (`email_app_master_plan.md` §10.4.6).
+- `OutlookProvider.delete_subscription` returns the HTTP status of Graph and
+  raises on a transport error. The caller decides what a status means.
+- `get_scheduler_status()` returns state for health checks. A disconnect
+  reads it to know whether a loop ran, so a failed disconnect starts only a
+  loop that ran before.
 
 ## Dependencies
 

@@ -3,11 +3,12 @@
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.6, EM-T4f.
 
 Production, 2026-10-02. A member clicked Disconnect during the first sync of
-an Outlook mailbox. ``delete_account`` ran the ``DELETE`` and then waited for
-the sync task INSIDE the same block. The task waited on a lock of that
-``DELETE``. Postgres cannot see a cycle with one half in the app, so only the
-statement timeout of 2 minutes broke it. Nothing deleted the Graph
-subscription, so Microsoft kept posting for the deleted mailbox.
+an Outlook mailbox. The member waited about 2 minutes, and Microsoft kept
+posting for the deleted mailbox. Two syncs of one mailbox ran at once, and the
+old route waited for the loop task inside the block of its ``DELETE``. Part 1
+(this file) bounds the wait of the ``DELETE``, starts the loop again when the
+delete fails, and reads the Graph status. Part 2 (one sync for each mailbox)
+is not built.
 
 R7 fence named here: ``email-disconnect-order``.
 
@@ -18,14 +19,22 @@ fake records that count when it runs.
   and before the ``DELETE``. A companion test proves the order check can fail.
 * b. A member who does not own the mailbox gets 404, and no loop stops.
 * c. A Microsoft row with a subscription id gets ``delete_subscription`` with
-  that id. A Graph call that raises, or that is slow, still gives 204. No log
-  line holds a token.
+  that id. A Graph call that raises, or that is slow, still gives 204. The
+  REAL ``OutlookProvider`` over ``httpx.MockTransport`` shows that 204 and 404
+  log ``subscription_deleted``, and 403 and 500 log the failure with the
+  status. No log line holds a token.
 * d. A row with no subscription id, or a row of another provider, builds no
   provider and makes no Graph call.
+* e. The ``DELETE`` runs under ``SET LOCAL lock_timeout``. A lock timeout
+  answers 409, and any failure of the delete block starts the loop again with
+  the organization of the row. With the real scheduler, a failed ``DELETE``
+  leaves a running loop.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``
-(NOSUPERUSER, NOBYPASSRLS). The Graph call is a fake.
+(NOSUPERUSER, NOBYPASSRLS). The Graph call is a fake. One case holds a KEY
+SHARE lock on the row from a second connection, and the 409 comes back after
+about 5 seconds, not 2 minutes.
 
 Run (real Postgres)::
 
@@ -48,10 +57,13 @@ pytest.importorskip("sqlalchemy")
 
 import acb_llm.key_store as key_store_mod
 import email_ingestion.scheduler as sched
+import httpx
 from acb_auth.roles import UserContext, UserRole
 from acb_common.db import bind_tenant, release_tenant
+from email_ingestion.providers.outlook import GRAPH_API_BASE, OutlookProvider
 from fastapi import HTTPException
 from gateway.routes.email.transport import accounts
+from sqlalchemy import exc as sa_exc
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -68,6 +80,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 TOKEN = "tok-em-t4f-must-not-leak"
 OWNER = "owner@em-t4f.test"
 OTHER = "other@em-t4f.test"
+ROW_ORG = "11111111-2222-3333-4444-555555555555"
 
 
 # ── hermetic doubles ─────────────────────────────────────────────────────────
@@ -85,10 +98,16 @@ class _Ledger:
         return [e[0] for e in self.events]
 
     def first(self, kind: str) -> tuple[Any, ...]:
-        return next(e for e in self.events if e[0] == kind)
+        for event in self.events:
+            if event[0] == kind:
+                return event
+        raise AssertionError(f"no {kind!r} event ran; saw {self.kinds()}")
 
     def index(self, kind: str) -> int:
         return self.kinds().index(kind)
+
+    def log_names(self) -> list[str]:
+        return [name for _level, name, _kw in self.logs]
 
 
 class _Result:
@@ -99,23 +118,44 @@ class _Result:
         return self._row
 
 
-class _FakeDB:
-    """Answers the three statements of ``delete_account`` from a dict."""
+class _DriverError(Exception):
+    """Stands in for the adapted asyncpg error, which carries ``sqlstate``."""
 
-    def __init__(self, ledger: _Ledger, rows: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"sqlstate {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+def _lock_timeout_error() -> sa_exc.OperationalError:
+    """The shape SQLAlchemy raises for SQLSTATE 55P03 over asyncpg."""
+    return sa_exc.OperationalError(
+        "DELETE FROM email_accounts", {}, _DriverError("55P03"))
+
+
+class _FakeDB:
+    """Answers the statements of ``delete_account`` from a dict."""
+
+    def __init__(self, ledger: _Ledger, rows: dict[str, dict[str, Any]],
+                 delete_fails: BaseException | None) -> None:
         self.ledger = ledger
         self.rows = rows
+        self.delete_fails = delete_fails
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = " ".join(str(stmt).split())
         p = params or {}
-        if sql.startswith("SELECT 1 FROM email_accounts"):
+        if sql.startswith("SELECT organization_id FROM email_accounts"):
             self.ledger.events.append(("read", self.ledger.open))
             row = self.rows.get(p["id"])
             owned = row is not None and row["user_id"] == p["uid"]
-            return _Result(SimpleNamespace() if owned else None)
+            return _Result(SimpleNamespace(organization_id=row["org"]) if owned else None)
+        if sql.startswith("SET LOCAL lock_timeout"):
+            self.ledger.events.append(("lock_timeout", self.ledger.open, sql))
+            return _Result(None)
         if sql.startswith("DELETE FROM email_accounts"):
             self.ledger.events.append(("delete", self.ledger.open))
+            if self.delete_fails is not None:
+                raise self.delete_fails
             row = self.rows.get(p["id"])
             if row is None or row["user_id"] != p["user_id"]:
                 return _Result(None)
@@ -155,12 +195,13 @@ class _FakeGraph:
         self.ledger = ledger
         self.behaviour = behaviour
 
-    async def delete_subscription(self, subscription_id: str) -> None:
+    async def delete_subscription(self, subscription_id: str) -> int:
         self.ledger.events.append(("graph_delete", self.ledger.open, subscription_id))
         if self.behaviour == "raise":
             raise RuntimeError(f"Graph refused, bearer {TOKEN}")
         if self.behaviour == "slow":
             await asyncio.sleep(30)
+        return 204
 
 
 class _RecordingLog:
@@ -177,26 +218,40 @@ class _RecordingLog:
 def _row(*, user_id: str = OWNER, provider: str = "microsoft",
          sub: str | None = "sub-em-t4f-1", is_default: bool = True) -> dict[str, Any]:
     return {"user_id": user_id, "provider": provider, "sub": sub,
-            "is_default": is_default, "creds": "blob-em-t4f"}
+            "is_default": is_default, "creds": "blob-em-t4f", "org": ROW_ORG}
 
 
 @pytest.fixture()
 def wired(monkeypatch):
-    """Wire the doubles into ``accounts``, and return a setup function."""
+    """Wire the doubles into ``accounts``, and return a setup function.
 
-    def _setup(rows: dict[str, dict[str, Any]], *, graph: str = "ok",
-               stop_raises: bool = False, decrypt_raises: bool = False):
+    With ``fake_scheduler=False`` the scheduler stays real, so a test can see
+    the loop bookkeeping of ``remove_account_sync`` and ``refresh_account_sync``.
+    """
+
+    def _setup(rows: dict[str, dict[str, Any]], *, graph: Any = "ok",
+               stop_raises: bool = False, decrypt_raises: bool = False,
+               delete_fails: BaseException | None = None,
+               loops: tuple[str, ...] = ("acc-1",),
+               fake_scheduler: bool = True):
         ledger = _Ledger()
-        db = _FakeDB(ledger, rows)
+        db = _FakeDB(ledger, rows, delete_fails)
         monkeypatch.setattr(accounts, "_tenant_session", _watched_session(ledger, db))
         monkeypatch.setattr(accounts, "_log", _RecordingLog(ledger))
 
-        async def _remove(account_id: str) -> None:
-            ledger.events.append(("stop", ledger.open, account_id))
-            if stop_raises:
-                raise RuntimeError("the scheduler lock is broken")
+        if fake_scheduler:
+            async def _remove(account_id: str) -> None:
+                ledger.events.append(("stop", ledger.open, account_id))
+                if stop_raises:
+                    raise RuntimeError("the scheduler lock is broken")
 
-        monkeypatch.setattr(sched, "remove_account_sync", _remove)
+            async def _refresh(account_id: str, organization_id: str | None = None) -> None:
+                ledger.events.append(("restart", ledger.open, account_id, organization_id))
+
+            monkeypatch.setattr(sched, "remove_account_sync", _remove)
+            monkeypatch.setattr(sched, "refresh_account_sync", _refresh)
+            monkeypatch.setattr(sched, "get_scheduler_status",
+                                lambda: {"accounts": list(loops)})
 
         def _decrypt(blob: str) -> str:
             ledger.events.append(("decrypt", ledger.open, blob))
@@ -207,11 +262,11 @@ def wired(monkeypatch):
         monkeypatch.setattr(
             key_store_mod, "get_key_store", lambda: SimpleNamespace(decrypt=_decrypt))
 
-        fake_graph = _FakeGraph(ledger, graph)
+        provider = graph if not isinstance(graph, str) else _FakeGraph(ledger, graph)
 
-        def _build(name: str, creds: dict[str, Any]) -> _FakeGraph:
+        def _build(name: str, creds: dict[str, Any]) -> Any:
             ledger.events.append(("build", ledger.open, name, creds))
-            return fake_graph
+            return provider
 
         monkeypatch.setattr(accounts, "_instantiate_provider", _build)
         return ledger
@@ -220,6 +275,8 @@ def wired(monkeypatch):
 
 
 def _user(email: str = OWNER) -> UserContext:
+    # The session org differs from the row org on purpose: a restart must
+    # take the org of the row.
     return UserContext(email=email, role=UserRole.EMPLOYEE,
                        organization_id=str(uuid.uuid4()))
 
@@ -252,6 +309,7 @@ class TestTheLoopStopsFirstWithNoSessionOpen:
         assert _order_violations(ledger.events) == []
         assert ledger.first("stop") == ("stop", 0, "acc-1")
         assert ledger.first("delete")[1] == 1, "the DELETE ran outside a block"
+        assert "restart" not in ledger.kinds(), "a good disconnect restarted the loop"
 
     async def test_the_order_check_fails_on_the_old_shape(self):
         # The shape before EM-T4f: DELETE, then the stop, in ONE block.
@@ -301,10 +359,29 @@ class TestOwnershipComesBeforeTheStop:
         assert "stop" not in ledger.kinds(), "a non-owner stopped a sync loop"
         assert "delete" not in ledger.kinds()
         assert "graph_delete" not in ledger.kinds()
+        assert "restart" not in ledger.kinds()
         assert ledger.open == 0
 
 
 # ── hermetic: c. the Graph subscription ──────────────────────────────────────
+
+
+def _real_outlook(status: int | None, seen: list[httpx.Request]) -> OutlookProvider:
+    """The REAL provider, with a MockTransport client in place of Graph.
+
+    ``status=None`` makes the transport raise ``httpx.ConnectError``.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if status is None:
+            raise httpx.ConnectError("graph unreachable", request=request)
+        return httpx.Response(status)
+
+    provider = OutlookProvider({"access_token": TOKEN, "refresh_token": TOKEN})
+    provider._http = httpx.AsyncClient(
+        base_url=GRAPH_API_BASE, transport=httpx.MockTransport(_handler))
+    return provider
 
 
 class TestTheGraphSubscriptionIsDeleted:
@@ -318,7 +395,51 @@ class TestTheGraphSubscriptionIsDeleted:
         assert build[1] == 0 and build[2] == "microsoft"
         assert ledger.index("graph_delete") > ledger.index("delete"), (
             "the Graph call must read the subscription id after the loop stopped")
-        assert ledger.logs[-1][:2] == ("info", "email.disconnect.subscription_delete_sent")
+        assert ledger.logs[-1][:2] == ("info", "email.disconnect.subscription_deleted")
+
+    @pytest.mark.parametrize("status,level,event", [
+        (204, "info", "email.disconnect.subscription_deleted"),
+        (404, "info", "email.disconnect.subscription_deleted"),
+        (403, "warning", "email.disconnect.subscription_delete_failed"),
+        (500, "warning", "email.disconnect.subscription_delete_failed"),
+    ])
+    async def test_the_real_provider_reports_the_graph_status(
+        self, wired, status, level, event,
+    ):
+        seen: list[httpx.Request] = []
+        rows = {"acc-1": _row(sub="sub-real")}
+        ledger = wired(rows, graph=_real_outlook(status, seen))
+        assert await accounts.delete_account("acc-1", user=_user()) is None
+        assert "acc-1" not in rows
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("DELETE", "/v1.0/subscriptions/sub-real")]
+        graph_logs = [log for log in ledger.logs if "subscription" in log[1]]
+        assert len(graph_logs) == 1
+        assert graph_logs[0][:2] == (level, event)
+        assert graph_logs[0][2]["status"] == status
+        assert TOKEN not in repr(ledger.logs)
+
+    async def test_a_transport_error_of_the_real_provider_is_logged(self, wired):
+        seen: list[httpx.Request] = []
+        ledger = wired({"acc-1": _row()}, graph=_real_outlook(None, seen))
+        assert await accounts.delete_account("acc-1", user=_user()) is None
+        [failed] = [log for log in ledger.logs if "subscription" in log[1]]
+        assert failed[:2] == ("warning", "email.disconnect.subscription_delete_failed")
+        assert failed[2]["error"] == "ConnectError"
+        assert failed[2]["status"] is None
+
+    @pytest.mark.parametrize("status", [204, 404, 403, 500])
+    async def test_delete_subscription_returns_the_graph_status(self, status):
+        seen: list[httpx.Request] = []
+        provider = _real_outlook(status, seen)
+        assert await provider.delete_subscription("sub-x") == status
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("DELETE", "/v1.0/subscriptions/sub-x")]
+
+    async def test_delete_subscription_raises_on_a_transport_error(self):
+        provider = _real_outlook(None, [])
+        with pytest.raises(httpx.ConnectError):
+            await provider.delete_subscription("sub-x")
 
     @pytest.mark.parametrize("graph,decrypt_raises,error", [
         ("raise", False, "RuntimeError"),
@@ -370,6 +491,93 @@ class TestNoGraphCallWithoutASubscription:
         assert "acc-1" not in rows
         for kind in ("decrypt", "build", "graph_delete"):
             assert kind not in ledger.kinds(), f"{kind} ran for {provider}"
+
+
+# ── hermetic: e. the lock bound, the 409 and the restart ─────────────────────
+
+
+class TestAFailedDeleteStartsTheLoopAgain:
+
+    async def test_the_delete_runs_under_a_lock_timeout(self, wired):
+        ledger = wired({"acc-1": _row()})
+        await accounts.delete_account("acc-1", user=_user())
+        bound = ledger.first("lock_timeout")
+        assert bound[1] == 1, "SET LOCAL ran outside the delete block"
+        assert bound[2] == "SET LOCAL lock_timeout = '5s'"
+        assert ledger.index("lock_timeout") < ledger.index("delete")
+        assert ledger.index("lock_timeout") > ledger.index("stop")
+
+    async def test_a_lock_timeout_answers_409_and_restarts_the_loop(self, wired):
+        rows = {"acc-1": _row()}
+        ledger = wired(rows, delete_fails=_lock_timeout_error())
+        with pytest.raises(HTTPException) as err:
+            await accounts.delete_account("acc-1", user=_user())
+        assert err.value.status_code == 409
+        assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
+        assert "acc-1" in rows, "a refused disconnect deleted the mailbox"
+        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG), (
+            "the loop must start again, with the org of the row and no block open")
+        assert ledger.index("restart") > ledger.index("delete")
+        assert "graph_delete" not in ledger.kinds()
+        assert "email.disconnect.busy" in ledger.log_names()
+
+    async def test_any_failed_delete_restarts_the_loop_and_raises(self, wired):
+        rows = {"acc-1": _row()}
+        ledger = wired(rows, delete_fails=RuntimeError("connection reset"))
+        with pytest.raises(RuntimeError, match="connection reset"):
+            await accounts.delete_account("acc-1", user=_user())
+        assert "acc-1" in rows
+        assert ledger.first("restart") == ("restart", 0, "acc-1", ROW_ORG)
+        assert "graph_delete" not in ledger.kinds()
+
+    async def test_no_restart_when_no_loop_ran_before(self, wired):
+        # Sync off, or EMAIL_SYNC_ENABLED off: a failed disconnect must not
+        # start a loop that did not run.
+        rows = {"acc-1": _row()}
+        ledger = wired(rows, delete_fails=_lock_timeout_error(), loops=())
+        with pytest.raises(HTTPException) as err:
+            await accounts.delete_account("acc-1", user=_user())
+        assert err.value.status_code == 409
+        assert "restart" not in ledger.kinds()
+
+    def test_only_sqlstate_55p03_is_a_lock_timeout(self):
+        assert accounts._is_lock_timeout(_lock_timeout_error())
+        assert not accounts._is_lock_timeout(sa_exc.OperationalError(
+            "DELETE", {}, _DriverError("40P01")))
+        assert not accounts._is_lock_timeout(RuntimeError("no sqlstate"))
+
+    async def test_with_the_real_scheduler_a_failed_delete_leaves_a_running_loop(
+        self, wired, monkeypatch,
+    ):
+        started: list[tuple[str, int, str]] = []
+
+        async def _sleeper(account_id: str, interval: int, *, organization_id: str):
+            started.append((account_id, interval, organization_id))
+            await asyncio.sleep(3600)
+
+        async def _interval(account_id: str, organization_id: str) -> int:
+            return 300
+
+        monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
+        monkeypatch.setattr(sched, "_get_account_sync_interval", _interval)
+        old = asyncio.create_task(asyncio.sleep(3600))
+        monkeypatch.setitem(sched._scheduler_tasks, "acc-1", old)
+        rows = {"acc-1": _row()}
+        wired(rows, delete_fails=RuntimeError("connection reset"),
+              fake_scheduler=False)
+        try:
+            with pytest.raises(RuntimeError):
+                await accounts.delete_account("acc-1", user=_user())
+            await asyncio.sleep(0)
+            assert old.cancelled(), "step 2 did not stop the old loop"
+            new = sched._scheduler_tasks.get("acc-1")
+            assert new is not None and new is not old and not new.done(), (
+                "a failed DELETE left the mailbox with no running loop")
+            assert started == [("acc-1", 300, ROW_ORG)]
+        finally:
+            await sched.remove_account_sync("acc-1")
+            if not old.done():
+                old.cancel()
 
 
 # ── R8: the real SQL under FORCE RLS ─────────────────────────────────────────
@@ -425,8 +633,9 @@ def r8_doubles(monkeypatch):
         seen["stop"].append(account_id)
 
     class _Graph:
-        async def delete_subscription(self, subscription_id: str) -> None:
+        async def delete_subscription(self, subscription_id: str) -> int:
             seen["graph"].append(subscription_id)
+            return 204
 
     monkeypatch.setattr(sched, "remove_account_sync", _remove)
     monkeypatch.setattr(key_store_mod, "get_key_store", lambda: SimpleNamespace(
@@ -508,6 +717,68 @@ class TestTheDisconnectUnderForceRLS:
                                "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
                                a=acc) != [], "a non-owner deleted the mailbox"
         finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_a_held_key_share_lock_gives_409_in_seconds_and_the_loop_runs(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """A second connection holds the KEY SHARE lock that an FK check of a
+        sync outside the loop holds. The real scheduler stops the loop, the
+        DELETE gives up after about 5 seconds, and the loop starts again with
+        the organization of the row."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        started: list[tuple[str, int, str]] = []
+
+        async def _sleeper(account_id: str, interval: int, *, organization_id: str):
+            started.append((account_id, interval, organization_id))
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(sched, "_account_sync_loop", _sleeper)
+        monkeypatch.setattr(accounts, "_instantiate_provider", lambda *_a: pytest.fail(
+            "a refused disconnect reached Graph"))
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t4f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, sub="sub-r8-held")
+        old = asyncio.create_task(asyncio.sleep(3600))
+        monkeypatch.setitem(sched._scheduler_tasks, acc, old)
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        holder = p.admin_engine.connect()
+        held = holder.begin()
+        token = bind_tenant(p.org_b)
+        try:
+            holder.execute(text(
+                "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid) "
+                "FOR KEY SHARE"), {"a": acc})
+            async with tenant_engine_scope(app_dsn):
+                t0 = time.monotonic()
+                with pytest.raises(HTTPException) as err:
+                    await accounts.delete_account(acc, user=user)
+                waited = time.monotonic() - t0
+                await asyncio.sleep(0)
+                assert err.value.status_code == 409
+                assert err.value.detail == accounts.DISCONNECT_BUSY_DETAIL
+                assert 3.0 < waited < 30.0, f"the DELETE waited {waited:.1f}s"
+                assert old.cancelled(), "step 2 did not stop the old loop"
+                new = sched._scheduler_tasks.get(acc)
+                assert new is not None and new is not old and not new.done(), (
+                    "the refused disconnect left the mailbox with no loop")
+                assert started and started[0][0] == acc
+                assert started[0][2] == str(p.org_b)
+            assert _admin_read(p.admin_engine,
+                               "SELECT 1 FROM email_accounts WHERE id = CAST(:a AS uuid)",
+                               a=acc) != [], "the refused DELETE removed the row"
+        finally:
+            held.rollback()
+            holder.close()
+            release_tenant(token)
+            await sched.remove_account_sync(acc)
+            if not old.done():
+                old.cancel()
             with p.admin_engine.begin() as c:
                 c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
                           {"u": owner})

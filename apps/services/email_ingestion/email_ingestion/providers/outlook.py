@@ -687,13 +687,18 @@ class OutlookProvider(BaseEmailProvider):
         resp.raise_for_status()
         return resp.json()
 
-    async def delete_subscription(self, subscription_id: str) -> None:
-        """Best-effort delete of a subscription."""
+    async def delete_subscription(self, subscription_id: str) -> int:
+        """Delete a subscription, and return the HTTP status that Graph sent.
+
+        Graph sends 204 when it deletes the subscription and 404 when the
+        subscription is already gone. The caller decides what each status
+        means. A transport error, or a failed token refresh, raises (WS-17
+        EM-T4f). This method used to swallow every error and read no status,
+        so a disconnect could not tell a 403 from a 204.
+        """
         client = await self._get_client()
-        try:
-            await client.delete(f"/subscriptions/{subscription_id}")
-        except Exception:  # noqa: BLE001
-            pass
+        resp = await client.delete(f"/subscriptions/{subscription_id}")
+        return resp.status_code
 
     async def modify_message(
         self,
