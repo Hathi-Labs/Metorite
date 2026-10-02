@@ -5,7 +5,7 @@
 --       `false`. Nothing else changes.
 -- Why:  D-EM-6, owner decision of 2026-10-02 ("Turn the default autodraft
 --       emails to off"). Spec: `project-docs/specs/email_app_master_plan.md`
---       §10.2 and §10.4 EM-T7.
+--       §10.2 and §10.4.9 (EM-T7).
 --
 -- **History.** Migration 26 created the column `NOT NULL DEFAULT true`.
 -- Migration 81 set it to false. Migration 82 set it back to true, because a
@@ -14,17 +14,20 @@
 -- switch that a member turns on in AI settings, never one they find running.
 --
 -- **Why the column default matters.** An INSERT that does not name the column
--- gets this value. `derive_writing_style` in
--- `gateway/routes/email/automation/assistant.py` inserts only
--- `(account_id, writing_style, updated_at)`, so a background capture can make
--- a settings row for a mailbox that never opened AI settings. The API model
--- (`AssistantSettingsModel.draft_replies`) and the GET fallback default to
--- false in the same change, so all three agree.
+-- gets this value. `generate_writing_style` in
+-- `gateway/routes/email/automation/assistant.py` can create the first settings
+-- row of a mailbox, and a member runs it on demand. It names only a few
+-- columns, so the others take their defaults. Since EM-T7 it also names
+-- `draft_replies`, with what the reply rule of the mailbox does. The API model
+-- (`AssistantSettingsModel.draft_replies`) defaults to false in the same
+-- change. The GET answers false for a mailbox with no settings row and no
+-- reply rule that drafts.
 --
 -- **EXISTING ROWS ARE NOT TOUCHED.** A stored value can be a real choice, and
--- this file changes only what a NEW row inherits. The EM-T7 dispatch of
--- 2026-10-02 records 0 email accounts in production, so no live row is at
--- stake there. A development row keeps its value.
+-- this file changes only what a NEW row inherits. On 2026-10-02 at about
+-- 11:40 UTC, a sweep of all 5 production organizations, with the tenant
+-- bound, found 0 email_accounts, 0 email_assistant_settings and 0 email_rules.
+-- So no live row is at stake there. A development row keeps its value.
 --
 -- Expand only (R6): a default change rewrites no row, it holds its lock for a
 -- catalog update only, and old code runs on the new schema unchanged.

@@ -273,6 +273,20 @@ async def get_assistant_settings(
         if not awaiting and row:
             awaiting = getattr(row, "follow_up_days", 0) or 0
         from gateway.routes.email.signature import signature_text  # noqa: PLC0415
+        # A stored value always wins. With NO settings row, answer what the
+        # engine does: drafting is ON only when a reply rule carries
+        # DRAFT_EMAIL. A new mailbox has no rules, so it reads OFF (D-EM-6).
+        # A mailbox from before D-EM-6 got DRAFT_EMAIL from the old presets
+        # and reads ON, so the switch and the engine agree. The agent's
+        # update_assistant_settings PUTs this body back, so a wrong answer
+        # here would change the choice when it saved another field.
+        if row and row.draft_replies is not None:
+            draft_replies = bool(row.draft_replies)
+        else:
+            from gateway.routes.email.automation.rules import (
+                reply_rule_drafts,
+            )
+            draft_replies = await reply_rule_drafts(db, account_id)
         return {
             "account_id": account_id,
             "about": row.about if row else "",
@@ -312,16 +326,7 @@ async def get_assistant_settings(
             "learned_writing_style": (
                 getattr(row, "learned_writing_style", None) if row else ""
             ) or "",
-            # This fallback IS the default for every account that has never
-            # opened AI Settings, so it must agree with
-            # AssistantSettingsModel.draft_replies (OFF, D-EM-6) — a mismatch
-            # would show the toggle in a state nothing had actually applied.
-            # The agent's update_assistant_settings PUTs this body back, so an
-            # ON here would also turn drafting on when it saved another field.
-            "draft_replies": (
-                bool(row.draft_replies) if row and row.draft_replies is not None
-                else False
-            ),
+            "draft_replies": draft_replies,
             "follow_up_days": awaiting,  # legacy alias
             "draft_confidence": (
                 getattr(row, "draft_confidence", None) if row else None
@@ -389,7 +394,7 @@ async def put_assistant_settings(
         org_domains = list(dict.fromkeys(
             nd for d in (req.org_domains or [])
             if isinstance(d, str) and (nd := normalize_domain(d))))
-        await db.execute(text(
+        saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
                  (account_id, about, signature, auto_run, cold_email_blocker,
                   rule_model, draft_model, compose_model, chat_model,
@@ -432,7 +437,8 @@ async def put_assistant_settings(
                  multi_rule_execution = EXCLUDED.multi_rule_execution,
                  sensitive_data_protection = EXCLUDED.sensitive_data_protection,
                  org_domains = EXCLUDED.org_domains,
-                 updated_at = now()"""
+                 updated_at = now()
+               RETURNING learned_writing_style"""
         ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
             "auto": req.auto_run, "cold": req.cold_email_blocker or "OFF",
             "rule_model": req.rule_model or "tier-fast",
@@ -452,7 +458,7 @@ async def put_assistant_settings(
             "mbe": req.morning_brief_enabled,
             "mre": req.multi_rule_execution,
             "sdp": req.sensitive_data_protection,
-            "orgd": org_domains})
+            "orgd": org_domains})).fetchone()
         # inbox-zero parity: the "Auto draft replies" toggle adds/removes the
         # DRAFT_EMAIL action on the "Reply" rule (like inbox-zero's
         # enableDraftRepliesAction), so to-reply mail is auto-drafted when on.
@@ -469,11 +475,17 @@ async def put_assistant_settings(
             "SELECT email_address FROM email_accounts WHERE id = :aid"
         ), {"aid": req.account_id})).fetchone()
         from gateway.routes.email.automation.identity import _domain_of  # noqa: PLC0415
+        from gateway.routes.email.signature import signature_text
         own_domain = _domain_of(getattr(acc_row, "email_address", "") or "")
+        # The answer carries EVERY key the GET carries. SettingsTab keeps this
+        # body as its state and PUTs it back on the next change, so a missing
+        # key is stored as its model default. That is how morning_brief_enabled
+        # turned itself off. Fence: test_the_put_answer_carries_every_get_key.
         return {
             "account_id": req.account_id,
             "about": req.about or "",
             "signature": req.signature or "",
+            "signature_text": signature_text(req.signature or ""),
             "auto_run": req.auto_run,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
             "rule_model": req.rule_model or "tier-fast",
@@ -483,6 +495,9 @@ async def put_assistant_settings(
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",
             "writing_style": req.writing_style or "",
+            # Read-only, so the upsert RETURNs the stored value.
+            "learned_writing_style": (
+                getattr(saved, "learned_writing_style", None) or ""),
             "draft_replies": req.draft_replies,
             "follow_up_days": awaiting,
             "draft_confidence": req.draft_confidence or "ALL_EMAILS",
@@ -493,6 +508,7 @@ async def put_assistant_settings(
             "digest_day_of_week": req.digest_day_of_week,
             "digest_time_of_day": req.digest_time_of_day or "09:00",
             "digest_send_to_email": req.digest_send_to_email,
+            "morning_brief_enabled": req.morning_brief_enabled,
             "multi_rule_execution": req.multi_rule_execution,
             "sensitive_data_protection": req.sensitive_data_protection,
             "org_domains": org_domains,
@@ -654,13 +670,22 @@ async def generate_writing_style(
         if not style:
             raise HTTPException(
                 status_code=502, detail="Could not derive a writing style.")
+        # This can create the FIRST settings row. A new row stores what the
+        # engine does now (reply_rule_drafts), never the column default. A
+        # mailbox from before D-EM-6 drafts through its Needs Reply rule, and a
+        # stored false would show the switch OFF while the engine drafts. The
+        # DO UPDATE does not name draft_replies, so a stored choice stays.
+        from gateway.routes.email.automation.rules import (
+            reply_rule_drafts,
+        )
         await db.execute(text(
             """INSERT INTO email_assistant_settings
-                 (account_id, writing_style, updated_at)
-               VALUES (:aid, :ws, now())
+                 (account_id, writing_style, draft_replies, updated_at)
+               VALUES (:aid, :ws, :dr, now())
                ON CONFLICT (account_id) DO UPDATE SET
                  writing_style = EXCLUDED.writing_style, updated_at = now()"""
-        ), {"aid": account_id, "ws": style})
+        ), {"aid": account_id, "ws": style,
+            "dr": await reply_rule_drafts(db, account_id)})
         # Index the derived style into Mem0 — keyed PER ACCOUNT so a user's other
         # mailboxes don't inherit this inbox's writing voice (see
         # email_memory_scope). The drafter reads it back under the same scope.

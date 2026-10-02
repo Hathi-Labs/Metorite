@@ -428,8 +428,9 @@ async def stored_draft_replies(db: Any, account_id: str) -> bool:
     """The account's stored "Auto draft replies" choice.
 
     A mailbox with no settings row, or a NULL in the column, reads False:
-    reply drafting is OFF until a member turns it on (D-EM-6). This is the
-    same answer that ``GET /assistant/settings`` gives for such a mailbox.
+    reply drafting is OFF until a member turns it on (D-EM-6). For a NEW
+    mailbox this is the answer ``GET /assistant/settings`` gives. A legacy
+    mailbox with no row can differ, see ``reply_rule_drafts``.
     """
     row = (await db.execute(text(
         "SELECT draft_replies FROM email_assistant_settings "
@@ -437,6 +438,46 @@ async def stored_draft_replies(db: Any, account_id: str) -> bool:
     ), {"aid": account_id})).fetchone()
     # ``is True``, not ``bool()``: only a stored true turns drafting on.
     return getattr(row, "draft_replies", None) is True
+
+
+# The rule that the "Auto draft replies" switch governs.
+# ``sync_draft_reply_action`` edits it and ``reply_rule_drafts`` reads it, so
+# both name it from here. The names cover the renames of migration 92.
+_REPLY_SYSTEM_TYPES = ("REPLY", "TO_REPLY")
+_REPLY_RULE_NAMES = ("needs reply", "reply", "to reply")
+
+
+def _is_reply_rule(rule: dict[str, Any]) -> bool:
+    return (
+        (rule.get("system_type") or "").upper() in _REPLY_SYSTEM_TYPES
+        or (rule.get("name") or "").strip().lower() in _REPLY_RULE_NAMES
+    )
+
+
+async def reply_rule_drafts(db: Any, account_id: str) -> bool:
+    """True when a reply rule of the account carries a DRAFT_EMAIL action.
+
+    This is what the engine does: a rule runs its own actions and never reads
+    the setting. The GET answers this for a mailbox with NO settings row, and
+    ``generate_writing_style`` stores it when it creates the row (D-EM-6, EM-T7
+    fix round 1). A mailbox from before D-EM-6 got DRAFT_EMAIL from the old
+    presets, so its switch reads ON until a member changes it. A new mailbox
+    has no rules, so it reads False. The caller holds the tenant session and
+    has proved the owner.
+    """
+    row = (await db.execute(text(
+        """SELECT EXISTS (
+             SELECT 1
+               FROM email_rules r
+               JOIN email_actions a ON a.rule_id = r.id
+              WHERE r.account_id = :aid
+                AND (UPPER(COALESCE(r.system_type, '')) = ANY(:types)
+                     OR LOWER(BTRIM(r.name)) = ANY(:names))
+                AND UPPER(a.type) = 'DRAFT_EMAIL'
+           ) AS drafts"""
+    ), {"aid": account_id, "types": list(_REPLY_SYSTEM_TYPES),
+        "names": list(_REPLY_RULE_NAMES)})).fetchone()
+    return getattr(row, "drafts", None) is True
 
 
 async def sync_draft_reply_action(db: Any, account_id: str, enabled: bool) -> bool:
@@ -451,13 +492,7 @@ async def sync_draft_reply_action(db: Any, account_id: str, enabled: bool) -> bo
     state. Caller commits.
     """
     rules = await _load_rules(db, account_id)
-    target = next(
-        (r for r in rules
-         if (r.get("system_type") or "").upper() in ("REPLY", "TO_REPLY")
-         or (r.get("name") or "").strip().lower()
-         in ("needs reply", "reply", "to reply")),
-        None,
-    )
+    target = next((r for r in rules if _is_reply_rule(r)), None)
     if not target:
         return False
     actions = target["actions"]

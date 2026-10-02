@@ -2233,7 +2233,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 #### 10.4.9 EM-T7 — automatic reply drafting is OFF by default
 
-**Status (2026-10-02).** 🟡 BUILT, not merged. Migration 224 sets the column default to false. The fence is `tests/unit/test_email_auto_draft_defaults.py`, with R8 on a private database.
+**Status (2026-10-02).** 🟡 BUILT, not merged, with fix round 1. Migration 224 sets the column default to false. The fence is `tests/unit/test_email_auto_draft_defaults.py`, with R8 on a private database.
 
 **Why (D-EM-6, §10.2).** Each automatic draft is a call on the drafting model. A member turns drafting on, and does not find it already on. Migration 81 set both defaults to false. Migration 82 set `draft_replies` back to true on 2026-07-20. D-EM-6 reverses 82 for a new mailbox.
 
@@ -2241,23 +2241,37 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 1. Add a migration that sets the default of `email_assistant_settings.draft_replies` to false.
 2. Take its number at build time (R1). It was 224. Make it expand only and idempotent.
-3. Set `AssistantSettingsModel.draft_replies` to false. The GET answers false for a mailbox with no settings row.
-4. Remove `DRAFT_EMAIL` from the Needs Reply preset.
-5. Make "Add defaults" and "Reset rules" add `DRAFT_EMAIL` only when the stored `draft_replies` is true.
-6. Remove `DRAFT_EMAIL` from the preset copy in `RulesTab.tsx`.
-7. Make `SettingsTab.tsx` draw the switch through `assistantSettings.ts::autoDraftRepliesOn`.
-8. Keep `follow_up_auto_draft` false, and pin it with a test.
+3. Set `AssistantSettingsModel.draft_replies` to false.
+4. With no settings row, make the GET answer `rules.py::reply_rule_drafts`.
+5. Make `reply_rule_drafts` true only when a reply rule of the mailbox carries `DRAFT_EMAIL`.
+6. Make `generate_writing_style` store that answer when it creates the first settings row.
+7. Remove `DRAFT_EMAIL` from the Needs Reply preset.
+8. Make "Add defaults" and "Reset rules" add `DRAFT_EMAIL` only when the stored `draft_replies` is true.
+9. Remove `DRAFT_EMAIL` from the preset copy in `RulesTab.tsx`.
+10. Make `SettingsTab.tsx` draw the switch through `assistantSettings.ts::autoDraftRepliesOn`.
+11. Make the PUT answer carry every key of the GET.
+12. Keep `follow_up_auto_draft` false, and pin it with a test.
 
-**Non-goals.** The migration changes no stored row. Production had 0 email accounts on 2026-10-02, so no live row is at stake. The backfill does not change, because it was already OFF. This slice does not refresh `schema.generated.sql`.
+**Fix round 1 (2026-10-02).** A rule runs its own `DRAFT_EMAIL` and never reads the setting. A mailbox from before D-EM-6 got that action from the old presets. With no settings row, the GET read false while the engine drafted. The first save of another field then removed the action. So the GET now answers what the reply rule does, and a stored row still wins. A new mailbox has no rules, so it still reads false.
+
+The same round fixed an older defect in the PUT. Its answer left out `morning_brief_enabled`, `signature_text` and `learned_writing_style`. SettingsTab keeps that answer and saves it back, so the morning brief turned off at the next save.
+
+**Non-goals.** The migration changes no stored row. A sweep of all 5 production organizations on 2026-10-02 found 0 mailboxes, 0 settings rows and 0 rules. So no live row is at stake. The backfill does not change, because it was already OFF. This slice does not refresh `schema.generated.sql`.
+
+An AI settings tab that was open before the deploy can save the old ON value back. The window is short, so this slice accepts it. Reset rules does not keep drafting for a mailbox from before D-EM-6 with no settings row. It installs the new presets, as a reset should.
 
 The feature stays. A member can turn drafting on, and the save adds `DRAFT_EMAIL` to Needs Reply.
 
 **Done when.**
 
-- The GET for a mailbox with no settings row answers `draft_replies: false`.
+- A new mailbox, with no settings row and no rules, reads `draft_replies: false` from the GET.
+- With no settings row, a Needs Reply rule that carries `DRAFT_EMAIL` reads true. A rule without it reads false.
+- A stored row wins over the rules in both directions.
 - A save that omits the field stores false.
+- The PUT answer carries every key of the GET.
 - R8: the migration sets the column default to false on a fresh ladder. A second run changes nothing.
 - R8: a row stored true before the migration stays true. A new row without the column gets false.
+- R8: the GET, `reply_rule_drafts`, `stored_draft_replies` and `generate_writing_style` run on the private database. Each one reads its own mailbox only.
 - No preset path and no new-mailbox path adds `DRAFT_EMAIL`. Each path has a test.
 - A vitest proves that SettingsTab draws the switch OFF for a new mailbox.
 
