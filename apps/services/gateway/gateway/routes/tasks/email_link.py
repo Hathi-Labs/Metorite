@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from acb_common import get_logger
 from sqlalchemy import text
+
+_log = get_logger("gateway.tasks.email_link")
 
 
 def _thread_from_origin(origin: Any) -> tuple[str, str] | None:
@@ -47,18 +50,51 @@ def _thread_from_origin(origin: Any) -> tuple[str, str] | None:
     return account_id, thread_id
 
 
-async def propagate_task_done_to_thread(db: Any, item_row: Any) -> None:
+async def _closer_owns_mailbox(db: Any, account_id: str, closer_email: str) -> bool:
+    """True when ``closer_email`` owns the mailbox ``account_id``.
+
+    The comparison ignores case, because the closer's email reaches this module
+    lowercased (the callers of ``complete_for_member`` lower it) while
+    ``email_accounts.user_id`` keeps the case of the session address that
+    connected the mailbox. ``app_user`` is unique on ``lower(email)``
+    (migration 162), so ignoring case cannot match a second member."""
+    if not closer_email:
+        return False
+    row = (await db.execute(text(
+        "SELECT 1 FROM email_accounts "
+        "WHERE id = :aid AND LOWER(user_id) = LOWER(:uid)"
+    ), {"aid": account_id, "uid": closer_email})).fetchone()
+    return row is not None
+
+
+async def propagate_task_done_to_thread(
+    db: Any, item_row: Any, *, closer_email: str,
+) -> None:
     """A task just closed — if it links back to an email thread, mark that thread
     Done (Reply Zero DONE) and collapse its conversation labels to "Done".
 
     Guarded: no-op if the thread is already DONE, so the reverse propagation
     (thread Done → close tasks) that may follow finds nothing to do. Best-effort;
     the caller has already committed the task close. Does NOT commit — the caller
-    owns the transaction (so a task-patch and this write land together)."""
+    owns the transaction (so a task-patch and this write land together).
+
+    ⚠️ Owner guard (D-EM-4, EM-T2c item 8): a task can be shared, so the member
+    who closes it may not own the mailbox in its origin. Then this function
+    skips the mailbox write and logs ``tasks.email_link.not_owner``. The task
+    close itself stands. ``closer_email`` is keyword-only with no default, so a
+    new caller must name who closes the task. Fence:
+    ``tests/unit/test_email_chat_context_owner.py`` (R8)."""
     link = _thread_from_origin(getattr(item_row, "origin", None))
     if link is None:
         return
     account_id, thread_id = link
+
+    if not await _closer_owns_mailbox(db, account_id, closer_email):
+        _log.info(
+            "tasks.email_link.not_owner",
+            account_id=account_id, task_id=str(getattr(item_row, "id", "") or ""),
+        )
+        return
 
     # Already Done? Nothing to do — and critically, don't re-fire the label
     # reconciliation (that's what would ping-pong with the reverse direction).
