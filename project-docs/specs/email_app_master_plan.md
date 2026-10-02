@@ -9,7 +9,7 @@
 > sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
-> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). 🔨 **EM-T3a is BUILT, not merged** (§10.4.3).
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -560,9 +560,9 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
-| **EM-T3a** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (branch `email-t3`, 2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
-| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | 🔨 **BUILT, not merged (branch `email-t3b`, stacked on `email-t3`, 2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
-| **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
+| **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
+| **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
+| **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
 | **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
@@ -935,19 +935,121 @@ new gateway route, `GET /email/oauth/{provider}/app`. It returns the client ID a
 URI of the Microsoft app, and never the secret (fence `tests/unit/test_email_oauth_app_info.py`).
 The BFF authorize route forwards `login_hint`.
 
-⚠️ **Until EM-T3c merges, the return leg of an admin approval fails.** Microsoft sends the admin
-to the redirect URI with `admin_consent` and `tenant`, and no `code`. The gateway callback then
-answers `invalid_state`, and the page says "The connection did not finish". Microsoft keeps the
-approval all the same, so the member can connect after it. For this reason the guided page
-has no "I am the admin" button yet. The prefilled email tells the admin that this page can
-appear and that the approval still counts. EM-T3c removes that sentence.
-
 **Fix round 1 (2026-10-02).** A first sync with `sync_status = 'error'` is not pending, so the
 poll stops and the reconnect banner owns that state. A hidden tab makes no poll request. The
 page draws "Connect your email" only after the first account read settles. The mobile bottom
 bar hides its email tabs while the empty state shows. "Try again" for Gmail goes back to the
 connect choices (`/email?connect=1`). The email router's real `exempt=[...]` list must equal
 `GATED_ROUTERS` (fence in `tests/unit/test_org_access_enforcement.py`).
+
+##### EM-T3c — the return leg of admin consent
+
+**Problem.** The admin-consent link of EM-T3b sends no `state`. Microsoft returns the admin to the
+redirect URI with `admin_consent=True` and `tenant`, and with no `code`. On a refusal, Microsoft
+returns `error` and `error_description` instead.
+
+Before EM-T3c, the BFF callback called `requireIdentity()` first. An admin with no Metorite
+session got a JSON 401. A signed-in admin got `invalid_state`.
+
+**Scope.**
+
+1. **An admin branch in the BFF callback.** The branch runs before `requireIdentity()`.
+   It never calls the gateway.
+   The branch runs when `code` is absent and one of these is true:
+   - `admin_consent` is present.
+   - `error` is present and `state` is absent.
+
+   Every other request takes the member path of EM-T1a, with no change.
+2. **The result.** The branch makes one token from a fixed set:
+   - `approved`, when `admin_consent` equals `true` in any case and `error` is absent.
+   - `declined`, when `error` is `access_denied`, or the description holds AADSTS65004.
+   - `failed`, for every other case.
+   The branch sends 303 with a RELATIVE `Location`.
+   For `approved`, the Location is `/oauth/approved`.
+   For the other two, it is `/oauth/approved?result=declined` or `/oauth/approved?result=failed`.
+3. **A public page at `/oauth/approved`.** The page holds no session and makes no fetch.
+   It reads `result` only, and it treats any value outside the set as `failed`.
+   For `approved`, it says "Approved". It also says that members of the organization can now
+   connect their mailbox. For the other two, it gives fixed guided copy.
+4. **The door.** Add `/oauth/approved` to `PUBLIC_PAGES` in `proxy.ts`. Add
+   `/oauth/approved` to `CHROMELESS_ROUTES` in `nav.ts`. Let the exact path
+   `/api/email/oauth/microsoft/callback` pass `proxy.ts` without a session. The route stays the
+   boundary for the member path: `requireIdentity()` still refuses a signed-out member.
+5. **"I am the admin".** The guided page for `admin_consent_required` gets a third action.
+   It opens `adminConsentUrl(app)` in the same tab.
+   Remove the "did not finish" sentence from `adminConsentMailto()`.
+   Remove the warning paragraph that starts "Until EM-T3c merges" from this section.
+
+**Non-goals.**
+
+- No gateway change, no migration, no table and no write of any kind.
+- No change to the redirect URI. A new URI is an Entra owner act (§10.5).
+- No `state` marker on the admin-consent link. Links already sent hold no state, and the branch
+  must accept them. The branch writes nothing, so a marker would protect nothing.
+- No record of the tenant GUID. EM-T3d owns pre-approval and the member count.
+- No change to the member path of EM-T1a, and no kinder page for a signed-out member.
+
+**Done when.**
+
+- A signed-out GET with `admin_consent=True&tenant=<guid>` returns 303 to `/oauth/approved`.
+- The same request with a session returns the same 303.
+- With `error=access_denied` and AADSTS65004 and no state, the Location is
+  `/oauth/approved?result=declined`.
+- With `error=server_error` and no state, the Location is `/oauth/approved?result=failed`.
+- In each admin case, the test proves that `gatewayFetch`, `gatewayHeaders` and
+  `requireIdentity` are not called.
+- No Location holds the tenant, the description or any other request value. The test
+  sends a hostile `tenant` and `error_description`, and the Location equals the expected constant.
+- A request with `code` and `state` and no session still answers 401 and never reaches the gateway.
+- A request with `error` and a `state` still goes to the gateway, as in EM-T1a.
+- `proxy()` passes a signed-out GET to `/oauth/approved` and to
+  `/api/email/oauth/microsoft/callback`. It still answers 401 for `/api/email/oauth/microsoft/authorize`
+  and for `/api/email/accounts`.
+- `isChromeless("/oauth/approved")` is true. `featureForPath("/oauth/approved")` is null.
+- The page shows "Approved" for no `result`. It shows the `failed` copy for `result=<script>`.
+- The guided page has an "I am the admin" link whose `href` equals `adminConsentUrl(app)`.
+- The `adminConsentMailto()` body does not contain "did not finish".
+- Visual review (the `visual-review` skill) of `/oauth/approved` when signed out, in light mode and at
+  mobile width. The PR carries the screenshots.
+
+**Files.** `workbench/control_plane/src/app/api/email/oauth/[provider]/callback/route.ts` and
+`route.test.ts`, `src/proxy.ts`, a new `src/proxy.test.ts`, a new `src/app/oauth/approved/page.tsx`
+with its test, `src/lib/nav.ts`, `src/lib/nav.test.ts`, `src/app/email/lib/connect.ts`,
+`connect.test.ts` and `src/app/email/oauth/callback/page.tsx`.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/api/email/oauth src/app/email src/app/oauth src/proxy.test.ts \
+  src/lib/nav.test.ts src/lib/authFailsClosed.test.ts src/lib/access.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs ../../project-docs/specs/email_app_master_plan.md
+```
+
+**Risks.**
+
+- **Open redirect.** The branch builds the Location from constants only. No request value
+  reaches it.
+- **Reflected content.** The page renders fixed copy. It reads one token from a fixed set and
+  never renders the tenant or the description.
+- **Enumeration.** The branch makes no lookup and no gateway call. Every tenant gets the same
+  answer, so the page tells nothing about who uses Metorite.
+- **A forged "Approved".** Anyone can open `/oauth/approved` by hand. It changes nothing, because
+  Microsoft holds the approval. The copy must not claim more than "Microsoft reported an approval".
+- **The proxy exemption.** It is one exact path. The route keeps `requireIdentity()` for every
+  request that is not an admin return, so the member path keeps its boundary.
+- **Known limit.** The admin consent workflow (AADSTS90095) can keep the admin on a Microsoft
+  form. Then nothing returns to Metorite.
+
+**As built (2026-10-02).** The branch is `adminReturn()` in the BFF callback `route.ts`. It runs
+for the `microsoft` provider only, because only that provider has an admin-consent link. A
+Gmail request keeps the member path. A `code` or `state` with an empty value counts as present,
+so that request also keeps the member path.
+
+The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
+the real page. The proxy fence is `src/proxy.test.ts`.
 
 #### 10.4.5 EM-T2 in full
 

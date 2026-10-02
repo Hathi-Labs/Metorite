@@ -16,8 +16,8 @@
  *
  * The rest copies the authorize route beside it:
  *
- * - `requireIdentity()` first, so a signed-out caller gets the 401 shape and
- *   never the throw of gatewayHeaders(). EM-T3 owns a kinder page for a session
+ * - `requireIdentity()` first on the member path, so a signed-out caller gets
+ *   the 401 shape and never the throw of gatewayHeaders(). EM-T3 owns a kinder page for a session
  *   that ends inside the ten-minute window.
  * - `gatewayHeaders()`, never `serviceHeaders()`. The bearer alone would reach
  *   the gateway as the platform, and the member check would refuse every time.
@@ -40,6 +40,19 @@
  * Do NOT add `response_mode=form_post` to the authorize URL. The provider would
  * then POST here cross-site, and the browser drops the Lax session cookie on
  * that POST.
+ *
+ * THE ADMIN-CONSENT RETURN (EM-T3c, §10.4.3)
+ * -------------------------------------------
+ * The admin-consent link of EM-T3b sends no `state`, and the redirect URI is
+ * this route. Microsoft returns the IT admin here with `admin_consent` and
+ * `tenant`, or with `error` and no `state`. That admin often has no Metorite
+ * session. So `adminReturn()` runs BEFORE `requireIdentity()` and answers with
+ * a 303 to the public page `/oauth/approved`. It calls nothing, writes nothing
+ * and reads nothing back: the Location comes from `ADMIN_RETURN_LOCATION`
+ * only, so no request value (the tenant, the description) can reach it.
+ * `proxy.ts` lets this exact path pass without a session for that reason, and
+ * this route stays the boundary for the member path: every request that is
+ * not an admin return still meets `requireIdentity()`.
  *
  * NOTE ON ROUTING: `src/app/api/email/[...path]/route.ts` also matches this URL.
  * Next resolves a static segment ahead of a catch-all, so this file wins. That
@@ -73,6 +86,51 @@ function failed(reason: string): NextResponse {
   return relativeRedirect(`${CALLBACK_PAGE}?${qs}`, 303);
 }
 
+/** The one provider with an admin-consent link (EM-T3b). */
+const ADMIN_CONSENT_PROVIDER = "microsoft";
+
+/** The result of an admin-consent return. A fixed set. */
+type AdminReturn = "approved" | "declined" | "failed";
+
+/**
+ * Each result maps to ONE constant Location. Never build this from the
+ * request: that is the open-redirect and reflected-content risk of §10.4.3.
+ */
+const ADMIN_RETURN_LOCATION: Record<AdminReturn, string> = {
+  approved: "/oauth/approved",
+  declined: "/oauth/approved?result=declined",
+  failed: "/oauth/approved?result=failed",
+};
+
+/** Microsoft's code for "the user or the admin declined the consent". */
+const DECLINED_CODE = "AADSTS65004";
+
+/**
+ * Is this the return leg of the admin-consent link, and with which result?
+ *
+ * Null means "not an admin return", and the member path of EM-T1a runs with
+ * no change. A request with a `code` is never an admin return. An `error`
+ * WITH a `state` belongs to a member, so it goes to the gateway as before.
+ *
+ * Presence, not truthiness: `code=` or `state=` with an empty value still
+ * counts as present, so that request takes the member path. The spec says
+ * "absent", and an empty parameter is not absent.
+ */
+function adminReturn(params: URLSearchParams): AdminReturn | null {
+  if (params.has("code")) return null;
+  const hasError = params.has("error");
+  const hasState = params.has("state");
+  const consent = params.get("admin_consent");
+  if (consent === null && !(hasError && !hasState)) return null;
+
+  if (!hasError && (consent ?? "").toLowerCase() === "true") return "approved";
+  const error = params.get("error");
+  // The description is only searched for the code. It is never echoed.
+  const description = params.get("error_description") ?? "";
+  if (error === "access_denied" || description.includes(DECLINED_CODE)) return "declined";
+  return "failed";
+}
+
 /** The configured public origin of the workbench, or null when unset. */
 function workbenchOrigin(): string | null {
   const raw = (process.env.WORKBENCH_PUBLIC_URL || "").trim();
@@ -91,6 +149,12 @@ export async function GET(
   const { provider } = await params;
   if (!PROVIDER_SEGMENT.test(provider)) {
     return failed("unknown_provider");
+  }
+
+  // EM-T3c: before the session check, because the admin has no session.
+  if (provider === ADMIN_CONSENT_PROVIDER) {
+    const result = adminReturn(req.nextUrl.searchParams);
+    if (result !== null) return relativeRedirect(ADMIN_RETURN_LOCATION[result], 303);
   }
 
   const me = await requireIdentity();

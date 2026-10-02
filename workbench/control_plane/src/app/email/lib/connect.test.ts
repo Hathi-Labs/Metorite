@@ -209,6 +209,25 @@ describe("the admin-consent link comes from the server (done-when 4)", () => {
     expect(body).toContain(link);
     expect(m).not.toContain("+");
   });
+
+  it("the email no longer warns of a failed page (EM-T3c)", () => {
+    // EM-T3c gives the admin a landing page, so the warning is now false.
+    const m = adminConsentMailto(adminConsentUrl(app));
+    const body = decodeURIComponent(m.split("&body=")[1]);
+    expect(body).not.toContain("did not finish");
+  });
+
+  it("the guided page offers 'I am the admin', opening adminConsentUrl(app) (EM-T3c)", () => {
+    const page = codeOnly(CALLBACK_PAGE);
+    expect(page).toContain("I am the admin");
+    // The href is the link the admin steps build from the server's app info,
+    // and `link` is `adminConsentUrl(app)`.
+    expect(page).toMatch(/setLink\(app \? adminConsentUrl\(app\) : null\)/);
+    expect(page).toMatch(/<a\b[^>]*\bhref=\{link\}[^>]*>[\s\S]*?I am the admin/);
+    // Same tab: no new window for the admin.
+    const anchor = page.match(/<a\b[^>]*\bhref=\{link\}[^>]*>/)?.[0] ?? "";
+    expect(anchor).not.toContain("_blank");
+  });
 });
 
 describe("first sync shows progress (done-when 5)", () => {
@@ -410,10 +429,10 @@ describe("the mobile bottom bar over the empty state (fix round 1, P2)", () => {
 });
 
 describe("the admin email and the retry (fix round 1)", () => {
-  it("tells the admin that a did-not-finish page can appear and the approval counts", () => {
+  it("no longer warns the admin of a did-not-finish page (EM-T3c removed it)", () => {
     const body = decodeURIComponent(adminConsentMailto("https://x.test").split("&body=")[1]);
-    expect(body).toMatch(/did not finish/);
-    expect(body).toMatch(/approval still counts/);
+    expect(body).not.toMatch(/did not finish/);
+    expect(body).not.toMatch(/approval still counts/);
   });
 
   it("Try again for Gmail goes to the connect choices, never its OAuth leg", () => {
