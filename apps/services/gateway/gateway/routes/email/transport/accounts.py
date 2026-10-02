@@ -14,6 +14,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import (
+    _decrypt_credentials,
     _default_label,
     _instantiate_provider,
     _log,
@@ -609,8 +610,7 @@ async def _drop_graph_subscription(account_id: str, row: Any) -> None:
         return
     try:
         async with asyncio.timeout(SUBSCRIPTION_DELETE_TIMEOUT_S):
-            from acb_llm.key_store import get_key_store
-            creds = json.loads(get_key_store().decrypt(row.credentials_encrypted))
+            creds, _store = _decrypt_credentials(row.credentials_encrypted)
             provider = _instantiate_provider(row.provider, creds)
             graph_status = await provider.delete_subscription(str(sub_id))
     except Exception as exc:
