@@ -1514,6 +1514,7 @@ Seven slices, in order:
 | CP-13f | The inline gates: commitment, meeting copilot, draft consult | 🔴 same |
 | CP-13g | The Tasks decisions, split from the drafted text | 🔴 same |
 | CP-13h | ✅ BUILT 2026-09-24. Jev through the AI/ML API reseller, `native_aimlapi` (D75 amendment) | 🟢 AGENT-SAFE to build. 🔴 the account is §8 gate 3, the key is §6.0 B1 |
+| CP-13i | The door logs the dated model id of each answer for the operator (§6A.14 CP-13i) | 🟢 AGENT-SAFE |
 
 **Done when:** §6A.14's table is green, and an operator binds `tier-decide` and gets an
 answer from "Try a decision" with no code change. The `usage_event` row must carry
@@ -9464,6 +9465,25 @@ and a calibrated probability. It never returns free text. Sources:
 | Data | The vendor says it does not train on user data. A DPA exists. Zero retention is for enterprise customers only, on request. The region is not stated |
 | litellm | **Proxy-only** pass-through. No SDK verb exists, and D58 rejects the Proxy |
 
+#### Question conventions — how a caller asks System One (vendored 2026-10-02)
+
+Sources, read on 2026-10-02: [the API reference](https://docs.typesafe.ai/api.md), [how to build with System One](https://docs.typesafe.ai/concepts/how-to-build-with-system-one.md), [confidence](https://docs.typesafe.ai/confidence.md) and [state](https://docs.typesafe.ai/concepts/state.md). Read them again before you build a new adopter.
+
+| Vendor fact | What a caller does |
+|---|---|
+| Atomic questions are "the most important concept" | Ask about one property in each question. Split a complex question into narrow ones |
+| Many narrow questions about one state run in parallel | Put them in one request. The Router takes 16 or fewer (clause 13). Split a longer list into requests that run at the same time |
+| `choice` gives one answer, and its options exclude each other | Use `choice` only when two options cannot both be true. For labels that can overlap, ask one boolean for each |
+| The model does not see option keys | An opaque key such as `r0` is safe. Never name a key in the instructions. Name the meaning |
+| The criteria of `noul` are optional `true` and `false` descriptions | Our `boolean` maps to it (clause 4). Put the rubric in the criteria |
+| State holds facts, the content to evaluate | Put no persona, no command and no question in the state. Use an object with named fields |
+| Instructions can name a state field by its path in backticks | Write `` `email.subject` `` in the instructions. Never copy the value |
+| Instructions can be an object, with question and guidance fields | Our wire takes a string (`DecideQuestion.instructions`). Write one question line, then a "Guidance:" block |
+| The confidence of `choice` and `score` is the concentration of the distribution | Log the confidence, and the margin of the top two probabilities |
+| `noul` has no confidence | Put a threshold on the probability. Its distance from a coin toss is the absolute value of 2p − 1 |
+| Thresholds are found by test, for each action, by its stakes | Set a higher threshold for an action that moves or hides data. Tune each one in a shadow window |
+| Send a low confidence to a fallback | Each adopter decides this in its own audit. Email has no fallback (D-EM-8) |
+
 ⚠️ **The last row is why this ticket builds the handler seam.** litellm
 cannot call Jev from the SDK, and `_litellm_call` (`router.py:629-650`) can
 call only a litellm verb. So Jev is the first native model the Router serves.
@@ -10144,6 +10164,10 @@ in `workbench/operator_console/src/lib/`.
   now passes through two third parties. The residency answer in §9 item 8
   must cover both. Until it does, `decide` stays off real tenant content.
 
+#### CP-13i · The dated model id in the operator log (WS-31, 2026-10-02)
+
+The handler reads the `model` field of the answer from the vendor. The door logs it with the `request_id` for the operator. The body to the tenant still names no model (D66). Fence: a recorded reseller body with `typesafe/jev-1.13-20260917` gives that id in the log, and not in the body. This is WS-31 work, and it is AGENT-SAFE.
+
 #### CP-13e to CP-13g · The app layer adopts it, one feature at a time
 
 This half is a plan, and the owner said so. Every slice below needs its own
@@ -10171,6 +10195,8 @@ classifier-shaped LLM call in the tree.
    feature-to-tier registry absorbs it when H-44 is built. It is not a second
    vocabulary. It holds a mode, and it holds no tier.
 
+**Email amends rules 2 and 3** (D-EM-7 and D-EM-8, 2026-10-02). In `on`, email triage has no LLM path. A threshold decides, and a missing answer leaves the email undecided. Rules 1 and 4 still bind email. Every other adopter keeps all four rules.
+
 **CP-13e · Email triage, the booleans and the small choices.** These are the
 clean cases.
 
@@ -10181,10 +10207,11 @@ clean cases.
 | 3 | Thread status | `email/automation/replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4. The largest cost saving |
 | 4 | Rule classifier | `email/automation/engine.py:284` | the account's `rule_model` | choice of the enabled instruction rules, plus none |
 
+> The anchors and the "Now" column above date from 2026-09-23. `email_app_master_plan.md` §10.4.8 holds the current ones.
+
 ⚠️ **The rule classifier has NO cap on the number of rules.** A user can
 write more than 20, and decision models lose accuracy as options grow. The
-slice must measure accuracy against the rule count. Above the measured limit,
-the feature stays on the LLM for that account.
+slice must measure accuracy against the rule count. Email asks one boolean for each rule. So the rule count grows no choice except `best`, which only ranks (D-EM-7).
 
 ⚠️ **`decide` feeds the ONE classifier.** `email_app_master_plan.md` §2 says
 every label is a projection of the rules pipeline, never a parallel
