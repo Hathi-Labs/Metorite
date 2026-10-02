@@ -17,6 +17,11 @@ Two halves.
 * An AST fence: no ``.commit()`` inside a ``tenant_session`` block in
   ``scheduler.py``. A commit there ends ``SET LOCAL``, and each statement
   after it runs with no tenant.
+* EM-T4a-1 (§10.4.6). Phases (e) and (f) hold no session across an external
+  call. The watched fake provider gets each ``get_message`` with no session
+  open, and a watched ``_embed_batch`` gets its call with no session open.
+  A second AST fence: ``body_backfill.py`` and ``email_embeddings.py`` take
+  a session, open none, and never call ``.commit()``.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the non-privileged role
@@ -28,6 +33,9 @@ Two halves.
 * ``_sync_account`` with a fake provider writes ``email_messages`` and
   ``email_sync_log`` rows with the right ``organization_id``, and the other
   organization reads none of them.
+* EM-T4a-1: the provider syncs headers only. Phase (e) writes each fetched
+  body into the row of org B, and phase (f) writes the embeddings there.
+  Org A reads none of them.
 * ``mailbox_owner`` with a bound tenant returns the owner under FORCE RLS.
 
 Run (real Postgres)::
@@ -51,6 +59,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+import email_ingestion.email_embeddings as email_embeddings
 import email_ingestion.scheduler as sched
 from acb_common.db import (
     TenantUnbound,
@@ -59,9 +68,11 @@ from acb_common.db import (
     current_tenant,
     release_tenant,
 )
+from acb_common.settings import get_settings
 from email_ingestion.providers.base import EmailAddress, EmailMessage, SyncResult
 from sqlalchemy import create_engine, text
 
+from tests.unit._sql_match import hits
 from tests.unit._tenant_ladder import tenant_engine_scope
 
 # Reuse the two-org phase-4 fixture + its DB gate (non-priv role acb_app_h3rls).
@@ -74,7 +85,10 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 )
 
 _REPO = Path(__file__).resolve().parents[2]
-_SCHEDULER = _REPO / "apps/services/email_ingestion/email_ingestion/scheduler.py"
+_INGESTION = _REPO / "apps/services/email_ingestion/email_ingestion"
+_SCHEDULER = _INGESTION / "scheduler.py"
+#: The step modules of phases (e) and (f). Each takes a session and opens none.
+_SYNC_STEPS = (_INGESTION / "body_backfill.py", _INGESTION / "email_embeddings.py")
 
 
 @pytest.fixture()
@@ -240,6 +254,61 @@ def test_the_commit_fence_is_not_vacuous():
         "        await db.commit()\n"
     )
     assert _commits_inside_tenant_sessions(planted) == [4]
+
+
+#: A call whose name ends in one of these opens a session.
+_SESSION_OPENERS = ("tenant_session", "get_db", "get_session_factory")
+
+
+def _commits_and_session_opens(source: str) -> tuple[list[int], list[int]]:
+    """Line numbers of each ``.commit()`` call, and of each call that opens a
+    session, ANYWHERE in *source* — not only inside a block."""
+    commits: list[int] = []
+    opens: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else (
+            fn.attr if isinstance(fn, ast.Attribute) else "")
+        if isinstance(fn, ast.Attribute) and name == "commit":
+            commits.append(node.lineno)
+        elif name.endswith(_SESSION_OPENERS):
+            opens.append(node.lineno)
+    return commits, opens
+
+
+@pytest.mark.parametrize("path", _SYNC_STEPS, ids=lambda p: p.name)
+def test_the_sync_steps_take_a_session_and_never_commit(path):
+    """R7 fence ``email-sync-steps-never-commit`` (EM-T4a-1 items 4 and 5).
+
+    The read and write steps of phases (e) and (f) take the session that
+    ``scheduler.py`` opens. A step that opens its own session escapes the
+    scheduler fence above and the watched session count below. A step that
+    commits ends ``SET LOCAL``, and each statement after it runs with no
+    tenant. The seam commits when the block of the scheduler exits."""
+    commits, opens = _commits_and_session_opens(
+        path.read_text(encoding="utf-8"))
+    assert commits == [], (
+        f"{path.name} calls .commit() at lines {commits}. No step commits: "
+        "the seam commits when the tenant_session block exits."
+    )
+    assert opens == [], (
+        f"{path.name} opens a session at lines {opens}. Each block of the "
+        "sync lives in scheduler.py, so the fence can count it."
+    )
+
+
+def test_the_sync_step_fence_is_not_vacuous():
+    planted = (
+        "async def write(db):\n"
+        "    await db.execute(x)\n"
+        "    await db.commit()\n"
+        "async def read(org):\n"
+        "    async with tenant_session(org) as db:\n"
+        "        return await db.execute(x)\n"
+    )
+    assert _commits_and_session_opens(planted) == ([3], [5])
 
 
 def test_the_scheduler_opens_no_engine_of_its_own():
@@ -523,6 +592,76 @@ class _Db:
         return None
 
 
+def _flat(stmt) -> str:
+    """The SQL of a statement on one line, so a fragment match does not
+    depend on how the source wraps it."""
+    return " ".join(str(stmt).split())
+
+
+#: The candidate read of phase (e), and the one of phase (f).
+_BODY_CANDIDATES = "(body_text IS NULL OR body_text = '')"
+_EMBED_CANDIDATES = "LEFT JOIN email_embeddings"
+
+
+class _Rows(_Result):
+    def __init__(self, rows) -> None:
+        self._rows = list(rows)
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _StepDb(_Db):
+    """A fake session for ONE ``tenant_session`` block.
+
+    It answers the candidate reads of phases (e) and (f) with rows. Every
+    other statement gets the ``_Result`` of the phases (a) to (d). It records
+    each statement with the number of its block, so a test can tell a read
+    block from a write block."""
+
+    def __init__(self, block: int, log: list, body_rows, embed_rows) -> None:
+        self.block = block
+        self.log = log
+        self.body_rows = body_rows
+        self.embed_rows = embed_rows
+
+    async def execute(self, stmt, params=None, *_a, **_k):
+        sql = _flat(stmt)
+        self.log.append((self.block, sql, dict(params or {})))
+        if _BODY_CANDIDATES in sql:
+            return _Rows(self.body_rows)
+        if hits(sql, _EMBED_CANDIDATES):
+            return _Rows(self.embed_rows)
+        return _Result()
+
+
+def _watched_sessions(state: dict, log: list, *, body_rows=(), embed_rows=()):
+    """A ``tenant_session`` stand-in that counts the open blocks."""
+    @asynccontextmanager
+    async def _ts(org=None):
+        state["open"] += 1
+        state["opens"] += 1
+        try:
+            yield _StepDb(state["opens"], log, body_rows, embed_rows)
+        finally:
+            state["open"] -= 1
+    return _ts
+
+
+def _blocks(log: list, fragment: str) -> list[int]:
+    """The block number of each logged statement that holds *fragment*."""
+    return [block for block, sql, _ in log if fragment in sql]
+
+
+def _written_ids(log: list) -> list[str]:
+    """The message id of each body UPDATE of phase (e), in order."""
+    return [p["id"] for _, sql, p in log if "SET body_text" in sql]
+
+
+def _body_row(i: int) -> SimpleNamespace:
+    return SimpleNamespace(id=f"m-{i}", provider_message_id=f"pm-{i}")
+
+
 async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
     """R7 fence ``email-sync-no-session-across-provider-io``.
 
@@ -530,18 +669,16 @@ async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
     authenticates and while it fetches. The short creds-persist session
     BETWEEN the two calls is allowed, and the provider makes it happen
     (``credentials_dirty`` is True). A failed assertion lands in the error
-    path, so the test checks for a clean result."""
+    path, so the test checks for a clean result.
+
+    EM-T4a-1 extends it to phases (e) and (f). The candidate reads return
+    rows, so ``get_message`` and ``_embed_batch`` run. Both phases swallow a
+    failure, so ``seen`` records the open count BEFORE each assertion."""
     state = {"open": 0, "opens": 0}
     seen: list[tuple[str, int]] = []
-
-    @asynccontextmanager
-    async def _ts(org=None):
-        state["open"] += 1
-        state["opens"] += 1
-        try:
-            yield _Db()
-        finally:
-            state["open"] -= 1
+    log: list = []
+    embed_rows = [SimpleNamespace(id="m-1", subject="s", body_text="b1"),
+                  SimpleNamespace(id="m-2", subject="s", body_text="b2")]
 
     class _Watched(_FakeProvider):
         async def authenticate(self) -> bool:
@@ -554,6 +691,16 @@ async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
             assert state["open"] == 0, "a session is open during sync_messages"
             return await super().sync_messages(**kw)
 
+        async def get_message(self, provider_message_id):
+            seen.append(("get_message", state["open"]))
+            assert state["open"] == 0, "a session is open during get_message"
+            return _full(provider_message_id)
+
+    async def _embed(texts, model):
+        seen.append(("_embed_batch", state["open"]))
+        assert state["open"] == 0, "a session is open during _embed_batch"
+        return [[0.25, 0.5] for _ in texts]
+
     async def _upsert(db, account_id, msg):
         return None
 
@@ -562,17 +709,105 @@ async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
 
     from acb_llm import key_store
 
-    monkeypatch.setattr(sched, "tenant_session", _ts)
+    monkeypatch.setattr(sched, "tenant_session", _watched_sessions(
+        state, log, body_rows=[_body_row(1), _body_row(2)],
+        embed_rows=embed_rows))
     monkeypatch.setattr(sched, "upsert_message", _upsert)
     monkeypatch.setattr(sched, "run_label_learn_hook", _no_hook)
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
     monkeypatch.setattr(sched, "build_provider",
                         lambda name, creds: _Watched([_message(1)]))
+    monkeypatch.setattr(email_embeddings, "_embed_batch", _embed)
+    monkeypatch.setattr(get_settings(), "email_semantic_search_enabled", True)
     res = await sched._sync_account("acc-1", organization_id="org-1")
     assert "error" not in res, f"the sync failed: {res}"
-    assert seen == [("authenticate", 0), ("sync_messages", 0)]
+    assert seen == [("authenticate", 0), ("sync_messages", 0),
+                    ("get_message", 0), ("get_message", 0),
+                    ("_embed_batch", 0)]
     assert state["open"] == 0
     assert state["opens"] >= 4, "the phases did not each open a session"
+
+    # Phase (e): one read block, then the writes in ONE later block.
+    [body_read] = _blocks(log, _BODY_CANDIDATES)
+    body_writes = _blocks(log, "SET body_text")
+    assert _written_ids(log) == ["m-1", "m-2"]
+    assert len(set(body_writes)) == 1 and body_writes[0] > body_read, (
+        "phase (e) wrote the bodies in its read block"
+    )
+    # Phase (f): the same shape.
+    [embed_read] = _blocks(log, _EMBED_CANDIDATES)
+    embed_writes = _blocks(log, "INSERT INTO email_embeddings")
+    assert len(embed_writes) == 2
+    assert len(set(embed_writes)) == 1 and embed_writes[0] > embed_read, (
+        "phase (f) wrote the embeddings in its read block"
+    )
+
+
+async def test_one_failed_fetch_leaves_the_other_bodies_written(monkeypatch):
+    """EM-T4a-1: a provider error for one message is logged and skipped. The
+    bodies of the other messages are written in the write block."""
+    state = {"open": 0, "opens": 0}
+    log: list = []
+    fetched: list[str] = []
+
+    class _OneFails(_FakeProvider):
+        async def get_message(self, provider_message_id):
+            fetched.append(provider_message_id)
+            if provider_message_id == "pm-2":
+                raise RuntimeError("Graph answered 404")
+            return _full(provider_message_id)
+
+    monkeypatch.setattr(sched, "tenant_session", _watched_sessions(
+        state, log, body_rows=[_body_row(1), _body_row(2), _body_row(3)]))
+    hydrated = await sched._backfill_bodies("org-1", "acc-1", _OneFails([]))
+    assert fetched == ["pm-1", "pm-2", "pm-3"]
+    assert _written_ids(log) == ["m-1", "m-3"]
+    assert hydrated == 2
+    assert state == {"open": 0, "opens": 2}, "phase (e) is not read then write"
+
+
+async def test_no_candidates_opens_one_session_and_calls_no_provider(
+    monkeypatch,
+):
+    """EM-T4a-1: with no empty body, phase (e) reads in one block and stops.
+    It makes no provider call and opens no write block."""
+    state = {"open": 0, "opens": 0}
+    log: list = []
+    fetched: list[str] = []
+
+    class _Counts(_FakeProvider):
+        async def get_message(self, provider_message_id):
+            fetched.append(provider_message_id)
+            return _full(provider_message_id)
+
+    monkeypatch.setattr(sched, "tenant_session", _watched_sessions(state, log))
+    assert await sched._backfill_bodies("org-1", "acc-1", _Counts([])) == 0
+    assert fetched == [], "phase (e) called the provider with no candidates"
+    assert state == {"open": 0, "opens": 1}
+    assert _written_ids(log) == []
+
+
+async def test_with_semantic_search_off_phase_f_calls_no_model(monkeypatch):
+    """EM-T4a-1: the read step of phase (f) returns nothing when semantic
+    search is off. So the phase reads nothing, calls no model and opens no
+    write block — even with messages waiting."""
+    state = {"open": 0, "opens": 0}
+    log: list = []
+    called: list[int] = []
+
+    async def _embed(texts, model):
+        called.append(len(texts))
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(sched, "tenant_session", _watched_sessions(
+        state, log,
+        embed_rows=[SimpleNamespace(id="m-1", subject="s", body_text="b")]))
+    monkeypatch.setattr(email_embeddings, "_embed_batch", _embed)
+    monkeypatch.setattr(get_settings(), "email_semantic_search_enabled", False)
+    assert await sched._embed_messages("org-1", "acc-1") == 0
+    assert called == []
+    assert log == [], "the read step touched the database with the flag off"
+    assert state == {"open": 0, "opens": 1}
 
 
 # ── R8: the sync core ───────────────────────────────────────────────────────
@@ -606,16 +841,28 @@ class _FakeProvider:
         raise RuntimeError("no body backfill in this test")
 
 
-def _message(i: int) -> EmailMessage:
+def _message(i: int, *, body: str = "body") -> EmailMessage:
     return EmailMessage(
         provider_message_id=f"pm-{uuid.uuid4().hex[:10]}-{i}",
         thread_id=f"t-{i}",
         folder="INBOX",
         from_address=EmailAddress(name="S", email="s@sender.test"),
         subject=f"hello {i}",
-        body_text="body",
-        snippet="body",
+        body_text=body,
+        snippet=body,
         received_at=datetime.now(UTC),
+    )
+
+
+def _full(provider_message_id: str) -> EmailMessage:
+    """The full message that ``get_message`` returns: a body for each id."""
+    return EmailMessage(
+        provider_message_id=provider_message_id,
+        thread_id="t-full",
+        folder="INBOX",
+        subject="full",
+        body_text=f"the body of {provider_message_id}",
+        snippet="the snippet",
     )
 
 
@@ -723,6 +970,104 @@ class TestTheSyncCoreWritesItsOwnTenant:
             assert log == ["error"]
         finally:
             release_tenant(token)
+            _purge(p.admin_engine, [account_id])
+
+    async def test_phases_e_and_f_write_the_fetched_bodies_into_org_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """EM-T4a-1. The provider syncs three messages with headers only.
+        Phase (e) fetches each body with no session open, and one fetch
+        fails. Phase (f) embeds the two bodies with no session open. Each
+        write lands in the rows of org B under FORCE RLS, and org A reads
+        none of them."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-t1b.test")
+        headers = [_message(i, body="") for i in (1, 2, 3)]
+        failing = headers[1].provider_message_id
+        open_at: dict[str, list[int]] = {"get_message": [], "_embed_batch": []}
+        state = {"open": 0}
+        real_session = sched.tenant_session
+
+        @asynccontextmanager
+        async def _counted(org=None):
+            async with real_session(org) as db:
+                state["open"] += 1
+                try:
+                    yield db
+                finally:
+                    state["open"] -= 1
+
+        class _HeadersOnly(_FakeProvider):
+            async def get_message(self, provider_message_id):
+                open_at["get_message"].append(state["open"])
+                if provider_message_id == failing:
+                    raise RuntimeError("Graph answered 404")
+                return _full(provider_message_id)
+
+        async def _embed(texts, model):
+            open_at["_embed_batch"].append(state["open"])
+            return [[0.001 * (i + 1)] * 1536 for i in range(len(texts))]
+
+        from acb_llm import key_store
+
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider",
+                            lambda name, creds: _HeadersOnly(headers))
+        monkeypatch.setattr(sched, "tenant_session", _counted)
+        monkeypatch.setattr(email_embeddings, "_embed_batch", _embed)
+        monkeypatch.setattr(get_settings(), "email_semantic_search_enabled",
+                            True)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                res = await sched._sync_account(account_id,
+                                                organization_id=p.org_b)
+            assert res == {"synced": 3, "history_id": "h-1"}, res
+            assert open_at == {"get_message": [0, 0, 0], "_embed_batch": [0]}, (
+                "a session was open during a call of phase (e) or (f)"
+            )
+
+            with p.admin_engine.connect() as c:
+                bodies = dict(c.execute(text(
+                    "SELECT provider_message_id, COALESCE(body_text, '') "
+                    "FROM email_messages WHERE account_id = CAST(:a AS uuid)"),
+                    {"a": account_id}).all())
+                embed_orgs = c.execute(text(
+                    "SELECT organization_id::text FROM email_embeddings "
+                    "WHERE account_id = CAST(:a AS uuid)"),
+                    {"a": account_id}).scalars().all()
+            assert bodies == {
+                m.provider_message_id: (
+                    "" if m.provider_message_id == failing
+                    else f"the body of {m.provider_message_id}")
+                for m in headers
+            }, "a fetched body did not land, or the failed one was written"
+            assert embed_orgs == [p.org_b, p.org_b]
+
+            hydrated = ("SELECT count(*) FROM email_messages "
+                        "WHERE account_id = CAST(:a AS uuid) "
+                        "AND body_text LIKE 'the body of %'")
+            embeds = ("SELECT count(*) FROM email_embeddings "
+                      "WHERE account_id = CAST(:a AS uuid)")
+            params = {"a": account_id}
+            assert _count_as(p.app_url, p.org_b, hydrated, params) == 2
+            assert _count_as(p.app_url, p.org_b, embeds, params) == 2
+            assert _count_as(p.app_url, p.org_a, hydrated, params) == 0, (
+                "org A read the bodies of org B"
+            )
+            assert _count_as(p.app_url, p.org_a, embeds, params) == 0, (
+                "org A read the embeddings of org B"
+            )
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_embeddings WHERE account_id = "
+                               "CAST(:a AS uuid)"), {"a": account_id})
+                c.execute(text("DELETE FROM email_messages WHERE account_id = "
+                               "CAST(:a AS uuid)"), {"a": account_id})
             _purge(p.admin_engine, [account_id])
 
 

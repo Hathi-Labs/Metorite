@@ -20,6 +20,13 @@ organization of its account, and every write runs in ``tenant_session(org)``.
 statement after it runs with no tenant. So the sync core is split into
 PHASES, each one its own ``tenant_session(org)`` with no ``commit()``. The
 fence is ``tests/unit/test_email_scheduler_tenancy.py``.
+
+⚠️ No session stays open across an external call (WS-17 EM-T4a-1,
+``email_app_master_plan.md`` §10.4.6). Phase (b) authenticates and fetches
+with no session. Phases (e) and (f) read in one block, call the provider or
+the model with no session, and write in a second block. A session held
+across a slow call holds one of the 12 pool slots for the whole call. The
+watched fakes of the same test file fail on a call made with a block open.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from acb_common.db import (
 )
 from sqlalchemy import text
 
+from email_ingestion import body_backfill, email_embeddings
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
 from email_ingestion.providers.factory import build_provider
@@ -153,6 +161,45 @@ async def _sweep_one_org(organization_id: str) -> list[tuple[str, int | None]]:
 # -- Core sync logic (shared with manual /email/sync endpoint) ---------------
 
 
+async def _backfill_bodies(org: str, account_id: str, provider: Any) -> int:
+    """Phase (e): hydrate a bounded batch of empty bodies. Returns how many
+    it wrote.
+
+    Read the candidates in one ``tenant_session(org)``. Fetch each body with
+    NO session open. Write the bodies in a second block (EM-T4a-1). With no
+    candidates it opens one block and makes no provider call. No step commits,
+    because the seam commits when each block exits."""
+    async with tenant_session(org) as db:
+        candidates = await body_backfill.select_missing_bodies(db, account_id)
+    if not candidates:
+        return 0
+    fetched = await body_backfill.fetch_bodies(provider, account_id, candidates)
+    if not fetched:
+        return 0
+    async with tenant_session(org) as db:
+        return await body_backfill.write_bodies(db, account_id, fetched)
+
+
+async def _embed_messages(org: str, account_id: str) -> int:
+    """Phase (f): embed a bounded batch for semantic search. Returns how many
+    it wrote.
+
+    Read the pending messages in one ``tenant_session(org)``. The read step
+    returns ``None`` when semantic search is off. Call the model with NO
+    session open. Write the vectors in a second block (EM-T4a-1)."""
+    async with tenant_session(org) as db:
+        pending = await email_embeddings.select_pending_embeddings(
+            db, account_id)
+    if pending is None:
+        return 0
+    vectors = await email_embeddings.compute_embeddings(pending)
+    if vectors is None:
+        return 0
+    async with tenant_session(org) as db:
+        return await email_embeddings.write_embeddings(
+            db, account_id, pending, vectors)
+
+
 async def _sync_account(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
@@ -171,8 +218,12 @@ async def _sync_account(
         rotated token is persisted in a short session between the two calls;
     (c) persist the messages, then the reconcile;
     (d) the final credentials, account and sync-log rows;
-    (e) ``backfill_missing_bodies``;
-    (f) ``embed_pending_messages``.
+    (e) the body backfill (``_backfill_bodies``): read the empty-body
+        candidates, fetch each body with NO session open, and write the
+        bodies in a second block;
+    (f) the embeddings (``_embed_messages``): read the pending messages,
+        call the model with NO session open, and write the vectors in a
+        second block.
 
     The error path writes in a new ``tenant_session(org)``.
 
@@ -407,24 +458,19 @@ async def _sync_account(
         # So full-text search can match on the body of messages the user
         # hasn't opened (Outlook syncs headers-only). Best-effort and bounded
         # — never fails or stalls the sync; the backlog empties over
-        # successive ticks. The helper commits at its END, after its last
-        # statement, so the tenant binding covers every write it makes.
+        # successive ticks. No session is open across the provider calls.
         try:
-            from email_ingestion.body_backfill import backfill_missing_bodies
-            async with tenant_session(org) as db:
-                await backfill_missing_bodies(db, account_id, provider)
-        except Exception as exc:  # noqa: BLE001
+            await _backfill_bodies(org, account_id, provider)
+        except Exception as exc:
             logger.warning("sync.body_backfill_failed account=%s err=%s",
                            account_id, str(exc)[:160])
 
         # ── (f) semantic search: embed a bounded batch ──────────────────────
         # No-op unless email_semantic_search_enabled. Best-effort; never fails
-        # the sync. The helper also commits only at its end.
+        # the sync. No session is open across the model call.
         try:
-            from email_ingestion.email_embeddings import embed_pending_messages
-            async with tenant_session(org) as db:
-                await embed_pending_messages(db, account_id)
-        except Exception as exc:  # noqa: BLE001
+            await _embed_messages(org, account_id)
+        except Exception as exc:
             logger.warning("sync.email_embed_failed account=%s err=%s",
                            account_id, str(exc)[:160])
 

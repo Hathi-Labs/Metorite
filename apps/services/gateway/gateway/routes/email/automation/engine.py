@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
+from gateway import decide_features
 from gateway.routes.email.automation.assistant import _account_models
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
@@ -281,10 +282,48 @@ def _hint_block(hints: str) -> str:
     )
 
 
+def _rule_pick_key(pick: dict[str, Any] | None) -> str:
+    """The option key of an old pick: ``r<index>``, or ``none``."""
+    return f"r{pick['index']}" if pick else "none"
+
+
+def _rule_pick_question(
+    email: dict[str, str], rules: list[dict[str, Any]],
+    guidance: dict[str, list[str]] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """The ``decide`` request for the rule pick (EM-T5, shadow only).
+
+    The options are ``r0`` .. ``r<N-1>`` for the N rules, plus ``none``. Each
+    criterion is the rule's own text and the user's corrections for it,
+    clipped to 1000 characters. Returns None (skip) when N + 1 options pass
+    the Console's limit, because a refused request would only log an error.
+    """
+    if len(rules) + 1 > decide_features.CHOICE_OPTION_LIMIT:
+        return None
+    from acb_llm import ChoiceQuestion  # shadow mode only
+
+    g = guidance or {}
+    criteria: dict[str, str] = {}
+    for i, r in enumerate(rules):
+        text_ = f"{r['name']}: {r.get('instructions') or '(no description)'}"
+        for note in g.get(str(r.get("id")), []):
+            text_ += f"\n- correction from the user: {note}"
+        criteria[f"r{i}"] = decide_features.clip(text_)
+    criteria["none"] = "No rule fits this email."
+    return _email_block(email), {"rule": ChoiceQuestion(
+        instructions=(
+            "You are an email classifier. Choose the single rule that best "
+            "matches this email, or none when no rule fits."
+        ),
+        criteria=criteria,
+    )}
+
+
 async def _llm_pick_rule(
     email: dict[str, str], rules: list[dict[str, Any]], hints: str = "",
     *, model: str = "tier-fast",
     guidance: dict[str, list[str]] | None = None,
+    account_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Ask the LLM which instruction-based rule matches the email.
 
@@ -298,44 +337,54 @@ async def _llm_pick_rule(
     """
     if not rules:
         return None
-    try:
-        rule_lines = _rule_lines(rules, guidance)
-        sys_prompt = (
-            "You are an email classifier helping the user manage their inbox. "
-            "Given an email and a numbered list of rules, choose the single "
-            "best-matching rule. " + _CLASSIFIER_GUIDELINES
-            + ' Respond with ONLY a JSON object: {"index": <number or -1 if none '
-            'match>, "reason": "<short why>"}.'
-        )
-        user_prompt = (
-            f"{_email_block(email)}\n\nRULES\n{rule_lines}"
-            f"{_global_guidance_block(guidance)}{_hint_block(hints)}"
-        )
-        # Force structured output so the reply is parseable JSON, not prose we
-        # have to scrape (the #1 cause of silent "no match"); _llm_json drops
-        # json_object automatically for models that don't support it.
-        data, content, _used = await _llm_json(
-            model,
-            [{"role": "system", "content": sys_prompt},
-             {"role": "user", "content": user_prompt}],
-            max_tokens=800,
-        )
-        if isinstance(data, dict) and isinstance(data.get("index"), int):
-            idx = data["index"]
-            if 0 <= idx < len(rules):
-                return {"index": idx, "reason": str(data.get("reason", ""))[:300]}
-        # Distinguish an unparseable/empty reply (a real failure) from a genuine
-        # "no rule fits" (-1) — otherwise a high parse-failure rate looks
-        # identical to "nothing matched" and stays invisible.
-        if data is None and content.strip():
-            _log.warning("email.llm_pick_rule_unparseable",
-                         model=_used, sample=content[:200])
-        return None
-    except Exception as exc:  # noqa: BLE001
-        # The call failed (gateway/network/timeout) — NOT a no-match. Signal it
-        # so the watermark isn't burned on mail the classifier never saw.
-        _log.warning("email.llm_pick_rule_failed", error=str(exc)[:200])
-        raise LLMUnavailable(str(exc)[:200]) from exc
+    async def _old() -> dict[str, Any] | None:
+        try:
+            rule_lines = _rule_lines(rules, guidance)
+            sys_prompt = (
+                "You are an email classifier helping the user manage their inbox. "
+                "Given an email and a numbered list of rules, choose the single "
+                "best-matching rule. " + _CLASSIFIER_GUIDELINES
+                + ' Respond with ONLY a JSON object: {"index": <number or -1 if none '
+                'match>, "reason": "<short why>"}.'
+            )
+            user_prompt = (
+                f"{_email_block(email)}\n\nRULES\n{rule_lines}"
+                f"{_global_guidance_block(guidance)}{_hint_block(hints)}"
+            )
+            # Force structured output so the reply is parseable JSON, not prose we
+            # have to scrape (the #1 cause of silent "no match"); _llm_json drops
+            # json_object automatically for models that don't support it.
+            data, content, _used = await _llm_json(
+                model,
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": user_prompt}],
+                max_tokens=800,
+            )
+            if isinstance(data, dict) and isinstance(data.get("index"), int):
+                idx = data["index"]
+                if 0 <= idx < len(rules):
+                    return {"index": idx, "reason": str(data.get("reason", ""))[:300]}
+            # Distinguish an unparseable/empty reply (a real failure) from a genuine
+            # "no rule fits" (-1) — otherwise a high parse-failure rate looks
+            # identical to "nothing matched" and stays invisible.
+            if data is None and content.strip():
+                _log.warning("email.llm_pick_rule_unparseable",
+                             model=_used, sample=content[:200])
+            return None
+        except Exception as exc:  # noqa: BLE001
+            # The call failed (gateway/network/timeout) — NOT a no-match. Signal it
+            # so the watermark isn't burned on mail the classifier never saw.
+            _log.warning("email.llm_pick_rule_failed", error=str(exc)[:200])
+            raise LLMUnavailable(str(exc)[:200]) from exc
+
+    # EM-T5: in `shadow` mode `decide` runs beside the old call. The result is
+    # ALWAYS the old call's, and an LLMUnavailable from it still propagates.
+    return await decide_features.shadow(
+        "email.rule_pick", _old, account_id=account_id,
+        build=lambda: _rule_pick_question(email, rules, guidance),
+        compare=decide_features.compare_choice(
+            _rule_pick_key, qid="rule", options=len(rules) + 1),
+    )
 
 
 async def _llm_pick_rules(
@@ -746,7 +795,7 @@ async def _match_email_to_rule(
         models = await _account_models(db, account_id)
         pick = await _llm_pick_rule(
             email, instruction_rules, hints=hints, model=models["rule"],
-            guidance=guidance)
+            guidance=guidance, account_id=account_id)
         if pick:
             return {"rule": instruction_rules[pick["index"]],
                     "reason": pick["reason"] or "Matched by AI.", "source": "ai"}
