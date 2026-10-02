@@ -237,7 +237,11 @@ class GmailProvider(BaseEmailProvider):
                 timeout=10.0,
             ) as client:
                 resp = await client.get(f"{GMAIL_API_BASE}/users/me/profile")
-                if resp.status_code == 401 and self._refresh_token:
+                # A token that a refresh on this instance made, and that
+                # still gets a 401, gets no second refresh (EM-T4c). A sync
+                # calls this twice, once itself and once in _get_client.
+                if (resp.status_code == 401 and self._refresh_token
+                        and not self._creds_dirty):
                     await self._refresh_access_token()
                     return True
                 return resp.is_success

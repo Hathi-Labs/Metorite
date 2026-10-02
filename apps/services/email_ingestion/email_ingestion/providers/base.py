@@ -51,16 +51,54 @@ class RefreshingBearer(httpx.Auth):
       again. The flow reads the body into memory before the first try, so a
       stream cannot reach the second try empty.
 
+    **One refresh for each token that a refresh cannot help.** A mailbox can
+    answer 401 to each request while the token endpoint still works. Then
+    each request would post to the token endpoint. So the flow remembers a
+    token for which a refresh did not help: the refresh failed, or the new
+    token got a 401 too. Each later 401 with that token goes back to the
+    caller with no refresh and no second try. A success with that token
+    clears it, so a token that expires later can refresh again.
+
     The fence is ``tests/unit/test_email_provider_401_retry.py``.
     """
 
     def __init__(self, provider: _RefreshableProvider) -> None:
         self._provider = provider
+        #: The token for which a refresh did not help, or ``None``.
+        self._no_refresh_for: str | None = None
 
     def sync_auth_flow(
         self, request: httpx.Request,
     ) -> Generator[httpx.Request, httpx.Response, None]:
         raise RuntimeError("RefreshingBearer serves an httpx.AsyncClient only")
+
+    def _cannot_help(self, token: str | None) -> bool:
+        """True when a refresh did not help *token* before. ``None`` is
+        never remembered, so a request with no token can still refresh."""
+        return token is not None and token == self._no_refresh_for
+
+    def _note_success(self, token: str | None, response: httpx.Response) -> None:
+        """A success with a remembered token clears it."""
+        if response.is_success and self._cannot_help(token):
+            self._no_refresh_for = None
+
+    async def _refresh_once(self, used: str | None) -> None:
+        """Refresh under the lock, unless another request did it already or a
+        refresh cannot help *used*."""
+        provider = self._provider
+        async with provider._refresh_lock:
+            # Another request may have refreshed while this one waited.
+            if provider._access_token != used or self._cannot_help(used):
+                return
+            try:
+                await provider._refresh_access_token()
+            except Exception:
+                self._no_refresh_for = used
+                raise
+            logger.info(
+                "provider.token_refreshed_on_401 provider=%s",
+                provider.__class__.__name__,
+            )
 
     async def async_auth_flow(
         self, request: httpx.Request,
@@ -71,17 +109,26 @@ class RefreshingBearer(httpx.Auth):
         request.headers["Authorization"] = f"Bearer {used}"
         response = yield request
         if response.status_code != 401 or not provider._refresh_token:
+            self._note_success(used, response)
             return
-        async with provider._refresh_lock:
-            # Another request may have refreshed while this one waited.
-            if provider._access_token == used:
-                await provider._refresh_access_token()
-                logger.info(
-                    "provider.token_refreshed_on_401 provider=%s",
-                    provider.__class__.__name__,
-                )
-        request.headers["Authorization"] = f"Bearer {provider._access_token}"
-        yield request
+        await self._refresh_once(used)
+        fresh = provider._access_token
+        if fresh == used:
+            # No new token: a refresh of this token failed in another
+            # request, or the token endpoint sent the same token back. A
+            # second try with that token gets the same 401.
+            self._no_refresh_for = used
+            return
+        request.headers["Authorization"] = f"Bearer {fresh}"
+        retry = yield request
+        if retry.status_code == 401:
+            self._no_refresh_for = fresh
+            logger.warning(
+                "provider.token_refused_after_refresh provider=%s",
+                provider.__class__.__name__,
+            )
+        else:
+            self._note_success(fresh, retry)
 
 
 # Canonical folder keys shared by the whole stack (DB, gateway query, UI store).

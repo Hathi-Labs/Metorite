@@ -1690,9 +1690,26 @@ Gmail sweep each returned no message, because each sweep drops a folder that rai
 then wrote a successful sync of 0 messages. `reconcile_full_snapshot` sends nothing to the trash,
 because it only reads the folders that the sweep returned.
 
-**Fences.** `tests/unit/test_email_provider_401_retry.py`: 22 tests, and one of them is R8. Eleven
-mutations each turn a test red. The two scheduler tests use the real `OutlookProvider`, the real
-refresh and the real error path.
+**Fix round 1 (2026-10-02).** This round repairs the three defects that the review found.
+
+1. A body fetch in phase (e) can refresh after phase (d) wrote the credentials. A successful sync then
+   kept the old tokens. Now a short `tenant_session(org)` block after phase (e) writes them again, but
+   only when they changed after phase (d). Phase (f) makes no provider call. A failure of that write
+   reaches the error path, which writes the credentials beside the error status.
+2. A mailbox that refuses each request, with a token endpoint that works, posted to the token
+   endpoint for each request. A probe saw 32 posts in one tick. Now `RefreshingBearer` keeps the
+   token whose refresh failed, or whose new token got a 401 too. Each later 401 with that token goes
+   back to the caller with no refresh and no second try. A success with that token clears it. Also,
+   `authenticate` does not refresh a token that a refresh on the same instance made. A sync calls
+   `authenticate` two times. Without this rule, the token endpoint gets three posts in one tick. Now
+   it gets two.
+3. `list_folders` took the 400 of a failed refresh for a rejected `$select`, and sent the request
+   again. Now a 400 from the token endpoint goes back to the caller.
+
+**Fences.** `tests/unit/test_email_provider_401_retry.py`: 39 tests, and two of them are R8. Against
+the source before fix round 1, eleven of the new tests are red. Eleven mutations of the first round
+and ten of fix round 1 each turn a test red. The scheduler tests use the real `OutlookProvider`, the
+real refresh and the real error path.
 
 **Verify with.**
 

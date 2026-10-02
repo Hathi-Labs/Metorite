@@ -27,9 +27,23 @@ refresh all reach ONE fake service, so the real refresh code runs.
 * A fence: neither ``_get_client`` sets an ``Authorization`` header.
 * The error path of ``_sync_account`` writes the refreshed credentials.
 
-**R8.** The same error path against the two-org catalog of
-``test_h3_rls_promotion_rehearsal``, as the non-privileged role: the
-``credentials_encrypted`` column of the account holds the new refresh token.
+**Fix round 1.**
+
+* A 401 that a refresh cannot cure costs one refresh for each token, not
+  one for each request. A failed refresh is not tried again for the same
+  token. A success with that token clears it.
+* One ``_sync_account`` tick with a 401 on each request posts to the token
+  endpoint twice. The ``authenticate`` probe does not refresh a token that
+  a refresh on the same instance made.
+* ``list_folders`` does not take the 400 of a failed refresh for a rejected
+  ``$select``.
+* A refresh on a body fetch of phase (e) reaches the database after a
+  successful sync. A refresh before phase (d) is written once.
+
+**R8.** Against the two-org catalog of ``test_h3_rls_promotion_rehearsal``,
+as the non-privileged role, the ``credentials_encrypted`` column of the
+account holds the new refresh token in two cases: the error path after a
+refresh, and a successful sync whose phase (e) refreshed.
 
 Run::
 
@@ -99,10 +113,15 @@ class _FakeService:
         #: Each request that carries ``at-1`` waits here before its answer.
         self.barrier: asyncio.Barrier | None = None
         self.always_401 = False
+        #: Each path here answers 401 to each token.
+        self.refuse_paths: set[str] = set()
         self.refuse_refresh = False
+        #: Each POST to the token endpoint, refused or not.
+        self.token_posts = 0
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         if str(request.url) == self.token_url:
+            self.token_posts += 1
             return await self._token(request)
         bearer = request.headers.get("authorization", "").removeprefix("Bearer ")
         self.seen.append((request.url.path, dict(request.url.params), bearer,
@@ -111,7 +130,8 @@ class _FakeService:
             self.valid.discard("at-1")
         if self.barrier is not None and bearer == "at-1":
             await self.barrier.wait()
-        if self.always_401 or bearer not in self.valid:
+        if (self.always_401 or request.url.path in self.refuse_paths
+                or bearer not in self.valid):
             return httpx.Response(401, json={"error": "InvalidAuthenticationToken"})
         route = self.routes.get(request.url.path)
         if route is None:
@@ -281,6 +301,169 @@ async def test_a_failed_refresh_raises_and_sends_nothing_more(kind, wire):
     assert [bearer for _, bearer in service.calls(path)] == ["at-1"]
     assert service.refreshes == 0
     assert p.credentials_dirty() is False
+
+
+# ── a 401 that a refresh cannot cure (fix round 1, notes 1 and 3) ───────────
+
+
+@KINDS
+async def test_a_401_that_a_refresh_does_not_cure_costs_one_refresh(kind, wire):
+    """Each request gets a 401, and the token endpoint works. The first 401
+    refreshes, and its retry gets a 401 too. So a refresh does not help this
+    token, and each later 401 goes back to the caller with no refresh."""
+    path = f"{kind.prefix}/x"
+    service = wire(_service(kind, {path: _ok({"ok": True})}))
+    p = _provider(kind)
+    client = await p._get_client()
+    service.always_401 = True
+
+    statuses = [(await client.get("/x")).status_code for _ in range(5)]
+
+    assert statuses == [401] * 5
+    assert service.token_posts == 1, "each 401 posted to the token endpoint"
+    assert [bearer for _, bearer in service.calls(path)] == [
+        "at-1", "at-2", "at-2", "at-2", "at-2", "at-2"]
+
+
+@KINDS
+async def test_a_failed_refresh_is_not_tried_again_for_the_same_token(kind, wire):
+    """A refresh that failed for a token is not tried again for it. The
+    first request raises the refresh error. Each later 401 with the same
+    token goes back to the caller, with no second post and no retry."""
+    path = f"{kind.prefix}/x"
+    service = wire(_service(kind, {path: _ok({"ok": True})}))
+    p = _provider(kind)
+    client = await p._get_client()
+    service.valid.discard("at-1")
+    service.refuse_refresh = True
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get("/x")
+    later = [(await client.get("/x")).status_code for _ in range(3)]
+
+    assert later == [401] * 3
+    assert service.token_posts == 1
+    assert [bearer for _, bearer in service.calls(path)] == ["at-1"] * 4
+
+
+@KINDS
+async def test_a_request_with_no_token_can_still_refresh(kind, wire):
+    """``None`` is never a remembered token. A client that sends a request
+    before any access token exists still refreshes on its 401."""
+    path = f"{kind.prefix}/x"
+    service = wire(_service(kind, {path: _ok({"ok": True})}))
+    p = kind.make({"refresh_token": "r-1"},
+                  app=OAuthApp(client_id="cid", client_secret="secret"))
+    client = httpx.AsyncClient(auth=RefreshingBearer(p))
+    try:
+        resp = await client.get(f"https://mail.test{path}")
+    finally:
+        await client.aclose()
+
+    assert resp.status_code == 200
+    assert [bearer for _, bearer in service.calls(path)] == ["None", "at-2"]
+
+
+@KINDS
+async def test_two_401s_at_the_same_time_and_a_failed_refresh_post_once(
+    kind, wire,
+):
+    """Two requests get a 401 at the same time, and the refresh fails. The
+    request that took the lock raises the refresh error. The other one gets
+    no new token, so it gets its 401 back with no post and no second try."""
+    path = f"{kind.prefix}/x"
+    service = wire(_service(kind, {path: _ok({"ok": True})}))
+    p = _provider(kind)
+    client = await p._get_client()
+    service.barrier = asyncio.Barrier(2)
+    service.valid.discard("at-1")
+    service.refuse_refresh = True
+
+    results = await asyncio.wait_for(asyncio.gather(
+        client.get("/x"), client.get("/x"), return_exceptions=True), timeout=5)
+
+    raised = [r for r in results if isinstance(r, httpx.HTTPStatusError)]
+    answered = [r.status_code for r in results if isinstance(r, httpx.Response)]
+    assert (len(raised), answered) == (1, [401])
+    assert service.token_posts == 1
+    assert [bearer for _, bearer in service.calls(path)] == ["at-1", "at-1"], (
+        "the request that waited sent the dead token a second time"
+    )
+
+
+@KINDS
+async def test_a_token_that_works_again_can_be_refreshed_again(kind, wire):
+    """A 401 on ONE path does not stop the refresh for good. The new token
+    works on another path, so the flow forgets the refusal. When that token
+    expires later, the next 401 refreshes again."""
+    bad, ok = f"{kind.prefix}/bad", f"{kind.prefix}/ok"
+    service = wire(_service(kind, {bad: _ok(), ok: _ok()}))
+    service.refuse_paths = {bad}
+    p = _provider(kind)
+    client = await p._get_client()
+
+    assert (await client.get("/bad")).status_code == 401
+    assert (await client.get("/ok")).status_code == 200
+    service.valid.discard("at-2")
+    assert (await client.get("/ok")).status_code == 200
+
+    assert service.token_posts == 2
+    assert [bearer for _, bearer in service.calls(ok)] == ["at-2", "at-2", "at-3"]
+
+
+@KINDS
+async def test_a_tick_where_each_request_gets_a_401_posts_twice(
+    kind, monkeypatch, wire,
+):
+    """One ``_sync_account`` tick, with a 401 on each mail request and a
+    working token endpoint. The ``authenticate`` probe refreshes once, and
+    the flow refreshes once. Before fix round 1 each request posted again,
+    and a probe saw 32 posts in one tick. Phase (e) has three bodies to
+    fetch, so the tick sends more requests than it may post."""
+    from acb_llm import key_store
+
+    service = wire(_service(kind))
+    service.always_401 = True
+    provider = _provider(kind)
+    log: list = []
+
+    async def _no_op(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(sched, "tenant_session", _logged_sessions(log, [
+        SimpleNamespace(id=f"row-{i}", provider_message_id=f"m{i}")
+        for i in (1, 2, 3)]))
+    monkeypatch.setattr(sched, "upsert_message", _no_op)
+    monkeypatch.setattr(sched, "run_label_learn_hook", _no_op)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+
+    await sched._sync_account("acc-1", organization_id="org-1")
+
+    assert service.token_posts == 2, (
+        f"{service.token_posts} posts to the token endpoint in one tick")
+    # The bound is not vacuous: the tick sent at least four mail requests
+    # after the second post, and each one of them got its 401.
+    assert len(service.seen) >= 6
+
+
+async def test_a_failed_refresh_in_list_folders_is_not_a_rejected_select(wire):
+    """``list_folders`` drops ``$select`` and tries again on a 400. The 400
+    of a failed refresh comes from the token endpoint, not from Graph, so
+    it goes back to the caller with no second try."""
+    service = wire(_service(_OUTLOOK, {"/v1.0/me/mailFolders": _ok({"value": []})}))
+    p = _provider(_OUTLOOK)
+    await p._get_client()
+    service.valid.discard("at-1")
+    service.refuse_refresh = True
+
+    with pytest.raises(httpx.HTTPStatusError) as err:
+        await p.list_folders()
+
+    assert err.value.response.status_code == 400
+    assert str(err.value.request.url) == _OUTLOOK.token_url
+    assert service.token_posts == 1
+    assert len(service.calls("/v1.0/me/mailFolders")) == 1
 
 
 @KINDS
@@ -515,27 +698,64 @@ def _refreshing_outlook(wire) -> tuple[_FakeService, OutlookProvider]:
     return service, _provider(_OUTLOOK)
 
 
-class _LogDb:
-    def __init__(self, block: int, log: list) -> None:
-        self.block = block
-        self.log = log
+def _full_graph_message(request: httpx.Request) -> httpx.Response:
+    mid = request.url.path.rsplit("/", 1)[-1]
+    return httpx.Response(200, json={
+        **_graph_message(int(mid.removeprefix("m"))),
+        "body": {"contentType": "text", "content": f"the body of {mid}"}})
 
-    async def execute(self, stmt, params=None, *_a, **_k):
-        self.log.append((self.block, " ".join(str(stmt).split()),
-                         dict(params or {})))
-        return SimpleNamespace(fetchone=lambda: SimpleNamespace(
+
+def _outlook_refreshing_in_phase_e(wire) -> tuple[_FakeService, OutlookProvider]:
+    """A real Outlook provider whose token expires on the first body fetch of
+    phase (e), after phase (d) has written the account row."""
+    routes = _outlook_sync_routes()
+    for i in (1, 2):
+        routes[f"/v1.0/me/messages/m{i}"] = _full_graph_message
+    service = wire(_service(_OUTLOOK, routes))
+    service.expire_on = lambda r: r.url.path.startswith("/v1.0/me/messages/")
+    return service, _provider(_OUTLOOK)
+
+
+#: The candidate read of phase (e).
+_BODY_CANDIDATES = "(body_text IS NULL OR body_text = '')"
+
+
+class _Res:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def fetchone(self):
+        return SimpleNamespace(
             id="log-1", provider="microsoft", credentials_encrypted="old",
             last_history_id=None, sync_interval_secs=300,
-            initial_sync_done=True, categories=[]))
+            initial_sync_done=True, categories=[])
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def scalar(self):
+        return None
 
 
-def _logged_sessions(log: list):
+class _LogDb:
+    def __init__(self, block: int, log: list, body_rows: list) -> None:
+        self.block = block
+        self.log = log
+        self.body_rows = body_rows
+
+    async def execute(self, stmt, params=None, *_a, **_k):
+        sql = " ".join(str(stmt).split())
+        self.log.append((self.block, sql, dict(params or {})))
+        return _Res(self.body_rows if _BODY_CANDIDATES in sql else [])
+
+
+def _logged_sessions(log: list, body_rows: list | None = None):
     state = {"opens": 0}
 
     @asynccontextmanager
     async def _ts(org=None):
         state["opens"] += 1
-        yield _LogDb(state["opens"], log)
+        yield _LogDb(state["opens"], log, body_rows or [])
 
     return _ts
 
@@ -606,11 +826,163 @@ async def test_a_failed_sync_with_no_refresh_writes_no_credentials(monkeypatch):
     assert _credential_writes(log) == []
 
 
-# ── R8: the error path writes the new token under FORCE RLS ─────────────────
+async def test_a_refresh_in_phase_e_is_written_after_a_successful_sync(
+    monkeypatch, wire,
+):
+    """Fix round 1, P2. The token expires on the first body fetch of phase
+    (e). Phase (d) has already written the account row, with no token to
+    write. The sync succeeds, and a short block after phase (e) writes the
+    new tokens."""
+    from acb_llm import key_store
+
+    service, provider = _outlook_refreshing_in_phase_e(wire)
+    log: list = []
+
+    async def _no_op(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(sched, "tenant_session", _logged_sessions(
+        log, [SimpleNamespace(id="row-1", provider_message_id="m1")]))
+    monkeypatch.setattr(sched, "upsert_message", _no_op)
+    monkeypatch.setattr(sched, "run_label_learn_hook", _no_op)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+
+    res = await sched._sync_account("acc-1", organization_id="org-1")
+
+    assert res == {"synced": 2, "history_id": None}
+    assert service.refreshes == 1
+    assert _error_blocks(log) == []
+    [body_block] = [block for block, sql, _ in log if "SET body_text" in sql]
+    assert _credential_writes(log) == [
+        (body_block + 1, {"access_token": "at-2", "refresh_token": "r-2"})], (
+        "a successful sync left the tokens of phase (e) out of the database"
+    )
+
+
+async def test_a_sync_with_no_refresh_writes_no_credentials(monkeypatch, wire):
+    """The write after phase (e) runs only when the tokens changed after
+    phase (d) wrote them."""
+    from acb_llm import key_store
+
+    service = wire(_service(_OUTLOOK, _outlook_sync_routes()))
+    provider = _provider(_OUTLOOK)
+    log: list = []
+
+    async def _no_op(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(sched, "tenant_session", _logged_sessions(log))
+    monkeypatch.setattr(sched, "upsert_message", _no_op)
+    monkeypatch.setattr(sched, "run_label_learn_hook", _no_op)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+
+    res = await sched._sync_account("acc-1", organization_id="org-1")
+
+    assert res == {"synced": 2, "history_id": None}
+    assert service.token_posts == 0
+    assert _credential_writes(log) == []
+
+
+async def test_a_refresh_before_phase_d_is_written_once(monkeypatch, wire):
+    """A refresh during ``sync_messages`` is written by phase (d). The write
+    after phase (e) sees no change since then, so it writes nothing more."""
+    from acb_llm import key_store
+
+    service, provider = _refreshing_outlook(wire)
+    log: list = []
+
+    async def _no_op(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(sched, "tenant_session", _logged_sessions(log))
+    monkeypatch.setattr(sched, "upsert_message", _no_op)
+    monkeypatch.setattr(sched, "run_label_learn_hook", _no_op)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+
+    res = await sched._sync_account("acc-1", organization_id="org-1")
+
+    assert res == {"synced": 2, "history_id": None}
+    assert service.refreshes == 1
+    [phase_d] = [block for block, sql, _ in log if "sync_status = 'idle'" in sql]
+    assert _credential_writes(log) == [
+        (phase_d, {"access_token": "at-2", "refresh_token": "r-2"})]
+
+
+# ── R8: the refreshed tokens reach the database under FORCE RLS ─────────────
+
+
+def _purge_account(admin_engine, account_id: str) -> None:
+    with admin_engine.begin() as c:
+        c.execute(text("DELETE FROM email_sync_log WHERE account_id = "
+                       "CAST(:a AS uuid)"), {"a": account_id})
+        c.execute(text("DELETE FROM email_accounts WHERE id = "
+                       "CAST(:a AS uuid)"), {"a": account_id})
 
 
 @_DB_GATE
-class TestTheErrorPathKeepsTheNewRefreshToken:
+class TestRefreshedTokensReachTheDatabase:
+
+    async def test_a_refresh_in_phase_e_reaches_credentials_encrypted(
+        self, promoted, app_engine, monkeypatch, wire,  # noqa: F811
+    ):
+        """Fix round 1, P2. Phase (c) writes two messages with no body.
+        Phase (e) fetches both bodies, and the token expires on the first
+        fetch. After a successful sync the column holds the new token."""
+        from acb_llm import key_store
+
+        p = promoted
+        with p.admin_engine.begin() as c:
+            account_id = str(c.execute(text(
+                "INSERT INTO email_accounts (user_id, provider, email_address, "
+                "credentials_encrypted, sync_enabled, sync_interval_secs, "
+                "sync_status, initial_sync_done, organization_id) "
+                "VALUES ('b@em-t4c.test', 'microsoft', :m, 'old', true, 300, "
+                "'idle', true, CAST(:o AS uuid)) RETURNING id"),
+                {"m": f"box-{uuid.uuid4().hex[:8]}@em-t4c.test",
+                 "o": p.org_b}).scalar_one())
+
+        service, provider = _outlook_refreshing_in_phase_e(wire)
+
+        async def _no_op(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(sched, "run_label_learn_hook", _no_op)
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                res = await sched._sync_account(account_id,
+                                                organization_id=p.org_b)
+            assert res == {"synced": 2, "history_id": None}
+            assert service.refreshes == 1
+            with p.admin_engine.connect() as c:
+                acct = c.execute(text(
+                    "SELECT sync_status, credentials_encrypted "
+                    "FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": account_id}).mappings().one()
+                bodies = c.execute(text(
+                    "SELECT body_text FROM email_messages "
+                    "WHERE account_id = CAST(:a AS uuid) "
+                    "ORDER BY provider_message_id"),
+                    {"a": account_id}).scalars().all()
+            assert acct["sync_status"] == "idle"
+            assert bodies == ["the body of m1", "the body of m2"]
+            assert acct["credentials_encrypted"] != "old", (
+                "a successful sync left the tokens of phase (e) out of the row"
+            )
+            creds = json.loads(acct["credentials_encrypted"].removeprefix("enc:"))
+            assert creds == {"access_token": "at-2", "refresh_token": "r-2"}
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_messages WHERE account_id = "
+                               "CAST(:a AS uuid)"), {"a": account_id})
+            _purge_account(p.admin_engine, account_id)
 
     async def test_credentials_encrypted_holds_the_new_refresh_token(
         self, promoted, app_engine, monkeypatch, wire,  # noqa: F811
@@ -659,8 +1031,4 @@ class TestTheErrorPathKeepsTheNewRefreshToken:
             assert creds == {"access_token": "at-2", "refresh_token": "r-2"}
         finally:
             release_tenant(token)
-            with p.admin_engine.begin() as c:
-                c.execute(text("DELETE FROM email_sync_log WHERE account_id = "
-                               "CAST(:a AS uuid)"), {"a": account_id})
-                c.execute(text("DELETE FROM email_accounts WHERE id = "
-                               "CAST(:a AS uuid)"), {"a": account_id})
+            _purge_account(p.admin_engine, account_id)

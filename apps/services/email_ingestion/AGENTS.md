@@ -66,6 +66,13 @@ All providers implement the `BaseEmailProvider` abstract interface:
    which reads `_access_token` for each request. On a 401 it refreshes once under
    `_refresh_lock` and sends the same request once more. A second 401 goes back to
    the caller. Fence: `tests/unit/test_email_provider_401_retry.py`.
+   - **One refresh for each token that a refresh cannot help.** The flow keeps
+     the token whose refresh failed, or whose new token got a 401 too. Each later
+     401 with that token goes back to the caller with no refresh. A success with
+     that token clears it.
+   - `authenticate` does not refresh a token that a refresh on the same instance
+     made. A sync calls `authenticate` two times, so without this rule a mailbox
+     that refuses each request costs three token posts in one tick.
 
 ## Inbound SMTP Server
 
@@ -107,8 +114,10 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - ⚠️ **The error path keeps refreshed credentials (WS-17 EM-T4c).** A refresh
   during the sync makes the credentials dirty. The error path then writes them
   in its own `tenant_session(org)`, beside the error status. Microsoft revokes
-  a refresh token on use, so a lost new token forces a reconnect. R7:
-  `tests/unit/test_email_provider_401_retry.py`.
+  a refresh token on use, so a lost new token forces a reconnect. A body fetch
+  in phase (e) can refresh after phase (d) wrote the credentials. So a short
+  block after phase (e) writes them again, but only when they changed after
+  phase (d). R7: `tests/unit/test_email_provider_401_retry.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

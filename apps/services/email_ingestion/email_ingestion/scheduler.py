@@ -200,6 +200,23 @@ async def _embed_messages(org: str, account_id: str) -> int:
             db, account_id, pending, vectors)
 
 
+_WRITE_CREDENTIALS = text(
+    """UPDATE email_accounts
+       SET credentials_encrypted = :creds, updated_at = now()
+       WHERE id = :id"""
+)
+
+
+def _credentials_json(provider: Any) -> str | None:
+    """The credentials of *provider* as JSON when a refresh changed them.
+
+    ``None`` when no provider was built, or when nothing changed. Two of
+    these values tell whether a refresh happened between them (EM-T4c)."""
+    if provider is None or not provider.credentials_dirty():
+        return None
+    return json.dumps(provider.export_credentials())
+
+
 def _dirty_credentials(provider: Any, store: Any) -> str | None:
     """The encrypted credentials of *provider* when a refresh changed them.
 
@@ -207,15 +224,32 @@ def _dirty_credentials(provider: Any, store: Any) -> str | None:
     ``None`` when no provider was built, or when nothing changed. A failure
     to encrypt is logged and also gives ``None``, so the error status still
     lands."""
-    if provider is None or store is None:
+    if store is None:
         return None
     try:
-        if not provider.credentials_dirty():
-            return None
-        return store.encrypt(json.dumps(provider.export_credentials()))
+        plain = _credentials_json(provider)
+        return None if plain is None else store.encrypt(plain)
     except Exception as exc:
         logger.warning("sync.credentials_keep_failed error=%s", str(exc)[:160])
         return None
+
+
+async def _write_credentials_refreshed_since(
+    org: str, account_id: str, provider: Any, store: Any, written: str | None,
+) -> None:
+    """Write the credentials when a refresh changed them after *written*.
+
+    Phase (d) writes the credentials with the account row. Phase (e) then
+    fetches bodies, and a 401 there refreshes the token again (EM-T4c).
+    Microsoft revokes the old refresh token on use. So this short block
+    writes the new tokens, or the next sync starts with a dead one. With no
+    change since phase (d), it opens no session."""
+    now = _credentials_json(provider)
+    if now is None or now == written:
+        return
+    async with tenant_session(org) as db:
+        await db.execute(_WRITE_CREDENTIALS,
+                         {"id": account_id, "creds": store.encrypt(now)})
 
 
 async def _sync_account(
@@ -235,17 +269,22 @@ async def _sync_account(
     (b) authenticate and fetch from the provider with NO session open — a
         rotated token is persisted in a short session between the two calls;
     (c) persist the messages, then the reconcile;
-    (d) the final credentials, account and sync-log rows;
+    (d) the credentials, account and sync-log rows;
     (e) the body backfill (``_backfill_bodies``): read the empty-body
         candidates, fetch each body with NO session open, and write the
-        bodies in a second block;
+        bodies in a second block. A 401 on a body fetch refreshes the token
+        AFTER phase (d) wrote the credentials. So a short block after this
+        phase writes them again, only when they changed since phase (d)
+        (EM-T4c);
     (f) the embeddings (``_embed_messages``): read the pending messages,
         call the model with NO session open, and write the vectors in a
-        second block.
+        second block. It makes no provider call.
 
     The error path writes in a new ``tenant_session(org)``. When a refresh
     during the sync changed the credentials, it writes them in that block too
-    (EM-T4c), so a later failure cannot lose a rotated refresh token.
+    (EM-T4c), so a later failure cannot lose a rotated refresh token. A
+    failed write of the credentials after phase (e) also reaches the error
+    path, which then tries that write again beside the error status.
 
     ``deep``/``since`` override the automatic (first-sync) heuristic so a caller
     can force a deep backfill from an arbitrary date floor — e.g. historical
@@ -424,25 +463,17 @@ async def _sync_account(
             logger.warning("sync.reconcile_failed account=%s err=%s",
                            account_id, str(exc)[:160])
 
-        # ── (d) the final credentials, account and log rows ─────────────────
+        # ── (d) the credentials, account and log rows ───────────────────────
+        # Persist refreshed OAuth tokens if the provider rotated them, so the
+        # next sync cycle doesn't reuse a stale (and soon-invalid) token.
+        # ``written`` is what this phase writes, so the write after phase (e)
+        # can tell a later refresh from this one (EM-T4c).
+        written = _credentials_json(provider)
         async with tenant_session(org) as db:
-            # Persist refreshed OAuth tokens if the provider rotated them, so
-            # the next sync cycle doesn't reuse a stale (and soon-invalid)
-            # token.
-            if provider.credentials_dirty():
-                await db.execute(
-                    text(
-                        """UPDATE email_accounts
-                           SET credentials_encrypted = :creds, updated_at = now()
-                           WHERE id = :id"""
-                    ),
-                    {
-                        "id": account_id,
-                        "creds": store.encrypt(
-                            json.dumps(provider.export_credentials())
-                        ),
-                    },
-                )
+            if written is not None:
+                await db.execute(_WRITE_CREDENTIALS,
+                                 {"id": account_id,
+                                  "creds": store.encrypt(written)})
 
             # Update account sync state. Mark the one-time deep sync done so
             # subsequent polls stay shallow.
@@ -488,6 +519,10 @@ async def _sync_account(
         except Exception as exc:
             logger.warning("sync.body_backfill_failed account=%s err=%s",
                            account_id, str(exc)[:160])
+        # A 401 in phase (e) may have rotated the tokens after phase (d)
+        # wrote them (EM-T4c). A failure here reaches the error path.
+        await _write_credentials_refreshed_since(
+            org, account_id, provider, store, written)
 
         # ── (f) semantic search: embed a bounded batch ──────────────────────
         # No-op unless email_semantic_search_enabled. Best-effort; never fails
@@ -541,15 +576,8 @@ async def _sync_account(
                 # Keep the rotated tokens. Microsoft revokes the old refresh
                 # token on use, so losing the new one forces a reconnect.
                 if creds_blob is not None:
-                    await db.execute(
-                        text(
-                            """UPDATE email_accounts
-                               SET credentials_encrypted = :creds,
-                                   updated_at = now()
-                               WHERE id = :id"""
-                        ),
-                        {"id": account_id, "creds": creds_blob},
-                    )
+                    await db.execute(_WRITE_CREDENTIALS,
+                                     {"id": account_id, "creds": creds_blob})
         except Exception:
             pass
 

@@ -227,7 +227,11 @@ class OutlookProvider(BaseEmailProvider):
                 timeout=10.0,
             ) as client:
                 resp = await client.get(f"{GRAPH_API_BASE}/me")
-                if resp.status_code == 401 and self._refresh_token:
+                # A token that a refresh on this instance made, and that
+                # still gets a 401, gets no second refresh (EM-T4c). A sync
+                # calls this twice, once itself and once in _get_client.
+                if (resp.status_code == 401 and self._refresh_token
+                        and not self._creds_dirty):
                     await self._refresh_access_token()
                     return True
                 return resp.is_success
@@ -269,11 +273,14 @@ class OutlookProvider(BaseEmailProvider):
             except httpx.HTTPStatusError as exc:
                 # Defensive: if a $select field is still rejected (400) on some
                 # account type, retry once with default properties so listing
-                # degrades instead of failing outright.
+                # degrades instead of failing outright. The 400 of a failed
+                # token refresh (EM-T4c) comes from the token endpoint, so it
+                # goes back to the caller.
                 if (
                     params and "$select" in params
                     and exc.response is not None
                     and exc.response.status_code == 400
+                    and not str(exc.request.url).startswith(MICROSOFT_OAUTH_BASE)
                 ):
                     params = {k: v for k, v in params.items() if k != "$select"}
                     resp = await client.get(url, params=params)
