@@ -854,8 +854,9 @@ async def process_past_estimate(
     as "processed everything in the range" when it was "processed the oldest N".
 
     Counts what is synced LOCALLY. The job downloads the range from the provider
-    first, so the real figure can be higher for a range that predates the initial
-    365-day sync; the dialog says so rather than presenting this as exact.
+    first, so the real figure can be higher for a range that predates the
+    initial import. That download never reaches back past 180 days (EM-T6a,
+    D-EM-10). The dialog says so rather than presenting this as exact.
     """
     start_dt = _parse_iso_date(start_date, end_of_day=False)
     end_dt = _parse_iso_date(end_date, end_of_day=True)

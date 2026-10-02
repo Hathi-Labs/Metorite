@@ -35,7 +35,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from acb_common.db import (
@@ -48,15 +48,11 @@ from acb_common.db import (
 )
 from sqlalchemy import text
 
-from email_ingestion import body_backfill, email_embeddings
+from email_ingestion import body_backfill, email_embeddings, import_window
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import reconcile_full_snapshot
-
-# Deep initial-sync history window (days). Older mail is pulled lazily via the
-# /backfill endpoint.
-INITIAL_SYNC_DAYS = 365
 
 # Ceiling for the failure backoff. When an account's sync keeps failing (a
 # revoked token, an account the user disconnected upstream), polling it every
@@ -263,6 +259,37 @@ _WRITE_CREDENTIALS = text(
        SET credentials_encrypted = :creds, updated_at = now()
        WHERE id = :id"""
 )
+
+#: The stored ids among the messages below the floor (EM-T6a item 6).
+_STORED_IDS = text(
+    """SELECT provider_message_id FROM email_messages
+       WHERE account_id = :aid AND provider_message_id = ANY(:pids)"""
+)
+
+
+async def _drop_below_floor(
+    db: Any, account_id: str, messages: list[Any], floor: datetime,
+) -> list[Any]:
+    """The messages that phase (c) may write: the backstop of the floor.
+
+    It drops each message older than ``floor`` (D-EM-10, EM-T6a item 6). It
+    keeps such a message when its row is already stored, so the sync still
+    updates it. It keeps a message with no ``received_at``. With no message
+    below the floor, it makes no query. Otherwise ONE query reads the stored
+    ids. The caller hands in the session of phase (c)."""
+    old = {m.provider_message_id for m in messages
+           if import_window.below_floor(m.received_at, floor)}
+    if not old:
+        return messages
+    rows = (await db.execute(
+        _STORED_IDS, {"aid": account_id, "pids": sorted(old)})).fetchall()
+    drop = old - {r.provider_message_id for r in rows}
+    kept = [m for m in messages if m.provider_message_id not in drop
+            or not import_window.below_floor(m.received_at, floor)]
+    if len(kept) < len(messages):
+        logger.info("sync.dropped_below_floor account=%s count=%d",
+                    account_id, len(messages) - len(kept))
+    return kept
 
 
 def _credentials_json(provider: Any) -> str | None:
@@ -502,7 +529,8 @@ async def _sync_cycle(
     (a) read the account, set ``syncing``, write the ``email_sync_log`` row;
     (b) authenticate and fetch from the provider with NO session open — a
         rotated token is persisted in a short session between the two calls;
-    (c) persist the messages, then the reconcile;
+    (c) drop each message below the floor that is not stored yet
+        (``_drop_below_floor``), persist the messages, then the reconcile;
     (d) the credentials, account and sync-log rows;
     (e) the body backfill (``_backfill_bodies``): read the empty-body
         candidates, fetch each body with NO session open, and write the
@@ -521,11 +549,12 @@ async def _sync_cycle(
     write once more in a new block, logs the result, and the sync keeps its
     success.
 
-    ``deep``/``since`` override the automatic (first-sync) heuristic so a caller
-    can force a deep backfill from an arbitrary date floor — e.g. historical
-    rule-apply downloading a past date range before running rules over it. Both
-    default to None, which preserves the normal first-sync-deep / then-incremental
-    behaviour exactly.
+    ``deep`` overrides the automatic (first-sync) heuristic, so a caller can
+    force a deep backfill. ``since`` is the explicit floor of a member act
+    (Process past emails, Clean older mail). Every sync passes a floor to the
+    provider, deep or shallow (WS-17 EM-T6a, ``import_window.sync_floor``).
+    With no ``since``, the floor is ``import_since``, the range that the member
+    chose. The ceiling of 180 days binds every floor (D-EM-10).
     """
     org = organization_id or current_tenant()
     if not org:
@@ -545,7 +574,8 @@ async def _sync_cycle(
             row = (await db.execute(
                 text(
                     """SELECT id, provider, credentials_encrypted, last_history_id,
-                              sync_interval_secs, initial_sync_done
+                              sync_interval_secs, initial_sync_done,
+                              import_since
                        FROM email_accounts
                        WHERE id = :id"""
                 ),
@@ -613,20 +643,18 @@ async def _sync_cycle(
                     },
                 )
 
-        # First-ever sync for this account → deep 1-year backfill across all
-        # folders; afterwards stay shallow/incremental (cheap polls). A caller
-        # may override to force a deep sync from a specific `since` floor
-        # (historical rule-apply backfilling a past date range).
+        # First-ever sync for this account → deep backfill across all folders,
+        # back to the floor. Afterwards stay shallow (cheap polls). A caller
+        # may force a deep sync.
         do_deep = (
             not bool(getattr(row, "initial_sync_done", False))
             if deep is None else bool(deep)
         )
-        floor = since
-        if floor is None:
-            floor = (
-                datetime.now(timezone.utc) - timedelta(days=INITIAL_SYNC_DAYS)
-                if do_deep else None
-            )
+        # The floor binds EVERY sync, deep or shallow (EM-T6a items 3 and 4).
+        # An explicit ``since`` is a member act. Without one, the range that
+        # the member chose binds. The ceiling of 180 days binds both.
+        floor = import_window.sync_floor(
+            since=since, import_since=getattr(row, "import_since", None))
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,
@@ -646,6 +674,10 @@ async def _sync_cycle(
         # ── (c) persist the messages ────────────────────────────────────────
         persisted_count = 0
         async with tenant_session(org) as db:
+            # The backstop of the floor, for a provider that ignores ``since``.
+            # The reconcile below then reads the same list.
+            sync_result.messages = await _drop_below_floor(
+                db, account_id, sync_result.messages, floor)
             for msg in sync_result.messages:
                 if msg.subject == "[DELETED]":
                     await db.execute(

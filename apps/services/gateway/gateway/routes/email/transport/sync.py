@@ -206,8 +206,8 @@ async def learn_from_label_change_events(
 
 class SyncRequest(BaseModel):
     account_id: str
-    # Force a deep re-sync (≈1 year, all folders) even if the initial sync
-    # already ran — e.g. a manual "resync everything" from the UI.
+    # Force a deep re-sync (all folders, back to the import floor) even if the
+    # initial sync already ran — e.g. a manual "resync everything" from the UI.
     full: bool = False
 
 
@@ -244,8 +244,9 @@ async def _run_manual_sync(
 ) -> dict[str, Any]:
     """Run one manual sync through the shared core and shape the API response.
 
-    ``full=True`` forces the deep (~1-year, all-folder) backfill; ``False``
-    keeps the core's own heuristic (deep on first sync, shallow after). New
+    ``full=True`` forces the deep (all-folder) backfill back to the import
+    floor of the mailbox (EM-T6a); ``False`` keeps the core's own heuristic
+    (deep on first sync, shallow after). New
     mail is handed to the shared new-mail pipeline AFTER the response, exactly
     like the scheduler and webhook paths (H1). A core-reported failure (auth,
     provider, DB) surfaces as the same 500 the old inline body raised; the core
@@ -289,13 +290,15 @@ async def resync_account(
     """Force a COMPLETE, DEEP re-sync from the provider (not just an incremental
     sync).
 
-    Resets the sync cursor and re-fetches every folder with the one-year deep
-    backfill (``full=True``), overwriting stale local fields. This is the only
-    UI path that re-runs the deep backfill on an account whose
+    Resets the sync cursor and re-fetches every folder with the deep backfill
+    (``full=True``), back to the import floor that the member chose (EM-T6a),
+    overwriting stale local fields. This is the only UI path that re-runs the
+    deep backfill on an account whose
     ``initial_sync_done`` is already set (the recurring poll and a plain sync
     stay shallow), so it's how an account connected before deep-sync shipped
-    pulls its full history. With ``purge=true`` it first DELETES the account's
-    local messages (cascades attachments) before re-fetching — use this when
+    pulls its history back to the floor. With ``purge=true`` it first DELETES
+    the account's local messages (cascades attachments) before re-fetching —
+    use this when
     local data is corrupt or badly out of sync. Returns the sync result."""
     async with _tenant_session() as db:
         own = (await db.execute(text(
@@ -308,10 +311,11 @@ async def resync_account(
     # tick could write the old cursor back, and the resync then fetched
     # nothing new. When a sync runs, the resync answers 409 and purges
     # nothing. The cursor reset makes the provider do a full sweep.
-    # Re-fetch through the shared core, forcing the DEEP (≈1-year, all-folder)
-    # backfill — ``full=True`` overrides the ``initial_sync_done`` gate so an
-    # already-initialised account actually pulls its older mail instead of just
-    # the newest shallow page. (This used to call the trigger_sync ROUTE
+    # Re-fetch through the shared core, forcing the DEEP (all-folder) backfill
+    # to the import floor — ``full=True`` overrides the ``initial_sync_done``
+    # gate so an already-initialised account actually pulls its older mail
+    # instead of just the newest shallow page. (This used to call the
+    # trigger_sync ROUTE
     # directly with the wrong positional args — ``user`` landed in the
     # ``background`` slot and ``user`` stayed an unresolved Depends — so every
     # direct resync crashed with a 500 before reaching the provider. Calling

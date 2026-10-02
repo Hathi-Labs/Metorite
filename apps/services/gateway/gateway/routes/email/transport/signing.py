@@ -8,9 +8,11 @@ we made it:
 
 * **The OAuth state.** The authorize leg puts it in the consent URL, and the
   provider hands it back to the callback. It carries the organization, the
-  member, the provider, ``redirect_after`` and an expiry of ten minutes. It
-  replaces an in-process dict that a restart emptied, that a second worker
-  could not see, and that never expired.
+  member, the provider, ``redirect_after``, ``import_months`` and an expiry of
+  ten minutes. It replaces an in-process dict that a restart emptied, that a
+  second worker could not see, and that never expired. ``import_months`` is
+  the import range of a new mailbox (EM-T6a, D-EM-11). A state signed before
+  EM-T6a has no such claim, and the verifier reads it as 1.
 * **The Graph webhook signature.** ``_ensure_subscription`` writes
   ``?org=<uuid>&sig=<hmac>`` into the ``notificationUrl``. The webhook reads
   the organization from that URL, so a caller who cannot sign cannot name one.
@@ -43,6 +45,7 @@ from typing import Any
 
 from acb_auth.member_proof import _usable
 from acb_common import get_settings
+from email_ingestion.import_window import DEFAULT_IMPORT_MONTHS, is_import_months
 
 __all__ = [
     "OAUTH_STATE_PURPOSE",
@@ -113,18 +116,22 @@ def sign_oauth_state(
     member: str,
     provider: str,
     redirect_after: str = "",
+    import_months: int = DEFAULT_IMPORT_MONTHS,
     now: float | None = None,
 ) -> str:
     """Sign a state for one connect attempt.
 
     Raises:
         SigningUnavailable: the secret is empty or public.
-        ValueError: ``org`` is not a UUID, ``member`` is empty, or the state
+        ValueError: ``org`` is not a UUID, ``member`` is empty,
+            ``import_months`` is not an integer from 0 to 6, or the state
             would be longer than the verifier accepts.
     """
     who = (member or "").strip().lower()
     if not who:
         raise ValueError("a state needs a member")
+    if not is_import_months(import_months):
+        raise ValueError("import_months is an integer from 0 to 6")
     issued = time.time() if now is None else now
     payload = {
         "v": _STATE_VERSION,
@@ -133,6 +140,7 @@ def sign_oauth_state(
         "member": who,
         "provider": provider,
         "redirect_after": redirect_after or "",
+        "import_months": import_months,
         "exp": int(issued) + OAUTH_STATE_TTL_SECONDS,
     }
     body = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
@@ -150,6 +158,10 @@ def verify_oauth_state(token: str | None, *, now: float | None = None) -> dict[s
     ``None`` covers every failure: a bad MAC, a wrong purpose, an expired
     state, a bad shape, and a secret that is empty or public. The caller
     answers each one the same way, so this function does not say which.
+
+    A state with no ``import_months`` claim was signed before EM-T6a, and the
+    payload then carries the default of 1. A claim that is not an integer
+    from 0 to 6 is a bad shape.
     """
     if not token or len(token) > _MAX_STATE_CHARS or token.count(".") != 1:
         return None
@@ -177,6 +189,9 @@ def verify_oauth_state(token: str | None, *, now: float | None = None) -> dict[s
         if not isinstance(payload.get(key), str) or not payload[key]:
             return None
     if not isinstance(payload.get("redirect_after", ""), str):
+        return None
+    months = payload.setdefault("import_months", DEFAULT_IMPORT_MONTHS)
+    if not is_import_months(months):
         return None
     try:
         payload["org"] = _canonical_org(payload["org"])

@@ -413,8 +413,9 @@ class OutlookProvider(BaseEmailProvider):
             if query:
                 params["$search"] = f'"{query}"'
             elif since is not None:
-                # Server-side time bound for the deep initial sync. Filtering and
-                # ordering on the same property (receivedDateTime) is allowed by
+                # Server-side time bound: the import floor of every sync sweep
+                # (EM-T6a). Filtering and ordering on the same property
+                # (receivedDateTime) is allowed by
                 # Graph; $search would NOT combine with $orderby, so they're
                 # mutually exclusive here (sync never passes a query).
                 iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1039,8 +1040,9 @@ class OutlookProvider(BaseEmailProvider):
     ) -> list[EmailMessage]:
         """Page a single folder (newest-first), following ``@odata.nextLink``.
 
-        ``max_pages`` bounds the number of pages; ``since`` adds a server-side
-        receivedDateTime floor so the deep sweep naturally exhausts ~1 year back.
+        ``max_pages`` bounds the number of pages. ``since`` adds a server-side
+        receivedDateTime floor, so a sweep stops at the import floor of the
+        mailbox (EM-T6a).
         """
         out: list[EmailMessage] = []
         token: str | None = None
@@ -1120,11 +1122,12 @@ class OutlookProvider(BaseEmailProvider):
         else:
             # Full multi-folder sweep so messages land in the right folder in the
             # UI (not just inbox/sent). DEEP sync (first connect / forced) pages
-            # ~1 year back per folder via the since-filter; RECURRING polls page
-            # only the newest pages (cheap). Older-than-window mail is pulled
-            # lazily by the /backfill endpoint.
+            # each folder back to the floor via the since-filter. RECURRING
+            # polls read only the newest pages (cheap). The floor binds BOTH
+            # (EM-T6a item 5): without it, the first poll of a quiet user
+            # folder added mail that was years old (D-EM-10).
             max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
-            sweep_since = since if deep else None
+            sweep_since = since
             messages = []
             for folder_key in ("inbox", "sent", "drafts", "archive", "junk", "trash"):
                 try:
