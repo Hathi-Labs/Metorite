@@ -577,8 +577,6 @@ export interface AssistantSettings {
   signature_text?: string;
   auto_run: boolean;
   cold_email_blocker: ColdBlockerMode;
-  /** Model for rule evaluation / classification / labeling (default tier-fast). */
-  rule_model: string;
   /** Model for BACKGROUND draft writing — follow-ups, DRAFT_EMAIL rule actions
    *  (default tier-powerful). */
   draft_model: string;
