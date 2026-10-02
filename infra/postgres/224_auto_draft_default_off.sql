@@ -1,0 +1,38 @@
+-- ============================================================================
+-- 224_auto_draft_default_off.sql — reply drafting is OFF for a new mailbox.
+--
+-- What: `email_assistant_settings.draft_replies` gets the column default
+--       `false`. Nothing else changes.
+-- Why:  D-EM-6, owner decision of 2026-10-02 ("Turn the default autodraft
+--       emails to off"). Spec: `project-docs/specs/email_app_master_plan.md`
+--       §10.2 and §10.4 EM-T7.
+--
+-- **History.** Migration 26 created the column `NOT NULL DEFAULT true`.
+-- Migration 81 set it to false. Migration 82 set it back to true, because a
+-- draft on mail that just arrived was then the feature (user, 2026-07-20).
+-- D-EM-6 reverses 82 for a new mailbox. Automatic reply drafting is now a
+-- switch that a member turns on in AI settings, never one they find running.
+--
+-- **Why the column default matters.** An INSERT that does not name the column
+-- gets this value. `derive_writing_style` in
+-- `gateway/routes/email/automation/assistant.py` inserts only
+-- `(account_id, writing_style, updated_at)`, so a background capture can make
+-- a settings row for a mailbox that never opened AI settings. The API model
+-- (`AssistantSettingsModel.draft_replies`) and the GET fallback default to
+-- false in the same change, so all three agree.
+--
+-- **EXISTING ROWS ARE NOT TOUCHED.** A stored value can be a real choice, and
+-- this file changes only what a NEW row inherits. The EM-T7 dispatch of
+-- 2026-10-02 records 0 email accounts in production, so no live row is at
+-- stake there. A development row keeps its value.
+--
+-- Expand only (R6): a default change rewrites no row, it holds its lock for a
+-- catalog update only, and old code runs on the new schema unchanged.
+-- Idempotent: a second run sets the same default again. Creates no table, so
+-- it adds no tenant exemption (R5).
+-- Pinned by tests/unit/test_email_auto_draft_defaults.py, which finds this
+-- file by CONTENT, never by number (R1).
+-- ============================================================================
+
+ALTER TABLE email_assistant_settings
+    ALTER COLUMN draft_replies SET DEFAULT false;

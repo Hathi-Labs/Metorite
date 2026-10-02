@@ -202,17 +202,16 @@ class AssistantSettingsModel(BaseModel):
     digest_frequency: str = "OFF"  # OFF | DAILY | WEEKLY
     personal_instructions: str | None = None
     writing_style: str | None = None
-    # LIVE drafting defaults ON (adds DRAFT_EMAIL to the Reply rule via
-    # sync_draft_reply_action). A draft on a conversation that just arrived is
-    # the feature: it is waiting when the user opens the mail.
-    #
-    # Deliberately NOT symmetric with the backfill, which defaults OFF
-    # (RuleProcessPastRequest.draft_replies). The distinction is the age of the
-    # thread, not the act of drafting — a draft on a months-old conversation is
-    # spend on something that already ended, and a backfill can produce hundreds
-    # in one run. User directive, 2026-07-20: "this should only apply when I am
-    # processing past emails ... the regular rules apply as is for new mails".
-    draft_replies: bool = True
+    # LIVE drafting is OFF for a new mailbox (D-EM-6, owner, 2026-10-02: "Turn
+    # the default autodraft emails to off"). A member turns it on in AI
+    # settings, and the save adds DRAFT_EMAIL to the Needs Reply rule through
+    # sync_draft_reply_action. Every draft is a call on the drafting model, so
+    # nobody should find it already running. This reverses the ON default of
+    # migration 82 (2026-07-20). Migration 224 sets the column default to
+    # false, and the GET fallback below agrees, so a save that omits the field
+    # stores false. The backfill was already OFF
+    # (RuleProcessPastRequest.draft_replies).
+    draft_replies: bool = False
     follow_up_days: int = 0  # legacy alias for follow_up_awaiting_days
     # inbox-zero parity (migration 29)
     draft_confidence: str = "ALL_EMAILS"  # ALL_EMAILS | STANDARD | HIGH_CONFIDENCE
@@ -315,11 +314,13 @@ async def get_assistant_settings(
             ) or "",
             # This fallback IS the default for every account that has never
             # opened AI Settings, so it must agree with
-            # AssistantSettingsModel.draft_replies (ON) — a mismatch would show
-            # the toggle in a state nothing had actually applied.
+            # AssistantSettingsModel.draft_replies (OFF, D-EM-6) — a mismatch
+            # would show the toggle in a state nothing had actually applied.
+            # The agent's update_assistant_settings PUTs this body back, so an
+            # ON here would also turn drafting on when it saved another field.
             "draft_replies": (
                 bool(row.draft_replies) if row and row.draft_replies is not None
-                else True
+                else False
             ),
             "follow_up_days": awaiting,  # legacy alias
             "draft_confidence": (

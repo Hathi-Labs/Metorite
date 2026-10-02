@@ -178,10 +178,16 @@ async def list_rules(
 #
 # category_action values: "label" | "label_archive" | "move_folder"
 # (on Outlook "move_folder" expands to LABEL + MOVE_FOLDER)
+#
+# ``drafts_replies`` marks the ONE preset that the "Auto draft replies" switch
+# governs. It carries no DRAFT_EMAIL of its own (D-EM-6: reply drafting is OFF
+# for a new mailbox). ``_actions_for_preset`` adds the action only when the
+# account's stored ``draft_replies`` is true, so a reset or 'Add defaults'
+# keeps the rule and the switch in agreement.
 _PRESET_RULES: list[dict[str, Any]] = [
     {"name": "Needs Reply", "instructions": "Emails I need to respond to.",
      "run_on_threads": True, "category_action": "label",
-     "extra": [{"type": "DRAFT_EMAIL"}]},
+     "drafts_replies": True},
     {"name": "Awaiting Reply", "run_on_threads": True,
      "instructions": "Threads where I've already replied and am now waiting to "
                      "hear back from the other person.",
@@ -222,7 +228,9 @@ _PRESET_RULES: list[dict[str, Any]] = [
 ]
 
 
-def _actions_for_preset(preset: dict[str, Any], provider: str) -> list[dict[str, Any]]:
+def _actions_for_preset(
+    preset: dict[str, Any], provider: str, *, draft_replies: bool = False,
+) -> list[dict[str, Any]]:
     """Resolve a preset's category_action into concrete actions for a provider.
 
     On Outlook (``provider == "microsoft"``) the ``category_action_ms`` override
@@ -232,6 +240,10 @@ def _actions_for_preset(preset: dict[str, Any], provider: str) -> list[dict[str,
     the move). No ARCHIVE follows — the folder move already clears the inbox, and
     archiving would re-file the message into Archive. On Gmail (no folders) the
     base ``category_action`` (label-based) is used. ``extra`` actions append.
+
+    ``draft_replies`` is the account's stored "Auto draft replies" choice. A
+    preset marked ``drafts_replies`` gets DRAFT_EMAIL only when it is true. The
+    default is False, so a caller that does not pass it drafts nothing (D-EM-6).
     """
     name = preset["name"]
     action = preset["category_action"]
@@ -248,6 +260,8 @@ def _actions_for_preset(preset: dict[str, Any], provider: str) -> list[dict[str,
     else:  # "label" (and any unknown value) → categorize only.
         actions = [{"type": "LABEL", "label": name}]
     actions.extend(preset.get("extra", []))
+    if draft_replies and preset.get("drafts_replies"):
+        actions.append({"type": "DRAFT_EMAIL"})
     return actions
 
 
@@ -267,7 +281,10 @@ async def _seed_preset_rules(
     installed. With ``skip_existing`` (the additive 'Add defaults' flow) presets
     whose name already exists are left untouched; otherwise every preset is
     created. The ``provider`` decides whether cleanup categories become folders
-    (Outlook) or labels (Gmail). Caller commits."""
+    (Outlook) or labels (Gmail). The account's stored "Auto draft replies"
+    choice decides whether Needs Reply gets DRAFT_EMAIL. A mailbox with no
+    settings row gets none (D-EM-6). Caller commits."""
+    draft_replies = await stored_draft_replies(db, account_id)
     existing = (
         {r["name"].lower() for r in await _load_rules(db, account_id)}
         if skip_existing else set()
@@ -291,7 +308,8 @@ async def _seed_preset_rules(
             "instr": p["instructions"], "rot": p.get("run_on_threads", False)})
         await _replace_actions(
             db, rid,
-            [RuleActionModel(**a) for a in _actions_for_preset(p, provider)],
+            [RuleActionModel(**a) for a in _actions_for_preset(
+                p, provider, draft_replies=draft_replies)],
         )
         installed.append(p["name"])
     return installed
@@ -404,6 +422,21 @@ async def _replace_actions(db: Any, rule_id: str, actions: list[RuleActionModel]
             "attachments": json.dumps([
                 att.model_dump() for att in (a.attachments or [])
             ])})
+
+
+async def stored_draft_replies(db: Any, account_id: str) -> bool:
+    """The account's stored "Auto draft replies" choice.
+
+    A mailbox with no settings row, or a NULL in the column, reads False:
+    reply drafting is OFF until a member turns it on (D-EM-6). This is the
+    same answer that ``GET /assistant/settings`` gives for such a mailbox.
+    """
+    row = (await db.execute(text(
+        "SELECT draft_replies FROM email_assistant_settings "
+        "WHERE account_id = :aid"
+    ), {"aid": account_id})).fetchone()
+    # ``is True``, not ``bool()``: only a stored true turns drafting on.
+    return getattr(row, "draft_replies", None) is True
 
 
 async def sync_draft_reply_action(db: Any, account_id: str, enabled: bool) -> bool:

@@ -17,11 +17,94 @@ def test_preset_set_matches_inbox_zero_system_rules() -> None:
         "Needs Reply", "Awaiting Reply", "Done", "FYI", "Newsletter",
         "Marketing", "Calendar", "Receipt", "Notification", "Cold Email",
     ]
-    # Needs Reply drafts a reply; FYI/Needs Reply run on threads.
+    # FYI/Needs Reply run on threads.
     reply = next(p for p in m._PRESET_RULES if p["name"] == "Needs Reply")
     assert reply["run_on_threads"] is True
-    actions = _actions_for_preset(reply, "gmail")
-    assert any(a["type"] == "DRAFT_EMAIL" for a in actions)
+
+
+# ── D-EM-6: reply drafting is OFF for a new mailbox ─────────────────────────
+# The presets used to carry DRAFT_EMAIL on Needs Reply, so 'Add defaults' and
+# 'Reset rules' turned drafting on whatever the switch said. Now the seed adds
+# it only when the account's stored "Auto draft replies" is true. Spec:
+# email_app_master_plan.md §10.4 EM-T7.
+
+
+def _types(acts) -> list[str]:
+    return [getattr(a, "type", None) or a["type"] for a in acts]
+
+
+def test_no_preset_drafts_by_default() -> None:
+    for provider in ("gmail", "microsoft"):
+        for p in m._PRESET_RULES:
+            assert "DRAFT_EMAIL" not in _types(_actions_for_preset(p, provider)), (
+                p["name"], provider)
+
+
+def test_only_needs_reply_drafts_when_the_member_turned_it_on() -> None:
+    for provider in ("gmail", "microsoft"):
+        drafting = [
+            p["name"] for p in m._PRESET_RULES
+            if "DRAFT_EMAIL" in _types(
+                _actions_for_preset(p, provider, draft_replies=True))
+        ]
+        assert drafting == ["Needs Reply"], provider
+
+
+async def _seed_through(handler, *, stored_draft_replies: bool | None) -> dict:
+    """Run a REAL preset handler. ``stored_draft_replies=None`` means the
+    mailbox has no settings row. Returns {rule name: [action types]}."""
+    row = SimpleNamespace(provider="gmail")
+    if stored_draft_replies is not None:
+        row.draft_replies = stored_draft_replies
+    rule_names: dict[str, str] = {}
+    by_rule: dict[str, list[str]] = {}
+
+    def _execute(sql, params=None):
+        sql = str(sql)
+        if params and "INSERT INTO email_rules" in sql:
+            rule_names[params["id"]] = params["name"]
+        no_row = "FROM email_assistant_settings" in sql and stored_draft_replies is None
+        return MagicMock(fetchone=MagicMock(return_value=None if no_row else row),
+                         fetchall=MagicMock(return_value=[]))
+
+    async def _replace(_db, rid, acts):
+        by_rule[rule_names[rid]] = _types(acts)
+
+    db = AsyncMock()
+    db.execute.side_effect = _execute
+    user = SimpleNamespace(email="u@example.com")
+    with patch.object(m.automation.rules, "_tenant_session", bind_db(db)), \
+            patch.object(m.automation.rules, "_assert_account_owner", AsyncMock()), \
+            patch.object(m.automation.rules, "_load_rules", AsyncMock(return_value=[])), \
+            patch.object(m.automation.rules, "_replace_actions",
+                         AsyncMock(side_effect=_replace)):
+        await handler(account_id="acc-1", user=user)
+    return by_rule
+
+
+async def test_add_defaults_on_a_new_mailbox_creates_no_draft_action() -> None:
+    by_rule = await _seed_through(m.install_preset_rules, stored_draft_replies=None)
+    assert "Needs Reply" in by_rule
+    assert all("DRAFT_EMAIL" not in t for t in by_rule.values()), by_rule
+
+
+async def test_reset_on_a_new_mailbox_creates_no_draft_action() -> None:
+    by_rule = await _seed_through(m.reset_rules, stored_draft_replies=None)
+    assert len(by_rule) == len(m._PRESET_RULES)
+    assert all("DRAFT_EMAIL" not in t for t in by_rule.values()), by_rule
+
+
+async def test_add_defaults_with_drafting_stored_off_creates_no_draft_action() -> None:
+    by_rule = await _seed_through(m.install_preset_rules, stored_draft_replies=False)
+    assert all("DRAFT_EMAIL" not in t for t in by_rule.values()), by_rule
+
+
+async def test_add_defaults_after_the_member_turned_drafting_on() -> None:
+    """The feature stays: a member who turned the switch on gets a Needs Reply
+    rule that drafts, and no other rule drafts."""
+    by_rule = await _seed_through(m.install_preset_rules, stored_draft_replies=True)
+    drafting = [name for name, t in by_rule.items() if "DRAFT_EMAIL" in t]
+    assert drafting == ["Needs Reply"]
 
 
 # Names that become FOLDER moves on Outlook (inbox-zero parity) vs stay as

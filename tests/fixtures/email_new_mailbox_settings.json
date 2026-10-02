@@ -1,0 +1,18 @@
+{
+  "$comment": [
+    "WS-17 EM-T7, D-EM-6 (project-docs/specs/email_app_master_plan.md §10.2 and §10.4 EM-T7).",
+    "Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.",
+    "",
+    "ONE file, read by BOTH runners:",
+    "  tests/unit/test_email_auto_draft_defaults.py runs the REAL GET /email/assistant/settings",
+    "  handler for a mailbox with no settings row and compares its answer to `get_without_settings_row`.",
+    "  workbench/control_plane/src/app/email/lib/assistantSettings.test.ts runs",
+    "  assistantSettings.ts::autoDraftRepliesOn over the same body, which is the value the",
+    "  'Auto draft replies' toggle in SettingsTab.tsx draws.",
+    "Neither side may restate these values in its own source (tests/fixtures/README.md rule 2)."
+  ],
+  "get_without_settings_row": {
+    "draft_replies": false,
+    "follow_up_auto_draft": false
+  }
+}

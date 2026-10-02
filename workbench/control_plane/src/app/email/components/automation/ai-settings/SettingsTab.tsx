@@ -18,6 +18,7 @@ import {
   reviewRulePatterns, saveAssistantSettings, scanFollowUps, updateKnowledge,
   upsertColdSender,
 } from "../../../lib/api";
+import { autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
   AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
   DraftConfidence, KnowledgeEntry, LLMConfigResponse, LearnedPattern,
@@ -219,7 +220,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             description="Automatically draft replies written in your tone to emails needing a reply."
             right={
               <Toggle
-                enabled={s.draft_replies}
+                enabled={autoDraftRepliesOn(s)}
                 onChange={(v) => persistPatch({ draft_replies: v })}
               />
             }
