@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** EM-T6b is next.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
@@ -586,7 +586,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED, not built (2026-10-02).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -1999,7 +1999,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED, not built (2026-10-02). The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b to EM-T6e are not merged. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
@@ -2037,9 +2037,23 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T6a — the import floor and the range choice (backend)
 
+**Status.** ✅ MERGED (#577, 2026-10-02).
+
+**As built.**
+
+- The migration is `225_email_import_onboarding.sql`. `email_ingestion/import_window.py` owns the ceiling, the range and the floor.
+- The core drops a message below the floor in the session of phase (c). The reconcile then reads the same list.
+- Closing the guided setup through the PATCH does not restart the sync loop, because a restart cancels a sync in flight. A change of `label` or `sync_enabled` restarts it, as before.
+- Item 13 also corrected three claims that the audit did not list: `automation/cleanup.py` at about 728 and 943, and `automation/runner.py` at about 858. `providers/base.py` got one docstring line.
+- `schema.generated.sql` is not regenerated, and scope item 1 no longer asks for it. The snapshot is stale since `079af091`, and a dump of the ladder rewrites all 7161 lines. A refresh is a separate change. The R8 suite proves the columns instead.
+- Consequence: the reconcile of the recurring Outlook poll no longer reaches stored mail older than the floor. So a delete in Outlook of such mail stays in Metorite. This follows from item 5.
+- Consequence: stored mail below the floor no longer gets moves or read-state changes from Outlook, because the sweep no longer reads it. Graph gives a moved message a new id, and the provider sends no `ImmutableId` header.
+- F5: a reconnect no longer clears a stale Gmail `last_history_id`. Only a Resync clears it now. The risk is low, because D-EM-5 keeps Gmail out of the connect flow.
+- Fix round 1 (2026-10-02). "Clean older mail → Everything" sends no date, and the route now passes the ceiling, never `import_since`. "Load older" (`POST /email/accounts/{id}/backfill`) writes no message older than the ceiling, and it stops at the first page that reaches below it. `sync_floor` returns UTC, because Outlook writes the wall time with a `Z`.
+
 **Scope.**
 
-1. **One migration.** Add one file in `infra/postgres/` with the next free number at build time (R1). Name it `<n>_email_import_onboarding.sql`. It adds eight columns to `email_accounts` with `ADD COLUMN IF NOT EXISTS`. Each column is nullable, with no default, no CHECK and no backfill (R6). The columns are `import_since TIMESTAMPTZ`, `import_reached_at TIMESTAMPTZ`, `import_phase TEXT`, `import_count INTEGER`, `import_estimate INTEGER`, `stored_bytes BIGINT`, `stored_bytes_at TIMESTAMPTZ` and `onboarding_done_at TIMESTAMPTZ`. EM-T6b to EM-T6e add no migration. Run `scripts/dump_schema.sh` and commit `schema.generated.sql`.
+1. **One migration.** Add one file in `infra/postgres/` with the next free number at build time (R1). Name it `<n>_email_import_onboarding.sql`. It adds eight columns to `email_accounts` with `ADD COLUMN IF NOT EXISTS`. Each column is nullable, with no default, no CHECK and no backfill (R6). The columns are `import_since TIMESTAMPTZ`, `import_reached_at TIMESTAMPTZ`, `import_phase TEXT`, `import_count INTEGER`, `import_estimate INTEGER`, `stored_bytes BIGINT`, `stored_bytes_at TIMESTAMPTZ` and `onboarding_done_at TIMESTAMPTZ`. EM-T6b to EM-T6e add no migration. Do not regenerate `schema.generated.sql` here. It is stale since `079af091`, and a refresh is a separate change.
 2. **One floor function.** Add `email_ingestion/import_window.py`. It holds the ceiling, the floor and the conversion of a range to a date. A month is 30 days. The ceiling is `now - 180 days`. Delete `INITIAL_SYNC_DAYS`.
 3. **The floor rule.** A member act can pass an explicit `since`. Its floor is the later of that `since` and the ceiling. Every other sync takes the choice of the member. Its floor is the later of `import_since` and the ceiling. The ceiling alone binds a row with `import_since` NULL, because that mailbox connected before EM-T6.
 4. **`_sync_account` passes the floor on every sync**, deep or shallow. The explicit callers are Process past emails and Clean older mail. A Resync passes no `since`, so the choice of the member binds it.
@@ -2080,7 +2094,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 - `GET /email/accounts` returns `import_since` and `onboarding_done`.
 - `test_email_owner_scope_fence.py` passes with no new entry.
 
-**Files.** A new `infra/postgres/<n>_email_import_onboarding.sql`, and `schema.generated.sql`. Under `apps/services/email_ingestion/email_ingestion/`: a new `import_window.py`, `scheduler.py` and `providers/outlook.py`. Under `apps/services/gateway/gateway/routes/email/`: `transport/oauth.py`, `transport/signing.py`, `transport/accounts.py`, `transport/sync.py` (text only) and `automation/cleanup.py` (text only). The tests are a new `tests/unit/test_email_import_floor.py`, with updates to `test_email_deep_sync.py` and `test_email_oauth_state.py`.
+**Files.** A new `infra/postgres/<n>_email_import_onboarding.sql`. Under `apps/services/email_ingestion/email_ingestion/`: a new `import_window.py`, `scheduler.py` and `providers/outlook.py`. Under `apps/services/gateway/gateway/routes/email/`: `transport/oauth.py`, `transport/signing.py`, `transport/accounts.py`, `transport/sync.py` (text only) and `automation/cleanup.py` (text only). The tests are a new `tests/unit/test_email_import_floor.py`, with updates to `test_email_deep_sync.py` and `test_email_oauth_state.py`.
 
 **Verify with.**
 
@@ -2094,9 +2108,12 @@ uv run pytest tests/unit/test_email_import_floor.py tests/unit/test_email_deep_s
   tests/unit/test_email_account_unique_per_tenant.py tests/unit/test_email_owner_scope_fence.py \
   tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_tenancy_insert_fence.py tests/unit/test_db_engine_seam.py -q -rs
-uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email/transport \
+uv run ruff check apps/services/email_ingestion/email_ingestion/import_window.py \
   tests/unit/test_email_import_floor.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
+
+The first ruff run names the new files only. The second run is the blocking set of CI. A run over the whole directories reports 113 older findings, and the changed files hold some of them.
 
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line of the new migration and `\d email_accounts` on the box.
 

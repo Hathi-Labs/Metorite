@@ -708,8 +708,9 @@ class BaseEmailProvider(ABC):
 
         If history_id is None, performs an initial full sync.  ``deep`` requests
         the one-time deep backfill (page each folder back to ``since``); when
-        False the sync stays shallow/incremental.  ``since`` is the history floor
-        for a deep sync (providers that support a server-side date filter use it).
+        False the sync stays shallow/incremental.  ``since`` is the import floor.
+        The scheduler passes it on every sync, deep or shallow (EM-T6a).
+        Providers that support a server-side date filter use it.
         """
         ...
 

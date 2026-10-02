@@ -5,7 +5,7 @@ HEADERS only; the full body is fetched lazily the first time a user opens the
 message (see the gateway's get_message hydration). Until then ``body_text`` is
 empty — so full-text search cannot match on the body of any message the user
 hasn't opened. For "reliably search ALL emails" that's a real recall hole:
-a year of unopened Outlook mail is invisible to body search.
+months of unopened Outlook mail are invisible to body search.
 
 This module drains that backlog in the background. After each account's normal
 sync tick, phase (e) of the scheduler takes a BOUNDED batch of the account's
