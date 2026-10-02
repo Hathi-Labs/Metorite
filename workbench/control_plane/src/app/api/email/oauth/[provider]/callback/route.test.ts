@@ -14,14 +14,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const identity = vi.hoisted(() => ({ signedIn: true }));
 
+/** Spies, so an admin-return case can prove that nothing was called (EM-T3c). */
+const seam = vi.hoisted(() => ({
+  gatewayHeaders: 0,
+  requireIdentity: 0,
+  gatewayFetch: 0,
+}));
+
 vi.mock("@/lib/gateway", () => ({
   GATEWAY_URL: "http://gw.test",
-  gatewayHeaders: async () => ({ "X-User-Email": "dana@example.com" }),
-  requireIdentity: async () =>
-    identity.signedIn
+  gatewayHeaders: async () => {
+    seam.gatewayHeaders += 1;
+    return { "X-User-Email": "dana@example.com" };
+  },
+  requireIdentity: async () => {
+    seam.requireIdentity += 1;
+    return identity.signedIn
       ? { email: "dana@example.com" }
-      : NextResponse.json({ error: "Sign in to continue" }, { status: 401 }),
-  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+      : NextResponse.json({ error: "Sign in to continue" }, { status: 401 });
+  },
+  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => {
+    seam.gatewayFetch += 1;
+    return fetch(input, init);
+  },
 }));
 
 const PUBLIC = "https://app.example.test";
@@ -159,5 +174,178 @@ describe("the BFF email OAuth authorize failure path (F3)", () => {
     expect(where.path).toBe("/email/oauth/callback");
     expect(where.error).toBe("not configured");
     expect(where.raw).not.toContain("localhost");
+  });
+});
+
+// ── EM-T3c: the return leg of admin consent (§10.4.3) ─────────────────────
+//
+// The admin-consent link sends no `state`. Microsoft returns the admin here
+// with `admin_consent` and `tenant`, or with `error` and no `state`. That admin
+// often has no Metorite session. The branch answers from constants only and
+// calls nothing: no identity, no gateway.
+
+const APPROVED = "/oauth/approved";
+const DECLINED = "/oauth/approved?result=declined";
+const FAILED = "/oauth/approved?result=failed";
+
+const HOSTILE_TENANT = encodeURIComponent("https://evil.test/<script>alert(1)</script>");
+const HOSTILE_DESCRIPTION = encodeURIComponent(
+  "AADSTS65004: User declined. //evil.test <img src=x onerror=alert(1)>",
+);
+
+function resetSeam() {
+  seam.gatewayHeaders = 0;
+  seam.requireIdentity = 0;
+  seam.gatewayFetch = 0;
+}
+
+function expectNothingCalled() {
+  expect(seam.requireIdentity).toBe(0);
+  expect(seam.gatewayHeaders).toBe(0);
+  expect(seam.gatewayFetch).toBe(0);
+  expect(calls).toHaveLength(0);
+}
+
+describe("the admin-consent return (EM-T3c)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.stubEnv("WORKBENCH_PUBLIC_URL", PUBLIC);
+    stubGateway(redirectTo(`${PUBLIC}/email/oauth/callback?account_id=a1`));
+    resetSeam();
+  });
+
+  it("sends a signed-out admin approval to the public page", async () => {
+    identity.signedIn = false;
+    const res = await callback(
+      "admin_consent=True&tenant=11111111-2222-3333-4444-555555555555",
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(APPROVED);
+    expectNothingCalled();
+  });
+
+  it("gives a signed-in admin the same answer", async () => {
+    identity.signedIn = true;
+    const res = await callback(
+      "admin_consent=True&tenant=11111111-2222-3333-4444-555555555555",
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(APPROVED);
+    expectNothingCalled();
+  });
+
+  it("reads admin_consent=true in any case", async () => {
+    identity.signedIn = false;
+    for (const v of ["true", "TRUE", "True"]) {
+      const res = await callback(`admin_consent=${v}&tenant=t`);
+      expect(res.headers.get("location")).toBe(APPROVED);
+    }
+    expectNothingCalled();
+  });
+
+  it("sends a decline with no state to the declined copy", async () => {
+    identity.signedIn = false;
+    const res = await callback(
+      `error=access_denied&error_description=${HOSTILE_DESCRIPTION}&tenant=${HOSTILE_TENANT}`,
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(DECLINED);
+    expectNothingCalled();
+  });
+
+  it("reads AADSTS65004 in the description as a decline", async () => {
+    identity.signedIn = false;
+    const res = await callback(
+      `error=consent_required&error_description=${encodeURIComponent("AADSTS65004: declined")}`,
+    );
+    expect(res.headers.get("location")).toBe(DECLINED);
+    expectNothingCalled();
+  });
+
+  it("sends any other error with no state to the failed copy", async () => {
+    identity.signedIn = false;
+    const res = await callback("error=server_error");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(FAILED);
+    expectNothingCalled();
+  });
+
+  it("treats admin_consent with an error, or not true, as failed", async () => {
+    identity.signedIn = false;
+    expect((await callback("admin_consent=True&error=server_error")).headers.get("location"))
+      .toBe(FAILED);
+    expect((await callback("admin_consent=False&tenant=t")).headers.get("location"))
+      .toBe(FAILED);
+    expect((await callback("admin_consent=")).headers.get("location")).toBe(FAILED);
+    expectNothingCalled();
+  });
+
+  it("puts no request value in the Location, whatever the request holds", async () => {
+    identity.signedIn = false;
+    const cases: Array<[string, string]> = [
+      [`admin_consent=True&tenant=${HOSTILE_TENANT}&error_description=${HOSTILE_DESCRIPTION}`, APPROVED],
+      [`error=access_denied&tenant=${HOSTILE_TENANT}&error_description=${HOSTILE_DESCRIPTION}`, DECLINED],
+      [`error=${HOSTILE_TENANT}&tenant=${HOSTILE_TENANT}&error_description=x`, FAILED],
+      [`admin_consent=${HOSTILE_TENANT}&result=approved&redirect_after=https://evil.test`, FAILED],
+    ];
+    for (const [query, expected] of cases) {
+      const res = await callback(query, "microsoft", "https://evil.test");
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(expected);
+    }
+    expectNothingCalled();
+  });
+
+  it("keeps the member path: code and state with no session is 401, and no gateway", async () => {
+    identity.signedIn = false;
+    const res = await callback("code=c&state=s&admin_consent=True");
+    expect(res.status).toBe(401);
+    expect(seam.requireIdentity).toBe(1);
+    expect(seam.gatewayFetch).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("keeps the member path: an error WITH a state still goes to the gateway", async () => {
+    identity.signedIn = true;
+    stubGateway(redirectTo(`${PUBLIC}/email/oauth/callback?error=consent_declined`));
+    const res = await callback("error=access_denied&state=s1.g");
+    expect(res.status).toBe(302);
+    expect(seam.requireIdentity).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0].url).searchParams.get("state")).toBe("s1.g");
+  });
+
+  it("keeps the member path: an error with a state and no session is 401", async () => {
+    identity.signedIn = false;
+    const res = await callback("error=access_denied&state=s1.g");
+    expect(res.status).toBe(401);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("treats an EMPTY state or code as present: the member path runs", async () => {
+    identity.signedIn = false;
+    for (const query of ["error=x&state=", "admin_consent=True&code="]) {
+      resetSeam();
+      const res = await callback(query);
+      expect(res.status, query).toBe(401);
+      expect(res.headers.get("location"), query).toBeNull();
+      expect(seam.requireIdentity, query).toBe(1);
+      expect(seam.gatewayFetch, query).toBe(0);
+    }
+  });
+
+  it("an EMPTY error still blocks approved", async () => {
+    identity.signedIn = false;
+    const res = await callback("admin_consent=True&error=");
+    expect(res.headers.get("location")).toBe(FAILED);
+    expectNothingCalled();
+  });
+
+  it("answers an admin return only for the Microsoft provider", async () => {
+    identity.signedIn = false;
+    const res = await callback("admin_consent=True&tenant=t", "gmail");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("location")).toBeNull();
   });
 });

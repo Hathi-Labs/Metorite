@@ -44,7 +44,28 @@ const AUTH_ROUTES = "/api/auth";
  * The page reads no secret and holds no session; the authorization that matters
  * is `@auth/core`'s own callback, which the typed code is submitted to.
  */
-const PUBLIC_PAGES = new Set(["/signin", "/signin/code", "/favicon.ico"]);
+const PUBLIC_PAGES = new Set([
+  "/signin",
+  "/signin/code",
+  "/favicon.ico",
+  // WS-17 EM-T3c: where an IT admin lands after approving Metorite in
+  // Microsoft. That admin has no Metorite session. The page reads one token
+  // from a fixed set, makes no fetch and renders fixed copy only.
+  "/oauth/approved",
+]);
+
+/**
+ * API paths that pass without a session. EXACT matches only, never a prefix.
+ *
+ * `/api/email/oauth/microsoft/callback` (WS-17 EM-T3c): Microsoft sends an IT
+ * admin with no Metorite session here after an admin approval. The route
+ * answers that return from constants before it asks for a session.
+ * ⚠️ The route stays the boundary for the member path: every other request,
+ * a `code` and `state` included, still meets `requireIdentity()` there, so a
+ * signed-out member still gets 401 and never reaches the gateway. Fences:
+ * `proxy.test.ts` and the callback's `route.test.ts`.
+ */
+const PUBLIC_API_PATHS = new Set(["/api/email/oauth/microsoft/callback"]);
 
 export async function proxy(req: NextRequest) {
   // The laptop case, and ONLY the laptop case, runs open. This used to be
@@ -84,6 +105,7 @@ export async function proxy(req: NextRequest) {
   // owns RESERVED_LABELS/SLUG_RE and the signup gate enforces them.
 
   if (PUBLIC_PAGES.has(pathname)) return NextResponse.next();
+  if (PUBLIC_API_PATHS.has(pathname)) return NextResponse.next();
 
   if (await auth()) return NextResponse.next();
 

@@ -437,6 +437,46 @@ def test_every_client_command_takes_a_typed_key_first() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5b. The binary pool (WS-17 EM-T2b) — same wrapper, bytes in and out.
+# ---------------------------------------------------------------------------
+
+def test_binary_client_is_the_same_wrapper_over_a_second_small_pool(monkeypatch) -> None:
+    """``get_tenant_redis(binary=True)`` must not decode replies.
+
+    The main pool decodes as UTF-8, so an attachment read through it either
+    raises or (caught) becomes a silent cache miss. The binary pool is a second
+    pool, small, under the SAME wrapper class, so the key discipline holds.
+    """
+    made: list[dict[str, Any]] = []
+
+    def _from_url(url: str, **kwargs: Any) -> object:
+        made.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(tr.aioredis, "from_url", _from_url)
+    tr.reset_pool_for_tests()
+    try:
+        binary = tr.get_tenant_redis(binary=True)
+        text_client = tr.get_tenant_redis()
+        again = tr.get_tenant_redis(binary=True)
+
+        assert type(binary) is TenantRedis and type(text_client) is TenantRedis
+        assert len(made) == 2, "each pool is built once, then reused"
+        binary_kwargs, text_kwargs = made
+        assert binary_kwargs["decode_responses"] is False
+        assert binary_kwargs["max_connections"] == tr.BINARY_POOL_MAX_CONNECTIONS
+        assert tr.BINARY_POOL_MAX_CONNECTIONS <= 4
+        assert text_kwargs["decode_responses"] is True
+        assert binary._client is not text_client._client
+        assert again._client is binary._client
+
+        tr.reset_pool_for_tests()
+        assert tr._POOL is None and tr._BINARY_POOL is None
+    finally:
+        tr.reset_pool_for_tests()
+
+
+# ---------------------------------------------------------------------------
 # 6. The ratchet — a direct redis client outside the wrapper fails the build.
 # ---------------------------------------------------------------------------
 #
@@ -467,8 +507,6 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
     "apps/services/gateway/gateway/routes/chat.py":
         "FOLLOW-UP: inline client at :700 and the cc:active:* SCAN at :707 — the "
         "scan is a cross-tenant enumeration the moment a second tenant exists",
-    "apps/services/gateway/gateway/routes/email/core.py":
-        "FOLLOW-UP: _get_redis() at :120 backing the email:att:cache:* keys",
     "apps/services/ingestion/ingestion/queue.py":
         "FOLLOW-UP: ingestion:{clickup,zoho,gmail,dlq} streams (sync client)",
     "apps/services/ingestion/ingestion/consumer.py":
