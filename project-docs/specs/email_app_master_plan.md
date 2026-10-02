@@ -559,7 +559,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 |---|---|---|---|
 | **EM-T1a** | 🟢 AGENT-SAFE | ✅ **MERGED #559, 2026-10-01.** **Signed state, a callback behind the session, and a webhook that binds a tenant.** See §10.4.1. | See §10.4.1. |
 | **EM-T1b** | 🟢 AGENT-SAFE | ✅ **EM-T1b-1 MERGED #560 and EM-T1b-2 MERGED #561 (2026-10-01).** Sync ON. **The sync scheduler and the sync pipeline bind a tenant.** Two PRs: EM-T1b-1 (scheduler, sync core, hooks), then EM-T1b-2 (ten automation sites). See §10.4.2. | See §10.4.2. |
-| **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
+| **EM-T2** | 🟢 AGENT-SAFE | 🔨 **EM-T2a BUILT, not merged (branch `email-t2`, 2026-10-02).** EM-T2b and EM-T2c not built. **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
 | **EM-T3a** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (branch `email-t3`, 2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | 🔨 **BUILT, not merged (branch `email-t3b`, stacked on `email-t3`, 2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
@@ -951,8 +951,11 @@ connect choices (`/email?connect=1`). The email router's real `exempt=[...]` lis
 
 #### 10.4.5 EM-T2 in full
 
-**Status.** Not built. Audited against `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
-each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
+**Status.** 🔨 EM-T2a BUILT, not merged (branch `email-t2`, 2026-10-02). EM-T2b and EM-T2c
+not built.
+
+Audited against `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and each part is one PR.
+EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
 **Measured state (2026-10-02).**
 
@@ -1023,6 +1026,15 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line for 223 and
 `\d email_accounts` on the box.
+
+**As built (2026-10-02).** `create_account` also puts the organization in its duplicate read
+and in the default test. Both then match the new indexes with or without row level security.
+The fence runs 223 in the production order on the promoted catalog, and on a dedicated
+database that holds the ladder up to 222.
+
+⚠️ **Residual.** A full replay (`MIGRATION_REPLAY_ALL=1`) runs 47 again before 223. When one
+member holds a default mailbox in two organizations, 47 then fails on its old index. Migration
+209 has the same shape for `people`. The ledger deploy does not replay 47.
 
 ##### EM-T2b — the attachment cache goes through `tenant_redis`
 
