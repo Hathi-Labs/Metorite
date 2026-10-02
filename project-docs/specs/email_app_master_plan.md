@@ -544,6 +544,7 @@ or API client to create a pattern by hand.
 - **Q1 (owner, 2026-10-02).** The limit of 500 MB is for each mailbox, not for each member.
 - **Q2 (owner, 2026-10-02).** New mail continues to sync at the limit. Only the import of older mail stops.
 - **Q3 (owner, 2026-10-02).** At the limit, the body backfill and the embeddings stop. A message that the member opens still loads its body live from the provider.
+- **Q4 (owner, 2026-10-02).** At the limit, an open shows the body and stores nothing. So an open never takes a mailbox past the limit.
 
 ### 10.3 The customer flow (the acceptance target for EM-T3)
 
@@ -2094,7 +2095,7 @@ The R8 tests must show PASSED, not SKIPPED.
 13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
 14. **The account API.** `EmailAccountModel` gains `stored_bytes` and `storage_limit_bytes`.
 
-**Non-goals.** No limit for each member (Q1). No retention by age. No delete of an attachment file, because Metorite stores none. No UI (EM-T6e). No change to the mailbox in Outlook, ever (D-EM-14). No change to the open path of a message (`transport/messages.py:624-654`, risk R-10).
+**Non-goals.** No limit for each member (Q1). No retention by age. No delete of an attachment file, because Metorite stores none. No UI (EM-T6e). No change to the mailbox in Outlook, ever (D-EM-14).
 
 **Done when.**
 
@@ -2104,6 +2105,8 @@ The R8 tests must show PASSED, not SKIPPED.
 - A Resync at the limit stops in the same way, and its result holds `limit: true`.
 - (Q3) At the limit, phases (e) and (f) make no provider call and no model call.
 - (Q3) At the limit, a member who opens a message with no stored body gets the body.
+- (Q4) At the limit, that open writes no body to the row (`transport/messages.py:624-654`), so the meter
+  does not change. Under the limit, the open stores the body as it does today.
 - (Q2) At the limit, the next poll still writes a new message.
 - The preview returns the count and the bytes, and the count of `email_messages` rows does not change.
 - R8: a removal with `before` 30 days back deletes each message of the mailbox older than that date, and no message of another mailbox. It deletes their `email_executed_rules` rows, and it moves `import_since` to `before`.
@@ -2223,7 +2226,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **R-7. A member act can import removed mail again.** Process past emails with an explicit date is bound by the ceiling only. The member asked for that mail, and the limit still binds.
 - **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
 - **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
-- **R-10. An open at the limit adds to the meter.** The open path stores the body that it loads (`transport/messages.py:624-654`). So each open at the limit adds one body, as new mail does (Q2). The Q3 answer keeps the live load and does not say if the open stores. EM-T6c keeps the path as it is. An owner call can change that before EM-T6c ships.
+- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:624-654`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
