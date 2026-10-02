@@ -628,6 +628,8 @@ async def test_pm_mark_done_by_thread_emits_status_changed_and_closes_the_thread
     assert ov == {"task_id": "open", "member_email": "a@x", "disposition": "DONE"}
     assert propagate.await_count == 1
     assert propagate.await_args.args[1].origin["thread_id"] == "th-1"
+    # D-EM-4 (EM-T2c item 8): the hop names who closes the task.
+    assert propagate.await_args.kwargs == {"closer_email": "a@x"}
     assert events == [("pm.task.status_changed", {
         "task_id": "open", "from": "Inbox", "to": "Done", "to_category": "done",
     })]

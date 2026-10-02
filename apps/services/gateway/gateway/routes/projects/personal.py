@@ -2068,7 +2068,7 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
         from gateway.routes.tasks.email_link import propagate_task_done_to_thread
 
         with contextlib.suppress(Exception):
-            await propagate_task_done_to_thread(db, task)
+            await propagate_task_done_to_thread(db, task, closer_email=email)
     await emit("pm.task.status_changed", {
         "task_id": str(task.id), "from": moved["from"].name,
         "to": moved["to"].name, "to_category": moved["to"].category,

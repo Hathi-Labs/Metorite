@@ -45,9 +45,16 @@ async def _build_chat_context(
     only account) and assemble the background context it receives via
     ``memory_context``: an account hint, an inbox snapshot on the first turn, and
     the email currently open in the reader. Returns ``(account_id, context_parts)``.
-    Best-effort — never raises."""
+    Best-effort — never raises.
+
+    ⚠️ D-EM-4 (EM-T2c item 1): the resolved id is ALWAYS a mailbox of
+    ``user_id``, or None. ``account_id`` comes from the request body, so an id
+    the member does not own is dropped, never kept. Both members can be in one
+    organization, so row level security does not hide the other mailbox. The
+    snapshot below reads by ``account_id`` alone and trusts this resolution.
+    Fence: ``tests/unit/test_email_chat_context_owner.py`` (R8)."""
     parts: list[str] = []
-    resolved = account_id
+    resolved: str | None = None
     try:
         async with _tenant_session() as db:
             accounts = (await db.execute(text(
@@ -198,13 +205,15 @@ async def ai_chat(
     # The chat panel uses its own chat_model setting (default tier-powerful — a
     # strong tool-caller, matching _DEFAULT_TASK_MODELS["chat"]), independent of
     # rule evaluation and draft writing.  This fallback only applies when there
-    # is no account_id or the per-account lookup fails.
+    # is no account_id or the per-account lookup fails. It reads the RESOLVED id,
+    # never req.account_id: the body may name a mailbox of another member
+    # (D-EM-4, EM-T2c item 2).
     chat_model = "tier-powerful"
-    if req.account_id:
+    if account_id:
         try:
             from gateway.routes.email.automation.assistant import _account_models  # noqa: PLC0415
             async with _tenant_session() as _mdb:
-                chat_model = (await _account_models(_mdb, req.account_id))["chat"]
+                chat_model = (await _account_models(_mdb, account_id))["chat"]
         except Exception:  # noqa: BLE001
             pass
 
