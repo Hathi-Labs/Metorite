@@ -9,7 +9,7 @@
 > sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
-> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. 🔨 EM-T3d is in build.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -562,8 +562,8 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
 | **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
-| **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
-| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
+| **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
+| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
 | **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
@@ -1051,9 +1051,134 @@ so that request also keeps the member path.
 The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
 the real page. The proxy fence is `src/proxy.test.ts`.
 
+##### EM-T3d — pre-approval and the connected-member count
+
+**Status.** Not built. Audited against `ea9467a9` on 2026-10-02. EM-T3d waits for EM-T2c only,
+because the fence of EM-T2c holds `OWNER_SCOPE_EXEMPT`. It does not need EM-T2a. Production has
+`email_accounts.organization_id`, and the scheduler already filters on it (EM-T1b-1).
+
+**Problem.** §10.3 step 6 has no surface. Today an admin can approve the app only after a member
+gets the consent error. No route tells an admin how many members connected a mailbox. D-EM-4 lets
+an admin see that count, and never the mail.
+
+**Scope.**
+
+1. **The count route.** Add `GET /email/admin/connections` to `transport/accounts.py`. Name the
+   handler `org_connection_counts`. Do not add a new module.
+2. **The gate.** The route depends on `require_permission("admin:members:read")` from `acb_auth`.
+   That is the same test that `/auth/me` reports as `is_admin`. The email router adds `feature:email`.
+3. **The tenant.** The handler takes `user` and no other parameter. It answers 403 when
+   `user.organization_id` is empty, before it opens a session.
+4. **The read.** The handler reads through `_tenant_session()`. Its SQL also filters on
+   `organization_id = CAST(:org AS uuid)`, from `user.organization_id`. One SELECT computes every
+   count with `count(*) FILTER (...)`.
+5. **The answer.** The response model `OrgConnectionCounts` holds seven integers: `members`,
+   `mailboxes`, `microsoft`, `gmail`, `imap`, `sync_errors` and `first_sync_pending`. `members` is
+   `count(DISTINCT lower(user_id))`. `sync_errors` counts the rows in sync status `error`.
+   `first_sync_pending` counts `NOT initial_sync_done`.
+6. **The fence entry.** Add `org_connection_counts` to `OWNER_SCOPE_EXEMPT` in
+   `tests/unit/test_email_owner_scope_fence.py`. The reason says that the route is for admins only.
+   It also says that the query returns counts, and no address, no member and no account id.
+7. **The Email tab.** Add a fifth tab, "Email", to `OrganizationAdmin.tsx`. Put the tab in a new
+   `EmailTab.tsx`, as a container that fetches and a pure `EmailTabView` that draws. Put the mapper
+   and the copy in a new `lib/emailConnections.ts`.
+8. **Pre-approval.** The tab calls `getMailAppInfo()` from `app/email/lib/api.ts`. When that returns
+   an app, the tab shows a link to `adminConsentUrl(app)`. The link opens a new browser tab, with
+   `rel="noopener noreferrer"`. Microsoft then sends the admin to `/oauth/approved` (EM-T3c).
+9. **The count on the tab.** The tab reads `/api/email/admin/connections` through the BFF catch-all
+   `api/email/[...path]`. It shows the seven counts and nothing else.
+10. **The docs.** In `launch_surface.md` §6.2, add a fifth tab, "Email", that points to this
+    section. Add Email to the tabs of the Organisation row in its §2 table. In the header comment
+    of `OrganizationAdmin.tsx`, change "Four tabs" to "Five tabs".
+
+**Non-goals.**
+
+- No record of an approval. Microsoft holds the approval. The `tenant` value on the return comes
+  with no state, so a record of it would trust a value that anyone can forge.
+- No "approved" badge. Metorite cannot know if the organization approved the app.
+- No migration, no table and no write of any kind.
+- No list of members, no address, no account id and no `sync_error` text.
+- No join to `app_user`. A purge deletes the mailbox of a removed member. Until then, it counts.
+- No pre-approval for Gmail or IMAP. Only Microsoft has an admin-consent step (D-EM-5).
+- No new BFF route, and no copy of `adminConsentUrl` or `getMailAppInfo`.
+
+**Done when.**
+
+- R8, as admin of org A: the route returns the counts of org A only, while org B holds rows too.
+  The same test as admin of org B returns the counts of org B only.
+- R8: the response JSON holds no `@` and no seeded address, for each organization.
+- R8: a member with two mailboxes counts once in `members` and twice in `mailboxes`.
+- R8: `sync_errors`, `first_sync_pending` and each provider count equal the seeded rows.
+- A member with `feature:email` and no `admin:members:read` gets 403. The handler body does not run.
+- An admin with no organization gets 403, and the handler opens no session.
+- The handler signature holds `user` and no other parameter (R5).
+- Each field of `OrgConnectionCounts` is an `int`. The test fails when a field of another type appears.
+- `OWNER_SCOPE_EXEMPT` holds `org_connection_counts` with its reason, and the fence passes.
+- `EmailTabView` draws a link whose `href` equals `adminConsentUrl(app)`, with `target="_blank"`
+  and `rel="noopener noreferrer"`.
+- With no app, `EmailTabView` draws no link. It draws a fixed sentence instead.
+- `mapConnectionCounts` keeps the seven integer fields only. It drops a string field, for example
+  `email_address`.
+- A failed count read draws an error sentence. It never draws "0 members".
+- The markup of `EmailTabView` holds no `@` for a fixture with counts.
+- `launch_surface.md` §6.2 lists five tabs.
+- Do a visual review of the Email tab with the `visual-review` skill. Use light mode, compact density,
+  a changed accent, mobile width, and a view beside Seat assignments. The PR carries the screenshots.
+
+**Files.**
+
+- `apps/services/gateway/gateway/routes/email/transport/accounts.py`: the route and the model.
+- `tests/unit/test_email_owner_scope_fence.py`: one entry.
+- A new `tests/unit/test_email_org_connection_counts.py`. It holds the 403 cases, the model
+  fence and an R8 class. Copy the R8 shape of `test_email_accounts_initial_sync_rls.py`. Copy the
+  403 shape of `test_billing_proxy_route.py`, which overrides `get_current_user`.
+- `workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx`: the tab.
+- A new `src/app/settings/organization/EmailTab.tsx`.
+- A new `src/app/settings/organization/lib/emailConnections.ts` and `emailConnections.test.ts`.
+- A new `src/app/settings/organization/emailTab.test.ts`. It draws `EmailTabView` with
+  `renderToStaticMarkup`. Vitest reads `*.test.ts` only, so use `createElement`, not JSX.
+- `project-docs/specs/launch_surface.md` §2 and §6.2.
+- This section, the EM-T3d row of §10.4, and the WS-17 row of the board.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_org_connection_counts.py \
+  tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_email_imports.py tests/unit/test_org_access_enforcement.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/settings/organization src/app/email/lib src/lib/theme src/lib/nav.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs ../../project-docs/specs/email_app_master_plan.md \
+  ../../project-docs/specs/launch_surface.md
+```
+
+The R8 class must show PASSED, not SKIPPED.
+
+**Risks.**
+
+- **A read across members.** This is the one email route that reads every mailbox row of an
+  organization. The admin gate, the tenant predicate and FORCE RLS each limit it. The model of
+  integers limits what it returns.
+- **Small numbers.** In a small organization, a count can point at a person. "1 Gmail mailbox" can
+  identify the one member who uses Gmail. D-EM-4 accepts a count, so the tab shows it.
+- **A manager sees it.** The seeded `manager` role holds `admin:members:read`. A manager sees the
+  count, as a manager sees the roster.
+- **A forged approval.** The link is public, and the return writes nothing. The tab never says
+  that the organization approved the app.
+- **A fresh developer database.** It has no `email_accounts.organization_id` until EM-T2a (H-104).
+  The scheduler has the same need. The R8 class runs on the promoted catalog, which has the column.
+- **A removed member.** Their mailbox counts until a purge. The tab says "members connected a
+  mailbox". It does not say "of your members".
+- **Known limit.** The live approval needs a real Microsoft tenant. The owner tests it by hand, as
+  the start of §10.4.3 says.
+
 #### 10.4.5 EM-T2 in full
 
-**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). 🔨 EM-T2c BUILT, not merged (branch `email-t2c`). Audited against
+**Status.** ✅ EM-T2a MERGED (#567, migration 223 applied on production 2026-10-02 06:41 UTC). ✅ EM-T2b MERGED (#565). ✅ EM-T2c MERGED (#568). Audited against
 `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
 each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
@@ -1138,7 +1263,7 @@ member holds a default mailbox in two organizations, 47 then fails on its old in
 
 ##### EM-T2b — the attachment cache goes through `tenant_redis`
 
-**Status.** BUILT, not merged (2026-10-02, branch `email-t2b`). EM-T2a and EM-T2c are not built.
+**Status.** ✅ MERGED #565 (2026-10-02).
 
 1. Extend the seam. `get_tenant_redis(binary=True)` returns the same wrapper over a second pool
    with `decode_responses=False`. Do not add a second wrapper class. Size the second pool small.
