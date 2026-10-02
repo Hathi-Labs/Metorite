@@ -25,6 +25,7 @@ providers/
 ├── app_credentials.py — oauth_app, the one reader of the OAuth app credentials
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
+import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
 ```
 
 ## Providers
@@ -123,11 +124,48 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   short block after phase (e) writes them again, but only when they changed
   after phase (d). That write never fails the sync. A failed write goes again
   once in a new block, and the log names the class of the error, never a token.
+- ⚠️ **The import floor binds every sync, and the ceiling binds every path
+  (WS-17 EM-T6a, D-EM-10).** `import_window.py` is the one owner of the
+  ceiling (180 days), the range (0 to 6 months) and the floor. Do not write a
+  second date rule. `_sync_account` passes the floor on every sync, deep or
+  shallow. An explicit `since` of a member act binds when it is newer than the
+  ceiling. Otherwise `import_since` binds. Outlook sends the floor on each
+  sweep. The core drops a message below the floor before phase (c), unless
+  Metorite holds its row. Clean older mail with no date passes the ceiling.
+  The "Load older" backfill of a folder (`gateway/routes/email/transport/folders.py`)
+  writes nothing below the ceiling and stops paging there. Every floor is in
+  UTC. R7: `tests/unit/test_email_import_floor.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
   the session or the verified OAuth state, never from request input.
-- `get_scheduler_status()` returns state for health checks
+- ⚠️ **Call `remove_account_sync` with no session open (WS-17 EM-T4f).** It
+  waits for the loop task. A caller with an open block holds its locks for as
+  long as the task runs. A disconnect reads the row first, then stops the
+  loop, then deletes in a new block. R7:
+  `tests/unit/test_email_disconnect_order.py`.
+- ⚠️ **One sync at a time for each mailbox (WS-17 EM-T4f part 2).**
+  `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
+  `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
+  of one mailbox upsert the same keys and one waits on the uncommitted rows
+  of the other. The lock key is the id in lower case. The loop, the webhook,
+  the manual sync and the resync pass `if_busy="skip"` and get
+  `SYNC_SKIPPED_BUSY`. A skip marks the mailbox, and the holder then runs ONE
+  more shallow cycle under the lock (`_rerun_once`). The deep downloads wait
+  up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and `download_failure` turns a
+  busy or failed result into a job error. A resync passes `purge` and
+  `reset_cursor`, and phase (a) applies them under the lock. A new call must
+  pass a constant mode. The lock lives in this process, which is enough while
+  the gateway is one uvicorn process. Call it with no session open. R7:
+  `tests/unit/test_email_sync_one_at_a_time.py`.
+- The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
+  from `_scheduler_tasks` only while the entry is its own task, and it takes
+  no `_scheduler_lock` for that.
+- `OutlookProvider.delete_subscription` returns the HTTP status of Graph and
+  raises on a transport error. The caller decides what a status means.
+- `get_scheduler_status()` returns state for health checks. A disconnect
+  reads it to know whether a loop ran, so a failed disconnect starts only a
+  loop that ran before.
 
 ## Dependencies
 

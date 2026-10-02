@@ -235,8 +235,10 @@ async def test_the_webhook_sync_binds_its_org_and_releases_it(monkeypatch) -> No
 
     seen: dict[str, str | None] = {}
 
-    async def _sync(account_id):
+    async def _sync(account_id, **kw):
         seen["sync"] = current_tenant()
+        # EM-T4f part 2: the webhook skips when a sync holds the mailbox.
+        seen["if_busy"] = kw.get("if_busy")
         return {"synced": 1}
 
     async def _pipeline(account_id):
@@ -246,7 +248,7 @@ async def test_the_webhook_sync_binds_its_org_and_releases_it(monkeypatch) -> No
     monkeypatch.setattr(scheduler_hooks, "process_new_mail", _pipeline)
     before = current_tenant()
     await sync_mod._webhook_sync("acc-1", ORG)
-    assert seen == {"sync": ORG, "pipeline": ORG}
+    assert seen == {"sync": ORG, "pipeline": ORG, "if_busy": "skip"}
     assert current_tenant() == before, "the binding must not leak past the task"
 
 

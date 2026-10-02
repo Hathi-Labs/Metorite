@@ -17,6 +17,8 @@ import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import type { SkillFamily, SkillsCatalog } from "@/app/api/integrations/skills/route";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import GitHubAccountBadge from "@/components/GitHubAccountBadge";
+import { deleteEmailAccount } from "@/app/email/lib/api";
+import { disconnectFailureText } from "@/app/email/lib/connect";
 import Tabs from "@/components/Tabs";
 import type { TabDef } from "@/components/Tabs";
 
@@ -957,6 +959,8 @@ function EmailTab() {
   }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // A refused remove. It shows above the list, and the list stays (EM-T4f).
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const hasFetched = useRef(false);
 
@@ -1036,11 +1040,14 @@ function EmailTab() {
 
   const handleDelete = useCallback(async (id: string) => {
     if (!confirm("Remove this email account?")) return;
+    setRemoveError(null);
     try {
-      await fetch(`/api/email/accounts/${id}`, { method: "DELETE" });
+      // `deleteEmailAccount` throws on a status that is not ok, so a 409 or
+      // a 500 keeps the mailbox in the list (EM-T4f).
+      await deleteEmailAccount(id);
       setAccounts((prev) => prev.filter((a) => a.id !== id));
-    } catch {
-      setError("Failed to remove account");
+    } catch (e) {
+      setRemoveError(disconnectFailureText(e));
     }
   }, []);
 
@@ -1121,6 +1128,18 @@ function EmailTab() {
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {removeError && (
+        <div role="alert"
+          className="mx-4 mt-3 p-3 rounded-xl bg-destructive/10 border border-destructive/30 flex items-start gap-2.5 text-xs text-destructive">
+          <Icon name="AlertCircle" className="w-4 h-4 mt-0.5 shrink-0" />
+          <p className="flex-1 min-w-0">{removeError}</p>
+          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => setRemoveError(null)}
+            title="Dismiss" aria-label="Dismiss" className="rounded-md">
+            <Icon name="X" className="w-3.5 h-3.5" />
+          </Button>
         </div>
       )}
 

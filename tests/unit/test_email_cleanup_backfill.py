@@ -1,11 +1,13 @@
 """Clean older mail: fetch history, then categorize it without a model.
 
 The Email Cleaner showed 564 outstanding messages on a mailbox holding ~43,000.
-It was not failing to categorize them — it had never seen them. ``_sync_account``
-fetches ``INITIAL_SYNC_DAYS = 365`` on an account's FIRST sync and every sync
-after that is incremental, so mail older than a year is simply absent. Measured
-on the live account: 6,803 messages held, every folder starting within days of
-one year before the account was connected.
+It was not failing to categorize them — it had never seen them. Before EM-T6a,
+``_sync_account`` fetched one year on an account's FIRST sync, and every sync
+after that is incremental, so older mail was simply absent. Measured on the
+live account: 6,803 messages held, every folder starting within days of one
+year before the account was connected. Since EM-T6a the first sync fetches the
+range that the member chose, and no path reaches back past 180 days (D-EM-10).
+"Everything" now means back to that ceiling.
 
 This is the deterministic counterpart of "Process past emails": same two-phase
 shape, but it spends nothing on models.
@@ -37,8 +39,9 @@ _ACC = "acc-backfill"
 
 
 def test_no_date_means_the_whole_mailbox() -> None:
-    """"Everything" is the point — a floor that defaults to a year would
-    reproduce the bug this feature exists to fix."""
+    """"Everything" sends no date. The route maps it to the ceiling of 180
+    days, never to the smaller import range (EM-T6a,
+    ``test_email_import_floor.py``)."""
     assert c.CleanupBackfillRequest(account_id=_ACC).since_date is None
 
 

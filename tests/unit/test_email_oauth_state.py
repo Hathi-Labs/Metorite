@@ -12,6 +12,11 @@ R7 fences named here:
   member in the state redirects with ``invalid_state`` (risk R-4).
 * ``email-oauth-provider-error``: a provider ``error`` with no ``code`` lands
   on the callback page, never on a 422.
+* ``email-oauth-import-months`` (EM-T6a, §10.4.7 items 7 and 8): the authorize
+  leg signs ``import_months`` 0 to 6, and 1 when absent. Any other value
+  answers 400 before anything is signed. A state with no claim verifies as 1,
+  and a state with a bad claim does not verify. The callback hands the claim
+  to ``_save_account``. ``test_email_import_floor.py`` proves the row (R8).
 
 The database half (a callback for a member of org B writes a row of org B
 that org A cannot read) is R8 and lives in ``test_email_tenant_bind_rls.py``.
@@ -126,6 +131,47 @@ def test_junk_does_not_verify(junk) -> None:
     assert signing.verify_oauth_state(junk) is None
 
 
+def _signed(payload: dict) -> str:
+    """A state over *payload* under the test secret, as any signer wrote it."""
+    import json
+
+    body = signing._b64(json.dumps(payload, separators=(",", ":"),
+                                   sort_keys=True).encode())
+    return f"{body}.{signing._mac(SECRET, signing.OAUTH_STATE_PURPOSE, body)}"
+
+
+def _payload(**over) -> dict:
+    payload = {"v": 1, "nonce": "n", "org": ORG, "member": MEMBER,
+               "provider": "microsoft", "redirect_after": "",
+               "exp": int(time.time()) + 600}
+    payload.update(over)
+    return payload
+
+
+@pytest.mark.parametrize("months", range(0, 7))
+def test_a_state_carries_import_months(months: int) -> None:
+    claims = signing.verify_oauth_state(_state(import_months=months))
+    assert claims is not None and claims["import_months"] == months
+
+
+def test_a_state_with_no_import_months_verifies_as_one() -> None:
+    """A state signed before EM-T6a still completes after the deploy."""
+    claims = signing.verify_oauth_state(_signed(_payload()))
+    assert claims is not None
+    assert claims["import_months"] == 1
+
+
+@pytest.mark.parametrize("bad", [7, -1, "3", 1.5, True, None, [1]])
+def test_a_state_with_a_bad_import_months_does_not_verify(bad) -> None:
+    assert signing.verify_oauth_state(_signed(_payload(import_months=bad))) is None
+
+
+@pytest.mark.parametrize("bad", [7, -1, True, "1"])
+def test_the_signer_refuses_a_bad_import_months(bad) -> None:
+    with pytest.raises(ValueError):
+        _state(import_months=bad)
+
+
 def test_the_webhook_signature_binds_the_organization() -> None:
     sig = signing.sign_webhook_org(ORG)
     assert signing.verify_webhook_org(ORG, sig) == ORG
@@ -169,6 +215,43 @@ async def test_the_longest_accepted_redirect_after_still_verifies() -> None:
     )
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
     assert signing.verify_oauth_state(state) is not None
+
+
+def _state_of(resp) -> dict:
+    state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+    claims = signing.verify_oauth_state(state)
+    assert claims is not None
+    return claims
+
+
+async def test_authorize_signs_the_import_months_it_was_given() -> None:
+    resp = await oauth.oauth_authorize(
+        "microsoft", user=_member(), redirect_after="", import_months="3")
+    assert _state_of(resp)["import_months"] == 3
+
+
+async def test_authorize_signs_one_month_when_none_is_given() -> None:
+    resp = await oauth.oauth_authorize("microsoft", user=_member(), redirect_after="")
+    assert _state_of(resp)["import_months"] == 1
+
+
+#: The last value is a FULLWIDTH DIGIT SIX, which ``str.isdigit`` accepts.
+@pytest.mark.parametrize("bad", ["7", "-1", "x", "", " 3", "3\n", "03", "1.0", chr(0xFF16)])
+async def test_a_bad_import_months_answers_400_and_signs_nothing(
+    monkeypatch, bad,
+) -> None:
+    signed: list[dict] = []
+
+    def _spy(**kw):
+        signed.append(kw)
+        return "never"
+
+    monkeypatch.setattr(oauth, "sign_oauth_state", _spy)
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "microsoft", user=_member(), redirect_after="", import_months=bad)
+    assert exc.value.status_code == 400
+    assert signed == [], "the route signed a state for a bad import_months"
 
 
 def test_the_signer_refuses_a_state_longer_than_the_verifier_accepts() -> None:
@@ -281,6 +364,19 @@ async def test_a_valid_callback_saves_the_account_in_the_state_org(spy) -> None:
     assert spy.saved[0]["org"] == ORG
     assert spy.saved[0]["member"] == MEMBER
     assert spy.saved[0]["mailbox"] == "dana@contoso.test"
+    assert spy.saved[0]["import_months"] == 1
+
+
+async def test_the_callback_hands_the_range_to_the_save(spy) -> None:
+    resp = await _callback(_state(import_months=4))
+    assert _error_of(resp) is None
+    assert spy.saved[0]["import_months"] == 4
+
+
+async def test_an_old_state_hands_one_month_to_the_save(spy) -> None:
+    resp = await _callback(_signed(_payload()))
+    assert _error_of(resp) is None
+    assert spy.saved[0]["import_months"] == 1
 
 
 async def _assert_refused(spy, resp) -> None:

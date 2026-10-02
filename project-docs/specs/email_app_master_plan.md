@@ -11,8 +11,9 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** EM-T6b is next.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
+> ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > 🔨 **EM-T5b-1 and EM-T5b-2 (narrowed) are BUILT on branch `email-t5b`, not merged (2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
@@ -594,7 +595,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | 🔨 **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) BUILT, not merged (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED, not built (2026-10-02).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -2000,6 +2001,124 @@ uv run pytest tests/unit/test_email_n_plus_one.py tests/unit/test_email_rules_en
 uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_n_plus_one.py
 ```
 
+##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
+
+**Status (2026-10-02).** ✅ Part 1 and part 2 MERGED (#578), with fix round 2. Part 2 fixes the cause of the wait of 2 minutes: one sync runs at a time for each mailbox. Part 1 keeps its bound of 5 seconds on the `DELETE` for a sync that holds the row.
+
+This is a tenth part of EM-T4. The orchestrator added it on 2026-10-02 from production evidence. It is not owner-gated.
+
+**The defect (production, 2026-10-02).** A member connected Outlook, and the first sync stored 6410 messages. The member clicked Disconnect while the sync ran. The journal shows this order:
+
+- 08:51:06 UTC: `sync.account_failed`, "canceling statement due to statement timeout", on `INSERT INTO email_messages`.
+- 08:51:08: `sync.backoff next_in=600`.
+- 08:51:10: `sync.loop_removed`. Then `DELETE /email/accounts/<id>` returned 204. Then `sync.account_done synced=6410`.
+- 08:57:48: Microsoft still sent a POST to `/email/webhook/microsoft` for the deleted mailbox.
+
+The `statement_timeout` in production is 2 minutes.
+
+**The cause (corrected by the review of fix round 1, 2026-10-02).**
+
+1. Nothing makes `_sync_account` run one at a time for each mailbox. `_scheduler_tasks` tracks the loop only. Five other callers run it:
+   - the manual sync (`transport/sync.py:241`)
+   - the resync (`transport/sync.py:296`, through `_run_manual_sync`)
+   - the webhook sync (`transport/sync.py:317`)
+   - the cleanup backfill (`automation/cleanup.py:905`)
+   - the runner backfill (`automation/runner.py:1418`)
+2. In production, the loop and a second first sync wrote the same keys, `(account_id, provider_message_id)`. The upsert is `ON CONFLICT ... DO UPDATE` (`persist.py:92`). So the `INSERT` of the loop waited for the uncommitted rows of the other run. It waited until the statement timeout of 2 minutes.
+3. The loop then logged `sync.backoff`. A cancelled task cannot log that, because `CancelledError` passes `except Exception`. So the run that logged `synced=6410` was not the loop.
+4. The old route also waited for the loop task inside the block of its `DELETE` (`transport/accounts.py:365-405`, `scheduler.py:778-791`). So the `DELETE` held its locks until the task ended. The new order fixes this part only.
+5. The `DELETE` still waits for the KEY SHARE lock of each sync outside the loop. Each foreign key check holds one until its phase commits. The reviewer reproduced this on the scratch database as `acb_app_h3rls`.
+6. No code called `OutlookProvider.delete_subscription` (`outlook.py:690`). That method also swallowed each error and read no status. The Graph subscription stayed until it expired, and Microsoft sent notifications for a mailbox that we deleted.
+
+`update_account` (`transport/accounts.py:408-469`) calls `remove_account_sync` after its block closes, so it holds no lock during the wait. EM-T4f does not change it.
+
+**Part 1 scope (built).**
+
+1. Phase 1 reads the row in a short block, with the owner predicate. A row that is absent, or that another member owns, gives 404, and no loop stops. Phase 1 also reads the organization of the row.
+2. With no block open, the route records whether a loop runs, and then it calls `remove_account_sync`.
+3. Phase 2 runs `SET LOCAL lock_timeout = '5s'`, the `DELETE` and the default re-election, in a new block. Its `RETURNING` gives the provider, the credentials and the subscription id.
+4. A lock timeout (SQLSTATE 55P03) answers 409: "A sync is still writing mail for this mailbox. Try again in a moment."
+5. On any failure of phase 2, the route starts the loop again with `refresh_account_sync` and the organization of the row. It does this only when a loop ran before step 2. So a paused mailbox, or a box with `EMAIL_SYNC_ENABLED` off, gets no loop. The restart runs in a task of its own behind `asyncio.shield`, so a second cancel of the request cannot stop it (fix round 2).
+6. With no block open, a `microsoft` row with a subscription id gets `delete_subscription`, with a bound of 5 seconds. The route builds the provider through `_instantiate_provider`, the gateway adapter over `build_provider`.
+7. `delete_subscription` returns the HTTP status of Graph, and it raises on a transport error. 204 and 404 log `email.disconnect.subscription_deleted`. Each other status, error or timeout logs `email.disconnect.subscription_delete_failed`, and the route still returns 204. The log holds the status or the error class, and never a token. `_renew_or_replace` keeps its best effort around the delete.
+8. Each phase is one block with no `commit()`, which is mechanism (A) of §10.4.2.
+9. Both disconnect surfaces keep the mailbox on a refusal, and they show the reason of the gateway. The surfaces are the `DisconnectDialog` of the Email app and Remove on the Email tab of Integrations.
+
+**Part 2 scope (built, with fix round 2).**
+
+1. `_sync_account` takes an `asyncio.Lock` for each mailbox, and then it runs `_sync_cycle`, which holds the old body. The lock key is the account id in lower case, so an id in upper case gets the same lock. Nothing else calls `_sync_cycle`, except the one rerun below. The gateway is one uvicorn process (`deploy/hostinger/acb-gateway.service`), so a lock in the process is enough.
+2. Each call has a busy mode. The loop, the webhook, the manual sync and the resync pass `if_busy="skip"`. They get `{"skipped": "busy", "synced": 0}` at once, and the log says `sync.skipped_busy`. A skip is a success with nothing synced, so the loop adds no backoff.
+3. A skip marks the mailbox "rerun requested". The holder clears the mark when its cycle starts, because that cycle fetches after each earlier skip. The holder then runs ONE more shallow cycle (`deep=False`) under the lock. It does this only when its cycle ends with no error and no cancel, and no caller waits. The rerun keeps the tenant binding of the holder. Two skips cause one rerun.
+4. The manual sync and the resync never wait, because the Control Plane proxy gives each POST 30 seconds. While a sync runs, they answer 409 at once: "A sync is already running for this mailbox. New mail appears when it finishes." A full sync and the resync say "Start the full sync again when it finishes", because the rerun is shallow.
+5. The deep downloads of cleanup and Process past use the default, `"wait"`. They wait up to `SYNC_LOCK_WAIT_SECS` (600 seconds), and then they run. After the bound, a waiter logs `sync.busy_wait_timeout` and gets the busy result.
+6. A busy result or an `error` result ends a deep download as an error, with the reason from `download_failure`. Before, the job said "done" with 0 fetched. A raised error in Process past stays best effort, as before.
+7. The resync passes `purge` and `reset_cursor` into `_sync_account`. Phase (a) of the cycle applies them, under the lock. Before, the route applied them before the lock, so a running tick could write the cursor back.
+8. Why 600 seconds: in production, the first sync of 6410 messages fell inside a window of about 4 minutes. Ten minutes is more than twice that. A longer wait means the holder is stuck.
+9. No caller holds a session while it waits. The wrapper opens none, and the cycle opens its own blocks after the lock. No caller calls `_sync_account` or `_run_manual_sync` inside a block.
+10. The wrapper releases the lock on each exit of the cycle, a cancel included. A cancelled waiter leaves with no lock. A count of holders and waiters goes with each lock. At zero, the lock, the count and the rerun mark all go.
+11. The cycle returns `{"error": "Account not found", "gone": True}` when the row is gone. The loop then stops and logs `sync.loop_row_gone`. It drops its entry from `_scheduler_tasks` only while the entry is its own task.
+
+**Part 2 bounds and trade-offs (recorded).**
+
+- New mail that arrives during a sync appears when that sync ends, through the one rerun. Behind a long deep download, the mail appears when the download ends.
+- A skip during the rerun itself causes no second rerun. That mail appears at the next tick of the loop.
+- The lock lives in one process. A second gateway process needs a database lock in its place.
+
+**Why the Graph call comes after the delete.** The loop renews the subscription, and `_renew_or_replace` can replace it with a new id. A read before the loop stops can hold an old id. The `RETURNING` of phase 2 reads the id after the stop. A token that `authenticate()` refreshes needs no write, because the row is gone.
+
+**Non-goals.**
+
+- No change to `update_account`.
+- No migration.
+
+**Follow-ups (recorded, not built).**
+
+- **F-1. An orphan subscription.** A cancel can stop the loop between `create_subscription` and the `UPDATE` that stores the id in `_ensure_subscription` (`transport/sync.py:453-473`). Then no row names the new subscription, and it lives until it expires.
+- **F-2. An open client.** `OutlookProvider` has no close method. The httpx client that `_get_client` opens for the Graph delete stays open until the process collects it.
+- **F-3. A second SQLSTATE walk.** `_is_lock_timeout` in `transport/accounts.py` copies the walk of `is_transient` in `routes/projects/import_writer.py`. A third copy must move the walk to a shared module.
+- **F-4. The loop registry keys.** `_scheduler_tasks` keeps the id as the caller gave it. The mailbox lock folds case (fix round 2), and this registry does not. A disconnect with an id in upper case then stops no loop. The loop stops by itself when it finds the row gone.
+
+**Done when (part 1).**
+
+- a. `remove_account_sync` runs with no block open, after the ownership read and before the `DELETE`.
+- b. A member who does not own the mailbox gets 404, and `remove_account_sync` does not run.
+- c. A `microsoft` row with a subscription id gets `delete_subscription` with that id. Against the real `OutlookProvider` and `httpx.MockTransport`, 204 and 404 log `subscription_deleted`, and 403 and 500 log `subscription_delete_failed` with the status. A Graph call that raises, or that is slower than the bound, still gives 204.
+- d. A row with no subscription id, or a `gmail` row, builds no provider and makes no Graph call.
+- e. The `DELETE` runs after `SET LOCAL lock_timeout` in the same block. A lock timeout gives 409 and starts the loop again with the organization of the row. Any other failure of phase 2 starts the loop again and raises. With no loop before step 2, nothing starts.
+- f. With the real scheduler, a failed `DELETE` leaves a running loop. A cancel during the `DELETE`, and a second cancel during the restart, still let the restart finish.
+- g. Both disconnect surfaces keep the mailbox on a refusal and show the detail of the gateway.
+- R8: the blocks run against the promoted two-org catalog as the role with no bypass. The row and its messages are gone, and the default moves to the other mailbox. A member of the other organization gets 404. When a second connection holds a KEY SHARE lock on the row, the route answers 409 after about 5 seconds. The row stays, and a new loop runs with the organization of the row. The test bounds the call at 20 seconds, so a route with no `lock_timeout` fails it and does not hang.
+
+**Done when (part 2).**
+
+- h. While a sync of a mailbox runs, a skip call returns the busy result and runs no cycle. A waiting call runs after the first one ends. A second mailbox syncs at the same time. An id in upper case is the same mailbox.
+- i. The wrapper releases the lock after an exception, after a cancel of the holder and after a cancel of a waiter. A waiter gives up at the bound. After 25 syncs, the dicts are empty.
+- j. The loop passes `if_busy="skip"`, and a skip adds no backoff. The loop stops when its row is gone, and it keeps the entry of a newer loop.
+- k. While a sync runs, the manual sync and the resync answer 409 at once, with no wait. The busy resync writes nothing.
+- l. A skip during a held sync causes exactly one shallow rerun after the holder ends, with the tenant of the holder. Two skips cause one rerun. A waiter, an error or a cancel of the holder causes none.
+- m. A busy or failed deep download ends the cleanup job and the Process past job as an error, with the reason.
+- n. Structure: only `_sync_account` and its rerun call `_sync_cycle`. The wrapper opens no session. Each call of `_sync_account` in a file that is not a test has a constant busy mode. A mode that is not a constant fails the check, and no call into the lock runs inside a block.
+- R8: sync A parks inside phase (c) with an uncommitted row. Sync B of the same mailbox does not reach the provider until A ends, and a skip call returns busy. Both then finish with 3 rows and no duplicate. A resync with `purge` and `reset_cursor` deletes the old rows and gives the provider no cursor.
+
+**Fence (R7).** `tests/unit/test_email_disconnect_order.py`, `tests/unit/test_email_sync_one_at_a_time.py`, `workbench/control_plane/src/app/email/lib/connect.test.ts` and `workbench/control_plane/src/app/integrations/emailRemove.test.ts`.
+
+**Files.** `transport/accounts.py`, `transport/sync.py`, `providers/outlook.py`, `scheduler.py`, `automation/cleanup.py` and `automation/runner.py`. In the Control Plane: `email/components/DisconnectDialog.tsx`, `email/lib/connect.ts`, `email/lib/emailStore.ts` and `integrations/page.tsx`. Plus the four tests, and the updated `test_email_webhook.py` and `test_email_manual_sync_parity.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_disconnect_order.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_request_jobs_tenancy.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_email_webhook.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_process_past_progress.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/accounts.py \
+  tests/unit/test_email_disconnect_order.py tests/unit/test_email_sync_one_at_a_time.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/integrations
+```
+
+⚠️ The `promoted` fixture always takes the same database name, `<ladder database>_h3rls`. Another worktree that runs an R8 suite on the same scratch server drops it. To run alone, point `TENANT_LADDER_DATABASE_URL` at a database name of your own on that server.
+
 **Recorded risks.**
 
 - **R-1.** A split can write a decision that a newer message made stale. EM-T4a-2 checks `last_message_id` before the write.
@@ -2011,7 +2130,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED, not built (2026-10-02). The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b to EM-T6e are not merged. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
@@ -2049,9 +2168,23 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 ##### EM-T6a — the import floor and the range choice (backend)
 
+**Status.** ✅ MERGED (#577, 2026-10-02).
+
+**As built.**
+
+- The migration is `225_email_import_onboarding.sql`. `email_ingestion/import_window.py` owns the ceiling, the range and the floor.
+- The core drops a message below the floor in the session of phase (c). The reconcile then reads the same list.
+- Closing the guided setup through the PATCH does not restart the sync loop, because a restart cancels a sync in flight. A change of `label` or `sync_enabled` restarts it, as before.
+- Item 13 also corrected three claims that the audit did not list: `automation/cleanup.py` at about 728 and 943, and `automation/runner.py` at about 858. `providers/base.py` got one docstring line.
+- `schema.generated.sql` is not regenerated, and scope item 1 no longer asks for it. The snapshot is stale since `079af091`, and a dump of the ladder rewrites all 7161 lines. A refresh is a separate change. The R8 suite proves the columns instead.
+- Consequence: the reconcile of the recurring Outlook poll no longer reaches stored mail older than the floor. So a delete in Outlook of such mail stays in Metorite. This follows from item 5.
+- Consequence: stored mail below the floor no longer gets moves or read-state changes from Outlook, because the sweep no longer reads it. Graph gives a moved message a new id, and the provider sends no `ImmutableId` header.
+- F5: a reconnect no longer clears a stale Gmail `last_history_id`. Only a Resync clears it now. The risk is low, because D-EM-5 keeps Gmail out of the connect flow.
+- Fix round 1 (2026-10-02). "Clean older mail → Everything" sends no date, and the route now passes the ceiling, never `import_since`. "Load older" (`POST /email/accounts/{id}/backfill`) writes no message older than the ceiling, and it stops at the first page that reaches below it. `sync_floor` returns UTC, because Outlook writes the wall time with a `Z`.
+
 **Scope.**
 
-1. **One migration.** Add one file in `infra/postgres/` with the next free number at build time (R1). Name it `<n>_email_import_onboarding.sql`. It adds eight columns to `email_accounts` with `ADD COLUMN IF NOT EXISTS`. Each column is nullable, with no default, no CHECK and no backfill (R6). The columns are `import_since TIMESTAMPTZ`, `import_reached_at TIMESTAMPTZ`, `import_phase TEXT`, `import_count INTEGER`, `import_estimate INTEGER`, `stored_bytes BIGINT`, `stored_bytes_at TIMESTAMPTZ` and `onboarding_done_at TIMESTAMPTZ`. EM-T6b to EM-T6e add no migration. Run `scripts/dump_schema.sh` and commit `schema.generated.sql`.
+1. **One migration.** Add one file in `infra/postgres/` with the next free number at build time (R1). Name it `<n>_email_import_onboarding.sql`. It adds eight columns to `email_accounts` with `ADD COLUMN IF NOT EXISTS`. Each column is nullable, with no default, no CHECK and no backfill (R6). The columns are `import_since TIMESTAMPTZ`, `import_reached_at TIMESTAMPTZ`, `import_phase TEXT`, `import_count INTEGER`, `import_estimate INTEGER`, `stored_bytes BIGINT`, `stored_bytes_at TIMESTAMPTZ` and `onboarding_done_at TIMESTAMPTZ`. EM-T6b to EM-T6e add no migration. Do not regenerate `schema.generated.sql` here. It is stale since `079af091`, and a refresh is a separate change.
 2. **One floor function.** Add `email_ingestion/import_window.py`. It holds the ceiling, the floor and the conversion of a range to a date. A month is 30 days. The ceiling is `now - 180 days`. Delete `INITIAL_SYNC_DAYS`.
 3. **The floor rule.** A member act can pass an explicit `since`. Its floor is the later of that `since` and the ceiling. Every other sync takes the choice of the member. Its floor is the later of `import_since` and the ceiling. The ceiling alone binds a row with `import_since` NULL, because that mailbox connected before EM-T6.
 4. **`_sync_account` passes the floor on every sync**, deep or shallow. The explicit callers are Process past emails and Clean older mail. A Resync passes no `since`, so the choice of the member binds it.
@@ -2092,7 +2225,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 - `GET /email/accounts` returns `import_since` and `onboarding_done`.
 - `test_email_owner_scope_fence.py` passes with no new entry.
 
-**Files.** A new `infra/postgres/<n>_email_import_onboarding.sql`, and `schema.generated.sql`. Under `apps/services/email_ingestion/email_ingestion/`: a new `import_window.py`, `scheduler.py` and `providers/outlook.py`. Under `apps/services/gateway/gateway/routes/email/`: `transport/oauth.py`, `transport/signing.py`, `transport/accounts.py`, `transport/sync.py` (text only) and `automation/cleanup.py` (text only). The tests are a new `tests/unit/test_email_import_floor.py`, with updates to `test_email_deep_sync.py` and `test_email_oauth_state.py`.
+**Files.** A new `infra/postgres/<n>_email_import_onboarding.sql`. Under `apps/services/email_ingestion/email_ingestion/`: a new `import_window.py`, `scheduler.py` and `providers/outlook.py`. Under `apps/services/gateway/gateway/routes/email/`: `transport/oauth.py`, `transport/signing.py`, `transport/accounts.py`, `transport/sync.py` (text only) and `automation/cleanup.py` (text only). The tests are a new `tests/unit/test_email_import_floor.py`, with updates to `test_email_deep_sync.py` and `test_email_oauth_state.py`.
 
 **Verify with.**
 
@@ -2106,9 +2239,12 @@ uv run pytest tests/unit/test_email_import_floor.py tests/unit/test_email_deep_s
   tests/unit/test_email_account_unique_per_tenant.py tests/unit/test_email_owner_scope_fence.py \
   tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_tenancy_insert_fence.py tests/unit/test_db_engine_seam.py -q -rs
-uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email/transport \
+uv run ruff check apps/services/email_ingestion/email_ingestion/import_window.py \
   tests/unit/test_email_import_floor.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
+
+The first ruff run names the new files only. The second run is the blocking set of CI. A run over the whole directories reports 113 older findings, and the changed files hold some of them.
 
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line of the new migration and `\d email_accounts` on the box.
 
