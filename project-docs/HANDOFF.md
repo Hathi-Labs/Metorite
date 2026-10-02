@@ -500,6 +500,8 @@ line — never reclaim a number by deleting the other entry.
   writes one (H-36). A reseller call passes through both.
 - **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
   `work_plan.md` §6.1 WS-31 (i)
+- **2026-10-02.** A mode other than `off` in `DECIDE_FEATURE_MODES` is this gate too.
+  It waits for EM-T4 item 3, the shared LLM cap (`email_app_master_plan.md` §10.4.4).
 - **Added:** 2026-09-23 · the Jev planning session
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
