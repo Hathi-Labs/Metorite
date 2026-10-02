@@ -400,6 +400,21 @@ class _FakeProvider:
         return {}
 
 
+def _seed_enabled_rule(admin, *, org: str, account_id: str) -> None:
+    """One enabled rule, created a day before any seeded message.
+
+    The AUTOMATIC run (caller "scheduler") and the Reply Zero backfill touch
+    only mail received after the first enabled rule of the mailbox was
+    created (EM-T5b-2, owner decision (d) of 2026-10-02). The cases below
+    need this rule for their inbox rows to be selected."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_rules (account_id, name, instructions, enabled, "
+            "created_at, organization_id) VALUES (CAST(:a AS uuid), 'Receipt', "
+            "'receipts', true, :c, CAST(:o AS uuid))"),
+            {"a": account_id, "c": datetime.now(UTC) - timedelta(days=1), "o": org})
+
+
 def _seed_message(admin, *, org: str, account_id: str, folder: str = "inbox",
                   sender: str = "s@sender.test", thread_id: str | None = None,
                   categories: list[str] | None = None,
@@ -490,6 +505,7 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         m1 = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                            thread_id=f"t-r1-{acc}")
         m2 = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
@@ -636,6 +652,9 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        # The backfill selects an INBOX gap thread only after the first
+        # enabled rule (the new-mail floor, EM-T5b-2 fix round 2).
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         filed_tid, gap_tid = f"t-filed-{acc}", f"t-gap-{acc}"
         _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                       folder="archive", sender="x@ext-em-t1b2.test",
@@ -966,6 +985,7 @@ class TestFixRoundOne:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                             thread_id=f"t-proj-{acc}")
 

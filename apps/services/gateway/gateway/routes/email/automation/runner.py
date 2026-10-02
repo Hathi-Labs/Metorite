@@ -11,6 +11,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.engine import (
+    _MOVE_ACTIONS,
     LLMUnavailable,
     _email_payload_from_id,
     _is_conversation_status_rule,
@@ -43,7 +44,10 @@ from gateway.routes.email.automation.learning import (
     _sender_consistent_for_rule,
     _sender_is_a_correspondent,
 )
-from gateway.routes.email.automation.rules import _upsert_rule_pattern
+from gateway.routes.email.automation.rules import (
+    NEW_MAIL_FLOOR_SQL,
+    _upsert_rule_pattern,
+)
 from gateway.routes.email.automation.senders import _maybe_block_cold
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -96,7 +100,8 @@ async def test_rules(
             email = {"subject": req.subject or "", "from": req.from_email or "",
                      "body": req.body or "", "to": ""}
         try:
-            match = await _match_email_to_rule(db, req.account_id, email)
+            match = await _match_email_to_rule(
+                db, req.account_id, email, message_id=req.email_id or None)
         except LLMUnavailable:
             return {"matched": False, "rule": None,
                     "reason": "The AI classifier is temporarily unavailable — "
@@ -149,7 +154,8 @@ async def test_rules_recent(
                 r, self_email, about, extra_domains=org_domains,
                 attachments=attach.get(str(r.id), ""))
             try:
-                match = await _match_email_to_rule(db, req.account_id, email)
+                match = await _match_email_to_rule(
+                    db, req.account_id, email, message_id=str(r.id))
             except LLMUnavailable:
                 match = None  # preview only — a transient outage, not a verdict
             results.append({
@@ -589,7 +595,9 @@ async def undo_execution(
 
         pmid = row.provider_message_id
         reversed_actions: list[str] = []
-        if any(t in ("ARCHIVE", "MOVE_FOLDER", "TRASH", "MARK_SPAM")
+        # The one set of moving actions. The rule match reads the same set for
+        # its higher threshold (`engine._MOVE_ACTIONS`).
+        if any(t in _MOVE_ACTIONS
                for t in taken):
             await provider.move_to_folder(pmid, "inbox")
             if row.message_id:
@@ -1019,7 +1027,8 @@ async def run_rules_on_message(
             row, await _account_self_email(db, req.account_id), about,
             extra_domains=org_domains, attachments=attach)
         try:
-            match = await _match_email_to_rule(db, req.account_id, email)
+            match = await _match_email_to_rule(
+                db, req.account_id, email, message_id=str(row.id))
         except LLMUnavailable:
             # Classifier down — don't log SKIPPED or stamp the watermark (that
             # would consume the message unseen). Report it so the user retries.
@@ -1083,9 +1092,15 @@ async def run_rules_on_message(
                 multi_rule=multi_rule, resolve=True, provider=provider,
             ) or [match]
         except LLMUnavailable:
-            # Already have the primary single match; apply just that rather than
-            # failing the whole apply on a second classifier call.
-            matches = [match]
+            # §10.4.8 EM-T5b-2 item 6: a missing SECOND answer is the same as
+            # a missing first one. Apply nothing and stamp nothing, so the
+            # message stays undecided and a later run asks again (D-EM-8).
+            # It used to apply the first match anyway.
+            await _persist_rotated_creds(db, store, req.account_id, provider)
+            return {"matched": False, "applied": False, "rule": None,
+                    "reason": "The AI classifier is temporarily unavailable — "
+                              "try again in a moment.",
+                    "actions": [], "unavailable": True}
         # An apply (never a dry-run) with a guaranteed fallback match, so
         # log_no_match is off — this path always has something to apply.
         await _apply_matches(
@@ -1217,7 +1232,7 @@ async def _apply_and_log_match(
                 and await _sender_consistent_for_rule(
                     db, account_id, sender, str(rule["id"]))
                 and await _ai_confirms_sender_pattern(
-                    db, account_id, sender, rule)):
+                    db, account_id, sender, rule, message_id=str(r.id))):
             try:
                 await _upsert_rule_pattern(
                     db, account_id, str(rule["id"]), sender, False, "AI",
@@ -1552,9 +1567,10 @@ async def _process_past_emails_job(
                 try:
                     if multi_rule:
                         matches = await _match_email_to_rules_multi(
-                            db, account_id, email)
+                            db, account_id, email, message_id=str(r.id))
                     else:
-                        m = await _match_email_to_rule(db, account_id, email)
+                        m = await _match_email_to_rule(
+                            db, account_id, email, message_id=str(r.id))
                         matches = [m] if m else []
                 except LLMUnavailable as exc:
                     # Classifier down — don't stamp the watermark on mail it
@@ -1622,6 +1638,19 @@ async def _process_past_emails_job(
                              account_id=account_id, error=type(exc).__name__)
 
 
+#: The caller name of the automatic run (`scheduler_hooks.auto_run_rules_for_account`).
+_SCHEDULER = "scheduler"
+
+#: The AUTOMATIC run touches new mail only (owner decision (d), 2026-10-02):
+#: mail received at or after the creation of the first enabled rule of the
+#: mailbox. Older synced mail changes only through "Process past emails",
+#: which the member starts. With no enabled rule, the bound is NULL and the
+#: run selects nothing (the hook already returns early then). The manual run
+#: and Process past keep no bound.
+_NEW_MAIL_ONLY = f"""
+       AND em.received_at >= {NEW_MAIL_FLOOR_SQL}"""
+
+
 async def _run_rules_job(
     account_id: str, limit: int, dry_run: bool, user_email: str
 ) -> None:
@@ -1642,15 +1671,17 @@ async def _run_rules_job(
     """
     try:
         # Phase 0: every read the loop needs.
+        # The floor is one of two fixed texts, never a value from a request.
+        new_mail_only = _NEW_MAIL_ONLY if user_email == _SCHEDULER else ""
         async with _tenant_session() as db:
             rows = (await db.execute(text(
-                """SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
+                f"""SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
                           em.body_text, em.snippet, em.from_address,
                           em.to_addresses, em.cc_addresses, em.received_at
                    FROM email_messages em
                    WHERE em.account_id = :aid AND LOWER(em.folder) = 'inbox'
                      AND em.rules_processed_at IS NULL
-                     AND em.rules_held_back_at IS NULL
+                     AND em.rules_held_back_at IS NULL{new_mail_only}
                    ORDER BY em.received_at DESC LIMIT :limit"""
             ), {"aid": account_id, "limit": limit})).fetchall()
             if not rows:

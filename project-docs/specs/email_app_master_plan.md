@@ -16,6 +16,7 @@
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
+> ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -133,20 +134,17 @@ records only what the email app must keep true.
    | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
    | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
+   Amended 2026-10-02 by D-EM-7. The rule match now covers the multi-rule mode too, and `rule_model` no longer applies. §10.4.8 holds the current anchors.
+
 3. **Each one runs in shadow first.** It logs both answers and acts on the old
-   one, until the agreement on this mailbox is measured.
-4. **A low confidence escalates to the current LLM path.** The thread-status
-   call already carries a `confident` flag (`replyzero.py:302`). The calibrated
-   confidence replaces that flag, and the "· auto" re-check tag stays.
+   one, until the agreement on this mailbox is measured. Then it switches to `on`. In `on`, no LLM call runs (D-EM-8).
+4. **No escalation to an LLM** (D-EM-8, 2026-10-02). A threshold on the probability decides. A decided thread status gets no new `· auto` tag, because a second ask of the same thread gives the same answer. An old `· auto` row gets one more check.
 5. ⚠️ **The rule count has no cap.** A user can write more than 20 rules, and
-   accuracy falls as options grow. Measure accuracy against the count, and keep
-   the LLM above the measured limit.
-6. **Multi-rule execution stays on the LLM.** `_llm_pick_rules` (`engine.py:341`)
-   is multi-label, and it is off by default.
+   accuracy falls as options grow. One boolean for each rule keeps each judgment small. A long rule list costs more questions, not a harder question. No LLM path remains (D-EM-8). The window measures accuracy against the rule count.
+6. **Multi-rule execution moves too** (D-EM-7, 2026-10-02). One boolean for each rule replaces the multi-label LLM call. §10.4.8 holds the shape.
 7. **Tier 1 item 3's semaphore covers `decide` calls too.** A decision is cheap,
    but a second mailbox still doubles the traffic.
-8. 🔴 **Real mail waits for the owner's residency answer.** Shadow mode sends
-   the message body too (`work_plan.md` §6.1 WS-31 (i)).
+8. **The owner answered residency for email** (D-EM-9, 2026-10-02). `DECIDE_ENABLED` and the router credential on the box are still owner acts (H-166).
 
 ---
 
@@ -535,7 +533,9 @@ or API client to create a pattern by hand.
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
 | **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
-| D-EM-7 to D-EM-9 | *Gap. Not on `main` at 2026-10-02.* EM-T7 adds D-EM-6 (drafting off), and EM-T5b adds D-EM-7 to D-EM-9 (the `decide` tier), each on its own branch. |
+| **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
+| **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
+| **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
 | **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) |
 | **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) |
 | **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
@@ -550,6 +550,13 @@ or API client to create a pattern by hand.
 - **Q2 (owner, 2026-10-02).** New mail continues to sync at the limit. Only the import of older mail stops.
 - **Q3 (owner, 2026-10-02).** At the limit, the body backfill and the embeddings stop. A message that the member opens still loads its body live from the provider.
 - **Q4 (owner, 2026-10-02).** At the limit, an open shows the body and stores nothing. So an open never takes a mailbox past the limit.
+
+**The owner decisions for the Jev demo (2026-10-02).** Each one narrows D-EM-7 to D-EM-9 for EM-T5b-2. §10.4.8 holds the build.
+
+- **(a) (owner, 2026-10-02).** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s.
+- **(b) (owner, 2026-10-02).** Jev decides the rule match for ALL organizations, with no shadow window ("Do jev for all").
+- **(c) (owner, 2026-10-02).** The demo scope is the rule match only (`email.rule_match`). The thread status, the cold check and the sender pin keep the old path, and shadow stays allowed for them.
+- **(d) (owner, 2026-10-02).** The AUTOMATIC run touches new mail only: mail that arrived after the member made the first enabled rule of the mailbox. Older synced mail changes only through "Process past emails".
 
 ### 10.3 The customer flow (the acceptance target for EM-T3)
 
@@ -588,6 +595,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
+| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
@@ -1279,6 +1287,10 @@ either one.
 - No second classifier. Every answer that the feature acts on is the old answer.
 - No change to the concurrency cap. EM-T4 wraps the one helper.
 
+> **Amended 2026-10-02 by D-EM-7 and D-EM-8.** Two non-goals above end with EM-T5. The other non-goals still bind EM-T5.
+>
+> EM-T5b changes `_llm_pick_rules`, so multi-rule execution moves to `decide`. EM-T5b builds `on` with no LLM path, and with no gate that calls an LLM.
+
 **Done when.**
 
 - With every mode `off`, a fake `decide` records zero calls on all four sites.
@@ -1698,11 +1710,11 @@ The R8 tests must show PASSED, not SKIPPED.
 ##### EM-T4a-2 — the decision core
 
 1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
-2. The functions are `classify_matches` with its two match helpers (`engine.py:692-871`) and `resolve_conversation_status_matches` (`replyzero.py:604`).
-3. The other functions are `recompute_thread_status` (`replyzero.py:840`), `_ai_confirms_sender_pattern` (`learning.py:47`) and `_maybe_block_cold` (`senders.py:1245`).
+2. The functions are `classify_matches` with its two match helpers (`engine.py:741-920` at `01d760e6`) and `resolve_conversation_status_matches` (`replyzero.py:657`).
+3. The other functions are `recompute_thread_status` (`replyzero.py:894`), `_ai_confirms_sender_pattern` (`learning.py:67`) and `_maybe_block_cold` (`senders.py:1282`). EM-T5b-1 moves these lines again, so read them again at dispatch.
 4. `recompute_thread_status` writes the status in a new block. It writes only when the newest message of the thread is still `ctx.last_message_id`.
 5. The runner loop, the gap loop of `_maybe_classify_threads` and `_mark_thread_replied` use the split.
-6. The EM-T5 shadow helper wraps the ask step only.
+6. The EM-T5 shadow helper wraps the ask step only. In `on`, `decide_features.ask` is the ask step.
 
 **Non-goals.** No change to a prompt, a model tier or a decision. No change to the action tail, which is EM-T4a-3.
 
@@ -1788,7 +1800,7 @@ API, and EM-T4b adds the shared cap and the budget.
 13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again. It does not write its `· auto` fallback for it.
 14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
 15. `core._llm_json` and the 9 direct sites enter `llm_slot`. `run_agent_stream` (`chat.py:217`) is exempt, because a member drives it.
-16. After EM-T5 merges, `decide_features._ask` takes a slot only when one is free. Otherwise it logs `decide.shadow_skipped` with `reason=cap` and makes no call.
+16. In `shadow`, `decide_features._ask` takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on` (EM-T5b-2), `decide_features.ask` waits for a slot, as `_llm_json` does.
 
 **Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one. No UI. No change to `acompletion_with_fallback`.
 
@@ -2454,6 +2466,473 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
 - **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
 - **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:624-654`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
+
+#### 10.4.8 EM-T5b in full
+
+**Status.** ✅ EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR. EM-T5b-3 and EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
+
+**EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. `build_thread_context` builds them only when `email.thread_status` is not `off`, so in `off` the live context is the one from before. These choices of the build are not in the text above:
+
+- `decide_features.CHOICE_TEXT_BUDGET` (80 000 characters) is the text that all the options of one choice share. Without it, `best` over 254 long rules fails the window check of the Console.
+- `decide_features.clip_fact` bounds each fact of a state twice: the raw text by the clip above, and its JSON-escaped form by two times that clip. The Console measures the escaped state, where one control character takes six characters.
+- `_status_corrections_block` keeps its text, and it returns a `StatusCorrections` that also carries the notes for `decide`. They are newest first, with the conversation-rule notes first, and with no `[<rule name>]` prefix. The status path makes no new database read.
+- The log names an answer by our own key (`r<i>`, `none` or `unknown`), never by the raw string of the vendor.
+- `engine._MOVE_ACTIONS` is the one set of moving actions. The undo in `runner.py` imports it.
+
+The fences are `tests/unit/test_email_decide_questions.py` and the updated `tests/unit/test_email_decide_shadow.py`.
+
+**The owner narrowed EM-T5b-2 (2026-10-02).** The decisions (a) to (d) of §10.2 apply:
+
+- (a) `DECIDE_ENABLED=true` is ON in production since 12:16 UTC, and one smoke call reached Jev (0.99 in 1.5 s).
+- (b) The rule match runs on Jev for all organizations, with no shadow window.
+- (c) Only `email.rule_match` goes `on`. The other three features keep the old path.
+- (d) The automatic run touches new mail only.
+
+**EM-T5b-2 as built, narrowed (2026-10-02).** It follows the scope of EM-T5b-2 below, reduced to the rule match:
+
+1. `decide_features.ON_FEATURES` holds `email.rule_match` only. `on` for any other feature still resolves to `off` and logs `decide.mode_refused`.
+2. `DECIDE_FEATURE_ORGS` accepts `*`, which means every organization. With an empty value, no organization runs. A call with no tenant stays `off`.
+3. `decide_features.ask` runs the requests in `on`. Its bound is `ON_BOUND_S`, the 10-second client bound of item 2 below, shared by all the requests of one call. It never calls an LLM.
+4. In `on`, `_llm_pick_rule` returns `RuleMatch.as_pick` and `_llm_pick_rules` returns `RuleMatch.as_picks`. So every caller uses the Jev answer: the automatic run (`classify_matches`), Process past emails, the Test routes and the re-run of one message.
+5. With no decision, the matcher raises `DecisionUnavailable`, a subclass of `LLMUnavailable`. The callers already skip the `rules_processed_at` stamp on that signal, so the next cycle asks again (D-EM-8). The reasons are a timeout, `DecideUnavailable`, `DecideRequestInvalid` (also `decide.request_invalid` at error level), a reply that is not a `Decision`, and an answer that `_read_rule_match` cannot read.
+6. Each call in `on` names the mailbox owner, `email_accounts.user_id`, as a proven member (`engine._decide_member`). A deployment Router key refuses a call with no member, and a request job runs as its request member.
+7. The automatic run (caller `scheduler`) selects only mail that arrived at or after the oldest `created_at` of the enabled rules of the mailbox (`rules.NEW_MAIL_FLOOR_SQL`, through `runner._NEW_MAIL_ONLY`). With no enabled rule it selects nothing, and the hook already returns early then. The manual run and Process past keep no floor. Fix round 2: the Reply Zero backfill (`_maybe_classify_threads`) applies the same floor to its INBOX gap threads, because it calls `classify_matches` and writes a status and provider labels. Its sent and filed rows keep no floor. The member's "Reclassify" reuses that backfill, so it no longer reaches older inbox threads either. The floor has two trade-offs:
+   - Disabling or deleting the oldest enabled rule, or "Reset rules", moves the floor forward. Mail between the old floor and the new floor is then reachable only through Process past.
+   - A rule that was made disabled and enabled later keeps its creation time as the floor.
+
+   A stored floor for each account, a nullable column, is the later fix.
+8. No member chooses the rules model (D-EM-7). The card is gone from Settings, and `rule_model` is gone from the settings model, the GET answer, the PUT SQL, `_account_models` and the email agent tool. The column stays (R6), and nothing reads or writes it. The old rule call that runs outside `on` uses `tier-fast`.
+9. `decide.decided` logs the keys, the probabilities, the `message_id` and each `request_id`, with no tenant text. `decide.unavailable` logs the feature, the account, the `message_id` and the reason.
+
+**Fix round 2 (2026-10-02).**
+
+- A conversation rule that moves mail needs 0.7 on its own `conv` option (item 8 of "The rule match request"). A label-only one keeps the plurality of the choice.
+- At most one rule that moves mail applies to an email: the most probable one. A tie goes to the canonical order. The log names the others in `dropped_moves`.
+- After a 402 or a 403 verdict, `ask` makes no Router call for that organization for 15 minutes (`REFUSAL_COOLDOWN_S`). Each email stays undecided with the reason `cooldown`, and the runner writes no stamp. The map lives in the one gateway process.
+- `run_rules_on_message` applies nothing and stamps nothing when it gets no second answer, as the table of EM-T5b-2 item 6 says.
+- The Reply Zero backfill keeps the new-mail floor (item 7 above).
+- On a new-mail cycle the scheduler runs the backfill twice: once inside `process_new_mail`, and once from the every-cycle hook (`scheduler.py`). For the scheduler, the first call adds only an earlier run before auto-archive and a second capped batch. For the manual sync and the Graph webhook, `process_new_mail` is the only call. Not refactored.
+
+Not built in this narrowing: the thread status, the cold check and the sender pin in `on`, the startup check (item 9 below), the `· auto` change (item 7 below) and the docstrings of `acb_llm/decide.py` (item 10 below).
+
+The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process past and the floor), `tests/unit/test_email_assistant_settings.py` (R8 for the stored `rule_model`) and `workbench/control_plane/src/app/email/lib/noRuleModel.test.ts`.
+
+**Gate.**
+
+- AGENT-SAFE: the code of all four parts, against a fake `decide`.
+- OWNER-GATE (§6.1 WS-31 (i), H-166): `DECIDE_ENABLED` and the router credential on a box.
+- `shadow` on a box, after `DECIDE_ENABLED`, is gate `enforcement-flip`.
+- OWNER "go": any `on` on a box, and the merge of EM-T5b-3. Each one changes live triage, and EM-T5b-3 removes the way back.
+
+**Order.**
+
+1. EM-T5b-1 goes first. EM-T4a-2 waits for it, because both change the same five functions.
+2. The owner acts of H-166 follow. Then a shadow window runs for 7 days or 300 decided emails, whichever ends later.
+3. EM-T5b-2 merges dark. The owner reads the window, then says "go" for `on`.
+4. EM-T5b-3 merges after 7 days of `on`, with `decide.unavailable` on fewer than 1% of decisions.
+5. EM-T5b-4 does not depend on the others.
+
+**The model calls of Email (measured 2026-10-02).**
+
+| Site | Anchor | Moves to `decide` | Question |
+|---|---|---|---|
+| Rule match, one rule | `engine.py:322` `_llm_pick_rule` | Yes | One boolean per rule, and two choices |
+| Rule match, multi-rule | `engine.py:390` `_llm_pick_rules` | Yes | The same request |
+| Thread status | `replyzero.py:333` `_llm_determine_thread_status` | Yes | One choice of 3 or 4 |
+| Cold check | `senders.py:1245` `_llm_is_cold` | Yes | One boolean |
+| Sender pin | `learning.py:67` `_ai_confirms_sender_pattern` | Yes | One boolean, threshold 0.9 |
+| Cleanup sweep | `cleanup.py:490` `sweep_uncategorized` | No model call | It projects rule labels |
+| Sender categories | `senders.py:1049` `_categorize_senders_job` | No model call | It projects rule labels |
+| Draft consult plan | `drafting.py:1075` | No. CP-13f owns it | It writes a question too |
+| Template fill | `actions.py:268` `_render_template` | No | Text |
+| Morning brief | `digest.py:516` | No | Text |
+| Rule generation | `rules.py:483` | No | Text |
+| Drafts, memories, style | `drafting.py:449, 638, 735, 941`, `assistant.py:599`, `voice_profile.py:215, 253, 692` | No | Text |
+| Email chat | `chat.py:221` | No | An agent run |
+| Embeddings | `email_ingestion/email_embeddings.py:87` | No | Vectors |
+
+**The rule match request.** EM-T5b-1 builds it, and EM-T5b-2 acts on it.
+
+1. **Candidates.** Nothing changes before the AI step. The reply gate, the patterns and the static rules run first (`engine.py:741-802`).
+2. **One boolean for each candidate that is not a conversation-status rule.** Its key is `r<i>`. `criteria.true` holds the rule name, its text and the user's corrections for it. `criteria.false` says that the email does not meet the rule, or that the rule excludes it.
+3. **One choice, `conv`, over the conversation-status candidates, plus `none`.** Reply, Awaiting Reply, FYI and Done exclude each other. So they share one choice, and they are not four booleans. Each option uses the `r<i>` key of its rule, and holds what `criteria.true` holds.
+4. **One choice, `best`, over every candidate, plus `none`.** It runs only for 2 to 254 candidates, because a choice takes 255 options or fewer. It ranks the matched rules, and it never adds a match. Its options use the same keys and text as `conv`.
+5. **The state** is the object under "State shapes". It holds facts only.
+6. **The instructions** hold the question and the guidance of `_CLASSIFIER_GUIDELINES`. They also hold the account-wide corrections, newest first, clipped to 1500 characters.
+7. **Requests.** One request holds 16 questions or fewer. `conv` and `best` go in the first request. All requests run at the same time. When one request fails, the email is undecided.
+8. **A match.** A boolean matches at its threshold or above. A rule that moves mail has a threshold of 0.7. Such a rule has an `ARCHIVE`, `MOVE_FOLDER`, `TRASH` or `MARK_SPAM` action, the set of `runner.py:591`. Every other rule has 0.5. `conv` matches when its answer is not `none`. A conversation rule that moves mail also needs 0.7 on its own option, as the thresholds table says (fix round 2). At most one rule that moves mail matches, the one with the highest probability.
+9. **The main rule.** It is the `best` answer when that rule matched. If not, it is the matched rule with the highest probability. A tie goes to the canonical order of `_load_rules`.
+10. **The return shapes do not change.** One-rule mode returns the main rule as `{"index", "reason"}`, or None. Multi-rule returns each match as `{"index", "reason", "primary"}`. So `classify_matches`, `_apply_matches`, the runner and process-past need no change.
+11. **The reason** is `Matched by AI (probability 0.83).`, because System One returns no reason text.
+12. **Why `best` is in the same request.** The brief proposed a second request over the matched rules only. One request is one round trip, and one email then has one answer or none.
+
+**State shapes.** No state holds a persona, a command or a question.
+
+The rule match:
+
+```json
+{"email": {"from": {"name": "", "address": ""}, "to": "", "cc": "", "date": "",
+           "subject": "", "attachments": "", "body": "<first 1500 characters>"},
+ "direction": "received | sent_by_owner | sent_by_owner_organisation",
+ "mailbox_owner": {"address": "", "name": "", "recipient_role": "to | cc | other",
+                   "about": "<first 1200 characters>"},
+ "sender_history": [{"rule": "Newsletter", "count": 4}]}
+```
+
+The cold check uses `email` and `direction` from above, and adds `"sender": {"prior_contact": false}`.
+
+The thread status:
+
+```json
+{"thread": [{"side": "owner | owner_organisation | other_party", "from": "", "to": "",
+             "cc": "", "owner_cc_only": false, "date": "", "subject": "",
+             "attachments": "", "body": "<first 1500 characters>"}],
+ "earlier_messages_omitted": 0,
+ "last_message_side": "owner | owner_organisation | other_party",
+ "mailbox_owner": {"address": "", "about": "<first 1200 characters>"}}
+```
+
+The sender pin:
+
+```json
+{"sender": {"address": "", "domain": "", "public_mail_domain": true,
+            "automated_local_part": false},
+ "recent_messages": [{"subject": "<120 characters>", "snippet": "<160 characters>"}]}
+```
+
+- `direction` maps `sender_scope`. `external` becomes `received`, `self` becomes `sent_by_owner`, and `internal` becomes `sent_by_owner_organisation`.
+- `recipient_role` maps `_recipient_role`. `direct` becomes `to`, `cc` stays `cc`, and an empty value becomes `other`.
+- `sender_history` comes from `_fetch_classification_hints`, as rows and not as text.
+- The thread keeps its newest messages within 8000 characters, as `_THREAD_PROMPT_BUDGET` does.
+- `public_mail_domain` reads `cleanup._SHARED_DOMAINS`. `automated_local_part` reads `engine._NO_REPLY_PREFIXES`. Add no new list.
+- The state carries the facts that the old prompt carried. It may add a computed fact. It adds no other tenant text.
+
+**The instructions.** Copy these words. Each one names a state field by its path, and none names an option key.
+
+The rule boolean `r<i>`:
+
+```text
+Does the rule that the criteria describe apply to the email in `email`?
+Guidance:
+- Judge `email` on its own content. `sender_history` is a hint only.
+- When the rule text excludes some emails, an excluded email does not meet the rule.
+- When `direction` is not "received", the owner's side sent the email. A rule for
+  received mail (receipts, newsletters, marketing, cold outreach) does not apply,
+  unless the rule names outbound mail.
+- A rule about replying applies only when the email asks the owner for a response.
+  When `mailbox_owner.recipient_role` is "cc", a reply is usually not needed.
+- Use `mailbox_owner.about` to judge what matters to the owner.
+Corrections from the user. They override the guidance:
+- <account-wide corrections, newest first>
+```
+
+`criteria.false` for each rule: "The email does not meet the rule, or the rule excludes it."
+
+The choice `conv`:
+
+```text
+Which conversation rule in the criteria fits the email in `email`?
+Guidance:
+- A conversation rule fits mail from a person that is part of an exchange.
+- Bulk, automated and one-way mail fits no conversation rule.
+- <the direction, cc and reply lines of the rule boolean>
+Corrections from the user. They override the guidance:
+- <account-wide corrections, newest first>
+```
+
+`none` for `conv`: "No conversation rule fits. The email is bulk, automated or one-way mail."
+
+The choice `best`:
+
+```text
+Which one rule in the criteria fits the email in `email` most specifically?
+Guidance:
+- Prefer the most specific rule. Choose a catch-all rule only when no specific rule fits.
+- <the exclude, direction, cc and reply lines of the rule boolean>
+Corrections from the user. They override the guidance:
+- <account-wide corrections, newest first>
+```
+
+`none` for `best`: "No rule fits this email."
+
+The thread status:
+
+```text
+What is the status of the thread in `thread`, from the side of the mailbox owner?
+Guidance:
+- Weigh the whole thread. The last message decides whose turn it is. An earlier
+  open question counts only when the last message did not resolve it.
+- A message whose `side` is "owner" or "owner_organisation" is from the owner's side.
+  A reply from the owner's organisation means that the owner's side acted.
+- When someone else promised something, the other party owes the next step.
+- When the owner promised a later reply or deliverable, the owner owes a reply.
+- When `last_message_side` is the owner's side, and that message asks nothing and
+  promises nothing, the thread is complete.
+- A message where `owner_cc_only` is true, with no direct ask, needs no reply.
+Corrections from the user. They override the guidance:
+- <the notes of _status_corrections_block, one per line>
+```
+
+The criteria of the thread status copy the old rubric, one clause per key: `replyzero.py:372-385` for REPLY, AWAITING_REPLY and DONE, and `:354-357` for FYI. FYI is an option only when `last_message_side` is `other_party`.
+
+The cold check:
+
+```text
+Is the email in `email` cold outreach?
+Guidance:
+- Cold outreach is unsolicited sales, marketing or recruiting mail from someone
+  with no relationship with the mailbox owner.
+- The owner has never sent mail to this sender, so `sender.prior_contact` is false.
+```
+
+The sender pin:
+
+```text
+Will every future email from `sender` belong under the rule in the yes criterion?
+Guidance:
+- Answer yes only for a list or no-reply address that exists to send one kind of message.
+- A person is a no.
+- When `sender.public_mail_domain` is true, answer no, unless `recent_messages`
+  show a plainly automated sender.
+- Mixed content across `recent_messages` is a no.
+- When in doubt, answer no.
+```
+
+For the pin, `criteria.true` is "Every message from this sender fits this rule." and then the rule name and text. `criteria.false` is "A person, a sender of mixed content, or a sender that can send mail that needs a reply."
+
+**Thresholds.** These are start values, and the shadow window tunes them. Each one is a named constant beside its site.
+
+| Decision | Start value | Why |
+|---|---|---|
+| A rule that only labels | 0.5 | A wrong label costs one Fix |
+| A rule that moves mail | 0.7 | A wrong move hides real mail from the inbox |
+| Cold check | 0.5 | The old prompt asked for no margin |
+| Sender pin | 0.9 | The old prompt asked for 90% sure, and a pin is permanent |
+| Thread status | none | The choice decides. The log keeps the confidence |
+
+**The log line.** Each call logs the feature, `account_id`, `message_id`, each `request_id`, the latency, and the counts of questions and requests. It also logs these values:
+
+- the probability of each boolean, under its key, for example `p_r0`
+- for each choice, the answer key, the confidence and the margin of the top two probabilities
+- the matched keys and the main key
+- in shadow, the old keys, `agree_set`, `agree_main` and `p_old`, the probability of the old answer
+
+It logs no rule name, subject, body, address or `about`.
+
+**Cost and latency.** Nobody has measured either on this box.
+
+- The presets give 8 questions, so one request serves one email. A request serves up to 14 booleans with both choices.
+- Input is near 3000 to 4000 tokens: about 1000 for the state, and about 300 for each question.
+- The vendor states 70 to 500 ms. The old rule call is one chat completion with up to 800 or 1500 output tokens.
+- The client bound is 10 seconds (`console_resolve.py:2503`). In `on`, a timeout leaves the email undecided.
+- The EM-T4b cap wraps `decide_features.ask` (B8).
+
+##### EM-T5b-1 — the questions, rebuilt, in shadow
+
+**Scope.**
+
+1. Rename `email.rule_pick` to `email.rule_match` in `decide_features.FEATURES`. It covers both modes of the rule match. `on` stays refused.
+2. In `engine.py`, add `_rule_match_requests`, which builds the requests above. Add `_read_rule_match`, a pure function that reads the answers.
+3. `_llm_pick_rule` and `_llm_pick_rules` both go through `decide_features.shadow` with `email.rule_match`. Multi-rule had no shadow before.
+4. `decide_features.shadow` accepts a list of requests from `build`. It runs them at the same time inside the one 5-second bound. It merges the answers by question id.
+5. Rebuild `_status_question`, `_cold_question` and `_sender_pin_question` to the shapes above. `ThreadContext` gains a list of structured messages. `thread_text` stays for the old call.
+6. Pass `message_id` to each site from the runner, process-past, the gap loop and `recompute_thread_status`.
+7. Widen the log lines as above.
+8. The old LLM call still acts. No member sees a change.
+
+**Non-goals.** No `on`. No change to a caller of `classify_matches`. No split of a session, which EM-T4a-2 owns. No Settings change. No Console change.
+
+**Done when.**
+
+- With every mode `off`, a fake `decide` records zero calls on all four features.
+- `email.rule_pick=shadow` resolves to `off` and logs `decide.mode_refused`.
+- For the 10 preset rules, one request holds 6 booleans, `conv` with 5 options and `best` with 11 options.
+- For 20 cleanup rules, the questions split into 2 requests of 16 or fewer. `conv` and `best` are in the first. The fake sees both calls start before either one ends.
+- Each request for 1, 15, 16, 17, 254, 255 and 300 rules passes `customer_console.decide.decide_refusal`. So does a request with a rule text of 10 000 characters, 50 corrections and a body of 20 000 characters.
+- Above 254 candidates, the request holds no `best`.
+- `json.dumps(state)` holds none of "You are", "Respond", "Determine", "Choose" and "acting on behalf". Each state is a dict with the listed keys.
+- The rule state holds the `about`, the sender history, the recipient role and the direction. The instructions hold the account-wide corrections, and the state does not.
+- `_read_rule_match`: probabilities of 0.7 and 0.2 match `r0` only. A `best` answer that did not match gives the matched rule with the highest probability. A tie goes to the canonical order.
+- `_read_rule_match`: with all probabilities under the threshold, one-rule mode gets None, and multi-rule gets `[]`. A rule that moves mail does not match at 0.6.
+- With `email.rule_match=shadow` and a listed organization, `_llm_pick_rules` makes one request and returns the LLM answer. The log holds both key sets.
+- No `decide.*` line that `decide_features` writes for a call holds a seeded rule name, subject, body or address, and each one holds `message_id`. `decide.mode_refused` and the lines of the facade itself carry no message id, by design: they do not belong to one email.
+- The thread status criteria hold "promised a follow-up", "the OTHER person's court" and "Taking ownership". FYI is an option only when `last_message_side` is `other_party`.
+- No instructions text holds `REPLY`, `AWAITING_REPLY`, `DONE`, `FYI`, `r0` or `none`.
+- The pin state marks `gmail.com` as a public mail domain, from `cleanup._SHARED_DOMAINS`. The rule text is in `criteria.true`, never in the state.
+- The suites of `classify_matches`, the runner, process-past and Reply Zero pass with no changed expected value.
+
+**Files.** `apps/services/gateway/gateway/decide_features.py`. In `apps/services/gateway/gateway/routes/email/automation/`: `engine.py`, `replyzero.py`, `senders.py`, `learning.py` and `runner.py` (the `message_id` only). `apps/services/gateway/AGENTS.md` line 21. `tests/unit/test_email_decide_shadow.py`, and a new `tests/unit/test_email_decide_questions.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_cold_gate_case.py \
+  tests/unit/test_customer_console_decide.py tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_dependency_boundary.py tests/unit/test_background_ai_member.py \
+  tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_reply_zero.py \
+  tests/unit/test_email_thread_single_classification.py tests/unit/test_email_thread_status_parity.py \
+  tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
+  tests/unit/test_email_classify_matches.py tests/unit/test_email_guidance_reaches_prompt.py \
+  tests/unit/test_email_rules_engine.py tests/unit/test_crm_auto_lead.py \
+  tests/unit/test_email_process_past_cost_guard.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_process_past_idempotent.py tests/unit/test_email_process_past_progress.py -q -rs
+uv run ruff check apps/services/gateway/gateway/decide_features.py \
+  tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py
+node .claude/hooks/ste-lint.mjs --staged
+```
+
+Compare ruff on `routes/email/automation` with the base, for each file and code, as §10.4.4 says.
+
+**One live path changes (fix round 1, 2026-10-02).** EM-T5b-1 changes one live path, the prior-contact read of the cold gate (`senders._PRIOR_CONTACT_SQL`), because the case-sensitive JSONB test read a contact with capitals as a stranger, and the `decide` state then said `prior_contact: false` as a fact. The read now compares addresses without case. `tests/unit/test_email_cold_gate_case.py` proves it on a real database (R8, as the non-owner role under FORCE RLS), so the run must show no skip.
+
+**The shadow window.** It starts after EM-T5b-1 merges and H-166 is done. Set all four features to `shadow` in `DECIDE_FEATURE_MODES`, and the Fracktal organization id in `DECIDE_FEATURE_ORGS`. Run it for 7 days or 300 decided emails, whichever ends later. Then report for each feature: the agreement rate, the `decide.unavailable` rate, the p50 and p95 latency, and the matched rules for each email. The owner reads 20 disagreements by `message_id`, because agreement with the LLM is not accuracy.
+
+##### EM-T5b-2 — `on`, with no LLM path
+
+**Scope.**
+
+1. `on` becomes a legal mode for the four email features only. For any other name, `on` still resolves to `off`.
+2. Add `decide_features.ask(feature, *, account_id, message_id, build)`. It runs the requests within the 10-second client bound and returns one merged `Decision`.
+3. On `DecideUnavailable`, a timeout, `DecideRequestInvalid` or any other error, `ask` logs and returns None. It never calls an LLM.
+4. Each site reads `mode_for(feature)`. In `on`, it calls `ask` and reads the answer. In other modes, it runs `shadow` as today.
+5. A success logs `decide.decided`. A missing answer logs `decide.unavailable` with the feature, `account_id`, `message_id` and the reason. `DecideRequestInvalid` also logs `decide.request_invalid` at error level.
+6. What each site does when `ask` returns None (D-EM-8):
+
+| Site | When `ask` returns None |
+|---|---|
+| Rule match | Raise `DecisionUnavailable`, a new subclass of `LLMUnavailable` in `engine.py`. Each caller already skips the stamp and applies nothing |
+| Thread status inside `classify_matches` | Raise `DecisionUnavailable` again, before the broad handler at `replyzero.py:726`. The runner skips the row |
+| Thread status in `recompute_thread_status` | Write nothing and return None. `_mark_thread_replied` leaves the labels. The gap loop asks again in the next cycle |
+| `run_rules_on_message` | Treat a second missing answer as the first one (`runner.py:1081-1084`). Apply nothing and stamp nothing |
+| Cold check | Not cold. No row and no label. The rule outcome stands, so the runner stamps the message |
+| Sender pin | No pin |
+| Cleanup sweep, sender categories | No change. Mail with no rule decision stays "no evidence" for this pass |
+
+7. A decided thread status never gets the `· auto` tag. An old `· auto` row gets one more check.
+8. **Remove the rules-model choice (D-EM-7).**
+   - Delete the `rule_model` card (`SettingsTab.tsx:415-422`), the field (`types.ts:580-581`) and the label (`EmailToolCards.tsx:760`).
+   - Delete `rule_model` from `AssistantSettingsModel`, from the GET answer and from the PUT SQL (`assistant.py`).
+   - Delete the `rule` key from `_DEFAULT_TASK_MODELS` and `_account_models`. The old rule call uses `tier-fast`.
+   - Delete the `rule_model` parameter and its docstring line from `update_assistant_settings` (`agents.py:1063`, `:1093-1095`, `:1125`).
+   - Keep the column (R6). Correct `infra/postgres/README.md:80`.
+9. **The startup check.** `register_email_post_sync_hooks` (`scheduler_hooks.py:238`) logs `email.decide_not_wired` at error level, once. It does so when a feature is `on` and `decide_enabled` is false or `router_is_wired()` is false.
+10. Correct the docstrings at `acb_llm/decide.py:10-13` and `:85-92`. For email, the caller leaves the email undecided.
+
+**Non-goals.** No change to a default mode, which stays `off`. No mode change on a box. No column drop. No change to the draft, compose or chat models.
+
+**Done when.**
+
+- In `on`, a fake `decide` drives each of the four sites. A fake `_llm_json` records zero calls.
+- In `on`, a `DecideUnavailable` from the fake leaves `rules_processed_at` NULL and applies nothing. `decide.unavailable` logs the four fields. A fake that sleeps past the bound does the same.
+- In `on`, a `DecideRequestInvalid` leaves the email undecided and logs at error level.
+- In `on`, a missing thread status inside `classify_matches` writes no `email_thread_status` row, and the runner skips the row. `_mark_thread_replied` writes nothing.
+- In `on`, a missing cold answer writes no `email_cold_senders` row, and the runner stamps the message.
+- In `on`, a missing pin answer writes no `email_rule_patterns` row.
+- `run_rules_on_message` with a missing second answer applies nothing and stamps nothing.
+- A decided thread status has no `· auto` in its reason.
+- `on` for a name outside the four resolves to `off` and logs `decide.mode_refused`.
+- The startup check logs once when a feature is `on` and the box is not wired. It logs nothing when the box is wired.
+- `AssistantSettingsModel` has no `rule_model` field, and GET has no `rule_model` key. `update_assistant_settings` has no `rule_model` parameter.
+- A vitest source scan finds no `rule_model` under `src/app/email` or `src/components/email`.
+- R8: a settings row with `rule_model = 'tier-balanced'` keeps that value after a PUT. GET leaves it out.
+- In `off` and `shadow`, the old rule call uses `tier-fast`, whatever `rule_model` holds.
+
+**Files.**
+
+- `gateway/decide_features.py` and `routes/email/scheduler_hooks.py`
+- In `routes/email/automation/`: `engine.py`, `replyzero.py`, `senders.py`, `learning.py`, `runner.py` and `assistant.py`
+- `packages/acb_llm/acb_llm/decide.py`, the docstrings only
+- `apps/agents/agent-email-assistant/agents.py`
+- In `workbench/control_plane/src/`: `app/email/components/automation/ai-settings/SettingsTab.tsx`, `app/email/lib/types.ts` and `components/email/EmailToolCards.tsx`
+- `infra/postgres/README.md`
+- Tests: a new `tests/unit/test_email_decide_on.py`, `tests/unit/test_email_assistant_settings.py`, and a new `src/app/email/lib/noRuleModel.test.ts`
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_decide_on.py tests/unit/test_email_assistant_settings.py \
+  tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
+  tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_single_classification.py \
+  tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_classify_matches.py \
+  tests/unit/test_email_rules_engine.py tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_dependency_boundary.py tests/unit/test_email_layering.py -q -rs
+uv run ruff check apps/services/gateway/gateway/decide_features.py \
+  tests/unit/test_email_decide_on.py tests/unit/test_email_assistant_settings.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/components/email
+```
+
+The changed automation files carry old ruff findings, so compare them with the base for each file and code, as §10.4.4 says. `scheduler_hooks.py` does not change, and its 8 old RUF100 findings are not part of this check.
+
+The R8 case must show PASSED, not SKIPPED.
+
+**After the merge, on the owner's "go".** Set the four features to `on` for the Fracktal organization id. Report the act, the box and the evidence in the same message. The evidence is one `decide.decided` line for each feature, each with a `request_id`.
+
+##### EM-T5b-3 — hardcode, and delete the old path
+
+**Scope.**
+
+1. The four email features leave `FEATURES`. Each site calls `ask` with no mode check.
+2. Delete the old LLM body of each site and the four email calls to `shadow`. Delete `_STATUS_MODEL`, `_STATUS_MODEL_ESCALATION` and each prompt helper that nothing reads.
+3. The startup check runs whenever email sync is on.
+4. A pair in `DECIDE_FEATURE_MODES` for an email feature is now unknown, so it logs `decide.mode_refused`.
+
+**Gate.** The merge waits for the owner's "go". The evidence is 7 days of `on`, with `decide.unavailable` on fewer than 1% of decisions. After this merge, a revert is the only way back.
+
+**Done when.**
+
+- `FEATURES` holds no name that starts with `email.`.
+- An AST fence finds no `_llm_json` or `acompletion` call in the four decision functions. A companion test proves that the fence can fail.
+- With `decide_enabled` false, a run decides no email and stamps nothing. The startup check logs at error level.
+- The suites of EM-T5b-2 pass, less the email shadow cases.
+
+**Files.** The Python files of EM-T5b-2, `tests/unit/test_email_decide_shadow.py`, and a new `tests/unit/test_email_no_llm_classifier.py`.
+
+**Verify with.** The commands of EM-T5b-2, with `tests/unit/test_email_no_llm_classifier.py` added.
+
+##### EM-T5b-4 — "not sorted yet", for the member
+
+**Why.** §1 item 5 says that automation failures are visible, never silent. Under D-EM-8, an outage leaves mail unsorted, and nothing tells the member.
+
+**Scope.**
+
+1. Add one route with the owner scope. It returns `unsorted`. That is the count of inbox messages in the mailbox of the member that wait for the rules. Such a message has `rules_processed_at` NULL, `rules_held_back_at` NULL, and a `received_at` older than 30 minutes. The route counts only when auto-run is on.
+2. Add a banner in Email, beside `FirstSyncBanner.tsx`. It says "3 new emails are not sorted yet. They are safe in your inbox, and sorting starts again by itself."
+3. The banner shows nothing for a count of 0, and nothing when the read fails.
+4. The count is a fact. It stays true for any cause: `decide` down, a failed sign-in or a stopped sync.
+
+**Done when.**
+
+- R8: the count for member A of org A leaves out the mailbox of member B of org A, and each mailbox of org B.
+- The route passes `test_email_owner_scope_fence.py` with no exemption.
+- The banner view draws the sentence for 3. It draws nothing for 0 or for an error, and it draws no `@`.
+- A visual review in light mode, at compact density and with a changed accent, beside the inbox.
+
+**Files.** One route in `routes/email/automation/runner.py`. A new banner in `workbench/control_plane/src/app/email/components/`. One new test file on each side.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_unsorted_count.py tests/unit/test_email_owner_scope_fence.py -q -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+```
+
+**Recorded risks.**
+
+- **R-1. Accuracy is not measured.** Jev has never answered our rubric. On Outlook, a cleanup rule moves mail to a folder, so a false match hides a real email. The shadow window measures agreement with the LLM, not truth.
+- **R-2. No fallback.** A vendor outage, a 429, a revoked key, an unbound tier, `DECIDE_ENABLED` off or a Console outage stops triage for every mailbox on the box. Mail stays in the inbox, unsorted, and each cycle asks again. Today `tier-decide` has no backup step.
+- **R-3. More matches for each email.** Booleans do not compete, so multi-rule can apply more rules than the LLM did. When two rules move one email, the last move wins. The window counts the matched rules for each email.
+- **R-4. History loses the reason.** System One gives no reason text. History shows the probability, not a sentence.
+- **R-5. The model can change with no record.** The reseller allows only `typesafe/jev`. CP-13i records the dated id. Until it does, a threshold can drift with no trace.
+- **R-6. An object state through the reseller has no live proof.** The CP-13h fences send a string state. The window is the first live proof, and it must pass before any `on`.
+- **R-7. A session stays open across the call** until EM-T4a-2. In `on`, the bound is 10 seconds.
+- **R-8. `DECIDE_ENABLED` is box-wide.** On an org key, it also opens the chat `decide` tool on tenant content, which D-EM-9 does not name.
+- **R-9. Retry load in an outage.** The runner asks again for its newest 50 unsorted messages in each cycle. Each one costs one failed Console call and no vendor charge.
+- **R-10. A developer box decides nothing** after EM-T5b-3, unless it reaches a Console. The tests use the fake.
 
 #### 10.4.9 EM-T7 — automatic reply drafting is OFF by default
 

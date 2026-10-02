@@ -143,8 +143,10 @@ async def _load_assistant_about(
 
 
 # Per-task default tiers when no account preference is saved (or lookup fails).
+# ⚠️ No `rule` key (D-EM-7, EM-T5b-2): no member chooses the rules model. The
+# rule match runs on `decide` (`tier-decide`), and the old rule call that still
+# runs outside `on` uses its fixed tier, `tier-fast`.
 _DEFAULT_TASK_MODELS = {
-    "rule": "tier-fast",       # rule evaluation / classification / labeling
     "draft": "tier-powerful",  # BACKGROUND draft writing (rules, follow-ups)
     "compose": "tier-fast",    # MANUAL "Draft with AI" (user waits on it)
     "chat": "tier-powerful",   # email chat panel (strong tool-caller)
@@ -152,24 +154,23 @@ _DEFAULT_TASK_MODELS = {
 
 
 async def _account_models(db: Any, account_id: str) -> dict[str, str]:
-    """The four task-specific models an account uses, as a dict with keys
-    ``rule`` (rule evaluation/classification), ``draft`` (background draft
-    writing), ``compose`` (manual "Draft with AI"), and ``chat`` (the email
-    chat panel).
+    """The three task-specific models an account uses, as a dict with keys
+    ``draft`` (background draft writing), ``compose`` (manual "Draft with
+    AI"), and ``chat`` (the email chat panel).
 
-    Each falls back to its per-task default (rule→tier-fast, draft→tier-powerful,
+    Each falls back to its per-task default (draft→tier-powerful,
     compose→tier-fast, chat→tier-powerful) so automation works before the user
-    saves a preference or if the lookup fails."""
+    saves a preference or if the lookup fails. The stored ``rule_model``
+    column is not read (D-EM-7)."""
     out = dict(_DEFAULT_TASK_MODELS)
     if not account_id:
         return out
     try:
         row = (await db.execute(text(
-            "SELECT rule_model, draft_model, compose_model, chat_model "
+            "SELECT draft_model, compose_model, chat_model "
             "FROM email_assistant_settings WHERE account_id = :aid"
         ), {"aid": account_id})).fetchone()
         if row:
-            out["rule"] = (getattr(row, "rule_model", None) or out["rule"])
             out["draft"] = (getattr(row, "draft_model", None) or out["draft"])
             out["compose"] = (
                 getattr(row, "compose_model", None) or out["compose"])
@@ -188,9 +189,10 @@ class AssistantSettingsModel(BaseModel):
     # account auto-runs once it has rules. An explicit OFF stops auto-run.
     auto_run: bool = True
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
-    # Four task-specific models (tier-fast | tier-balanced | tier-powerful, or
-    # any enabled model id). Rule evaluation / classification / labeling:
-    rule_model: str = "tier-fast"
+    # Three task-specific models (tier-fast | tier-balanced | tier-powerful, or
+    # any enabled model id). There is no rules model (D-EM-7): the rule match
+    # runs on `decide`, and no member can change it. The `rule_model` column
+    # stays (R6), and nothing reads or writes it.
     # BACKGROUND draft writing (follow-ups, rule DRAFT_EMAIL actions):
     draft_model: str = "tier-powerful"
     # MANUAL drafting — the composer's "Draft with AI" button, where the user
@@ -249,7 +251,7 @@ async def get_assistant_settings(
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         row = (await db.execute(text(
             """SELECT about, signature, auto_run, cold_email_blocker,
-                      rule_model, draft_model, compose_model, chat_model,
+                      draft_model, compose_model, chat_model,
                       digest_frequency, personal_instructions, writing_style,
                       learned_writing_style,
                       draft_replies, follow_up_days, draft_confidence,
@@ -298,8 +300,6 @@ async def get_assistant_settings(
             "signature_text": signature_text((row.signature if row else "") or ""),
             "auto_run": bool(row.auto_run) if row else True,
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
-            "rule_model": (getattr(row, "rule_model", None) if row else None)
-            or "tier-fast",
             "draft_model": (getattr(row, "draft_model", None) if row else None)
             or "tier-powerful",
             # Default must match _DEFAULT_TASK_MODELS["compose"] — manual
@@ -397,7 +397,7 @@ async def put_assistant_settings(
         saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
                  (account_id, about, signature, auto_run, cold_email_blocker,
-                  rule_model, draft_model, compose_model, chat_model,
+                  draft_model, compose_model, chat_model,
                   digest_frequency,
                   personal_instructions,
                   writing_style, draft_replies, follow_up_days, draft_confidence,
@@ -406,7 +406,7 @@ async def put_assistant_settings(
                   digest_time_of_day, digest_send_to_email, morning_brief_enabled,
                   multi_rule_execution, sensitive_data_protection, org_domains,
                   updated_at)
-               VALUES (:aid, :about, :sig, :auto, :cold, :rule_model,
+               VALUES (:aid, :about, :sig, :auto, :cold,
                        :draft_model, :compose_model, :chat_model,
                        :digest,
                        :pi, :ws, :dr, :fu, :dc, :fua, :funr, :fuad, :dcat,
@@ -416,7 +416,6 @@ async def put_assistant_settings(
                  signature = EXCLUDED.signature,
                  auto_run = EXCLUDED.auto_run,
                  cold_email_blocker = EXCLUDED.cold_email_blocker,
-                 rule_model = EXCLUDED.rule_model,
                  draft_model = EXCLUDED.draft_model,
                  compose_model = EXCLUDED.compose_model,
                  chat_model = EXCLUDED.chat_model,
@@ -441,7 +440,6 @@ async def put_assistant_settings(
                RETURNING learned_writing_style"""
         ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
             "auto": req.auto_run, "cold": req.cold_email_blocker or "OFF",
-            "rule_model": req.rule_model or "tier-fast",
             "draft_model": req.draft_model or "tier-powerful",
             "compose_model": req.compose_model or "tier-fast",
             "chat_model": req.chat_model or "tier-powerful",
@@ -488,7 +486,6 @@ async def put_assistant_settings(
             "signature_text": signature_text(req.signature or ""),
             "auto_run": req.auto_run,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
-            "rule_model": req.rule_model or "tier-fast",
             "draft_model": req.draft_model or "tier-powerful",
             "compose_model": req.compose_model or "tier-fast",
             "chat_model": req.chat_model or "tier-powerful",

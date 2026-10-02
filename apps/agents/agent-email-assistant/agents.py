@@ -1060,7 +1060,6 @@ async def update_assistant_settings(
     digest_send_to_email: bool | None = None,
     multi_rule_execution: bool | None = None,
     sensitive_data_protection: bool | None = None,
-    rule_model: str | None = None,
     draft_model: str | None = None,
     chat_model: str | None = None,
 ) -> str:
@@ -1090,9 +1089,10 @@ async def update_assistant_settings(
         digest_send_to_email: email the digest to the account address.
         multi_rule_execution: allow more than one rule per email.
         sensitive_data_protection: skip auto-drafting on sensitive-looking mail.
-        rule_model / draft_model / chat_model: LiteLLM tier or model id for rule
-            classification / draft writing / the chat panel (e.g. "tier-fast",
-            "tier-balanced", "tier-powerful").
+        draft_model / chat_model: LiteLLM tier or model id for draft writing /
+            the chat panel (e.g. "tier-fast", "tier-balanced", "tier-powerful").
+            There is no rules model: the rules run on `decide`, and no member
+            can change it (D-EM-7).
     """
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
@@ -1122,7 +1122,6 @@ async def update_assistant_settings(
     setif("digest_send_to_email", digest_send_to_email)
     setif("multi_rule_execution", multi_rule_execution)
     setif("sensitive_data_protection", sensitive_data_protection)
-    setif("rule_model", rule_model)
     setif("draft_model", draft_model)
     setif("chat_model", chat_model)
     await _patch_settings(body)

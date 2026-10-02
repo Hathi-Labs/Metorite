@@ -500,35 +500,23 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
   when CP-13d was built
 
-### H-166 · Open the AI/ML API account, install the key, and answer residency · [OWNER]
-- **Check:** on `/providers`, look for a live `aimlapi` credential. None
-  means this is open. Then read `work_plan.md` D19.6. If it still says
-  India-only with no AI sub-processor clause, the residency answer is open.
-- **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
-  1. **Open an AI/ML API account** (TypeSafe has paused direct signups, D75
-     clause 8). An external commercial account is an owner act. Ask AI/ML
-     API and TypeSafe for their DPA, their region, and zero retention.
-  2. **Install the key** on `/providers`, with provider `aimlapi` (§6.0 B1).
-     Then follow the AI/ML API guide on that page. It binds
-     `aimlapi/typesafe/jev` with the verb `native_aimlapi` (§6A.14 CP-13h).
-  3. **Answer residency.** D19.6 promises India-only data at launch, and
-     neither vendor states a region. Choose one: amend D19.6 for AI
-     sub-processors, get a region in writing from BOTH, or keep `decide`
-     off real tenant content.
-  4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
-     Router door copies an OpenAI shape, and no such shape exists for a
-     decision. `work_plan.md` D75 clause 3 holds the proposal.
-  5. **Set `DECIDE_ENABLED`** on the box, after answer 3. No agent sets it.
-- ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
-  runs on Fracktal's data: not the chat tool, not an app slice, and not
-  shadow mode.
-- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37
-  writes one (H-36). A reseller call passes through both.
-- **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
-  `work_plan.md` §6.1 WS-31 (i)
-- **2026-10-02.** A mode other than `off` in `DECIDE_FEATURE_MODES` is this gate too.
-  It waits for EM-T4 item 3, the shared LLM cap (`email_app_master_plan.md` §10.4.4).
-- **Added:** 2026-09-23 · the Jev planning session
+### H-166 · Turn on `decide` for email on the box · [OWNER]
+- **Check:** on the box, run `grep -E 'DECIDE_ENABLED|CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY' /opt/acb/app/.env`. Two lines with `true` mean steps 2 and 3 are done. Then look for one `decide.decided` line in the gateway journal. In `shadow` the line is `decide.shadow`. A line means the box gets answers.
+- **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
+- **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
+- **Next, after EM-T5b ships:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` on the box (decisions (b) and (c)). Then it reports one `decide.decided` line with a `request_id`.
+- **Do this, in order:**
+  1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
+  2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
+  3. Set `DECIDE_ENABLED=true`. No agent sets it (§6.1 WS-31 (i)).
+  4. Bind a backup step on `tier-decide` when a second decision model exists. Today one vendor outage stops triage for every mailbox (D-EM-8).
+  5. Say whether D-EM-9 also covers the chat `decide` tool. On an org key, the switch opens that tool too. On the deployment key, the tool sends no member and stays dark.
+  6. Accept or reject the D61.1 amendment (D75 clause 3). The build does not wait.
+  7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
+- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
+- **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
+- **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
+- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The

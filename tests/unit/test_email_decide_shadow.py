@@ -13,11 +13,19 @@ The rules these pin:
   fails, refuses the request or is slow.
 - The log lines carry no subject, body, sender, reason or rule name.
 
+EM-T5b-1 (§10.4.8) changed two things here. ``email.rule_pick`` is now
+``email.rule_match``. And the state is no longer the old user message: it is
+an object of FACTS, and the corrections ride in the instructions. The old
+"the state equals the old user message" fences (§10.4.4 item 10) are
+replaced by the state-shape fences below and in
+``test_email_decide_questions.py``.
+
 Every test uses a FAKE ``acb_llm.decide.decide``. No test reaches a network.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from types import MappingProxyType, SimpleNamespace
@@ -185,11 +193,19 @@ async def _site_pin(monkeypatch, delay: float = 0.0):
     return out, True
 
 
+#: The thread as facts (`ThreadContext.messages`), the other party last.
+THREAD = [{
+    "side": "other_party", "from": SECRET_SENDER, "to": "owner@acme.com",
+    "cc": "", "owner_cc_only": False, "date": "", "subject": SECRET_SUBJECT,
+    "attachments": "", "body": SECRET_BODY,
+}]
+
+
 async def _site_status(monkeypatch, delay: float = 0.0):
     _llm(monkeypatch, rz, {"status": "DONE", "rationale": SECRET_REASON}, delay)
     out = await rz._llm_determine_thread_status(
         f"From: {SECRET_SENDER}\n{SECRET_BODY}", "owner@acme.com", "",
-        user_sent_last=False, account_id=ACC,
+        user_sent_last=False, account_id=ACC, thread_messages=THREAD,
     )
     return out, ("DONE", True)
 
@@ -204,7 +220,7 @@ SITES = {
     "email.cold_check": _site_cold,
     "email.sender_pin": _site_pin,
     "email.thread_status": _site_status,
-    "email.rule_pick": _site_rule,
+    "email.rule_match": _site_rule,
 }
 
 
@@ -291,7 +307,7 @@ async def test_shadow_makes_one_call_and_returns_the_old_answer(
 
 
 async def test_only_the_named_feature_is_in_shadow(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
     fake = _fake(monkeypatch)
     await _site_cold(monkeypatch)
     await _site_pin(monkeypatch)
@@ -301,53 +317,57 @@ async def test_only_the_named_feature_is_in_shadow(monkeypatch, tenant) -> None:
     assert len(fake.calls) == 1
 
 
-async def test_the_state_is_the_same_text_the_old_call_sends(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.cold_check=shadow", ORG)
+@pytest.mark.parametrize("feature", list(SITES))
+async def test_the_state_is_an_object_of_facts_not_the_old_prompt(
+    monkeypatch, tenant, feature
+) -> None:
+    """EM-T5b-1 replaced §10.4.4 item 10. The old call still sends its own
+    text, but the ``decide`` state is a dict of named facts. It is not the old
+    user message, and it holds no persona line of that message."""
+    _modes(monkeypatch, f"{feature}=shadow", ORG)
     fake = _fake(monkeypatch)
-    sent = _llm(monkeypatch, snd, {"cold": False})
-    await snd._llm_is_cold(EMAIL, account_id=ACC)
-    assert fake.calls[0]["state"] == sent[0][1]["content"]
+    await SITES[feature](monkeypatch)
+    state = fake.calls[0]["state"]
+    assert isinstance(state, dict)
+    text = json.dumps(state)
+    for persona in ("You are", "acting on behalf", "Respond", "Determine"):
+        assert persona not in text, persona
 
 
-async def test_the_pin_state_is_the_old_user_message(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.sender_pin=shadow", ORG)
-    fake = _fake(monkeypatch)
-    sent = _llm(monkeypatch, lrn, {"always": False})
-    await lrn._ai_confirms_sender_pattern(_pin_db(), ACC, SECRET_SENDER, RULES[0])
-    assert fake.calls[0]["state"] == sent[0][1]["content"]
-
-
-async def test_the_status_state_is_the_old_user_message(monkeypatch, tenant) -> None:
-    """The corrections ride in the old SYSTEM prompt. The state carries the
-    user message only, exactly as the old call sends it (item 10)."""
-    _modes(monkeypatch, "email.thread_status=shadow", ORG)
-    fake = _fake(monkeypatch)
-    sent = _llm(monkeypatch, rz, {"status": "DONE"})
-    await rz._llm_determine_thread_status(
-        f"From: {SECRET_SENDER}\n{SECRET_BODY}", "owner@acme.com", "About me",
-        user_sent_last=False, corrections="\n\nCORRECTIONS: be strict",
-        account_id=ACC,
-    )
-    assert fake.calls[0]["state"] == sent[0][1]["content"]
-    assert "CORRECTIONS" not in fake.calls[0]["state"]
-
-
-async def test_the_rule_state_is_the_email_block_of_the_old_message(
+async def test_the_status_corrections_ride_in_the_instructions_not_the_state(
     monkeypatch, tenant
 ) -> None:
-    """The old user message is the email block, then the rules, the guidance
-    and the hints. The state is the email block only: no more text."""
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
     fake = _fake(monkeypatch)
-    sent = _llm(monkeypatch, eng, {"index": -1})
+    _llm(monkeypatch, rz, {"status": "DONE"})
+    block = ("\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override your "
+             "default reading):\n- Vendors chasing a PO need an answer.")
+    await rz._llm_determine_thread_status(
+        "thread", "owner@acme.com", "About me", user_sent_last=False,
+        corrections=block, account_id=ACC, thread_messages=THREAD,
+    )
+    (question,) = fake.calls[0]["questions"].values()
+    assert "Vendors chasing a PO need an answer." in question.instructions
+    assert "Vendors chasing" not in json.dumps(fake.calls[0]["state"])
+
+
+async def test_the_rule_state_holds_no_rule_text_and_no_correction(
+    monkeypatch, tenant
+) -> None:
+    """The rules and the corrections are questions and instructions. The
+    state is the email, the direction, the owner and the sender history."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
+    fake = _fake(monkeypatch)
+    _llm(monkeypatch, eng, {"index": -1})
     await eng._llm_pick_rule(
         EMAIL, RULES, hints="Receipt (x3)", guidance={"": ["be strict"]},
-        account_id=ACC,
+        account_id=ACC, history=[{"rule": "Receipt", "count": 3}],
     )
     state = fake.calls[0]["state"]
-    assert state == eng._email_block(EMAIL)
-    old_user = sent[0][1]["content"]
-    assert old_user.startswith(state) and len(old_user) > len(state)
+    assert set(state) == {"email", "direction", "mailbox_owner", "sender_history"}
+    assert state["sender_history"] == [{"rule": "Receipt", "count": 3}]
+    text = json.dumps(state)
+    assert "be strict" not in text and "newsletters" not in text
 
 
 @pytest.mark.parametrize("feature", list(SITES))
@@ -370,7 +390,7 @@ async def test_decide_runs_at_the_same_time_as_the_old_call(
 
 
 async def test_the_old_exception_still_propagates(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
     _fake(monkeypatch, delay=10)
 
     async def boom(*a, **kw):
@@ -463,9 +483,9 @@ async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
 
 
 async def test_a_refused_pair_does_not_disable_a_good_one(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.cold_check=on, email.rule_pick=shadow", ORG)
+    _modes(monkeypatch, "email.cold_check=on, email.rule_match=shadow", ORG)
     assert df.mode_for("email.cold_check") == "off"
-    assert df.mode_for("email.rule_pick") == "shadow"
+    assert df.mode_for("email.rule_match") == "shadow"
 
 
 async def test_an_unregistered_feature_name_is_off(monkeypatch, tenant) -> None:
@@ -488,14 +508,19 @@ async def test_the_shadow_record_holds_the_fields_and_no_tenant_text(
     assert {r["decide_feature"] for r in recs} == set(SITES)
     for r in recs:
         for key in (
-            "decide_feature", "account_id", "old", "new", "agree",
+            "decide_feature", "account_id", "message_id", "old", "new", "agree",
             "confidence", "probability", "latency_ms", "options", "request_id",
+            "request_ids", "questions", "requests",
         ):
             assert key in r, key
         assert r["account_id"] == ACC
         assert r["request_id"] == "req-123"
+        assert r["request_ids"] == ["req-123"] * r["requests"]
         assert isinstance(r["latency_ms"], int)
-        assert (r["confidence"] is not None) or (r["probability"] is not None)
+        # A boolean logs its probability, a choice its confidence, and the
+        # rule match the probability of each rule under its key.
+        assert (r["confidence"] is not None) or (r["probability"] is not None) \
+            or ("p_r0" in r)
     decide_lines = repr([c for c in caps if c["event"].startswith("decide.")])
     for secret in (SECRET_SUBJECT, SECRET_BODY, SECRET_SENDER, SECRET_REASON, SECRET_RULE):
         assert secret not in decide_lines, secret
@@ -512,6 +537,7 @@ async def test_the_thread_status_record_keeps_the_old_confident_flag(
     assert rec["old"] == "DONE" and rec["new"] == "DONE" and rec["agree"] is True
     assert rec["old_confident"] is True
     assert rec["options"] == 4
+    assert "margin" in rec  # every choice logs its top-two margin
 
 
 async def test_the_sender_pin_agrees_at_the_ninety_percent_threshold(
@@ -529,13 +555,20 @@ async def test_the_sender_pin_agrees_at_the_ninety_percent_threshold(
 
 
 async def test_the_rule_record_logs_keys_never_names(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
-    _fake(monkeypatch, choice="r0")
+    """Both rules pass 0.5 and `best` ranks r0 first, so the main rule agrees
+    with the old pick. The old set is {r0} and the new set {r0, r1}."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
+    _fake(monkeypatch, probability=0.9, choice="r0")
     with structlog.testing.capture_logs() as caps:
         await _site_rule(monkeypatch)
     rec = _records(caps, "decide.shadow")[0]
     assert (rec["old"], rec["new"], rec["agree"]) == ("r0", "r0", True)
-    assert rec["options"] == len(RULES) + 1
+    assert rec["old_keys"] == ["r0"] and rec["matched"] == ["r0", "r1"]
+    assert (rec["agree_main"], rec["agree_set"]) == (True, False)
+    assert rec["p_r0"] == 0.9 and rec["p_old"] == 0.9
+    assert rec["best"] == "r0" and rec["main"] == "r0"
+    assert rec["options"] == len(RULES)
+    assert SECRET_RULE not in repr(rec)
 
 
 # ── Done when: the member comes from job_member_scope, proven ───────────────
@@ -571,35 +604,43 @@ async def test_the_member_is_never_read_from_the_mail(monkeypatch, tenant) -> No
     assert fake.calls[0]["member"] != SECRET_SENDER
 
 
-# ── Done when: N enabled rules → N + 1 options, `none` among them ───────────
+# ── EM-T5b-1: one boolean for each rule, and no skip above 254 ──────────────
 
 
 @pytest.mark.parametrize("n", [1, 2, 7, 254])
-async def test_the_rule_question_has_n_plus_one_options(monkeypatch, tenant, n) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+async def test_each_rule_asks_its_own_boolean(monkeypatch, tenant, n) -> None:
+    """EM-T5 asked one choice of N + 1. EM-T5b-1 asks one boolean `r<i>` for
+    each rule, and the choice `best` only ranks (§10.4.8 items 2 and 4)."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
     fake = _fake(monkeypatch)
     _llm(monkeypatch, eng, {"index": -1})
     rules = [{"id": str(i), "name": f"R{i}", "instructions": "x"} for i in range(n)]
     await eng._llm_pick_rule(EMAIL, rules, account_id=ACC)
-    (question,) = fake.calls[0]["questions"].values()
-    assert question.type == "choice"
-    assert list(question.criteria) == [f"r{i}" for i in range(n)] + ["none"]
+    asked: dict[str, Any] = {}
+    for call in fake.calls:
+        asked.update(call["questions"])
+    booleans = sorted(k for k, q in asked.items() if q.type == "boolean")
+    assert booleans == sorted(f"r{i}" for i in range(n))
+    assert ("best" in asked) is (n >= 2)
 
 
-async def test_above_the_console_limit_the_call_is_skipped(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+async def test_above_254_rules_decide_still_runs_without_best(monkeypatch, tenant) -> None:
+    """EM-T5 skipped `decide` above 254 rules. Booleans have no option limit,
+    so EM-T5b-1 asks, and only `best` is left out."""
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
     fake = _fake(monkeypatch)
     _llm(monkeypatch, eng, {"index": 3, "reason": "r"})
     rules = [{"id": str(i), "name": f"R{i}", "instructions": "x"} for i in range(255)]
     with structlog.testing.capture_logs() as caps:
         out = await eng._llm_pick_rule(EMAIL, rules, account_id=ACC)
     assert out == {"index": 3, "reason": "r"}
-    assert fake.calls == []
-    assert _records(caps, "decide.shadow_skipped")
+    assert fake.calls
+    assert not any("best" in c["questions"] for c in fake.calls)
+    assert _records(caps, "decide.shadow_skipped") == []
 
 
 async def test_each_criterion_is_clipped_to_1000_characters(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.rule_pick=shadow", ORG)
+    _modes(monkeypatch, "email.rule_match=shadow", ORG)
     fake = _fake(monkeypatch)
     _llm(monkeypatch, eng, {"index": -1})
     rules = [{"id": "1", "name": "Long", "instructions": "y" * 5000}]
@@ -607,7 +648,7 @@ async def test_each_criterion_is_clipped_to_1000_characters(monkeypatch, tenant)
     await eng._llm_pick_rule(EMAIL, rules, guidance=guidance, account_id=ACC)
     (question,) = fake.calls[0]["questions"].values()
     assert all(len(v) <= 1000 for v in question.criteria.values())
-    assert len(question.criteria["r0"]) == 1000
+    assert len(question.criteria["true"]) == 1000
 
 
 # ── Done when: FYI only when the user did not send last ─────────────────────
@@ -620,12 +661,30 @@ async def test_fyi_is_an_option_only_when_the_user_did_not_send_last(
     _modes(monkeypatch, "email.thread_status=shadow", ORG)
     fake = _fake(monkeypatch)
     _llm(monkeypatch, rz, {"status": "DONE"})
+    side = "owner" if user_sent_last else "other_party"
     await rz._llm_determine_thread_status(
-        "thread", "owner@acme.com", "", user_sent_last=user_sent_last, account_id=ACC
+        "thread", "owner@acme.com", "", user_sent_last=user_sent_last,
+        account_id=ACC, thread_messages=[{**THREAD[0], "side": side}],
     )
     (question,) = fake.calls[0]["questions"].values()
     assert ("FYI" in question.criteria) is has_fyi
     assert {"REPLY", "AWAITING_REPLY", "DONE"} <= set(question.criteria)
+    state = fake.calls[0]["state"]
+    assert (state["last_message_side"] == "other_party") is has_fyi
+
+
+async def test_a_status_call_with_no_messages_is_skipped(monkeypatch, tenant) -> None:
+    """The state is the thread as facts. A caller that has only the old text
+    gets the old answer, and `decide` is not asked (EM-T5b-1)."""
+    _modes(monkeypatch, "email.thread_status=shadow", ORG)
+    fake = _fake(monkeypatch)
+    _llm(monkeypatch, rz, {"status": "DONE"})
+    with structlog.testing.capture_logs() as caps:
+        out = await rz._llm_determine_thread_status(
+            "thread", "owner@acme.com", "", user_sent_last=False, account_id=ACC)
+    assert out == ("DONE", True)
+    assert fake.calls == []
+    assert _records(caps, "decide.shadow_skipped")
 
 
 # ── Done when: a slow decide delays the old answer by at most the bound ─────
@@ -671,7 +730,14 @@ def test_the_limits_match_the_console() -> None:
     gateway may not import ``customer_console``
     (``test_console_dependency_boundary.py``). A TEST may import it, so this
     pins the copy to the source of record."""
-    from customer_console.decide import MAX_CHOICE_OPTIONS, MAX_CRITERION_CHARS
+    from customer_console.decide import (
+        MAX_CHOICE_OPTIONS,
+        MAX_CRITERION_CHARS,
+        MAX_INSTRUCTIONS_CHARS,
+        MAX_QUESTIONS,
+    )
 
     assert df.CHOICE_OPTION_LIMIT == MAX_CHOICE_OPTIONS
+    assert df.QUESTION_LIMIT == MAX_QUESTIONS
     assert df.CRITERION_CLIP <= MAX_CRITERION_CHARS
+    assert df.CORRECTIONS_CLIP < MAX_INSTRUCTIONS_CHARS

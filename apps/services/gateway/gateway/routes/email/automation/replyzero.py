@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -286,7 +286,8 @@ def _clip_thread_for_prompt(thread_text: str, limit: int = _THREAD_PROMPT_BUDGET
 
 
 def _status_user_prompt(thread_text: str, user_email: str, about: str) -> str:
-    """The thread text the status call sends. The old call and ``decide`` share it."""
+    """The user message of the OLD status call. Since EM-T5b-1, ``decide``
+    does not use this text. It gets the thread as facts (`_status_state`)."""
     ctx = f"You are acting on behalf of: {user_email}\n"
     if (about or "").strip():
         ctx += f"{about.strip()[:1200]}\n"
@@ -297,35 +298,137 @@ def _status_user_prompt(thread_text: str, user_email: str, about: str) -> str:
     )
 
 
-def _status_question(
-    thread_text: str, user_email: str, about: str, *, user_sent_last: bool,
-) -> tuple[str, dict[str, Any]]:
-    """The ``decide`` request for the thread status (EM-T5, shadow only).
+# ── The thread status on `decide` (EM-T5b-1, §10.4.8) ─────────────────────────
+#
+# The state is the thread as FACTS: one object for each message, with the
+# side that sent it. The rubric of the old system prompt is in the criteria,
+# one clause for each key, and in the guidance. No instruction names a key.
 
-    FYI is an option only when the user did NOT send last, as in the old call.
+#: ``_msg_scope`` → the ``side`` of a message in the state.
+_SIDE = {"self": "owner", "internal": "owner_organisation", "external": "other_party"}
+
+_STATUS_QUESTION = ("What is the status of the thread in `thread`, from the side "
+                    "of the mailbox owner?")
+_STATUS_GUIDANCE = (
+    "- Weigh the whole thread. The last message decides whose turn it is. An "
+    "earlier open question counts only when the last message did not resolve it.",
+    "- A message whose `side` is \"owner\" or \"owner_organisation\" is from the "
+    "owner's side. A reply from the owner's organisation means that the owner's "
+    "side acted.",
+    "- When someone else promised something, the other party owes the next step.",
+    "- When the owner promised a later reply or deliverable, the owner owes a reply.",
+    "- When `last_message_side` is the owner's side, and that message asks nothing "
+    "and promises nothing, the thread is complete.",
+    "- A message where `owner_cc_only` is true, with no direct ask, needs no reply.",
+)
+
+#: The criteria copy the old rubric (`_llm_determine_thread_status`, the
+#: CRITERIA block and the FYI clause), one clause for each key. They say
+#: "the owner" where the old prompt said "the user", to match the state, and
+#: they name a meaning where the old prompt named a key.
+_STATUS_CRITERIA = {
+    "REPLY": (
+        "The owner needs to reply. Someone asked the owner a direct question or "
+        "requested info/action and the owner hasn't addressed it; OR the owner "
+        "promised a follow-up/deliverable and hasn't sent it. A clarifying "
+        "question that got answered while a commitment is still pending still "
+        "needs a reply."),
+    "AWAITING_REPLY": (
+        "Waiting for the other party. The ball is in the OTHER person's court: "
+        "the owner asked/requested and is still waiting, or someone else owes an "
+        "action. If the owner's request was already fulfilled, the owner is NO "
+        "longer awaiting."),
+    "DONE": (
+        "The thread is complete. All questions answered and requests fulfilled, "
+        "the conversation concluded, or the owner sent info/recommendations and "
+        "isn't waiting for anything. Taking ownership ('I'll handle it') fulfils "
+        "a request unless it promises a later deliverable."),
+}
+_STATUS_FYI = (
+    "No reply needed. There are absolutely no questions, requests, or pending "
+    "actions anywhere in the thread, and the owner RECEIVED the last message. A "
+    "message where the owner is only on Cc (not in To) and isn't directly asked "
+    "anything needs no reply.")
+
+
+def _status_correction_notes(corrections: str) -> list[str]:
+    """The correction notes for the ``decide`` instructions, newest first.
+
+    ``_status_corrections_block`` returns a :class:`StatusCorrections`, which
+    carries the notes in their ``decide`` order with no rule-name prefix. The
+    status path makes no new DB read for them. A plain text (a caller with
+    no block of ours) falls back to its ``- note`` lines, newest first. The
+    block lists the account-wide notes first, so reversing it puts the
+    conversation-rule notes first too.
     """
+    notes = getattr(corrections, "decide_notes", None)
+    if notes is not None:
+        return [n.strip() for n in notes if n and n.strip()]
+    start = (corrections or "").find("\n- ")
+    if start == -1:
+        return []
+    body = corrections[start + 3:]
+    return [n.strip() for n in reversed(body.split("\n- ")) if n.strip()]
+
+
+def _status_state(
+    messages: list[dict[str, Any]], user_email: str, about: str,
+    *, user_sent_last: bool,
+) -> dict[str, Any]:
+    """The state of the thread status: the newest messages within the budget
+    of the old prompt (``_THREAD_PROMPT_BUDGET``), oldest first.
+
+    ``last_message_side`` follows ``user_sent_last``, the same fact that
+    decides FYI for the old call, so the two cannot disagree.
+    """
+    kept: list[dict[str, Any]] = []
+    size = 0
+    for msg in reversed(messages):
+        cost = len(json.dumps(msg, ensure_ascii=False, default=str))
+        if kept and size + cost > _THREAD_PROMPT_BUDGET:
+            break
+        kept.append(msg)
+        size += cost
+    kept.reverse()
+    if user_sent_last:
+        last = messages[-1].get("side") if messages else None
+        last_side = last if last in ("owner", "owner_organisation") else "owner"
+    else:
+        last_side = "other_party"
+    return {
+        "thread": kept,
+        "earlier_messages_omitted": len(messages) - len(kept),
+        "last_message_side": last_side,
+        "mailbox_owner": {
+            "address": decide_features.clip_fact(user_email, 320),
+            "about": decide_features.clip_fact(str(about or "").strip(), 1200),
+        },
+    }
+
+
+def _status_question(
+    messages: list[dict[str, Any]] | None, user_email: str, about: str,
+    *, user_sent_last: bool, corrections: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The ``decide`` request for the thread status (EM-T5b-1, shadow only).
+
+    FYI is an option only when ``last_message_side`` is ``other_party``,
+    which is when the owner's side did NOT send last, as in the old call.
+    Returns None (skip) when the caller has no structured messages.
+    """
+    if not messages:
+        return None
     from acb_llm import ChoiceQuestion  # shadow mode only
 
-    criteria = {
-        "REPLY": "Someone asked the user a direct question or requested "
-                 "info or action that the user has not addressed, or the "
-                 "user promised a follow-up that is not sent.",
-        "AWAITING_REPLY": "The ball is in the OTHER person's court: the user "
-                          "is waiting, or someone else owes an action.",
-        "DONE": "All questions are answered and requests fulfilled, or the "
-                "conversation is concluded.",
-    }
-    if not user_sent_last:
-        criteria["FYI"] = ("No questions, requests or pending actions "
-                           "anywhere in the thread, and the user received "
-                           "the last message.")
-    return _status_user_prompt(thread_text, user_email, about), {
+    state = _status_state(messages, user_email, about, user_sent_last=user_sent_last)
+    criteria = dict(_STATUS_CRITERIA)
+    if state["last_message_side"] == "other_party":
+        criteria["FYI"] = _STATUS_FYI
+    return state, {
         "status": ChoiceQuestion(
-            instructions=(
-                "Determine the current status of this email thread from the "
-                "user's perspective. The LAST message decides whose court "
-                "the ball is in."
-            ),
+            instructions=decide_features.instructions(
+                _STATUS_QUESTION, _STATUS_GUIDANCE,
+                _status_correction_notes(corrections)),
             criteria={k: decide_features.clip(v) for k, v in criteria.items()},
         )}
 
@@ -334,6 +437,8 @@ async def _llm_determine_thread_status(
     thread_text: str, user_email: str, about: str, *, user_sent_last: bool = True,
     model: str = _STATUS_MODEL, corrections: str = "",
     account_id: str | None = None,
+    thread_messages: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
 ) -> tuple[str, bool]:
     """Determine an email thread's status from the user's perspective — a faithful
     port of inbox-zero's aiDetermineThreadStatus.
@@ -344,7 +449,12 @@ async def _llm_determine_thread_status(
     fallback is always AWAITING_REPLY/FYI, a one-directional bias, so callers
     should treat a non-confident status as PROVISIONAL (mark it for re-check)
     instead of trusting a fabricated AWAITING. One escalating retry to a stronger
-    tier is attempted before falling back."""
+    tier is attempted before falling back.
+
+    EM-T5b-1: ``thread_messages`` is ``ThreadContext.messages``, the thread as
+    facts for the ``decide`` state. With none, the shadow call is skipped.
+    ``thread_text`` stays for the old call. ``message_id`` goes into each
+    ``decide`` log line."""
     async def _old() -> tuple[str, bool]:
         fallback = "AWAITING_REPLY" if user_sent_last else "FYI"
         try:
@@ -423,15 +533,18 @@ async def _llm_determine_thread_status(
 
     # EM-T5: in `shadow` mode `decide` runs beside the old call. The result is
     # ALWAYS the old call's, compared after the escalation, and the log keeps
-    # the old `confident` flag (§10.4.4 item 9).
+    # the old `confident` flag (§10.4.4 item 9). EM-T5b-1 rebuilt the question
+    # to the System One conventions (§10.4.8).
     options = 3 if user_sent_last else 4
     return await decide_features.shadow(
-        "email.thread_status", _old, account_id=account_id,
+        "email.thread_status", _old, account_id=account_id, message_id=message_id,
         build=lambda: _status_question(
-            thread_text, user_email, about, user_sent_last=user_sent_last),
+            thread_messages, user_email, about,
+            user_sent_last=user_sent_last, corrections=corrections),
         compare=decide_features.compare_choice(
             lambda r: r[0], qid="status", options=options,
-            extra_of=lambda r: {"confident": bool(r[1])}),
+            extra_of=lambda r: {"confident": bool(r[1])},
+            keys=("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))),
     )
 
 
@@ -491,6 +604,49 @@ def _fmt_thread_msg(
     body = (r.body_text or r.snippet or "").strip()
     lines.append(body[:1500])
     return "\n".join(lines)
+
+
+def _thread_message(
+    r: Any, self_email: str = "",
+    extra_domains: frozenset[str] | set[str] = frozenset(),
+    attach_line: str = "",
+) -> dict[str, Any]:
+    """One message of the thread as FACTS, for the ``decide`` state.
+
+    The same facts as :func:`_fmt_thread_msg`: the sender, its side, the
+    recipients and the Cc-only flag of an inbound message, the date, the
+    subject, the attachment line and the body. No persona and no command.
+    """
+    frm = r.from_address if isinstance(r.from_address, dict) \
+        else json.loads(r.from_address or "{}")
+    scope = _msg_scope(r, self_email, extra_domains)
+    external = scope == "external"
+    to = cc = ""
+    cc_only = False
+    if external:
+        to = _fmt_addr_list(getattr(r, "to_addresses", None))
+        cc = _fmt_addr_list(getattr(r, "cc_addresses", None))
+        # Lazy, as in `_fmt_thread_msg`: the engine imports from this module.
+        from gateway.routes.email.automation.engine import _recipient_role
+        cc_only = _recipient_role(
+            self_email, getattr(r, "to_addresses", None),
+            getattr(r, "cc_addresses", None)) == "cc"
+    dt = getattr(r, "received_at", None)
+    # `clip_fact` takes any value, so a name that is None or not text reads
+    # as text, as the f-string of `_fmt_thread_msg` reads it. It also bounds
+    # the JSON-escaped form that the Console measures.
+    fact = decide_features.clip_fact
+    return {
+        "side": _SIDE.get(scope, "other_party"),
+        "from": fact(frm.get("name") or frm.get("email") or "?", 320),
+        "to": fact(to, 1000),
+        "cc": fact(cc, 1000),
+        "owner_cc_only": cc_only,
+        "date": dt.isoformat() if hasattr(dt, "isoformat") else "",
+        "subject": fact(getattr(r, "subject", None), 500),
+        "attachments": fact(attach_line, 1000),
+        "body": fact(str(r.body_text or r.snippet or "").strip(), 1500),
+    }
 
 
 async def _conversation_rule_for_status(
@@ -557,6 +713,28 @@ async def _thread_is_conversation(
     return bool(row and (row.n or 0) >= 2 and row.ours)
 
 
+class StatusCorrections(str):
+    """The corrections block of the old status prompt, plus the notes for
+    ``decide`` (EM-T5b-1).
+
+    The text is the block that the old system prompt carries, byte for byte,
+    so the live path does not change. ``decide_notes`` holds the same notes in
+    the order the ``decide`` instructions need: the conversation-rule notes
+    first, then the account-wide notes, each group newest first. The
+    corrections clip (1500 characters) cuts the end, so it drops the oldest
+    note and never the newest. The notes carry no ``[<rule name>]`` prefix,
+    because the preset rule named "FYI" would put an option key into the
+    instructions (§6A.14 "Question conventions").
+    """
+
+    decide_notes: tuple[str, ...]
+
+    def __new__(cls, text: str, decide_notes: tuple[str, ...] = ()) -> StatusCorrections:
+        obj = super().__new__(cls, text)
+        obj.decide_notes = tuple(decide_notes)
+        return obj
+
+
 async def _status_corrections_block(db: Any, account_id: str) -> str:
     """The user's taught corrections, rendered for the status determiner.
 
@@ -564,7 +742,10 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
     (Reply / Awaiting / FYI / Done). Cleanup-rule guidance is left out — "Zoho
     digests are Newsletter" has nothing to tell a determiner choosing between
     REPLY and DONE, and prompt space spent on it is pure noise. Best-effort:
-    guidance failing to load must never block a status call."""
+    guidance failing to load must never block a status call.
+
+    Returns a :class:`StatusCorrections`: the old text, plus the notes for
+    ``decide`` from the same read."""
     try:
         from gateway.routes.email.automation.engine import (
             _load_rule_guidance,
@@ -572,7 +753,9 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
         g = await _load_rule_guidance(db, account_id)
         if not g:
             return ""
-        notes = list(g.get("", []))
+        account_wide = list(g.get("", []))
+        notes = list(account_wide)
+        rule_notes: list[str] = []
         conv_ids = set()
         if any(k for k in g if k):
             from gateway.routes.email.automation.rules import (
@@ -582,13 +765,19 @@ async def _status_corrections_block(db: Any, account_id: str) -> str:
                 key = _match_conversation_key({"rule": r})
                 if key:
                     conv_ids.add(str(r.get("id")))
-                    for n in g.get(str(r.get("id")), []):
+                    own = g.get(str(r.get("id")), [])
+                    for n in own:
                         notes.append(f"[{r.get('name')}] {n}")
+                    # Newest first within the rule. `_load_rule_guidance`
+                    # gives each list oldest first.
+                    rule_notes.extend(reversed(own))
         if not notes:
             return ""
         body = "\n".join(f"- {n}" for n in notes)
-        return ("\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override "
-                f"your default reading):\n{body}")
+        return StatusCorrections(
+            "\n\nCORRECTIONS THE USER HAS MADE BEFORE (these override "
+            f"your default reading):\n{body}",
+            (*rule_notes, *reversed(account_wide)))
     except Exception as exc:
         _log.warning("email.status_corrections_failed",
                      account_id=account_id, error=str(exc)[:160])
@@ -705,11 +894,14 @@ async def resolve_conversation_status_matches(
             db, account_id, thread_id, acc_email)
         if ctx is None:
             return matches
+        row_id = getattr(message_row, "id", None)
         status, _confident = await _llm_determine_thread_status(
             ctx.thread_text, acc_email, about,
             user_sent_last=ctx.our_side_last,
             corrections=await _status_corrections_block(db, account_id),
-            account_id=account_id)
+            account_id=account_id,
+            thread_messages=getattr(ctx, "messages", None),
+            message_id=str(row_id) if row_id is not None else None)
         target = await _conversation_rule_for_status(db, account_id, status)
         if not target:
             return matches
@@ -827,13 +1019,18 @@ class ThreadContext:
     Done. ``thread_text`` is direction-annotated (you / your organisation /
     external) and ``last_message_id``/``last_message_at`` are what the status row
     should be stamped with (``now()`` when an unsynced just-sent reply is folded
-    in)."""
+    in).
+
+    ``messages`` (EM-T5b-1) is the same thread as facts, one dict for each
+    message, oldest first, for the ``decide`` state. ``thread_text`` stays
+    for the old LLM call."""
     thread_id: str
     last_message_id: Any
     last_message_at: Any
     our_side_last: bool
     has_external: bool
     thread_text: str
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def build_thread_context(
@@ -881,6 +1078,27 @@ async def build_thread_context(
             f"Subject: {subject or latest.subject or ''}\n{body[:1500]}")
         our_side_last = True
 
+    # The thread as facts serves the `decide` shadow only (EM-T5b-1). In `off`
+    # it is not built, so the live path does exactly what it did before. A
+    # failure here costs the shadow its question, never the status.
+    messages: list[dict[str, Any]] = []
+    if decide_features.mode_for("email.thread_status") != "off":
+        try:
+            messages = [_thread_message(r, self_email, extra_domains,
+                                        attach.get(str(r.id), "")) for r in rows]
+            if reply_pending:
+                fact = decide_features.clip_fact
+                messages.append({
+                    "side": "owner", "from": fact(self_email, 320),
+                    "to": "", "cc": "", "owner_cc_only": False, "date": "",
+                    "subject": fact(subject or latest.subject, 500),
+                    "attachments": "", "body": fact(body, 1500),
+                })
+        except Exception as exc:  # the shadow must never break the status
+            _log.warning("email.thread_facts_failed", account_id=account_id,
+                         error_type=type(exc).__name__)
+            messages = []
+
     # Anchor last activity to the just-sent reply (not yet in the DB) so the
     # follow-up clock starts from NOW, not the inbound message we replied to.
     last_at = (datetime.now(timezone.utc)
@@ -888,7 +1106,7 @@ async def build_thread_context(
     return ThreadContext(
         thread_id=thread_id, last_message_id=latest.id, last_message_at=last_at,
         our_side_last=our_side_last, has_external=has_external,
-        thread_text="\n\n---\n\n".join(parts))
+        thread_text="\n\n---\n\n".join(parts), messages=messages)
 
 
 async def recompute_thread_status(
@@ -913,11 +1131,14 @@ async def recompute_thread_status(
         extra_domains=extra_domains, pending_reply=pending_reply)
     if ctx is None:
         return None
+    last_id = ctx.last_message_id
     status, confident = await _llm_determine_thread_status(
         ctx.thread_text, acc_email, about,
         user_sent_last=ctx.our_side_last, model=model,
         corrections=await _status_corrections_block(db, account_id),
-        account_id=account_id)
+        account_id=account_id,
+        thread_messages=getattr(ctx, "messages", None),
+        message_id=str(last_id) if last_id is not None else None)
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status), ("AWAITING", "Awaiting Reply"))
     # Whoever spoke last is a FACT, not a judgment call. The determiner
@@ -1237,8 +1458,16 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # never acquire one. Filtering in SQL means every cycle picks up 200
             # threads that actually need doing, and the backlog drains instead
             # of standing still.
+            #
+            # 🔴 The new-mail floor (owner decision (d), EM-T5b-2 fix round
+            # 2): an INBOX gap thread is selected only when its latest message
+            # arrived at or after the oldest enabled rule. Those rows go to
+            # `classify_matches` (Jev in `on`), which writes a status and
+            # provider labels, and older mail changes only through "Process
+            # past emails". The sent and the filed rows keep no floor.
+            from gateway.routes.email.automation.rules import NEW_MAIL_FLOOR_SQL
             rows = (await db.execute(text(
-                """WITH latest AS (
+                f"""WITH latest AS (
                      SELECT DISTINCT ON (thread_id) thread_id, id, subject,
                             from_address, to_addresses, cc_addresses, body_text,
                             snippet, folder, received_at
@@ -1249,9 +1478,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
                    SELECT l.* FROM latest l
                      LEFT JOIN email_thread_status s
                             ON s.account_id = :aid AND s.thread_id = l.thread_id
-                    WHERE s.thread_id IS NULL
+                    WHERE (s.thread_id IS NULL
                        OR s.last_message_id::text <> l.id::text
-                       OR COALESCE(s.reason, '') LIKE '%· auto'
+                       OR COALESCE(s.reason, '') LIKE '%· auto')
+                      AND (LOWER(COALESCE(l.folder, '')) <> 'inbox'
+                           OR l.received_at >= {NEW_MAIL_FLOOR_SQL})
                     -- Inbox first. Those are the threads that might still need a
                     -- reply, so they must not queue behind a filed backlog that is
                     -- both larger and already dealt with — ordering by date alone

@@ -77,7 +77,7 @@ survives). Highlights:
 | `email_messages` | synced messages (`from/to/cc/bcc` JSONB, `labels[]`, `categories[]`, FTS GIN); well-indexed on `(account_id, folder, received_at DESC)` |
 | `email_attachments` | `message_id → email_messages CASCADE` |
 | `email_folders` / `email_sync_log` | folder map / sync history |
-| `email_assistant_settings` | per-account AI config (PK = `account_id`): the three model roles (`rule_model`/`draft_model`/`chat_model`), digest, follow-up, cold-blocker, writing style |
+| `email_assistant_settings` | per-account AI config (PK = `account_id`): the model roles (`draft_model`/`compose_model`/`chat_model`), digest, follow-up, cold-blocker, writing style. `rule_model` stays as a column (R6), and nothing reads or writes it: the rules run on `decide` (D-EM-7) |
 | `email_rules` / `email_actions` / `email_executed_rules` | rule engine + audit log |
 | `email_newsletters` / `email_senders` / `email_cold_senders` | bulk/sender classification |
 | `email_contacts` (`119`) | the people directory the mailbox learns by itself — name, title, org, phones, links per (account, address), parsed from the person's own signature by the contact card. `manual_fields[]` names columns a human edited; the signature writer never overwrites those. Counts / last-seen are NOT here (derived live from `email_messages`) |

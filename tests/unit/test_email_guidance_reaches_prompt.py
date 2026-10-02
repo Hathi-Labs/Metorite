@@ -37,13 +37,18 @@ def _db_returning(rows: list) -> AsyncMock:
     return db
 
 
-async def _prompt_for(guidance_rows: list, *, multi: bool = False) -> str:
+async def _prompt_for(guidance_rows: list, *, multi: bool = False,
+                      history: list | None = None) -> str:
     """Run a matcher and return the user prompt the classifier would get.
 
     ``multi`` selects the multi-rule matcher, which is the one that actually
     runs on the live account (multi_rule_execution is ON). Testing only the
     single-rule path would have proved the feature works on a code path this
     mailbox never takes.
+
+    ``history`` is what ``_fetch_sender_history`` returns: the rule name and
+    the count for each row. Since EM-T5b-1 the matchers call it, and no
+    longer ``_fetch_classification_hints``.
     """
     seen: dict[str, str] = {}
 
@@ -58,10 +63,8 @@ async def _prompt_for(guidance_rows: list, *, multi: bool = False) -> str:
         patch.object(e, "_load_rule_patterns", AsyncMock(return_value={})),
         patch.object(e, "_is_reply_candidate",
                      AsyncMock(return_value=(False, ""))),
-        patch.object(e, "_fetch_classification_hints",
-                     AsyncMock(return_value="")),
-        patch.object(e, "_account_models",
-                     AsyncMock(return_value={"rule": "m", "draft": "m"})),
+        patch.object(e, "_fetch_sender_history",
+                     AsyncMock(return_value=list(history or []))),
         patch.object(e, "_llm_json", fake_llm_json),
     ):
         fn = (e._match_email_to_rules_multi if multi
@@ -113,6 +116,17 @@ async def test_account_wide_guidance_overrides_by_name() -> None:
     ])
     assert "CORRECTIONS THE USER HAS MADE BEFORE" in prompt
     assert "Mail from our own domain is never cold." in prompt
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_the_sender_history_reaches_the_prompt(multi: bool) -> None:
+    """The rows of `_fetch_sender_history` become the old advisory hint, in
+    both matchers. With no rows, no hint block appears."""
+    rows = [{"rule": "Newsletter", "count": 4}, {"rule": "FYI", "count": 1}]
+    prompt = await _prompt_for([], multi=multi, history=rows)
+    assert "CLASSIFICATION HISTORY" in prompt
+    assert "Newsletter (x4), FYI (x1)" in prompt
+    assert "CLASSIFICATION HISTORY" not in await _prompt_for([], multi=multi)
 
 
 async def test_no_guidance_leaves_the_prompt_untouched() -> None:

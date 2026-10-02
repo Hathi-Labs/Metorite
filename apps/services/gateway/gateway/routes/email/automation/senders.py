@@ -1208,7 +1208,8 @@ async def sender_categories(
 
 
 def _cold_user_prompt(email: dict[str, str]) -> str:
-    """The email text the cold check sends. The old call and ``decide`` share it."""
+    """The user message of the OLD cold check. Since EM-T5b-1, ``decide``
+    does not use this text. It gets the email as facts (`_cold_question`)."""
     # Richer envelope (the cold check reuses the classifier email dict, which
     # carries from_name/to/cc/date): a name + direct-vs-bulk addressing helps
     # tell a personal approach from a blast.
@@ -1225,15 +1226,40 @@ def _cold_user_prompt(email: dict[str, str]) -> str:
     )
 
 
-def _cold_question(email: dict[str, str]) -> tuple[str, dict[str, Any]]:
-    """The ``decide`` request for the cold check (EM-T5, shadow only)."""
-    from acb_llm import BooleanQuestion  # shadow mode only
+#: The probability at which ``decide`` calls an email cold (§10.4.8
+#: "Thresholds"). A start value: the old prompt asked for no margin.
+_COLD_THRESHOLD = 0.5
 
-    return _cold_user_prompt(email), {"cold": BooleanQuestion(
-        instructions=(
-            "Is this a COLD email: unsolicited sales, marketing, or recruiting "
-            "outreach from someone with no prior relationship to the recipient?"
-        ),
+_COLD_QUESTION = "Is the email in `email` cold outreach?"
+_COLD_GUIDANCE = (
+    "- Cold outreach is unsolicited sales, marketing or recruiting mail from "
+    "someone with no relationship with the mailbox owner.",
+    "- The owner has never sent mail to this sender, so `sender.prior_contact` "
+    "is false.",
+)
+
+
+def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ``decide`` request for the cold check (EM-T5b-1, shadow only).
+
+    The state is the ``email`` and ``direction`` facts of the rule match,
+    plus ``sender.prior_contact``. The only caller, ``_maybe_block_cold``,
+    asks only after it found no mail from the owner to this sender, so the
+    fact is always false.
+    """
+    from acb_llm import BooleanQuestion  # shadow mode only
+    from gateway.routes.email.automation.engine import (
+        _email_direction,
+        _email_facts,
+    )
+
+    state = {
+        "email": _email_facts(email),
+        "direction": _email_direction(email),
+        "sender": {"prior_contact": False},
+    }
+    return state, {"cold": BooleanQuestion(
+        instructions=decide_features.instructions(_COLD_QUESTION, _COLD_GUIDANCE),
         criteria={
             "true": "Unsolicited sales, marketing or recruiting outreach "
                     "from someone with no prior relationship.",
@@ -1244,11 +1270,13 @@ def _cold_question(email: dict[str, str]) -> tuple[str, dict[str, Any]]:
 
 async def _llm_is_cold(
     email: dict[str, str], *, account_id: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[bool, str]:
     """Classify whether an email is cold outreach. (is_cold, reason).
 
     EM-T5: in ``shadow`` mode ``decide`` runs beside the old call, and the
     result is always the old call's (``gateway/decide_features.py``).
+    ``message_id`` goes into each ``decide`` log line.
     """
 
     async def _old() -> tuple[bool, str]:
@@ -1273,10 +1301,37 @@ async def _llm_is_cold(
             return False, ""
 
     return await decide_features.shadow(
-        "email.cold_check", _old, account_id=account_id,
+        "email.cold_check", _old, account_id=account_id, message_id=message_id,
         build=lambda: _cold_question(email),
-        compare=decide_features.compare_boolean(lambda r: r[0], qid="cold"),
+        compare=decide_features.compare_boolean(
+            lambda r: r[0], qid="cold", threshold=_COLD_THRESHOLD),
     )
+
+
+#: Has the owner ever sent mail TO this address? The address compares
+#: without case. JSONB containment (``@>``) is case-sensitive, and Outlook
+#: keeps the case of an address, so ``Jo.Smith@Acme.com`` in a sent message
+#: did not contain ``jo.smith@acme.com``, and a known contact read as cold
+#: (EM-T5b-1 fix round 1). The account and the sent folder bound the scan
+#: before any array is opened. The CASE keeps ``jsonb_array_elements`` from
+#: raising on a value that is not an array, which would abort the session.
+_PRIOR_CONTACT_SQL = """
+    SELECT 1
+      FROM email_messages em
+     CROSS JOIN LATERAL jsonb_array_elements(
+           CASE WHEN jsonb_typeof(em.to_addresses) = 'array'
+                THEN em.to_addresses ELSE '[]'::jsonb END) AS t(addr)
+     WHERE em.account_id = :aid
+       AND LOWER(em.folder) = 'sent'
+       AND LOWER(t.addr->>'email') = :e
+     LIMIT 1"""
+
+
+async def _has_prior_contact(db: Any, account_id: str, sender: str) -> bool:
+    """True when a sent message of the account names ``sender`` in To."""
+    row = (await db.execute(text(_PRIOR_CONTACT_SQL), {
+        "aid": account_id, "e": (sender or "").strip().lower()})).fetchone()
+    return row is not None
 
 
 async def _maybe_block_cold(
@@ -1295,15 +1350,12 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "e": sender})).fetchone()
     if seen:
         return
-    # Replied-to / known sender (we've emailed them) → not cold.
-    replied = (await db.execute(text(
-        """SELECT 1 FROM email_messages
-           WHERE account_id = :aid AND LOWER(folder) = 'sent'
-             AND to_addresses @> :tojson LIMIT 1"""
-    ), {"aid": account_id, "tojson": json.dumps([{"email": sender}])})).fetchone()
-    if replied:
+    # Replied-to / known sender (we've emailed them) → not cold. The address
+    # compares without case (`_PRIOR_CONTACT_SQL`).
+    if await _has_prior_contact(db, account_id, sender):
         return
-    is_cold, reason = await _llm_is_cold(email, account_id=account_id)
+    is_cold, reason = await _llm_is_cold(
+        email, account_id=account_id, message_id=str(message_id))
     if not is_cold:
         return
     await db.execute(text(
