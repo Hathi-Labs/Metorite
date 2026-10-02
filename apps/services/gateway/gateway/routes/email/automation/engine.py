@@ -12,7 +12,6 @@ from typing import Any
 
 from fastapi import HTTPException
 from gateway import decide_features
-from gateway.routes.email.automation.assistant import _account_models
 from gateway.routes.email.automation.identity import (
     resolve_org_domains,
     sender_scope,
@@ -23,6 +22,7 @@ from gateway.routes.email.core import (
     _fmt_addr_list,
     _llm_json,
     _log,
+    _savepoint,
 )
 from sqlalchemy import text
 
@@ -705,6 +705,69 @@ def _rule_match_compare(
     return _compare
 
 
+class DecisionUnavailable(LLMUnavailable):
+    """``decide`` gave no decision for an email, in ``on`` (EM-T5b-2, D-EM-8).
+
+    A subclass of :class:`LLMUnavailable`, so every caller that already skips
+    the ``rules_processed_at`` stamp on a classifier outage does the same
+    here, and the next cycle asks again. No LLM call replaces the answer.
+    """
+
+
+async def _decide_rule_match(
+    email: dict[str, str], rules: list[dict[str, Any]],
+    guidance: dict[str, list[str]] | None,
+    history: list[dict[str, Any]] | None,
+    *, account_id: str | None, message_id: str | None, member: str | None,
+) -> RuleMatch:
+    """The rule match in ``on``: the ``decide`` answer decides.
+
+    Raises :class:`DecisionUnavailable` when there is no decision, for any
+    reason (`decide_features.ask` logs which one).
+    """
+    match = await decide_features.ask(
+        "email.rule_match", account_id=account_id, message_id=message_id,
+        build=lambda: _rule_match_requests(email, rules, guidance, history),
+        read=lambda decision: _read_with_fields(decision, rules),
+        member=member,
+    )
+    if match is None:
+        raise DecisionUnavailable("decide gave no decision")
+    return match
+
+
+def _read_with_fields(
+    decision: Any, rules: list[dict[str, Any]],
+) -> tuple[RuleMatch, Mapping[str, Any]]:
+    match = _read_rule_match(decision, rules)
+    return match, match.fields
+
+
+async def _decide_member(db: Any, account_id: str) -> str | None:
+    """The mailbox owner for a ``decide`` call in ``on``, else None.
+
+    A deployment Router key refuses a ``decide`` call that names no member,
+    and a request job runs as its request member, not as the owner. So in
+    ``on`` the matchers name the owner, ``email_accounts.user_id``, read by
+    the account id the server holds, in the caller's own session (EM-T5b-2
+    item 5). Outside ``on`` this reads nothing. A failed read gives None, and
+    the call keeps the member of the run context.
+    """
+    if decide_features.mode_for("email.rule_match") != "on":
+        return None
+    try:
+        async with _savepoint(db):
+            row = (await db.execute(text(
+                "SELECT user_id FROM email_accounts WHERE id = :aid"
+            ), {"aid": account_id})).fetchone()
+    except Exception as exc:  # the run context member stays
+        _log.warning("email.decide_member_unresolved", account_id=account_id,
+                     error_type=type(exc).__name__)
+        return None
+    owner = str(getattr(row, "user_id", "") or "") if row is not None else ""
+    return owner if "@" in owner else None
+
+
 async def _llm_pick_rule(
     email: dict[str, str], rules: list[dict[str, Any]], hints: str = "",
     *, model: str = "tier-fast",
@@ -712,6 +775,7 @@ async def _llm_pick_rule(
     account_id: str | None = None,
     history: list[dict[str, Any]] | None = None,
     message_id: str | None = None,
+    member: str | None = None,
 ) -> dict[str, Any] | None:
     """Ask the LLM which instruction-based rule matches the email.
 
@@ -727,9 +791,19 @@ async def _llm_pick_rule(
     requests of :func:`_rule_match_requests` run beside it. ``history`` is
     the sender history as rows, for the state. ``message_id`` goes into each
     log line.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides (``RuleMatch.as_pick``)
+    and no LLM call is made. No answer raises :class:`DecisionUnavailable`.
+    ``member`` is the mailbox owner, for a deployment Router key.
     """
     if not rules:
         return None
+    if decide_features.mode_for("email.rule_match") == "on":
+        match = await _decide_rule_match(
+            email, rules, guidance, history,
+            account_id=account_id, message_id=message_id, member=member)
+        return match.as_pick()
+
     async def _old() -> dict[str, Any] | None:
         try:
             rule_lines = _rule_lines(rules, guidance)
@@ -786,6 +860,7 @@ async def _llm_pick_rules(
     account_id: str | None = None,
     history: list[dict[str, Any]] | None = None,
     message_id: str | None = None,
+    member: str | None = None,
 ) -> list[dict[str, Any]]:
     """Multi-rule selection (inbox-zero parity): ask the LLM for ALL instruction
     rules that apply to the email, not just the single best.
@@ -800,9 +875,17 @@ async def _llm_pick_rules(
     EM-T5b-1: multi-rule had no shadow before. It now asks the same
     ``decide`` requests as :func:`_llm_pick_rule`, under the same feature,
     ``email.rule_match``, and still returns the LLM answer.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides
+    (``RuleMatch.as_picks``) and no LLM call is made.
     """
     if not rules:
         return []
+    if decide_features.mode_for("email.rule_match") == "on":
+        match = await _decide_rule_match(
+            email, rules, guidance, history,
+            account_id=account_id, message_id=message_id, member=member)
+        return match.as_picks()
 
     async def _old() -> list[dict[str, Any]]:
         try:
@@ -1200,11 +1283,13 @@ async def _match_email_to_rule(
 
     if instruction_rules:
         history = await _fetch_sender_history(db, account_id, email.get("from", ""))
-        models = await _account_models(db, account_id)
+        # D-EM-7: no member chooses the rules model. The old call runs on its
+        # fixed tier (`tier-fast`), and `on` asks Jev on `tier-decide`.
         pick = await _llm_pick_rule(
             email, instruction_rules, hints=_hints_text(history),
-            model=models["rule"], guidance=guidance, account_id=account_id,
-            history=history, message_id=message_id)
+            guidance=guidance, account_id=account_id,
+            history=history, message_id=message_id,
+            member=await _decide_member(db, account_id))
         if pick:
             return {"rule": instruction_rules[pick["index"]],
                     "reason": pick["reason"] or "Matched by AI.", "source": "ai"}
@@ -1271,11 +1356,12 @@ async def _match_email_to_rules_multi(
 
     if instruction_rules:
         history = await _fetch_sender_history(db, account_id, email.get("from", ""))
-        models = await _account_models(db, account_id)
+        # D-EM-7: no member chooses the rules model (see _match_email_to_rule).
         for pick in await _llm_pick_rules(
             email, instruction_rules, hints=_hints_text(history),
-            model=models["rule"], guidance=guidance, account_id=account_id,
+            guidance=guidance, account_id=account_id,
             history=history, message_id=message_id,
+            member=await _decide_member(db, account_id),
         ):
             _add(instruction_rules[pick["index"]],
                  pick["reason"] or "Matched by AI.", "ai",

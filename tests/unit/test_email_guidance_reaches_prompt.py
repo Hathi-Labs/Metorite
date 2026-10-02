@@ -65,8 +65,6 @@ async def _prompt_for(guidance_rows: list, *, multi: bool = False,
                      AsyncMock(return_value=(False, ""))),
         patch.object(e, "_fetch_sender_history",
                      AsyncMock(return_value=list(history or []))),
-        patch.object(e, "_account_models",
-                     AsyncMock(return_value={"rule": "m", "draft": "m"})),
         patch.object(e, "_llm_json", fake_llm_json),
     ):
         fn = (e._match_email_to_rules_multi if multi

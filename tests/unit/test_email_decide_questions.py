@@ -905,7 +905,6 @@ async def test_classify_matches_passes_the_row_id_and_the_sender_history(
     monkeypatch.setattr(eng, "_is_reply_candidate", AsyncMock(return_value=(True, "")))
     monkeypatch.setattr(eng, "_load_rule_guidance", AsyncMock(return_value={}))
     monkeypatch.setattr(eng, "_fetch_sender_history", AsyncMock(return_value=history))
-    monkeypatch.setattr(eng, "_account_models", AsyncMock(return_value={"rule": "m"}))
     row = SimpleNamespace(id="msg-42", thread_id=None)
     with structlog.testing.capture_logs() as caps:
         await eng.classify_matches(AsyncMock(), ACC, row, EMAIL, resolve=False)
@@ -1093,7 +1092,6 @@ async def test_the_old_main_matches_the_live_sort(monkeypatch, tenant) -> None:
     monkeypatch.setattr(eng, "_is_reply_candidate", AsyncMock(return_value=(True, "")))
     monkeypatch.setattr(eng, "_load_rule_guidance", AsyncMock(return_value={}))
     monkeypatch.setattr(eng, "_fetch_sender_history", AsyncMock(return_value=[]))
-    monkeypatch.setattr(eng, "_account_models", AsyncMock(return_value={"rule": "m"}))
     with structlog.testing.capture_logs() as caps:
         matches = await eng._match_email_to_rules_multi(
             AsyncMock(), ACC, EMAIL, message_id=MID)

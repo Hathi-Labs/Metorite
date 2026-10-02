@@ -400,6 +400,22 @@ class _FakeProvider:
         return {}
 
 
+def _seed_enabled_rule(admin, *, org: str, account_id: str) -> None:
+    """One enabled rule, created a day before any seeded message.
+
+    The AUTOMATIC run (caller "scheduler") touches only mail received after
+    the first enabled rule of the mailbox was created (EM-T5b-2 item 7, owner
+    decision (d) of 2026-10-02). The runner cases below call the job as the
+    scheduler, so they need this rule for their rows to be selected. The
+    rule changes nothing else: those cases patch `classify_matches`."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_rules (account_id, name, instructions, enabled, "
+            "created_at, organization_id) VALUES (CAST(:a AS uuid), 'Receipt', "
+            "'receipts', true, :c, CAST(:o AS uuid))"),
+            {"a": account_id, "c": datetime.now(UTC) - timedelta(days=1), "o": org})
+
+
 def _seed_message(admin, *, org: str, account_id: str, folder: str = "inbox",
                   sender: str = "s@sender.test", thread_id: str | None = None,
                   categories: list[str] | None = None,
@@ -490,6 +506,7 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         m1 = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                            thread_id=f"t-r1-{acc}")
         m2 = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
@@ -966,6 +983,7 @@ class TestFixRoundOne:
         _assert_non_priv(app_engine)
         p = promoted
         acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t1b2.test")
+        _seed_enabled_rule(p.admin_engine, org=p.org_b, account_id=acc)
         mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
                             thread_id=f"t-proj-{acc}")
 

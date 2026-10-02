@@ -1601,6 +1601,20 @@ async def _process_past_emails_job(
                              account_id=account_id, error=type(exc).__name__)
 
 
+#: The caller name of the automatic run (`scheduler_hooks.auto_run_rules_for_account`).
+_SCHEDULER = "scheduler"
+
+#: The AUTOMATIC run touches new mail only (owner decision (d), 2026-10-02):
+#: mail received at or after the creation of the first enabled rule of the
+#: mailbox. Older synced mail changes only through "Process past emails",
+#: which the member starts. With no enabled rule, the bound is NULL and the
+#: run selects nothing (the hook already returns early then). The manual run
+#: and Process past keep no bound.
+_NEW_MAIL_ONLY = """
+       AND em.received_at >= (SELECT MIN(r.created_at) FROM email_rules r
+                               WHERE r.account_id = :aid AND r.enabled)"""
+
+
 async def _run_rules_job(
     account_id: str, limit: int, dry_run: bool, user_email: str
 ) -> None:
@@ -1621,15 +1635,17 @@ async def _run_rules_job(
     """
     try:
         # Phase 0: every read the loop needs.
+        # The floor is one of two fixed texts, never a value from a request.
+        new_mail_only = _NEW_MAIL_ONLY if user_email == _SCHEDULER else ""
         async with _tenant_session() as db:
             rows = (await db.execute(text(
-                """SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
+                f"""SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
                           em.body_text, em.snippet, em.from_address,
                           em.to_addresses, em.cc_addresses, em.received_at
                    FROM email_messages em
                    WHERE em.account_id = :aid AND LOWER(em.folder) = 'inbox'
                      AND em.rules_processed_at IS NULL
-                     AND em.rules_held_back_at IS NULL
+                     AND em.rules_held_back_at IS NULL{new_mail_only}
                    ORDER BY em.received_at DESC LIMIT :limit"""
             ), {"aid": account_id, "limit": limit})).fetchall()
             if not rows:
