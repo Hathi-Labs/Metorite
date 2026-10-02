@@ -10,6 +10,7 @@
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
+> 🟡 **EM-T4a-1 is BUILT, not merged (2026-10-02, branch `email-t4a1`).** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -564,7 +565,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
-| **EM-T4** | 🟢 AGENT-SAFE | **§7 Tier 1, items 2 to 5.** Sessions no longer stay open across LLM or provider I/O. This includes the two that EM-T1b-1 left: phase (e) across the Graph calls of the body backfill, and phase (f) across `litellm.aembedding`. A shared LLM cap and a daily budget. A 401 refresh mid-sync. Graph delta sync works again. | Each item has a test. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | 🟡 **EM-T4a-1 BUILT, not merged (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | 🔨 **BUILT (shadow, dark), not merged (branch `email-t5`, 2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -1352,6 +1353,410 @@ uv run pytest tests/unit/test_email_owner_scope_fence.py \
   tests/unit/test_email_chat_context_owner.py tests/unit/test_email_imports.py -q -rs
 uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 ```
+
+#### 10.4.6 EM-T4 in full
+
+**Status.** 🟡 EM-T4a-1 BUILT, not merged (2026-10-02, branch `email-t4a1`). The other parts are not built. Audited on 2026-10-02 against `ea9467a9`. Each anchor below was read in the code on that date. EM-T4 has eight parts, and each part is one PR.
+
+**Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
+
+**Order.**
+
+1. EM-T4a-0 goes first, because it fixes a live defect (see its section). EM-T4a-1 and EM-T4c
+   follow. They do not depend on each other.
+2. EM-T4b waits for EM-T5 to merge, because it wraps the shadow helper.
+3. EM-T4a-2 waits for EM-T5, because both change `engine.py` and `replyzero.py`.
+4. EM-T4a-3 waits for EM-T4a-2. EM-T4a-4 waits for EM-T4a-0, EM-T4a-3 and EM-T4b.
+5. EM-T4d waits for EM-T4c, because both change `_get_client` in `outlook.py`.
+6. EM-T4e waits for EM-T2a, because both change `transport/accounts.py`. It takes the next free migration number at build time (R1).
+
+**Measured state: sessions across external I/O on the sync path.**
+
+- Phase (e) of `_sync_account` holds one `tenant_session(org)` across up to 25 `provider.get_message` calls (`scheduler.py:412-418`, `body_backfill.py:97-99`).
+- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:615`).
+- `_run_rules_job` opens one block for each row (`runner.py:1648`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
+- `_maybe_classify_threads` opens one block for each gap thread (`replyzero.py:1277`). `_mark_thread_replied` holds its first block across the status call (`replyzero.py:918-937`).
+- `_maybe_send_follow_up_reminders` holds one block for up to 50 threads (`followups.py:92-258`). The block covers `authenticate`, `set_labels`, the body fetch, the draft agent and `create_draft`.
+- `_maybe_send_digest` holds one block across the digest model call and `send_message` (`digest.py:708-772`).
+- `_bulk_reconcile_provider` holds one block across `bulk_apply` and across sleeps of 2 and 8 seconds (`senders.py:460`, `senders.py:493-520`).
+- `_ensure_subscription` holds one block across `authenticate` and the Graph subscription calls (`transport/sync.py:433-473`). It runs at most once in 12 hours for each mailbox.
+
+**Measured state: the shape to copy, and the cost of the old shape.**
+
+- The cleanup sweep already has the right shape. It calls `push_label` with no session, and then it writes the mirror and the audit row in a new block (`cleanup.py:629-651`).
+- The pool holds 8 sessions plus 4 overflow. A wait for a free session fails after 10 seconds (`acb_common/settings.py:94-104`).
+- On 2026-08-06, a session held open across a model call blocked a migration, and the lock queue stalled each later reader (`replyzero.py:1241-1247`).
+
+**Measured state: the request jobs.**
+
+- 12 sites in jobs that a request starts still call `_get_db()`, for example `runner.py:1409`, `replyzero.py:1382` and `drafting.py:1781`. Each one carries an `# H4` marker.
+- `_get_db()` binds no tenant (`acb_common/db.py:177-187`). Under FORCE RLS such a session reads zero rows. So on the box these jobs most likely read nothing. Nobody has measured this on the box.
+
+**Measured state: the model calls.**
+
+- 11 sites call `core._llm_json` (`core.py:644`). 9 sites call a model directly: `actions.py:295`, `assistant.py:615`, `drafting.py:636`, `drafting.py:891`, `drafting.py:1036`, `drafting.py:1279`, `drafting.py:1526`, `voice_profile.py:695` and `email_embeddings.py:73`.
+- Nothing limits these calls across mailboxes. The gateway runs as one uvicorn process (`deploy/hostinger/acb-gateway.service:13`).
+- CP-7 owns credit budgets (`work_plan.md` §4, the Budgets row). The EM-T4 budget counts calls. It stops a loop that runs away, and it never prices anything.
+
+**Measured state: the 401.**
+
+- Each provider writes the bearer token into its client once (`outlook.py:126-137`, `gmail.py:180-191`). Only `authenticate()` refreshes on a 401.
+- `_graph_send` retries one 429 (`outlook.py:139-161`). Outlook makes 36 calls on an httpx client, and only 3 go through `_graph_send`. Gmail makes 22 and has no wrapper.
+
+**Measured state: delta.**
+
+- `sync_messages` sets `history_id = None` (`outlook.py:1061`). So each poll sweeps 6 system folders and each user folder (`outlook.py:1104-1160`).
+- Commits `55bec57f` and `a350b578` turned delta off on 2026-06-23. A seeded inbox token returned 0 changes in each cycle while new mail arrived. Nobody found the cause.
+- The dead branch (`outlook.py:1063-1103`) has four defects. It keeps only the bare `$deltatoken`, and it sends `$top`. It reads one page with no `@odata.nextLink`, and it moves each `@removed` item to TRASH.
+- The cursor column is `last_history_id TEXT` (`17_email_accounts.sql:25`). It can hold a JSON map of links, so delta needs no migration.
+
+**Measured state: §7 item 4.** The row said "items 2 to 5" but named delta in place of item 4. Item 4 is still real:
+
+- `list_accounts` runs one COUNT for each account (`transport/accounts.py:69`, `transport/accounts.py:242`).
+- `_load_rules` reads the actions once for each rule (`automation/rules.py:119-121`). The engine calls it once for each email.
+- `email_thread_status.last_message_id` has no index (`27_email_reply_tracking.sql:18`). No index on `email_messages` starts with `(account_id, thread_id, received_at)`.
+
+**The split pattern (decided).**
+
+Each part uses (A) of §10.4.2. Read in one `_tenant_session()` block. Call the model or the provider with no session open. Write in a new block, with no `commit()`. A write carries each value that the provider returned, for example the new id after a move. A best-effort write inside a block runs in `_savepoint`.
+
+Option (B), a listener on the seam, stays rejected.
+
+**One fence for every part (R7).**
+
+Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and it gives a watched fake model and a watched fake provider. Each fake fails the test when a block is open during its call. Each part adds its functions to `tests/unit/test_email_no_session_across_io.py`. A companion test proves that the fence fails on a function that holds a block across a fake call.
+
+##### EM-T4a-0 — the request jobs bind a tenant (first, 2026-10-02)
+
+**Why first.** Email is live in the nav since #564. The 12 request jobs below open `_get_db()`,
+which binds no tenant. Under FORCE RLS each one reads zero rows. So compose assist answers
+"Account not found", and Process past emails, reclassify, the voice profile, learn-from-sent and
+the block filters do nothing. Production showed almost no email traffic on 2026-10-02, so no
+member has hit this yet.
+
+**Scope.**
+
+1. Each of the 12 `_get_db()` sites with an `# H4` marker opens `_tenant_session()` instead.
+   The sites are in `drafting.py` (330, 533, 1781), `cleanup.py` (891, 904), `voice_profile.py`
+   (351), `replyzero.py` (977, 1382, 1405), `senders.py` (812, 846) and `runner.py` (1409).
+2. A BackgroundTask keeps the tenant of its request, because Starlette runs it inside the tenant
+   scope. A task that `asyncio.create_task` starts copies the context. So each site uses the ambient
+   tenant. A site with no tenant raises `TenantUnbound`, and the job logs it and stops.
+3. A site that commits part way uses the phase split (A) of §10.4.2: one block for each phase, and
+   no `commit()`.
+4. `mailbox_owner` keeps its one discovery read.
+5. Correct each `# H4` comment. It says "no ambient tenant to inherit", and that is false.
+6. Lower `H2_BASELINE_ELSEWHERE` by the measured count.
+
+**Non-goals.** No split of a session across external I/O, which EM-T4a-4 owns. No change to what a
+job does. No cap and no budget, which EM-T4b owns. "Process past emails" keeps its own ceiling
+(`test_email_process_past_cost_guard.py`), so the jobs do not need EM-T4b first.
+
+**Done when.**
+
+- An AST fence finds no `await _get_db()` in `routes/email` other than `mailbox_owner`. A companion
+  test proves that the fence can fail.
+- With no tenant bound, each job opens no session and writes nothing.
+- R8: `_compose_assist_run` for a member of org B finds the account of that member.
+- R8: "Process past emails" over a seeded range in org B stamps `rules_processed_at` in org B.
+  Org A reads none of it.
+- R8: one job from each other file (cleanup, voice profile, reclassify, block filter) writes in org B.
+- The existing suites of each job pass with no changed expected value.
+
+**Files.** The six files above. The tests are a new `tests/unit/test_email_request_jobs_tenancy.py`
+and `tests/unit/test_db_engine_seam.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_request_jobs_tenancy.py tests/unit/test_db_engine_seam.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_reclassify_resumable.py \
+  tests/unit/test_email_process_past_cost_guard.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_process_past_idempotent.py tests/unit/test_email_process_past_progress.py \
+  tests/unit/test_email_automation_tenancy.py tests/unit/test_background_ai_member.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_request_jobs_tenancy.py
+```
+
+The R8 tests must show PASSED, not SKIPPED.
+
+##### EM-T4a-1 — the sync core, phases (e) and (f)
+
+1. Split `backfill_missing_bodies` into three steps: read the candidates, fetch the bodies, and write the bodies.
+2. Phase (e) runs the read in one `tenant_session(org)`, the fetch with no session, and the write in a second block.
+3. Split `embed_pending_messages` the same way. Phase (f) calls `_embed_batch` with no session open.
+4. The read and write steps take a session and open none. Each block lives in `scheduler.py`, so the existing fence counts it.
+5. No step calls `commit()`. The seam commits on exit.
+6. Extend `test_no_session_is_open_during_the_provider_calls` (`test_email_scheduler_tenancy.py:526`) to `get_message` and `_embed_batch`.
+
+**Non-goals.** No change to the batch sizes, to phases (a) to (d), or to the gateway.
+
+**Done when.**
+
+- In phase (e), a watched fake provider gets each `get_message` call with zero open sessions.
+- With semantic search on, a watched `_embed_batch` gets its call with zero open sessions.
+- A fetch that fails for one message leaves the bodies of the other messages written.
+- With no candidates, phase (e) opens one session and makes no provider call.
+- R8: a sync for org B writes the body into the row of org B. Org A reads none of it.
+- The commit fence of `test_email_scheduler_tenancy.py` also covers `body_backfill.py` and `email_embeddings.py`.
+
+**Files.** `apps/services/email_ingestion/email_ingestion/scheduler.py`, `body_backfill.py` and `email_embeddings.py`. The test is `tests/unit/test_email_scheduler_tenancy.py`.
+
+**As built (2026-10-02).** `body_backfill.py` has three steps: `select_missing_bodies`,
+`fetch_bodies` and `write_bodies`. `email_embeddings.py` has three steps:
+`select_pending_embeddings`, `compute_embeddings` and `write_embeddings`. The read step of
+phase (f) returns `None` when semantic search is off. `scheduler.py` runs each phase in
+`_backfill_bodies` and `_embed_messages`. `_sync_account` keeps the log line of each failure.
+The old `backfill_missing_bodies` and `embed_pending_messages` are gone, because the scheduler
+was their only caller.
+
+**Fences.** `test_no_session_is_open_during_the_provider_calls` and
+`test_the_sync_steps_take_a_session_and_never_commit`, with its companion
+`test_the_sync_step_fence_is_not_vacuous`. The R8 case is
+`test_phases_e_and_f_write_the_fetched_bodies_into_org_b`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_embeddings_hash.py \
+  tests/unit/test_email_deep_sync.py tests/unit/test_email_manual_sync_parity.py \
+  tests/unit/test_email_sync_backoff.py tests/unit/test_db_engine_seam.py -q -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_email_scheduler_tenancy.py
+```
+
+The R8 tests must show PASSED, not SKIPPED.
+
+##### EM-T4a-2 — the decision core
+
+1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
+2. The functions are `classify_matches` with its two match helpers (`engine.py:692-871`) and `resolve_conversation_status_matches` (`replyzero.py:604`).
+3. The other functions are `recompute_thread_status` (`replyzero.py:840`), `_ai_confirms_sender_pattern` (`learning.py:47`) and `_maybe_block_cold` (`senders.py:1245`).
+4. `recompute_thread_status` writes the status in a new block. It writes only when the newest message of the thread is still `ctx.last_message_id`.
+5. The runner loop, the gap loop of `_maybe_classify_threads` and `_mark_thread_replied` use the split.
+6. The EM-T5 shadow helper wraps the ask step only.
+
+**Non-goals.** No change to a prompt, a model tier or a decision. No change to the action tail, which is EM-T4a-3.
+
+**Done when.**
+
+- The watched fake model gets each call with zero open sessions in the runner, the gap loop and `_mark_thread_replied`.
+- A thread that gets a newer message during the ask step keeps its status row. The next cycle decides it again.
+- `test_email_classify_matches.py`, `test_email_thread_single_classification.py` and `test_email_rules_engine.py` pass with no changed expected value.
+- R8: the runner and the gap loop write `email_thread_status` and `email_executed_rules` rows in org B. Org A reads none of them.
+
+**Files.** `routes/email/automation/engine.py`, `replyzero.py`, `learning.py`, `senders.py` and `runner.py`, with the fence files.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_no_session_across_io.py tests/unit/test_email_classify_matches.py \
+  tests/unit/test_email_thread_single_classification.py tests/unit/test_email_rules_engine.py \
+  tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_status_parity.py \
+  tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_classifier_unavailable.py \
+  tests/unit/test_email_apply_and_watermark.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_automation_tenancy.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+```
+
+##### EM-T4a-3 — the action tail on the sync path
+
+1. `_apply_rule_actions` (`actions.py:309`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
+2. One block then writes the mirrors, the new ids and the audit row.
+3. `_reconcile_thread_labels` (`replyzero.py:678`) writes the mirror in a block. It calls `set_labels` after the block closes. The mirror stays first.
+4. `_maybe_send_follow_up_reminders` reads in one block. It labels, fetches and drafts with no session. It stamps each thread in its own block.
+5. `_maybe_send_digest` builds the digest in one block and sends with no session. It stamps `last_digest_at` in a new block after the send returns.
+6. `_bulk_reconcile_provider` calls `bulk_apply` and sleeps with no session. It writes the new ids and the reverts in a block after each try.
+7. `_ensure_subscription` reads in one block, calls Graph with no session, and writes in a second block.
+
+**Non-goals.** No change to which actions run. Automation writes stay provider-first (§2).
+
+**Done when.**
+
+- The watched fakes get each call with zero open sessions in the six functions.
+- An Outlook move that gives a new id writes that id to `email_messages` and to the audit row.
+- A failed provider action writes `FAILED` and no mirror, as `test_email_rule_action_failures.py` states today.
+- A digest send that raises leaves `last_digest_at` unchanged.
+- R8: the mirrors, the audit rows and the stamps land in org B. Org A reads none of them.
+
+**Files.** `routes/email/automation/actions.py`, `drafting.py`, `replyzero.py`, `followups.py` and `senders.py`, with `routes/email/digest.py` and `transport/sync.py`.
+
+**Verify with.** The command of EM-T4a-2, plus `test_email_rule_action_failures.py`, `test_email_digest.py`, `test_email_follow_up_scan.py`, `test_email_bulk_apply.py`, `test_email_webhook.py` and `test_email_rulepath_draft_parity.py`.
+
+##### EM-T4a-4 — the request jobs
+
+1. EM-T4a-0 already moved the 12 sites to `_tenant_session()`. This part adds the split only.
+2. `mailbox_owner` keeps its one discovery read (`scheduler_hooks.py:41`).
+3. Each job gets the split of EM-T4a-2 and EM-T4a-3.
+4. Lower `H2_BASELINE_ELSEWHERE` by the measured count.
+
+**Non-goals.** No change to what a job does, or to its progress tracker.
+
+**Done when.**
+
+- An AST fence finds no `await _get_db()` in `routes/email` other than `mailbox_owner`. A companion test proves the fence can fail.
+- The watched fakes get each call with zero open sessions in each job.
+- R8: "Process past emails" over a seeded range in org B stamps `rules_processed_at` in org B. Org A reads none of it.
+- R8: `_compose_assist_run` (`drafting.py:1781`) for a member of org B finds the account of that member.
+
+⚠️ **Cost note.** EM-T4a-0 turns these jobs on. "Process past emails" keeps its own ceiling in the
+API, and EM-T4b adds the shared cap and the budget.
+
+##### EM-T4b — one cap and one daily budget for the model calls
+
+1. Add `apps/services/email_ingestion/email_ingestion/llm_cap.py`. It holds one `asyncio.Semaphore` for the process and one context manager, `llm_slot(account_id)`.
+2. Add three settings to `acb_common/settings.py`. `email_llm_concurrency` defaults to 4. `email_llm_daily_calls` defaults to 2000.
+3. `email_llm_budget_mode` is `off`, `log` or `enforce`. It defaults to `log`.
+4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it.
+5. `as_mailbox_owner`, `process_new_mail` and each request job of EM-T4a-4 open the scope.
+6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
+7. `llm_slot` is re-entrant. A task that holds a slot goes through a nested `llm_slot` with no second permit.
+8. The budget counts calls for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
+9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call.
+10. In `log` mode, a call past the limit runs. It logs `email.llm_budget_exceeded` once a day for each mailbox.
+11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
+12. The rule pick turns any model failure into `LLMUnavailable` (`engine.py:334-338`). So the runner leaves the message unstamped, and static and pattern rules still apply.
+13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again. It does not write its `· auto` fallback for it.
+14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
+15. `core._llm_json` and the 9 direct sites enter `llm_slot`. `run_agent_stream` (`chat.py:217`) is exempt, because a member drives it.
+16. After EM-T5 merges, `decide_features._ask` takes a slot only when one is free. Otherwise it logs `decide.shadow_skipped` with `reason=cap` and makes no call.
+
+**Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one. No UI. No change to `acompletion_with_fallback`.
+
+**Done when.**
+
+- With a cap of 2, five automation calls at one time never run more than two fake model calls at once.
+- A nested `llm_slot` inside a held slot completes with a cap of 1.
+- A call outside the automation scope takes no slot and adds nothing to the counter.
+- In `enforce` mode, call 2001 of one mailbox in one UTC day raises `LLMBudgetExhausted`. The fake model records no call.
+- In that case the runner leaves `rules_processed_at` NULL on the message. A static rule still applies to another message.
+- In `log` mode, call 2001 runs, and `email.llm_budget_exceeded` logs once.
+- The key for mailbox X in org A differs from the key for the same id in org B. Each key starts with `cc:<org>:email-llm:`.
+- With Redis down, the call runs and `email.llm_budget_unavailable` logs.
+- With no free slot, a shadow call makes no `decide` call. The old answer returns with no extra wait.
+- An AST fence finds each model await in `routes/email` and `email_ingestion` inside `llm_slot` or inside `_llm_json`. A companion test proves the fence can fail.
+- `test_tenant_redis.py` passes with no new allowlist entry.
+
+**Files.** A new `email_ingestion/llm_cap.py`, `acb_common/settings.py`, `routes/email/core.py`, the 9 direct sites, `scheduler_hooks.py` and `gateway/decide_features.py`. The test is a new `tests/unit/test_email_llm_cap.py`.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_llm_cap.py tests/unit/test_tenant_redis.py \
+  tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
+  tests/unit/test_email_reply_zero.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_background_ai_member.py tests/unit/test_email_layering.py \
+  tests/unit/test_email_process_past_cost_guard.py -q -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway packages/acb_common tests/unit
+```
+
+##### EM-T4c — refresh on a 401 during a sync, and try once more
+
+1. Add one `httpx.Auth` class in `providers/base.py`. It sets the bearer from the current access token on each request.
+2. On a 401, the class refreshes once under an `asyncio.Lock`. It then sends the same request once more.
+3. `_get_client` in `outlook.py` and `gmail.py` passes that class. It sets no `Authorization` header.
+4. A second 401 after the refresh goes back to the caller. There is no third try.
+5. A refresh that fails raises, and the sync fails as it does today. The reconnect banner then shows.
+6. The error path of `_sync_account` writes the credentials when `credentials_dirty()` is true. It uses its own `tenant_session(org)`.
+
+**Non-goals.** No IMAP change. No refresh by expiry time. No change to the 429 retry or to `provider_session`.
+
+**Done when.** The tests use `httpx.MockTransport`, because an `AsyncMock` client skips the auth flow.
+
+- A request that gets a 401 refreshes once, sends again with the new token, and returns 200.
+- Two requests that get a 401 at the same time cause one refresh.
+- A second 401 after the refresh returns 401. The transport sees no third request.
+- An Outlook sweep whose third page gets a 401 returns each page.
+- The same cases pass for Gmail.
+- After a refresh during a sync and a later failure, `credentials_encrypted` holds the new refresh token.
+- A fence fails when either `_get_client` sets an `Authorization` header.
+
+**Files.** `apps/services/email_ingestion/email_ingestion/providers/base.py`, `outlook.py`, `gmail.py` and `scheduler.py`. The test is a new `tests/unit/test_email_provider_401_retry.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_provider_401_retry.py tests/unit/test_outlook_labels_cache_and_429.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_outlook_folders_move.py \
+  tests/unit/test_gmail_normaliser.py tests/unit/test_email_connect_backend.py \
+  tests/unit/test_email_provider_session.py tests/unit/test_email_scheduler_tenancy.py -q -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_401_retry.py
+```
+
+##### EM-T4d — Graph delta, in shadow first
+
+1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
+2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
+3. Delta runs for each swept folder through `/me/mailFolders/{id}/messages/delta`. It follows each `@odata.nextLink` to the `@odata.deltaLink`.
+4. It stores each link whole, and it calls a stored link as it is. It sends `Prefer: odata.maxpagesize=100` and no `$top`.
+5. The cursor in `last_history_id` is a JSON object with a version key and one link for each folder.
+6. A cursor value that does not parse means "no cursor", and the poll does a full sweep.
+7. In `shadow`, each poll runs the full sweep and the delta. It writes from the full sweep only.
+8. It logs `email.delta_shadow` with three counts: in both, only in the sweep, and only in the delta.
+9. A new user folder gets a cursor on its next poll. A folder that is gone loses its cursor.
+
+**Non-goals.** No `on` mode. No delete rule for a tombstone. No change to Gmail, IMAP or the deep first sync. No new column and no migration.
+
+**Done when.**
+
+- Against a fake Graph, a delta round of three pages stores the last `@odata.deltaLink` of each folder, whole.
+- The next poll calls each stored link as it is, with no `$top`.
+- A stored bare token, or text that is not JSON, gives a full sweep and no error.
+- In `shadow`, the rows written equal the rows of the full sweep alone.
+- The `email.delta_shadow` record holds the three counts and the folder count. It holds no subject and no address.
+- A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`.
+
+**Live check before any `on` (gate `enforcement-flip`).** Set `shadow` for one test mailbox. After 7 days, each `email.delta_shadow` line must show 0 "only in the sweep" for new mail. A later part, EM-T4d-2, then proposes `on` and a delete rule.
+
+**Files.** `apps/services/email_ingestion/email_ingestion/providers/outlook.py`, `scheduler.py` and `acb_common/settings.py`. The test is a new `tests/unit/test_outlook_delta_shadow.py`.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_outlook_delta_shadow.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_manual_sync_parity.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_provider_401_retry.py -q -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_outlook_delta_shadow.py
+```
+
+##### EM-T4e — §7 item 4, the N+1 reads and the indexes
+
+1. `_load_rules` reads the actions of all rules of the account in one query. It groups them in Python.
+2. `list_accounts` reads the counts of all accounts in one grouped query, at both sites.
+3. Add one migration with the next free number at build time (R1). Copy the locking note of migration 170.
+4. It creates an index on `email_messages (account_id, thread_id, received_at DESC)`. It creates an index on `email_thread_status (last_message_id)`.
+5. Use `CREATE INDEX IF NOT EXISTS`, not `CONCURRENTLY`.
+
+**Non-goals.** No foreign key, because a message delete must not cascade into a status row. No other N+1.
+
+**Done when.**
+
+- `_load_rules` for 5 rules issues 2 queries, and its result equals the result of the old code.
+- `list_accounts` for 3 accounts issues one count query.
+- The migration applies to a fresh ladder database. A second run changes nothing.
+- R8: `EXPLAIN` of the thread read in `build_thread_context` names the new index on a seeded table.
+
+**Files.** `routes/email/automation/rules.py`, `routes/email/transport/accounts.py` and a new file in `infra/postgres/`. The test is a new `tests/unit/test_email_n_plus_one.py`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_n_plus_one.py tests/unit/test_email_rules_engine.py \
+  tests/unit/test_email_multi_account.py tests/unit/test_email_rules_admin.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_n_plus_one.py
+```
+
+**Recorded risks.**
+
+- **R-1.** A split can write a decision that a newer message made stale. EM-T4a-2 checks `last_message_id` before the write.
+- **R-2.** A split can lose atomicity between a provider act and its mirror. The provider acts first, as today. When the mirror write fails, the next sync corrects the row.
+- **R-3.** EM-T4a-4 can turn on jobs that do nothing on the box today. EM-T4b must merge first.
+- **R-4.** The 401 retry sends a request twice. Each body in both providers is JSON or form data, so httpx can send it again.
+- **R-5.** Delta stopped new mail once, and nobody found the cause. So EM-T4d builds shadow only, and the full sweep stays the source of truth.
+- **R-6.** A budget of 2000 calls is a guess for one mailbox. The `log` mode measures the real count before anyone sets `enforce`.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

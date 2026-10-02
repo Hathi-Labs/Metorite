@@ -92,6 +92,12 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `SET LOCAL`, so each statement after it runs with no tenant. Split the work
   into phases, and give each phase its own `tenant_session(org)`. R7:
   `tests/unit/test_email_scheduler_tenancy.py`.
+- ⚠️ **No session across an external call (WS-17 EM-T4a-1).** Phase (b)
+  calls the provider with no session open. Phases (e) and (f) read in one
+  `tenant_session(org)`, then call the provider or the model with no session
+  open. Then they write in a second block. The steps in `body_backfill.py`
+  and `email_embeddings.py` take a session, open none, and never call
+  `commit()`. R7: `tests/unit/test_email_scheduler_tenancy.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
