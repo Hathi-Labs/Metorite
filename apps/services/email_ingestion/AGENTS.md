@@ -152,20 +152,31 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   and the next sync resumes with `until = import_reached_at`. A deep sync of a
   member act (`deep=True`) imports in batches too, and writes no progress and
   no `initial_sync_done`. No import batch runs the reconcile or the label
-  learner. When a member act ends with no error, one block reconciles
-  deletions against all that its import wrote. The recurring sweep runs
-  after each import in the same call, so new mail always syncs (owner answer
-  Q2, spec §10.2). It reads back to `last_synced_at - 1 hour`, or
-  `created_at`, after a pause (D-EM-13). R7:
+  learner. The recurring sweep runs after each import in the same call, so
+  new mail always syncs (owner answer Q2, spec §10.2). It reads back to
+  `last_synced_at - 1 hour`, or `created_at`, after a pause (D-EM-13). R7:
   `tests/unit/test_email_import_batches.py`.
-- ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix
-  round 1).** Each next page is a new query with `le` the oldest time of the
-  last page. A `$skip` link shifts when a message moves out of a folder, and
-  one message is lost. The link is used only inside one second that fills a
-  page. Only a 404 on a first page skips a folder. A 429, 503 or 504 page
-  tries once more after `Retry-After`. Every other failure fails the cycle,
-  and the import resumes. A sweep page that fails short of the catch-up
-  watermark raises `CatchUpIncomplete`, so phase (d) keeps `last_synced_at`.
+- ⚠️ **A failure never stops new mail (EM-T6b fix round 2, owner answer
+  Q2).** A failed import does not raise. The cycle still runs the recurring
+  sweep and phase (c). Phase (d) then writes `sync_status = 'error'` with the
+  error, and the next cycle resumes the import. When a sweep page fails short
+  of the catch-up watermark, the sweep keeps the pages that it read and sets
+  `catch_up_incomplete`. Phase (d) writes that mail and keeps
+  `last_synced_at`, so the next cycle reads the pause again.
+- ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix rounds
+  1 and 2).** Each next page is a new query with `lt` the second after the
+  oldest message of the last page. Exchange keeps a fraction of a second, and
+  `le` that second dropped the rest of a split second. The stream drops the
+  ids that it read again. When one second fills a page, one query with
+  `$top=1000` reads that second. A 404 on a first page skips only Archive or
+  a user folder. A 429, 503 or 504 page tries once more after `Retry-After`.
+- ⚠️ **Two guards protect the reconcile of a member-act import (EM-T6b fix
+  round 2).** `reconcile.reconcile_import_snapshot` takes `(id, folder,
+  received_at)` tuples. It keeps a row written after phase (a), because a
+  move, a rule action or a draft during the import writes it and Graph gives
+  a moved message a new id. When a folder has more candidates than 50, or 2%
+  of its rows, the reconcile leaves that folder and logs
+  `sync.import_reconcile_skipped`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

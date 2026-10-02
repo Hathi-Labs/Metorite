@@ -2252,7 +2252,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 
 ##### EM-T6b — newest first, in batches, with progress and resume (backend)
 
-**Status.** BUILT, not merged (2026-10-02, branch `email-t6b`), with fix round 1. It sits on `main` with EM-T6a (#577) and on `email-t4f`.
+**Status.** BUILT, not merged (2026-10-03, branch `email-t6b`), with fix rounds 1 and 2. It sits on `main` with EM-T6a (#577), EM-T4f (#578) and EM-T6d part 1 (#579).
 
 **As built.**
 
@@ -2260,12 +2260,15 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 - The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
 - Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
 - A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
-- Fix round 1: Outlook pages each folder by time. Each next page is a new query with `le` the oldest time of the last page, and the stream drops the ids that it read at that second. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
-- The stream follows `@odata.nextLink` only inside one second that fills a whole page. A page that adds no message ends the folder, and so does `IMPORT_MAX_PAGES` (5000). Both log `sync.import_folder_capped`.
-- Only a 404 on a first page skips a folder, and the log says `sync.import_folder_skipped`. Any other failure fails the cycle, and the next sync resumes. With no folder left, the import raises and never writes `done`.
+- Outlook pages each folder by time (fix rounds 1 and 2). Each next page is a new query with `lt` the second after the oldest message of the last page, and the stream drops the ids that it read again. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
+- Exchange keeps a fraction of a second, and Graph shows whole seconds. `le 10:00:05` is `le 10:00:05.000`, so it dropped the rest of a split second. In a simulation of 200,000 messages it lost 400. With `lt` the loss is 0, and the resume bound uses `lt` too.
+- When one second fills a whole page, one query with `$top=1000` reads that second, and the next page starts below it. A page that adds no message ends the folder, and so does `IMPORT_MAX_PAGES` (5000). Both log `sync.import_folder_capped`.
+- A 404 on a first page skips only Archive or a user folder, and the log says `sync.import_folder_skipped`. A 404 on any other system folder fails the import, and so does any other failure. The next sync resumes.
 - A page that answers 429, 503 or 504 waits for `Retry-After`, with the bound of `_graph_send`, and tries once more. The recurring sweep does the same.
-- A sweep page that fails short of the catch-up watermark raises `CatchUpIncomplete`. The cycle then fails before phase (d), so `last_synced_at` keeps the old watermark. A first page that fails keeps the old rule: the sweep skips that folder.
-- When the deep sync of a member act ends with no error, one block reconciles deletions against the id, folder and time of each message that its import wrote. Only a provider with `import_full_snapshot` does this, which today is Outlook.
+- When an import fails, the cycle still runs the recurring sweep and phase (c), so new mail lands (owner answer Q2). Phase (d) then writes `sync_status = 'error'` with the error, and the next sync resumes the import.
+- When a sweep page fails short of the catch-up watermark, the sweep keeps the pages that it read and sets `catch_up_incomplete`. Phase (d) writes that mail and keeps `last_synced_at`. A first page that fails keeps the old rule: the sweep skips that folder.
+- When the deep sync of a member act ends with no error, one block reconciles deletions against `(id, folder, received_at)` of each message that its import wrote. Only a provider with `import_full_snapshot` does this, which today is Outlook.
+- Two guards protect that reconcile (fix round 2). It keeps a row whose `updated_at` is after phase (a), because a move, a rule action or a draft during the import writes the row, and Graph gives a moved message a new id. When a folder has more candidates than 50, or 2% of its rows, the reconcile leaves that folder and logs `sync.import_reconcile_skipped`.
 - Follow-up for EM-T6d: `isFirstSyncPending` and `onboardingStage` must also check `syncEnabled`. When the member turns sync off during the import, the phase stays `importing`, and the panel would freeze.
 - `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
 - A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.

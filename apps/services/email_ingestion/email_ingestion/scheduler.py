@@ -52,9 +52,11 @@ from sqlalchemy import text
 from email_ingestion import body_backfill, email_embeddings, import_window
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
-from email_ingestion.providers.base import EmailMessage, SyncResult
 from email_ingestion.providers.factory import build_provider
-from email_ingestion.reconcile import reconcile_full_snapshot
+from email_ingestion.reconcile import (
+    reconcile_full_snapshot,
+    reconcile_import_snapshot,
+)
 
 # Ceiling for the failure backoff. When an account's sync keeps failing (a
 # revoked token, an account the user disconnected upstream), polling it every
@@ -172,6 +174,36 @@ _IMPORT_DONE = text(
        SET initial_sync_done = true, import_phase = 'done', updated_at = now()
        WHERE id = :id"""
 )
+
+#: Phase (d) of a cycle whose import failed (fix round 2). The new mail of
+#: the cycle has landed. The account shows the error, and the next cycle
+#: resumes the import.
+_IMPORT_ERROR_ACCOUNT = text(
+    """UPDATE email_accounts
+       SET sync_status = 'error', sync_error = :import_error,
+           updated_at = now()
+       WHERE id = :id"""
+)
+
+_IMPORT_ERROR_LOG = text(
+    """UPDATE email_sync_log
+       SET status = 'error', error_message = :import_error
+       WHERE id = :log_id"""
+)
+
+
+async def _record_import_error(
+    db: Any, account_id: str, sync_log_id: Any, import_error: str | None,
+) -> None:
+    """Write the error of a failed import in the block of phase (d), after
+    the account and log rows of the cycle. With no error, it writes nothing.
+    It never calls ``commit()``."""
+    if not import_error:
+        return
+    params = {"id": account_id, "log_id": sync_log_id,
+              "import_error": import_error[:1000]}
+    await db.execute(_IMPORT_ERROR_ACCOUNT, params)
+    await db.execute(_IMPORT_ERROR_LOG, params)
 
 _TRASH_DELETED = text(
     """UPDATE email_messages
@@ -404,23 +436,23 @@ def _oldest_received(messages: list[Any]) -> datetime | None:
     return min(dated) if dated else None
 
 
-def _snapshot_entry(msg: Any) -> EmailMessage:
-    """What the reconcile reads of an imported message: id, folder, time."""
-    return EmailMessage(provider_message_id=msg.provider_message_id,
-                        thread_id=None, folder=msg.folder, subject=msg.subject,
-                        received_at=msg.received_at)
-
-
-async def _reconcile_import(org: str, account_id: str,
-                            snapshot: list[EmailMessage]) -> None:
+async def _reconcile_import(
+    org: str, account_id: str, snapshot: list[tuple[str, str, Any]],
+    started_at: datetime | None,
+) -> None:
     """Reconcile deletions against the full snapshot of a member-act import.
 
     Its own block, as the reconcile of the recurring sweep. A failure rolls
-    back only the reconcile, and the sync goes on (fix round 1)."""
+    back only the reconcile, and the sync goes on (fix round 1). With no
+    database time for the start, it trashes nothing (fix round 2)."""
+    if started_at is None:
+        logger.warning("sync.import_reconcile_skipped account=%s reason=no_start",
+                       account_id)
+        return
     try:
         async with tenant_session(org) as db:
-            removed = await reconcile_full_snapshot(
-                db, account_id, SyncResult(messages=snapshot, full_snapshot=True))
+            removed = await reconcile_import_snapshot(
+                db, account_id, snapshot, started_at=started_at)
         if removed:
             logger.info("sync.import_reconciled_deletions account=%s removed=%d",
                         account_id, removed)
@@ -432,9 +464,30 @@ async def _reconcile_import(org: str, account_id: str,
 async def _import_in_batches(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool,
-) -> int:
+) -> tuple[int, str | None]:
+    """Run the import, and return the rows that it wrote and its error.
+
+    The error is ``None`` when the import ended. A failed import does not
+    raise (fix round 2): the cycle still runs the recurring sweep, so new mail
+    lands (owner answer Q2), and then records the error. The next cycle
+    resumes the import."""
+    tally = {"written": 0}
+    try:
+        await _run_import(org, account_id, provider, row, floor=floor,
+                          progress=progress, tally=tally)
+    except Exception as exc:
+        logger.warning("sync.import_failed account=%s written=%d error=%s",
+                       account_id, tally["written"], str(exc)[:200])
+        return tally["written"], str(exc)
+    return tally["written"], None
+
+
+async def _run_import(
+    org: str, account_id: str, provider: Any, row: Any, *,
+    floor: datetime, progress: bool, tally: dict[str, int],
+) -> None:
     """Import the mail of the mailbox newest first, one batch at a time.
-    Returns the rows that it wrote. WS-17 EM-T6b items 4 to 8.
+    ``tally`` counts the rows that it wrote. WS-17 EM-T6b items 4 to 8.
 
     It fetches each batch with NO session open. One ``tenant_session(org)``
     then writes the messages of the batch, and the progress when
@@ -456,8 +509,10 @@ async def _import_in_batches(
     deletions against the id, folder and time of each message the import
     wrote (fix round 1). The recurring sweep reaches only its newest pages,
     so a Resync otherwise kept older mail that the member deleted in Outlook.
-    A failed reconcile is logged and does not fail the sync."""
-    snapshot: list[EmailMessage] | None = (
+    It keeps a row written after phase (a), and it skips a folder with too
+    many candidates (``reconcile_import_snapshot``, fix round 2). A failed
+    reconcile is logged and does not fail the sync."""
+    snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
         else None)
     until = getattr(row, "import_reached_at", None) if progress else None
@@ -477,7 +532,6 @@ async def _import_in_batches(
                 await db.execute(_IMPORT_ESTIMATE,
                                  {"id": account_id, "estimate": total})
 
-    written = 0
     async with aclosing(provider.import_batches(
             since=floor, until=until, size=IMPORT_BATCH_SIZE,
             on_estimate=on_estimate)) as batches:
@@ -489,16 +543,17 @@ async def _import_in_batches(
                     await db.execute(_IMPORT_BATCH, {
                         "id": account_id, "reached": _oldest_received(kept),
                         "count": count})
-            written += len(kept)
+            tally["written"] += len(kept)
             if snapshot is not None:
-                snapshot.extend(_snapshot_entry(m) for m in kept)
+                snapshot.extend((m.provider_message_id, m.folder, m.received_at)
+                                for m in kept)
     if snapshot is not None:
-        await _reconcile_import(org, account_id, snapshot)
+        await _reconcile_import(org, account_id, snapshot,
+                                getattr(row, "db_now", None))
     if progress:
         async with tenant_session(org) as db:
             await db.execute(_IMPORT_DONE, {"id": account_id})
         logger.info("sync.import_done account=%s count=%d", account_id, count)
-    return written
 
 
 def _credentials_json(provider: Any) -> str | None:
@@ -790,7 +845,8 @@ async def _sync_cycle(
                     """SELECT id, provider, credentials_encrypted, last_history_id,
                               sync_interval_secs, initial_sync_done,
                               import_since, import_reached_at, import_count,
-                              last_synced_at, created_at
+                              last_synced_at, created_at,
+                              clock_timestamp() AS db_now
                        FROM email_accounts
                        WHERE id = :id"""
                 ),
@@ -868,18 +924,21 @@ async def _sync_cycle(
         # newest first, and only the first import writes progress (EM-T6b
         # items 4 to 8). A caller forces a deep sync with ``deep=True``.
         first_import = deep is None and not getattr(row, "initial_sync_done", False)
-        imported = 0
+        imported, import_error = 0, None
         if first_import or deep:
-            imported = await _import_in_batches(
+            # A failed import does not raise. Phase (d) records its error,
+            # and the next cycle resumes it (fix round 2).
+            imported, import_error = await _import_in_batches(
                 org, account_id, provider, row, floor=floor,
                 progress=first_import)
 
-        # The recurring sweep runs in every call, after an import too, so new
-        # mail always syncs (owner answer Q2, spec §10.2). It reads past its
-        # newest pages back to the catch-up watermark after a pause (EM-T6b
-        # item 9, D-EM-13). A page that fails short of the watermark raises
-        # ``CatchUpIncomplete``. The cycle then fails before phase (d), so
-        # ``last_synced_at`` keeps the old watermark.
+        # The recurring sweep runs in every call, after an import too, and
+        # after a failed import, so new mail always syncs (owner answer Q2,
+        # spec §10.2). It reads past its newest pages back to the catch-up
+        # watermark after a pause (EM-T6b item 9, D-EM-13). When a page fails
+        # short of the watermark, the sweep keeps what it read and sets
+        # ``catch_up_incomplete``. Phase (d) then writes that mail and keeps
+        # ``last_synced_at``, so the next cycle reads the pause again.
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,
@@ -887,6 +946,7 @@ async def _sync_cycle(
             since=floor,
             catch_up=_catch_up_watermark(row),
         )
+        keep_watermark = bool(getattr(sync_result, "catch_up_incomplete", False))
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
@@ -943,18 +1003,24 @@ async def _sync_cycle(
 
             # Update account sync state. The end of the first import writes
             # ``initial_sync_done``, and a deep sync of a member act never
-            # does (EM-T6b items 6 and 8).
+            # does (EM-T6b items 6 and 8). A failed import records its error
+            # here, after the new mail landed. A catch-up that stopped short
+            # keeps ``last_synced_at`` (fix round 2).
             await db.execute(
                 text(
                     """UPDATE email_accounts
-                       SET sync_status = 'idle', last_synced_at = now(),
+                       SET sync_status = 'idle',
+                           last_synced_at = CASE
+                               WHEN CAST(:keep_watermark AS boolean)
+                               THEN last_synced_at ELSE now() END,
                            last_history_id = COALESCE(
                                :history_id, last_history_id),
                            sync_error = NULL,
                            updated_at = now()
                        WHERE id = :id"""
                 ),
-                {"id": account_id, "history_id": sync_result.new_history_id},
+                {"id": account_id, "history_id": sync_result.new_history_id,
+                 "keep_watermark": keep_watermark},
             )
 
             # Mark sync log success
@@ -973,6 +1039,8 @@ async def _sync_cycle(
                     "history_id": sync_result.new_history_id,
                 },
             )
+            # A failed import records its error after the new mail landed.
+            await _record_import_error(db, account_id, sync_log_id, import_error)
 
         # ── (e) drain a bounded slice of the empty-body backlog ─────────────
         # So full-text search can match on the body of messages the user
@@ -1002,7 +1070,10 @@ async def _sync_cycle(
             "sync.account_done account_id=%s provider=%s synced=%s",
             account_id, provider_name, persisted_count,
         )
-        return {"synced": persisted_count, "history_id": sync_result.new_history_id}
+        result = {"synced": persisted_count, "history_id": sync_result.new_history_id}
+        # A failed import is an error for each caller, after the new mail
+        # landed: the loop backs off, and a member act reports it.
+        return {**result, "error": import_error} if import_error else result
 
     except Exception as exc:
         logger.warning(
