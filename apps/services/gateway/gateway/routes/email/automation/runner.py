@@ -565,7 +565,8 @@ async def undo_execution(
     async with _tenant_session() as db:
         row = (await db.execute(text(
             """SELECT er.status, er.rule_id, er.message_id, er.provider_message_id,
-                      er.actions_taken, ea.provider, ea.credentials_encrypted
+                      er.actions_taken, er.account_id, ea.provider,
+                      ea.credentials_encrypted
                FROM email_executed_rules er
                JOIN email_accounts ea ON er.account_id = ea.id
                WHERE er.id = :eid AND ea.user_id = :uid"""
@@ -613,6 +614,8 @@ async def undo_execution(
         await db.execute(text(
             "UPDATE email_executed_rules SET status='UNDONE' WHERE id=:eid"
         ), {"eid": exec_id})
+        # A 401 during the undo refreshes the token (EM-T4c). Keep it.
+        await _persist_rotated_creds(db, store, str(row.account_id), provider)
         return {"status": "UNDONE", "reversed": reversed_actions}
 
 
@@ -851,8 +854,9 @@ async def process_past_estimate(
     as "processed everything in the range" when it was "processed the oldest N".
 
     Counts what is synced LOCALLY. The job downloads the range from the provider
-    first, so the real figure can be higher for a range that predates the initial
-    365-day sync; the dialog says so rather than presenting this as exact.
+    first, so the real figure can be higher for a range that predates the
+    initial import. That download never reaches back past 180 days (EM-T6a,
+    D-EM-10). The dialog says so rather than presenting this as exact.
     """
     start_dt = _parse_iso_date(start_date, end_of_day=False)
     end_dt = _parse_iso_date(end_date, end_of_day=True)
@@ -1419,6 +1423,10 @@ async def _process_past_emails_job(
     except Exception as e:  # noqa: BLE001 — never abort the apply on a backfill error
         _log.warning("email.process_past_sync_failed",
                      account_id=account_id, error=str(e)[:200])
+    # The ``finally`` below reads these two. A 401 in the apply loop refreshes
+    # the token (EM-T4c), and the new tokens live in the provider only.
+    provider: Any = None
+    store: Any = None
     # The first block is INSIDE the try: if the pool is exhausted or Postgres
     # blips, the exception used to escape the BackgroundTask entirely, leaving
     # the tracker stuck on {"status": "running"} forever. The UI then polls
@@ -1485,7 +1493,6 @@ async def _process_past_emails_job(
         # The provider authenticates with NO session open — a session parked
         # `idle in transaction` across a provider call is what queues a
         # migration's ALTER TABLE behind it (2026-08-06).
-        provider = None
         if acc:
             from acb_llm.key_store import get_key_store
             store = get_key_store()
@@ -1574,6 +1581,18 @@ async def _process_past_emails_job(
     except Exception as e:  # noqa: BLE001 — record failure for the UI, don't crash the worker
         _log.warning("email.process_past_failed", account_id=account_id, error=str(e)[:200])
         _past_job_finish(account_id, token=job_token, error=str(e))
+    finally:
+        # Keep the tokens that a refresh in the loop rotated (EM-T4c fix
+        # round 2), on success and on failure alike. A short block of its
+        # own, after the last provider call, and it never raises.
+        if (provider is not None and store is not None
+                and provider.credentials_dirty()):
+            try:
+                async with _tenant_session() as db:
+                    await _persist_rotated_creds(db, store, account_id, provider)
+            except Exception as exc:
+                _log.warning("email.process_past_creds_keep_failed",
+                             account_id=account_id, error=type(exc).__name__)
 
 
 async def _run_rules_job(

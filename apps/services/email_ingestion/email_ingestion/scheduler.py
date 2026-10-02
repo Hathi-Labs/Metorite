@@ -35,7 +35,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from acb_common.db import (
@@ -48,15 +48,11 @@ from acb_common.db import (
 )
 from sqlalchemy import text
 
-from email_ingestion import body_backfill, email_embeddings
+from email_ingestion import body_backfill, email_embeddings, import_window
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import reconcile_full_snapshot
-
-# Deep initial-sync history window (days). Older mail is pulled lazily via the
-# /backfill endpoint.
-INITIAL_SYNC_DAYS = 365
 
 # Ceiling for the failure backoff. When an account's sync keeps failing (a
 # revoked token, an account the user disconnected upstream), polling it every
@@ -200,6 +196,107 @@ async def _embed_messages(org: str, account_id: str) -> int:
             db, account_id, pending, vectors)
 
 
+_WRITE_CREDENTIALS = text(
+    """UPDATE email_accounts
+       SET credentials_encrypted = :creds, updated_at = now()
+       WHERE id = :id"""
+)
+
+#: The stored ids among the messages below the floor (EM-T6a item 6).
+_STORED_IDS = text(
+    """SELECT provider_message_id FROM email_messages
+       WHERE account_id = :aid AND provider_message_id = ANY(:pids)"""
+)
+
+
+async def _drop_below_floor(
+    db: Any, account_id: str, messages: list[Any], floor: datetime,
+) -> list[Any]:
+    """The messages that phase (c) may write: the backstop of the floor.
+
+    It drops each message older than ``floor`` (D-EM-10, EM-T6a item 6). It
+    keeps such a message when its row is already stored, so the sync still
+    updates it. It keeps a message with no ``received_at``. With no message
+    below the floor, it makes no query. Otherwise ONE query reads the stored
+    ids. The caller hands in the session of phase (c)."""
+    old = {m.provider_message_id for m in messages
+           if import_window.below_floor(m.received_at, floor)}
+    if not old:
+        return messages
+    rows = (await db.execute(
+        _STORED_IDS, {"aid": account_id, "pids": sorted(old)})).fetchall()
+    drop = old - {r.provider_message_id for r in rows}
+    kept = [m for m in messages if m.provider_message_id not in drop
+            or not import_window.below_floor(m.received_at, floor)]
+    if len(kept) < len(messages):
+        logger.info("sync.dropped_below_floor account=%s count=%d",
+                    account_id, len(messages) - len(kept))
+    return kept
+
+
+def _credentials_json(provider: Any) -> str | None:
+    """The credentials of *provider* as JSON when a refresh changed them.
+
+    ``None`` when no provider was built, or when nothing changed. Two of
+    these values tell whether a refresh happened between them (EM-T4c)."""
+    if provider is None or not provider.credentials_dirty():
+        return None
+    return json.dumps(provider.export_credentials())
+
+
+def _dirty_credentials(provider: Any, store: Any) -> str | None:
+    """The encrypted credentials of *provider* when a refresh changed them.
+
+    The error path of ``_sync_account`` writes this value (EM-T4c). It is
+    ``None`` when no provider was built, or when nothing changed. A failure
+    to encrypt is logged and also gives ``None``, so the error status still
+    lands."""
+    if store is None:
+        return None
+    try:
+        plain = _credentials_json(provider)
+        return None if plain is None else store.encrypt(plain)
+    except Exception as exc:
+        logger.warning("sync.credentials_keep_failed error=%s", str(exc)[:160])
+        return None
+
+
+async def _write_credentials_refreshed_since(
+    org: str, account_id: str, provider: Any, store: Any, written: str | None,
+) -> None:
+    """Write the credentials when a refresh changed them after *written*.
+
+    Phase (d) writes the credentials with the account row. Phase (e) then
+    fetches bodies, and a 401 there refreshes the token again (EM-T4c).
+    Microsoft can rotate the refresh token on use. So this short block
+    writes the new tokens, and the next sync does not start with an old one.
+    With no change since phase (d), it opens no session.
+
+    It never raises (fix round 2). A failed write is tried once more in a
+    new block. The sync has done its work, so a failure here must not turn
+    it into an error: ``_webhook_sync`` would skip the new-mail pipeline,
+    and the loop would double its backoff. The log names the class of the
+    error and never a token."""
+    now = _credentials_json(provider)
+    if now is None or now == written:
+        return
+    for attempt in (1, 2):
+        try:
+            creds = store.encrypt(now)
+            async with tenant_session(org) as db:
+                await db.execute(_WRITE_CREDENTIALS,
+                                 {"id": account_id, "creds": creds})
+        except Exception as exc:
+            logger.warning(
+                "sync.credentials_write_failed account=%s attempt=%d error=%s",
+                account_id, attempt, type(exc).__name__)
+            continue
+        if attempt > 1:
+            logger.info("sync.credentials_write_retried account=%s", account_id)
+        return
+    logger.error("sync.credentials_write_lost account=%s", account_id)
+
+
 async def _sync_account(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
@@ -216,22 +313,32 @@ async def _sync_account(
     (a) read the account, set ``syncing``, write the ``email_sync_log`` row;
     (b) authenticate and fetch from the provider with NO session open — a
         rotated token is persisted in a short session between the two calls;
-    (c) persist the messages, then the reconcile;
-    (d) the final credentials, account and sync-log rows;
+    (c) drop each message below the floor that is not stored yet
+        (``_drop_below_floor``), persist the messages, then the reconcile;
+    (d) the credentials, account and sync-log rows;
     (e) the body backfill (``_backfill_bodies``): read the empty-body
         candidates, fetch each body with NO session open, and write the
-        bodies in a second block;
+        bodies in a second block. A 401 on a body fetch refreshes the token
+        AFTER phase (d) wrote the credentials. So a short block after this
+        phase writes them again, only when they changed since phase (d)
+        (EM-T4c);
     (f) the embeddings (``_embed_messages``): read the pending messages,
         call the model with NO session open, and write the vectors in a
-        second block.
+        second block. It makes no provider call.
 
-    The error path writes in a new ``tenant_session(org)``.
+    The error path writes in a new ``tenant_session(org)``. When a refresh
+    during the sync changed the credentials, it writes them in that block too
+    (EM-T4c), so a later failure cannot lose a rotated refresh token. The
+    write after phase (e) never reaches the error path: it tries a failed
+    write once more in a new block, logs the result, and the sync keeps its
+    success.
 
-    ``deep``/``since`` override the automatic (first-sync) heuristic so a caller
-    can force a deep backfill from an arbitrary date floor — e.g. historical
-    rule-apply downloading a past date range before running rules over it. Both
-    default to None, which preserves the normal first-sync-deep / then-incremental
-    behaviour exactly.
+    ``deep`` overrides the automatic (first-sync) heuristic, so a caller can
+    force a deep backfill. ``since`` is the explicit floor of a member act
+    (Process past emails, Clean older mail). Every sync passes a floor to the
+    provider, deep or shallow (WS-17 EM-T6a, ``import_window.sync_floor``).
+    With no ``since``, the floor is ``import_since``, the range that the member
+    chose. The ceiling of 180 days binds every floor (D-EM-10).
     """
     org = organization_id or current_tenant()
     if not org:
@@ -241,13 +348,18 @@ async def _sync_account(
         )
 
     sync_log_id: Any = None
+    # The error path reads these two, to keep the credentials that a refresh
+    # during the sync rotated (EM-T4c).
+    provider: Any = None
+    store: Any = None
     try:
         # ── (a) the account row, the 'syncing' status and the log row ──────
         async with tenant_session(org) as db:
             row = (await db.execute(
                 text(
                     """SELECT id, provider, credentials_encrypted, last_history_id,
-                              sync_interval_secs, initial_sync_done
+                              sync_interval_secs, initial_sync_done,
+                              import_since
                        FROM email_accounts
                        WHERE id = :id"""
                 ),
@@ -307,20 +419,18 @@ async def _sync_account(
                     },
                 )
 
-        # First-ever sync for this account → deep 1-year backfill across all
-        # folders; afterwards stay shallow/incremental (cheap polls). A caller
-        # may override to force a deep sync from a specific `since` floor
-        # (historical rule-apply backfilling a past date range).
+        # First-ever sync for this account → deep backfill across all folders,
+        # back to the floor. Afterwards stay shallow (cheap polls). A caller
+        # may force a deep sync.
         do_deep = (
             not bool(getattr(row, "initial_sync_done", False))
             if deep is None else bool(deep)
         )
-        floor = since
-        if floor is None:
-            floor = (
-                datetime.now(timezone.utc) - timedelta(days=INITIAL_SYNC_DAYS)
-                if do_deep else None
-            )
+        # The floor binds EVERY sync, deep or shallow (EM-T6a items 3 and 4).
+        # An explicit ``since`` is a member act. Without one, the range that
+        # the member chose binds. The ceiling of 180 days binds both.
+        floor = import_window.sync_floor(
+            since=since, import_since=getattr(row, "import_since", None))
         sync_result = await provider.sync_messages(
             history_id=row.last_history_id,
             max_results=100,
@@ -340,6 +450,10 @@ async def _sync_account(
         # ── (c) persist the messages ────────────────────────────────────────
         persisted_count = 0
         async with tenant_session(org) as db:
+            # The backstop of the floor, for a provider that ignores ``since``.
+            # The reconcile below then reads the same list.
+            sync_result.messages = await _drop_below_floor(
+                db, account_id, sync_result.messages, floor)
             for msg in sync_result.messages:
                 if msg.subject == "[DELETED]":
                     await db.execute(
@@ -400,25 +514,17 @@ async def _sync_account(
             logger.warning("sync.reconcile_failed account=%s err=%s",
                            account_id, str(exc)[:160])
 
-        # ── (d) the final credentials, account and log rows ─────────────────
+        # ── (d) the credentials, account and log rows ───────────────────────
+        # Persist refreshed OAuth tokens if the provider rotated them, so the
+        # next sync cycle doesn't reuse a stale (and soon-invalid) token.
+        # ``written`` is what this phase writes, so the write after phase (e)
+        # can tell a later refresh from this one (EM-T4c).
+        written = _credentials_json(provider)
         async with tenant_session(org) as db:
-            # Persist refreshed OAuth tokens if the provider rotated them, so
-            # the next sync cycle doesn't reuse a stale (and soon-invalid)
-            # token.
-            if provider.credentials_dirty():
-                await db.execute(
-                    text(
-                        """UPDATE email_accounts
-                           SET credentials_encrypted = :creds, updated_at = now()
-                           WHERE id = :id"""
-                    ),
-                    {
-                        "id": account_id,
-                        "creds": store.encrypt(
-                            json.dumps(provider.export_credentials())
-                        ),
-                    },
-                )
+            if written is not None:
+                await db.execute(_WRITE_CREDENTIALS,
+                                 {"id": account_id,
+                                  "creds": store.encrypt(written)})
 
             # Update account sync state. Mark the one-time deep sync done so
             # subsequent polls stay shallow.
@@ -464,6 +570,10 @@ async def _sync_account(
         except Exception as exc:
             logger.warning("sync.body_backfill_failed account=%s err=%s",
                            account_id, str(exc)[:160])
+        # A 401 in phase (e) may have rotated the tokens after phase (d)
+        # wrote them (EM-T4c). It never raises, so the sync keeps its success.
+        await _write_credentials_refreshed_since(
+            org, account_id, provider, store, written)
 
         # ── (f) semantic search: embed a bounded batch ──────────────────────
         # No-op unless email_semantic_search_enabled. Best-effort; never fails
@@ -485,6 +595,11 @@ async def _sync_account(
             "sync.account_failed account_id=%s error=%s",
             account_id, str(exc),
         )
+
+        # A refresh during the sync may have rotated the tokens (EM-T4c).
+        # Encrypt them BEFORE the block opens, so a failure here cannot roll
+        # back the error status below.
+        creds_blob = _dirty_credentials(provider, store)
 
         # Mark account as error, in a NEW session: the phase that failed has
         # already rolled back.
@@ -509,6 +624,11 @@ async def _sync_account(
                         ),
                         {"log_id": sync_log_id, "error": str(exc)},
                     )
+                # Keep the rotated tokens. Microsoft revokes the old refresh
+                # token on use, so losing the new one forces a reconnect.
+                if creds_blob is not None:
+                    await db.execute(_WRITE_CREDENTIALS,
+                                     {"id": account_id, "creds": creds_blob})
         except Exception:
             pass
 

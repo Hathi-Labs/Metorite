@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion import import_window
 from fastapi import Depends, HTTPException
 from gateway.routes.email.core import (
     _tenant_session,
@@ -325,6 +326,11 @@ async def backfill_folder(
     ~100 per folder, so this pages further back through the provider's history
     on demand.  Returns the next page token so the client can keep loading
     older mail until ``exhausted`` is true.
+
+    The ceiling of 180 days binds this path too (D-EM-10, EM-T6a). It writes
+    no message older than the ceiling. The pages come newest first, so the
+    first page that reaches below the ceiling is the last page, and the answer
+    then reads ``exhausted``.
     """
     from email_ingestion.providers.base import canonical_folder
 
@@ -368,6 +374,7 @@ async def backfill_folder(
             except Exception:
                 pass
 
+            ceiling = import_window.ceiling()
             token = req.page_token
             synced = 0
             for _ in range(req.max_pages):
@@ -377,9 +384,18 @@ async def backfill_folder(
                     page_token=token,
                     canonical_override=canon_req,
                 )
+                dropped = 0
                 for msg in msgs:
+                    if import_window.below_floor(msg.received_at, ceiling):
+                        dropped += 1
+                        continue
                     await _upsert_message(db, account_id, msg)
                     synced += 1
+                if dropped:
+                    # Every later page is older still, so stop here.
+                    _log.info("backfill.reached_ceiling", account_id=account_id,
+                              dropped=dropped)
+                    token = None
                 if not token:
                     break
 
