@@ -22,7 +22,8 @@ export function ConnectEmptyState({
   loadError,
   onRetry,
 }: {
-  onConnect: (provider: ConnectProviderId) => void;
+  /** Starts the sign-in with the range the member chose (EM-T6d). */
+  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
   /** Set when the account list could not load. Then "no mailbox" is not known. */
   loadError?: string | null;
   onRetry?: () => void;

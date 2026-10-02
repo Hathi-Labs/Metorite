@@ -21,6 +21,7 @@ import { ConnectChoices } from "./components/ConnectChoices";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
+import { OnboardingPanel } from "./components/OnboardingPanel";
 import Modal from "@/components/ui/Modal";
 import { useEmailStore, isRealFolder } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
@@ -35,6 +36,7 @@ import {
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
+import { importProgress, onboardingStage } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -289,7 +291,7 @@ export default function EmailPage() {
     [selectFolder, isMobile, closeDrawer]
   );
 
-  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string) => {
+  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string, importMonths?: number) => {
     // Navigate to the BFF, never straight at the gateway host. A top-level
     // navigation carries no Bearer and no X-User-Email (the session cookie is
     // on this origin, not api.*), so the gated authorize route 401s every
@@ -300,10 +302,14 @@ export default function EmailPage() {
     // `loginHint` is the mailbox address on a reconnect, so Microsoft opens
     // on the right account. It is a hint, never an identity (EM-T3a item 3).
     //
+    // `importMonths` is the range of the first import, from the range step
+    // (EM-T6d). The reconnect banner passes none, because a reconnect keeps
+    // the range of the mailbox (D-EM-13).
+    //
     // connectQuery uses URLSearchParams, which already percent-encodes —
     // don't pre-encode or redirect_after ends up double-encoded and the
     // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
-    const query = connectQuery(window.location.href, loginHint);
+    const query = connectQuery(window.location.href, loginHint, importMonths);
     window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
   }, []);
 
@@ -584,7 +590,7 @@ export default function EmailPage() {
   if (noAccounts) {
     return (
       <ConnectEmptyState
-        onConnect={handleConnect}
+        onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
@@ -865,8 +871,19 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── First sync of a new mailbox ── */}
-        {pendingAccount && <FirstSyncBanner address={pendingAccount.emailAddress} />}
+        {/* ── First sync of a new mailbox ──
+            A mailbox with a chosen range (EM-T6a) draws the import panel with
+            real progress (EM-T6d). Every other pending mailbox keeps the
+            banner: one from before EM-T6, or a gateway before EM-T6a. */}
+        {pendingAccount &&
+          (onboardingStage(pendingAccount) === "importing" ? (
+            <OnboardingPanel
+              address={pendingAccount.emailAddress}
+              progress={importProgress(pendingAccount, { now: new Date() })}
+            />
+          ) : (
+            <FirstSyncBanner address={pendingAccount.emailAddress} />
+          ))}
 
         {/* ── Unified action toolbar — spans the list + viewer columns, just
             below the top bar (desktop only; mobile keeps per-view toolbars). ── */}
@@ -1062,9 +1079,9 @@ export default function EmailPage() {
       >
         <div className="px-3 py-3">
           <ConnectChoices
-            onConnect={(provider) => {
+            onConnect={(provider, importMonths) => {
               setShowAddModal(false);
-              handleConnect(provider);
+              handleConnect(provider, undefined, importMonths);
             }}
           />
         </div>

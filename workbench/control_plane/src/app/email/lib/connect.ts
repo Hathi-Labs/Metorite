@@ -59,13 +59,62 @@ export const CONNECT_PROVIDERS: readonly ConnectProvider[] = [
  * `login_hint` is a hint for the provider's sign-in page, never an identity:
  * the gateway drops a value that does not parse as an address, and the
  * callback still binds the member of the session (EM-T3a item 3).
+ *
+ * `importMonths` is the range of the first import (EM-T6d item 3). Only a
+ * first connect sends it. A reconnect keeps the range of the mailbox
+ * (D-EM-13), so the reconnect banner passes none. A value that is not a
+ * whole number from 0 to 6 is not sent, and the gateway then uses 1.
  */
-export function connectQuery(redirectAfter: string, loginHint?: string | null): string {
+export function connectQuery(
+  redirectAfter: string,
+  loginHint?: string | null,
+  importMonths?: number | null,
+): string {
   const params = new URLSearchParams({ redirect_after: redirectAfter });
   const hint = (loginHint ?? "").trim();
   if (hint) params.set("login_hint", hint);
+  if (isImportMonths(importMonths)) params.set("import_months", String(importMonths));
   return params.toString();
 }
+
+// ── The range of the first import (EM-T6d item 2, D-EM-10) ─────────────────
+
+/** The longest range a member may choose. Metorite imports nothing older. */
+export const MAX_IMPORT_MONTHS = 6;
+
+/** The range the step selects when it opens. The gateway default is also 1. */
+export const DEFAULT_IMPORT_MONTHS = 1;
+
+/** True for a whole number from 0 to `MAX_IMPORT_MONTHS`. */
+export function isImportMonths(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= MAX_IMPORT_MONTHS;
+}
+
+export interface ImportRangeChoice {
+  months: number;
+  label: string;
+}
+
+/** The seven choices of the range step, 0 to 6 months, in order. */
+export const IMPORT_RANGE_CHOICES: readonly ImportRangeChoice[] = Array.from(
+  { length: MAX_IMPORT_MONTHS + 1 },
+  (_, months) => ({
+    months,
+    label: months === 0 ? "Only new mail" : months === 1 ? "1 month" : `${months} months`,
+  }),
+);
+
+/** The words of the range step. */
+export const IMPORT_RANGE_COPY = {
+  title: "How much of your mail should Metorite import?",
+  body:
+    "Metorite imports the mail that you received in this range. After that, it gets each new message as it arrives. " +
+    `Metorite never imports mail older than ${MAX_IMPORT_MONTHS} months.`,
+  back: "Back",
+  /** The button that starts the sign-in, for each provider. */
+  continueTo: (provider: ConnectProviderId) =>
+    provider === "microsoft" ? "Continue to Microsoft" : "Continue to Google",
+} as const;
 
 /** Which provider the reconnect banner may send the member back through. */
 export function reconnectProvider(account: Pick<EmailAccount, "provider">): ConnectProviderId | null {

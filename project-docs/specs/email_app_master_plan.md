@@ -12,6 +12,7 @@
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > 📝 **EM-T6 is SPECIFIED, not built (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). EM-T6a is next after EM-T4c.
+> 🔨 **EM-T6d, part 1 (range step and progress) is BUILT, not merged (2026-10-02).** Branch `email-t6d`, UI only (§10.4.7).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
@@ -1927,6 +1928,8 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_ema
 
 **Status.** SPECIFIED, not built (2026-10-02). The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
+**EM-T6d, part 1 (range step and progress).** BUILT, not merged (2026-10-02), on branch `email-t6d`. The narrowing is under EM-T6d below.
+
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
 **Order.**
@@ -2139,6 +2142,14 @@ The R8 tests must show PASSED, not SKIPPED.
 ##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
 
 **Waits for** EM-T6a, EM-T6b and EM-T7. Before EM-T7, "Use the recommended rules" also turns on drafting, because the preset "Needs Reply" carries `DRAFT_EMAIL` (`rules.py:182-184`).
+
+**Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
+
+- **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is not dispatched.
+- **Part 1 degrades with no new field.** With no `import_since`, the page keeps `FirstSyncBanner`. With `import_since` and no `import_phase`, the panel shows the share of the range.
+- **Merge part 1 after EM-T6a.** Before EM-T6a, the gateway ignores `import_months`, so the range step offers a choice that has no effect.
+- **Item 13.** "Last 6 months" was already a choice. So "Last year" goes, and "Last 6 months" asks for 180 days, the ceiling of EM-T6a.
 
 **Scope.**
 

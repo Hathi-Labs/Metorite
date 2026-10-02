@@ -22,10 +22,10 @@ interface BulkUnsubscribeViewProps {
 }
 
 /** How far back "Clean older mail" fetches before sweeping. The Cleaner can
- *  only clean what has been synced, and the FIRST sync of an account fetches
- *  365 days while every sync after it is incremental — so on a real mailbox
- *  most mail has never been seen locally (measured: 6,803 held of ~43,000).
- *  `years: 0` means the entire mailbox. */
+ *  only clean what has been synced. The first import of an account reaches
+ *  back only as far as its range (EM-T6, D-EM-10), and every sync after it is
+ *  incremental, so on a real mailbox most mail has never been seen locally
+ *  (measured: 6,803 held of ~43,000). `years: 0` means the entire mailbox. */
 const BACKFILL_OPTIONS = [
   { label: "2 years", years: 2 },
   { label: "3 years", years: 3 },
@@ -1471,10 +1471,11 @@ export function BulkUnsubscribeView({
           </div>
         )}
       </div>
-      {/* Clean older mail. The Cleaner can only clean what has been synced, and
-          the first sync of an account fetches one year while every sync after
-          it is incremental — so most of a real mailbox has never been seen
-          locally. This fetches it, then categorizes it with NO model calls:
+      {/* Clean older mail. The Cleaner can only clean what has been synced.
+          The first import of an account reaches back only as far as its
+          range (EM-T6), and every sync after it is incremental, so most of a
+          real mailbox has never been seen locally. This fetches it, then
+          categorizes it with NO model calls:
           learned patterns, sender and domain history, and bulk shape. The
           fetched history is held back from the AI rule run server-side, which
           is what keeps a 40,000-message backfill from costing anything. */}

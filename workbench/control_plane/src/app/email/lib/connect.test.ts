@@ -9,10 +9,20 @@
 //   code with the comments stripped, so a comment cannot satisfy it.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { isKnownIcon } from "@/lib/icons";
+
+import { ImportRangeStep } from "../components/ImportRangeStep";
 import {
   CONNECT_PROVIDERS,
+  DEFAULT_IMPORT_MONTHS,
+  IMPORT_RANGE_CHOICES,
+  IMPORT_RANGE_COPY,
+  MAX_IMPORT_MONTHS,
+  isImportMonths,
   adminConsentMailto,
   adminConsentUrl,
   callbackView,
@@ -348,7 +358,9 @@ describe("the reconnect banner sends the mailbox as login_hint (done-when 6)", (
 
   it("the banner passes the address of the account", () => {
     expect(PAGE).toContain("handleConnect(provider, selectedAccount.emailAddress)");
-    expect(callbackBody(PAGE, "handleConnect")).toContain("connectQuery(window.location.href, loginHint)");
+    expect(callbackBody(PAGE, "handleConnect")).toContain(
+      "connectQuery(window.location.href, loginHint, importMonths)",
+    );
   });
 
   it("only an OAuth account can reconnect", () => {
@@ -449,5 +461,116 @@ describe("the admin email and the retry (fix round 1)", () => {
   it("the account-menu trigger is the Button primitive", () => {
     const sidebar = codeOnly(read("components/AccountSidebar.tsx"));
     expect(sidebar).toMatch(/<Button\s+variant="ghost"\s+size="icon-sm"\s+icon="MoreHorizontal"/);
+  });
+});
+
+// ── WS-17 EM-T6d, part 1: the range of the first import ────────────────────
+// Spec: `email_app_master_plan.md` §10.4.7, "EM-T6d", items 2 and 3.
+
+/** Every `role="radio"` button's attributes and label, in order. */
+function radios(markup: string): Array<{ checked: string; label: string; pressed?: string }> {
+  return [...markup.matchAll(/<button\b([^>]*role="radio"[^>]*)>([\s\S]*?)<\/button>/g)].map((m) => ({
+    checked: m[1].match(/aria-checked="([^"]*)"/)?.[1] ?? "",
+    pressed: m[1].match(/aria-pressed="([^"]*)"/)?.[1],
+    label: m[2].replace(/<[^>]*>/g, "").trim(),
+  }));
+}
+
+function rangeStep(months: number): string {
+  return renderToStaticMarkup(
+    createElement(ImportRangeStep, {
+      provider: "microsoft",
+      months,
+      onChange: () => {},
+      onBack: () => {},
+      onContinue: () => {},
+    }),
+  );
+}
+
+describe("the range step (EM-T6d item 2)", () => {
+  it("offers seven choices, 0 to 6 months, and 0 reads Only new mail", () => {
+    expect(IMPORT_RANGE_CHOICES.map((c) => c.months)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(MAX_IMPORT_MONTHS).toBe(6);
+    expect(IMPORT_RANGE_CHOICES[0].label).toBe("Only new mail");
+    expect(IMPORT_RANGE_CHOICES[1].label).toBe("1 month");
+    expect(IMPORT_RANGE_CHOICES[6].label).toBe("6 months");
+  });
+
+  it("its default is 1 month, and the step draws that choice as checked", () => {
+    expect(DEFAULT_IMPORT_MONTHS).toBe(1);
+    const r = radios(rangeStep(DEFAULT_IMPORT_MONTHS));
+    expect(r.map((x) => x.label)).toEqual(IMPORT_RANGE_CHOICES.map((c) => c.label));
+    expect(r.filter((x) => x.checked === "true").map((x) => x.label)).toEqual(["1 month"]);
+    // A radio keeps its own role: no aria-pressed beside aria-checked.
+    expect(r.every((x) => x.pressed === undefined)).toBe(true);
+  });
+
+  it("draws the title, the 6-month limit and the button to Microsoft", () => {
+    const out = rangeStep(3);
+    expect(out).toContain(IMPORT_RANGE_COPY.title);
+    expect(IMPORT_RANGE_COPY.title).toBe("How much of your mail should Metorite import?");
+    expect(IMPORT_RANGE_COPY.body).toMatch(/never imports mail older than 6 months/);
+    expect(out).toContain("never imports mail older than 6 months");
+    expect(out).toContain("Continue to Microsoft");
+    expect(out).toContain(">Back<");
+    expect(out).toMatch(/role="radiogroup"/);
+  });
+
+  it("a click on a provider opens the step with the default, and Continue starts the sign-in", () => {
+    const src = codeOnly(read("components/ConnectChoices.tsx"));
+    expect(src).toContain("onClick={() => p.available && setStep({ provider: p.id, months: DEFAULT_IMPORT_MONTHS })}");
+    expect(src).toMatch(/if \(step\) \{\s*return \(\s*<ImportRangeStep/);
+    expect(src).toContain("onContinue={() => onConnect(step.provider, step.months)}");
+    expect(src).toContain("onBack={() => setStep(null)}");
+    // The list click no longer starts the sign-in itself.
+    expect(src).not.toMatch(/p\.available && onConnect\(/);
+  });
+
+  it("both places pass the range to handleConnect, as its third argument", () => {
+    expect(PAGE).toContain(
+      "onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}",
+    );
+    expect(PAGE).toMatch(
+      /<ConnectChoices\s*onConnect=\{\(provider, importMonths\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, undefined, importMonths\);/,
+    );
+  });
+
+  it("names only icons that exist, so none falls back to Zap", () => {
+    const src = read("components/ImportRangeStep.tsx");
+    const names = [...src.matchAll(/(?:name|icon)="([A-Za-z0-9]+)"/g)].map((m) => m[1]);
+    names.push(...CONNECT_PROVIDERS.map((p) => p.icon));
+    expect(names.length).toBeGreaterThan(1);
+    for (const n of names) expect(isKnownIcon(n), n).toBe(true);
+  });
+});
+
+describe("the range goes to the gateway (EM-T6d item 3)", () => {
+  it("connectQuery with importMonths 3 holds import_months=3", () => {
+    const q = new URLSearchParams(connectQuery("https://app.test/email", null, 3));
+    expect(q.get("import_months")).toBe("3");
+    expect(q.get("redirect_after")).toBe("https://app.test/email");
+    expect(q.has("login_hint")).toBe(false);
+    expect(new URLSearchParams(connectQuery("https://app.test/email", undefined, 0)).get("import_months")).toBe("0");
+  });
+
+  it("sends no import_months for a value outside 0 to 6", () => {
+    for (const bad of [7, -1, 1.5, Number.NaN, null, undefined]) {
+      const q = new URLSearchParams(connectQuery("https://app.test/email", null, bad as number));
+      expect(q.has("import_months"), String(bad)).toBe(false);
+      expect(isImportMonths(bad)).toBe(false);
+    }
+  });
+
+  it("the reconnect target holds no import_months", () => {
+    // The banner passes the address and nothing else, so handleConnect gets
+    // no range, and connectQuery then sends none (D-EM-13).
+    expect(PAGE).toContain("onClick={() => handleConnect(provider, selectedAccount.emailAddress)}");
+    const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test"));
+    expect(q.get("login_hint")).toBe("ravi@contoso.test");
+    expect(q.has("import_months")).toBe(false);
+    // "Try again" on the callback page is not a first connect either.
+    const retry = retryTarget("microsoft", "https://app.test");
+    expect(new URLSearchParams(retry.split("?")[1]).has("import_months")).toBe(false);
   });
 });
