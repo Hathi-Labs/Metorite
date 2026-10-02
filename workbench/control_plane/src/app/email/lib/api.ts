@@ -73,7 +73,27 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     isDefault: Boolean(raw.is_default ?? false),
     initialSyncDone:
       typeof raw.initial_sync_done === "boolean" ? raw.initial_sync_done : undefined,
+    // EM-T6a and EM-T6b. A field the gateway does not send stays absent.
+    importSince: optionalString(raw.import_since),
+    onboardingDone:
+      typeof raw.onboarding_done === "boolean" ? raw.onboarding_done : undefined,
+    importReachedAt: optionalString(raw.import_reached_at),
+    importPhase: optionalString(raw.import_phase),
+    importCount: optionalCount(raw.import_count),
+    importEstimate: optionalCount(raw.import_estimate),
   };
+}
+
+/** A non-empty string, or null when the gateway sent null, or absent. */
+function optionalString(v: unknown): string | null | undefined {
+  if (v === null) return null;
+  return typeof v === "string" && v ? v : undefined;
+}
+
+/** A whole number of zero or more, or null when the gateway sent null, or absent. */
+function optionalCount(v: unknown): number | null | undefined {
+  if (v === null) return null;
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined;
 }
 
 /** Map a backend Email message (snake_case) to frontend Email (camelCase). */
@@ -2024,20 +2044,24 @@ export async function getCleanupStatus(
 /** Fetch older mail from the provider, then categorize it with NO model calls.
  *
  *  The deterministic counterpart of "Process past emails". The Cleaner can only
- *  clean what has been synced, and the initial sync only ever reached back one
- *  year — so on a real mailbox most mail has never been seen locally. Runs in
+ *  clean what has been synced, and the first import reaches back only as far as
+ *  the range of the mailbox (EM-T6), so on a real mailbox most mail has never
+ *  been seen locally. Runs in
  *  the background; poll `getCleanupStatus` for the two-phase progress.
  *
- *  `sinceDate` is YYYY-MM-DD; omit it to fetch the entire mailbox. */
+ *  `sinceDate` is YYYY-MM-DD, and it is required. After EM-T6a the gateway
+ *  reads a null as "back to the member's import range", which can be only
+ *  30 days, and it stops every download at 6 months. So the caller names the
+ *  date (`lib/cleanOlderMail.ts`). */
 export async function backfillAndClean(
   accountId: string,
-  sinceDate?: string
+  sinceDate: string
 ): Promise<{ scheduled: boolean; since?: string | null; reason?: string }> {
   return gatewayFetch("/email/cleanup/backfill", {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
-      since_date: sinceDate ?? null,
+      since_date: sinceDate,
     }),
   });
 }

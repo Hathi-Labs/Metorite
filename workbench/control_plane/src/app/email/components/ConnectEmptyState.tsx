@@ -19,10 +19,14 @@ import { ConnectChoices } from "./ConnectChoices";
 
 export function ConnectEmptyState({
   onConnect,
+  initialProvider = null,
   loadError,
   onRetry,
 }: {
-  onConnect: (provider: ConnectProviderId) => void;
+  /** Starts the sign-in with the range the member chose (EM-T6d). */
+  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
+  /** Opens the range step of this provider at once (a retry, EM-T6d). */
+  initialProvider?: ConnectProviderId | null;
   /** Set when the account list could not load. Then "no mailbox" is not known. */
   loadError?: string | null;
   onRetry?: () => void;
@@ -62,7 +66,7 @@ export function ConnectEmptyState({
           </p>
 
           <div className="mt-5">
-            <ConnectChoices onConnect={onConnect} />
+            <ConnectChoices onConnect={onConnect} initialProvider={initialProvider} />
           </div>
 
           <ul className="mt-5 space-y-1.5 border-t border-border pt-4 text-xs text-muted-foreground">

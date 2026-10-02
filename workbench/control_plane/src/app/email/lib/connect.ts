@@ -59,12 +59,108 @@ export const CONNECT_PROVIDERS: readonly ConnectProvider[] = [
  * `login_hint` is a hint for the provider's sign-in page, never an identity:
  * the gateway drops a value that does not parse as an address, and the
  * callback still binds the member of the session (EM-T3a item 3).
+ *
+ * `importMonths` is the range of the first import (EM-T6d item 3). Only a
+ * first connect sends it. A reconnect keeps the range of the mailbox
+ * (D-EM-13), so the reconnect banner passes none. A value that is not a
+ * whole number from 0 to 6 is not sent, and the gateway then uses 1.
  */
-export function connectQuery(redirectAfter: string, loginHint?: string | null): string {
+export function connectQuery(
+  redirectAfter: string,
+  loginHint?: string | null,
+  importMonths?: number | null,
+): string {
   const params = new URLSearchParams({ redirect_after: redirectAfter });
   const hint = (loginHint ?? "").trim();
   if (hint) params.set("login_hint", hint);
+  if (isImportMonths(importMonths)) params.set("import_months", String(importMonths));
   return params.toString();
+}
+
+// ── The range of the first import (EM-T6d item 2, D-EM-10) ─────────────────
+
+/** The longest range a member may choose. Metorite imports nothing older. */
+export const MAX_IMPORT_MONTHS = 6;
+
+/** The range the step selects when it opens. The gateway default is also 1. */
+export const DEFAULT_IMPORT_MONTHS = 1;
+
+/** True for a whole number from 0 to `MAX_IMPORT_MONTHS`. */
+export function isImportMonths(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= MAX_IMPORT_MONTHS;
+}
+
+export interface ImportRangeChoice {
+  months: number;
+  label: string;
+}
+
+/** The seven choices of the range step, 0 to 6 months, in order. */
+export const IMPORT_RANGE_CHOICES: readonly ImportRangeChoice[] = Array.from(
+  { length: MAX_IMPORT_MONTHS + 1 },
+  (_, months) => ({
+    months,
+    label: months === 0 ? "Only new mail" : months === 1 ? "1 month" : `${months} months`,
+  }),
+);
+
+/** The words of the range step. */
+export const IMPORT_RANGE_COPY = {
+  title: "How much of your mail should Metorite import?",
+  body:
+    "Metorite imports the mail that you received in this range. After that, it gets each new message as it arrives. " +
+    `Metorite never imports mail older than ${MAX_IMPORT_MONTHS} months.`,
+  back: "Back",
+  /** The button that starts the sign-in, for each provider. */
+  continueTo: (provider: ConnectProviderId) =>
+    provider === "microsoft" ? "Continue to Microsoft" : "Continue to Google",
+} as const;
+
+/**
+ * Where the range step keeps the last range the member chose (fix round 1).
+ *
+ * A convenience only. A failed connect sends the member back to the range
+ * step (`retryTarget`), and the step then shows the range they chose before.
+ * It is `sessionStorage`, so it ends with the tab. It holds one digit and no
+ * tenant data. The gateway never reads it: the range goes in the query.
+ */
+export const IMPORT_MONTHS_STORAGE_KEY = "metorite.email.importMonths";
+
+type MonthsStore = Pick<Storage, "getItem" | "setItem">;
+
+/** The session storage of this tab, or null where it is absent or refused. */
+function sessionStore(): MonthsStore | null {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    // A browser can refuse storage with a SecurityError.
+    return null;
+  }
+}
+
+/**
+ * The range the step selects when it opens: the stored one, or 1.
+ *
+ * Only one digit from 0 to 6 counts, the same rule as the BFF. Any other
+ * value, no value, no storage or a storage that throws gives the default.
+ */
+export function storedImportMonths(store: MonthsStore | null = sessionStore()): number {
+  try {
+    const raw = store?.getItem(IMPORT_MONTHS_STORAGE_KEY) ?? null;
+    return raw !== null && /^[0-6]$/.test(raw) ? Number(raw) : DEFAULT_IMPORT_MONTHS;
+  } catch {
+    return DEFAULT_IMPORT_MONTHS;
+  }
+}
+
+/** Keeps the chosen range for the next time the step opens. Never throws. */
+export function rememberImportMonths(months: number, store: MonthsStore | null = sessionStore()): void {
+  if (!isImportMonths(months)) return;
+  try {
+    store?.setItem(IMPORT_MONTHS_STORAGE_KEY, String(months));
+  } catch {
+    // A full or refused storage only costs the convenience.
+  }
 }
 
 /** Which provider the reconnect banner may send the member back through. */
@@ -91,22 +187,45 @@ export function emailSurface(state: { loaded: boolean; loading: boolean; count: 
   return "empty";
 }
 
+/** True for a provider that a member can connect today. */
+function isLiveProvider(id: string | null): id is ConnectProviderId {
+  return CONNECT_PROVIDERS.some((p) => p.id === id && p.available);
+}
+
 /**
- * Where "Try again" on the callback page goes.
+ * Where "Try again" and "Approved? Connect again" on the callback page go.
  *
- * A provider that is not available (Gmail, "Coming soon") goes back to the
- * connect choices in Email, never into its own OAuth leg. `/email?connect=1`
- * opens the add-account dialog, or the empty state shows the same choices.
+ * ⚠️ Never straight into the OAuth leg (fix round 1). The callback page shows
+ * those buttons before any mailbox row exists, so each one starts a FIRST
+ * connect. A direct authorize call carries no `import_months`, and the
+ * gateway default of 1 month then replaces the range the member chose. So a
+ * live provider goes back to the range step, which opens with the stored
+ * range (`storedImportMonths`). A provider that is not available (Gmail,
+ * "Coming soon") goes to the connect choices only.
+ *
+ * `/email?connect=1` opens the add-account dialog, or the empty state shows
+ * the same choices. `provider` opens the range step of that provider.
  */
-export function retryTarget(provider: ConnectProviderId, origin: string): string {
-  const live = CONNECT_PROVIDERS.find((p) => p.id === provider)?.available === true;
-  if (!live) return "/email?connect=1";
-  return `/api/email/oauth/${provider}/authorize?${connectQuery(`${origin}/email`)}`;
+export function retryTarget(provider: ConnectProviderId): string {
+  if (!isLiveProvider(provider)) return "/email?connect=1";
+  return `/email?${new URLSearchParams({ connect: "1", provider }).toString()}`;
 }
 
 /** True when the URL asks the page to open the connect choices. */
 export function wantsConnectChoices(search: string): boolean {
   return new URLSearchParams(search).get("connect") === "1";
+}
+
+/**
+ * The provider whose range step the URL asks to open, or null.
+ *
+ * Only with `connect=1`, and only for a live provider. Any other value is
+ * request input that names nothing, so it opens the list.
+ */
+export function rangeStepProviderFrom(search: string): ConnectProviderId | null {
+  if (!wantsConnectChoices(search)) return null;
+  const provider = new URLSearchParams(search).get("provider");
+  return isLiveProvider(provider) ? provider : null;
 }
 
 // ── First sync ─────────────────────────────────────────────────────────────
@@ -284,6 +403,32 @@ export function callbackView(params: {
       "If it happens again, give your Metorite admin the reference below.",
     reference,
   };
+}
+
+/** The line above the admin-approval help after a Microsoft decline. */
+export const ADMIN_APPROVAL_AFTER_DECLINE =
+  'Did Microsoft say "Need admin approval"? Your IT admin approves Metorite once for your company.';
+
+/**
+ * Whether the callback page shows the admin-approval help, and its lead line.
+ *
+ * `admin_consent_required` shows the help with no lead, as before. A
+ * Microsoft `consent_declined` shows it too, after the declined words. The
+ * reason: on Microsoft's "Need admin approval" screen, "Return to the
+ * application without granting consent" sends a bare `access_denied`. That
+ * carries no AADSTS code, so the gateway reads it as `consent_declined`
+ * (`_consent_error_reason`). In practice the company needs its admin. A
+ * decline from any other provider shows no Microsoft text.
+ */
+export function adminApprovalHelp(
+  kind: CallbackKind,
+  provider: ConnectProviderId,
+): { lead: string | null } | null {
+  if (kind === "admin_consent_required") return { lead: null };
+  if (kind === "consent_declined" && provider === "microsoft") {
+    return { lead: ADMIN_APPROVAL_AFTER_DECLINE };
+  }
+  return null;
 }
 
 // ── Admin consent ──────────────────────────────────────────────────────────
