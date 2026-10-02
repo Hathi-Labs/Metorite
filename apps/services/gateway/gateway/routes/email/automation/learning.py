@@ -45,27 +45,71 @@ def _is_auto_learnable_rule(rule: dict[str, Any]) -> bool:
     return name in _AUTO_LEARNABLE_RULES or system in _AUTO_LEARNABLE_RULES
 
 
-def _sender_pin_question(user_content: str) -> tuple[str, dict[str, Any]]:
-    """The ``decide`` request for the sender pin (EM-T5, shadow only)."""
-    from acb_llm import BooleanQuestion  # shadow mode only
+#: The probability at which ``decide`` confirms a pin (§10.4.8
+#: "Thresholds"). The old prompt asks for 90% sure, and a pin is permanent.
+_PIN_THRESHOLD = 0.9
 
-    return user_content, {"always": BooleanQuestion(
-        instructions=(
-            "Will EVERY future email from this sender serve the same purpose "
-            "as the proposed rule? A person, a generic-domain address, or a "
-            "sender of mixed content is a no."
-        ),
+_PIN_QUESTION = ("Will every future email from `sender` belong under the rule in "
+                 "the yes criterion?")
+_PIN_GUIDANCE = (
+    "- Answer yes only for a list or no-reply address that exists to send one "
+    "kind of message.",
+    "- A person is a no.",
+    "- When `sender.public_mail_domain` is true, answer no, unless "
+    "`recent_messages` show a plainly automated sender.",
+    "- Mixed content across `recent_messages` is a no.",
+    "- When in doubt, answer no.",
+)
+_PIN_TRUE = "Every message from this sender fits this rule."
+_PIN_FALSE = ("A person, a sender of mixed content, or a sender that can send "
+              "mail that needs a reply.")
+
+
+def _sender_pin_question(
+    sender: str, rule: dict[str, Any], rows: list[Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ``decide`` request for the sender pin (EM-T5b-1, shadow only).
+
+    The state holds facts about the sender and its recent mail. The rule
+    name and text go in ``criteria.true``, never in the state. Both computed
+    facts read a list that already exists: ``cleanup._SHARED_DOMAINS`` and
+    ``engine._NO_REPLY_PREFIXES``.
+    """
+    # Imported here: `cleanup` and `engine` sit above this module.
+    from acb_llm import BooleanQuestion  # shadow mode only
+    from gateway.routes.email.automation.cleanup import _SHARED_DOMAINS
+    from gateway.routes.email.automation.engine import _NO_REPLY_PREFIXES
+
+    address = (sender or "").strip().lower()
+    domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+    fact = decide_features.clip_fact
+    state = {
+        "sender": {
+            "address": fact(address, 320),
+            "domain": fact(domain, 255),
+            "public_mail_domain": domain in _SHARED_DOMAINS,
+            "automated_local_part": any(address.startswith(p) for p in _NO_REPLY_PREFIXES),
+        },
+        "recent_messages": [
+            {"subject": fact(r.subject or "(no subject)", 120),
+             "snippet": fact(r.snippet, 160)}
+            for r in rows
+        ],
+    }
+    rule_text = (f"{rule.get('name') or ''}: "
+                 f"{rule.get('instructions') or '(no description)'}")
+    return state, {"always": BooleanQuestion(
+        instructions=decide_features.instructions(_PIN_QUESTION, _PIN_GUIDANCE),
         criteria={
-            "true": "A list or no-reply address that only ever sends one "
-                    "kind of message.",
-            "false": "A person, or a sender that might send something that "
-                     "needs a reply.",
+            "true": decide_features.clip(f"{_PIN_TRUE}\n{rule_text}"),
+            "false": _PIN_FALSE,
         },
     )}
 
 
 async def _ai_confirms_sender_pattern(
     db: Any, account_id: str, sender: str, rule: dict[str, Any],
+    *, message_id: str | None = None,
 ) -> bool:
     """Ask the model, once, whether this sender is inherently single-purpose.
 
@@ -98,7 +142,8 @@ async def _ai_confirms_sender_pattern(
         f"- {(r.subject or '(no subject)')[:120]}"
         f" — {(r.snippet or '')[:160]}" for r in rows)
     rule_name = rule.get("name") or ""
-    # The same text for the old call and for `decide` (EM-T5 item 10).
+    # The old call's text. `decide` gets the same facts as a structured state
+    # (EM-T5b-1, `_sender_pin_question`).
     user_content = (
         f"Sender: {sender}\n"
         f'Proposed rule: "{rule_name}" — '
@@ -139,11 +184,11 @@ async def _ai_confirms_sender_pattern(
         return ok
 
     return await decide_features.shadow(
-        "email.sender_pin", _old, account_id=account_id,
-        build=lambda: _sender_pin_question(user_content),
+        "email.sender_pin", _old, account_id=account_id, message_id=message_id,
+        build=lambda: _sender_pin_question(sender, rule, list(rows)),
         # The prompt asks for 90% sure, so `agree` is read at 0.9.
         compare=decide_features.compare_boolean(
-            lambda r: r, qid="always", threshold=0.9),
+            lambda r: r, qid="always", threshold=_PIN_THRESHOLD),
     )
 
 

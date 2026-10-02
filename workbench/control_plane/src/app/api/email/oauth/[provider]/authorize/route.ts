@@ -57,6 +57,14 @@ const PROVIDER_SEGMENT = /^[a-z0-9-]{1,32}$/;
 const AUTHORIZE_TIMEOUT_MS = 30_000;
 
 /**
+ * The range of the first import, in months (EM-T6d item 3). One digit from 0
+ * to 6 and nothing else, so "07", "3.0", " 3" and "-1" do not pass. The
+ * gateway is the authority (EM-T6a answers 400 to a bad value). This keeps a
+ * bad value off the hop, and the connect then gets the default of 1 month.
+ */
+const IMPORT_MONTHS = /^[0-6]$/;
+
+/**
  * Hand a failure to the callback page rather than rendering JSON into the
  * address bar — this is a navigation, and the page already knows how to explain
  * an OAuth failure (it is where the gateway's own callback errors land).
@@ -104,17 +112,23 @@ export async function GET(
 
   const headers = await gatewayHeaders();
 
-  // Only `redirect_after` and `login_hint` are forwarded; see the header
-  // comment on `user_email`. `login_hint` is a HINT for the provider's sign-in
-  // page (the reconnect banner sends the mailbox address). The gateway drops a
-  // value that does not parse as one address, and the callback still binds the
-  // member of the session, so it can never choose whose mailbox is attached
-  // (EM-T3a item 3, EM-T3b).
+  // Only `redirect_after`, `login_hint` and `import_months` are forwarded; see
+  // the header comment on `user_email`. `login_hint` is a HINT for the
+  // provider's sign-in page (the reconnect banner sends the mailbox address).
+  // The gateway drops a value that does not parse as one address, and the
+  // callback still binds the member of the session, so it can never choose
+  // whose mailbox is attached (EM-T3a item 3, EM-T3b). `import_months` is the
+  // range of the first import, and only a value that matches IMPORT_MONTHS
+  // makes the hop (EM-T6d item 3).
   const forwarded = new URLSearchParams();
   const redirectAfter = req.nextUrl.searchParams.get("redirect_after");
   if (redirectAfter) forwarded.set("redirect_after", redirectAfter);
   const loginHint = req.nextUrl.searchParams.get("login_hint")?.trim();
   if (loginHint && loginHint.length <= 254) forwarded.set("login_hint", loginHint);
+  const importMonths = req.nextUrl.searchParams.get("import_months");
+  if (importMonths !== null && IMPORT_MONTHS.test(importMonths)) {
+    forwarded.set("import_months", importMonths);
+  }
   const qs = forwarded.toString();
 
   const upstream =

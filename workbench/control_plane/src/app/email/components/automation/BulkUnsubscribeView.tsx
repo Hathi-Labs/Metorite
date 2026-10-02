@@ -12,6 +12,11 @@ import {
 import { SenderStat, NewsletterStatus, SenderStatus, Email } from "../../lib/types";
 import { chipColors } from "../../lib/labelColors";
 import { useEmailStore } from "../../lib/emailStore";
+import {
+  CLEAN_OLDER_MAIL_CHOICES,
+  cleanOlderMailSince,
+  cleanOlderMailTitle,
+} from "../../lib/cleanOlderMail";
 import { FixDialog } from "./ai-settings/fixDialog";
 import { useViewMode } from "@/components/ViewModeProvider";
 
@@ -21,25 +26,11 @@ interface BulkUnsubscribeViewProps {
   onArchived?: () => void;
 }
 
-/** How far back "Clean older mail" fetches before sweeping. The Cleaner can
- *  only clean what has been synced, and the FIRST sync of an account fetches
- *  365 days while every sync after it is incremental — so on a real mailbox
- *  most mail has never been seen locally (measured: 6,803 held of ~43,000).
- *  `years: 0` means the entire mailbox. */
-const BACKFILL_OPTIONS = [
-  { label: "2 years", years: 2 },
-  { label: "3 years", years: 3 },
-  { label: "5 years", years: 5 },
-  { label: "Everything", years: 0 },
-];
-
-/** YYYY-MM-DD `n` years ago, or undefined for "no floor" (whole mailbox). */
-function isoYearsAgo(years: number): string | undefined {
-  if (!years) return undefined;
-  const d = new Date();
-  d.setFullYear(d.getFullYear() - years);
-  return d.toISOString().slice(0, 10);
-}
+// How far back "Clean older mail" fetches before sweeping lives in
+// `lib/cleanOlderMail.ts`. The Cleaner can only clean what has been synced.
+// The first import of an account reaches back only as far as its range
+// (EM-T6, D-EM-10), and every deep download stops at 6 months (EM-T6a). So
+// the choices stop at 6 months, and each one sends an explicit date.
 
 /** Age presets for the "Archive old mail" sweep (archive read mail older than N). */
 const AGE_OPTIONS = [
@@ -656,13 +647,13 @@ export function BulkUnsubscribeView({
   // Spends NO model calls, which is the entire point: the sweep projects
   // learned patterns and sender/domain history, and the downloaded history is
   // held back from the model-driven rule run server-side.
-  const cleanOlderMail = async (years: number) => {
+  const cleanOlderMail = async (days: number) => {
     if (!accountId || categorizing) return;
     setCategorizing(true);
     setError(null);
     setBackfillOpen(false);
     try {
-      const res = await backfillAndClean(accountId, isoYearsAgo(years));
+      const res = await backfillAndClean(accountId, cleanOlderMailSince(days));
       if (!res.scheduled) {
         setError(
           res.reason === "already_running"
@@ -672,7 +663,7 @@ export function BulkUnsubscribeView({
         return;
       }
       setNotice("Fetching older mail from your mailbox…");
-      // Downloading years of mail is minutes, not seconds, so the phase has to
+      // Downloading months of mail is minutes, not seconds, so the phase has to
       // be visible — silence on a long job reads as "stuck", and the user
       // presses the button again.
       for (let i = 0; i < POLL_MAX; i++) {
@@ -1471,10 +1462,11 @@ export function BulkUnsubscribeView({
           </div>
         )}
       </div>
-      {/* Clean older mail. The Cleaner can only clean what has been synced, and
-          the first sync of an account fetches one year while every sync after
-          it is incremental — so most of a real mailbox has never been seen
-          locally. This fetches it, then categorizes it with NO model calls:
+      {/* Clean older mail. The Cleaner can only clean what has been synced.
+          The first import of an account reaches back only as far as its
+          range (EM-T6), and every sync after it is incremental, so most of a
+          real mailbox has never been seen locally. This fetches it, then
+          categorizes it with NO model calls:
           learned patterns, sender and domain history, and bulk shape. The
           fetched history is held back from the AI rule run server-side, which
           is what keeps a 40,000-message backfill from costing anything. */}
@@ -1486,16 +1478,12 @@ export function BulkUnsubscribeView({
         </span>
         {backfillOpen ? (
           <div className="flex items-center gap-0.5 bg-secondary rounded-md p-0.5 ml-auto">
-            {BACKFILL_OPTIONS.map((o) => (
+            {CLEAN_OLDER_MAIL_CHOICES.map((o) => (
               <button
-                key={o.years}
-                onClick={() => cleanOlderMail(o.years)}
+                key={o.days}
+                onClick={() => cleanOlderMail(o.days)}
                 disabled={categorizing}
-                title={
-                  o.years
-                    ? `Fetch the last ${o.label} of mail, then categorize it`
-                    : "Fetch your entire mailbox, then categorize it"
-                }
+                title={cleanOlderMailTitle(o)}
                 className="px-2 py-0.5 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-background transition-colors disabled:opacity-50"
               >
                 {o.label}

@@ -71,6 +71,24 @@ export interface EmailAccount {
    * from a gateway that predates the flag, and absent means "do not wait".
    */
   initialSyncDone?: boolean;
+  // ── Guided onboarding (EM-T6, spec §10.4.7) ──
+  // Each field is optional. A gateway before EM-T6a or EM-T6b sends none of
+  // them, and the UI then keeps the behaviour it had before (EM-T6d).
+  /**
+   * The oldest date the member chose to import (EM-T6a). Null or absent marks
+   * a mailbox connected before EM-T6, which gets no guided setup.
+   */
+  importSince?: string | null;
+  /** True after the member closed the guided setup (EM-T6a). */
+  onboardingDone?: boolean;
+  /** The oldest `received_at` the first import wrote so far (EM-T6b). */
+  importReachedAt?: string | null;
+  /** `counting`, `importing` or `done` (EM-T6b). */
+  importPhase?: string | null;
+  /** The rows the first import wrote so far (EM-T6b). */
+  importCount?: number | null;
+  /** The provider's count of the range, or null when it gave none (EM-T6b). */
+  importEstimate?: number | null;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────
@@ -577,8 +595,6 @@ export interface AssistantSettings {
   signature_text?: string;
   auto_run: boolean;
   cold_email_blocker: ColdBlockerMode;
-  /** Model for rule evaluation / classification / labeling (default tier-fast). */
-  rule_model: string;
   /** Model for BACKGROUND draft writing — follow-ups, DRAFT_EMAIL rule actions
    *  (default tier-powerful). */
   draft_model: string;

@@ -412,15 +412,9 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             domains={s.org_domains || []}
             onChange={(next) => persistPatch({ org_domains: next })}
           />
+          {/* No rules model (D-EM-7): the rules run on the `decide` tier,
+              and no member can change it. */}
           {([
-            {
-              key: "rule_model" as const,
-              title: "Rule evaluation model",
-              description:
-                "Classifies and labels each incoming email against your rules. A fast tier is recommended for this high-volume task.",
-              value: s.rule_model,
-              def: "tier-fast",
-            },
             {
               key: "draft_model" as const,
               title: "Draft writing model",
