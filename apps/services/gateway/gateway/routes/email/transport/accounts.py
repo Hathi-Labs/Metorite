@@ -32,11 +32,22 @@ class EmailAccountModel(BaseModel):
     #: False until the first deep sync of the mailbox completes. The connect
     #: UI shows first-sync progress from it (EM-T3a item 5).
     initial_sync_done: bool = False
+    #: The import floor that the member chose at the first connect, as ISO
+    #: text. ``None`` for a mailbox that connected before EM-T6a.
+    import_since: str | None = None
+    #: True when the member closed the guided setup (EM-T6a item 11).
+    onboarding_done: bool = False
 
 
 class AccountUpdateModel(BaseModel):
     label: str | None = None
     sync_enabled: bool | None = None
+    #: True closes the guided setup, and false opens it again (EM-T6a).
+    onboarding_done: bool | None = None
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value else None
 
 
 class CreateAccountRequest(BaseModel):
@@ -95,7 +106,8 @@ async def list_accounts(
             text(
                 """SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
-                          is_default, initial_sync_done
+                          is_default, initial_sync_done, import_since,
+                          onboarding_done_at
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -129,6 +141,8 @@ async def list_accounts(
                 unread_count=unread,
                 is_default=bool(row.is_default),
                 initial_sync_done=bool(row.initial_sync_done),
+                import_since=_iso(row.import_since),
+                onboarding_done=row.onboarding_done_at is not None,
             ))
         return accounts
 
@@ -331,7 +345,8 @@ async def set_default_account(
                    WHERE id = :id AND user_id = :uid
                    RETURNING id, provider, email_address, label, avatar_color,
                              sync_enabled, sync_status, sync_error,
-                             last_synced_at, is_default, initial_sync_done"""
+                             last_synced_at, is_default, initial_sync_done,
+                             import_since, onboarding_done_at"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -359,6 +374,8 @@ async def set_default_account(
             unread_count=unread,
             is_default=bool(row.is_default),
             initial_sync_done=bool(row.initial_sync_done),
+            import_since=_iso(row.import_since),
+            onboarding_done=row.onboarding_done_at is not None,
         )
 
 
@@ -411,7 +428,11 @@ async def update_account(
     updates: AccountUpdateModel,
     user: UserContext = Depends(get_current_user),
 ):
-    """Update account settings (label, sync toggle)."""
+    """Update account settings (label, sync toggle, the guided setup).
+
+    ``onboarding_done`` true writes ``onboarding_done_at = now()``, and false
+    writes NULL (EM-T6a item 11). The owner predicate binds every field.
+    """
     async with _tenant_session() as db:
         set_clauses = []
         params: dict[str, Any] = {"id": account_id, "user_id": user.email or "anonymous"}
@@ -422,6 +443,10 @@ async def update_account(
         if updates.sync_enabled is not None:
             set_clauses.append("sync_enabled = :sync_enabled")
             params["sync_enabled"] = updates.sync_enabled
+        if updates.onboarding_done is not None:
+            set_clauses.append(
+                "onboarding_done_at = now()" if updates.onboarding_done
+                else "onboarding_done_at = NULL")
 
         if not set_clauses:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -435,13 +460,33 @@ async def update_account(
                     WHERE id = :id AND user_id = :user_id
                     RETURNING id, provider, email_address, label, avatar_color,
                               sync_enabled, sync_status, last_synced_at,
-                              initial_sync_done"""
+                              initial_sync_done, import_since,
+                              onboarding_done_at"""
             ),
             params,
         )
         row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
+
+    model = EmailAccountModel(
+        id=str(row.id),
+        provider=row.provider,
+        email_address=row.email_address,
+        label=row.label or "",
+        avatar_color=row.avatar_color or "#6366f1",
+        sync_enabled=row.sync_enabled,
+        sync_status=row.sync_status or "idle",
+        last_synced_at=row.last_synced_at.isoformat()
+        if row.last_synced_at else None,
+        initial_sync_done=bool(row.initial_sync_done),
+        import_since=_iso(row.import_since),
+        onboarding_done=row.onboarding_done_at is not None,
+    )
+    # Closing the guided setup changes nothing that the sync loop reads. A
+    # restart cancels a sync in flight, so this PATCH does not restart it.
+    if updates.label is None and updates.sync_enabled is None:
+        return model
 
     # Refresh background sync: start/stop loop for this account. It runs AFTER
     # the tenant block, so the update is committed first (EM-T1b-1 item 5).
@@ -455,15 +500,4 @@ async def update_account(
     except Exception as exc:
         _log.warning("email.refresh_sync_failed", error=str(exc)[:200])
 
-    return EmailAccountModel(
-        id=str(row.id),
-        provider=row.provider,
-        email_address=row.email_address,
-        label=row.label or "",
-        avatar_color=row.avatar_color or "#6366f1",
-        sync_enabled=row.sync_enabled,
-        sync_status=row.sync_status or "idle",
-        last_synced_at=row.last_synced_at.isoformat()
-        if row.last_synced_at else None,
-        initial_sync_done=bool(row.initial_sync_done),
-    )
+    return model

@@ -725,7 +725,7 @@ async def restore_provider_labels(account_id: str) -> dict[str, Any]:
     upstream — ``apply_label`` always writes the provider first — so the truth
     was never destroyed, only our copy of it. This reads it back in roughly one
     request per label (see BaseProvider.fetch_label_assignments) instead of
-    forcing a deep re-sync that would re-download a year of message bodies.
+    forcing a deep re-sync that would re-download months of messages.
 
     Only messages the provider reports labels FOR are touched. A message with no
     upstream labels is left exactly as-is rather than cleared, so a label that
@@ -869,11 +869,13 @@ async def _backfill_and_clean_job(
 
     Two phases behind one progress row, because to the user it is one action:
 
-    1. ``downloading`` — a deep provider sync from ``since`` (None = everything).
-       The first sync of an account only ever fetched 365 days
-       (``INITIAL_SYNC_DAYS``) and every sync after it is incremental, so on a
-       real mailbox most mail has simply never been seen locally. Measured on the
-       live account: 6,803 messages held against ~43,000 in the mailbox.
+    1. ``downloading`` — a deep provider sync from ``since``. The sync core
+       never reaches back past 180 days (D-EM-10), so an older ``since`` stops
+       there. With no ``since``, the import range of the mailbox binds
+       (EM-T6a). The first sync of an account fetches only the range that the
+       member chose, and every sync after it is incremental, so on a real
+       mailbox much mail has never been seen locally. Measured on the live
+       account before EM-T6a: 6,803 messages held against ~43,000.
     2. ``cleaning`` — the ordinary sweep over everything now present. No model
        calls, so the cost of this phase does not grow with the backlog; and it
        gets BETTER with history, because sender and domain consensus finally have
@@ -940,7 +942,8 @@ async def cleanup_backfill(
     """Fetch older mail from the provider, then clean it without a model.
 
     The Email Cleaner can only clean what has been synced, and the initial sync
-    only ever reached back one year. This is the deterministic counterpart of
+    reaches back only as far as the range that the member chose (EM-T6a). No
+    sync reaches back past 180 days. This is the deterministic counterpart of
     "Process past emails": same shape, but it spends no model calls — it fetches
     history, holds it back from the model-driven rule run, and lets the sweep
     project learned patterns and sender/domain history onto it.

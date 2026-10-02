@@ -1,5 +1,8 @@
-"""Deep-vs-shallow sync (1-year initial load, recurring shallow) + inbound
-deletion reconciliation for the full Outlook snapshot."""
+"""Deep-vs-shallow sync (deep initial load to the floor, recurring shallow) +
+inbound deletion reconciliation for the full Outlook snapshot.
+
+Since EM-T6a the floor binds the recurring poll too (D-EM-10). The floor rule
+itself is pinned by ``test_email_import_floor.py``."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -84,7 +87,9 @@ async def test_sync_messages_deep_sets_full_snapshot_and_passes_since() -> None:
 
     seen.clear()
     res = await p.sync_messages(deep=False, since=since)
-    assert all(s[2] is None for s in seen)             # shallow ignores since
+    # EM-T6a item 5: the shallow poll applies the floor too, and keeps its
+    # page count.
+    assert seen and all(s[2] == since for s in seen)
     assert all(s[1] == p.RECURRING_SYNC_MAX_PAGES for s in seen)
 
 

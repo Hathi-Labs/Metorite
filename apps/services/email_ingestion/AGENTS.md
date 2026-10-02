@@ -25,6 +25,7 @@ providers/
 ├── app_credentials.py — oauth_app, the one reader of the OAuth app credentials
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
+import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
 ```
 
 ## Providers
@@ -123,6 +124,14 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   short block after phase (e) writes them again, but only when they changed
   after phase (d). That write never fails the sync. A failed write goes again
   once in a new block, and the log names the class of the error, never a token.
+- ⚠️ **The import floor binds every sync (WS-17 EM-T6a, D-EM-10).**
+  `import_window.py` is the one owner of the ceiling (180 days), the range
+  (0 to 6 months) and the floor. Do not write a second date rule.
+  `_sync_account` passes the floor on every sync, deep or shallow. An explicit
+  `since` of a member act binds when it is newer than the ceiling. Otherwise
+  `import_since` binds. Outlook sends the floor on each sweep. The core drops
+  a message below the floor before phase (c), unless Metorite holds its row. R7:
+  `tests/unit/test_email_import_floor.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

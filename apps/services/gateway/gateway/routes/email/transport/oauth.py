@@ -29,6 +29,7 @@ from uuid import uuid4
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from email_ingestion.import_window import DEFAULT_IMPORT_MONTHS, since_for_months
 from email_ingestion.providers.app_credentials import MICROSOFT_OAUTH_BASE, oauth_app
 from email_ingestion.providers.gmail import GMAIL_SCOPES
 from email_ingestion.providers.outlook import GRAPH_SCOPES
@@ -58,6 +59,11 @@ _PROVIDER_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
 #: 400, so a member never consents only to get ``invalid_state``. The signer
 #: also refuses an over-long state, which covers text that JSON escapes.
 _MAX_REDIRECT_AFTER = 2048
+
+#: ``import_months`` passes only as one digit from 0 to 6 (EM-T6a item 7). The
+#: route reads it as text, so ``x`` is a 400 and never a 422 of FastAPI. Use
+#: ``fullmatch``: with ``match``, ``$`` also accepts a final newline.
+_IMPORT_MONTHS = re.compile(r"[0-6]")
 
 #: A ``login_hint`` passes only when it parses as one plain address.
 _EMAIL_ADDRESS = re.compile(
@@ -94,6 +100,7 @@ async def oauth_authorize(
     user: UserContext = Depends(get_current_user),
     redirect_after: str = Query(default=""),
     login_hint: Annotated[str | None, Query()] = None,
+    import_months: Annotated[str | None, Query()] = None,
 ):
     """Start OAuth flow for an email provider.
 
@@ -113,6 +120,10 @@ async def oauth_authorize(
     The URL carries ``login_hint``, by default the email of the session. A
     ``login_hint`` query replaces it only when it parses as an address, and
     a malformed one is dropped (EM-T3a item 3).
+
+    ``import_months`` is the import range of a new mailbox, 0 to 6 months, and
+    1 when absent (EM-T6a, D-EM-11). Any other value answers 400 before the
+    route signs a state. The state carries it to the callback.
     """
     if not user.organization_id or not user.email:
         raise HTTPException(
@@ -124,12 +135,21 @@ async def oauth_authorize(
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
     if len(redirect_after) > _MAX_REDIRECT_AFTER:
         raise HTTPException(status_code=400, detail="redirect_after is too long.")
+    months = DEFAULT_IMPORT_MONTHS
+    if import_months is not None:
+        if not _IMPORT_MONTHS.fullmatch(import_months):
+            raise HTTPException(
+                status_code=400,
+                detail="import_months is a whole number of months from 0 to 6.",
+            )
+        months = int(import_months)
     try:
         state = sign_oauth_state(
             org=str(user.organization_id),
             member=user.email,
             provider=provider,
             redirect_after=redirect_after,
+            import_months=months,
         )
     except SigningUnavailable:
         _log.error("email.oauth_state_secret_unusable")
@@ -309,6 +329,7 @@ async def oauth_callback(
             provider=provider,
             mailbox=mailbox,
             encrypted_creds=encrypted_creds,
+            import_months=claims["import_months"],
         )
     except Exception as exc:
         _log.error("email.oauth_account_save_failed", error=str(exc)[:200])
@@ -414,6 +435,7 @@ async def _save_account(
     provider: str,
     mailbox: str,
     encrypted_creds: str,
+    import_months: int = DEFAULT_IMPORT_MONTHS,
 ) -> str:
     """Create or refresh the mailbox row inside one ``tenant_session(org)``.
 
@@ -421,12 +443,19 @@ async def _save_account(
     package compare ``user_id = :uid`` with that same address. The lookup
     compares ``member`` in lower case, so a reconnect finds the row whatever
     its case. The seam commits on exit, so there is no ``commit()`` here.
+
+    ``import_months`` binds a NEW mailbox only (EM-T6a items 9 and 10). The
+    INSERT writes ``import_since``. A range of 0 imports no old mail, so the
+    INSERT also marks the first import done. A reconnect ignores the range.
     """
     async with _tenant_session(org) as db:
         # An account for this member and address already exists: this is a
         # *reconnect*. Refresh the stored credentials in place rather than
-        # reject a duplicate. Resetting last_history_id forces a full re-sync
-        # so messages persisted under an old code path get re-normalised.
+        # reject a duplicate. The reconnect keeps the sync point (D-EM-13):
+        # it writes neither ``last_history_id`` nor ``initial_sync_done``, so
+        # the next sync continues from ``last_synced_at``. Before EM-T6a it
+        # wrote ``last_history_id = NULL``. Outlook ignores that cursor and no
+        # code reset ``initial_sync_done``, so it never forced a full re-sync.
         existing_row = (await db.execute(
             text(
                 """SELECT id FROM email_accounts
@@ -444,7 +473,6 @@ async def _save_account(
                        SET credentials_encrypted = :creds,
                            sync_status = 'idle',
                            sync_error = NULL,
-                           last_history_id = NULL,
                            updated_at = now()
                        WHERE id = :id"""
                 ),
@@ -453,17 +481,20 @@ async def _save_account(
             return account_id
         # organization_id is set explicitly. The column default reads the same
         # GUC, but a write names its tenant (R5).
+        nothing_old = import_months == 0
         result = await db.execute(
             text(
                 """INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
-                    organization_id)
+                    organization_id, import_since, initial_sync_done,
+                    import_phase)
                    VALUES (:id, :user_id, :provider, :email, :label,
                             :color, :creds,
                             NOT EXISTS (SELECT 1 FROM email_accounts
                                         WHERE lower(user_id) = :member),
-                            CAST(:org AS uuid))
+                            CAST(:org AS uuid), :import_since,
+                            :initial_sync_done, :import_phase)
                    RETURNING id"""
             ),
             {
@@ -476,6 +507,9 @@ async def _save_account(
                 "color": "#6366f1",
                 "creds": encrypted_creds,
                 "org": org,
+                "import_since": since_for_months(import_months),
+                "initial_sync_done": nothing_old,
+                "import_phase": "done" if nothing_old else None,
             },
         )
         return str(result.fetchone()[0])
