@@ -54,8 +54,9 @@ _OWNER_PREDICATE = re.compile(
 # ── List 1: the handlers that carry no owner proof of their own ─────────────
 
 #: Each handler in ``routes/email`` with no owner proof in its own body, and
-#: why that is safe. The 13 entries are the measurement of 2026-10-02. A new
-#: entry needs a reason that a reviewer can check against the code.
+#: why that is safe. The first 13 entries are the measurement of 2026-10-02.
+#: EM-T3d added the fourteenth. A new entry needs a reason that a reviewer can
+#: check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
     "ai_chat": (
         "Delegates to _build_chat_context, which keeps account_id only when "
@@ -112,6 +113,12 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "Machine-called by Microsoft Graph with no member. It matches a "
         "subscription id and its clientState inside the tenant of a signed "
         "org, and only schedules a sync of that mailbox."
+    ),
+    "org_connection_counts": (
+        "EM-T3d. For admins only: require_permission('admin:members:read') "
+        "on the route. It reads across members on purpose, and returns "
+        "seven integer counts: no address, no member and no account id. "
+        "R8: test_email_org_connection_counts.py."
     ),
 }
 
