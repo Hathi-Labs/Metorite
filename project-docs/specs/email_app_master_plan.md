@@ -9,7 +9,8 @@
 > sync core bind a tenant. ✅ **EM-T1b-2 is MERGED (#561)** (§10.4.2).
 > ✅ **Email sync is ON in production since 2026-10-01 17:57 UTC.** The live check passed with
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
-> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** 🟡 EM-T3c is BUILT, not merged (2026-10-02).
+> Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. 🔨 EM-T3d is BUILT, not merged.
+> ✅ **EM-T4a-1 MERGED (#570). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -122,10 +123,10 @@ records only what the email app must keep true.
 
    | Order | Call | Now | Shape |
    |---|---|---|---|
-   | 1 | Cold-email check, `senders.py:1196` `_llm_is_cold` | `tier-fast` | boolean |
-   | 2 | Auto-learn sender pin, `learning.py:47` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
-   | 4 | Rule classifier, `engine.py:284` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
+   | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
+   | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
 3. **Each one runs in shadow first.** It logs both answers and acts on the old
    one, until the agreement on this mailbox is measured.
@@ -562,10 +563,10 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T2** | 🟢 AGENT-SAFE | **Isolation fences.** Account uniqueness includes `organization_id` (expand and contract, R6). The attachment cache keys go through `tenant_redis`. A fence fails when an email query reads a child table without the owner scope (D-EM-4). | See §10.4.5. |
 | **EM-T3a** | 🟢 AGENT-SAFE | ✅ **MERGED #563 (2026-10-02).** **The backend for the connect flow.** The app credentials come from settings, never from the account blob. The authorize leg sends `login_hint`. The callback maps the consent errors of Microsoft. The accounts API returns `initial_sync_done`. See §10.4.3. | See §10.4.3. |
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
-| **EM-T3c** | 🟢 AGENT-SAFE · security review | 🟡 **BUILT, not merged (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
-| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2 | **Pre-approval in Settings, and the connected-member count.** The count reads across members, so it needs a named exception to the owner-scope fence of EM-T2. | The admin sees a count and no address. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | 🟡 **EM-T4a-0 BUILT, not merged (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
-| **EM-T5** | 🟢 build · 🔴 real mail | **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | As CP-13e states. |
+| **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
+| **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | 🔨 **BUILT, not merged (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 (2026-10-02).** 🟡 **EM-T4a-0 BUILT, not merged.** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1051,9 +1052,268 @@ so that request also keeps the member path.
 The page is `src/app/oauth/approved/`. Its copy lives in `view.ts`. `approved.test.ts` renders
 the real page. The proxy fence is `src/proxy.test.ts`.
 
+##### EM-T3d — pre-approval and the connected-member count
+
+**Status.** 🔨 BUILT, not merged (2026-10-02). Audited against `ea9467a9` on 2026-10-02. EM-T3d waits for EM-T2c only,
+because the fence of EM-T2c holds `OWNER_SCOPE_EXEMPT`. It does not need EM-T2a. Production has
+`email_accounts.organization_id`, and the scheduler already filters on it (EM-T1b-1).
+
+**Problem.** §10.3 step 6 has no surface. Today an admin can approve the app only after a member
+gets the consent error. No route tells an admin how many members connected a mailbox. D-EM-4 lets
+an admin see that count, and never the mail.
+
+**Scope.**
+
+1. **The count route.** Add `GET /email/admin/connections` to `transport/accounts.py`. Name the
+   handler `org_connection_counts`. Do not add a new module.
+2. **The gate.** The route depends on `require_permission("admin:members:read")` from `acb_auth`.
+   That is the same test that `/auth/me` reports as `is_admin`. The email router adds `feature:email`.
+3. **The tenant.** The handler takes `user` and no other parameter. It answers 403 when
+   `user.organization_id` is empty, before it opens a session.
+4. **The read.** The handler reads through `_tenant_session()`. Its SQL also filters on
+   `organization_id = CAST(:org AS uuid)`, from `user.organization_id`. One SELECT computes every
+   count with `count(*) FILTER (...)`.
+5. **The answer.** The response model `OrgConnectionCounts` holds seven integers: `members`,
+   `mailboxes`, `microsoft`, `gmail`, `imap`, `sync_errors` and `first_sync_pending`. `members` is
+   `count(DISTINCT lower(user_id))`. `sync_errors` counts the rows in sync status `error`.
+   `first_sync_pending` counts `NOT initial_sync_done`.
+6. **The fence entry.** Add `org_connection_counts` to `OWNER_SCOPE_EXEMPT` in
+   `tests/unit/test_email_owner_scope_fence.py`. The reason says that the route is for admins only.
+   It also says that the query returns counts, and no address, no member and no account id.
+7. **The Email tab.** Add a fifth tab, "Email", to `OrganizationAdmin.tsx`. Put the tab in a new
+   `EmailTab.tsx`, as a container that fetches and a pure `EmailTabView` that draws. Put the mapper
+   and the copy in a new `lib/emailConnections.ts`.
+8. **Pre-approval.** The tab calls `getMailAppInfo()` from `app/email/lib/api.ts`. When that returns
+   an app, the tab shows a link to `adminConsentUrl(app)`. The link opens a new browser tab, with
+   `rel="noopener noreferrer"`. Microsoft then sends the admin to `/oauth/approved` (EM-T3c).
+9. **The count on the tab.** The tab reads `/api/email/admin/connections` through the BFF catch-all
+   `api/email/[...path]`. It shows the seven counts and nothing else.
+10. **The docs.** In `launch_surface.md` §6.2, add a fifth tab, "Email", that points to this
+    section. Add Email to the tabs of the Organisation row in its §2 table. In the header comment
+    of `OrganizationAdmin.tsx`, change "Four tabs" to "Five tabs".
+
+**Non-goals.**
+
+- No record of an approval. Microsoft holds the approval. The `tenant` value on the return comes
+  with no state, so a record of it would trust a value that anyone can forge.
+- No "approved" badge. Metorite cannot know if the organization approved the app.
+- No migration, no table and no write of any kind.
+- No list of members, no address, no account id and no `sync_error` text.
+- No join to `app_user`. A purge deletes the mailbox of a removed member. Until then, it counts.
+- No pre-approval for Gmail or IMAP. Only Microsoft has an admin-consent step (D-EM-5).
+- No new BFF route, and no copy of `adminConsentUrl` or `getMailAppInfo`.
+
+**Done when.**
+
+- R8, as admin of org A: the route returns the counts of org A only, while org B holds rows too.
+  The same test as admin of org B returns the counts of org B only.
+- R8: the response JSON holds no `@` and no seeded address, for each organization.
+- R8: a member with two mailboxes counts once in `members` and twice in `mailboxes`.
+- R8: `sync_errors`, `first_sync_pending` and each provider count equal the seeded rows.
+- A member with `feature:email` and no `admin:members:read` gets 403. The handler body does not run.
+- An admin with no organization gets 403, and the handler opens no session.
+- The handler signature holds `user` and no other parameter (R5).
+- Each field of `OrgConnectionCounts` is an `int`. The test fails when a field of another type appears.
+- `OWNER_SCOPE_EXEMPT` holds `org_connection_counts` with its reason, and the fence passes.
+- `EmailTabView` draws a link whose `href` equals `adminConsentUrl(app)`, with `target="_blank"`
+  and `rel="noopener noreferrer"`.
+- With no app, `EmailTabView` draws no link. It draws a fixed sentence instead.
+- `mapConnectionCounts` keeps the seven integer fields only. It drops a string field, for example
+  `email_address`.
+- A failed count read draws an error sentence. It never draws "0 members".
+- The markup of `EmailTabView` holds no `@` for a fixture with counts.
+- `launch_surface.md` §6.2 lists five tabs.
+- Do a visual review of the Email tab with the `visual-review` skill. Use light mode, compact density,
+  a changed accent, mobile width, and a view beside Seat assignments. The PR carries the screenshots.
+
+**Files.**
+
+- `apps/services/gateway/gateway/routes/email/transport/accounts.py`: the route and the model.
+- `tests/unit/test_email_owner_scope_fence.py`: one entry.
+- A new `tests/unit/test_email_org_connection_counts.py`. It holds the 403 cases, the model
+  fence and an R8 class. Copy the R8 shape of `test_email_accounts_initial_sync_rls.py`. Copy the
+  403 shape of `test_billing_proxy_route.py`, which overrides `get_current_user`.
+- `workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx`: the tab.
+- A new `src/app/settings/organization/EmailTab.tsx`.
+- A new `src/app/settings/organization/lib/emailConnections.ts` and `emailConnections.test.ts`.
+- A new `src/app/settings/organization/emailTab.test.ts`. It draws `EmailTabView` with
+  `renderToStaticMarkup`. Vitest reads `*.test.ts` only, so use `createElement`, not JSX.
+- `project-docs/specs/launch_surface.md` §2 and §6.2.
+- This section, the EM-T3d row of §10.4, and the WS-17 row of the board.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_org_connection_counts.py \
+  tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_accounts_initial_sync_rls.py \
+  tests/unit/test_email_imports.py tests/unit/test_org_access_enforcement.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/settings/organization src/app/email/lib src/lib/theme src/lib/nav.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs ../../project-docs/specs/email_app_master_plan.md \
+  ../../project-docs/specs/launch_surface.md
+```
+
+The R8 class must show PASSED, not SKIPPED.
+
+**Risks.**
+
+- **A read across members.** This is the one email route that reads every mailbox row of an
+  organization. The admin gate, the tenant predicate and FORCE RLS each limit it. The model of
+  integers limits what it returns.
+- **Small numbers.** In a small organization, a count can point at a person. "1 Gmail mailbox" can
+  identify the one member who uses Gmail. D-EM-4 accepts a count, so the tab shows it.
+- **A manager sees it.** The seeded `manager` role holds `admin:members:read`. A manager sees the
+  count, as a manager sees the roster.
+- **A forged approval.** The link is public, and the return writes nothing. The tab never says
+  that the organization approved the app.
+- **A fresh developer database.** It has no `email_accounts.organization_id` until EM-T2a (H-104).
+  The scheduler has the same need. The R8 class runs on the promoted catalog, which has the column.
+- **A removed member.** Their mailbox counts until a purge. The tab says "members connected a
+  mailbox". It does not say "of your members".
+- **Known limit.** The live approval needs a real Microsoft tenant. The owner tests it by hand, as
+  the start of §10.4.3 says.
+
+**As built (2026-10-02).** The handler reads through `_tenant_session()` with the ambient tenant.
+Its SQL also names the organization of the session. When the two disagree, the read finds no row
+and every count is zero. An R8 case holds that rule.
+
+The tab is the last of the five, after Requests. The roster buttons do not show on it. The fences
+are `tests/unit/test_email_org_connection_counts.py` and the fence entry. On the UI side, they are
+`lib/emailConnections.test.ts` and `emailTab.test.ts`. The copy never uses the word "approved",
+and a test refuses it.
+
+#### 10.4.4 EM-T5 in full
+
+**Status.** 🔨 MERGED #569 (shadow, dark) (branch `email-t5`, 2026-10-02).
+The audit ran on 2026-10-02 against `0e2cfa8a`. EM-T5 is CP-13e
+(`customer_console.md` §6A.14). That section keeps the four adoption rules.
+This section is the build contract. Every mode stays `off` on every box, and
+`DECIDE_ENABLED` stays off. The registry is `gateway/decide_features.py`, and
+the fence is `tests/unit/test_email_decide_shadow.py`.
+
+**Gate.** 🟢 AGENT-SAFE: the code, in modes `off` and `shadow`, against a fake
+`decide`. 🔴 OWNER-GATE (`work_plan.md` §6.1 WS-31 (i), H-166): `DECIDE_ENABLED`
+on a box, and any mode other than `off` on a box. The §3a window does not open
+either one.
+
+**Scope.**
+
+1. **The mode registry.** Create `apps/services/gateway/gateway/decide_features.py`.
+   It holds one mode for each feature: `off`, `shadow` or `on`. Every default is `off`.
+   The four features are `email.cold_check`, `email.sender_pin`,
+   `email.thread_status` and `email.rule_pick`.
+2. **The override.** Add `decide_feature_modes` and `decide_feature_orgs` to
+   `acb_common` settings. Both default to an empty string.
+   `decide_feature_modes` reads `feature=mode` pairs, with a comma between pairs.
+   `decide_feature_orgs` lists the organization ids that may run a mode other than `off`.
+   An empty list allows no organization.
+   An unknown feature or an unknown mode resolves to `off` and logs
+   `decide.mode_refused`.
+3. **`on` is refused in EM-T5.** A mode of `on` resolves to `off` and logs
+   `decide.mode_refused`. EM-T5b lifts this with measured thresholds.
+4. **One shadow helper.** The helper lives in `decide_features.py`. It asks the
+   registry for the mode of the feature and the organization from
+   `current_tenant()`. When the mode is `off`, it returns and makes no call.
+5. **Shadow runs beside the old call.** The helper runs `acb_llm.decide` at the
+   same time as the old LLM call, with a 5-second bound. The feature acts on the
+   old answer in every case.
+6. **The identity comes from the run context.** Rename
+   `acb_llm.routed._attribution` to `run_attribution`, and keep the old name as an alias.
+   The helper passes its fields to `decide()`. The helper reads no member from mail or a request.
+7. **The log line.** Each shadow call logs `decide.shadow` with the feature, the
+   account id, the old answer, the new answer, `agree`, the confidence or the
+   probability, the latency in ms, the option count and the `request_id`. It
+   logs no subject, body, sender, reason or rule name.
+8. **The errors.** `DecideUnavailable` logs `decide.fallback` with its reason.
+   In shadow mode, `DecideRequestInvalid` logs `decide.shadow_invalid` at error level with
+   its reason code, and the feature continues on the old answer. A request that
+   is not valid must never stop triage.
+9. **The four sites**, in this order:
+   - `automation/senders.py` `_llm_is_cold`: one boolean question.
+   - `automation/learning.py` `_ai_confirms_sender_pattern`: one boolean question.
+     The log records `agree` at the 0.9 probability threshold.
+   - `automation/replyzero.py` `_llm_determine_thread_status`: one choice
+     question. The options are REPLY, AWAITING_REPLY and DONE. FYI is an option
+     only when the user did not send last. Compare with the final answer after
+     the escalation, and log the old `confident` flag.
+   - `automation/engine.py` `_llm_pick_rule`: one choice question. The options
+     are the enabled instruction rules plus `none`. The option keys are
+     `r0`, `r1` and so on. Log the option count.
+10. **Clip to the Console limits.** Clip each criterion to 1000 characters.
+    Send the same email text that the old call sends. Do not send more.
+
+**Non-goals.**
+
+- No change to `DECIDE_ENABLED`, and no mode other than `off`, on any box.
+- No real mail. Every test uses a fake `decide`.
+- No `on` mode and no confidence gate. EM-T5b builds both after the owner acts.
+- No change to `_llm_pick_rules`. Multi-rule execution stays on the LLM.
+- No table for the shadow results.
+- No second classifier. Every answer that the feature acts on is the old answer.
+- No change to the concurrency cap. EM-T4 wraps the one helper.
+
+**Done when.**
+
+- With every mode `off`, a fake `decide` records zero calls on all four sites.
+- With a mode of `shadow` and an organization that is not on the list, the fake records zero calls.
+- With `shadow` and an organization on the list, each site makes one `decide` call.
+  The site returns the old answer when the two answers disagree.
+- A `DecideUnavailable` from the fake logs `decide.fallback`, and the site returns the old answer.
+- A `DecideRequestInvalid` from the fake logs `decide.shadow_invalid`, and the site returns the old answer.
+- A mode of `on`, or an unknown value, resolves to `off` and logs `decide.mode_refused`.
+- The `decide.shadow` record holds the listed fields. It holds no subject, body or sender.
+- Inside `job_member_scope("owner@acme.com")`, `decide()` gets that member with
+  `member_proven` True. With no scope, it gets no member.
+- The rule question for N enabled rules holds N + 1 options, and `none` is one of them.
+- The thread-status question holds FYI only when the user did not send last.
+- A shadow call that runs past 5 seconds does not delay the old answer by more than 5 seconds.
+- `test_console_dependency_boundary.py` passes unchanged.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_dependency_boundary.py \
+  tests/unit/test_background_ai_member.py \
+  tests/unit/test_email_auto_learn_gate.py \
+  tests/unit/test_email_reply_zero.py \
+  tests/unit/test_email_thread_single_classification.py \
+  tests/unit/test_email_classifier_unavailable.py \
+  tests/unit/test_email_apply_and_watermark.py \
+  tests/unit/test_crm_auto_lead.py \
+  tests/unit/test_email_rules_engine.py -q -rs
+uv run ruff check apps/services/gateway/gateway/decide_features.py \
+  packages/acb_llm/acb_llm/routed.py \
+  packages/acb_common/acb_common/settings.py \
+  tests/unit/test_email_decide_shadow.py
+```
+
+The four files above must show no ruff finding. The `routes/email/automation`
+directory already has findings on `main`. Run ruff on it on the branch and on
+the base, and compare the counts per file and per code. The branch must show
+no new finding in any file.
+
+EM-T5 writes no SQL, so R8 does not apply. If the slice adds SQL, start
+`scripts/dev_db.sh` and confirm that no test skips.
+
+**Recorded risks.**
+
+- **R-1.** Shadow on a box sends tenant mail to two sub-processors. The owner
+  answers this in H-166, and the organization list limits it.
+- **R-2.** Two sites hold a DB session across the LLM call. Shadow adds up to
+  5 seconds inside that session. EM-T4 item 2 removes the session hold.
+- **R-3.** The rule count has no cap. The log records the option count, so
+  EM-T5b can measure accuracy against it.
+- **R-4.** A log rotation can lose the sample. EM-T5b decides whether a table is needed.
+
 #### 10.4.5 EM-T2 in full
 
-**Status.** ✅ EM-T2b MERGED (#565). 🔨 EM-T2a BUILT, not merged (branch `email-t2`). 🔨 EM-T2c BUILT, not merged (branch `email-t2c`). Audited against
+**Status.** ✅ EM-T2a MERGED (#567, migration 223 applied on production 2026-10-02 06:41 UTC). ✅ EM-T2b MERGED (#565). ✅ EM-T2c MERGED (#568). Audited against
 `0e2cfa8a` on 2026-10-02. EM-T2 has three parts, and
 each part is one PR. EM-T2b and EM-T2c do not depend on EM-T2a. EM-T3d waits for EM-T2c.
 
@@ -1138,7 +1398,7 @@ member holds a default mailbox in two organizations, 47 then fails on its old in
 
 ##### EM-T2b — the attachment cache goes through `tenant_redis`
 
-**Status.** BUILT, not merged (2026-10-02, branch `email-t2b`). EM-T2a and EM-T2c are not built.
+**Status.** ✅ MERGED #565 (2026-10-02).
 
 1. Extend the seam. `get_tenant_redis(binary=True)` returns the same wrapper over a second pool
    with `decode_responses=False`. Do not add a second wrapper class. Size the second pool small.
@@ -1230,7 +1490,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** 🟡 EM-T4a-0 is BUILT, not merged (2026-10-02, branch `email-t4`). The other eight parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). 🟡 EM-T4a-0 is BUILT, not merged (branch `email-t4`). The other seven parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1386,6 +1646,19 @@ The R8 tests must show PASSED, not SKIPPED.
 - The commit fence of `test_email_scheduler_tenancy.py` also covers `body_backfill.py` and `email_embeddings.py`.
 
 **Files.** `apps/services/email_ingestion/email_ingestion/scheduler.py`, `body_backfill.py` and `email_embeddings.py`. The test is `tests/unit/test_email_scheduler_tenancy.py`.
+
+**As built (2026-10-02).** `body_backfill.py` has three steps: `select_missing_bodies`,
+`fetch_bodies` and `write_bodies`. `email_embeddings.py` has three steps:
+`select_pending_embeddings`, `compute_embeddings` and `write_embeddings`. The read step of
+phase (f) returns `None` when semantic search is off. `scheduler.py` runs each phase in
+`_backfill_bodies` and `_embed_messages`. `_sync_account` keeps the log line of each failure.
+The old `backfill_missing_bodies` and `embed_pending_messages` are gone, because the scheduler
+was their only caller.
+
+**Fences.** `test_no_session_is_open_during_the_provider_calls` and
+`test_the_sync_steps_take_a_session_and_never_commit`, with its companion
+`test_the_sync_step_fence_is_not_vacuous`. The R8 case is
+`test_phases_e_and_f_write_the_fetched_bodies_into_org_b`.
 
 **Verify with.**
 

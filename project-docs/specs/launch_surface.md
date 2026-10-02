@@ -107,7 +107,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
-| **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** (§6.2) |
+| **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
 **Eleven** entries, four sections, in that order. The set held eight until 2026-08-24,
@@ -291,7 +291,10 @@ primitive*. That distinction is the whole of this section.
 So the directive's first three bullets are mostly *wiring*, and the fourth is a
 real read that does not exist.
 
-### 6.2 The surface: Organisation, four tabs
+### 6.2 The surface: Organisation, five tabs
+
+WS-17 EM-T3d added the fifth tab, **Email**, on 2026-10-02. The correction note below dates
+from the four-tab surface, and it stays as a record.
 
 ⚠️ **Corrected 2026-08-26.** This section said *three* tabs and named three. The shipped surface has **four** — `OrganizationAdmin.tsx`'s own header reads *"Four tabs, one surface"* and the strip renders **Members & roles · Seat assignments · Branding · Requests**. The Requests tab (people who signed in and found no account — `colleague_onboarding.md` §6) landed with LS-6 and was never written back here, which is R4's failure mode exactly: the spec that calls itself the authority describing three quarters of what exists.
 
@@ -309,6 +312,9 @@ tabs:
    point: an admin is supposed to learn that a colleague is locked out without
    being told. Until it existed this screen only showed people an admin had
    already thought of.
+5. **Email** — the Microsoft 365 pre-approval link, and seven counts of the
+   connected mailboxes. An admin sees the counts and never the mail (D-EM-4).
+   `email_app_master_plan.md` §10.4.3, subsection EM-T3d, owns this tab.
 
 **Unassigned is a first-class state, not an absence.** A member whose seat was
 released stays on the roster, stays `active`, and shows as *Unassigned* with an

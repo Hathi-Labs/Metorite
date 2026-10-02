@@ -1,6 +1,6 @@
 """The embedding sweep's content_hash must match its SQL candidate predicate.
 
-``embed_pending_messages`` selects "messages needing an embedding" in SQL by
+``select_pending_embeddings`` selects "messages needing an embedding" in SQL by
 comparing the stored ``content_hash`` against a hash Postgres recomputes from
 ``coalesce(subject,'') || E'\\n\\n' || coalesce(body,'')``. The Python side must
 store the sha256 of the *byte-identical* string, or every message with (say) a

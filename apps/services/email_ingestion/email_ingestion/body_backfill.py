@@ -8,12 +8,24 @@ hasn't opened. For "reliably search ALL emails" that's a real recall hole:
 a year of unopened Outlook mail is invisible to body search.
 
 This module drains that backlog in the background. After each account's normal
-sync tick, ``backfill_missing_bodies`` fetches a BOUNDED batch of the account's
-empty-body messages (oldest first) via the already-authenticated provider and
-persists their body + snippet. Bounded per tick so it never stalls a sync cycle;
-over successive ticks the backlog empties. The partial index
-``idx_email_messages_missing_body`` (migration 72) keeps the candidate scan cheap
-even on large mailboxes.
+sync tick, phase (e) of the scheduler takes a BOUNDED batch of the account's
+empty-body messages (newest first), fetches each body via the
+already-authenticated provider, and persists the body + snippet. Bounded per
+tick so it never stalls a sync cycle; over successive ticks the backlog empties.
+The partial index ``idx_email_messages_missing_body`` (migration 72) keeps the
+candidate scan cheap even on large mailboxes.
+
+Three steps, so no session stays open across the provider calls (WS-17
+EM-T4a-1, ``email_app_master_plan.md`` §10.4.6):
+
+1. ``select_missing_bodies`` reads the candidates. It takes a session.
+2. ``fetch_bodies`` calls the provider. It takes NO session.
+3. ``write_bodies`` writes the bodies. It takes a session.
+
+The read and write steps open no session and never commit. The scheduler opens
+one ``tenant_session(org)`` for each, and the seam commits when the block exits.
+A ``commit()`` here would end ``SET LOCAL``. R7:
+``tests/unit/test_email_scheduler_tenancy.py``.
 
 Idempotent and self-limiting: once a message has a body it no longer matches the
 candidate query, so it's touched exactly once.
@@ -24,6 +36,8 @@ from __future__ import annotations
 import html as _html
 import logging
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import text
@@ -72,14 +86,32 @@ def _truncate(value: str | None, max_bytes: int) -> str | None:
     return encoded[:cut].decode("utf-8", errors="replace") + marker.decode()
 
 
-async def backfill_missing_bodies(
-    db: Any, account_id: str, provider: Any, *, batch: int = DEFAULT_BATCH,
-) -> int:
-    """Fetch + persist bodies for up to ``batch`` empty-body messages of one
-    account, using an already-authenticated ``provider``. Returns how many were
-    hydrated. Best-effort: a per-message provider error is logged and skipped so
-    one bad message never stalls the batch. Caller owns the session; this commits
-    its own writes so progress survives even if a later message fails."""
+@dataclass(frozen=True)
+class BodyCandidate:
+    """One message with an empty body, as the read step found it."""
+
+    id: str
+    provider_message_id: str
+
+
+@dataclass(frozen=True)
+class FetchedBody:
+    """The body of one message, ready for the write step."""
+
+    id: str
+    body_text: str
+    body_html: str | None
+    snippet: str
+    has_attachments: bool | None
+
+
+async def select_missing_bodies(
+    db: Any, account_id: str, *, batch: int = DEFAULT_BATCH,
+) -> list[BodyCandidate]:
+    """The read step: up to ``batch`` empty-body messages of one account.
+
+    Takes the caller's session, opens none and never commits. The candidates
+    are plain values, so they outlive the block that read them."""
     rows = (await db.execute(text(
         """SELECT id, provider_message_id
              FROM email_messages
@@ -90,14 +122,24 @@ async def backfill_missing_bodies(
             LIMIT :lim"""),
         {"aid": account_id, "lim": batch},
     )).fetchall()
-    if not rows:
-        return 0
+    return [BodyCandidate(id=str(r.id), provider_message_id=r.provider_message_id)
+            for r in rows]
 
-    hydrated = 0
-    for r in rows:
+
+async def fetch_bodies(
+    provider: Any, account_id: str, candidates: Sequence[BodyCandidate],
+) -> list[FetchedBody]:
+    """The fetch step: get each body from an already-authenticated provider.
+
+    Takes NO session. The caller holds none open across these provider calls
+    (EM-T4a-1). Best-effort: a per-message provider error is logged and
+    skipped, so one bad message never stalls the batch and the bodies of the
+    others still reach the write step."""
+    fetched: list[FetchedBody] = []
+    for r in candidates:
         try:
             full = await provider.get_message(r.provider_message_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("body_backfill.fetch_failed account=%s msg=%s err=%s",
                          account_id, r.provider_message_id, str(exc)[:120])
             continue
@@ -121,19 +163,31 @@ async def backfill_missing_bodies(
             # candidate query stops re-selecting this row.
             body_text = " "
         snippet = (getattr(full, "snippet", "") or body_text or "")[:200]
+        fetched.append(FetchedBody(
+            id=r.id, body_text=body_text, body_html=body_html, snippet=snippet,
+            has_attachments=getattr(full, "has_attachments", None)))
+    return fetched
+
+
+async def write_bodies(
+    db: Any, account_id: str, fetched: Sequence[FetchedBody],
+) -> int:
+    """The write step: persist each fetched body. Returns how many it wrote.
+
+    Takes the caller's session, opens none and never commits. The seam
+    commits when the caller's ``tenant_session`` block exits, so each UPDATE
+    runs under the tenant binding."""
+    for b in fetched:
         await db.execute(text(
             """UPDATE email_messages
                   SET body_text = :bt, body_html = :bh, snippet = :sn,
                       has_attachments = COALESCE(:ha, has_attachments),
                       updated_at = now()
                 WHERE id = :id"""),
-            {"id": str(r.id), "bt": body_text, "bh": body_html, "sn": snippet,
-             "ha": getattr(full, "has_attachments", None)},
+            {"id": b.id, "bt": b.body_text, "bh": b.body_html,
+             "sn": b.snippet, "ha": b.has_attachments},
         )
-        hydrated += 1
-
-    if hydrated:
-        await db.commit()
+    if fetched:
         logger.info("body_backfill.done account=%s hydrated=%d", account_id,
-                    hydrated)
-    return hydrated
+                    len(fetched))
+    return len(fetched)

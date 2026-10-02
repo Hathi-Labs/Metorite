@@ -43,7 +43,7 @@ from typing import Any
 
 from acb_common import get_logger
 
-__all__ = ["RoutedRefusal", "completion_on_router", "routing_is_on"]
+__all__ = ["RoutedRefusal", "completion_on_router", "routing_is_on", "run_attribution"]
 
 _log = get_logger("acb_llm.routed")
 
@@ -111,8 +111,12 @@ def routing_is_on() -> bool:
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
 
 
-def _attribution() -> dict[str, Any]:
+def run_attribution() -> dict[str, Any]:
     """Who to bill and what to blame, from the ambient run context.
+
+    Public since WS-17 EM-T5 (CP-13e). The email shadow helper in
+    ``gateway/decide_features.py`` passes these fields to ``acb_llm.decide``.
+    ``_attribution`` stays as an alias for older callers.
 
     ⚠️ ``user`` is the run context's name for the member, and ``app`` for the
     app. The two vocabularies meet here and nowhere else, so the mapping is
@@ -148,6 +152,10 @@ def _attribution() -> dict[str, Any]:
         "module_slug": ctx.get("app") or ctx.get("source") or None,
         "run_id": ctx.get("run_id") or None,
     }
+
+
+#: The old private name. Kept so an older import does not break.
+_attribution = run_attribution
 
 
 def router_tier(tier: str) -> str:
@@ -204,7 +212,7 @@ async def completion_on_router(
     """
     from acb_auth.console_resolve import chat_completion_on_console
 
-    attribution = _attribution()
+    attribution = run_attribution()
     # An explicit `source` beats the inferred one: Custom Apps all run through
     # one module, so only the caller knows which app it is.
     if source:

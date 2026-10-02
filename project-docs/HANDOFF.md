@@ -136,6 +136,32 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-152 · `specs/customer_console.md` §6A · PR #507 · PR #511
 - **Added:** 2026-09-28 · the deployment-key switch session
 
+### H-208 · Keep a copy of `ACB_MASTER_KEY` off the box · [OWNER]
+- **Check:** ask the owner whether the password manager holds the current
+  `ACB_MASTER_KEY` of `/opt/acb/app/.env`. If it does not, this is open.
+- **Why.** On 2026-10-02 the first Outlook connect failed with
+  `callback_failed_500`, because the box had no `ACB_MASTER_KEY`. An agent
+  generated the key on the box, so the value never entered a transcript. The
+  key encrypts each stored mailbox token. If the key is lost, every member must
+  connect the mailbox again.
+- **Do.** Copy the value from the box into the password manager. Do not paste
+  it into a chat.
+- **Authority:** `specs/email_app_master_plan.md` §10 · `acb_llm/key_store.py`
+- **Added:** 2026-10-02 · the Outlook onboarding session
+
+### H-209 · The two migration-order tests of 223 skip in CI · [AGENT]
+- **Check:** in the log of a `pr-check.yml` unit-test job, find
+  `test_email_account_unique_per_tenant.py::TestTheProductionOrder` and
+  `TestTheFreshLadderOrder`. If they show SKIPPED, this is open.
+- **Why.** CI did not prove migration 223 in the production order or on a fresh
+  ladder (run 36974344368). They passed on a local real database, and the box
+  showed the right indexes after the deploy. A later migration of the same
+  shape would ship with no CI proof.
+- **Do.** Find the condition that skips the two classes in CI, and make CI meet
+  it. Do not weaken the tests.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.5 (EM-T2a) · R8
+- **Added:** 2026-10-02 · the Outlook onboarding session
+
 ### H-207 · 🔴 Rotate the Microsoft app secret that reached a chat transcript · [OWNER]
 - **Check:** in Entra, open the app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` →
   Certificates & secrets. If a secret whose value ends `…scaAH` still exists,
@@ -500,6 +526,8 @@ line — never reclaim a number by deleting the other entry.
   writes one (H-36). A reseller call passes through both.
 - **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
   `work_plan.md` §6.1 WS-31 (i)
+- **2026-10-02.** A mode other than `off` in `DECIDE_FEATURE_MODES` is this gate too.
+  It waits for EM-T4 item 3, the shared LLM cap (`email_app_master_plan.md` §10.4.4).
 - **Added:** 2026-09-23 · the Jev planning session
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
