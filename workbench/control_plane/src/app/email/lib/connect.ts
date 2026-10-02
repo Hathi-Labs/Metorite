@@ -331,8 +331,6 @@ export function adminConsentMailto(link: string): string {
     "",
     "One approval covers everyone in our organization. Metorite asks for permission to read, send and organize the mail of each member who connects.",
     "",
-    "After you approve, Microsoft may show a Metorite page that says the connection did not finish. The approval still counts, and you can close that page.",
-    "",
     "Thank you.",
   ].join("\n");
   // encodeURIComponent, not URLSearchParams: a mail client reads `+` as a

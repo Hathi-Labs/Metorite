@@ -13,7 +13,8 @@
  *   admin approve new apps. The page offers a prefilled email to the admin
  *   and a copy of the admin-consent link. The client ID in that link comes
  *   from the gateway (`GET /email/oauth/microsoft/app`), never from a
- *   constant here.
+ *   constant here. A member who is the admin opens the link here with
+ *   "I am the admin" (EM-T3c), and Microsoft returns to `/oauth/approved`.
  * - `consent_declined`: the member said no. A friendly retry.
  *
  * ⚠️ No link on this page goes to Integrations. A member has nothing to
@@ -153,6 +154,14 @@ function AdminConsentSteps() {
           {copied ? "Link copied" : "Copy approval link"}
         </Button>
       </div>
+      {/* EM-T3c: a member who is also the IT admin approves here, in the
+          same tab. Microsoft then returns to `/oauth/approved`. */}
+      <p className="text-center text-xs text-muted-foreground">
+        <a href={link} className="text-primary font-medium hover:opacity-80">
+          I am the admin
+        </a>
+        {": approve Metorite for the company now."}
+      </p>
       <p
         className="select-all break-all rounded-md border border-border bg-secondary/50 px-2.5 py-2 font-mono text-[10px] text-muted-foreground"
         aria-label="Approval link"

@@ -55,8 +55,12 @@ import { CENTERS } from "@/lib/centers";
  * Deliberately NOT the same thing as "public": `/signup` requires a session
  * (its page redirects without one). Chrome is a statement about belonging to
  * an organization's workspace; onboarding is the state of not yet belonging.
+ *
+ * `/oauth/approved` (WS-17 EM-T3c) is the landing page of an IT admin who
+ * approved Metorite in Microsoft. That admin has no session and may never
+ * join, so the page carries no chrome. It is public in `proxy.ts` as well.
  */
-export const CHROMELESS_ROUTES: readonly string[] = ["/signin", "/signup"];
+export const CHROMELESS_ROUTES: readonly string[] = ["/signin", "/signup", "/oauth/approved"];
 
 export function isChromeless(pathname: string): boolean {
   return CHROMELESS_ROUTES.some(
