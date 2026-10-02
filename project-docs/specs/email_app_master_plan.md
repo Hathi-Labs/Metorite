@@ -1306,6 +1306,13 @@ Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and 
 
 **Build notes.** Three helpers lost their commit: `_mark_history_held_back`, `_maybe_refresh_learned_style` and `_project_thread_status_for_backfill`. `_store_ai_draft` and `_maybe_refresh_learned_style` swallow their own failure, so each now runs in `_savepoint`. `_learn_from_sent` uses two blocks, not three. Block B holds the pattern rows, Mem0 and the style refresh, so the commit count of `test_email_learning.py` stays at 2. An early return inside a block now commits that block. For the jobs that use `provider_session`, the only write that this adds is the rotated credentials.
 
+**Two fixes beyond the scope (2026-10-02).** `process_past_emails` passed `not req.is_test` as the
+`dry_run` of the job since f1a13861. So every apply from the UI ran as a preview, and a preview
+applied. It now passes `req.is_test`. After this merge, "Process past emails" moves and labels real
+mail for the first time. The route also refuses a second run on a mailbox while one runs, as
+reclassify and the cleanup sweep do. Fences: `test_the_job_gets_dry_run_equal_to_is_test` and
+`test_a_second_run_on_one_mailbox_is_refused` in `test_email_process_past_progress.py`.
+
 **Why first.** Email is live in the nav since #564. The 12 request jobs below open `_get_db()`,
 which binds no tenant. Under FORCE RLS each one reads zero rows. So compose assist answers
 "Account not found", and Process past emails, reclassify, the voice profile, learn-from-sent and

@@ -914,6 +914,11 @@ async def process_past_emails(
     only_unread = not req.include_read
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        # One run per mailbox. The job reads its rows once, so a second run over
+        # the same range would classify, apply and draft each message twice. The
+        # sibling jobs refuse the same way (reclassify, the cleanup sweep).
+        if _PAST_JOBS.is_running(req.account_id):
+            return {"scheduled": False, "already_running": True}
         # Best-effort pre-count of what's ALREADY synced locally — just a hint for
         # the caller. The job downloads the range from upstream first, so the real
         # total is recomputed there (the picker can reach past what's been synced).

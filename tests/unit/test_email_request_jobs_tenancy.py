@@ -571,6 +571,7 @@ class TestTheRequestJobsWriteTheirOwnTenant:
             ("FYI", p.org_b)] * 2, statuses
         _isolated(p, "email_executed_rules", acc, expect_b=2)
         _isolated(p, "email_thread_status", acc, expect_b=2)
+        _isolated(p, "email_messages", acc, expect_b=2)
 
     async def test_backfill_holds_history_back_in_b(
         self, promoted, app_engine, monkeypatch,  # noqa: F811

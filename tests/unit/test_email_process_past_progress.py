@@ -159,6 +159,30 @@ async def test_the_job_gets_dry_run_equal_to_is_test(is_test: bool) -> None:
     assert bound.arguments["dry_run"] is is_test
 
 
+async def test_a_second_run_on_one_mailbox_is_refused() -> None:
+    """The job reads its rows once, so a second run over the same mailbox
+    would classify, apply and draft each overlapping message twice. While a
+    run is going, the route schedules nothing and says so."""
+    db = AsyncMock()
+    result = MagicMock()
+    result.fetchone.return_value = SimpleNamespace(c=4)
+    db.execute.return_value = result
+    user = SimpleNamespace(email="u@example.com")
+    req = m.RuleProcessPastRequest(
+        account_id="acc-1", start_date="2026-01-01", end_date="2026-01-31",
+        is_test=False, include_read=True)
+    with patch.object(runner, "_tenant_session", bind_db(db)), \
+            patch.object(runner, "_assert_account_owner", AsyncMock()):
+        first_bg = BackgroundTasks()
+        first = await m.process_past_emails(req, background=first_bg, user=user)
+        second_bg = BackgroundTasks()
+        second = await m.process_past_emails(req, background=second_bg, user=user)
+
+    assert first["scheduled"] is True and len(first_bg.tasks) == 1
+    assert second == {"scheduled": False, "already_running": True}
+    assert second_bg.tasks == [], "a second run was scheduled while one runs"
+
+
 async def test_handler_schedules_download_even_when_nothing_local() -> None:
     # Historical apply over a range must DOWNLOAD that range from upstream first,
     # so it schedules even when nothing is synced locally yet (count == 0). The
