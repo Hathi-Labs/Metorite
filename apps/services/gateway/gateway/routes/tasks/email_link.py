@@ -54,8 +54,10 @@ async def _closer_owns_mailbox(db: Any, account_id: str, closer_email: str) -> b
     """True when ``closer_email`` owns the mailbox ``account_id``.
 
     The comparison ignores case, because the closer's email reaches this module
-    lowercased (``complete_for_member`` lowers it) while ``email_accounts.user_id``
-    keeps the case the provider returned."""
+    lowercased (the callers of ``complete_for_member`` lower it) while
+    ``email_accounts.user_id`` keeps the case of the session address that
+    connected the mailbox. ``app_user`` is unique on ``lower(email)``
+    (migration 162), so ignoring case cannot match a second member."""
     if not closer_email:
         return False
     row = (await db.execute(text(

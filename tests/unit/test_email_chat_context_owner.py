@@ -296,19 +296,25 @@ class TestTheTaskCloseWritesOnlyAnOwnedMailbox:
             "kind": "email", "account_id": acc_a, "thread_id": thread})
         app_dsn = p.app_url.render_as_string(hide_password=False)
         try:
-            async with tenant_engine_scope(app_dsn),                     common_db.tenant_session(p.org_b) as db:
+            async with (
+                tenant_engine_scope(app_dsn),
+                common_db.tenant_session(p.org_b) as db,
+            ):
                 await email_link.propagate_task_done_to_thread(
                     db, task, closer_email=member_b)
             assert _thread_status(p.admin_engine, acc_a, thread) == "NEEDS_REPLY", (
                 "a member closed a task and wrote the thread status of a "
-                "mailbox she does not own"
+                "mailbox they do not own"
             )
             assert reconciles == [], (
                 "a non-owner close reconciled the labels of another mailbox"
             )
 
             # The positive control: the owner's close marks it DONE.
-            async with tenant_engine_scope(app_dsn),                     common_db.tenant_session(p.org_b) as db:
+            async with (
+                tenant_engine_scope(app_dsn),
+                common_db.tenant_session(p.org_b) as db,
+            ):
                 await email_link.propagate_task_done_to_thread(
                     db, task, closer_email=member_a.upper())
             assert _thread_status(p.admin_engine, acc_a, thread) == "DONE"
