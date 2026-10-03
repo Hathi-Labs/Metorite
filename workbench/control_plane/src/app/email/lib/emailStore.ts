@@ -809,6 +809,30 @@ export function scopeBusy(state: {
   return ids.some((id) => state.syncStatus[id] === "syncing" || state.syncStatus[id] === "processing");
 }
 
+/**
+ * The checked ids that are rows of the list on screen, in the order of the
+ * list. Each bulk act and each "N selected" count reads this, never the raw
+ * `selectedIds`. A check whose row left the list can then never reach a mail,
+ * for example a mail of a mailbox kept separate (EM-T8g-2 review round 2).
+ */
+export function checkedRows(state: {
+  emails: ReadonlyArray<{ id: string }>;
+  selectedIds: ReadonlySet<string>;
+}): string[] {
+  return state.emails.filter((e) => state.selectedIds.has(e.id)).map((e) => e.id);
+}
+
+/** The checks that keep a row in `emails`, or null when each one does. A list
+ *  read that lands calls it, so a check never outlives its row. */
+function prunedChecks(
+  selectedIds: ReadonlySet<string>,
+  emails: ReadonlyArray<{ id: string }>,
+): Set<string> | null {
+  const rows = new Set(emails.map((e) => e.id));
+  const kept = [...selectedIds].filter((id) => rows.has(id));
+  return kept.length === selectedIds.size ? null : new Set(kept);
+}
+
 /** The `account_id` of a list, search or facet read: none in All inboxes. */
 export function listScope(state: { viewAll: boolean; selectedAccountId: string | null }): string | undefined {
   return state.viewAll ? undefined : state.selectedAccountId || undefined;
@@ -902,12 +926,17 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           get().fetchLabels(initial.accountId);
           void get().fetchAllFolderCounts();
         }
-      } else if (selectedAccountId && accounts.length > 0 &&
+      } else if (!get().viewAll && selectedAccountId && accounts.length > 0 &&
                  !accounts.some((a) => a.id === selectedAccountId)) {
-        // Another tab removed the selected mailbox: pick the view again, so the
-        // list never reads a mailbox that is gone.
-        const again = pickInitialView(accounts, get().viewAll ? ALL_INBOXES : null);
-        set({ selectedAccountId: again.accountId, viewAll: again.viewAll });
+        // Another tab removed the mailbox in view: pick the view again, so the
+        // list never reads a mailbox that is gone. Its open mail and its
+        // checks go with it (EM-T8g-2 review round 2).
+        get().applyPoolChange(beforeAccounts);
+        const again = pickInitialView(accounts, null);
+        set({
+          selectedAccountId: again.accountId, viewAll: again.viewAll,
+          selectedEmailId: null, selectedEmailOverride: null, selectedIds: new Set(),
+        });
         persistAccountId(again.viewAll ? ALL_INBOXES : again.accountId);
         if (again.accountId) {
           get().fetchFolders(again.accountId);
@@ -918,8 +947,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       } else {
         // Another tab removed a mailbox, kept one separate, or put one back.
         // Its rows leave All inboxes now, not at the next refresh (EM-T8d
-        // review F8). The one reconciliation decides (EM-T8g-2 review F7).
+        // review F8). The one reconciliation decides, also when the hidden
+        // mailbox of All inboxes went (EM-T8g-2 review F7, round 2).
         get().applyPoolChange(beforeAccounts);
+        if (get().viewAll) persistAccountId(ALL_INBOXES);
       }
     } catch (err: any) {
       // Demo fallback: backend unreachable → seed mock accounts so the UI works.
@@ -1077,6 +1108,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // In All inboxes the rows come from each mailbox, and a label belongs to
       // one mailbox, so the rows seed nothing (EM-T8d review F6).
       if (!get().viewAll) for (const e of emails) for (const c of e.categories || []) labelSet.add(c);
+      // A check never outlives its row (EM-T8g-2 review round 2).
+      const checks = prunedChecks(get().selectedIds, emails);
       set({
         emails,
         folders,
@@ -1085,6 +1118,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         emailsTotal: total,
         emailsPage: 1,
         searchIsSemantic,
+        ...(checks ? { selectedIds: checks } : {}),
       });
     } catch (err: any) {
       // A newer read owns the list, its spinner and its error.
@@ -1161,10 +1195,13 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (result.emails.length === 0 && DEMO) return;
       const labelSet = new Set(now.availableLabels);
       if (!now.viewAll) for (const e of result.emails) for (const c of e.categories || []) labelSet.add(c);
+      // A check never outlives its row (EM-T8g-2 review round 2).
+      const checks = prunedChecks(now.selectedIds, result.emails);
       set({
         emails: result.emails,
         emailsTotal: result.total,
         availableLabels: [...labelSet].sort(),
+        ...(checks ? { selectedIds: checks } : {}),
       });
     } catch {
       /* silent — a failed background refresh shouldn't surface an error */
@@ -1445,13 +1482,16 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   clearEmailSelection: () => set({ selectedIds: new Set() }),
 
   bulkUpdateSelected: (updates) => {
-    const ids = [...get().selectedIds];
+    // Only the checked rows of the list on screen (EM-T8g-2 review round 2).
+    const ids = checkedRows(get());
     ids.forEach((id) => get().updateEmail(id, updates));
     set({ selectedIds: new Set() });
   },
 
   bulkDeleteSelected: () => {
-    const ids = [...get().selectedIds];
+    // Only the checked rows of the list on screen. A stale check of a mailbox
+    // kept separate must never delete its mail (EM-T8g-2 review round 2).
+    const ids = checkedRows(get());
     ids.forEach((id) => get().deleteEmail(id));
     set({ selectedIds: new Set() });
   },
@@ -1965,8 +2005,13 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  replaceAccount: (account) =>
-    set({ accounts: get().accounts.map((a) => (a.id === account.id ? account : a)) }),
+  replaceAccount: (account) => {
+    const before = get().accounts;
+    set({ accounts: before.map((a) => (a.id === account.id ? account : a)) });
+    // A copy from the server can carry another flag of the pool, so the one
+    // reconciliation runs here too (EM-T8g-2 review round 2).
+    get().applyPoolChange(before);
+  },
 
   setInAllInboxes: async (id, pooled) => {
     let saved: EmailAccount;
@@ -2010,7 +2055,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (home) {
         get().selectAccount(home);
       } else {
-        set({ viewAll: false });
+        // No mailbox is left. Nothing of the old list may stay, or act.
+        set({
+          viewAll: false, emails: [], emailsTotal: 0, selectedIds: new Set(),
+          selectedEmailId: null, selectedEmailOverride: null,
+        });
         persistAccountId(null);
       }
       return;
@@ -2019,14 +2068,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     if (!changed && hiddenPooled) return;
     if (out.length > 0) {
       // The rows, the checks and the open mail of a mailbox that left go at
-      // once. A check that stays would let a bulk act reach a hidden mail
-      // (review F3).
-      const leaving = new Set(
-        st.emails.filter((e) => out.includes(e.accountId ?? "")).map((e) => e.id));
+      // once. Only a check of a row that stays survives, so a check whose
+      // row left the list before cannot reach a hidden mail either (review
+      // F3, round 2).
+      const emails = st.emails.filter((e) => !out.includes(e.accountId ?? ""));
       const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
       set({
-        emails: st.emails.filter((e) => !leaving.has(e.id)),
-        selectedIds: new Set([...st.selectedIds].filter((x) => !leaving.has(x))),
+        emails,
+        selectedIds: prunedChecks(st.selectedIds, emails) ?? st.selectedIds,
         ...(open && out.includes(open.accountId ?? "")
           ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
       });

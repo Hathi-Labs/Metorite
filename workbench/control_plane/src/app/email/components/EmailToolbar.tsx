@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
-import { useEmailStore, isRealFolder, foldersInScope } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope, checkedRows } from "../lib/emailStore";
 import { LabelMenu } from "./LabelMenu";
 
 /**
@@ -35,11 +35,14 @@ export function EmailToolbar() {
   const [showMore, setShowMore] = useState(false);
 
   // ── Bulk mode: checkbox multi-selection ──
-  if (selectedIds.size > 0) {
+  // The count is the checked rows of the list on screen, the ids that a bulk
+  // act reaches (EM-T8g-2 review round 2).
+  const checkedCount = checkedRows({ emails, selectedIds }).length;
+  if (checkedCount > 0) {
     return (
       <div className="flex items-center gap-1 px-3 py-2.5 border-b border-border flex-shrink-0 bg-primary/10 overflow-x-auto scrollbar-hide">
         <span className="text-xs font-medium text-foreground px-1">
-          {selectedIds.size} selected
+          {checkedCount} selected
         </span>
         <div className="flex-1" />
         <TBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdateSelected({ isRead: true })} />

@@ -991,6 +991,153 @@ describe("email-separate-leaves-at-once, review round 1", () => {
   });
 });
 
+// ── WS-17 EM-T8g-2 review round 2 ──────────────────────────────────────────
+//   * F3, the class: a check never outlives its row, and a bulk act reaches
+//     only the checked rows of the list on screen.
+//   * P3: a re-read that removes the hidden mailbox, and `replaceAccount`,
+//     reconcile the pool too.
+//   * The three mutants that survived round 1: the end of All inboxes goes to
+//     the default, an open mail held as an override goes too, and with no
+//     mailbox left All inboxes ends.
+describe("email-separate-leaves-at-once, review round 2", () => {
+  const row = (id: string) => ({
+    id, accountId: id.split("-")[0], threadId: id, categories: [], folder: "inbox", isRead: true,
+  });
+  const sep = (id: string, isDefault = false): EmailAccount => ({ ...box(id, isDefault), inAllInboxes: false });
+  const real = { deleteEmail: useEmailStore.getState().deleteEmail, updateEmail: useEmailStore.getState().updateEmail };
+  const deleted = vi.fn();
+  const updated = vi.fn();
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    deleted.mockReset();
+    updated.mockReset();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([]);
+    api.setMailboxPooled.mockImplementation(async (id: string, pooled: boolean) =>
+      ({ ...box(id), inAllInboxes: pooled }));
+    // The acts on one mail are spies, so a test sees which ids a bulk act sends.
+    useEmailStore.setState({
+      accounts: [box("a", true), box("b"), box("c")],
+      deleteEmail: deleted as never,
+      updateEmail: updated as never,
+      selectedEmailId: null,
+      selectedEmailOverride: null,
+      selectedIds: new Set(),
+      allFolderCounts: null,
+      emailsPage: 1,
+      emailsLoading: false,
+      error: null,
+    });
+  });
+  afterEach(async () => {
+    await flush();
+    await flush();
+    useEmailStore.setState(real);
+  });
+
+  it("F3 probe: check c-9, a refresh drops it, keep c separate, Delete: only a-1 goes", async () => {
+    useEmailStore.setState({ emails: [row("a-1"), row("c-9")] as never, selectedIds: new Set(["a-1", "c-9"]) });
+    api.listEmails.mockResolvedValueOnce(page(["a-1"])).mockReturnValue(new Promise(() => {}));
+    await useEmailStore.getState().softRefresh();
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    useEmailStore.getState().bulkDeleteSelected();
+    expect(deleted.mock.calls.map((c) => c[0])).toEqual(["a-1"]);
+  });
+
+  it("F3 (c): a background refresh that drops a checked row drops its check", async () => {
+    useEmailStore.setState({ emails: [row("a-1"), row("c-9")] as never, selectedIds: new Set(["a-1", "c-9"]) });
+    api.listEmails.mockResolvedValueOnce(page(["a-1"]));
+    await useEmailStore.getState().softRefresh();
+    expect([...useEmailStore.getState().selectedIds]).toEqual(["a-1"]);
+  });
+
+  it("F3 (c): a list read that drops a checked row drops its check", async () => {
+    useEmailStore.setState({ emails: [row("a-1"), row("c-9")] as never, selectedIds: new Set(["a-1", "c-9"]) });
+    api.listEmails.mockResolvedValueOnce(page(["a-1"]));
+    await useEmailStore.getState().fetchEmails();
+    expect([...useEmailStore.getState().selectedIds]).toEqual(["a-1"]);
+  });
+
+  it("F3 (b): a bulk act with a stale check reaches only the rows on screen", () => {
+    useEmailStore.setState({ emails: [row("a-1")] as never, selectedIds: new Set(["a-1", "c-9"]) });
+    useEmailStore.getState().bulkUpdateSelected({ isRead: true });
+    expect(updated.mock.calls.map((c) => c[0])).toEqual(["a-1"]);
+    useEmailStore.setState({ selectedIds: new Set(["a-1", "c-9"]) });
+    useEmailStore.getState().bulkDeleteSelected();
+    expect(deleted.mock.calls.map((c) => c[0])).toEqual(["a-1"]);
+  });
+
+  it("F3 (a): a toggle keeps only the checks of the rows that stay", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    // c-9 left the list earlier, and its check stayed.
+    useEmailStore.setState({ emails: [row("a-1"), row("b-1")] as never, selectedIds: new Set(["a-1", "c-9"]) });
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    expect([...useEmailStore.getState().selectedIds]).toEqual(["a-1"]);
+  });
+
+  it("P3: a re-read that removes the hidden mailbox and keeps c separate drops the checks", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      selectedAccountId: "a", viewAll: true,
+      emails: [row("a-1"), row("c-1")] as never, selectedIds: new Set(["c-1"]),
+    });
+    api.listEmailAccounts.mockResolvedValue([box("b", true), sep("c")]);
+    await useEmailStore.getState().fetchAccounts();
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId, [...s.selectedIds]]).toEqual([false, "b", []]);
+    s.bulkDeleteSelected();
+    expect(deleted).not.toHaveBeenCalled();
+  });
+
+  it("P3: a re-read that removes the mailbox in view drops its checks and its open mail", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      accounts: [box("a", true), box("b")], selectedAccountId: "a", viewAll: false,
+      emails: [row("a-1")] as never, selectedIds: new Set(["a-1"]), selectedEmailId: "a-1",
+    });
+    api.listEmailAccounts.mockResolvedValue([box("b", true)]);
+    await useEmailStore.getState().fetchAccounts();
+    const s = useEmailStore.getState();
+    expect([s.selectedAccountId, [...s.selectedIds], s.selectedEmailId]).toEqual(["b", [], null]);
+  });
+
+  it("P3: replaceAccount reconciles the pool", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({ emails: [row("a-1"), row("c-1")] as never, selectedIds: new Set(["a-1", "c-1"]) });
+    useEmailStore.getState().replaceAccount(sep("c"));
+    const s = useEmailStore.getState();
+    expect([s.emails.map((e) => e.id), [...s.selectedIds], s.viewAll]).toEqual([["a-1"], ["a-1"], true]);
+  });
+
+  it("V-F5b: a toggle that ends All inboxes goes to the default, also a separate one", async () => {
+    useEmailStore.setState({ accounts: [sep("c", true), box("a"), box("b")], selectedAccountId: "a", viewAll: true });
+    await useEmailStore.getState().setInAllInboxes("b", false);
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([false, "c"]);
+  });
+
+  it("V-F3c: the open mail of a mailbox that left goes, also when it is not a row", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      emails: [row("a-1")] as never,
+      selectedEmailId: "c-9",
+      selectedEmailOverride: row("c-9") as never,
+    });
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    const s = useEmailStore.getState();
+    expect([s.selectedEmailId, s.selectedEmailOverride]).toEqual([null, null]);
+  });
+
+  it("V-ALL0: with no mailbox left, All inboxes ends and nothing of the list stays", async () => {
+    useEmailStore.setState({ emails: [row("a-1")] as never, selectedIds: new Set(["a-1"]), selectedAccountId: "a" });
+    api.listEmailAccounts.mockResolvedValue([]);
+    await useEmailStore.getState().fetchAccounts();
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.emails.length, s.selectedIds.size]).toEqual([false, 0, 0]);
+  });
+});
+
 describe("email-all-skips-separate, the store half", () => {
   const raw = (name: string, count: number) => ({
     provider_folder_id: name, name, type: "system", message_count: count, unread_count: 0,

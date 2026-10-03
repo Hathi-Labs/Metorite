@@ -50,6 +50,7 @@ import {
   ALL_INBOXES,
   SUMMED_FOLDERS,
   allInboxesFolders,
+  checkedRows,
   listScope,
   pickInitialView,
   scopeBusy,
@@ -73,6 +74,45 @@ const read = (rel: string) =>
   readFileSync(join(ROOT, rel), "utf-8").replace(/\r\n/g, "\n");
 const codeOnly = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+/**
+ * The source with its comments removed and each string kept (EM-T8g-2 review
+ * round 2). `codeOnly` cuts a line at a `//` inside a string, so it can hide a
+ * read after it. This walks the text, skips each string literal whole, and
+ * drops only a real comment. A regex literal is not parsed. A misread one
+ * keeps more text, so the scan fails closed.
+ */
+function stripComments(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) {
+        if (src[j] === "\\") j++;
+        else if (c !== "`" && src[j] === "\n") break;
+        j++;
+      }
+      out += src.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
 
 const a = { id: "a", isDefault: false };
 const b = { id: "b", isDefault: true };
@@ -521,14 +561,27 @@ describe("email-all-skips-separate", () => {
   it("is the one rule: no other file names the flag, in any app", () => {
     // Review F2: the bare token, so a destructure `({ inAllInboxes })` and a
     // bracket read `a["inAllInboxes"]` count too. Every source file of `src/`.
+    // `stripComments` keeps each string, so a `//` in a string hides nothing
+    // (review round 2).
     const files = srcFiles();
     expect(files.length).toBeGreaterThan(400);
     expect(files).toContain("components/email/EmailToolCards.tsx");
-    const named = files.filter((f) => /\binAllInboxes\b/.test(codeOnly(readSrc(f))));
+    const named = files.filter((f) => /\binAllInboxes\b/.test(stripComments(readSrc(f))));
     // `api.ts` maps and sends it, `mailbox.ts` decides, `types.ts` declares it.
     expect(named.sort()).toEqual(["app/email/lib/api.ts", "app/email/lib/mailbox.ts", "app/email/lib/types.ts"]);
-    const wire = files.filter((f) => /\bin_all_inboxes\b/.test(codeOnly(readSrc(f))));
+    const wire = files.filter((f) => /\bin_all_inboxes\b/.test(stripComments(readSrc(f))));
     expect(wire).toEqual(["app/email/lib/api.ts"]);
+  });
+
+  it("finds a read after a // in a string, and skips a real comment (review round 2)", () => {
+    const hidden = 'const s = "a//b"; const x = a.inAllInboxes;';
+    // The old filter cut the line at the `//` in the string.
+    expect(codeOnly(hidden)).not.toMatch(/\binAllInboxes\b/);
+    expect(stripComments(hidden)).toMatch(/\binAllInboxes\b/);
+    expect(stripComments("const t = `x//${a}`; a['inAllInboxes'];")).toMatch(/\binAllInboxes\b/);
+    expect(stripComments("const u = '/*'; a.inAllInboxes; // */")).toMatch(/\binAllInboxes\b/);
+    // A comment still drops out, so a note may name the flag.
+    expect(stripComments("x(); // inAllInboxes\n/* inAllInboxes */ y();")).not.toMatch(/\binAllInboxes\b/);
   });
 });
 
@@ -656,6 +709,29 @@ describe("email-separate-menu", () => {
         ["old", false], ["in", false], ["out", true], ["odd", false],
       ]);
     });
+  });
+});
+
+describe("email-separate-leaves-at-once, review round 2: checks", () => {
+  it("acts only on the checked rows of the list on screen", () => {
+    const emails = [{ id: "a-1" }, { id: "b-1" }];
+    expect(checkedRows({ emails, selectedIds: new Set(["c-9", "b-1", "a-1"]) })).toEqual(["a-1", "b-1"]);
+    expect(checkedRows({ emails, selectedIds: new Set(["c-9"]) })).toEqual([]);
+  });
+
+  it("reads checkedRows for each bulk act and each count, in the store and in both bars", () => {
+    const store = codeOnly(read("lib/emailStore.ts"));
+    const update = store.slice(store.indexOf("bulkUpdateSelected: (updates) => {"));
+    expect(update.slice(0, 300)).toContain("const ids = checkedRows(get());");
+    const remove = store.slice(store.indexOf("bulkDeleteSelected: () => {"));
+    expect(remove.slice(0, 300)).toContain("const ids = checkedRows(get());");
+    expect(store).not.toMatch(/\[\.\.\.get\(\)\.selectedIds\]/);
+    const bar = codeOnly(read("components/EmailToolbar.tsx"));
+    expect(bar).toContain("const checkedCount = checkedRows({ emails, selectedIds }).length;");
+    expect(bar).not.toMatch(/selectedIds\.size/);
+    const list = codeOnly(read("components/EmailList.tsx"));
+    expect(list).toContain("const checked = checkedRows({ emails, selectedIds });");
+    expect(list).not.toMatch(/\[\.\.\.selected\]|selected\.size|\[\.\.\.selectedIds\]|selectedIds\.size/);
   });
 });
 

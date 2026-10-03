@@ -4548,7 +4548,7 @@ compact density and under a changed accent (CLAUDE.md §4).
 
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
-✅ T8g-1 MERGED #608 (2026-10-04, migration 229). 🔨 T8g-2 is BUILT, not merged (2026-10-04), with review fix round 1.
+✅ T8g-1 MERGED #608 (2026-10-04, migration 229). 🔨 T8g-2 is BUILT, not merged (2026-10-04), with review fix rounds 1 and 2.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -4928,6 +4928,62 @@ run killed 31 of 31. The other 15 edited code that this round moved into `applyP
 **Round 1 verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
 `npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat
 src/app/integrations src/app/settings/organization` gave 57 files and 1069 tests passed, with no
+unhandled error.
+
+**Review fix round 2 (2026-10-04).** The verifier checked `6deaed077` again. It confirmed F1, F4,
+F5, F6, F7 and M4, and it found no regression in EM-T8d, EM-T8f-2 or EM-T8f-3. It failed F3: a
+bulk delete could still reach a mail of a separate mailbox.
+
+- **F3, the probe.** A member checks c-9 in All inboxes. A refresh in the background takes c-9 out
+  of the list, and its check stays. The member keeps c separate and clicks Delete. Before this round,
+  `deleteEmail` then got `["a-1", "c-9"]`.
+- **F3, the fix of the class.** Three layers close it, and each one has its own fence.
+  - (a) `applyPoolChange` keeps only the checks of the rows that stay in the list.
+  - (b) `checkedRows` in `lib/emailStore.ts` gives the checked ids that are rows of the list on
+    screen. `bulkUpdateSelected`, `bulkDeleteSelected`, each bulk act of `EmailList.tsx` and
+    each "N selected" count read it. No reader of the raw `selectedIds` acts.
+  - (c) `fetchEmails` and `softRefresh` prune the checks to the rows that they land, so a check
+    never outlives its row.
+- **P3, a removed selected mailbox.** In All inboxes, `fetchAccounts` now sends that case to
+  `applyPoolChange`. With one mailbox in view, the branch clears the open mail and the checks.
+  `replaceAccount` calls `applyPoolChange` too.
+- **P3, the three survivors of round 1.** New cases kill each one. V-F5b holds the end of All
+  inboxes on the default mailbox. V-F3c holds the open mail kept as an override. V-ALL0 holds the
+  end with no mailbox left. With no mailbox left, the store now also clears the rows and the
+  checks.
+- **P3, the scan.** `stripComments` in `allInboxes.test.ts` keeps each string and drops only a
+  real comment. A `//` in a string no longer hides a read after it. The case `finds a read after
+  a // in a string, and skips a real comment` holds the stripper.
+- **Outside the stated scope.** `components/EmailToolbar.tsx` and `components/EmailList.tsx`
+  read `checkedRows`, because they hold the bulk acts.
+
+**Round 2 mutation run.** The run killed 17 of 17 mutants. The script restored each file and
+checked its hash. V-M1 to V-M3 are the three survivors of round 1 at the verifier.
+
+| Mutant | What it breaks | The case that goes red first |
+|---|---|---|
+| R2-a | (a): a toggle drops only the checks of the rows that leave now | `F3 (a): a toggle keeps only the checks of the rows that stay` |
+| R2-b1, R2-b2 | (b): a bulk delete or a bulk update reads the raw checks | `F3 (b): a bulk act with a stale check reaches only the rows on screen` |
+| R2-b3 | (b): `checkedRows` gives the raw checks | `acts only on the checked rows of the list on screen` |
+| R2-b4, R2-b5 | (b): the toolbar count, or a bulk label of the list, reads the raw checks | `reads checkedRows for each bulk act and each count, in the store and in both bars` |
+| R2-c1 | (c): `fetchEmails` keeps the check of a row that left | `F3 (c): a list read that drops a checked row drops its check` |
+| R2-c2 | (c): `softRefresh` keeps the check of a row that left | `F3 (c): a background refresh that drops a checked row drops its check` |
+| R2-c3 | `prunedChecks` never prunes | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| P3-a | the branch of round 1 for a removed selected mailbox | `P3: a re-read that removes the hidden mailbox and keeps c separate drops the checks` |
+| P3-b | a removed mailbox in view keeps its checks and its open mail | `P3: a re-read that removes the mailbox in view drops its checks and its open mail` |
+| P3-c | `replaceAccount` skips the reconciliation | `P3: replaceAccount reconciles the pool` |
+| V-M1 | All inboxes ends on `poolHome`, not on the default | `V-F5b: a toggle that ends All inboxes goes to the default, also a separate one` |
+| V-M2 | the check of the open mail ignores `selectedEmailOverride` | `V-F3c: the open mail of a mailbox that left goes, also when it is not a row` |
+| V-M3, V-M3b | with no mailbox left, `viewAll` stays true, or the rows and the checks stay | `V-ALL0: with no mailbox left, All inboxes ends and nothing of the list stays` |
+| S-a | a read of the flag after a `//` in a string, on one line | `is the one rule: no other file names the flag, in any app` |
+
+The 33 mutants of round 1 ran again on the code of round 2. 30 found their anchor, and the run
+killed 30 of 30. F3-a and F3-b edited the code that round 2 replaced, and R2-a and R2-c3 cover
+it. F7-b found its line twice, so F7-b2 ran on its own with a unique anchor, and the run killed it.
+
+**Round 2 verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat
+src/app/integrations src/app/settings/organization` gave 57 files and 1083 tests passed, with no
 unhandled error.
 
 **Gate.** 🟢 AGENT-SAFE.
