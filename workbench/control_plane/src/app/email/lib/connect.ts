@@ -129,7 +129,7 @@ export const IMPORT_MONTHS_STORAGE_KEY = "metorite.email.importMonths";
 type MonthsStore = Pick<Storage, "getItem" | "setItem">;
 
 /** The session storage of this tab, or null where it is absent or refused. */
-function sessionStore(): MonthsStore | null {
+function sessionStore(): (MonthsStore & Pick<Storage, "removeItem">) | null {
   try {
     return typeof window === "undefined" ? null : window.sessionStorage;
   } catch {
@@ -151,6 +151,63 @@ export function storedImportMonths(store: MonthsStore | null = sessionStore()): 
   } catch {
     return DEFAULT_IMPORT_MONTHS;
   }
+}
+
+// ── The return after a connect (EM-T8c, MB-9, §11.6 case 2) ───────────────
+
+/** The session key of the mailbox ids the member had before a connect. */
+export const MAILBOXES_BEFORE_CONNECT_KEY = "cc.email.mailboxesBeforeConnect";
+
+/** Keeps the ids of the mailboxes the member has, before the page leaves for
+ *  the provider. The callback page reads them back. Never throws. */
+export function rememberMailboxesBeforeConnect(
+  ids: ReadonlyArray<string>,
+  store: MonthsStore | null = sessionStore(),
+): void {
+  try {
+    store?.setItem(MAILBOXES_BEFORE_CONNECT_KEY, JSON.stringify(ids.filter(Boolean)));
+  } catch {
+    // A full or refused storage only costs the notice.
+  }
+}
+
+/**
+ * True when `accountId` was already connected before this ADD, so the connect
+ * signed it in again instead of adding a mailbox. Reads the ids ONCE: the key
+ * goes, so a later reconnect (which stores no ids) never reads a stale list.
+ */
+export function wasConnectedBefore(
+  accountId: string | null,
+  store: (MonthsStore & Partial<Pick<Storage, "removeItem">>) | null = sessionStore(),
+): boolean {
+  let raw: string | null = null;
+  try {
+    raw = store?.getItem(MAILBOXES_BEFORE_CONNECT_KEY) ?? null;
+    store?.removeItem?.(MAILBOXES_BEFORE_CONNECT_KEY);
+  } catch {
+    return false;
+  }
+  if (!accountId || !raw) return false;
+  try {
+    const ids: unknown = JSON.parse(raw);
+    return Array.isArray(ids) && ids.includes(accountId);
+  } catch {
+    return false;
+  }
+}
+
+/** The return target with the mailbox of the connect selected. Before, the
+ *  target kept `?account=<old>`, and the new mailbox and its setup stayed
+ *  hidden (MB-9). A target that is not a path of this site stays as it is. */
+export function withSelectedMailbox(target: string, accountId: string | null): string {
+  if (!target.startsWith("/")) return target;
+  const url = new URL(target, "http://local");
+  // The add is done. `connect=1` would open the add dialog again over the
+  // new mailbox (EM-T8c review).
+  url.searchParams.delete("connect");
+  url.searchParams.delete("provider");
+  if (accountId) url.searchParams.set("account", accountId);
+  return url.pathname + url.search + url.hash;
 }
 
 /** Keeps the chosen range for the next time the step opens. Never throws. */

@@ -73,6 +73,20 @@ def _domain_label(address: str) -> str:
     return _title(domain.split(".")[0])
 
 
+def work_domain(address: str | None) -> str | None:
+    """The domain of a mailbox when it is an organization domain, else None.
+
+    A consumer domain ("outlook.com") says nothing about who the member writes
+    to, so it gives None. The From row warns when the member writes to the
+    work domain of ANOTHER mailbox (EM-T8c, §11.4). The UI reads this field
+    and keeps no domain list of its own.
+    """
+    _, _, domain = (address or "").strip().lower().partition("@")
+    if not domain or domain in CONSUMER_DOMAINS:
+        return None
+    return domain
+
+
 def _local_label(address: str) -> str:
     local = address.strip().partition("@")[0]
     return _title(local.split("+")[0]) or address.strip()

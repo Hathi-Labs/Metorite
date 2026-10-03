@@ -557,6 +557,54 @@ class ContactSuggestion(BaseModel):
     name: str = ""
 
 
+#: The most addresses one ``/contacts/sent-from`` read takes (EM-T8c).
+SENT_FROM_MAX = 20
+
+
+@router.get("/contacts/sent-from")
+async def sent_from(
+    emails: str = Query(..., description="Comma-separated addresses, at most 20"),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """For each address, the mailbox of the member that last WROTE to it.
+
+    WS-17 EM-T8c (``email_app_master_plan.md`` §11.4): the From row warns
+    "You usually write to this person from <label>" when the member picks
+    another mailbox. The answer maps a lower-case address to a mailbox id of
+    the member. An address that no mailbox wrote to is absent. The owner
+    predicate is in the SQL, so a mailbox of another member never answers.
+    Best-effort: a failure answers ``{}``, because a warning must never stop
+    the composer.
+    """
+    wanted = sorted({
+        e.strip().lower() for e in (emails or "").split(",")
+        if "@" in e and len(e.strip()) <= 254
+    })[:SENT_FROM_MAX]
+    if not wanted:
+        return {}
+    try:
+        async with _tenant_session() as db:
+            rows = (await db.execute(text(
+                """
+                SELECT DISTINCT ON (a.addr) a.addr, em.account_id
+                  FROM email_messages em
+                  JOIN email_accounts ea ON ea.id = em.account_id
+                 CROSS JOIN LATERAL jsonb_array_elements(
+                        COALESCE(em.to_addresses, '[]'::jsonb)
+                        || COALESCE(em.cc_addresses, '[]'::jsonb)) AS r
+                 CROSS JOIN LATERAL (SELECT LOWER(r->>'email') AS addr) AS a
+                 WHERE ea.user_id = :uid
+                   AND LOWER(COALESCE(em.folder, '')) = 'sent'
+                   AND a.addr = ANY(:wanted)
+                 ORDER BY a.addr, em.received_at DESC NULLS LAST
+                """
+            ), {"uid": user.email or "anonymous", "wanted": wanted})).fetchall()
+        return {r.addr: str(r.account_id) for r in rows}
+    except Exception as exc:  # a warning is best-effort
+        _log.warning("email.sent_from_failed", error=str(exc)[:160])
+        return {}
+
+
 @router.get("/contacts/suggest")
 async def suggest_contacts(
     q: str = Query(..., min_length=1, description="Prefix/substring to match"),

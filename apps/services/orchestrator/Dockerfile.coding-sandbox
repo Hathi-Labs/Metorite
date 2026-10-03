@@ -1,0 +1,95 @@
+# The coding sandbox image — WS-43b, project-docs/specs/maf_coding_engine.md §7.2.
+#
+# The sandbox broker (WS-43c) runs one container of this image for each
+# organization, agent and chat thread. The container runs the shell commands
+# of the MAF coding engine, and nothing else. The model loop and every key stay
+# in the gateway process. So this image holds no secret, no SDK and no CLI, and
+# the container gets no key at run time either (§7.1 rule 5).
+#
+# Three pins. tests/unit/test_coding_sandbox_image.py (fence WS43-F10) fails
+# when one of them goes:
+#   1. Each FROM names the base by digest (@sha256:), or a stage of this file.
+#   2. Node.js has one exact 22.x version and the SHA-256 of its tarball, from
+#      that release's SHASUMS256.txt. The build checks the tarball against it.
+#   3. pip installs sandbox/requirements.txt with --require-hashes.
+#
+# The image runs as any non-root uid. The broker passes the gateway's own uid
+# with --user, and the test runs the image as uid 1000 and as uid 4242. No file
+# here belongs to one uid, and no uid needs an /etc/passwd entry.
+#
+# Build it from apps/services/orchestrator (the context of its siblings):
+#   docker build -f Dockerfile.coding-sandbox -t <name> .
+# The broker runs it by image ID or registry digest, never by tag (§7.2).
+# To build or load it on the production box is owner gate WS43-G2.
+#
+# To move a pin:
+#   - Base: `docker buildx imagetools inspect python:3.12-slim-bookworm`, and
+#     copy the index Digest into BOTH FROM lines.
+#   - Node: take the linux-x64.tar.gz line of
+#     https://nodejs.org/dist/v<version>/SHASUMS256.txt for a 22.x release.
+#   - Python: run this from the repo root. The names are the first set of §7.2,
+#     and every other line of the file is a dependency of one of them.
+#       printf '%s\n' pandas numpy openpyxl matplotlib pypdf fpdf2 markdown \
+#           tabulate pyyaml python-dateutil requests \
+#         | uv pip compile - --generate-hashes --python-version 3.12 \
+#           --python-platform x86_64-manylinux_2_28 --no-config \
+#           -o apps/services/orchestrator/sandbox/requirements.txt
+
+# ---- node: download Node.js and check it against the pinned SHA-256 ----------
+FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS node
+
+# ENV and not ARG, so that a --build-arg cannot replace the pin. This stage is
+# a builder, so neither value reaches the final image.
+ENV NODE_VERSION=22.23.3 \
+    NODE_SHA256=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af
+
+# The base has no curl, so Python downloads the tarball. sha256sum stops the
+# build when the tarball does not match. Only the node binary and npm leave this
+# stage: the headers, the docs and corepack stay behind.
+RUN set -eux; \
+    url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"; \
+    python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+        "$url" /tmp/node.tar.gz; \
+    echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c -; \
+    mkdir /opt/node; \
+    tar -xzf /tmp/node.tar.gz -C /opt/node --strip-components=1 --no-same-owner \
+        "node-v${NODE_VERSION}-linux-x64/bin/node" \
+        "node-v${NODE_VERSION}-linux-x64/lib/node_modules/npm"; \
+    rm /tmp/node.tar.gz
+
+# ---- final: the sandbox ------------------------------------------------------
+FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
+
+# git             — the agent's own repo work inside /workspace
+# bash            — the broker runs each exec under `bash -o pipefail` (§7.1 rule 9)
+# procps          — ps and pkill, for the broker's exec hygiene (§7.1 rule 9)
+# ca-certificates — HTTPS through the egress proxy, after an approval (§7.3)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git bash procps ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# app-builder's T2 build runs `node build/build_t2.mjs` (§4.3).
+COPY --from=node /opt/node/bin/node /usr/local/bin/node
+COPY --from=node /opt/node/lib/node_modules/npm /usr/local/lib/node_modules/npm
+
+COPY sandbox/requirements.txt /opt/sandbox/requirements.txt
+
+# --only-binary: wheels only, so no package runs a build script at install time.
+# The last two commands prove that Node and npm start on the build platform.
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && pip install --no-cache-dir --disable-pip-version-check \
+        --root-user-action=ignore \
+        --require-hashes --only-binary=:all: \
+        -r /opt/sandbox/requirements.txt \
+    && node --version \
+    && npm --version
+
+# A uid with no /etc/passwd entry gets HOME=/, which --read-only makes
+# unwritable. /tmp is the broker's tmpfs, so matplotlib, pip and npm write there.
+ENV HOME=/tmp
+
+WORKDIR /workspace
+
+USER 1000:1000

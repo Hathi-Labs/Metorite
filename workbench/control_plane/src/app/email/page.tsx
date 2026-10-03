@@ -27,7 +27,7 @@ import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import Modal from "@/components/ui/Modal";
-import { useEmailStore, isRealFolder } from "./lib/emailStore";
+import { useEmailStore, isRealFolder, backfillKey } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
@@ -38,6 +38,7 @@ import {
   FIRST_SYNC_POLL_MS,
   isFirstSyncPending,
   reconnectProvider,
+  rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
@@ -213,7 +214,8 @@ export default function EmailPage() {
   // The provider can't page a pseudo-folder (there's no "all"/"starred" folder
   // to ask for older mail from), so never offer "load older" on those views.
   const canBackfillFolder =
-    isRealFolder(selectedFolder) && !backfillExhausted[selectedFolder];
+    isRealFolder(selectedFolder) &&
+    !backfillExhausted[backfillKey(selectedAccountId, selectedFolder)];
   // "processing" (the background rules/labels pipeline after H1) counts as busy
   // too, so the top-bar refresh button keeps spinning until it settles.
   const syncing = selectedAccountId
@@ -339,6 +341,12 @@ export default function EmailPage() {
     // don't pre-encode or redirect_after ends up double-encoded and the
     // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
     const query = connectQuery(window.location.href, loginHint, importMonths);
+    // An ADD (no hint) keeps the ids of the mailboxes, so the callback can
+    // tell a mailbox that was already connected (EM-T8c, §11.6 case 2). A
+    // deliberate reconnect names its mailbox and stores none.
+    if (!loginHint) {
+      rememberMailboxesBeforeConnect(useEmailStore.getState().accounts.map((a) => a.id));
+    }
     window.location.href = `/api/email/oauth/${provider}/authorize?${query}`;
   }, []);
 
@@ -1151,12 +1159,12 @@ export default function EmailPage() {
         open={composeOpen}
         onClose={closeCompose}
         accountId={composeAccountId ?? ""}
+        defaultFromId={composeDefaults?.fromAccountId}
         onSend={async (params) => {
-          if (!composeAccountId) return;
-          await sendEmail({
-            accountId: composeAccountId,
-            ...params,
-          });
+          // The From row of the composer chose the mailbox (EM-T8c).
+          const sender = params.accountId || composeAccountId;
+          if (!sender) return;
+          await sendEmail({ ...params, accountId: sender });
         }}
         defaultTo={composeDefaults?.to}
         defaultSubject={composeDefaults?.subject}

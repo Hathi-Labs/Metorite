@@ -22,8 +22,11 @@ workbench/control_plane/e2e/   Playwright end-to-end (frontend).
   `tests/unit/test_memory_e2e.py`).
 - **No live DB in unit tests:** mock the SQLAlchemy session (`AsyncMock`) and
   assert the calls / dispatch logic, or test pure helpers directly.
-- **Markers:** `integration` (docker stack), `slow` (long-running). The default
-  run excludes integration (`-m 'not integration'`).
+- **Markers:** `integration` (docker stack), `slow` (long-running) and
+  `sandbox_docker` (a real Docker daemon, WS-43). The default run excludes
+  `integration` and `sandbox_docker`. The workflow
+  `.github/workflows/sandbox-docker.yml` runs `sandbox_docker`, and it fails
+  on any skip.
 
 ## Running
 
