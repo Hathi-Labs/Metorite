@@ -43,6 +43,13 @@ clone cache.
    `addendum.rendered_parts` both ask it, so with `DECIDE_ENABLED` off the
    tool is not injected and no section names it.
    Fence: tests/unit/test_decide_tool.py.
+5c. permission_policy.py -- the B6 risk-aware handler, plus the D85 guard
+   `guard_shared_agent_shell`. The guard refuses a shell request when the
+   run's artifact context does not say `host_shell_refused=False`, in every
+   `AGENT_PERMISSION_MODE`. The orchestrator decides the flag, because this
+   package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
+   target is `file_name`, and a `read` request is a read, contained in the
+   workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

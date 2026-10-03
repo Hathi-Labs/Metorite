@@ -2695,6 +2695,14 @@ async def run_agent_sync(
             result=final_state.get("result"),
         )
     except AgentRunError as exc:
+        from orchestrator.executor import AgentNotFound
+
+        if isinstance(exc.original, AgentNotFound):
+            # maf_coding_engine.md §15.4: a first-party-admin-only agent,
+            # refused as absent.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(exc.original),
+            ) from exc
         return AgentRunResponse(
             run_id=run_id,
             agent=agent,

@@ -71,7 +71,8 @@ _WATCHDOG = default_watchdog()
 from orchestrator._copilot_session import (
     _apply_copilot_infinite_sessions,
     _copilot_infinite_session_config,
-    _copilot_permission_handler,
+    _copilot_permission_handler,  # noqa: F401 — re-exported for tests
+    _install_copilot_permission_handler,
 )
 
 
@@ -83,9 +84,11 @@ from orchestrator._tool_injection import (
     _build_injected_tools_addendum,
     _build_registry_block,
     _gate_injected_tool,
+    _host_shell_refused,
     _inject_agent_tools,
     _inject_mcp_servers,
     _tool_name,
+    _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
 def _missing_module_name(exc: BaseException) -> str | None:
@@ -102,6 +105,29 @@ def _missing_module_name(exc: BaseException) -> str | None:
         name = m.group(1) if m else None
     # Install the TOP-LEVEL distribution name (submodule installs never work).
     return name.split(".")[0] if name else None
+
+
+def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
+    """The tool result when the dependency self-heal could not install *module*.
+
+    It suggests ``install_dependency`` only to a run that holds it. A shared
+    agent does not (D85), so it is told to ask an admin instead, and never
+    to call a tool it was not given.
+    """
+    head = (
+        f"Error: tool '{tool_name}' needs a package that isn't installed "
+        f"({exc}). Auto-install "
+        f"{'failed' if module else 'could not identify the module'}"
+    )
+    try:
+        from acb_skills.write_artifact import artifact_context
+        # The TOOL half of D85: does this run hold install_dependency?
+        withheld = artifact_context().get("shell_tools_withheld", True) is not False
+    except Exception:
+        withheld = True
+    if withheld:
+        return head + "; ask an admin to install the package, then retry."
+    return head + "; call install_dependency('<package>') and retry."
 _TOOL_EXECUTION_TIMEOUT: float = _WATCHDOG.tool_execution
 
 # ── Elicitation bridge: track which tool_call_id maps to a pending
@@ -874,6 +900,9 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
+        # §15.4: a first-party-admin-only agent, delegated to by anyone else,
+        # is refused as absent. The member is the PARENT run's (run binding).
+        await _assert_may_run_agent(agent_name)
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
@@ -907,19 +936,18 @@ async def _run_sub_agent_streaming(
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
+                # D85: a shared sub-agent gets no shell tool until the
+                # sandbox broker covers it.
+                agent_config=getattr(loaded, "config", None),
             )
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
             agent = agents[0]
 
-            # Apply the risk-aware permission handler for Copilot SDK agents (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # The permission handler of a Copilot SDK agent (B6), ALWAYS with
+            # the D85 shell guard, whatever handler its factory set.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── Set working directory for Copilot SDK sub-agents ──────────
             # The Copilot SDK CLI defaults to the gateway process CWD
@@ -973,6 +1001,15 @@ async def _run_sub_agent_streaming(
                 integration_warnings=dict(_sub_warnings),
                 # A sub-agent never inherits the parent's sandbox root.
                 permission_check_root=None,
+                # D85: the SUB-agent's own answers, never its parent's. The
+                # tool half, and the host half the Copilot permission guard
+                # reads for the CLI's own shell.
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, getattr(loaded, "config", None),
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, getattr(loaded, "config", None),
+                ),
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -980,6 +1017,7 @@ async def _run_sub_agent_streaming(
             # is read. No-op while SKILLS_INDEX_ONLY is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _sub_agent_dir, tool_scope=_sub_tool_scope,
+                agent_config=getattr(loaded, "config", None),
             )
 
             text_parts: list[str] = []
@@ -1317,6 +1355,89 @@ class RunWorkspaceRefused(RuntimeError):
     with no tenant must not fall back to it for its writes, so the run is
     refused before the agent starts. It fails closed, and it writes nothing.
     """
+
+
+# ── Agents for the platform's own admins only (owner, 2026-10-03, §15.4) ────
+#: Only an admin of the first-party organization (``organization.first_party``,
+#: migration 157) may run these, through ANY path: chat, the gateway run API,
+#: delegation, workflows, webhooks and cron. ``metorite`` is the root dev agent
+#: (repo-root ``agents.py``). It keeps its Copilot CLI shell for those admins
+#: (``_tool_injection._D85_OWNER_PENDING``), and this gate is what makes that
+#: safe. Fence: ``tests/unit/test_root_agent_first_party.py`` (WS43-F17).
+_FIRST_PARTY_ADMIN_ONLY_AGENTS: frozenset[str] = frozenset({"metorite"})
+
+#: The established gate of an admin act: the nine member-admin routes require
+#: it (``require_permission("admin:members:manage")``), and only the ``owner``
+#: (``*``) and ``admin`` roles hold it (migration 130). ``admin:members:read``
+#: is NOT an admin check, because migration 130 gives it to ``manager`` too.
+_FIRST_PARTY_ADMIN_PERMISSION = "admin:members:manage"
+
+
+class AgentNotFound(AgentLoadError):
+    """The agent is refused to this caller, and the refusal reads as absent.
+
+    An ``AgentLoadError``, so every path answers it as it answers an agent it
+    cannot load: no self-anneal, no self-mutation, and no word that the agent
+    exists. The sync run API maps it to 404.
+    """
+
+
+def _agent_slug(agent_name: str) -> str:
+    """The name a gate compares: lower case, with no ``agent-`` prefix."""
+    name = str(agent_name or "").strip().lower()
+    return name[len("agent-"):] if name.startswith("agent-") else name
+
+
+async def _first_party_admin_runs() -> tuple[bool, str]:
+    """Is the run on this frame a first-party admin's? ``(allowed, why)``.
+
+    The member and the org come from the run binding only, never from the
+    payload (R11). A direct run binds its member at its boundary, and a
+    delegated run keeps its parent's member, because a run that binds no user
+    leaves the parent's ``user`` and ``member_verified`` in place. Every
+    failure answers no.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from orchestrator.mutation import _read_first_party
+        if not await _read_first_party(org):
+            return False, "not the first-party organization"
+    except Exception as exc:
+        return False, f"the first-party check failed: {str(exc)[:120]}"
+    try:
+        from acb_auth import resolve_access
+        access = await resolve_access(member)
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
+        return False, "not an admin of the first-party organization"
+    return True, ""
+
+
+async def _assert_may_run_agent(agent_name: str) -> None:
+    """Refuse a first-party-admin-only agent to everyone else (§15.4).
+
+    Each run boundary calls it once, before it loads the agent:
+    ``run_agent_stream``, ``_run_agent_inner`` and
+    ``_run_sub_agent_streaming``. Every other agent passes untouched. A
+    refusal raises :class:`AgentNotFound`, so the agent's existence does not
+    show. The reason goes to the log only.
+    """
+    if _agent_slug(agent_name) not in _FIRST_PARTY_ADMIN_ONLY_AGENTS:
+        return
+    allowed, why = await _first_party_admin_runs()
+    if allowed:
+        return
+    _log.warning("executor.agent_run_refused", agent=agent_name, reason=why)
+    raise AgentNotFound(f"Agent {agent_name!r} not found.")
 
 
 def _resolve_run_workspace(
@@ -2471,6 +2592,9 @@ async def _run_agent_inner(
         except ImportError:
             pass
 
+        # §15.4: refused as absent unless a first-party admin runs it. An
+        # AgentLoadError, so no self-anneal and no self-mutation follow.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -2570,6 +2694,7 @@ async def _run_agent_inner(
                 agents,
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
             )  # inject call_agent / call_agent_background
 
             # Set write_artifact context + ensure visible workspace dirs exist.
@@ -2598,6 +2723,16 @@ async def _run_agent_inner(
                     getattr(settings, "gateway_internal_token", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
+                ),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
                 ),
             )
             try:
@@ -2636,6 +2771,7 @@ async def _run_agent_inner(
             materialize_skill_bodies_for_agent(
                 agent_name, _effective_agent_dir,
                 tool_scope=loaded.config.get("tool_scope") or None,
+                agent_config=loaded.config,
             )
 
             # ── Set working directory for Copilot SDK agents ────────────
@@ -2738,6 +2874,14 @@ async def _run_agent_inner(
             "executor.run_workspace_refused", agent=agent_name, run_id=run_id,
             error=str(exc),
         )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentNotFound as exc:
+        # §15.4: refused as absent. Before the AgentLoadError clause, because
+        # that one starts a self-mutation. The agent is fine, and this caller
+        # may not run it. The gate already logged the reason.
         raise AgentRunError(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
@@ -3154,6 +3298,9 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
 
+        # §15.4: refused as absent unless a first-party admin runs it. The
+        # RUN_ERROR then reads like an agent that cannot load.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -3190,6 +3337,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
             )  # inject call_agent / call_agent_background
             # Inject MCP servers from the registry into every agent at runtime
             for _a in agents:
@@ -3263,6 +3411,16 @@ async def run_agent_stream(
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
+                ),
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -3302,6 +3460,7 @@ async def run_agent_stream(
                 tool_scope=_merged_tool_scope(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
+                agent_config=loaded.config,
             )
 
             if not agents:
@@ -3341,16 +3500,11 @@ async def run_agent_stream(
                                thread_id=thread_id,
                                copilot_session=_copilot_session_id[:12])
 
-            # Ensure the risk-aware permission handler is set for
-            # GitHubCopilotAgent before ANY execution path — repos often omit it
-            # from default_options (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # Install the permission handler of each GitHubCopilotAgent before
+            # ANY execution path (B6). It ALWAYS carries the D85 shell guard,
+            # also when the agent's factory set its own handler.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── BYOK early detection (must happen BEFORE tier selection) ────
             # When a LiteLLM model is requested (contains '/' or starts with
@@ -3881,12 +4035,9 @@ async def run_agent_stream(
                 _byok_provider = _byok_provider_early
                 _byok_model_id = _byok_model_id_early
 
-                # Ensure the risk-aware permission handler (B6).
-                try:
-                    if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                        agent._permission_handler = _copilot_permission_handler()
-                except Exception:
-                    pass
+                # The permission handler (B6), always with the D85 guard. A
+                # no-op here: the install above already guarded it.
+                _install_copilot_permission_handler(agent)
 
                 _msg_text = event_payload.get("message") or event_payload.get("user_query") or ""
 
@@ -4629,11 +4780,8 @@ async def run_agent_stream(
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
                             "toolCallId": tool_call_id,
-                            "content": (
-                                f"Error: tool '{tool_name}' needs a package that "
-                                f"isn't installed ({_imp_exc}). Auto-install "
-                                f"{'failed' if _mod else 'could not identify the module'}"
-                                f"; call install_dependency('<package>') and retry."
+                            "content": _missing_dependency_message(
+                                tool_name, _imp_exc, _mod,
                             ),
                             "success": False,
                         })
@@ -4756,10 +4904,13 @@ async def run_agent_stream(
                             # SDK 1.0 (H-181): cli_path + cli_args became one
                             # stdio RuntimeConnection, and the client takes
                             # keywords instead of an options dict.
-                            _cli_args = (
-                                ["--deny-tool", "shell"]
-                                if _agent_runtime != "github-copilot" else []
-                            )
+                            # D85 (fix round 1 of PR #598): ALWAYS deny the
+                            # CLI shell on Tier 2. Tier 1.5 returns for every
+                            # Copilot-shaped agent, and a `github-copilot`
+                            # label makes an agent Copilot-shaped, so Tier 2
+                            # never serves that label. Its old "allow shell
+                            # for github-copilot" branch could not run.
+                            _cli_args = ["--deny-tool", "shell"]
                             _cli_path = _agent_settings.get("cli_path")
                             if _cli_path or _cli_args:
                                 _cli_opts["connection"] = _RuntimeConnection.for_stdio(
@@ -4790,12 +4941,15 @@ async def run_agent_stream(
 
                     if hasattr(type(agent), "__aenter__"):
                         await stack.enter_async_context(agent)
-                    # Apply the risk-aware permission handler if needed (B6).
-                    try:
-                        if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                            agent._permission_handler = _copilot_permission_handler()
-                    except Exception:
-                        pass
+                    # The permission handler (B6), always with the D85 guard.
+                    # H-201: carry this run's context in, as every Copilot
+                    # path must, or the handler sees no workspace and no
+                    # shell flag. A no-op when Tier 1.5 already carried it.
+                    _install_copilot_permission_handler(agent)
+                    from orchestrator.copilot_agent import (
+                        carry_run_context as _carry_tier2,
+                    )
+                    _carry_tier2(agent)
                     # Pass history as proper MAF Message objects so the model sees
                     # full user/assistant turn structure, not a flat string.
                     #
@@ -5094,7 +5248,10 @@ async def _self_anneal(
                         _apply_agent_md_overrides(
                             agents, loaded.agent_dir, agent_name,
                         )
-                        _inject_agent_tools(agents, agent_name=agent_name)
+                        _inject_agent_tools(
+                            agents, agent_name=agent_name,
+                            agent_config=loaded.config,  # D85
+                        )
                         result = await _run_with_maf_agent(
                             agents,
                             agent_name=agent_name,
@@ -5137,7 +5294,10 @@ async def _self_anneal(
                     _apply_agent_md_overrides(
                         agents, loaded.agent_dir, agent_name,
                     )
-                    _inject_agent_tools(agents, agent_name=agent_name)
+                    _inject_agent_tools(
+                        agents, agent_name=agent_name,
+                        agent_config=loaded.config,  # D85
+                    )
                     result = await _run_with_maf_agent(
                         agents,
                         agent_name=agent_name,
@@ -5319,13 +5479,9 @@ async def _run_with_maf_agent(
     # Agent repos often omit it; patch _permission_handler directly so sessions
     # are created without raising AgentException. B6: use the risk-aware handler
     # (blocks dangerous shell / out-of-workspace writes; logs privileged ops).
-    try:
-        _ph = _copilot_permission_handler()
-        for _a in agents:
-            if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                _a._permission_handler = _ph
-    except Exception:
-        pass
+    # D85: ALWAYS with the shell guard, whatever handler the factory set.
+    for _a in agents:
+        _install_copilot_permission_handler(_a)
     # H-201 (§21.16): a Copilot SDK agent runs its tool calls and permission
     # requests with no context of this run. Carry this run's context in.
     from orchestrator.copilot_agent import carry_run_context

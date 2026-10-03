@@ -17,6 +17,9 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  NOT double-gate or it deadlocks
   * shell commands                             → APPROVE unless they match the
                                                  dangerous-command denylist
+  * shell commands of a SHARED agent (D85)     → DENY in every mode, until the
+                                                 sandbox covers it
+                                                 (:func:`guard_shared_agent_shell`)
   * file writes outside the agent workspace    → DENY (out of bounds)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
@@ -35,6 +38,7 @@ across SDK versions.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 from typing import Any
@@ -141,7 +145,18 @@ def decide(request: Any) -> tuple[bool, str, str]:
     and it still runs — and still short-circuits to approve — once neither
     veto applies. Every existing single-field test call (no request combines
     ``tool_name`` with shell/write fields) is unaffected by the reorder.
+
+    The SDK 1.0 request shapes (fix round 1 of PR #598, 2026-10-03):
+    ``PermissionRequestWrite`` names its target ``file_name``, not ``path``,
+    so a Copilot CLI write used to skip both write vetoes and read as
+    ``write_in_workspace`` wherever it went. ``PermissionRequestRead`` has a
+    ``path`` and no ``read_only``, so a read used to take the write branch.
+    A read now has its own rule: inside the workspace it is approved, and
+    outside it, or with no workspace, it is refused. That is the outcome the
+    write branch gave a read before, under its own reason code. Fence:
+    tests/unit/test_shared_agent_shell_tools.py (WS43-F23).
     """
+    kind = str(_field(request, "kind") or "").strip().lower()
     read_only = bool(_field(request, "read_only"))
     tool_name = str(_field(request, "tool_name") or "")
     commands = _field(request, "commands")
@@ -150,10 +165,19 @@ def decide(request: Any) -> tuple[bool, str, str]:
     new_file = _field(request, "new_file_contents")
     path = str(_field(request, "path") or "")
     url = _field(request, "url") or _field(request, "possible_urls")
+    # The target of a write: ``file_name`` (SDK 1.0), else ``path`` (the
+    # older shape, and the run_script context). A read's path is not a write.
+    target = str(_field(request, "file_name") or "") or (
+        "" if kind == "read" else path
+    )
 
     # 1. Read-only → always safe.
     if read_only:
         return True, "read_only", "observation only"
+
+    # 1b. A file read → inside the workspace only, and never a write.
+    if kind == "read":
+        return _decide_read(path)
 
     # 2. Dangerous shell command → hard veto (fail-closed), regardless of
     #    what tool is asking for it.
@@ -169,15 +193,15 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 3. File write outside the agent workspace → hard veto (fail-closed),
     #    same reasoning: a tool's own annotation cannot waive this.
-    if has_write_redir or new_file is not None or path:
+    if has_write_redir or new_file is not None or target:
         root = _workspace_root()
         # H-201 (§21.16): a write to a path with NO run context has no
         # workspace to be inside, so it is refused. The old global dict hid
         # this case, because it always held the workspace of SOME run.
-        if path and not root:
-            return False, "write_without_workspace", path[:200]
-        if root and path and not _is_within(path, root):
-            return False, "write_out_of_workspace", path[:200]
+        if target and not root:
+            return False, "write_without_workspace", target[:200]
+        if root and target and not _is_within(target, root):
+            return False, "write_out_of_workspace", target[:200]
 
     # 4. Named platform tool → consult risk annotations. Reached once the
     #    hard vetoes above have cleared (or didn't apply), so the common case
@@ -208,8 +232,8 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 6. File write that cleared containment (or no workspace configured) →
     #    approve.
-    if has_write_redir or new_file is not None or path:
-        return True, "write_in_workspace", path[:200] or "(workspace)"
+    if has_write_redir or new_file is not None or target:
+        return True, "write_in_workspace", target[:200] or "(workspace)"
 
     # 7. Network → open_world is expected; approve but surface for audit.
     if url:
@@ -217,6 +241,24 @@ def decide(request: Any) -> tuple[bool, str, str]:
 
     # 8. Unknown / unclassifiable → fail OPEN but LOUD (near-term slice).
     return True, "unknown_allowed", tool_name or "(unclassified request)"
+
+
+def _decide_read(path: str) -> tuple[bool, str, str]:
+    """The decision for a ``read`` request (SDK ``PermissionRequestRead``).
+
+    Inside the run's workspace it is approved. Outside it, or with no run
+    context, it is refused, so the CLI cannot read the gateway's ``.env`` or
+    another tenant's dir. A read with no path names nothing, and it is
+    approved as an observation.
+    """
+    if not path:
+        return True, "read_only", "observation only"
+    root = _workspace_root()
+    if not root:
+        return False, "read_without_workspace", path[:200]
+    if not _is_within(path, root):
+        return False, "read_out_of_workspace", path[:200]
+    return True, "read_in_workspace", path[:200]
 
 
 # ── Per-tool call-context builders (BO-7 cheap win 1/3) ──────────────────────
@@ -294,6 +336,107 @@ def _denied_result(reason: str) -> Any:
             ". If you need this, ask the user to approve it explicitly."
         ),
     )
+
+
+# ── D85: no shell for a shared agent until the sandbox covers it ─────────────
+# Owner decision, 2026-10-03 (work_plan.md D85, maf_coding_engine.md §7.9).
+# The injection seam withholds the shell TOOLS from a shared agent (a cover
+# may lift that). This half refuses the Copilot CLI's OWN shell, which
+# task-manager and app-builder hold. That shell runs on the HOST, so a cover
+# never lifts it. The run decides it once, at its boundary: the executor binds
+# ``host_shell_refused`` into the artifact context from
+# ``orchestrator._tool_injection._host_shell_refused``.
+# Fence: tests/unit/test_shared_agent_shell_tools.py (WS43-F23).
+
+#: The text the model reads when D85 refuses its shell.
+SHELL_WITHHELD_REASON = (
+    "Shell is disabled for shared agents until the sandbox covers them, D85"
+)
+
+#: Request kinds that run a shell command. The SDK sends every shell, bash and
+#: PowerShell command as ``shell``; the other names cover a future SDK.
+_SHELL_KINDS = frozenset({"shell", "bash", "powershell", "pwsh"})
+
+
+def is_shell_request(request: Any) -> bool:
+    """True when *request* asks to run a shell command (D85).
+
+    A ``shell`` kind is one. So is any request that carries command text, so a
+    shell request with an unknown kind does not slip through.
+    """
+    kind = str(_field(request, "kind") or "").strip().lower()
+    if kind in _SHELL_KINDS:
+        return True
+    return bool(
+        _field(request, "full_command_text")
+        or _field(request, "commands")
+        or _field(request, "command_segments")
+    )
+
+
+def host_shell_refused_for_this_run() -> bool:
+    """True unless the run on this frame says its host shell may run (D85).
+
+    Only an explicit ``host_shell_refused=False`` in the artifact context
+    allows the Copilot CLI's shell. A frame with no run context, or a context
+    with no such key, reads as refused. That fails closed, as every H-201
+    reader does.
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("host_shell_refused", True) is not False
+    except Exception:
+        return True
+
+
+def _shell_withheld_result() -> Any:
+    """The SDK refusal for a D85 shell request.
+
+    It does not tell the model to ask the user, because no person can approve
+    this one. Only a Copilot CLI that runs inside a broker sandbox lifts it,
+    and none does yet.
+    """
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: " + SHELL_WITHHELD_REASON + ". Do not try "
+            "the shell again in this chat. Use your own tools."
+        ),
+    )
+
+
+def guard_shared_agent_shell(handler: Any) -> Any:
+    """*handler*, with the D85 shell refusal in front of it.
+
+    It refuses every shell request of a run whose host shell is refused, and
+    it passes every other request to *handler* unchanged. It holds in EVERY
+    ``AGENT_PERMISSION_MODE``, and whatever handler the agent's factory set.
+    Production runs ``enforce`` (the box's ``.env`` sets no mode, read on
+    2026-10-03). The guard still ignores the mode, so a later switch to
+    ``audit`` or ``approve_all`` cannot waive an owner decision. Wrapping
+    twice is a no-op.
+    """
+    if getattr(handler, "__cc_d85_guard__", False):
+        return handler
+
+    @functools.wraps(handler)
+    def _guarded(request: Any, invocation: Any) -> Any:
+        if is_shell_request(request) and host_shell_refused_for_this_run():
+            command = str(_field(request, "full_command_text") or "")
+            _log.info(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="host_shell_refused",
+                detail=command[:200],
+                surface="copilot_shell",
+            )
+            return _shell_withheld_result()
+        return handler(request, invocation)
+
+    _guarded.__cc_d85_guard__ = True  # type: ignore[attr-defined]
+    return _guarded
 
 
 def risk_aware_permission_handler(request: Any, invocation: dict[str, str]) -> Any:

@@ -3946,6 +3946,152 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/maf_coding_engine.md` §7.1 rules 12 and 13 · PR #591 review, round 2
 - **Added:** 2026-10-03 · WS-43c, the sandbox broker
 
+### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
+- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means a personal agent still keeps its host shell tools.
+- **Why:** D85 blocks `code_task`, `run_script`, `install_dependency` and the
+  Copilot CLI shell for shared agents only, because the owner left personal
+  agents out of scope.
+  email-assistant and whatsapp-assistant still run code on the host. There,
+  `run_script` has the network and the credentials of the integrations.
+  When WS-43f makes `covers()` live, apply the same rule to a personal
+  agent: no shell tool without a cover. Ask the owner first, because the
+  change takes a tool from a live agent.
+- **The delegation path.** A shared agent can reach that code through
+  `call_agent`. For example, projects-assistant delegates to email-assistant,
+  and email-assistant then calls `code_task` or `run_script` on the host. The
+  sub-run works in the `u:` dir of the acting member (H-201 P2-c), so it
+  reads that member's own files only. It still runs on the shared server.
+- **Test plan for the delegation path.**
+  1. In `tests/unit/test_shared_agent_shell_tools.py`, add a probe through
+     `executor._run_sub_agent_streaming`. A shared parent context
+     (`host_shell_refused=True`) delegates to email-assistant with its real
+     config. Today the sub-agent holds `run_script` and `code_task`, so pin
+     that first as the "before".
+  2. Make the change in `_tool_injection._d85_leaves_alone`, then turn the
+     probe around: no shell tool for the personal sub-agent without a cover.
+  3. Add the same probe for whatsapp-assistant, and one for a personal
+     Copilot-shaped sub-agent, whose CLI shell the guard then refuses.
+  4. Mutation: restore the `personal` early return. All three probes turn red.
+- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
+- **Added:** 2026-10-03 · the D85 interim block
+
+### H-226 · Let the Projects agent write code over the rows, once the sandbox covers it · [AGENT]
+- **Check:** `grep -n 'Never run `run_script` or `code_task` over them' apps/agents/agent-projects/instructions.md`
+  → a hit means the instructions still forbid code over the rows.
+- **Why:** D85 reverses O1 of S7e. Code over project and task data is
+  permitted, in the sandbox only. Until `covers("projects-assistant", org)`
+  is true, the agent holds no shell tool, so the old ban stays. Do not start
+  before that. Then write the rule "No file and no code over the rows" again:
+  1. Write code when a request needs it, for example a figure that no
+     server group gives.
+  2. Keep the HR-only fields gated. Do not compute the speed or the lead time
+     of a person from the rows.
+  3. Never send member data off the platform. The sandbox has no network.
+  Change the pin in `tests/unit/test_projects_agent.py` (~1873) in the same
+  pull request. Under D86, slice WS-43u owns this change.
+- **Authority:** `work_plan.md` D85 and D86 · `specs/projects_ai_chat.md`
+  §13.7 · `specs/maf_coding_engine.md` §7.9 and §16.3
+- **Added:** 2026-10-03 · the D85 interim block
+
+### H-229 · Give chat attachments platform-side text extraction, because D85 removed a live Projects flow · [AGENT]
+- **Check:** `grep -rn "docx" apps/services/gateway/gateway/routes/ packages/acb_skills/acb_skills/ | grep -i "extract"`
+  → no hit means a member's uploaded `.docx` still has no reader that a shared agent holds.
+- **What happens.** The PR #598 reviewer read the production logs. On
+  2026-10-02 and 2026-10-03, the projects-assistant of a customer org used
+  `code_task` to read an uploaded `.docx`. D85 takes `code_task` from that
+  shared agent, so that flow now stops. The agent has no other tool that
+  reads a Word file.
+- **Do.** Extract the text of a chat attachment on the platform side, before
+  the agent sees it. Start with `.docx`, `.pdf` and `.xlsx`. The agent then
+  reads plain text through a tool that it already holds, and no code runs on
+  the host. The supervisor starts this slice next.
+- **Test plan.** Upload a `.docx` in the Projects chat of a customer org, and
+  ask for its contents. The agent must answer from the text. Add a fence that
+  the extractor needs no shell tool.
+- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9 ·
+  PR #598 review, P2
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
+- **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
+  → no hit means `spawn_copilot_agent` still starts the sandbox for any organization.
+- **What happens.** `spawn_copilot_agent` (`orchestrator/agents.py` ~162)
+  calls `mutation._run_mutation_sandbox` (~222) directly.
+  `attempt_self_mutation` applies the MT-0b first-party check first
+  (`mutation.py` ~390), and this path does not. So a tenant run that reaches
+  `spawn_copilot_agent` can start a mutation container.
+- **Do.** Call `mutation._self_mutation_permitted(org)` before any mutation
+  image is built, with the org from the run binding. Refuse with the same
+  reason text that MT-0b gives.
+- **Test plan.** A test in `tests/unit/test_mt0b_self_mutation_containment.py`
+  shows that a customer org's `spawn_copilot_agent` starts no sandbox. Prove
+  it with a mutation that removes the check.
+- **Authority:** root `AGENTS.md` non-negotiable 3 · `saas_multitenancy.md`
+  §6.2 (MT-0b) · PR #598 review, P2
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-231 · Confirm that `metorite` is registered in production, so its exempt name is taken · [AGENT]
+- **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
+  → no row means the name is free, and an `agents:manage` holder could register another agent under it.
+- **What happens.** `_D85_OWNER_PENDING` exempts the registry name
+  `metorite`, and the first-party-admin gate guards it. The dynamic registry
+  (`gateway/routes/agent.py` ~688) has no organization filter, and a name is
+  unique across it. So the exemption is safe only while the real root agent
+  holds that name.
+- **Do.** Run the Check. If no row exists, register the root agent under
+  `metorite`, or reserve the name in `register_agent` so that nobody else
+  can take it.
+- **Authority:** `specs/maf_coding_engine.md` §7.9 and §15.4 · PR #598 review
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
+- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
+  → no hit means the gate does not compare the two organizations.
+- **What happens.** `_first_party_admin_runs` (`executor.py` ~1391) checks
+  that the run's org is first-party, and that the member holds
+  `admin:members:manage`. It does not check that the member's own org is the
+  run's org. `resolve_access` returns no organization, and with
+  `IDENTITY_CUTOVER` off it reads `app_user` by email only.
+- **Do.** Resolve the member's membership in the run's org (the identity
+  seam, `acb_auth.access`), and refuse when the two disagree. It is defence in
+  depth: today the run's org comes from the member's own session.
+- **Test plan.** A member who is an admin of a customer org, on a run bound to
+  the first-party org, is refused. Prove it with a mutation.
+- **Authority:** `specs/maf_coding_engine.md` §15.4 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-233 · Make the refused root agent look absent everywhere · [AGENT]
+- **Check:** `grep -n '"code": type(exc).__name__' apps/services/orchestrator/orchestrator/executor.py`
+  → a hit means a refused stream still says `AgentNotFound`, a code that no unknown agent gives.
+- **What happens.** §15.4 says "as if it did not exist". Two leaks remain:
+  1. A refused stream ends with `RUN_ERROR` code `AgentNotFound`. An agent
+     that truly fails to load gives `AgentLoadError`. So the code tells the
+     two apart.
+  2. `GET /agent` lists `metorite` to every member who may list agents. A
+     customer org's owner holds `*`, so that owner sees it.
+- **Do.** Emit `AgentLoadError` as the code for `AgentNotFound`. Filter the
+  agents in `executor._FIRST_PARTY_ADMIN_ONLY_AGENTS` out of every registry
+  list for a caller who is not a first-party admin. The 422 "Unknown agent …
+  Registered: …" text names them too.
+- **Authority:** `specs/maf_coding_engine.md` §15.4 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-234 · Run a real Copilot CLI session, to see whether it writes outside its workspace · [AGENT]
+- **Check:** `grep -c "write_out_of_workspace" <the log of a real task-manager turn on the local stack>`
+  → no run on record means this is still unverified.
+- **What happens.** PR #598 made `decide()` read the SDK 1.0 write target
+  `file_name`. Production runs the enforcing mode, because its `.env` sets no
+  permission mode. So a CLI write outside the run's workspace is now refused.
+  The CLI may ask to write its own session-state files, for example under its
+  home dir. If it does, the refusal can break task-manager, which is live.
+- **Do.** On the local stack, leave the permission mode unset, so it reads as
+  enforcing, as on production. Run one real My Tasks turn through the Copilot
+  CLI, and read every `permission.decision` line. If the CLI asks for its own
+  state files, allow its state dir by name in `decide()`, and add a test.
+- **Authority:** `specs/maf_coding_engine.md` §7.9 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
