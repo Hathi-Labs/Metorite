@@ -87,6 +87,7 @@ Remove stale or contradictory text immediately.
 Organisation: Fracktal Works
 Project: Metorite v2 -- Headless, self-mutating agent orchestration platform
 Runtime: MAF (Microsoft Agent Framework) native, plus the GitHub Copilot SDK as a second runtime for interactive coworker chat + the self-mutation sandbox. No LangGraph. No deepagents. No n8n.
+**⚠️ AMENDED 2026-10-03 (D84): the GitHub Copilot SDK leaves the platform.** Every Copilot use moves to MAF, and then the SDK leaves the lock. Plan: `project-docs/specs/maf_coding_engine.md` §15, board `WS-43`.
 Last updated: 2026-08-09
 
 ## Purpose
@@ -106,9 +107,11 @@ Copilot SDK sandboxes.
 4. No autonomous writes to source systems until Action Broker is live
 5. Git is the single source of truth for all agent artefacts
 6. MAF is the PRIMARY native agent runtime. The Copilot SDK is the supported second runtime for interactive coworker chat (Tier 1.5, /copilot/chat, BYOK-routed through the gateway) and the self-mutation sandbox -- not a general execution path for event-driven specialist agents
+   **⚠️ AMENDED 2026-10-03 (D84):** MAF becomes the ONLY runtime. Chat, the self-mutation runner and every agent that a repo registers move to MAF, and the Copilot SDK leaves the lock (`project-docs/specs/maf_coding_engine.md` §15). Do not build a new Copilot path. A new agent builds a MAF `Agent`.
 7. No Theia / browser IDE
 8. Source systems are authoritative -- Metorite is a read-mostly mirror. **⚠️ AMENDED 2026-08-24 (D52.4): this is no longer true of PROJECT MANAGEMENT.** It still binds Zoho, Gmail and every future connector. It does **not** bind Projects: ClickUp is retired outright (no connector, no sync; since D80 on 2026-09-26 a one-shot FILE importer may bring work in, `project-docs/specs/project_import.md`), and **Metorite is the project-management system of record** -- `pm_tasks` / `pm_task_personal` are the only task store in the product, and the Tasks app is a personal *lens* over them rather than a second store (D53). Do not build a "mirror" or a "sync" for anything under `pm_*`; there is nothing upstream to mirror. Board `WS-39`; owning section `project-docs/specs/project_management_app.md` §12.
 9. New event-driven / specialist-agent execution features default to MAF paths; the Copilot-SDK runtime is reserved for interactive chat + mutation (both gateway-routed), not new autonomous execution entrypoints
+   **⚠️ AMENDED 2026-10-03 (D84):** every execution feature uses MAF, and the Copilot-SDK reservation for chat and mutation ends with the slices of WS-43 (`project-docs/specs/maf_coding_engine.md` §15).
 10. **All gateway endpoints require auth, by construction rather than by opting in.** `require_authenticated` is attached app-wide at the `FastAPI(dependencies=[…])` level, so a route added tomorrow is covered without anyone remembering; `PUBLIC_ROUTES` is the exemption list and every entry authenticates itself another way. **Before building or modifying ANY app, read `project-docs/specs/user_management_contract.md`** — the ten binding rules for identity, membership and authorization, each one learned by breaking it. In particular: never navigate the browser directly at the gateway (it carries no credentials), never add a route to `PUBLIC_ROUTES` to make it reachable, and never take the acting identity from a query parameter or request body — **nor the acting TENANT, which is R11, added 2026-08-08 with D15; the tenant comes from the authenticated session or a tenant-scoped API key and from nowhere else.** The contract carries **eleven** rules, not ten.
 11. **Multi-tenancy is `organization_id` + Postgres RLS, and it is NOT built yet.**
     The tenant boundary was re-taken on 2026-08-08 (**D15**, board **WS-29**, spec
