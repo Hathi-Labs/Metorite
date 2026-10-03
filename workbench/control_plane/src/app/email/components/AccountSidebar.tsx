@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
+import { foldersInScope } from "../lib/emailStore";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -24,6 +25,10 @@ interface AccountSidebarProps {
   onDisconnect?: (account: EmailAccount) => void;
   /** Rename and recolour a mailbox (EM-T8b). The page owns the dialog. */
   onEditMailbox?: (account: EmailAccount) => void;
+  /** All inboxes is the view (EM-T8d, D-EM-22). */
+  viewAll?: boolean;
+  /** Open All inboxes. Without it, the row is not drawn. */
+  onSelectAll?: () => void;
   /** Open one of the Email Automation feature views. */
   onOpenAutomation?: (feature: AutomationFeature) => void;
   /** Currently-open automation feature, for highlighting. */
@@ -59,12 +64,25 @@ export function AccountSidebar({
   onSetDefault,
   onDisconnect,
   onEditMailbox,
+  viewAll = false,
+  onSelectAll,
   onOpenAutomation,
   activeAutomation,
   showMailbox = true,
   showAutomation = true,
 }: AccountSidebarProps) {
   const [accountsExpanded, setAccountsExpanded] = useState(true);
+  // All inboxes shows for two or more mailboxes. Its count is the sum of the
+  // Inbox counts (§11.4), and a selected mailbox row is never also selected.
+  const showAll = !!onSelectAll && accounts.length > 1;
+  const allUnread = accounts.reduce((n, a) => n + (a.unreadCount || 0), 0);
+  const isSelected = (id: string) => !viewAll && selectedAccountId === id;
+  // In All inboxes only the folders that every mailbox has show. A custom
+  // folder belongs to one mailbox, and a count belongs to one mailbox, so the
+  // tree draws none (§11.4 "Folders").
+  const shownFolders = viewAll
+    ? foldersInScope(folders, true).map((f) => ({ ...f, count: 0 }))
+    : folders;
   // The account menu: which account, and where to draw it.
   const [menu, setMenu] = useState<{ account: EmailAccount; x: number; y: number } | null>(null);
 
@@ -129,11 +147,39 @@ export function AccountSidebar({
 
         {accountsExpanded && (
           <div className="mt-1 space-y-0.5">
+            {showAll && (
+              <button
+                onClick={onSelectAll}
+                aria-pressed={viewAll}
+                className={`flex items-center gap-2.5 w-full px-2 py-2 rounded-md transition-colors text-left ${
+                  viewAll
+                    ? "bg-sidebar-accent text-sidebar-foreground"
+                    : "hover:bg-sidebar-accent/60 text-sidebar-foreground/70 hover:text-sidebar-foreground"
+                }`}
+              >
+                <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                  <AppIcon name="Inbox" size={13} />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-xs font-medium truncate">All inboxes</span>
+                  <span className="block text-[10px] text-muted-foreground truncate">
+                    {accounts.length} mailboxes
+                  </span>
+                </span>
+                {viewAll ? (
+                  <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
+                ) : allUnread > 0 ? (
+                  <span className="bg-primary text-primary-foreground text-[10px] rounded-full px-1.5 py-0.5 flex-shrink-0">
+                    {allUnread}
+                  </span>
+                ) : null}
+              </button>
+            )}
             {accounts.map((account) => (
               <div
                 key={account.id}
                 className={`group flex items-center gap-1 w-full px-2 py-2 rounded-md transition-colors ${
-                  selectedAccountId === account.id
+                  isSelected(account.id)
                     ? "bg-sidebar-accent text-sidebar-foreground"
                     : "hover:bg-sidebar-accent/60 text-sidebar-foreground/70 hover:text-sidebar-foreground"
                 }`}
@@ -146,6 +192,15 @@ export function AccountSidebar({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-medium truncate">{mailboxLabel(account)}</span>
+                      {account.syncStatus === "error" && (
+                        // A mailbox that stopped syncing shows it in the switcher,
+                        // so All inboxes cannot hide it (§11.4, EM-T8d review).
+                        <AppIcon name="AlertCircle"
+                          size={10}
+                          className="text-warning flex-shrink-0"
+                          aria-label="Needs attention"
+                        />
+                      )}
                       {account.isDefault && (
                         <AppIcon name="Star"
                           size={10}
@@ -172,7 +227,7 @@ export function AccountSidebar({
                     <AppIcon name="Star" size={11} />
                   </button>
                 )}
-                {selectedAccountId === account.id && (
+                {isSelected(account.id) && (
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
                 {(onDisconnect || onEditMailbox) && (
@@ -191,7 +246,7 @@ export function AccountSidebar({
                     className="flex-shrink-0"
                   />
                 )}
-                {account.unreadCount > 0 && selectedAccountId !== account.id && (
+                {account.unreadCount > 0 && !isSelected(account.id) && (
                   <span className="bg-primary text-primary-foreground text-[9px] rounded-full px-1.5 py-0.5 flex-shrink-0">
                     {account.unreadCount}
                   </span>
@@ -248,7 +303,7 @@ export function AccountSidebar({
       {/* Folders */}
       {showMailbox && (
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5 scrollbar-hide">
-        {folders.map(({ label, key, count, type }) => {
+        {shownFolders.map(({ label, key, count, type }) => {
           const IconComponent = getFolderIcon(key, type);
           return (
             <button

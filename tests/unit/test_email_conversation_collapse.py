@@ -56,12 +56,13 @@ async def _run(**kw):
 async def test_collapse_dedupes_by_conversation_and_counts_conversations() -> None:
     _out, seen = await _run(account_id="a", folder="INBOX", collapse=True)
     joined = "\n".join(seen)
-    # One row per conversation, newest-in-view first.
-    assert "DISTINCT ON (COALESCE(em.thread_id, em.id::text))" in joined
-    assert "ORDER BY COALESCE(em.thread_id, em.id::text), em.received_at DESC" \
-        in joined
+    # One row per conversation, newest-in-view first. The key names the
+    # mailbox, so a conversation never spans two mailboxes (EM-T8d, MB-12).
+    key = "(em.account_id::text || ':' || COALESCE(em.thread_id, em.id::text))"
+    assert f"DISTINCT ON ({key})" in joined
+    assert f"ORDER BY {key}, em.received_at DESC" in joined
     # Total is conversations, not messages.
-    assert "COUNT(DISTINCT COALESCE(em.thread_id, em.id::text))" in joined
+    assert f"COUNT(DISTINCT {key})" in joined
 
 
 async def test_default_is_per_message_for_the_assistant() -> None:

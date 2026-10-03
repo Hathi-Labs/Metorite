@@ -204,7 +204,8 @@ describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
 
   it("keeps the detail view on a phone after the switch", () => {
     const page = codeOnly(read("page.tsx"));
-    const at = page.indexOf("setMobileView(\"inbox\");\n  }, [selectedFolder, selectedAccountId]);");
+    // EM-T8d adds the scope (viewAll) to the deps of the same effect.
+    const at = page.indexOf("setMobileView(\"inbox\");\n  }, [selectedFolder, selectedAccountId, viewAll]);");
     expect(at).toBeGreaterThan(-1);
     const effect = page.slice(page.lastIndexOf("useEffect(() => {", at), at);
     expect(effect).toContain("if (useEmailStore.getState().selectedEmailOverride) return;");
@@ -227,8 +228,9 @@ describe("the composer sends from the mailbox it was given (D-EM-20)", () => {
   const page = codeOnly(read("page.tsx"));
 
   it("sends from composeDefaults.accountId before the selection", () => {
-    expect(page).toContain(
-      "const composeAccountId = composeDefaults?.accountId || selectedAccountId;",
+    // EM-T8d: new mail in All inboxes goes from the default mailbox.
+    expect(page).toMatch(
+      /const composeAccountId =\s*composeDefaults\?\.accountId \|\|\s*\(viewAll \? defaultAccountId \|\| selectedAccountId : selectedAccountId\);/,
     );
     expect(page).toContain("accountId={composeAccountId ?? \"\"}");
     // EM-T8c: the From row of the composer may choose another mailbox, and

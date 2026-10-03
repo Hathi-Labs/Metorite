@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
-import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope } from "../lib/emailStore";
 import { LabelMenu } from "./LabelMenu";
 
 /**
@@ -25,7 +25,7 @@ export function EmailToolbar() {
     emails, emailsTotal, selectedEmailId, selectedIds, folders,
     updateEmail, deleteEmail, openCompose,
     bulkUpdateSelected, bulkDeleteSelected, clearEmailSelection,
-    setViewerCommand,
+    setViewerCommand, viewAll,
   } = useEmailStore();
 
   const selectedEmail = emails.find((e) => e.id === selectedEmailId) ?? null;
@@ -85,7 +85,7 @@ export function EmailToolbar() {
                 <div className="fixed inset-0 z-10" onClick={() => setShowMove(false)} />
                 <div className="absolute left-0 top-full mt-1 z-20 bg-popover border border-border rounded-lg shadow-xl py-1 w-44 max-h-64 overflow-y-auto">
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Move to</div>
-                  {folders
+                  {foldersInScope(folders, viewAll)
                     .filter((f) => isRealFolder(f.key) && f.key !== selectedEmail.folder)
                     .map((f) => (
                       <button

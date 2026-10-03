@@ -23,8 +23,11 @@ export function LabelMenu({
    *  box-in-a-box with a nested scrollbar. */
   embedded?: boolean;
 }) {
-  const { availableLabels, labelColors, applyLabel, setLabelColor } =
+  const { availableLabels, labelColors, applyLabel, setLabelColor, viewAll, selectedAccountId } =
     useEmailStore();
+  // The colours are those of the selected mailbox. A mail of another mailbox
+  // (All inboxes) gets labels but no colour edit here (EM-T8d review).
+  const canColor = !viewAll || email.accountId === selectedAccountId;
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState<string | null>(null);
   const [pickNew, setPickNew] = useState(false);
@@ -36,7 +39,7 @@ export function LabelMenu({
     const name = newLabel.trim();
     if (!name) return;
     applyLabel(email.id, name, true);
-    if (newColor) setLabelColor(name, newColor);
+    if (newColor && canColor) setLabelColor(name, newColor, email.accountId);
     setNewLabel("");
     setNewColor(null);
     setPickNew(false);
@@ -86,18 +89,20 @@ export function LabelMenu({
                     </span>
                     <span className="truncate">{name}</span>
                   </button>
-                  <ColorSwatch
-                    name={name}
-                    title={open ? "Close colours" : "Set colour"}
-                    onClick={() => setOpenColorFor(open ? null : name)}
-                  />
+                  {canColor && (
+                    <ColorSwatch
+                      name={name}
+                      title={open ? "Close colours" : "Set colour"}
+                      onClick={() => setOpenColorFor(open ? null : name)}
+                    />
+                  )}
                 </div>
-                {open && (
+                {open && canColor && (
                   <div className="px-3 pb-1.5">
                     <LabelColorGrid
                       value={presetForLabel(name, labelColors)}
                       onPick={(c) => {
-                        setLabelColor(name, c);
+                        setLabelColor(name, c, email.accountId);
                         setOpenColorFor(null);
                       }}
                     />
@@ -138,7 +143,7 @@ export function LabelMenu({
             <Icon name="Plus" size={13} />
           </button>
         </div>
-        {pickNew && (
+        {pickNew && canColor && (
           <div className="pt-1">
             <LabelColorGrid
               value={newColor}

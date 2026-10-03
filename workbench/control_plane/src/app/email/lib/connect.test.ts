@@ -366,7 +366,7 @@ describe("the reconnect banner sends the mailbox as login_hint (done-when 6)", (
   });
 
   it("the banner passes the address of the account", () => {
-    expect(PAGE).toContain("handleConnect(provider, selectedAccount.emailAddress)");
+    expect(PAGE).toContain("handleConnect(provider, attentionAccount.emailAddress)");
     expect(callbackBody(PAGE, "handleConnect")).toContain(
       "connectQuery(window.location.href, loginHint, importMonths)",
     );
@@ -672,7 +672,7 @@ describe("the range goes to the gateway (EM-T6d item 3)", () => {
   it("the reconnect target holds no import_months", () => {
     // The banner passes the address and nothing else, so handleConnect gets
     // no range, and connectQuery then sends none (D-EM-13).
-    expect(PAGE).toContain("onClick={() => handleConnect(provider, selectedAccount.emailAddress)}");
+    expect(PAGE).toContain("onClick={() => handleConnect(provider, attentionAccount.emailAddress)}");
     const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test"));
     expect(q.get("login_hint")).toBe("ravi@contoso.test");
     expect(q.has("import_months")).toBe(false);

@@ -196,12 +196,19 @@ async def _unread_counts(
     call this. ``_account_scope`` holds the owner predicate, so the read
     counts only the mailboxes of ``owner``. ``account_id`` narrows it to one
     of them. A mailbox with no unread mail has no row here, and reads 0.
+
+    EM-T8d (MB-13): the count is the unread mail of the INBOX that the member
+    sees, so junk, deleted mail and snoozed mail do not count. The switcher
+    shows it for each mailbox, and All inboxes shows the sum.
     """
     params: dict[str, Any] = {"uid": owner}
     scope = _account_scope(account_id, params)
     rows = (await db.execute(text(
         "SELECT em.account_id, count(*) AS unread FROM email_messages em "
-        f"WHERE {scope} AND em.is_read = false GROUP BY em.account_id"
+        f"WHERE {scope} AND em.is_read = false "
+        "AND LOWER(COALESCE(em.folder, '')) = 'inbox' "
+        "AND (em.snoozed_until IS NULL OR em.snoozed_until <= now()) "
+        "GROUP BY em.account_id"
     ), params)).fetchall()
     return {str(r.account_id): int(r.unread) for r in rows}
 
