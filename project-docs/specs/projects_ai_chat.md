@@ -1620,9 +1620,10 @@ three product decisions were open. The owner answered all three on
   already see. That code runs only in the sandbox container of the
   organization, with no network (`maf_coding_engine.md` §7.9). The HR-only
   fields stay gated, as O3 says. Until the sandbox covers projects-assistant,
-  the agent holds no `run_script` and no `code_task`. So WS43-F21 now
+  the agent holds no `run_script` and no `code_task`. So WS43-F23 now
   ENFORCES that half of the fence. The `write_artifact` half stays ADVISORY.
-  The instructions keep the ban until the cover, and H-226 changes them then.
+  The instructions keep the ban until the cover. Then WS-43u (D86) changes
+  them (H-226).
 - **O2 · The server groups the data.** The route takes an optional `group_by`
   from an allowlist and a `measure` from an allowlist. The server returns
   exact figures. The model picks figures and explains them. It never adds

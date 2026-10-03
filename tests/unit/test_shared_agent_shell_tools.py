@@ -2,7 +2,7 @@
 
 The owner decided on 2026-10-03: until the sandbox is live, block code
 execution on the shared server for the Projects agent and the other shared
-agents (``work_plan.md`` D85, ``maf_coding_engine.md`` §7.9). Fence WS43-F21.
+agents (``work_plan.md`` D85, ``maf_coding_engine.md`` §7.9). Fence WS43-F23.
 
 The seam is ONE function, ``_tool_injection._withheld_shell_tools``. Its
 answer leaves the SCOPE (``_resolve_injected_scope(withheld=)``), and three
@@ -236,18 +236,21 @@ def _cover_only(agent: str, org: str):
 
 
 def test_a_covered_agent_gets_its_shell_tools_back(monkeypatch) -> None:
-    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("projects-assistant", ORG_A))
+    """A cover here means the broker runs the shell tools (§7.7). It is not
+    the ``projects`` target of D86, under which projects-assistant keeps the
+    three withheld (§16.3), so this test covers crm-assistant."""
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
     monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_A)
-    names = _inject_native("projects-assistant")
+    names = _inject_native("crm-assistant")
     assert {"run_script", "code_task"} <= names
-    # The cover is per agent: crm-assistant in the same org stays blocked.
-    assert not (_inject_native("crm-assistant") & SHELL_TOOLS)
+    # The cover is per agent: projects-assistant in the same org stays blocked.
+    assert not (_inject_native("projects-assistant") & SHELL_TOOLS)
 
 
 def test_a_cover_in_one_org_is_not_a_cover_in_another(monkeypatch) -> None:
-    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("projects-assistant", ORG_A))
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("crm-assistant", ORG_A))
     monkeypatch.setattr(executor, "_current_run_org", lambda: ORG_B)
-    assert not (_inject_native("projects-assistant") & SHELL_TOOLS)
+    assert not (_inject_native("crm-assistant") & SHELL_TOOLS)
 
 
 def test_a_run_with_no_org_gets_no_cover(monkeypatch) -> None:

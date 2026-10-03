@@ -77,12 +77,17 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
 def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
     """True when the sandbox broker runs this agent's shell tools (D85).
 
+    It answers one question: does the broker run ``code_task``,
+    ``run_script`` and ``install_dependency`` for this agent in this org
+    (``maf_coding_engine.md`` §7.7 condition 2)? Only then may the D85 block
+    lift.
+
     TODO(WS-43f): return ``orchestrator.sandbox_broker.covers(agent_name,
-    organization_id)`` here. PR #591 (WS-43c) adds that function. It answers
-    ``False`` for every agent until WS-43f routes ``run_script`` and
-    ``install_dependency`` through the broker (``maf_coding_engine.md`` §7.7).
-    Until then this local predicate gives the same answer, so nothing that
-    the broker does not run can reach a shared agent.
+    organization_id)`` here, for the targets whose shell tools the broker
+    runs. WS-43c (PR #591) added that function, and it answers ``False`` for
+    every agent until WS-43f. ⚠️ The ``projects`` target of D86 is NOT such a
+    cover: ``covers()`` is true there while the three host shell tools stay
+    withheld (§16.3). Until WS-43f this local predicate answers ``False``.
     """
     del agent_name, organization_id
     return False

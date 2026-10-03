@@ -307,7 +307,7 @@ def _denied_result(reason: str) -> Any:
 # app-builder hold. The run decides it once, at its boundary: the executor
 # binds ``shell_withheld`` into the artifact context from
 # ``orchestrator._tool_injection._withheld_shell_tools``, so both halves read
-# one answer. Fence: tests/unit/test_shared_agent_shell_tools.py (WS43-F21).
+# one answer. Fence: tests/unit/test_shared_agent_shell_tools.py (WS43-F23).
 
 #: The text the model reads when D85 refuses its shell.
 SHELL_WITHHELD_REASON = (

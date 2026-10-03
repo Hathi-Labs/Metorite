@@ -44,7 +44,7 @@ and streams chat responses as AG-UI events.
    - The org comes from `_current_run_org()`, never from input. `_sandbox_covers` returns `False` until WS-43f points it at `sandbox_broker.covers`.
    - The withheld names leave the scope through `_resolve_injected_scope(withheld=)`. So the injected list, the addendum and the skill bodies agree.
    - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
-   - Each artifact context (the run, the batch run, each sub-agent) binds `shell_withheld` from the same seam. `_copilot_session._copilot_permission_handler()` wraps every handler it returns in `permission_policy.guard_shared_agent_shell`, in EVERY `AGENT_PERMISSION_MODE`, because production runs `audit`. Take a Copilot handler from that factory and nowhere else. Fence: `tests/unit/test_shared_agent_shell_tools.py` (WS43-F21).
+   - Each artifact context (the run, the batch run, each sub-agent) binds `shell_withheld` from the same seam. `_copilot_session._copilot_permission_handler()` wraps every handler it returns in `permission_policy.guard_shared_agent_shell`, in EVERY `AGENT_PERMISSION_MODE`, because production runs `audit`. Take a Copilot handler from that factory and nowhere else. Fence: `tests/unit/test_shared_agent_shell_tools.py` (WS43-F23).
 
 ## Work Guidance
 
