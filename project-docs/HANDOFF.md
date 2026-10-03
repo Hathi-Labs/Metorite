@@ -112,29 +112,32 @@ line — never reclaim a number by deleting the other entry.
   3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
 - ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
   a private repo on a dev box before the merge.
-- **Authority:** `specs/maf_coding_engine.md` §15.3 ·
-  `permissions_sandbox_b6.md` §P5-b.3
+- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
 - **Added:** 2026-10-03 · the D84 spec session
 
-### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the two WS-43 flags · [OWNER]
-- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED" .claude/hooks/plan-guard.mjs`.
-  No hit means this is open.
+### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
+- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
+  No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Why.** `specs/maf_coding_engine.md` §12 gives the WS-43 gates the id
   `ws43-sandbox-flip`. No line of `.claude/OWNER_GRANTS.md` names it, so the
-  dev-phase window does not open it. No hook blocks a write of the two flags
-  today. So the gate binds by prose only.
+  dev-phase window does not open it. No hook blocks a write of the three
+  flags today. So the gate binds by prose only.
 - **Do.**
   1. Add a rule with the id `ws43-sandbox-flip` to `OWNER_GATES` in
      `plan-guard.mjs`.
-  2. Make it match `MAF_CODING_SCOPE` with a non-empty value, and
-     `SANDBOX_EGRESS_ENABLED` with a true value.
-  3. Do not add the two names to `enforcement-flip`. An
+  2. Make it match `MAF_CODING_SCOPE` with any non-empty value. That covers
+     the targets `code_task`, `app_builder`, `mutation:*` and `metorite:*`
+     (WS43-G3, WS43-G10). Add a test case for `mutation:*` and one for
+     `metorite:*`.
+  3. Make it match `SANDBOX_EGRESS_ENABLED` and `MAF_NATIVE_SESSIONS` with a
+     true value (WS43-G4, WS43-G13).
+  4. Do not add these names to `enforcement-flip`. An
      `ALLOW-UNTIL 2026-11-30` line covers that id, so the window would open
      them.
-  4. Add cases to `plan-guard.test.mjs`, then run
+  5. Add cases to `plan-guard.test.mjs`, then run
      `node .claude/hooks/plan-guard.test.mjs`.
 - **The id ends in `-flip` on purpose.** Then plan-guard also checks a file
-  write for the two flags (`plan-guard.mjs:478`).
+  write for the three flags (`plan-guard.mjs:478`).
 - **Why [OWNER].** An edit of `plan-guard.mjs` needs the `guard-write` grant
   (CLAUDE.md §3a). The fix round of PR #584 was told not to edit the guard.
 - **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
