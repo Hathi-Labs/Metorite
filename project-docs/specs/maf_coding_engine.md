@@ -5,9 +5,8 @@
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
 (the no-Copilot fence) are built (2026-10-03). WS-43c (the sandbox broker,
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
-dark (2026-10-03). WS-43d (Projects track step 1) is built and dark on the
-branch `ws43d-projects-tools`, and its PR waits for review and for D85
-(PR #598). Every other slice is spec only.** Owner decisions, 2026-10-03.
+dark (2026-10-03). WS-43d (Projects track step 1) is built and dark in
+PR #603, which waits for review and for D85 (PR #598). Every other slice is spec only.** Owner decisions, 2026-10-03.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84** and **D86**.
 
@@ -1521,7 +1520,7 @@ uv run pytest tests/unit/test_run_data_hygiene.py -q -rs -m sandbox_docker
 
 **Gate.** AGENT-SAFE. It ships dark: no organization is in the scope.
 
-**Built 2026-10-03 on the branch `ws43d-projects-tools`. It ships dark.**
+**Built 2026-10-03 in PR #603. It ships dark.**
 These facts change or add to the text above:
 
 - **`covers()` needs the D85 seam.** Condition 3 of §16.3 reads
