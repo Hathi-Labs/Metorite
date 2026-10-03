@@ -2203,7 +2203,7 @@ uv run pytest tests/unit/test_projects_agent.py \
 **Gate.** AGENT-SAFE. It ships dark, because no organization is in the
 scope.
 
-### WS-43v — Projects track step 3: the light eval 🔲 ▶ **Active (D86). The harness and the checkers are built (PR #WS43V-PR). The sweep waits on WS-43d and WS-43u**
+### WS-43v — Projects track step 3: the light eval 🔲 ▶ **Active (D86). The harness and the checkers are built (PR #607). The sweep waits on WS-43d and WS-43u**
 
 **Scope.** Eight Projects coding tasks under `evals/coding_engine/`, with
 checkers. It is a slim WS-43a. It runs locally through the Router on the
@@ -2243,7 +2243,7 @@ uv run python -m evals.coding_engine.run --engine maf --agent projects-assistant
 **Gate.** AGENT-SAFE on a local stack. A run on the production Router is
 WS43-G6.
 
-**As built (PR #WS43V-PR, 2026-10-03).** The supervisor narrowed the slice: build
+**As built (PR #607, 2026-10-03).** The supervisor narrowed the slice: build
 the harness and the checkers now, and run the sweep after WS-43d (PR #603)
 and WS-43u merge. So done-when 1 to 3 stay open. `evals/coding_engine/README.md`
 gives the files, the stack steps and the result format.
