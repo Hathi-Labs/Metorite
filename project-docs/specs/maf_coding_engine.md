@@ -2,8 +2,9 @@
 
 <!-- ste-tier: strict -->
 
-**Status: ACTIVE. Spec only, nothing built.** Owner decision, 2026-10-03.
-Board row **WS-43**. This spec records **D82** and **D83**.
+**Status: ACTIVE. WS-43b is built: the image and the Docker test workflow.
+Every other slice is spec only.** Owner decision, 2026-10-03. Board row
+**WS-43**. This spec records **D82** and **D83**.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
 PR #584 applied three reviews on the same day.
@@ -1224,7 +1225,7 @@ uv run python -m evals.coding_engine.run --engine copilot --tier tier-balanced -
 **Gate.** AGENT-SAFE on a local stack. A run against the production Router,
 or with a production key, is WS43-G6.
 
-### WS-43b — The sandbox image and the Docker test workflow 🔲
+### WS-43b — The sandbox image and the Docker test workflow ✅
 
 **Scope.** `apps/services/orchestrator/Dockerfile.coding-sandbox`,
 `apps/services/orchestrator/sandbox/requirements.txt`, the `sandbox_docker`
@@ -1256,6 +1257,33 @@ uv run pytest tests/unit/test_coding_sandbox_image.py -q -rs -m sandbox_docker
 
 **Gate.** AGENT-SAFE. To build the image on the box is a deploy step
 (WS43-G2).
+
+**Built on 2026-10-03.** The image ships dark. No code runs it yet, and
+nothing builds it on the box.
+
+- The base is `python:3.12-slim-bookworm@sha256:54c85f3c…`, with Python
+  3.12.15. Both `FROM` lines name the same index digest.
+- Node.js is 22.23.3 for `linux-x64`. A builder stage downloads the tarball
+  and checks it with `sha256sum -c`. Only the `node` binary and npm go to the
+  final stage. The pin is an `ENV`, so a `--build-arg` cannot replace it.
+- `requirements.txt` pins 25 distributions with their hashes. pip installs
+  them with `--require-hashes --only-binary=:all:`.
+- The image sets `HOME=/tmp` and ends on `USER 1000:1000`. A uid with no
+  passwd entry gets `HOME=/`, and `--read-only` makes that dir unwritable.
+- The image is about 656 MB on disk and about 205 MB compressed.
+
+**The fence.** The unit job of `pr-check.yml` runs 44 static tests. Each checker also
+runs on bad input, so a checker that goes blind fails. The 4 `sandbox_docker`
+tests run only in `sandbox-docker.yml`. WS43-F10's last clause, a broker that
+accepts a mutable tag, needs the broker. WS-43c adds that test to the same
+file.
+
+**Two facts that the text above does not say.**
+
+- §7.2 pins no version for the system packages. So `git`, `bash`, `procps`
+  and `ca-certificates` follow the Debian mirror at build time.
+- A Python package dir that a uid cannot read still imports, as an empty
+  namespace package. So the Docker test checks `__file__` for each module.
 
 ### WS-43c — The sandbox broker and the scope setting 🔲
 

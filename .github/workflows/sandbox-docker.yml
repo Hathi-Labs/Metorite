@@ -1,0 +1,100 @@
+# Metorite — the coding sandbox image and its Docker tests (WS-43b).
+#
+# Spec: project-docs/specs/maf_coding_engine.md §7.2 (the image) and §10
+# ("Where the Docker tests run").
+#
+# The `sandbox_docker` tests need a real Docker daemon. pyproject.toml takes
+# them out of the default run, so the unit job of pr-check.yml never builds the
+# image. This workflow builds it once, gives its image ID to the tests in
+# CODING_SANDBOX_IMAGE, and runs `pytest -m sandbox_docker -rs`.
+#
+# ⚠️ It fails on ANY skip. A Docker test that skips proves nothing, and a
+# workflow that reads green on a skip is the R8 failure again (843 tests once
+# skipped while the run read green).
+#
+# ⚠️ The trigger carries a `paths:` filter, as skill-eval.yml does. So do NOT
+# make this a REQUIRED check while the filter stays: a workflow that a filter
+# skips reports nothing, and the PR then waits for it forever (pr-check.yml
+# records the same trap, H-23).
+#
+# This workflow builds the image on a GitHub runner only. To build or load it
+# on the production box is owner gate WS43-G2, and nothing here does it.
+
+name: sandbox-docker
+
+on:
+  pull_request:
+    paths:
+      - "apps/services/orchestrator/Dockerfile.coding-sandbox"
+      - "apps/services/orchestrator/sandbox/**"
+      - "apps/services/orchestrator/orchestrator/sandbox_broker.py"
+      - "packages/acb_skills/acb_skills/sandbox_tools.py"
+      - "tests/unit/test_coding_sandbox_image.py"
+      - "tests/unit/test_sandbox_*.py"
+      - "tests/unit/test_app_builder_engine.py"
+      - "tests/unit/test_no_host_git_on_sandbox_dir.py"
+      - "pyproject.toml"
+      - ".github/workflows/sandbox-docker.yml"
+  schedule:
+    # Once a night, so that a moved upstream (a base digest that left the
+    # registry, a Node tarball that moved) shows up without a PR.
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox-docker:
+    name: "Sandbox Docker tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Build the coding sandbox image once
+        run: |
+          docker build \
+            --iidfile "$RUNNER_TEMP/coding-sandbox.iid" \
+            -f apps/services/orchestrator/Dockerfile.coding-sandbox \
+            apps/services/orchestrator
+          image="$(cat "$RUNNER_TEMP/coding-sandbox.iid")"
+          echo "CODING_SANDBOX_IMAGE=${image}" >> "$GITHUB_ENV"
+          docker image inspect --format 'image {{.Id}} size {{.Size}} bytes' "$image"
+
+      - name: Run the sandbox_docker tests
+        run: >-
+          uv run python -m pytest -m sandbox_docker -rs -v
+          --junitxml="$RUNNER_TEMP/sandbox-docker.xml"
+
+      - name: Fail on any skip, and on no test at all
+        run: |
+          uv run python - "$RUNNER_TEMP/sandbox-docker.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          tests = sum(int(s.get("tests", "0")) for s in suites)
+          skipped = sum(int(s.get("skipped", "0")) for s in suites)
+          print(f"sandbox_docker: {tests} test(s), {skipped} skipped")
+          if tests == 0:
+              sys.exit("No sandbox_docker test ran. The marker or its filter is broken.")
+          if skipped:
+              sys.exit(
+                  f"{skipped} sandbox_docker test(s) skipped. A Docker test that "
+                  "skips proves nothing (maf_coding_engine.md section 10). Read the -rs "
+                  "summary above for the reason."
+              )
+          PY
