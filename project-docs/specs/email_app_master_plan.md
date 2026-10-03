@@ -3854,8 +3854,7 @@ tells the model to leave `account_id` out, and only EM-T8e-2 makes that argument
 
 ##### EM-T8e-3 — the chat scope (UI)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03). The branch is `email-chat-scope`. Merge it after
-EM-T8e-2, because the All inboxes persona tells the model to leave `account_id` out.
+**Status.** ✅ MERGED #599 (2026-10-03), after EM-T8e-2 #597. No migration.
 
 **As built (2026-10-03).**
 
