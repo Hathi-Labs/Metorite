@@ -95,6 +95,30 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the two WS-43 flags · [OWNER]
+- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED" .claude/hooks/plan-guard.mjs`.
+  No hit means this is open.
+- **Why.** `specs/maf_coding_engine.md` §12 gives the WS-43 gates the id
+  `ws43-sandbox-flip`. No line of `.claude/OWNER_GRANTS.md` names it, so the
+  dev-phase window does not open it. No hook blocks a write of the two flags
+  today. So the gate binds by prose only.
+- **Do.**
+  1. Add a rule with the id `ws43-sandbox-flip` to `OWNER_GATES` in
+     `plan-guard.mjs`.
+  2. Make it match `MAF_CODING_SCOPE` with a non-empty value, and
+     `SANDBOX_EGRESS_ENABLED` with a true value.
+  3. Do not add the two names to `enforcement-flip`. An
+     `ALLOW-UNTIL 2026-11-30` line covers that id, so the window would open
+     them.
+  4. Add cases to `plan-guard.test.mjs`, then run
+     `node .claude/hooks/plan-guard.test.mjs`.
+- **The id ends in `-flip` on purpose.** Then plan-guard also checks a file
+  write for the two flags (`plan-guard.mjs:478`).
+- **Why [OWNER].** An edit of `plan-guard.mjs` needs the `guard-write` grant
+  (CLAUDE.md §3a). The fix round of PR #584 was told not to edit the guard.
+- **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
+- **Added:** 2026-10-03 · PR #584 fix round 1
+
 ### H-211 · Remove `approve_all` from the root `metorite` agent and from `agent-sales-assistant` · [AGENT]
 - **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
   `on_permission_request` line means this is open. For the other agent, run
@@ -150,12 +174,12 @@ line — never reclaim a number by deleting the other entry.
   `ISOLATION_TIER_ENFORCE`, and neither `docker run` passes `--read-only` or
   `--network`. The board is the only current-state authority. So a false
   "shipped" hides two dispatchable slices.
-- **Do.** Rewrite the WS-3 state cell to say that WS-3a and WS-3b are unbuilt.
-  Or build them from `permissions_sandbox_b6.md` §P5-a.2 and §P5-b.2. WS-3a's
-  refusal must read `sandbox_broker.covers(agent)` and not
-  `copilot_sandbox_scope` (`specs/maf_coding_engine.md` §9 R-3).
-- **This PR flagged the row** with a pointer to this entry. It did not
-  rewrite the state cell.
+- **Do.** Build WS-3a and WS-3b from `permissions_sandbox_b6.md` §P5-a.2 and
+  §P5-b.2. WS-3a's refusal must read `sandbox_broker.covers(agent, org)` and
+  not `copilot_sandbox_scope` (`specs/maf_coding_engine.md` §9 WS43-S3). When
+  they ship, set the WS-3 state cell back to built, and delete this entry.
+- **PR #584 corrected the state cell.** It now says that WS-3a and WS-3b are
+  not built. The Check still reads the code.
 - **Authority:** `work_plan.md` §2 WS-3 · `permissions_sandbox_b6.md` §P5-a.2
   and §P5-b.2
 - **Added:** 2026-10-03 · the WS-43 spec session
