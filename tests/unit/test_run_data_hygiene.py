@@ -38,7 +38,12 @@ Fix round 1 of PR #603 (each run red once by hand on 2026-10-03):
   is dropped: the mount test and the Docker shared-code test;
 * ``refused_write`` ignores another thread or another member's skill: the
   host-tools test and the route skill test;
-* the PUT route skips ``_apply_write_rules``: the route skill test.
+* the PUT route skips ``_apply_write_rules``: the route skill test;
+* the verifier's demo, each layer on its own: the read-only mount, the
+  ``_place`` rule or ``PYTHONSAFEPATH`` taken out turns the Docker
+  ``pandas.py`` test red;
+* the sweep shows a file again with no content change, or sweeps
+  ``agent-data/``: the two sweep tests.
 """
 from __future__ import annotations
 
@@ -254,6 +259,47 @@ async def test_the_run_data_never_reaches_the_blob_store(sandbox, host_trap) -> 
     assert "1 file(s) saved" in out
 
 
+async def test_a_read_only_command_shows_no_card_again(sandbox, host_trap) -> None:  # noqa: F811
+    """The verifier, addition 4: the mtime slack of the sweep let an output
+    from just before the command through, and it showed a second card."""
+    from acb_skills import sandbox_tools as st
+    from acb_skills.tenant_file_store import TenantFileStore
+
+    thread = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=thread):
+        b = sb.read_run_binding()
+        store = TenantFileStore(
+            workspace=b.workspace, outputs_rel=b.outputs_rel, run_data=b.run_data,
+            guard=st._BrokerGuard(sandbox.broker, b), member="member@example.com",
+        )
+        await store.write("outputs/chart.svg", "<svg/>")
+        await store.write("outputs/chart.svg", "<svg/>")  # the same content again
+        out = await st.run_command("cat /workspace/outputs/chart.svg")
+    assert sandbox.cards == [f"{b.outputs_rel}/chart.svg"], sandbox.cards
+    assert [r for r, _ in sandbox.mirrored] == [f"{b.outputs_rel}/chart.svg"]
+    assert "file(s) saved" not in out
+
+
+async def test_a_command_never_mirrors_another_threads_agent_data(sandbox, host_trap) -> None:  # noqa: F811
+    """The verifier, addition 4: T2's sweep mirrored T1's recent agent-data
+    files under T2's run. The sweep covers only T2's own output folder."""
+    from acb_skills import sandbox_tools as st
+    from acb_skills.tenant_file_store import TenantFileStore
+
+    t1, t2 = new_thread(), new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t1, member="x@example.com"):
+        b1 = sb.read_run_binding()
+        store = TenantFileStore(
+            workspace=b1.workspace, outputs_rel=b1.outputs_rel, run_data=b1.run_data,
+            guard=st._BrokerGuard(sandbox.broker, b1), member="x@example.com",
+        )
+        await store.write("agent-data/t1-notes.md", "T1 NOTES")
+    sandbox.mirrored.clear()
+    with bound_run(ORG_A, agent=PA, thread=t2, member="y@example.com"):
+        await st.run_command("true")
+    assert sandbox.mirrored == [], sandbox.mirrored
+
+
 async def test_the_startup_sweep_deletes_run_data_a_crash_left(sandbox) -> None:  # noqa: F811
     from acb_skills.agent_paths import state_root
 
@@ -433,6 +479,15 @@ def test_a_link_in_a_workspace_is_never_served_or_written_through(graph_as_app, 
     target = ws / "outputs" / "real.txt"
     target.write_text("REAL", encoding="utf-8")
     os.symlink(target, ws / "outputs" / "alias.txt")
+    # The verifier's M7b: a RELATIVE link that never leaves the dir, as the
+    # last name and as a dir on the way. Only RESOLVE_NO_SYMLINKS (or the
+    # O_NOFOLLOW walk) refuses the second one.
+    os.symlink("real.txt", ws / "outputs" / "rel-alias.txt")
+    os.symlink(".", ws / "outputs" / "here", target_is_directory=True)
+    for rel in ("outputs/rel-alias.txt", "outputs/here/real.txt"):
+        assert alice.get(f"/agent/workspace/{s1}/file", params={"path": rel}).status_code == 404, rel
+        assert alice.put(f"/agent/workspace/{s1}/file", params={"path": rel},
+                         json={"content": "THROUGH"}).status_code == 400, rel
     assert alice.get(f"/agent/workspace/{s1}/file", params={"path": "outputs/alias.txt"}).status_code == 404
     assert alice.put(f"/agent/workspace/{s1}/file", params={"path": "outputs/alias.txt"},
                      json={"content": "THROUGH"}).status_code == 400
@@ -639,3 +694,79 @@ async def test_docker_a_thread_never_imports_or_writes_shared_code(real_projects
     for path in ("/workspace/outputs/ok", "/workspace/.run/ok"):
         assert (await broker.exec(hy, f"echo x > {path}", 30)).exit_code == 0, path
 
+
+#: The verifier's live demo (fix round 1): a root ``pandas.py`` that copies
+#: the run data of whoever imports it into a shared folder.
+_EXFIL_PANDAS = (
+    "import os, shutil\n"
+    "os.makedirs('/workspace/agent-data/leak', exist_ok=True)\n"
+    "shutil.copy('/workspace/.run/rows.csv', '/workspace/agent-data/leak/rows.csv')\n"
+    "print('EXFIL-RAN')\n"
+)
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_planted_root_pandas_never_leaks_another_threads_rows(
+    real_projects, monkeypatch,
+) -> None:
+    """EXACTLY the verifier's demo, with each of the three layers checked on
+    its own, so the fence goes red if any one of them goes:
+
+    1. ``_place``: T1's ``file_access_write`` of a root ``pandas.py`` is refused.
+    2. ``PYTHONSAFEPATH``: with the file there anyway, T2's plain
+       ``python3 -c "import pandas"`` imports the real pandas, not the file.
+    3. The read-only mount: run by its full path, the file still cannot write
+       ``agent-data/leak/``, so T2's rows never reach a shared folder, the
+       blob store or T1.
+    """
+    from acb_skills import sandbox_tools as st
+    from acb_skills.tenant_file_store import TenantFileStore
+
+    broker = real_projects["broker"]
+    assert await broker.probe_docker() is True
+    # The D85 seam (PR #598) is not on this branch yet. See _sandbox_tools_fakes.
+    monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
+    mirrored: list[str] = []
+
+    async def mirror(rel: str, data: bytes, **_kw: Any) -> None:
+        mirrored.append(rel)
+
+    import importlib
+
+    monkeypatch.setattr(importlib.import_module("acb_skills.write_artifact"), "mirror_to_blob_store", mirror)
+    t1, t2 = new_thread(), new_thread()
+    # 1. T1, member X, tries to plant pandas.py with the file tools.
+    with bound_run(DOCKER_ORG, agent=PA, thread=t1, member="x@example.com"):
+        b1 = sb.read_run_binding()
+        x_store = TenantFileStore(
+            workspace=b1.workspace, outputs_rel=b1.outputs_rel, run_data=b1.run_data,
+            guard=st._BrokerGuard(broker, b1), member="x@example.com",
+        )
+        with pytest.raises(ValueError):
+            await x_store.write("pandas.py", _EXFIL_PANDAS)
+    assert not (b1.workspace / "pandas.py").exists(), "_place let a root module through"
+    # The file is planted anyway, past the store, so layers 2 and 3 are tested
+    # on their own.
+    (b1.workspace / "pandas.py").write_text(_EXFIL_PANDAS, encoding="utf-8")
+    # T2, member Y, has member rows in its run data.
+    with bound_run(DOCKER_ORG, agent=PA, thread=t2, member="y@example.com"):
+        b2 = sb.read_run_binding()
+        y_store = TenantFileStore(
+            workspace=b2.workspace, outputs_rel=b2.outputs_rel, run_data=b2.run_data,
+            guard=st._BrokerGuard(broker, b2), member="y@example.com",
+        )
+        await y_store.write(".run/rows.csv", "name,salary\nY,100\n")
+        # 2. A plain import, from the cwd /workspace.
+        imported = await st.run_command(
+            "cd /workspace && python3 -c 'import pandas; print(pandas.__version__)'", 60,
+        )
+        # 3. The file run by its full path still has nowhere to write.
+        ran = await st.run_command("cd /workspace && python3 /workspace/pandas.py", 60)
+        leak = await st.run_command("ls -A /workspace/agent-data/leak 2>/dev/null | wc -l", 30)
+    assert "EXFIL-RAN" not in imported and "exit 0" in imported, imported
+    assert "EXFIL-RAN" not in ran and "exit 0" not in ran.split("\n", 1)[0], ran
+    assert leak.splitlines()[1].strip() == "0", leak
+    assert not (b2.workspace / "agent-data" / "leak").exists()
+    assert not any("leak" in rel or "rows.csv" in rel for rel in mirrored), mirrored
+    with bound_run(DOCKER_ORG, agent=PA, thread=t1, member="x@example.com"):
+        assert await x_store.read("agent-data/leak/rows.csv") is None

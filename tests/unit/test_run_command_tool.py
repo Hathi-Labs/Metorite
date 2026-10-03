@@ -17,7 +17,9 @@ Mutations this suite catches (R7), each run red once by hand:
 * ``"run_command"`` taken out of ``manifest.SHELL_TOOLS``: the tier test;
 * the ``SANDBOX_TOOL_NAMES`` filter taken out of ``risk_summary_block``: the
   byte-identical addendum test;
-* the broker failure answered with a host ``subprocess.run``: the host trap.
+* the broker failure answered with a host ``subprocess.run``: the host trap;
+* an ``exec()`` that raises after the start answered with a host
+  ``subprocess.run`` (the verifier's M2c): the raising-exec test.
 """
 from __future__ import annotations
 
@@ -65,6 +67,22 @@ async def test_a_broker_that_fails_runs_nothing_on_the_host(sandbox, host_trap) 
         out = await st.run_command("echo hi")
     assert "failed" in out and "Nothing ran on the host" in out
     assert sandbox.docker.command_execs() == []
+    assert host_trap == []
+
+
+async def test_an_exec_that_raises_runs_nothing_on_the_host(
+    sandbox, host_trap, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """The verifier's M2c: the container started, and then ``exec()`` raised.
+    The trap on every host process start shows that nothing ran on the host."""
+    async def broken_exec(handle: Any, command: str, timeout_s: float) -> Any:
+        raise sb.SandboxUnavailable("The sandbox restart failed, so the sandbox is gone.")
+
+    monkeypatch.setattr(sandbox.broker, "exec", broken_exec)
+    with bound_run(ORG_A, agent=PA, thread=new_thread()):
+        out = await st.run_command("python3 /workspace/.run/chart.py")
+    assert "failed" in out and "Nothing ran on the host" in out
+    assert sandbox.docker.runs(), "the container never started, so the test proves nothing"
     assert host_trap == []
 
 

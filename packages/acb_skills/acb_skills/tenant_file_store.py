@@ -68,7 +68,14 @@ from acb_skills import safe_open
 
 _log = get_logger("acb_skills.tenant_file_store")
 
-__all__ = ["KEPT_HEADS", "OUTPUTS", "RUN_DATA", "HostFileGuard", "TenantFileStore"]
+__all__ = [
+    "KEPT_HEADS",
+    "OUTPUTS",
+    "RUN_DATA",
+    "HostFileGuard",
+    "TenantFileStore",
+    "first_time_shown",
+]
 
 #: The tool path of the thread's own output folder.
 OUTPUTS = "outputs"
@@ -76,6 +83,28 @@ OUTPUTS = "outputs"
 RUN_DATA = ".run"
 #: The kept folders a tool path may start with, besides ``outputs`` and ``.run``.
 KEPT_HEADS = ("agent-data", "inputs")
+
+
+#: The last content shown as a card, per (working dir, path), so an output
+#: whose content did not change is never mirrored or shown again (the
+#: verifier, fix round 1). The sweep after a command and a file-tool write
+#: both ask it. Bounded, and per process, as the broker is.
+_SHOWN: dict[tuple[str, str], str] = {}
+_SHOWN_MAX = 10_000
+
+
+def first_time_shown(workspace: Path, rel: str, data: bytes) -> bool:
+    """True, and remembered, when *data* is new content for *rel*."""
+    import hashlib
+
+    key = (str(workspace), rel)
+    digest = hashlib.sha256(data).hexdigest()
+    if _SHOWN.get(key) == digest:
+        return False
+    if key not in _SHOWN and len(_SHOWN) >= _SHOWN_MAX:
+        _SHOWN.pop(next(iter(_SHOWN)))
+    _SHOWN[key] = digest
+    return True
 
 
 class HostFileGuard(Protocol):
@@ -260,6 +289,8 @@ class TenantFileStore(FileSystemAgentFileStore):
 
     async def _after_write(self, place: _Place, data: bytes, *, existed: bool) -> None:
         if place.store_rel is None:
+            return
+        if place.outputs and not first_time_shown(self._workspace, place.store_rel, data):
             return
         from acb_skills.write_artifact import announce_artifact, mirror_to_blob_store
 

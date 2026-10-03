@@ -28,7 +28,9 @@ Mutations this suite catches (R7), each run red once by hand on 2026-10-03:
 * ``acb_memory.rehydrate_workspace`` writes with ``Path.write_bytes``: the
   rehydrate test goes red;
 * ``O_NONBLOCK`` taken out of the opener (Linux): the FIFO tests go red, and
-  they release the blocked thread, so a red run never hangs.
+  they release the blocked thread, so a red run never hangs;
+* ``openat2`` without ``RESOLVE_NO_SYMLINKS`` (``RESOLVE_BENEATH`` kept, the
+  verifier's M7b): the relative in-root link test goes red on Linux.
 """
 from __future__ import annotations
 
@@ -157,6 +159,24 @@ def test_a_link_two_levels_down_is_refused(tmp_path: Path, opener_path: str) -> 
     with pytest.raises(so.UnsafePath):
         so.write_bytes(root, "agent-data/skills/evil/SKILL.md", b"x")
     assert not (outside / "SKILL.md").exists()
+
+
+def test_a_relative_link_that_stays_in_the_root_is_refused(tmp_path: Path, opener_path: str) -> None:
+    """The verifier's M7b: a link from one thread's folder to another's,
+    ``outputs/t2/x -> ../t1/f``, never leaves the root, so only
+    ``RESOLVE_NO_SYMLINKS`` (or the ``O_NOFOLLOW`` walk) refuses it."""
+    root, _ = _tree(tmp_path)
+    (root / "outputs" / "t1").mkdir(parents=True)
+    (root / "outputs" / "t2").mkdir()
+    (root / "outputs" / "t1" / "f").write_text("T1 PRIVATE", encoding="utf-8")
+    os.symlink("../t1/f", root / "outputs" / "t2" / "x")
+    os.symlink("../t1", root / "outputs" / "t2" / "d", target_is_directory=True)
+    for rel in ("outputs/t2/x", "outputs/t2/d/f"):
+        with pytest.raises(so.UnsafePath):
+            so.read_bytes(root, rel)
+        with pytest.raises(so.UnsafePath):
+            so.write_bytes(root, rel, b"OVERWRITTEN")
+    assert (root / "outputs" / "t1" / "f").read_text(encoding="utf-8") == "T1 PRIVATE"
 
 
 def test_a_link_as_the_root_is_refused(tmp_path: Path, opener_path: str) -> None:

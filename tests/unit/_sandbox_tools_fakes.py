@@ -74,6 +74,9 @@ def sandbox(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> Sandbox:
     broker._note_docker(True)
     monkeypatch.setattr(sb, "_BROKER", broker)
     monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
+    import acb_skills.tenant_file_store as tfs
+
+    monkeypatch.setattr(tfs, "_SHOWN", {})
     box = Sandbox(env=env, docker=docker, broker=broker)
 
     async def mirror(rel: str, data: bytes, **_kw: Any) -> None:

@@ -232,16 +232,28 @@ async def _sweep(binding: Any, *, since: float) -> list[str]:
     lies outside the working dir, so the output folder is the one place a
     command can change. Each file there also shows as an artifact card.
     """
-    from acb_skills.code_tools import sweep_changed_files
+    import asyncio
 
-    mirrored = await sweep_changed_files(
-        binding.workspace, since=since, subdirs=(binding.outputs_rel,),
+    from acb_skills.code_tools import _collect_changed
+    from acb_skills.tenant_file_store import first_time_shown
+    from acb_skills.write_artifact import mirror_to_blob_store
+
+    collected = await asyncio.to_thread(
+        _collect_changed, binding.workspace, since, (binding.outputs_rel,),
     )
-    prefix = binding.outputs_rel + "/"
-    for rel, data in mirrored:
-        if rel.startswith(prefix):
-            announce_artifact(rel, data)
-    return [rel for rel, _data in mirrored]
+    saved: list[str] = []
+    for rel, data in collected:
+        # The mtime slack of the sweep lets a file from just before the
+        # command through. Only new content is mirrored and shown.
+        if not first_time_shown(binding.workspace, rel, data):
+            continue
+        try:
+            await mirror_to_blob_store(rel, data, actor="agent")
+        except Exception:
+            continue
+        announce_artifact(rel, data)
+        saved.append(rel)
+    return saved
 
 
 async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -> str:
