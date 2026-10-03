@@ -1457,8 +1457,11 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   for oc_page in "$OC_DIR"/src/app/*/page.tsx; do
     [ -f "$oc_page" ] || continue
     oc_route="$(basename "$(dirname "$oc_page")")"
+    # One code, never two. `|| echo 000` inside the `$(...)` turns a 404
+    # that ends in a curl error into `404000`, and that hides a stale route.
+    # The same idiom hid an outage in vps-health.yml on 2026-10-03.
     oc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null || echo 000)"
+      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null)" || true
     [ "$oc_code" = "404" ] && oc_stale="$oc_stale /$oc_route"
   done
   if [ -n "$oc_stale" ]; then
