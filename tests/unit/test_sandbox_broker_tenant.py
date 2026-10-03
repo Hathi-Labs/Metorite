@@ -498,10 +498,32 @@ async def test_the_reaper_stops_idle_and_old_containers_only(
     assert await broker.reap_once() == 0
     clock.now += 60
     assert await broker.reap_once() == 1
-    assert idle.removed and not busy.removed, "a leased container is never reaped"
+    assert idle.removed and not busy.removed, "the idle TTL never stops a leased container"
     clock.now += 2000
-    await broker.release(busy)  # past its lifetime: it stops at release
+    async with broker.host_files(busy):
+        assert await broker.reap_once() == 0, "no container stops under its lock"
+    assert await broker.reap_once() == 1, "a leaked lease must not outlive the lifetime"
     assert busy.removed
+    with pytest.raises(sb.SandboxRefused, match="stopped"):
+        await broker.exec(busy, "true", 5)
+
+
+async def test_a_failing_start_evicts_nobody(
+    broker: sb.SandboxBroker, docker: FakeDocker, clock: Clock, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every input of a start is checked before a container is evicted for it."""
+    a1 = await _idle(broker, clock, ORG_A, "a1")
+    await _idle(broker, clock, ORG_A, "a2")
+    with bound_run(ORG_A, thread="a3") as ws:
+        (ws / "sub").mkdir()
+        (ws / "sub" / ".git").mkdir()
+        with pytest.raises(sb.SandboxRefused, match="below its root"):
+            await broker.acquire()
+    monkeypatch.setattr(env["settings"], "sandbox_image", "x:latest")
+    with bound_run(ORG_A, thread="a4"), pytest.raises(sb.SandboxRefused, match="pinned"):
+        await broker.acquire()
+    assert docker.removals() == [] and not a1.removed
 
 
 # ── rule 14: no fallback to the host ─────────────────────────────────────────

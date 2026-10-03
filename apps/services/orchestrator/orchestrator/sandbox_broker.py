@@ -1011,6 +1011,8 @@ class SandboxBroker:
             )
         await self._await_startup()
         self._check_free_disk()
+        if not self._reusable(binding):
+            await self._preflight(binding)
         handle, victims, fresh = await self._claim(binding)
         await self._remove_all(victims)
         if fresh:
@@ -1025,6 +1027,24 @@ class SandboxBroker:
             handle.leases = max(0, handle.leases - 1)
             raise
         return handle
+
+    def _reusable(self, binding: RunBinding) -> bool:
+        held = self._live.get(binding.name)
+        return held is not None and held.workspace == binding.workspace and not held.failed
+
+    async def _preflight(self, binding: RunBinding) -> None:
+        """Check every input of a start BEFORE a container is evicted for it.
+
+        The image, the limits, the uid, the state dir and the mounts. A start
+        that would fail must not cost another run its idle container.
+        """
+        settings = self._settings()
+        pinned_image(settings)
+        Limits.from_settings(settings)
+        uid, gid = _process_ids()
+        if uid == 0 or gid == 0:
+            raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
+        await asyncio.to_thread(self._mounts_for, binding)
 
     async def _claim(
         self, binding: RunBinding,
@@ -1301,7 +1321,13 @@ class SandboxBroker:
     # ── reaping and sweeping (§7.1 rules 12 and 13) ─────────────────────────
 
     async def reap_once(self) -> int:
-        """Stop idle containers past the idle TTL or the lifetime."""
+        """Stop a container idle past the TTL, or older than the lifetime.
+
+        "Idle" means released. A container past its lifetime stops even
+        when a run still holds it, so a lease that a crashed run never
+        released cannot hold a slot for ever. No container stops while an
+        exec or a host file call holds its lock.
+        """
         settings = self._settings()
         ttl = float(getattr(settings, "sandbox_idle_ttl_seconds", 600))
         lifetime = float(getattr(settings, "sandbox_max_lifetime_seconds", 7200))
@@ -1309,8 +1335,11 @@ class SandboxBroker:
         async with self._registry_lock:
             victims = [
                 h for h in self._live.values()
-                if h.leases == 0 and not h.starting and not h.lock.locked()
-                and (now - h.last_used > ttl or now - h.started_at > lifetime)
+                if not h.starting and not h.lock.locked()
+                and (
+                    (h.leases == 0 and now - h.last_used > ttl)
+                    or now - h.started_at > lifetime
+                )
             ]
             for victim in victims:
                 self._drop(victim)
