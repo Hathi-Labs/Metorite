@@ -37,6 +37,7 @@ class FakeDocker:
         self.block_rm: asyncio.Event | None = None
         self.block_ps: asyncio.Event | None = None
         self.block_sweep: asyncio.Event | None = None
+        self.inspect_missing = False
         self.started = 0
 
     async def run(self, args: Sequence[str], *, timeout: float) -> sb.DockerResult:
@@ -65,6 +66,8 @@ class FakeDocker:
             if self.block_ps is not None:
                 await self.block_ps.wait()
             return sb.DockerResult(0, "".join(f"{i}\n" for i in self.ps_ids), "")
+        if verb == "inspect" and self.inspect_missing:
+            return sb.DockerResult(1, "", f"Error: No such object: {argv[-1]}")
         if verb == "inspect":
             import json
 

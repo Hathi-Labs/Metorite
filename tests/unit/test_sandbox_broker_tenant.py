@@ -793,6 +793,53 @@ async def test_two_containers_on_one_dir_share_one_lock(
     assert events == ["host-done", "exec-on-h2"], "an exec in h2 raced a host call on h1"
 
 
+@pytest.mark.parametrize("how", ["reap", "evict"])
+async def test_a_dropped_sharer_never_takes_the_dir_lock_from_a_live_one(
+    broker: sb.SandboxBroker, docker: FakeDocker, clock: Clock, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch, how: str,
+) -> None:
+    """Review round 3: the dir lock outlives a dropped container while one lives.
+
+    h1 and h2 share the o:<org> dir. h1 goes (the reaper, or the fair-share
+    eviction). A third thread on the same dir must get h2's lock, or the
+    P2-b race comes back.
+    """
+    monkeypatch.setattr(env["settings"], "sandbox_idle_ttl_seconds", 100)
+    with bound_run(ORG_A, thread="t1") as ws:
+        h1 = await broker.acquire()
+    with bound_run(ORG_A, thread="t2"):
+        h2 = await broker.acquire()  # leased, so neither rule may stop it
+    assert h1.lock is h2.lock
+    await broker.release(h1)
+    if how == "reap":
+        clock.now += 200
+        assert await broker.reap_once() == 1
+    else:
+        monkeypatch.setattr(env["settings"], "sandbox_max_per_org", 2)
+    assert h1.removed is (how == "reap")
+    assert broker._dir_locks.get(ws.resolve()) is h2.lock, (
+        "the dir lock went while a live sharer held it"
+    )
+    with bound_run(ORG_A, thread="t3"):
+        h3 = await broker.acquire()
+    assert h1.removed, "h1 must be gone before h3 starts"
+    assert h3.lock is h2.lock, "a new sharer got a new lock, so two execs can race"
+
+
+async def test_a_stale_name_that_vanishes_gives_a_retry_message(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    """Review round 3: a vanished stale container is not "another tenant"."""
+    docker.name_in_use_once = True
+    docker.inspect_missing = True
+    with bound_run(ORG_A, thread="t-vanish"), pytest.raises(
+        sb.SandboxUnavailable, match="vanished"
+    ):
+        await broker.acquire()
+    assert docker.removals() == []
+    assert broker._live == {}
+
+
 # ── verifier V2: one name, two mount sources ─────────────────────────────────
 
 

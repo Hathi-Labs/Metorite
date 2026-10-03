@@ -1330,6 +1330,11 @@ class SandboxBroker:
             timeout=_SMALL_TIMEOUT_SECONDS,
         )
         stale_id, _sep, raw = found.stdout.strip().partition("|")
+        if found.rc != 0 or not stale_id.strip():
+            raise SandboxUnavailable(
+                "The container that held this sandbox name vanished before the "
+                "broker could check it. Retry the command."
+            )
         try:
             labels = json.loads(raw or "null") or {}
         except json.JSONDecodeError:
