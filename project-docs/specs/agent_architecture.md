@@ -573,6 +573,13 @@ playbook, not as a vector row nobody can see.
 > text below is the record of 2026-07-26, so its "Copilot writes code" wording
 > is history. WS-43h also moves app-builder (§11.3) onto the MAF harness. The
 > owning spec is [`maf_coding_engine.md`](maf_coding_engine.md), board row WS-43.
+>
+> ⚠️ **Amended 2026-10-03 by D84 (owner decision).** The Copilot SDK leaves the
+> platform. "Copilot becomes a tool" is now "Copilot goes": self-mutation, the
+> root `metorite` agent and every agent that a repo registers move to MAF. Then
+> the packages `github-copilot-sdk` and `agent-framework-github-copilot` leave
+> the lock. An agent from a repo must build a MAF `Agent`. The plan is
+> [`maf_coding_engine.md`](maf_coding_engine.md) §15.
 
 **Decision: there is exactly one agent runtime, and `runtime` stops being a variable.**
 
