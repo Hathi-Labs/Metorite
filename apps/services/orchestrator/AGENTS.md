@@ -38,6 +38,10 @@ and streams chat responses as AG-UI events.
    - With the flag on and with history, the input is a list of `Message(role=..., contents=[...])`. `RunContextProvider` (`_native_run_context.py`) adds the integrations, `memory_context` and `system_context` to the instructions, never to the messages. So a stored session never holds them.
    - `agent_for_run` returns a shallow copy of the agent with its own provider list. Never append a run's provider to the agent object itself, because one agent can serve two runs at once.
    - With the flag off, the input is the string of `_compose_maf_run_input`, byte for byte. Fence: `tests/unit/test_native_session_persistence.py` (WS43-F20).
+   - **WS-43t2, the stored session.** `native_session_store.py` is the one module that reads or writes `maf_agent_session`. Its two database calls open `tenant_session(organization_id)`, and the organization is a required argument.
+   - `_begin_native_session` reads `_current_run_org()` on the event loop, and passes the value to the store. `tenant_session` is sync and takes no ambient tenant, so a worker thread cannot resolve it.
+   - A loaded session makes the run input the current turn only. A run that carries a session must also carry `turn.history` on its per-run copy. Without it, MAF adds a history provider to the shared agent.
+   - Each load logs one `native_session.load` line. A failed load falls back to the text history and never fails the run. Fence: the same file (R8 on the H3 phase-4 catalog) and `tests/unit/test_rooms.py::test_no_chat_or_room_path_opens_an_unbound_session`.
 
 ## Work Guidance
 
