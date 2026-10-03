@@ -137,6 +137,11 @@ def _newer_than(messages: list[EmailMessage], watermark: datetime | None) -> boo
     return min(dated) > watermark
 
 
+#: The statuses of a sweep folder that the sweep skips with no harm: the folder
+#: is missing or forbidden. Any other failure leaves the folder short of the
+#: catch-up watermark (fix round 3).
+_SKIPPED_SWEEP_STATUSES = frozenset({403, 404})
+
 #: The page statuses that a sync tries once more, after ``Retry-After``
 #: (EM-T6b fix round 1). Graph sends them for throttling and for a short
 #: outage.
@@ -1331,10 +1336,9 @@ class OutlookProvider(BaseEmailProvider):
             # reads past the newest pages after a pause (EM-T6b item 9).
             max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
             messages = []
-            incomplete = False
+            incomplete: list[str] = []
 
             async def _sweep(folder_key: str, canon: str | None) -> None:
-                nonlocal incomplete
                 try:
                     messages.extend(await self._sweep_folder(
                         folder_key, max_results, canonical_override=canon,
@@ -1344,12 +1348,17 @@ class OutlookProvider(BaseEmailProvider):
                     # Keep what the folder read, and keep the watermark: new
                     # mail still lands this cycle (owner answer Q2, EM-T6b).
                     messages.extend(exc.messages)
-                    incomplete = True
+                    incomplete.append(canon or folder_key)
                     logger.warning("sync.catch_up_incomplete folder=%s error=%s",
                                    folder_key, str(exc.__cause__)[:160])
-                except Exception:
-                    # A missing/forbidden folder shouldn't abort the whole sync.
-                    return
+                except Exception as exc:
+                    # A missing (404) or forbidden (403) folder is skipped, as
+                    # before. Any other failure leaves the folder unread, so the
+                    # cycle keeps its watermark (fix round 3).
+                    if _status(exc) not in _SKIPPED_SWEEP_STATUSES:
+                        incomplete.append(canon or folder_key)
+                        logger.warning("sync.sweep_folder_failed folder=%s status=%s",
+                                       folder_key, _status(exc))
 
             for folder_key in SWEEP_SYSTEM_FOLDERS:
                 await _sweep(folder_key, None)
@@ -1372,7 +1381,8 @@ class OutlookProvider(BaseEmailProvider):
                 # A full multi-folder snapshot → the gateway can reconcile
                 # provider-side deletions (messages gone from every folder).
                 full_snapshot=True,
-                catch_up_incomplete=incomplete,
+                catch_up_incomplete=bool(incomplete),
+                catch_up_folders=incomplete,
             )
 
     async def import_batches(
@@ -1517,6 +1527,21 @@ class OutlookProvider(BaseEmailProvider):
                     out.append(m)
             if not token or stream.pages >= self.IMPORT_MAX_PAGES:
                 return out
+
+    async def message_exists(self, internet_message_id: str) -> bool:
+        """True when a message with *internet_message_id* is in any folder.
+
+        The reconcile of a member-act import asks this before it trashes a
+        row (fix round 3). A move in the Outlook client gives the message a
+        new id, and the internet message id stays. A failed request raises,
+        and the caller then keeps the row."""
+        quoted = internet_message_id.replace("'", "''")
+        resp = await self._graph_send(
+            "GET", "/me/messages",
+            params={"$filter": f"internetMessageId eq '{quoted}'",
+                    "$select": "id", "$top": 1})
+        resp.raise_for_status()
+        return bool(resp.json().get("value"))
 
     async def _import_estimate(
         self, streams: list[_FolderStream],

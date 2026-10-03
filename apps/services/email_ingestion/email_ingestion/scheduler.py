@@ -36,7 +36,7 @@ import json
 import logging
 import os
 from contextlib import aclosing
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_common.db import (
@@ -54,8 +54,9 @@ from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import (
+    import_reconcile_candidates,
     reconcile_full_snapshot,
-    reconcile_import_snapshot,
+    trash_import_rows,
 )
 
 # Ceiling for the failure backoff. When an account's sync keeps failing (a
@@ -92,6 +93,16 @@ _sync_lock_users: dict[str, int] = {}
 # Mailboxes where a caller skipped while a sync held the lock. The holder runs
 # one more shallow cycle for them (fix round 2). The set empties with the lock.
 _sync_rerun: set[str] = set()
+
+#: Consecutive cycles whose catch-up stopped short, for each mailbox (fix
+#: round 3). It lives in this process, as the mailbox lock does, and a
+#: restart starts it again at 0. The later full fix is a watermark for each
+#: folder.
+_catch_up_misses: dict[str, int] = {}
+
+#: After this many short catch-ups in a row, the watermark moves on, so one
+#: folder that always fails cannot stall the mailbox (fix round 3).
+CATCH_UP_MAX_MISSES = 6
 
 #: How long a caller that waits (the deep downloads of cleanup and Process
 #: past) waits for the sync that holds the mailbox. In production, the
@@ -430,32 +441,115 @@ def _catch_up_watermark(row: Any) -> datetime | None:
     return getattr(row, "created_at", None)
 
 
+def _watermark_outcome(
+    account_id: str, sync_result: Any, row: Any, import_error: str | None,
+) -> tuple[bool, str | None]:
+    """Whether phase (d) keeps ``last_synced_at``, and the ``sync_error``
+    note of a short catch-up (fix round 3).
+
+    * A failed import on a mailbox that never finished a sync keeps
+      ``last_synced_at`` NULL. The next sweep then reads back to
+      ``created_at``, so the mail since the connect still lands.
+    * A sweep folder that stopped short of the watermark keeps it too, and
+      the note names the folder, never a provider message. The loop counts
+      the cycle as a soft failure and backs off.
+    * After ``CATCH_UP_MAX_MISSES`` short cycles in a row, the watermark
+      moves on, and the log says ``sync.catch_up_abandoned`` with the folder
+      and the gap.
+    """
+    keep_null = import_error is not None and getattr(row, "last_synced_at", None) is None
+    key = _lock_key(account_id)
+    if not getattr(sync_result, "catch_up_incomplete", False):
+        _catch_up_misses.pop(key, None)
+        return keep_null, None
+    folders = ", ".join(getattr(sync_result, "catch_up_folders", None) or []) or "a folder"
+    misses = _catch_up_misses.get(key, 0) + 1
+    if misses < CATCH_UP_MAX_MISSES:
+        _catch_up_misses[key] = misses
+        return True, f"The catch-up of {folders} is incomplete. The next sync tries again."
+    _catch_up_misses.pop(key, None)
+    watermark = _catch_up_watermark(row)
+    gap = (datetime.now(UTC) - watermark).total_seconds() if watermark else 0.0
+    logger.warning("sync.catch_up_abandoned account=%s folder=%s gap_secs=%d misses=%d",
+                   account_id, folders, int(gap), misses)
+    return keep_null, (f"The catch-up of {folders} stopped after {misses} tries. "
+                       "Older mail of the pause can be missing.")
+
+
+def _cycle_result(
+    synced: int, history_id: Any, import_error: str | None, note: str | None,
+) -> dict[str, Any]:
+    """The result of a sync cycle. A failed import is an error for each
+    caller, after the new mail landed. A short catch-up is a soft failure:
+    the loop backs off, and no caller sees an error (fix round 3)."""
+    result: dict[str, Any] = {"synced": synced, "history_id": history_id}
+    if note:
+        result["catch_up_incomplete"] = True
+    if import_error:
+        result["error"] = import_error
+    return result
+
+
 def _oldest_received(messages: list[Any]) -> datetime | None:
     """The oldest ``received_at`` among *messages*, or None with no date."""
     dated = [m.received_at for m in messages if m.received_at is not None]
     return min(dated) if dated else None
 
 
+async def _confirm_gone(
+    provider: Any, candidates: list[tuple[Any, str | None]],
+) -> list[Any]:
+    """The candidate rows whose message the provider no longer has.
+
+    It asks the provider by ``internet_message_id``, with no session open
+    (fix round 3). A move in the Outlook client gives the message a new id,
+    so the import did not read it, and the lookup still finds it. A row with
+    no internet message id, a failed lookup, or a provider with no lookup
+    keeps its row: the reconcile never trashes on doubt."""
+    exists = getattr(provider, "message_exists", None)
+    if exists is None:
+        return []
+    gone: list[Any] = []
+    for row_id, internet_message_id in candidates:
+        if not internet_message_id:
+            continue
+        try:
+            found = await exists(internet_message_id)
+        except Exception as exc:
+            logger.info("sync.import_reconcile_lookup_failed error=%s",
+                        type(exc).__name__)
+            continue
+        if found is False:
+            gone.append(row_id)
+    return gone
+
+
 async def _reconcile_import(
-    org: str, account_id: str, snapshot: list[tuple[str, str, Any]],
-    started_at: datetime | None,
+    org: str, account_id: str, provider: Any,
+    snapshot: list[tuple[str, str, Any]], started_at: datetime | None,
 ) -> None:
     """Reconcile deletions against the full snapshot of a member-act import.
 
-    Its own block, as the reconcile of the recurring sweep. A failure rolls
-    back only the reconcile, and the sync goes on (fix round 1). With no
-    database time for the start, it trashes nothing (fix round 2)."""
+    One block reads the candidates. The provider then confirms each one with
+    no session open, and a second block moves the confirmed rows to trash
+    (fix round 3). A failure rolls back only the reconcile, and the sync goes
+    on (fix round 1). With no database time for the start, it trashes
+    nothing (fix round 2)."""
     if started_at is None:
         logger.warning("sync.import_reconcile_skipped account=%s reason=no_start",
                        account_id)
         return
     try:
         async with tenant_session(org) as db:
-            removed = await reconcile_import_snapshot(
+            candidates = await import_reconcile_candidates(
                 db, account_id, snapshot, started_at=started_at)
-        if removed:
-            logger.info("sync.import_reconciled_deletions account=%s removed=%d",
-                        account_id, removed)
+        gone = await _confirm_gone(provider, candidates)
+        if not gone:
+            return
+        async with tenant_session(org) as db:
+            removed = await trash_import_rows(db, gone, started_at=started_at)
+        logger.info("sync.import_reconciled_deletions account=%s removed=%d "
+                    "candidates=%d", account_id, removed, len(candidates))
     except Exception as exc:
         logger.warning("sync.import_reconcile_failed account=%s err=%s",
                        account_id, str(exc)[:160])
@@ -510,7 +604,7 @@ async def _run_import(
     wrote (fix round 1). The recurring sweep reaches only its newest pages,
     so a Resync otherwise kept older mail that the member deleted in Outlook.
     It keeps a row written after phase (a), and it skips a folder with too
-    many candidates (``reconcile_import_snapshot``, fix round 2). A failed
+    many candidates (``import_reconcile_candidates``, fix round 2). A failed
     reconcile is logged and does not fail the sync."""
     snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
@@ -548,7 +642,7 @@ async def _run_import(
                 snapshot.extend((m.provider_message_id, m.folder, m.received_at)
                                 for m in kept)
     if snapshot is not None:
-        await _reconcile_import(org, account_id, snapshot,
+        await _reconcile_import(org, account_id, provider, snapshot,
                                 getattr(row, "db_now", None))
     if progress:
         async with tenant_session(org) as db:
@@ -946,7 +1040,10 @@ async def _sync_cycle(
             since=floor,
             catch_up=_catch_up_watermark(row),
         )
-        keep_watermark = bool(getattr(sync_result, "catch_up_incomplete", False))
+        # Fix round 3: whether phase (d) keeps the watermark, and the note
+        # of a short catch-up (``_watermark_outcome``).
+        keep_watermark, sync_note = _watermark_outcome(
+            account_id, sync_result, row, import_error)
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
@@ -1005,7 +1102,7 @@ async def _sync_cycle(
             # ``initial_sync_done``, and a deep sync of a member act never
             # does (EM-T6b items 6 and 8). A failed import records its error
             # here, after the new mail landed. A catch-up that stopped short
-            # keeps ``last_synced_at`` (fix round 2).
+            # keeps ``last_synced_at`` and writes its note (fix rounds 2, 3).
             await db.execute(
                 text(
                     """UPDATE email_accounts
@@ -1015,12 +1112,12 @@ async def _sync_cycle(
                                THEN last_synced_at ELSE now() END,
                            last_history_id = COALESCE(
                                :history_id, last_history_id),
-                           sync_error = NULL,
+                           sync_error = CAST(:sync_note AS text),
                            updated_at = now()
                        WHERE id = :id"""
                 ),
                 {"id": account_id, "history_id": sync_result.new_history_id,
-                 "keep_watermark": keep_watermark},
+                 "keep_watermark": keep_watermark, "sync_note": sync_note},
             )
 
             # Mark sync log success
@@ -1070,10 +1167,8 @@ async def _sync_cycle(
             "sync.account_done account_id=%s provider=%s synced=%s",
             account_id, provider_name, persisted_count,
         )
-        result = {"synced": persisted_count, "history_id": sync_result.new_history_id}
-        # A failed import is an error for each caller, after the new mail
-        # landed: the loop backs off, and a member act reports it.
-        return {**result, "error": import_error} if import_error else result
+        return _cycle_result(persisted_count, sync_result.new_history_id,
+                             import_error, sync_note)
 
     except Exception as exc:
         logger.warning(
@@ -1171,7 +1266,9 @@ async def _account_sync_loop(
                 # (auth, provider) rather than raising, so a bad sync is a dict
                 # with an "error" key — not an exception. Treat both as failure
                 # for backoff.
-                sync_failed = (not isinstance(result, dict)) or ("error" in result)
+                # A short catch-up is a soft failure: it backs off too (fix
+                # round 3), and its new mail still goes through the pipeline.
+                sync_failed = (not isinstance(result, dict)) or ("error" in result)                     or bool(result.get("catch_up_incomplete"))
                 new_mail = isinstance(result, dict) and result.get("synced", 0)
                 # Process new mail through the shared pipeline — auto-run
                 # rules, categorize senders, classify threads (Reply Zero),

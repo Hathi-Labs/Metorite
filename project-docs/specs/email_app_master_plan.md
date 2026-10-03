@@ -2252,7 +2252,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 
 ##### EM-T6b — newest first, in batches, with progress and resume (backend)
 
-**Status.** ✅ MERGED (#580, 2026-10-03), with fix rounds 1 and 2. It sits on `main` with EM-T6a (#577), EM-T4f (#578) and EM-T6d part 1 (#579).
+**Status.** ✅ MERGED (#580, 2026-10-03), with fix rounds 1, 2 and 3. It sits on `main` with EM-T6a (#577), EM-T4f (#578) and EM-T6d part 1 (#579).
 
 **As built.**
 
@@ -2265,10 +2265,12 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 - When one second fills a whole page, one query with `$top=1000` reads that second, and the next page starts below it. A page that adds no message ends the folder, and so does `IMPORT_MAX_PAGES` (5000). Both log `sync.import_folder_capped`.
 - A 404 on a first page skips only Archive or a user folder, and the log says `sync.import_folder_skipped`. A 404 on any other system folder fails the import, and so does any other failure. The next sync resumes.
 - A page that answers 429, 503 or 504 waits for `Retry-After`, with the bound of `_graph_send`, and tries once more. The recurring sweep does the same.
-- When an import fails, the cycle still runs the recurring sweep and phase (c), so new mail lands (owner answer Q2). Phase (d) then writes `sync_status = 'error'` with the error, and the next sync resumes the import.
-- When a sweep page fails short of the catch-up watermark, the sweep keeps the pages that it read and sets `catch_up_incomplete`. Phase (d) writes that mail and keeps `last_synced_at`. A first page that fails keeps the old rule: the sweep skips that folder.
+- When an import fails, the cycle still runs the recurring sweep and phase (c), so new mail lands (owner answer Q2). Phase (d) then writes `sync_status = 'error'` with the error, and the next sync resumes the import. A failed import on a mailbox that never synced keeps `last_synced_at` NULL (fix round 3), so the next sweep reads back to `created_at`.
+- When a sweep folder stops short of the catch-up watermark, the sweep keeps the pages that it read and sets `catch_up_incomplete`. Phase (d) writes that mail and keeps `last_synced_at`. Fix round 3: a first page that fails with a status other than 403 or 404 also leaves its folder short.
+- A short catch-up writes a `sync_error` note with the folder name only, and the loop backs off as for a failure. After 6 short cycles in a row, the watermark moves on, and the log says `sync.catch_up_abandoned` with the folder and the gap. The count lives in the process, so a restart starts it again. The later full fix is a watermark for each folder.
 - When the deep sync of a member act ends with no error, one block reconciles deletions against `(id, folder, received_at)` of each message that its import wrote. Only a provider with `import_full_snapshot` does this, which today is Outlook.
-- Two guards protect that reconcile (fix round 2). It keeps a row whose `updated_at` is after phase (a), because a move, a rule action or a draft during the import writes the row, and Graph gives a moved message a new id. When a folder has more candidates than 50, or 2% of its rows, the reconcile leaves that folder and logs `sync.import_reconcile_skipped`.
+- Three guards protect that reconcile (fix rounds 2 and 3). It keeps a row whose `updated_at` is after phase (a), because a move, a rule action or a draft during the import writes the row, and Graph gives a moved message a new id. When a folder has more candidates than 50, or 2% of its rows, the reconcile leaves that folder and logs `sync.import_reconcile_skipped`.
+- Then, with no session open, Outlook looks up each candidate by `internetMessageId`, at most 50 for each folder. A message that Graph still has keeps its row, because the member moved it in the Outlook client. A failed lookup, or a row with no internet message id, keeps its row too. The trash checks `updated_at` again in its own block.
 - Follow-up for EM-T6d: `isFirstSyncPending` and `onboardingStage` must also check `syncEnabled`. When the member turns sync off during the import, the phase stays `importing`, and the panel would freeze.
 - `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
 - A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.

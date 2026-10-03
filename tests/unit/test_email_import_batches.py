@@ -83,6 +83,14 @@ _ORG = "11111111-2222-3333-4444-555555555555"
 
 
 @pytest.fixture(autouse=True)
+def _no_catch_up_misses():
+    """Each test starts with no short catch-up counted (fix round 3)."""
+    sched._catch_up_misses.clear()
+    yield
+    sched._catch_up_misses.clear()
+
+
+@pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "email_semantic_search_enabled", False,
                         raising=False)
@@ -166,7 +174,8 @@ class _FakeGraph:
                  page_size: int | None = None, no_count: tuple = (),
                  count_status: dict | None = None, fail: dict | None = None,
                  retry_after: str | None = None, ignore_until: bool = False,
-                 missing: tuple = (), ignore_until_in: tuple = ()) -> None:
+                 missing: tuple = (), ignore_until_in: tuple = (),
+                 fail_offset: dict | None = None, lookup_fail: tuple = ()) -> None:
         folders = {**{p: [] for p in _ALWAYS if p not in missing}, **folders}
         self.mail = {p: [(f"{p}-{i:04d}", t)
                          for i, t in enumerate(sorted(ts, reverse=True))]
@@ -179,6 +188,11 @@ class _FakeGraph:
         self.retry_after = retry_after
         self.ignore_until = ignore_until
         self.ignore_until_in = set(ignore_until_in)
+        # ``fail_offset`` maps a folder to ``(offset, status)``: each page at
+        # or past that offset fails, in every cycle.
+        self.fail_offset = fail_offset or {}
+        self.lookup_fail = set(lookup_fail)
+        self.lookups: list[str] = []
         self.pages: list[tuple[str, int, str | None]] = []
         self.tops: list[tuple[str, int]] = []
         self.followed: list[tuple[str, int]] = []
@@ -206,7 +220,24 @@ class _FakeGraph:
                 if (since is None or t >= since)
                 and (upper is None or t < upper or (t == upper and not open_upper))]
 
+    async def request(self, method, url, params=None, **_kw):
+        """What ``_graph_send`` calls."""
+        assert method == "GET", method
+        return await self.get(url, params=params)
+
+    def _lookup(self, params: dict) -> _Resp:
+        """``/me/messages`` with ``internetMessageId eq '<id>'``: every folder."""
+        wanted = params["$filter"].split(" eq ", 1)[1].strip("'").replace("''", "'")
+        self.lookups.append(wanted)
+        if wanted in self.lookup_fail:
+            return _Resp(503, {})
+        hits = [{"id": m} for msgs in self.mail.values() for m, _ in msgs
+                if f"<{m}@graph.test>" == wanted]
+        return _Resp(200, {"value": hits[:1]})
+
     async def get(self, url, params=None, headers=None):
+        if url == "/me/messages":
+            return self._lookup(params or {})
         if url.startswith(self.LINK):
             path = self._links[url][0]
             self.followed.append((path, self._n.get(path, 0) + 1))
@@ -235,6 +266,8 @@ class _FakeGraph:
         if (path, n) in self.fail:
             headers = {"Retry-After": self.retry_after} if self.retry_after else {}
             return _Resp(self.fail[(path, n)], {}, headers)
+        if path in self.fail_offset and offset >= self.fail_offset[path][0]:
+            return _Resp(self.fail_offset[path][1], {})
         # ``page_size`` shrinks a normal page. A ``$top`` above 100 is the
         # query of one whole second, and Graph honours it.
         size = top if top > 100 else (self.page_size or top)
@@ -875,13 +908,13 @@ async def test_a_resync_reconciles_once_against_its_whole_import(core, monkeypat
         # Fix round 2, item 7: tuples of (id, folder, received_at).
         assert all(isinstance(e, tuple) and len(e) == 3 for e in snapshot)
         imports.append((sorted(pid for pid, _, _ in snapshot), started_at))
-        return 0
+        return []
 
     async def _sweep(db, account_id, sync_result):
         sweeps.append(len(sync_result.messages))
         return 0
 
-    monkeypatch.setattr(sched, "reconcile_import_snapshot", _import)
+    monkeypatch.setattr(sched, "import_reconcile_candidates", _import)
     monkeypatch.setattr(sched, "reconcile_full_snapshot", _sweep)
     graph = _FakeGraph(_interleaved(now - timedelta(minutes=1), 30, _THREE))
     p = _outlook(graph, ("F-user",))
@@ -922,11 +955,23 @@ async def test_a_failed_import_still_writes_the_new_mail(core) -> None:
     assert res["error"] == "Graph answered 500"
     assert res["synced"] == 2
     assert [pid for _, pid in core.upserts] == ["old-1", "new-1"]
+    # Fix round 3, item 1(b): the mailbox never finished a sync, so
+    # ``last_synced_at`` stays NULL and the next sweep reads back to the
+    # connect.
     [(_, d_params)] = _stmts(core.log, "last_synced_at = CASE")
-    assert d_params["keep_watermark"] is False
+    assert d_params["keep_watermark"] is True
     [(_, e_params)] = _stmts(core.log, "SET sync_status = 'error', sync_error")
     assert e_params["import_error"] == "Graph answered 500"
     assert _stmts(core.log, "import_phase = 'done'") == []
+
+    # A mailbox with a sync point moves it on: the sweep was complete.
+    core.log.clear()
+    again = _Breaks([[_msg("old-3", now - timedelta(days=4))],
+                     [_msg("old-4", now - timedelta(days=5))]],
+                    recurring=[_msg("new-2", now)])
+    await core.run(again, _row(last_synced_at=now - timedelta(hours=1)))
+    [(_, d_params)] = _stmts(core.log, "last_synced_at = CASE")
+    assert d_params["keep_watermark"] is False
 
 
 async def test_a_count_that_answers_503_still_writes_every_message(core) -> None:
@@ -1043,9 +1088,10 @@ async def test_a_catch_up_page_that_fails_keeps_the_watermark(core, slept) -> No
     assert set(graph.ids("inbox")[:600]) <= {pid for _, pid in core.upserts}
 
 
-async def test_a_normal_poll_skips_a_folder_whose_second_page_fails(core, slept) -> None:
-    """A page that fails after the sweep passed the watermark keeps the old
-    rule: the sweep skips that folder, and the cycle succeeds."""
+async def test_a_normal_poll_keeps_the_watermark_when_a_folder_fails(core, slept) -> None:
+    """Fix round 3. A folder whose page fails with a status other than 403
+    or 404 is unread this cycle. The sweep writes the other folders, keeps
+    the watermark, and the cycle is a soft failure with a short note."""
     now = _now()
     graph = _catch_up_graph(now)
     graph.fail = {("inbox", 2): 500}
@@ -1059,7 +1105,10 @@ async def test_a_normal_poll_skips_a_folder_whose_second_page_fails(core, slept)
     assert not any(pid.startswith("inbox-") for pid in written)
     assert set(graph.ids("sentitems")[:200]) <= written
     [(_, d_params)] = _stmts(core.log, _PHASE_D)
-    assert d_params["keep_watermark"] is False
+    assert d_params["keep_watermark"] is True
+    assert d_params["sync_note"] == (
+        "The catch-up of inbox is incomplete. The next sync tries again.")
+    assert res["catch_up_incomplete"] is True
 
 
 async def test_a_sweep_page_that_answers_503_once_is_read_again(core, slept) -> None:
@@ -1074,6 +1123,105 @@ async def test_a_sweep_page_that_answers_503_once_is_read_again(core, slept) -> 
     assert "error" not in res, res
     assert set(graph.ids("inbox")[:200]) <= {pid for _, pid in core.upserts}
     assert slept == [1.0]
+
+
+@pytest.mark.parametrize(("status", "short"),
+                         [(500, True), (429, True), (403, False), (404, False)])
+async def test_a_first_page_that_fails_leaves_its_folder_short(slept, status, short) -> None:
+    """Fix round 3, item 1(a). A folder whose first page fails is unread. Only
+    a missing (404) or forbidden (403) folder is skipped with no harm."""
+    now = _now()
+    graph = _FakeGraph({"inbox": [now - timedelta(hours=k + 1) for k in range(5)],
+                        "sentitems": [now - timedelta(hours=k + 2) for k in range(5)]},
+                       fail={("inbox", 1): status, ("inbox", 2): status})
+    p = _outlook(graph)
+
+    res = await p.sync_messages(deep=False, since=now - timedelta(days=30),
+                                catch_up=now - timedelta(hours=2))
+
+    assert res.catch_up_incomplete is short
+    assert res.catch_up_folders == (["inbox"] if short else [])
+    assert set(graph.ids("sentitems")) <= {m.provider_message_id for m in res.messages}
+
+
+async def test_a_catch_up_that_always_fails_moves_on_after_six_cycles(
+    core, slept, caplog,
+) -> None:
+    """Fix round 3, item 2. Page 4 of the inbox fails in every cycle. Each
+    short cycle keeps the watermark, writes a note with the folder only, and
+    is a soft failure. The sixth one moves the watermark on and logs
+    ``sync.catch_up_abandoned``, and the count starts again."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail_offset = {"inbox": (300, 500)}
+    p = _outlook(graph, ("F-user",))
+    row = _row(initial_sync_done=True, import_since=None,
+               last_synced_at=now - timedelta(days=21))
+    keeps, notes, results = [], [], []
+
+    with caplog.at_level("WARNING"):
+        for _ in range(7):
+            core.log.clear()
+            results.append(await core.run(p, row))
+            [(_, d_params)] = _stmts(core.log, _PHASE_D)
+            keeps.append(d_params["keep_watermark"])
+            notes.append(d_params["sync_note"])
+
+    assert keeps == [True] * 5 + [False, True]
+    assert notes[0] == "The catch-up of inbox is incomplete. The next sync tries again."
+    assert notes[5] == ("The catch-up of inbox stopped after 6 tries. "
+                        "Older mail of the pause can be missing.")
+    assert all(r.get("catch_up_incomplete") is True and "error" not in r
+               for r in results)
+    [abandoned] = [r.getMessage() for r in caplog.records
+                   if "sync.catch_up_abandoned" in r.getMessage()]
+    assert "folder=inbox" in abandoned and "misses=6" in abandoned
+    gap = int(abandoned.split("gap_secs=")[1].split()[0])
+    assert abs(gap - (21 * 86400 + 3600)) < 120
+
+
+async def test_a_complete_cycle_starts_the_count_again(core, slept) -> None:
+    now = _now()
+    graph = _catch_up_graph(now)
+    p = _outlook(graph, ("F-user",))
+    row = _row(initial_sync_done=True, import_since=None,
+               last_synced_at=now - timedelta(days=21))
+    keeps = []
+    for fail in [True] * 5 + [False] + [True] * 5:
+        graph.fail_offset = {"inbox": (300, 500)} if fail else {}
+        core.log.clear()
+        await core.run(p, row)
+        [(_, d_params)] = _stmts(core.log, _PHASE_D)
+        keeps.append(d_params["keep_watermark"])
+    assert keeps == [True] * 5 + [False] + [True] * 5
+
+
+async def test_a_short_catch_up_backs_the_loop_off(monkeypatch) -> None:
+    """Fix round 3, item 2: the loop sleeps the backoff, not the interval."""
+    import asyncio
+
+    waits: list[float] = []
+
+    async def _sync(account_id, **_kw):
+        return {"synced": 0, "history_id": None, "catch_up_incomplete": True}
+
+    async def _hook(*_a, **_k):
+        return None
+
+    async def _interval(*_a, **_k):
+        return 300
+
+    async def _sleep(secs):
+        waits.append(secs)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(sched, "_sync_account", _sync)
+    monkeypatch.setattr(sched, "run_hook", _hook)
+    monkeypatch.setattr(sched, "_get_account_sync_interval", _interval)
+    monkeypatch.setattr(sched.asyncio, "sleep", _sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await sched._account_sync_loop("acc-1", 300, organization_id=_ORG)
+    assert waits == [600]
 
 
 def test_the_watermark_is_the_last_sync_less_an_hour_or_the_connect() -> None:
@@ -1362,14 +1510,23 @@ class TestTheImportOnARealDatabase:
         with p.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO email_messages (account_id, provider_message_id, "
-                "folder, from_address, to_addresses, subject, received_at, "
-                "organization_id) VALUES (CAST(:a AS uuid), :pid, 'inbox', "
+                "internet_message_id, folder, from_address, to_addresses, "
+                "subject, received_at, organization_id) VALUES "
+                "(CAST(:a AS uuid), :pid, '<gone@seed.test>', 'inbox', "
                 "'{}'::jsonb, '[]'::jsonb, 'deleted in Outlook', :r, "
                 "CAST(:o AS uuid))"),
                 {"a": account_id, "pid": gone, "r": mail[150].received_at
                  + timedelta(minutes=3), "o": p.org_b})
         provider = _Scripted(mail)
         provider.import_full_snapshot = True
+        asked: list[str] = []
+
+        async def _exists(internet_message_id):
+            # Fix round 3: the reconcile asks the provider before a trash.
+            asked.append(internet_message_id)
+            return False
+
+        provider.message_exists = _exists
 
         from acb_llm import key_store
 
@@ -1388,6 +1545,7 @@ class TestTheImportOnARealDatabase:
                     "WHERE account_id = CAST(:a AS uuid)"),
                     {"a": account_id}).all())
             assert folders.pop(gone) == "trash", "the resync kept a deleted message"
+            assert asked == ["<gone@seed.test>"]
             assert set(folders.values()) == {"inbox"} and len(folders) == 250
             gone_sql = ("SELECT count(*) FROM email_messages WHERE account_id = "
                         "CAST(:a AS uuid) AND folder = 'trash'")
@@ -1409,15 +1567,16 @@ class TestTheImportOnARealDatabase:
              initial_sync_done=True)
         ids = {}
         with p.admin_engine.begin() as c:
-            for key, folder, received in rows:
+            for key, folder, received, *imid in rows:
                 ids[key] = f"pm-{key}-{uuid.uuid4().hex[:8]}"
                 c.execute(text(
                     "INSERT INTO email_messages (account_id, provider_message_id, "
-                    "folder, from_address, to_addresses, subject, received_at, "
-                    "updated_at, organization_id) VALUES (CAST(:a AS uuid), :pid, "
-                    ":f, '{}'::jsonb, '[]'::jsonb, :key, :r, now() - interval '1 day', "
-                    "CAST(:o AS uuid))"),
+                    "internet_message_id, folder, from_address, to_addresses, "
+                    "subject, received_at, updated_at, organization_id) VALUES "
+                    "(CAST(:a AS uuid), :pid, :imid, :f, '{}'::jsonb, '[]'::jsonb, "
+                    ":key, :r, now() - interval '1 day', CAST(:o AS uuid))"),
                     {"a": account_id, "pid": ids[key], "f": folder, "key": key,
+                     "imid": imid[0] if imid else f"<{key}@seed.test>",
                      "r": received, "o": p.org_b})
         if hook is not None:
             graph.on_page = lambda path, n: hook(path, n, account_id, ids)
@@ -1506,6 +1665,137 @@ class TestTheImportOnARealDatabase:
         skipped = [r.getMessage() for r in caplog.records
                    if "sync.import_reconcile_skipped" in r.getMessage()]
         assert len(skipped) == 1 and "folder=inbox candidates=60" in skipped[0]
+
+    async def test_the_reconcile_keeps_a_row_whose_message_graph_still_has(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 3, item 3. A move in the Outlook client gives the message
+        a new id, and the old row keeps its ``updated_at``. Before the trash,
+        the reconcile asks Graph by ``internetMessageId``. A row whose message
+        Graph still has stays, and so does a row whose lookup fails or that
+        has no internet message id. Only the row that Graph lost goes."""
+        _assert_non_priv(app_engine)
+        now = _now()
+        graph = _FakeGraph({"inbox": [now - timedelta(hours=k + 1) for k in range(10)],
+                            "outbox": [now - timedelta(hours=8)]},
+                           page_size=3, lookup_fail=("<flaky@seed.test>",))
+        moved_imid = f"<{graph.ids('outbox')[0]}@graph.test>"
+        rows = [("client-moved", "inbox", now - timedelta(hours=8), moved_imid),
+                ("flaky", "inbox", now - timedelta(hours=8, minutes=10)),
+                ("no-imid", "inbox", now - timedelta(hours=8, minutes=20), None),
+                ("gone", "inbox", now - timedelta(hours=8, minutes=30))]
+
+        folders = await self._resync_with_rows(promoted, monkeypatch, graph, (), rows)
+
+        assert folders == {"client-moved": "inbox", "flaky": "inbox",
+                           "no-imid": "inbox", "gone": "trash"}, folders
+        assert sorted(graph.lookups) == sorted(
+            [moved_imid, "<flaky@seed.test>", "<gone@seed.test>"])
+
+    async def test_a_failed_import_and_a_failed_inbox_keep_last_synced_at_null(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 3, item 1. The first import fails, and inbox page 1 of
+        the sweep fails in the same cycle. ``last_synced_at`` stays NULL, so
+        the next cycle reads back to ``created_at`` and the mail since the
+        connect lands."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-t6b.test")
+        _set(p.admin_engine, account_id, import_since=now - timedelta(days=30))
+        with p.admin_engine.connect() as c:
+            created = c.execute(text(
+                "SELECT created_at FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                {"a": account_id}).scalar_one()
+        graph = _FakeGraph({"inbox": [now - timedelta(hours=k + 1) for k in range(5)]},
+                           fail={("inbox", 1): 500, ("inbox", 2): 500})
+        provider = _outlook(graph)
+        real_sync = provider.sync_messages
+        catch_ups: list = []
+
+        async def _recording(**kw):
+            catch_ups.append(kw.get("catch_up"))
+            return await real_sync(**kw)
+
+        provider.sync_messages = _recording
+
+        from acb_llm import key_store
+
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+
+        def _state():
+            with p.admin_engine.connect() as c:
+                return c.execute(text(
+                    "SELECT last_synced_at, sync_status, initial_sync_done "
+                    "FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": account_id}).one()
+
+        try:
+            async with tenant_engine_scope(app_dsn):
+                first = await sched._sync_account(account_id, organization_id=p.org_b)
+                assert "error" in first and first.get("catch_up_incomplete"), first
+                assert tuple(_state()) == (None, "error", False), (
+                    "a failed import moved last_synced_at")
+                second = await sched._sync_account(account_id, organization_id=p.org_b)
+            assert "error" not in second, second
+            assert catch_ups == [created, created], (
+                "the next cycle did not read back to the connect")
+            synced, status, done = _state()
+            assert synced is not None and status == "idle" and done is True
+        finally:
+            release_tenant(token)
+            _drop(p.admin_engine, account_id)
+
+    @pytest.mark.parametrize(("absent", "skipped"), [(55, False), (61, True)])
+    async def test_the_cap_takes_two_percent_of_a_large_folder(
+        self, promoted, app_engine, caplog, absent, skipped,  # noqa: F811
+    ):
+        """Fix round 3, item 4. With 3000 rows in the window, 2% is 60, above
+        the floor of 50. So 55 candidates pass, and the folder gives at most
+        50 lookups. 61 candidates skip the folder."""
+        from email_ingestion import reconcile
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-t6b.test")
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_messages (account_id, provider_message_id, "
+                "internet_message_id, folder, from_address, to_addresses, subject, "
+                "received_at, updated_at, organization_id) "
+                "SELECT CAST(:a AS uuid), 'big-' || g, '<big-' || g || '@seed.test>', "
+                "'inbox', '{}'::jsonb, '[]'::jsonb, 'big', "
+                "now() - make_interval(mins => g), now() - interval '1 day', "
+                "CAST(:o AS uuid) FROM generate_series(1, 3000) g"),
+                {"a": account_id, "o": p.org_b})
+            rows = c.execute(text(
+                "SELECT provider_message_id, received_at FROM email_messages "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).all()
+        gone = {f"big-{g}" for g in range(100, 100 + absent)}
+        snapshot = [(pid, "inbox", at) for pid, at in rows if pid not in gone]
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        try:
+            with caplog.at_level("WARNING"):
+                async with (tenant_engine_scope(app_dsn),
+                            sched.tenant_session(p.org_b) as db):
+                    found = await reconcile.import_reconcile_candidates(
+                        db, account_id, snapshot, started_at=datetime.now(UTC))
+            logged = [r.getMessage() for r in caplog.records
+                      if "sync.import_reconcile_skipped" in r.getMessage()]
+            if skipped:
+                assert found == [] and len(logged) == 1
+                assert f"candidates={absent} rows=3000 cap=60" in logged[0]
+            else:
+                assert logged == [], "the 2% branch did not lift the cap above 50"
+                assert len(found) == reconcile.IMPORT_RECONCILE_MAX_LOOKUPS
+        finally:
+            _drop(p.admin_engine, account_id)
 
     async def test_the_three_account_reads_return_the_progress(
         self, promoted, app_engine, monkeypatch,  # noqa: F811

@@ -32,9 +32,13 @@ logger = logging.getLogger(__name__)
 IMPORT_RECONCILE_MIN_CAP = 50
 IMPORT_RECONCILE_SHARE = 0.02
 
+#: A folder looks up at most this many candidates at the provider in one
+#: reconcile (fix round 3). A candidate that it does not look up stays.
+IMPORT_RECONCILE_MAX_LOOKUPS = 50
+
 #: The stored rows of one folder of an import window.
 _IMPORT_WINDOW_ROWS = text(
-    """SELECT id, provider_message_id, updated_at
+    """SELECT id, provider_message_id, internet_message_id, updated_at
        FROM email_messages
        WHERE account_id = :aid
          AND LOWER(folder) = :folder
@@ -42,17 +46,20 @@ _IMPORT_WINDOW_ROWS = text(
          AND received_at >= :min_recv"""
 )
 
+#: The guard of ``updated_at`` holds again here: a row written while the
+#: lookups ran stays.
 _TRASH_ROWS = text(
     "UPDATE email_messages SET folder = 'trash', updated_at = now() "
-    "WHERE id = ANY(:ids)"
+    "WHERE id = ANY(:ids) AND updated_at < :started_at"
 )
 
 
-async def reconcile_import_snapshot(
+async def import_reconcile_candidates(
     db: Any, account_id: str,
     snapshot: list[tuple[str, str, datetime | None]], *, started_at: datetime,
-) -> int:
-    """Trash stored rows that the full import of a member act did not read.
+) -> list[tuple[Any, str | None]]:
+    """The stored rows that the full import of a member act did not read,
+    as ``(row id, internet_message_id)``.
 
     ``snapshot`` holds ``(id, folder, received_at)`` for each message that
     the import wrote. Each folder is bounded to its oldest message in the
@@ -64,8 +71,10 @@ async def reconcile_import_snapshot(
     ``started_at`` stays: a move, a rule action or a draft during the import
     wrote it, and Graph gives a moved message a new id. A folder with more
     candidates than the cap is skipped and logged as
-    ``sync.import_reconcile_skipped``. Returns the rows trashed. The caller
-    owns the block and never commits inside it."""
+    ``sync.import_reconcile_skipped``. A folder gives at most
+    ``IMPORT_RECONCILE_MAX_LOOKUPS`` candidates. The caller looks each one up
+    at the provider with no session open, and then calls
+    ``trash_import_rows`` (fix round 3). It never commits."""
     seen = {pid for pid, _, _ in snapshot}
     folder_min: dict[str, datetime] = {}
     for _, folder, received in snapshot:
@@ -75,11 +84,11 @@ async def reconcile_import_snapshot(
         if key not in folder_min or received < folder_min[key]:
             folder_min[key] = received
 
-    trashed = 0
+    candidates: list[tuple[Any, str | None]] = []
     for folder, min_recv in folder_min.items():
         rows = (await db.execute(_IMPORT_WINDOW_ROWS, {
             "aid": account_id, "folder": folder, "min_recv": min_recv})).fetchall()
-        gone = [r.id for r in rows if r.provider_message_id not in seen
+        gone = [r for r in rows if r.provider_message_id not in seen
                 and r.updated_at is not None and r.updated_at < started_at]
         cap = max(IMPORT_RECONCILE_MIN_CAP,
                   math.ceil(IMPORT_RECONCILE_SHARE * len(rows)))
@@ -89,10 +98,18 @@ async def reconcile_import_snapshot(
                 "candidates=%d rows=%d cap=%d",
                 account_id, folder, len(gone), len(rows), cap)
             continue
-        if gone:
-            await db.execute(_TRASH_ROWS, {"ids": gone})
-            trashed += len(gone)
-    return trashed
+        candidates.extend((r.id, r.internet_message_id)
+                          for r in gone[:IMPORT_RECONCILE_MAX_LOOKUPS])
+    return candidates
+
+
+async def trash_import_rows(db: Any, ids: list[Any], *, started_at: datetime) -> int:
+    """Move the rows *ids* to trash, each only while its ``updated_at`` is
+    before ``started_at``. Returns the rows moved. It never commits."""
+    if not ids:
+        return 0
+    result = await db.execute(_TRASH_ROWS, {"ids": ids, "started_at": started_at})
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def reconcile_full_snapshot(db: Any, account_id: str, sync_result: Any) -> int:

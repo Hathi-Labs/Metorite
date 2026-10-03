@@ -345,10 +345,12 @@ class SyncResult:
     # incremental syncs (Gmail history, IMAP UIDNEXT) where absence means
     # "unchanged", not "deleted".
     full_snapshot: bool = False
-    # True when a sweep page failed before its folder read back to the
-    # catch-up watermark (EM-T6b fix round 2). The messages above hold what
-    # the sweep read. Phase (d) writes them and keeps ``last_synced_at``.
+    # True when a sweep folder failed before it read back to the catch-up
+    # watermark (EM-T6b fix rounds 2 and 3). The messages above hold what the
+    # sweep read. Phase (d) writes them and keeps ``last_synced_at``.
+    # ``catch_up_folders`` names those folders.
     catch_up_incomplete: bool = False
+    catch_up_folders: list[str] = field(default_factory=list)
 
 
 #: The callback that an import calls once, before its first batch, with the
