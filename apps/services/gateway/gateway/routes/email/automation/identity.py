@@ -14,11 +14,21 @@ Email) for your own outbound/internal mail and treat it as FYI instead.
 ``extra_domains`` carries the OPTIONAL ``org_domains`` setting (extra domains
 beyond the account's own); when none are configured, detection is same-domain
 only and needs no setup.
+
+**Self covers each mailbox of the member (D-EM-27, WS-17 EM-T8e-1).** A member
+can connect several mailboxes. "Self" is any address of a mailbox of the member
+in this organization, so mail between two of them is not external.
+:data:`SELF_ADDRESSES_SQL` and :func:`resolve_self` are the one SQL helper for
+that set. The internal domain stays the domain of the current mailbox.
+Fence: ``tests/unit/test_email_ai_context.py`` (``email-self-each-mailbox``).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
+from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
 
 
@@ -61,15 +71,102 @@ async def resolve_org_domains(db: Any, account_id: str) -> frozenset[str]:
         return frozenset()
 
 
+#: The mailboxes of the member who owns the mailbox ``:aid``. ``a`` is that
+#: mailbox and ``o`` is each mailbox of the same member, ``a`` included.
+#: Row level security binds the organization. The organization predicate
+#: repeats that bind for a session that row level security does not bind, so
+#: a mailbox of the same member in another organization is never ``o``.
+_MEMBER_MAILBOXES_FROM = (
+    "FROM email_accounts a "
+    "JOIN email_accounts o ON o.user_id = a.user_id "
+    "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
+    "WHERE a.id = :aid")
+
+#: The lower-case address of each mailbox of the member who owns ``:aid``
+#: (D-EM-27). A SQL caller puts it in its own text as a subquery, for example
+#: ``LOWER(em.from_address->>'email') NOT IN (<this>)``, with ``:aid`` bound.
+#: ``email_address`` is NOT NULL, so ``NOT IN`` never meets a NULL here.
+SELF_ADDRESSES_SQL = f"SELECT LOWER(o.email_address) AS addr {_MEMBER_MAILBOXES_FROM}"
+
+#: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, so
+#: the set in SQL and the set in Python cannot disagree.
+_MEMBER_MAILBOXES_SQL = (
+    "SELECT o.id::text AS id, o.email_address AS address, o.label AS label "
+    f"{_MEMBER_MAILBOXES_FROM} ORDER BY o.created_at, o.id")
+
+
+@dataclass(frozen=True)
+class SelfIdentity:
+    """Who the mailbox ``account_id`` speaks as, and who "self" is.
+
+    ``address`` and ``label`` name the mailbox itself, for the drafter
+    (MB-14). ``self_addresses`` holds the lower-case address of each mailbox
+    of the member, this one included (D-EM-27). Each field is empty when the
+    mailbox row is not visible.
+    """
+
+    address: str = ""
+    label: str = ""
+    self_addresses: frozenset[str] = frozenset()
+
+
+async def resolve_self(db: Any, account_id: str) -> SelfIdentity:
+    """The identity of the mailbox ``account_id``, in one read.
+
+    The label is the display label of ``mailbox_identity.display_labels``,
+    the one place that decides a label. The read uses the session of the
+    caller, so the tenant bind of that session applies. A row that is not a
+    mapping with these names (a hermetic test double) counts as no row.
+    """
+    rows = (await db.execute(
+        text(_MEMBER_MAILBOXES_SQL), {"aid": account_id})).fetchall()
+    boxes: list[tuple[str, str, str | None]] = []
+    for r in rows or []:
+        box_id, address = getattr(r, "id", None), getattr(r, "address", None)
+        if isinstance(box_id, str) and isinstance(address, str) and address:
+            label = getattr(r, "label", None)
+            boxes.append((box_id, address, label if isinstance(label, str) else None))
+    if not boxes:
+        return SelfIdentity()
+    labels = display_labels(boxes)
+    want = str(account_id or "").strip().lower()
+    own = next(((i, a) for i, a, _ in boxes if i.lower() == want), ("", ""))
+    return SelfIdentity(
+        address=own[1], label=labels.get(own[0], "") if own[0] else "",
+        self_addresses=frozenset(a.strip().lower() for _, a, _ in boxes))
+
+
+async def resolve_self_addresses(db: Any, account_id: str) -> frozenset[str]:
+    """The lower-case address of each mailbox of the member who owns
+    ``account_id`` (D-EM-27). Empty when the mailbox row is not visible."""
+    return (await resolve_self(db, account_id)).self_addresses
+
+
+def own_addresses(
+    self_email: str, self_addresses: Iterable[str] = (),
+) -> frozenset[str]:
+    """``self_email`` and ``self_addresses``, lower case, with no blank entry.
+
+    A caller that has one address still gets the right answer, because the
+    set then holds that address only."""
+    found = {(a or "").strip().lower() for a in (self_addresses or ())}
+    found.add((self_email or "").strip().lower())
+    found.discard("")
+    return frozenset(found)
+
+
 def sender_scope(
     from_email: str,
     self_email: str,
     extra_domains: frozenset[str] | set[str] = frozenset(),
+    *,
+    self_addresses: Iterable[str] = (),
 ) -> str:
     """Classify a sender's provenance relative to the mailbox owner.
 
     Returns one of:
-    - ``"self"``     — the owner's own address sent it (you personally).
+    - ``"self"``     — the owner's own address sent it (you personally), or the
+      address of another mailbox of the owner (``self_addresses``, D-EM-27).
     - ``"internal"`` — same email domain as the owner, or one of ``extra_domains``
       (your organisation, but not you).
     - ``"external"`` — anyone else.
@@ -78,12 +175,16 @@ def sender_scope(
     genuine receive-category for mail we couldn't identify. ``self_email`` with no
     domain (shouldn't happen) yields same-domain matching off the empty string,
     i.e. only an exact ``self`` match counts.
+
+    ``self_addresses`` is keyword-only and optional, so a caller with ONE
+    address (``routes/crm/auto_lead.py``) keeps working unchanged. The
+    internal domain stays the domain of ``self_email``, the current mailbox.
     """
     frm = (from_email or "").strip().lower()
     me = (self_email or "").strip().lower()
     if not frm or "@" not in frm:
         return "external"
-    if me and frm == me:
+    if frm in own_addresses(me, self_addresses):
         return "self"
     own_domain = _domain_of(me)
     domains = {d for d in ({own_domain} | {
@@ -95,7 +196,10 @@ def is_own_mail(
     from_email: str,
     self_email: str,
     extra_domains: frozenset[str] | set[str] = frozenset(),
+    *,
+    self_addresses: Iterable[str] = (),
 ) -> bool:
     """True when the sender is you or your organisation (``self``/``internal``) —
     i.e. NOT external mail you received from an outside party."""
-    return sender_scope(from_email, self_email, extra_domains) != "external"
+    return sender_scope(from_email, self_email, extra_domains,
+                        self_addresses=self_addresses) != "external"

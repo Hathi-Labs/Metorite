@@ -1089,14 +1089,13 @@ async def _categorize_senders_job(account_id: str, limit: int) -> None:
                 return
             # The account's own address + configured org domains → sender_scope,
             # so we never bucket the user's own / same-org senders into a
-            # RECEIVE category.
-            acc = (await db.execute(text(
-                "SELECT email_address FROM email_accounts WHERE id = :id"
-            ), {"id": account_id})).fetchone()
-            self_email = (acc.email_address if acc else "") or ""
+            # RECEIVE category. "Own" is each mailbox of the member (D-EM-27,
+            # EM-T8e-1), read with this mailbox's address in one query.
             from gateway.routes.email.automation.identity import (  # noqa: PLC0415
                 resolve_org_domains,
+                resolve_self,
             )
+            me = await resolve_self(db, account_id)
             org_domains = await resolve_org_domains(db, account_id)
 
             # Never categorize the user's OWN address as a "sender". Keep
@@ -1104,7 +1103,8 @@ async def _categorize_senders_job(account_id: str, limit: int) -> None:
             # 'user' overrides.
             cands = [
                 r for r in rows
-                if sender_scope(r.email, self_email, org_domains) != "self"
+                if sender_scope(r.email, me.address, org_domains,
+                                self_addresses=me.self_addresses) != "self"
                 and (r.cur_source or "") != "user"
             ]
             if not cands:
@@ -1395,9 +1395,15 @@ async def _maybe_block_cold(
     provider_msg_id: str, email: dict[str, str], blocker: str,
 ) -> None:
     """Cold-email gate: for a first-time, non-whitelisted sender, LLM-classify
-    and (if cold) label/archive + record. Runs only when no rule matched."""
+    and (if cold) label/archive + record. Runs only when no rule matched.
+
+    Mail from any mailbox of the member is never cold (D-EM-27, EM-T8e-1).
+    The payload's ``sender_scope`` says ``self`` for it, because the runner
+    builds the payload with each mailbox of the member."""
     sender = (email.get("from") or "").lower()
     if not sender:
+        return
+    if (email.get("sender_scope") or "") == "self":
         return
     # Already known to the cold-sender table (flagged or whitelisted) → skip.
     seen = (await db.execute(text(

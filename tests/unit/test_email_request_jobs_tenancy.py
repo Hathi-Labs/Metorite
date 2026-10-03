@@ -409,6 +409,11 @@ def test_the_compose_stream_task_keeps_the_organization_of_its_request(
                       "compose": "tier-fast", "chat": "tier-powerful"}))
     monkeypatch.setattr(drafting_mod, "_llm_compose_assist",
                         AsyncMock(return_value="Hello Priya"))
+    # New mail names the sending mailbox (EM-T8e-1). The block yields a bare
+    # AsyncMock, which answers no read, so the identity read is a double too.
+    from gateway.routes.email.automation.identity import SelfIdentity
+    monkeypatch.setattr(drafting_mod, "resolve_self",
+                        AsyncMock(return_value=SelfIdentity()))
 
     app = FastAPI()
     app.add_middleware(TenantScopeMiddleware)

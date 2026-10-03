@@ -28,6 +28,7 @@ from gateway.routes.email.automation.drafting import (
     _store_ai_draft,
     _upsert_local_draft,
 )
+from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.core import (
     RESERVED_INDICATORS,
     _attachment_summaries,
@@ -311,6 +312,24 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
         return template
 
 
+async def _draft_from_address(
+    db: Any, account_id: str, *payloads: dict[str, Any] | None,
+) -> str:
+    """The From of a local draft copy: the address of the sending mailbox.
+
+    A rule draft goes out from ``account_id``, never from the sign-in address
+    of the member (MB-14, EM-T8e-1). A payload's ``self`` is that address.
+    ``approve_execution`` and ``retry_failed_executions`` build a payload with
+    no ``self``, so the mailbox row answers then."""
+    for payload in payloads:
+        own = ((payload or {}).get("self") or "").strip()
+        if own:
+            return own
+    if not account_id:
+        return ""
+    return (await resolve_self(db, account_id)).address
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -492,12 +511,14 @@ async def _apply_rule_actions(
                 )
                 # Mirror the draft locally so it shows in the Drafts folder and
                 # in-thread immediately (matches the manual draft write-path).
+                # The From is the sending mailbox (MB-14, EM-T8e-1).
                 if draft_pid and account_id:
                     await _upsert_local_draft(
                         db, account_id, draft_pid,
                         thread_id=email.get("thread_id") or None,
-                        owner_email=user_email, to_email=to,
-                        subject=subj, body=body,
+                        owner_email=await _draft_from_address(
+                            db, account_id, None if tmpl else draft_email, email),
+                        to_email=to, subject=subj, body=body,
                     )
                 # AI-written (non-template) drafts: remember for edit-learning.
                 # commit=False: every caller of _apply_rule_actions holds a
@@ -535,7 +556,9 @@ async def _apply_rule_actions(
                 if fwd_pid and account_id:
                     await _upsert_local_draft(
                         db, account_id, fwd_pid, thread_id=None,
-                        owner_email=user_email, to_email=a["to_address"],
+                        owner_email=await _draft_from_address(
+                            db, account_id, email),
+                        to_email=a["to_address"],
                         subject=fwd_subject, body=fwd,
                     )
             elif t == "CALL_WEBHOOK" and a.get("url"):

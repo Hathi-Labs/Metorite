@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
+from gateway.routes.email.automation.identity import resolve_self_addresses
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -874,15 +875,14 @@ async def _upsert_rule_pattern(
         if key in {"REPLY", "AWAITING_REPLY", "FYI", "DONE",
                    "TO_REPLY", "ACTIONED"}:
             return False
-    # (2) Never pin the mailbox's own address (FROM patterns only).
+    # (2) Never pin an address of the member's own mailboxes (FROM patterns
+    #     only). "Own" is EACH mailbox of the member (D-EM-27, EM-T8e-1), so
+    #     the address of a second mailbox is never pinned in the first.
     if ptype == "FROM":
-        acct = (await db.execute(text(
-            "SELECT email_address FROM email_accounts WHERE id = :aid"
-        ), {"aid": account_id})).fetchone()
-        own = (getattr(acct, "email_address", "") or "").strip().lower()
         val_l = value.strip().lower()
-        if own and (own in val_l or val_l in own):
-            return False
+        for own in await resolve_self_addresses(db, account_id):
+            if own and (own in val_l or val_l in own):
+                return False
     # (3) A pattern the user REJECTED must not come straight back. The auto-
     #     learner fires on any sender with three consistent AI matches, which is
     #     exactly the sender the user just rejected a pattern for — so without
@@ -1044,6 +1044,24 @@ class RuleFeedbackRequest(BaseModel):
     pin_sender: bool = False
 
 
+#: The values of ``expected`` that name no rule.
+_NO_RULE = frozenset({"none", "new"})
+
+
+def _refuse_foreign_rules(
+    rules_of_mailbox: dict[str, Any], expected: str, matched: list[str],
+) -> None:
+    """404 when ``expected`` or a value of ``matched`` is not a rule of the
+    mailbox (D-EM-19, EM-T8e-1). The ids compare without case. An empty
+    value of ``matched`` names nothing and passes, as the route skips it."""
+    known = {str(k).strip().lower() for k in rules_of_mailbox}
+    named = [r for r in matched if r]
+    if expected not in _NO_RULE:
+        named.append(expected)
+    if any(str(r).strip().lower() not in known for r in named):
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+
 @router.post("/rules/feedback")
 async def rule_feedback(
     req: RuleFeedbackRequest,
@@ -1071,6 +1089,11 @@ async def rule_feedback(
         # sticks is to set the thread status directly. Cleanup categories
         # (Newsletter/Receipt/…) are sender-stable → learn FROM/SUBJECT patterns.
         meta = {r["id"]: r for r in await _load_rules(db, req.account_id)}
+        # The pair must match (D-EM-19, EM-T8e-1): each rule the request names
+        # is a rule of THIS mailbox, or the answer is 404 and nothing is
+        # written. `_upsert_rule_pattern` reads a rule by its id alone, so a
+        # rule of another mailbox would otherwise reach its guards.
+        _refuse_foreign_rules(meta, req.expected, req.matched_rule_ids)
 
         # The Fix dialog passes the message id; derive its thread for a status fix.
         thread_id = (req.thread_id or "").strip()
