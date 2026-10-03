@@ -23,10 +23,14 @@ The rules of this module:
    the BARE member email when the account id is empty, and the bare key holds
    every personal memory of the member. A purge of it would delete them all.
    An account id that is not a UUID is refused too.
-3. The key holds the account id in its canonical form, ``str(UUID(id))``. The
-   writers use the id that the database returns, which is that form. A path
-   id in capitals, or with no hyphens, finds the row in Postgres and would
-   find no Mem0 key.
+3. The key holds the account id in its canonical form, ``str(UUID(id))``.
+   ``core.email_memory_scope`` builds that form for each writer and for this
+   purge (review round 2). Some writers take the id from the REQUEST: the
+   writing-style route, the draft routes and the send route. Postgres finds
+   the row for an id in capitals or with no hyphens. Before round 2 such a
+   writer keyed Mem0 on the id as the request gave it, and the purge missed
+   that key. This module also checks that the id IS a UUID, and refuses it
+   when it is not.
 4. The purge makes TWO passes, ``SECOND_PASS_DELAY_S`` apart. No lock holds the
    third writer, and stopping the sync does not stop a background add that is
    still running. Such an add can land after the first pass, and the second

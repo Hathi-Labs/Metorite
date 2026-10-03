@@ -34,6 +34,12 @@ Four rules change what arrives:
    (``rules.sync_draft_reply_action``). A second one, for example
    "Needs Reply (copy)", would go on drafting while the switch shows OFF
    (D-EM-6). "Add defaults" refuses the same case (``_seed_preset_rules``).
+   A reply rule is never renamed. When its own name is taken, at the read or
+   at the INSERT, it is left out as ``reply_rule_exists`` too. So a writer
+   that commits "Needs Reply" between the read and the INSERT cannot make the
+   copy land as "Needs Reply (copy)" (review round 2). Residual: a writer
+   that commits a reply rule under ANOTHER name in that window still gives
+   two reply rules. Only a lock that "Add defaults" also takes can close it.
 3. A reply rule keeps DRAFT_EMAIL only when the stored ``draft_replies`` of
    the TARGET is true (D-EM-6). Any other rule keeps its DRAFT_EMAIL, because
    the member put it there and the switch does not govern it.
@@ -233,11 +239,21 @@ def _left_out_reason(
 
 async def _copy_one(
     db: Any, rule: dict[str, Any], src: str, dst: str, taken: set[str],
-    *, keep_draft: bool,
-) -> str:
-    """Copy one rule and its actions. The answer is the name in the target."""
+    *, keep_draft: bool, rename: bool = True,
+) -> str | None:
+    """Copy one rule and its actions. The answer is the name in the target.
+
+    With ``rename=False`` the rule lands under its own name or not at all,
+    and the answer is ``None`` when that name is taken. The caller passes it
+    for a reply rule (rule 2 of the module, review round 2). The read of the
+    target holds no lock, so another writer can commit "Needs Reply" before
+    the INSERT. A renamed copy, "Needs Reply (copy)", is then a second reply
+    rule that ``_is_reply_rule`` cannot see.
+    """
     for _try in range(_MAX_NAME_TRIES):
         name = copy_name(rule["name"], taken)
+        if not rename and name != rule["name"]:
+            return None
         taken.add(name.lower())
         new_id = str(uuid4())
         row = (await db.execute(text(_COPY_RULE_SQL), {
@@ -293,7 +309,11 @@ async def copy_rules(
             is_reply = _is_reply_rule(rule)
             name = await _copy_one(
                 db, rule, src, dst, taken,
-                keep_draft=target_drafts or not is_reply)
+                keep_draft=target_drafts or not is_reply, rename=not is_reply)
+            if name is None:
+                left_out.append(RuleCopyLeftOut(
+                    name=rule["name"], reason=LEFT_OUT_REPLY_EXISTS))
+                continue
             reply_held = reply_held or is_reply
             copied.append(name)
             if name != rule["name"]:

@@ -22,6 +22,9 @@ R7 fences named here:
   one reply rule at most. A source reply rule is left out as
   ``reply_rule_exists`` when the target holds one, so the switch OFF stops
   every reply draft after a copy.
+* ``email-rule-copy-reply-race`` (review round 2, F2): another writer commits
+  "Needs Reply" between the read of the target and the INSERT. The reply rule
+  is left out, and it never lands as "Needs Reply (copy)".
 * ``email-rule-copy-forward-loop``: a rule with a FORWARD to an own address is
   left out and named.
 * ``email-rule-copy-409``: a copy that cannot land answers 409 and writes
@@ -539,6 +542,22 @@ class TestDraftingFollowsTheTarget:
 # ── R8: email-rule-copy-one-reply-rule ───────────────────────────────────────
 
 
+async def _switch_off_then_drafting(p: Any, account: str) -> list[dict[str, Any]]:
+    """Turn "Auto draft replies" OFF as SettingsTab does, then read each rule
+    of the mailbox that still holds DRAFT_EMAIL."""
+    app_dsn = p.app_url.render_as_string(hide_password=False)
+    token = bind_tenant(p.org_b)
+    try:
+        async with tenant_engine_scope(app_dsn), core._tenant_session() as db:
+            await rules_mod.sync_draft_reply_action(db, account, False)
+    finally:
+        release_tenant(token)
+    return _rows(p.admin_engine,
+                 "SELECT r.name FROM email_rules r JOIN email_actions a "
+                 "ON a.rule_id = r.id WHERE r.account_id = CAST(:a AS uuid) "
+                 "AND a.type = 'DRAFT_EMAIL'", a=account)
+
+
 @_DB_GATE
 class TestTheTargetKeepsOneReplyRule:
     """The "Auto draft replies" switch edits only the first reply rule. A second
@@ -564,18 +583,42 @@ class TestTheTargetKeepsOneReplyRule:
         assert [(x.name, x.reason) for x in out.left_out] == [
             ("Needs Reply", rule_copy.LEFT_OUT_REPLY_EXISTS)]
         assert set(_rules_of(p.admin_engine, dst)) == {"Needs Reply"}
-        # The member turns drafting OFF, as SettingsTab does.
-        app_dsn = p.app_url.render_as_string(hide_password=False)
-        token = bind_tenant(p.org_b)
-        try:
-            async with tenant_engine_scope(app_dsn), core._tenant_session() as db:
-                await rules_mod.sync_draft_reply_action(db, dst, False)
-        finally:
-            release_tenant(token)
-        drafting = _rows(p.admin_engine,
-                         "SELECT r.name FROM email_rules r JOIN email_actions a "
-                         "ON a.rule_id = r.id WHERE r.account_id = CAST(:a AS uuid) "
-                         "AND a.type = 'DRAFT_EMAIL'", a=dst)
+        drafting = await _switch_off_then_drafting(p, dst)
+        assert drafting == [], f"a rule still drafts with the switch OFF: {drafting}"
+
+    async def test_a_reply_rule_that_another_writer_commits_during_the_copy(
+        self, member, promoted, monkeypatch,  # noqa: F811
+    ):
+        """``email-rule-copy-reply-race`` (review round 2, F2). "Add defaults"
+        commits Needs Reply on its own connection AFTER the copy read the
+        target and BEFORE the INSERT. The read saw no reply rule. Before the
+        fix, the INSERT then renamed the copy to "Needs Reply (copy)", which
+        the switch cannot see."""
+        p = promoted
+        src, dst = member.box(), member.box()
+        _settings(p.admin_engine, org=p.org_b, account=dst, draft_replies=True)
+        rid = _rule(p.admin_engine, org=p.org_b, account=src, name="Needs Reply")
+        _action(p.admin_engine, org=p.org_b, rule=rid, type_="LABEL", label="x")
+        _action(p.admin_engine, org=p.org_b, rule=rid, type_="DRAFT_EMAIL")
+        real_read = rule_copy._target_rules
+
+        async def _read_then_commit(db: Any, account_id: str) -> list[dict[str, Any]]:
+            seen = await real_read(db, account_id)
+            assert seen == [], "the race needs a target with no rule at the read"
+            other = _rule(p.admin_engine, org=p.org_b, account=dst, name="Needs Reply")
+            _action(p.admin_engine, org=p.org_b, rule=other, type_="DRAFT_EMAIL")
+            return seen
+
+        monkeypatch.setattr(rule_copy, "_target_rules", _read_then_commit)
+
+        out = await member.copy(src, dst)
+
+        assert out.copied == [] and out.renamed == []
+        assert [(x.name, x.reason) for x in out.left_out] == [
+            ("Needs Reply", rule_copy.LEFT_OUT_REPLY_EXISTS)]
+        assert set(_rules_of(p.admin_engine, dst)) == {"Needs Reply"}, (
+            "the copy landed under another name")
+        drafting = await _switch_off_then_drafting(p, dst)
         assert drafting == [], f"a rule still drafts with the switch OFF: {drafting}"
 
     @pytest.mark.parametrize("held_name,held_type,enabled", [

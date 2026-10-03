@@ -15,6 +15,9 @@ R7 fences named here:
   bare scope, of another mailbox, or of another member. The key holds the
   canonical form of the id, so a path id in capitals or with no hyphens still
   finds it.
+* ``email-memory-key-canonical`` (review round 2): ``core.email_memory_scope``
+  gives one key for each form of one id. A real writer that takes the id from
+  the request, given capitals, writes the key that the purge deletes (R8).
 * ``email-purge-second-pass``: a second pass, ``SECOND_PASS_DELAY_S`` after the
   first, deletes a memory that a late add wrote between the passes.
 * ``email-purge-refuses-bare-scope``: an empty or invalid account id deletes
@@ -64,6 +67,8 @@ from acb_common.db import bind_tenant, release_tenant
 from acb_memory import mem0_client
 from fastapi import HTTPException
 from gateway.routes.email import memory_purge
+from gateway.routes.email.automation import assistant as assistant_mod
+from gateway.routes.email.core import email_memory_scope
 from gateway.routes.email.transport import accounts
 from sqlalchemy import text
 
@@ -103,6 +108,9 @@ class _FakeMem0:
     nothing, so the scope never empties and no page comes back twice. Past
     ``safety`` reads it raises ``_SafetyStop``, so a regression of the page
     cap fails the test and never hangs the run.
+
+    ``add`` has the shape of ``Memory.add``, so a real writer reaches it
+    through ``add_memories_background``. ``seed`` puts one row in directly.
     """
 
     def __init__(self, scopes: dict[str, int], *, fail: str | None = None,
@@ -110,17 +118,24 @@ class _FakeMem0:
         self.rows: dict[str, dict[str, Any]] = {}
         for scope, n in scopes.items():
             for i in range(n):
-                self.add(scope, f"{SECRET} {scope} {i}")
+                self.seed(scope, f"{SECRET} {scope} {i}")
         self.reads: list[tuple[str, int, bool]] = []
         self.deleted: list[str] = []
+        self.added: list[str] = []
         self.fail = fail
         self.stuck = stuck
         self.endless = endless
         self.safety = 2 * mem0_client.DELETE_SCOPE_MAX_PAGES + 10
 
-    def add(self, scope: str, memory: str) -> None:
+    def seed(self, scope: str, memory: str) -> None:
         mid = str(uuid.uuid4())
         self.rows[mid] = {"id": mid, "user_id": scope, "memory": memory}
+
+    def add(self, messages: list[dict[str, str]], *, user_id: str,
+            agent_id: str | None = None) -> dict[str, Any]:
+        self.added.append(user_id)
+        self.seed(user_id, " ".join(m.get("content", "") for m in messages))
+        return {"results": []}
 
     def get_all(self, *, filters: dict[str, Any], top_k: int = 20,
                 show_expired: bool = False) -> dict[str, Any]:
@@ -312,7 +327,7 @@ class TestTheSecondPass:
     async def test_a_late_add_between_the_passes_is_deleted(self, wired, mem0):  # noqa: F811
         async def _late_add(fake: _FakeMem0) -> None:
             # A background add of the drafter lands after the first pass.
-            fake.add(MAILBOX, f"{SECRET} late")
+            fake.seed(MAILBOX, f"{SECRET} late")
 
         wired({ACC: _row()})
         m = mem0(_seeded(), between=_late_add)
@@ -361,12 +376,29 @@ class TestThePurgeRefusesTheBareScope:
     @pytest.mark.parametrize("bad", [
         "", "  ", "*", " * ", None, 7, {"in": [OWNER]}, [MAILBOX],
     ], ids=["empty", "blank", "wildcard", "padded-wildcard", "none", "int",
-            "operator-dict", "list"])
+            "dict", "list"])
     async def test_delete_scope_refuses_before_any_read(self, mem0, bad):
         m = mem0(_seeded())
         with pytest.raises(ValueError):
             await m.client.delete_scope(bad)
         assert m.fake.reads == [] and m.fake.deleted == []
+
+
+# ── email-memory-key-canonical ───────────────────────────────────────────────
+
+
+class TestTheKeyIsCanonical:
+
+    @pytest.mark.parametrize("given", [
+        ACC, ACC.upper(), ACC.replace("-", ""), "{" + ACC + "}", f"  {ACC.upper()}  ",
+    ], ids=["canonical", "capitals", "no-hyphens", "braces", "padded"])
+    def test_each_form_of_one_id_gives_one_key(self, given):
+        assert email_memory_scope(OWNER, given) == MAILBOX
+        assert memory_purge.mailbox_memory_scope(OWNER, given) == MAILBOX
+
+    def test_an_id_that_is_not_a_uuid_stays_as_it_is(self):
+        assert email_memory_scope("me@acme.com", "acc-1") == "me@acme.com#acct:acc-1"
+        assert email_memory_scope("me@acme.com", "ACC-1") == "me@acme.com#acct:ACC-1"
 
 
 # ── email-purge-page-cap ─────────────────────────────────────────────────────
@@ -496,6 +528,20 @@ def _seed_account(admin, *, org: str, owner: str, default: bool,
              "d": default, "age": age, "o": org}).scalar_one())
 
 
+def _seed_sent(admin, *, org: str, account_id: str) -> None:
+    """One sent mail, so the writing-style route has a sample."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_messages (account_id, provider_message_id, folder, "
+            "from_address, to_addresses, subject, body_text, received_at, "
+            "organization_id) VALUES (CAST(:a AS uuid), :pm, 'sent', "
+            "CAST(:f AS jsonb), CAST(:t AS jsonb), 'Re: plan', "
+            "'Thanks, that works for me. Talk soon.', now(), CAST(:o AS uuid))"),
+            {"a": account_id, "pm": f"pm-{uuid.uuid4().hex[:12]}",
+             "f": json.dumps({"email": "me@em-t8f.test"}),
+             "t": json.dumps([{"email": "you@outside.test"}]), "o": org})
+
+
 def _created_at(admin, account_id: str) -> datetime:
     with admin.connect() as c:
         return c.execute(text(
@@ -533,6 +579,44 @@ class TestOnARealDatabase:
                 await _drain()
             assert m.fake.left(scope) == 0
             assert m.fake.left(owner) == 2, "the purge took the bare scope"
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM email_accounts WHERE user_id = :u"),
+                          {"u": owner})
+
+    async def test_a_writer_given_capitals_writes_the_key_that_the_purge_deletes(
+        self, promoted, app_engine, mem0, monkeypatch,  # noqa: F811
+    ):
+        """``email-memory-key-canonical`` (review round 2, F1). The
+        writing-style route takes the account id from the request. Postgres
+        finds the row for the id in capitals. Before round 2 the route keyed
+        Mem0 on the capitals, and the purge deleted another key."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"member-{uuid.uuid4().hex[:8]}@em-t8f.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
+                            default=True, age="1 hour")
+        _seed_sent(p.admin_engine, org=p.org_b, account_id=acc)
+        scope = f"{owner}#acct:{acc}"
+        m = mem0({})
+
+        async def _style(_samples: list[str]) -> str:
+            return "Short and warm."
+
+        monkeypatch.setattr(assistant_mod, "_llm_writing_style", _style)
+        user = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                           organization_id=p.org_b)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn):
+                out = await assistant_mod.generate_writing_style(
+                    account_id=acc.upper(), user=user)
+            assert out == {"writing_style": "Short and warm."}
+            assert m.fake.added == [scope], "the writer keyed Mem0 on the request id"
+            assert await memory_purge.purge_mailbox_memory(owner, acc.upper()) == 1
+            assert m.fake.rows == {}, "a memory of the mailbox is left"
         finally:
             release_tenant(token)
             with p.admin_engine.begin() as c:

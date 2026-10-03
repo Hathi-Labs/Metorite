@@ -4140,8 +4140,9 @@ migration.
 - **The refusals.** `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value,
   before any read. The pgvector store of mem0ai 2.2.1 turns `"*"` into `payload ? 'user_id'`,
   which matches each memory of each tenant. The purge also refuses an account id that is not a
-  UUID, and it builds the key from `str(UUID(id))`. The writers use that form, and a path id in
-  capitals finds the row in Postgres but no Mem0 key.
+  UUID. Since round 2, `core.email_memory_scope` builds the key from `str(UUID(id))` for each
+  writer and for the purge. Some writers take the id from the request, and Postgres finds the
+  row for an id in capitals.
 - **Two passes.** Three writers fill the key. The third is the precedent of each draft, which a
   background task adds, and no lock holds it. So the purge runs `delete_scope` twice, 120 seconds
   apart. An add that lands after the second pass stays.
@@ -4190,9 +4191,34 @@ rebase dropped the two narrowing commits, because #602 carries them.
   2 skipped (the two WS-29 gates of `DATABASE_URL`). All 127 email suites, with the memory and
   seam suites, gave 2291 passed. The ruff gate passed.
 
+**Review fix round 2 (2026-10-03).** The verifier passed round 1 with no code blocker. Round 2
+fixed two P3s and two P4s. The agent rebased the branch on `ceba07cb` (#604, EM-T8e-1). In
+`apps/services/gateway/AGENTS.md` both sides added a bullet after the EM-T4e bullet, and the
+agent kept both.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| F1 (P3): a writer that takes the id from the request keys Mem0 on capitals | `core.email_memory_scope` builds `str(UUID(id))` when the id parses | the key keeps the request id | `TestTheKeyIsCanonical` and `test_a_writer_given_capitals_writes_the_key_that_the_purge_deletes` |
+| F2 (P3): a writer commits "Needs Reply" between the read and the INSERT | A reply rule is never renamed. When the target holds its name, the copy leaves it out as `reply_rule_exists` | rename allowed, or the check gone | `test_a_reply_rule_that_another_writer_commits_during_the_copy` |
+
+- **F1, the writers.** The writing-style route, the draft routes and the send route take the id
+  from the request. A canonical id does not change, so a key from a database id stays the same.
+- **F2, the residual.** A writer that commits a reply rule under ANOTHER name in the same window
+  still gives two reply rules. Only a lock that "Add defaults" also takes can close it. It is not
+  built here.
+- **Docs.** The docstring of `delete_scope` gives the real reason to refuse a value that is not a
+  `str` (F4). Version 2.2.1 of mem0ai changes such a value with `str()`. The Fences list and scope item 2
+  carry the fences and the log of rounds 1 and 2 (F5).
+- **Mutation check.** The 4 mutants of the table went red. The script restored each file and
+  checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 315 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 128 email suites, with the memory and
+  seam suites, gave 2373 passed. The ruff gate passed.
+
 **Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
 `automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`
 and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-1 edits both.
+After EM-T8e-1 merged (#604), review round 2 edits `core.email_memory_scope` only.
 
 1. **Copy rules (item 2).**
    - `POST /email/rules/copy` takes `from_account_id` and `to_account_id`. Each must be a mailbox
@@ -4210,8 +4236,8 @@ and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-
    - The answer lists the copied names, the renamed names and the rules that it left out.
 2. **The memory purge (item 4, MB-17).**
    - After the DELETE of a disconnect commits, a task with a strong reference deletes each Mem0
-     memory under `email_memory_scope(owner, account_id)`. It logs
-     `email.disconnect.memory_purged` with the count.
+     memory under `email_memory_scope(owner, account_id)`. It makes two passes, 120 seconds
+     apart. It logs `email.disconnect.memory_purged` with the counts `first` and `second`.
    - The helper refuses a scope that has no `#acct:`. A purge of the bare member scope would
      delete every personal memory of the member.
    - A 404, a 409 or a failed DELETE makes no purge call.
@@ -4232,10 +4258,22 @@ and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-
   - `email-rule-copy-drafting`: with `draft_replies` false or absent, no copied reply rule holds
     DRAFT_EMAIL. With it true, the rule keeps it.
   - `email-rule-copy-forward-loop`: a FORWARD to an own address is left out and named.
+  - `email-rule-copy-one-reply-rule` (round 1): the target keeps one reply rule. After a copy,
+    the switch OFF stops each reply draft.
+  - `email-rule-copy-reply-race` (round 2): another writer commits "Needs Reply" between the read
+    and the INSERT. The reply rule is left out, and never lands under another name.
+  - `email-rule-copy-409` (round 1): a copy that cannot land answers 409 and writes nothing.
 - `tests/unit/test_email_disconnect_memory_purge.py` (a fake Mem0 client):
   - `email-disconnect-purges-memory`: a 204 deletes each memory under `<owner>#acct:<id>`, over
     more than one page. It deletes no memory of the bare scope or of another mailbox.
-  - `email-purge-refuses-bare-scope`: an empty account id deletes nothing.
+  - `email-memory-key-canonical` (round 2): each form of one id gives one key. A writer given an
+    id in capitals writes the key that the purge deletes (R8).
+  - `email-purge-second-pass` (round 1): the second pass deletes an add that lands between the
+    passes.
+  - `email-purge-refuses-bare-scope`: an empty account id, or one that is not a UUID, deletes
+    nothing. `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value.
+  - `email-purge-page-cap` (round 1): a scope that never empties raises after 1000 pages.
+  - `email-purge-strong-reference` (round 1): `_PURGES` holds the task while it runs.
   - `email-purge-after-delete`: a 404, a 409 or a failed DELETE makes no purge call. A failed
     purge still gives 204, and its log holds no memory text.
   - `email-account-created-at`: each account read returns `created_at`.

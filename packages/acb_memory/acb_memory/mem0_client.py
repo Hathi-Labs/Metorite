@@ -292,8 +292,10 @@ class MemoryClient:
         * ``"*"``. The pgvector store of mem0ai 2.2.1 turns it into
           ``payload ? 'user_id'``, which matches every memory of every tenant.
           mem0 trims the value first, so ``" * "`` is the same value.
-        * A value that is not a ``str``. A dict is an operator filter, for
-          example ``{"in": [...]}``.
+        * A value that is not a ``str``. ``get_all`` of mem0ai 2.2.1 changes
+          it with ``str()`` first (``_validate_and_trim_entity_id``), so a
+          dict or a list becomes the text of it. That key is not the scope
+          that the caller meant. A purge must name its scope exactly.
 
         A blank value is refused too. A scope check that is special to one
         caller stays with that caller (``routes/email/memory_purge.py``).
