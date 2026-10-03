@@ -150,12 +150,15 @@ def drive_native(
     message: str = "hi",
     thread_id: str | None = None,
     history: list[dict[str, str]] | None = None,
+    extra_payload: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
     Returns the parsed events and the agents the run built. Only the HTTP
     transport is replaced. The static registry decides the runtime.
     *history* is the earlier turns, in the shape the browser sends them.
+    *extra_payload* adds keys that the gateway route puts on the payload
+    before the run, for example ``memory_context`` and ``system_context``.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -203,6 +206,8 @@ def drive_native(
     payload: dict[str, Any] = {"message": message}
     if history:
         payload["messages"] = list(history)
+    if extra_payload:
+        payload.update(extra_payload)
 
     async def _collect() -> list[str]:
         return [
