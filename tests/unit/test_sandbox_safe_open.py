@@ -34,6 +34,7 @@ import contextlib
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 from acb_skills import safe_open as so
@@ -236,3 +237,106 @@ def test_a_racing_swap_of_a_parent_dir_never_wins(tmp_path: Path, opener_path: s
         t.join(timeout=10)
     assert b"HOST SECRET" not in seen
     assert sorted(p.name for p in outside.iterdir()) == ["secret.txt"]
+
+
+# ── each host reader and writer of §7.5 rule B uses the opener ───────────────
+
+
+def test_the_sweep_never_reads_through_a_link(tmp_path: Path, opener_path: str) -> None:
+    from acb_skills.code_tools import _collect_changed
+
+    root, outside = _tree(tmp_path)
+    os.symlink(outside, root / "agent-data" / "escape", target_is_directory=True)
+    os.symlink(outside / "secret.txt", root / "agent-data" / "leak.txt")
+    collected = dict(_collect_changed(root, since=0.0, subdirs=("agent-data",)))
+    assert collected == {"agent-data/notes.md": b"ok"}
+    assert all(b"HOST SECRET" not in data for data in collected.values())
+
+
+def test_the_rehydrate_never_writes_through_a_link(
+    tmp_path: Path, opener_path: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from acb_memory import blob_store
+
+    root, outside = _tree(tmp_path)
+    os.symlink(outside / "secret.txt", root / "agent-data" / "leak.txt")
+    os.symlink(outside, root / "outputs", target_is_directory=True)
+    rows = {
+        "agent-data/leak.txt": b"FROM THE STORE",
+        "outputs/planted.txt": b"FROM THE STORE",
+        "agent-data/fine.md": b"restored",
+    }
+
+    async def list_files(agent: str, prefix: Any = None, **kw: Any) -> list[Any]:
+        return [
+            blob_store.BlobMeta(agent, p, p.split("/")[0], blob_store._sha256(d), len(d), "text/plain")
+            for p, d in rows.items()
+        ]
+
+    async def get_file(agent: str, path: str, **kw: Any) -> bytes | None:
+        return rows.get(path)
+
+    monkeypatch.setattr(blob_store, "list_files", list_files)
+    monkeypatch.setattr(blob_store, "get_file", get_file)
+    restored = asyncio.run(blob_store.rehydrate_workspace("agent-x", str(root), instance="o:x"))
+    assert restored == 1
+    assert (root / "agent-data" / "fine.md").read_bytes() == b"restored"
+    assert (outside / "secret.txt").read_text(encoding="utf-8") == "HOST SECRET"
+    assert not (outside / "planted.txt").exists()
+
+
+def test_every_rule_b_route_opens_through_the_opener() -> None:
+    """A source fence: the workspace routes read and write with the opener."""
+    import inspect
+
+    from gateway.routes import workspace
+
+    for fn in (
+        workspace.get_workspace_file, workspace.write_workspace_file,
+        workspace.delete_workspace_file, workspace.upload_files,
+        workspace.promote_input_to_agent_data, workspace.get_artifact_file,
+        workspace.write_artifact_file, workspace.upload_artifact,
+        workspace._faultin_from_store,
+    ):
+        src = inspect.getsource(fn)
+        for banned in (".write_bytes(", ".read_bytes(", ".write_text(", "open(file_path", ".unlink("):
+            assert banned not in src.replace("safe_open.", "SAFE."), (fn.__name__, banned)
+
+
+# ── a skill survives a lost disk copy (done-when 7, R8) ──────────────────────
+
+from tests.unit._sandbox_tools_fakes import PA, short_tmp  # noqa: E402,F401
+from tests.unit.test_chat_write_under_rls import graph_as_app, members  # noqa: E402,F401
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402,F401
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+from tests.unit.test_maf_code_session import _run, clone  # noqa: E402,F401
+
+
+@_DB_GATE
+def test_a_skill_survives_a_lost_disk_copy_and_a_rehydrate(graph_as_app, clone) -> None:  # noqa: F811
+    import asyncio
+    import shutil
+
+    from acb_memory import rehydrate_workspace
+
+    a = graph_as_app.org_a
+    skill = f"agent-data/skills/chart-{os.getpid()}/SKILL.md"
+    body = "---\nname: chart\ndescription: Draw a chart.\n---\nRun the script.\n"
+    seen: dict[str, Path] = {}
+
+    async def write(store: Any, ws: Path, run_data: Path, slug: str) -> None:
+        await store.write(skill, body)
+        seen["ws"] = ws
+
+    _run(a, clone, write)
+    ws = seen["ws"]
+    shutil.rmtree(ws / "agent-data")
+    assert not (ws / skill).exists()
+    restored = asyncio.run(rehydrate_workspace(PA, str(ws), instance=f"o:{a}", organization_id=a))
+    assert restored >= 1
+    assert (ws / skill).read_text(encoding="utf-8") == body

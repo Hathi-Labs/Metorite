@@ -188,9 +188,18 @@ async def _faultin_from_store(
         data = await get_file(agent, rel, instance="", organization_id=organization_id)
     if data is None:
         return False
-    dest = _safe_resolve(workspace, rel)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    from acb_skills import safe_open
+
+    # WS-43d (§7.5 rule B): the blob goes back into the dir through the safe
+    # opener, so a link that a container planted cannot point the write at a
+    # host file.
+    try:
+        await asyncio.to_thread(
+            safe_open.write_bytes, workspace, _open_rel(workspace, rel), data,
+        )
+    except (safe_open.UnsafePath, OSError) as exc:
+        _log.warning("workspace.faultin_refused", agent=agent, path=rel, error=str(exc)[:200])
+        return False
     _log.info("workspace.faulted_in", agent=agent, path=rel)
     return True
 
@@ -759,6 +768,120 @@ def _safe_resolve(root: Path, rel: str) -> Path:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# The safe opener (WS-43d, maf_coding_engine.md §7.5 rule B)
+# ---------------------------------------------------------------------------
+# A sandbox container can write anything in the dir it mounts: a link, or a
+# part that turns into a link while the host reads it. So every route that
+# reads or writes a workspace file by path opens it with
+# ``acb_skills.safe_open``. ``_safe_resolve`` still answers 400 for an escape,
+# and the opener then refuses a link at any depth, which reads as absent.
+
+
+def _open_rel(root: Path, rel: str) -> str:
+    """*rel* as the safe opener takes it, after the containment check."""
+    from acb_skills import safe_open
+
+    _safe_resolve(root, rel)
+    clean = rel.replace("\\", "/").lstrip("/.")
+    try:
+        return "/".join(safe_open.split_rel(clean))
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=400, detail="Path traversal not allowed") from exc
+
+
+def _safe_stat(root: Path, rel: str) -> os.stat_result | None:
+    """The stat of a regular file reached with no link, or ``None``."""
+    from acb_skills import safe_open
+
+    try:
+        return safe_open.stat_file(root, rel)
+    except (safe_open.UnsafePath, OSError):
+        return None
+
+
+def _safe_chunks(root: Path, rel: str):
+    """Yield the bytes of ``root/rel``, opened with the safe opener."""
+    from acb_skills import safe_open
+
+    fh = safe_open.open_read(root, rel)
+    if fh is None:
+        return
+    with fh:
+        while chunk := fh.read(65536):
+            yield chunk
+
+
+def _safe_write(root: Path, rel: str, data: bytes) -> None:
+    """Write ``root/rel`` with the safe opener. A link answers 400."""
+    from acb_skills import safe_open
+
+    try:
+        safe_open.write_bytes(root, rel, data)
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=400, detail="That path is not a plain file.") from exc
+
+
+def _safe_upload(root: Path, folder: str, name: str, data: bytes) -> str:
+    """Write an upload under *folder* with a free name. Returns its rel path.
+
+    The exclusive create picks the name in the same call that writes, so two
+    uploads of one name never overwrite each other.
+    """
+    from acb_skills import safe_open
+
+    stem, ext = Path(name).stem, Path(name).suffix
+    candidate, counter = name, 1
+    while True:
+        rel = f"{folder}/{candidate}"
+        try:
+            safe_open.write_bytes(root, rel, data, exclusive=True)
+            return rel
+        except FileExistsError:
+            candidate = f"{stem} ({counter}){ext}"
+            counter += 1
+        except safe_open.UnsafePath as exc:
+            raise HTTPException(status_code=400, detail="That folder is not a plain dir.") from exc
+
+
+# ---------------------------------------------------------------------------
+# The thread's own output folder (WS-43d, maf_coding_engine.md §16.3, D86)
+# ---------------------------------------------------------------------------
+# Every session of a shared agent in one organization opens the same tenant
+# dir. A sandbox run writes its outputs to its thread's own folder,
+# ``outputs/<thread slug>/``. So for a session of a shared agent, the routes
+# list and serve, under ``outputs/``, only the folder of THAT session's thread.
+# The folder of another thread is hidden and answers 404. The room check stays.
+# A file of ``outputs/`` that is not in a thread folder is served as before.
+
+
+def _own_thread_slug(workspace: Path, session_id: str) -> str | None:
+    """This session's thread slug in a shared agent's tenant dir, else ``None``.
+
+    ``None`` means the rule does not apply: a personal agent's own dir or an
+    app workspace holds no other member's thread.
+    """
+    from acb_skills.agent_paths import instance_slug, is_tenant_instance
+
+    _agent, instance = _blob_key_for_workspace(workspace)
+    if not is_tenant_instance(instance):
+        return None
+    return instance_slug(str(session_id or ""))
+
+
+def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* lies in the output folder of a thread that is not *own_slug*."""
+    if own_slug is None:
+        return False
+    from acb_skills.agent_paths import is_thread_slug
+
+    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".")]
+    return (
+        len(parts) >= 2 and parts[0] == "outputs"
+        and is_thread_slug(parts[1]) and parts[1] != own_slug
+    )
+
+
 # The three "special" workspace directories.  Agents are encouraged to write
 # deliverables to outputs/ (uploads land in inputs/, reference data in
 # agent-data/), and these are always created up-front so they show in the UI.
@@ -840,7 +963,11 @@ def _walk_tree(root: Path) -> list[FileEntry]:
                     continue
                 fpath = dp / fname
                 try:
-                    stat = fpath.stat()
+                    # WS-43d (§7.5 rule B): a link is never listed, so the
+                    # tree never shows the size of a host file.
+                    if fpath.is_symlink():
+                        continue
+                    stat = fpath.lstat()
                     rel_path = str((rel_dir / fname)).replace("\\", "/")
                     mime, _ = mimetypes.guess_type(fname)
                     entries.append(FileEntry(
@@ -963,6 +1090,9 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
+    # WS-43d (§16.3): another thread's output folder is not listed.
+    own = _own_thread_slug(workspace, session_id)
+    files = [f for f in files if not _is_other_thread_path(f.path, own)]
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
 
@@ -994,46 +1124,52 @@ async def get_workspace_file(
 
     if _is_blocked_path(path):
         raise HTTPException(status_code=404, detail="File not found")
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists() or not file_path.is_file():
+    rel = _open_rel(workspace, path)
+    # WS-43d (§16.3): another thread's output folder answers as absent, and
+    # BEFORE the fault-in, so the store cannot restore it either.
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+        raise HTTPException(status_code=404, detail="File not found")
+    st = await asyncio.to_thread(_safe_stat, workspace, rel)
+    if st is None:
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
         restored = await _faultin_from_store(
             workspace, path, organization_id=_user.organization_id,
         )
-        if not restored:
+        st = await asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
+        if st is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-    file_size = file_path.stat().st_size
+    file_size = st.st_size
+    name = rel.rsplit("/", 1)[-1]
     if format_ == "pdf":
         # The member is the authenticated caller, never request input.
-        return await _file_as_pdf(file_path, file_size, member=_user.email or "")
+        return await _file_as_pdf(
+            workspace, rel, name, file_size, member=_user.email or "",
+        )
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"File too large ({file_size} bytes). Maximum is {_MAX_FILE_BYTES} bytes.",
         )
 
-    mime, _ = mimetypes.guess_type(file_path.name)
+    mime, _ = mimetypes.guess_type(name)
     media_type = mime or "application/octet-stream"
 
-    def _iter_file():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
     return StreamingResponse(
-        _iter_file(),
+        _safe_chunks(workspace, rel),
         media_type=media_type,
         headers={
-            "Content-Disposition": f'inline; filename="{file_path.name}"',
+            "Content-Disposition": f'inline; filename="{name}"',
             "Content-Length": str(file_size),
         },
     )
 
 
-async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Response:
+async def _file_as_pdf(
+    workspace: Path, rel: str, name: str, file_size: int, *, member: str,
+) -> Response:
     """A workspace document as a PDF download (WS-27bm S8, spec §14).
 
     The type check comes before the size check and before any read, so a
@@ -1050,7 +1186,9 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
         render_pdf,
     )
 
-    kind = SOURCE_KINDS.get(file_path.suffix.lower())
+    from acb_skills import safe_open
+
+    kind = SOURCE_KINDS.get(Path(name).suffix.lower())
     if kind is None:
         raise HTTPException(
             status_code=415,
@@ -1061,9 +1199,15 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
             status_code=413,
             detail=f"File too large for a PDF ({file_size} bytes). Maximum is {MAX_SOURCE_BYTES} bytes.",
         )
-    source = await asyncio.to_thread(
-        file_path.read_text, encoding="utf-8", errors="replace"
-    )
+    try:
+        raw = await asyncio.to_thread(
+            safe_open.read_bytes, workspace, rel, limit=MAX_SOURCE_BYTES,
+        )
+    except (safe_open.UnsafePath, OSError) as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    if raw is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    source = raw.decode("utf-8", errors="replace")
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
@@ -1073,7 +1217,7 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": attachment_disposition(pdf_filename(file_path.name))},
+        headers={"Content-Disposition": attachment_disposition(pdf_filename(name))},
     )
 
 
@@ -1288,21 +1432,18 @@ async def upload_files(
                        f"({len(content)} bytes). Max is {_MAX_UPLOAD_BYTES}.",
             )
 
-        # Avoid overwrites: append (1), (2), etc.
-        dest = upload_dir / safe_name
-        counter = 1
-        stem, ext2 = Path(safe_name).stem, Path(safe_name).suffix
-        while dest.exists():
-            dest = upload_dir / f"{stem} ({counter}){ext2}"
-            counter += 1
-
-        # Write
-        dest.write_bytes(content)
+        # Avoid overwrites: append (1), (2), etc. WS-43d (§7.5 rule B): the
+        # name is taken and written in one exclusive create, with no link.
+        rel_path = await asyncio.to_thread(
+            _safe_upload, workspace, "inputs", safe_name, content,
+        )
+        dest_name = rel_path.rsplit("/", 1)[-1]
 
         # Build response entry
-        stat = dest.stat()
+        stat = await asyncio.to_thread(_safe_stat, workspace, rel_path)
+        if stat is None:
+            raise HTTPException(status_code=500, detail="The upload was not stored.")
         mime, _ = mimetypes.guess_type(safe_name)
-        rel_path = str(dest.relative_to(workspace)).replace("\\", "/")
 
         # Write-through: a user upload (inputs/) is durable state too.
         await _mirror_gateway_write(
@@ -1312,7 +1453,7 @@ async def upload_files(
 
         uploaded.append(FileEntry(
             path=rel_path,
-            name=dest.name,
+            name=dest_name,
             size=stat.st_size,
             modified_at=__import__("datetime").datetime.fromtimestamp(
                 stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1387,23 +1528,19 @@ async def upload_artifact(
                 detail=f"File '{safe_name}' too large "
                        f"({len(content)} bytes). Max is {_MAX_UPLOAD_BYTES}.",
             )
-        dest = upload_dir / safe_name
-        counter = 1
-        stem, ext2 = Path(safe_name).stem, Path(safe_name).suffix
-        while dest.exists():
-            dest = upload_dir / f"{stem} ({counter}){ext2}"
-            counter += 1
-        dest.write_bytes(content)
-        stat = dest.stat()
+        # WS-43d (§7.5 rule B): one exclusive create, with no link followed.
+        rel_path = await asyncio.to_thread(_safe_upload, workspace, cat, safe_name, content)
+        stat = await asyncio.to_thread(_safe_stat, workspace, rel_path)
+        if stat is None:
+            raise HTTPException(status_code=500, detail="The upload was not stored.")
         mime, _ = mimetypes.guess_type(safe_name)
-        rel_path = str(dest.relative_to(workspace)).replace("\\", "/")
         # Write-through to the authoritative blob store.
         await _mirror_gateway_write(
             workspace, rel_path, content, action="create", session_id=None,
             organization_id=_user.organization_id,
         )
         uploaded.append(FileEntry(
-            path=rel_path, name=dest.name, size=stat.st_size,
+            path=rel_path, name=rel_path.rsplit("/", 1)[-1], size=stat.st_size,
             modified_at=__import__("datetime").datetime.fromtimestamp(
                 stat.st_mtime, tz=__import__("datetime").timezone.utc
             ).isoformat(),
@@ -1441,28 +1578,31 @@ async def delete_workspace_file(
         )
     _refuse_shared_clone_write(workspace)
 
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    if file_path.is_dir():
-        raise HTTPException(
-            status_code=400, detail="Cannot delete directories"
-        )
+    from acb_skills import safe_open
 
+    rel = _open_rel(workspace, path)
+    # WS-43d (§16.3): another thread's output folder answers as absent.
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+        raise HTTPException(status_code=404, detail="File not found")
     # Only allow deletion of files within the visible workspace dirs.
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Deletion is restricted to inputs/, outputs/, and agent-data/.",
         )
-
-    file_path.unlink()
+    try:
+        # WS-43d (§7.5 rule B): no part of the path is followed as a link.
+        deleted = await asyncio.to_thread(safe_open.unlink, workspace, rel)
+    except IsADirectoryError as exc:
+        raise HTTPException(status_code=400, detail="Cannot delete directories") from exc
+    except safe_open.UnsafePath as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="File not found")
     # Write-through the delete to the authoritative store (records a delete
     # version in history).
-    rel_del = str(file_path.relative_to(workspace)).replace("\\", "/")
     await _mirror_gateway_delete(
-        workspace, rel_del, session_id=session_id,
+        workspace, rel, session_id=session_id,
         organization_id=_user.organization_id,
     )
     _log.info(
@@ -1505,21 +1645,28 @@ async def promote_input_to_agent_data(
     src_rel = body.path.replace("\\", "/").lstrip("/")
     if not src_rel.startswith("inputs/"):
         raise HTTPException(status_code=400, detail="only inputs/ files can be promoted")
-    src = _safe_resolve(workspace, src_rel)
-    if not src.exists() or not src.is_file():
-        raise HTTPException(status_code=404, detail="source file not found")
+    from acb_skills import safe_open
 
-    dest_rel = (body.dest or f"agent-data/{src.name}").replace("\\", "/").lstrip("/")
+    # WS-43d (§7.5 rule B): the read, the write and the unlink all go
+    # through the safe opener. A link reads as absent.
+    src_rel = _open_rel(workspace, src_rel)
+    try:
+        data = await asyncio.to_thread(safe_open.read_bytes, workspace, src_rel)
+    except (safe_open.UnsafePath, OSError):
+        data = None
+    if data is None:
+        raise HTTPException(status_code=404, detail="source file not found")
+    src_name = src_rel.rsplit("/", 1)[-1]
+
+    dest_rel = (body.dest or f"agent-data/{src_name}").replace("\\", "/").lstrip("/")
     if not dest_rel.startswith("agent-data/"):
         raise HTTPException(status_code=400, detail="destination must be under agent-data/")
-    dest = _safe_resolve(workspace, dest_rel)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest_rel = _open_rel(workspace, dest_rel)
+    await asyncio.to_thread(_safe_write, workspace, dest_rel, data)
+    await asyncio.to_thread(safe_open.unlink, workspace, src_rel)
+    dest_name = dest_rel.rsplit("/", 1)[-1]
 
-    data = src.read_bytes()
-    dest.write_bytes(data)
-    src.unlink()
-
-    mime, _ = mimetypes.guess_type(dest.name)
+    mime, _ = mimetypes.guess_type(dest_name)
     mime = mime or "application/octet-stream"
     # Store: record the new agent-data version (promote) + the inputs delete.
     await _mirror_gateway_write(
@@ -1531,11 +1678,13 @@ async def promote_input_to_agent_data(
         organization_id=_user.organization_id,
     )
 
-    stat = dest.stat()
+    stat = await asyncio.to_thread(_safe_stat, workspace, dest_rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The promoted file was not stored.")
     _log.info("workspace.promoted", session_id=session_id, src=src_rel, dest=dest_rel)
     return FileEntry(
         path=dest_rel,
-        name=dest.name,
+        name=dest_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1574,10 +1723,16 @@ async def get_workspace_history(
     except ImportError:
         return {"history": []}
     agent, instance = _blob_key_for_workspace(workspace)
+    own = _own_thread_slug(workspace, session_id)
+    if path and _is_other_thread_path(path, own):
+        return {"history": []}
     rows = await file_history(
         agent, path, limit, instance=instance,
         organization_id=_user.organization_id,
     )
+    # WS-43d (§16.3): the files of another thread's output folder are not
+    # listed, not even by name.
+    rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
     return {"history": rows}
 
 
@@ -1620,37 +1775,34 @@ async def write_workspace_file(
         )
     _refuse_shared_clone_write(workspace)
 
-    file_path = _safe_resolve(workspace, path)
+    rel = _open_rel(workspace, path)
     # Only allow writes within the visible workspace dirs (inputs/, outputs/,
     # agent-data/).  The agent itself can write anywhere, but the frontend
     # user is restricted to the three visible folders.
-    if not file_path.is_relative_to(workspace):
-        raise HTTPException(
-            status_code=400, detail="Path escapes workspace root"
-        )
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
+    # WS-43d (§16.3): another thread's output folder answers as absent.
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+        raise HTTPException(status_code=404, detail="File not found")
 
-    # Create parent directories if needed
-    _existed = file_path.exists()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write content
-    if body.encoding == "base64":
-        data = base64.b64decode(body.content)
-        file_path.write_bytes(data)
-    else:
-        data = body.content.encode("utf-8")
-        file_path.write_text(body.content, encoding="utf-8")
+    _existed = await asyncio.to_thread(_safe_stat, workspace, rel) is not None
+    data = (
+        base64.b64decode(body.content) if body.encoding == "base64"
+        else body.content.encode("utf-8")
+    )
+    # WS-43d (§7.5 rule B): parent dirs and the file, with no link followed.
+    await asyncio.to_thread(_safe_write, workspace, rel, data)
 
     # Build response
-    stat = file_path.stat()
-    mime, _ = mimetypes.guess_type(file_path.name)
-    rel_path = str(file_path.relative_to(workspace)).replace("\\", "/")
+    stat = await asyncio.to_thread(_safe_stat, workspace, rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The file was not stored.")
+    file_name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(file_name)
+    rel_path = rel
 
     # Write-through to the authoritative blob store.
     await _mirror_gateway_write(
@@ -1668,7 +1820,7 @@ async def write_workspace_file(
 
     return FileEntry(
         path=rel_path,
-        name=file_path.name,
+        name=file_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc
@@ -1980,18 +2132,20 @@ async def get_artifact_file(
 
     if _is_blocked_path(path):
         raise HTTPException(status_code=404, detail="File not found")
-    file_path = _safe_resolve(workspace, path)
-    if not file_path.exists() or not file_path.is_file():
+    rel = _open_rel(workspace, path)
+    st = await _asyncio.to_thread(_safe_stat, workspace, rel)
+    if st is None:
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
         restored = await _faultin_from_store(
             workspace, path, organization_id=_user.organization_id,
         )
-        if not restored:
+        st = await _asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
+        if st is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-    file_size = file_path.stat().st_size
+    file_size = st.st_size
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
@@ -1999,19 +2153,15 @@ async def get_artifact_file(
                    f"Maximum is {_MAX_FILE_BYTES} bytes.",
         )
 
-    mime, _ = mimetypes.guess_type(file_path.name)
+    name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(name)
     media_type = mime or "application/octet-stream"
 
-    def _iter_file():
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
     return StreamingResponse(
-        _iter_file(),
+        _safe_chunks(workspace, rel),
         media_type=media_type,
         headers={
-            "Content-Disposition": f'inline; filename="{file_path.name}"',
+            "Content-Disposition": f'inline; filename="{name}"',
             "Content-Length": str(file_size),
         },
     )
@@ -2044,31 +2194,29 @@ async def write_artifact_file(
             status_code=404, detail=f"Agent workspace not found: {agent}"
         )
 
-    file_path = _safe_resolve(workspace, path)
+    rel = _open_rel(workspace, path)
     # Restrict writes to visible workspace dirs
-    rel = str(file_path.relative_to(workspace)).replace("\\", "/")
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
             status_code=400,
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
 
-    # Create parent directories if needed
-    _existed = file_path.exists()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write content
-    if body.encoding == "base64":
-        data = base64.b64decode(body.content)
-        file_path.write_bytes(data)
-    else:
-        data = body.content.encode("utf-8")
-        file_path.write_text(body.content, encoding="utf-8")
+    _existed = await _asyncio.to_thread(_safe_stat, workspace, rel) is not None
+    data = (
+        base64.b64decode(body.content) if body.encoding == "base64"
+        else body.content.encode("utf-8")
+    )
+    # WS-43d (§7.5 rule B): parent dirs and the file, with no link followed.
+    await _asyncio.to_thread(_safe_write, workspace, rel, data)
 
     # Build response
-    stat = file_path.stat()
-    mime, _ = mimetypes.guess_type(file_path.name)
-    rel_path = str(file_path.relative_to(workspace)).replace("\\", "/")
+    stat = await _asyncio.to_thread(_safe_stat, workspace, rel)
+    if stat is None:
+        raise HTTPException(status_code=500, detail="The file was not stored.")
+    file_name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(file_name)
+    rel_path = rel
 
     # Write-through to the authoritative blob store (agent = the explicit target).
     await _mirror_gateway_write(
@@ -2094,7 +2242,7 @@ async def write_artifact_file(
     return ArtifactEntry(
         agent_name=agent,
         path=rel_path,
-        name=file_path.name,
+        name=file_name,
         size=stat.st_size,
         modified_at=__import__("datetime").datetime.fromtimestamp(
             stat.st_mtime, tz=__import__("datetime").timezone.utc

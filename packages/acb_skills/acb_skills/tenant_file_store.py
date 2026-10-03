@@ -36,6 +36,9 @@ Tool path              Host path                                    Kept
   artifact card that links to ``outputs/<thread slug>/<name>``.
 * **A write past the quota is refused, and a delete still works** (§7.1 rule
   10), so the model can free space.
+* **Each write and each delete calls ``decide()`` with the real host path**
+  (the B6 write veto reads ``path``). In ``enforce`` mode a refusal
+  fails the call. No boundary above depends on the permission mode.
 
 This module does not import the orchestrator. The caller passes a guard
 (``acb_skills.sandbox_tools``) that holds the broker's lock.
@@ -52,9 +55,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from acb_common import get_logger
 from agent_framework import AgentFileStore, FileStoreEntry, FileSystemAgentFileStore
 
 from acb_skills import safe_open
+
+_log = get_logger("acb_skills.tenant_file_store")
 
 __all__ = ["OUTPUTS", "RUN_DATA", "HostFileGuard", "TenantFileStore"]
 
@@ -129,6 +135,44 @@ class TenantFileStore(FileSystemAgentFileStore):
         if place.outputs or place.run_data:
             await self._guard.prepare()
 
+    def _decide(self, tool_name: str, place: _Place, *, data: bytes | None) -> None:
+        """``decide()`` with the REAL host target path, before a write or a delete.
+
+        The B6 write veto reads ``path``, so it gets the host path the call
+        will open, never the model's tool path. The containment root of the
+        call is the root of that path, set as ``permission_check_root`` for
+        this call only (the idiom of ``permission_policy._workspace_root``):
+        the working dir for a kept folder, and this run's own run-data dir for
+        ``.run/``, which lies outside the working dir by design (§16.3).
+
+        In ``enforce`` mode a refusal raises, and the file tool answers with
+        it. In ``audit`` mode it is logged only, and the map and the safe
+        opener remain the boundary.
+        """
+        import os
+
+        from acb_skills.permission_policy import decide
+        from acb_skills.write_artifact import artifact_context_scope, derive_artifact_context
+
+        target = str(place.root / place.rel)
+        request: dict[str, Any] = {"tool_name": tool_name, "path": target}
+        if data is not None:
+            request["new_file_contents"] = ""
+        with artifact_context_scope():
+            derive_artifact_context(permission_check_root=str(place.root))
+            try:
+                approved, code, _detail = decide(request)
+            except Exception:  # a policy bug must not open or brick the tool
+                approved, code = True, "decide_error"
+        mode = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower()
+        enforced = (not approved) and mode == "enforce"
+        _log.info(
+            "permission.decision", mode=mode, tool=tool_name, approved=not enforced,
+            would_deny=not approved, reason=code, path=target[:300], surface="sandbox_file",
+        )
+        if enforced:
+            raise ValueError(f"blocked by permission policy: {code}")
+
     # ── the store API ───────────────────────────────────────────────────────
 
     async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
@@ -141,6 +185,7 @@ class TenantFileStore(FileSystemAgentFileStore):
                 "then write again."
             )
         data = content.encode("utf-8")
+        self._decide("file_access_write", place, data=data)
         async with self._guard.hold():
             await self._prepare(place)
             existed = await asyncio.to_thread(safe_open.is_file, place.root, place.rel)
@@ -179,6 +224,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         place = self._place(path)
         if not place.rel:
             raise safe_open.UnsafePath("A delete needs a file name.")
+        self._decide("file_access_delete", place, data=None)
         async with self._guard.hold():
             deleted = await asyncio.to_thread(safe_open.unlink, place.root, place.rel)
         if deleted and place.store_rel is not None:

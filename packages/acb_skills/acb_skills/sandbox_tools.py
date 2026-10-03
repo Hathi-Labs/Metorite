@@ -57,9 +57,9 @@ from agent_framework import (
     ContextProvider,
     FileAccessProvider,
     FileSkillsSource,
-    FunctionTool,
     SkillsProvider,
     SkillsSource,
+    tool,
 )
 
 from acb_skills.write_artifact import announce_artifact, artifact_context
@@ -465,7 +465,7 @@ async def _add_tools(
         disable_run_skill_script_approval=True,
     )
     await skills.before_run(agent=agent, session=session, context=context, state=state)
-    context.extend_tools(SOURCE_ID, [FunctionTool(func=run_command, approval_mode="never_require")])
+    context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
 
 
 def attach_for_run(agent: Any, agent_name: str) -> Any:
