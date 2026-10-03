@@ -19,7 +19,7 @@
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). 🔨 EM-T8a is in build. It fixes the wrong-sender defects first.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3325,7 +3325,7 @@ wrong-sender defects first.
 
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
-| **EM-T8a** | 🟢 AGENT-SAFE · security review | **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
+| **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
@@ -3335,7 +3335,7 @@ wrong-sender defects first.
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
-**Status.** 🔨 BUILT with review fix round 1, not merged (2026-10-03, branch `email-multi-inbox`).
+**Status.** ✅ MERGED (#587, 2026-10-03), with review fix round 1.
 
 **Scope.**
 
@@ -3378,6 +3378,10 @@ wrong-sender defects first.
   proves that the reply uses the provider id, and that the card names the From address.
 - A vitest source fence proves that `EmailDetail.tsx` passes no bare `selectedAccountId` to a send,
   draft, signature or thread call.
+- The fix round of the review adds five fences, each named in its test file:
+  `email-authorize-check-fails-open-to-picker`, `email-chat-draft-card-mailbox`,
+  `email-draftcard-own-addresses`, `email-open-by-id-mobile` and
+  `email-integrations-reconnect-hint`.
 
 **Verification.** `uv run pytest tests/unit/test_email_multi_inbox.py tests/unit/test_email_oauth_state.py tests/unit/test_email_tool_consolidation.py -v -rs`.
 The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run

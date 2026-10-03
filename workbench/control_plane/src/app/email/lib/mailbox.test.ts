@@ -195,6 +195,13 @@ describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
     expect(fn).toContain("get().accounts.some((a) => a.id === email.accountId)");
   });
 
+  it("drops an opened mail when its mailbox is removed", () => {
+    const store = codeOnly(read("lib/emailStore.ts"));
+    expect(store).toContain(
+      "set({ selectedAccountId: next, selectedEmailId: null, selectedEmailOverride: null });",
+    );
+  });
+
   it("keeps the detail view on a phone after the switch", () => {
     const page = codeOnly(read("page.tsx"));
     const at = page.indexOf("setMobileView(\"inbox\");\n  }, [selectedFolder, selectedAccountId]);");

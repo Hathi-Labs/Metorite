@@ -1511,7 +1511,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       set({ accounts });
       if (get().selectedAccountId === id) {
         const next = accounts.find((a) => a.isDefault)?.id ?? accounts[0]?.id ?? null;
-        set({ selectedAccountId: next });
+        // A mail of the removed mailbox goes too, and the phone returns to
+        // the inbox list (EM-T8a review).
+        set({ selectedAccountId: next, selectedEmailId: null, selectedEmailOverride: null });
         persistAccountId(next);
         if (next) {
           get().fetchFolders(next);
