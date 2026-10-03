@@ -502,7 +502,7 @@ def _rule_match_requests(
     """
     if not rules:
         return []
-    from acb_llm import BooleanQuestion, ChoiceQuestion  # shadow mode only
+    from acb_llm import BooleanQuestion, ChoiceQuestion  # `shadow` and `on` only
 
     g = guidance or {}
     # The account-wide corrections, newest first (`_load_rule_guidance`
@@ -760,17 +760,20 @@ def _read_with_fields(
     return match, match.fields
 
 
-async def _decide_member(db: Any, account_id: str) -> str | None:
-    """The mailbox owner for a ``decide`` call in ``on``, else None.
+async def _decide_member(
+    db: Any, account_id: str, feature: str = "email.rule_match",
+) -> str | None:
+    """The mailbox owner for a ``decide`` call of ``feature`` in ``on``, else None.
 
     A deployment Router key refuses a ``decide`` call that names no member,
     and a request job runs as its request member, not as the owner. So in
-    ``on`` the matchers name the owner, ``email_accounts.user_id``, read by
+    ``on`` each site names the owner, ``email_accounts.user_id``, read by
     the account id the server holds, in the caller's own session (EM-T5b-2
-    item 5). Outside ``on`` this reads nothing. A failed read gives None, and
-    the call keeps the member of the run context.
+    item 5). The rule match, the thread status, the cold check and the
+    sender pin all read it here. Outside ``on`` this reads nothing. A failed
+    read gives None, and the call keeps the member of the run context.
     """
-    if decide_features.mode_for("email.rule_match") != "on":
+    if decide_features.mode_for(feature) != "on":
         return None
     try:
         async with _savepoint(db):
@@ -1416,11 +1419,26 @@ async def classify_matches(
     classifier model itself is down (a genuine no-match still returns ``[]``), so
     the caller can skip its ``rules_processed_at`` watermark and retry next cycle
     instead of burning the message unseen.
+
+    EM-T5b-2 fix round 3: in ``on`` of ``email.thread_status``, the status
+    is asked BEFORE the match when it is sure to be asked
+    (``replyzero.status_before_match``). A missing status then raises
+    ``DecisionUnavailable`` before the match is paid. Outside ``on`` the
+    step reads nothing, and the order is the one above.
     """
     # The message id for the `decide` shadow log (EM-T5b-1). It comes from the
     # row, so no caller of this function changes.
     row_id = getattr(message_row, "id", None)
     message_id = str(row_id) if row_id is not None else None
+    # Lazy import: replyzero sits ABOVE the engine (it imports match helpers from
+    # here), so importing it at module scope would cycle. The resolver is the
+    # thread-status authority; it owns the #110 conversation logic.
+    from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+        resolve_conversation_status_matches,
+        status_before_match,
+    )
+    first = (await status_before_match(db, account_id, message_row)
+             if resolve else None)
     if multi_rule:
         matches = await _match_email_to_rules_multi(
             db, account_id, email, message_id=message_id)
@@ -1429,14 +1447,8 @@ async def classify_matches(
         matches = [m] if m else []
     if not resolve:
         return matches
-    # Lazy import: replyzero sits ABOVE the engine (it imports match helpers from
-    # here), so importing it at module scope would cycle. The resolver is the
-    # thread-status authority; it owns the #110 conversation logic.
-    from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-        resolve_conversation_status_matches,
-    )
     resolved = await resolve_conversation_status_matches(
-        db, account_id, message_row, matches, provider=provider)
+        db, account_id, message_row, matches, provider=provider, first=first)
     return resolved or []
 
 

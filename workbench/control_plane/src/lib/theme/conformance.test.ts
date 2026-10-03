@@ -232,7 +232,6 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
 const COLOR_DEBT: Record<string, number> = {
   "app/email/components/MessageContent.tsx": 5,
   "app/email/components/SignatureEditor.tsx": 1,
-  "app/email/lib/api.ts": 1,
   "app/notes/session/[id]/page.tsx": 1,
   "app/observability/page.tsx": 3,
   "app/calendar/components/StartupRitual.tsx": 1,

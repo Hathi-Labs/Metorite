@@ -43,7 +43,13 @@ from typing import Any
 
 from acb_common import get_logger
 
-__all__ = ["RoutedRefusal", "completion_on_router", "routing_is_on", "run_attribution"]
+__all__ = [
+    "RoutedRefusal",
+    "completion_on_router",
+    "router_wired",
+    "routing_is_on",
+    "run_attribution",
+]
 
 _log = get_logger("acb_llm.routed")
 
@@ -109,6 +115,24 @@ def routing_is_on() -> bool:
         return False
     settings = get_settings()
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
+
+
+def router_wired() -> bool:
+    """Whether this box can reach the Console Router at all. Never raises.
+
+    The ``router_is_wired`` half of :func:`routing_is_on`, without the owner's
+    serving flag. It makes no call, and a wiring it cannot read is not wired.
+    The email startup check reads it (EM-T5b-2 item 9), because ``decide``
+    rides the same Router and needs no serving flag. That check imports this
+    module, so the gateway adds no importer of the Console client
+    (``tests/unit/test_console_dependency_boundary.py``).
+    """
+    try:
+        from acb_auth.console_resolve import router_is_wired
+
+        return bool(router_is_wired())
+    except Exception:
+        return False
 
 
 def run_attribution() -> dict[str, Any]:

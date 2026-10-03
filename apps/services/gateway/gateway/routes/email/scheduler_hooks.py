@@ -235,12 +235,49 @@ async def learn_label_changes(account_id: str, changes: list) -> None:
                      error=str(exc)[:200])
 
 
+def check_decide_wiring() -> None:
+    """The startup check of EM-T5b-2 (item 9). Never raises.
+
+    In ``on`` an email gets a decision from ``decide`` or none at all, with
+    no LLM path (D-EM-8). So a box that sets a feature ``on`` and cannot
+    reach ``decide`` leaves every such email undecided, and nothing else
+    says why. This logs ``email.decide_not_wired`` at error level, once for
+    each call, when a feature is ``on`` and ``decide_enabled`` is false or
+    ``router_is_wired()`` is false. It logs nothing when no feature is
+    ``on``, or when the box is wired. The line holds feature names and two
+    booleans, and no secret.
+
+    Fence: ``tests/unit/test_email_decide_on.py``.
+    """
+    try:
+        from acb_common import get_settings
+        from acb_llm.routed import router_wired
+        from gateway import decide_features
+
+        features = decide_features.configured_on()
+        if not features:
+            return
+        enabled = bool(getattr(get_settings(), "decide_enabled", False))
+        # Through `acb_llm.routed`: the gateway may not add an importer of the
+        # Console client (`test_console_dependency_boundary.py`).
+        wired = router_wired()
+        if enabled and wired:
+            return
+        _log.error("email.decide_not_wired", decide_features=list(features),
+                   decide_enabled=enabled, router_wired=wired)
+    except Exception as exc:  # a check never stops startup
+        _log.warning("email.decide_wiring_check_failed",
+                     error_type=type(exc).__name__)
+
+
 def register_email_post_sync_hooks() -> None:
     """Register every email post-sync callback into the scheduler registry.
 
     Imports the individual jobs from their own modules (not the package
     ``__init__``) so the wiring is explicit, and lazily (inside this function)
     so importing this module during app import can't create a cycle.
+
+    EM-T5b-2 item 9: it also runs :func:`check_decide_wiring`, once.
     """
     from gateway.routes.email.automation.followups import (
         _maybe_send_follow_up_reminders,
@@ -274,3 +311,4 @@ def register_email_post_sync_hooks() -> None:
         learn_label_changes=learn_label_changes,
     )
     _log.info("email.post_sync_hooks_registered")
+    check_decide_wiring()

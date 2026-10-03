@@ -95,25 +95,49 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the two WS-43 flags · [OWNER]
-- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED" .claude/hooks/plan-guard.mjs`.
-  No hit means this is open.
+### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
+- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open.
+- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
+  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
+  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
+  container mounts the clone at `/workspace/repo`, and it has a network. So
+  code that the model writes in that container can read the token and send
+  it out.
+- **Do.**
+  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
+     token from the environment. Then `.git/config` holds a URL with no
+     token.
+  2. Rewrite the remote URL of each existing clone once, in the loader.
+  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
+- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
+  a private repo on a dev box before the merge.
+- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
+- **Added:** 2026-10-03 · the D84 spec session
+
+### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
+- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
+  No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Why.** `specs/maf_coding_engine.md` §12 gives the WS-43 gates the id
   `ws43-sandbox-flip`. No line of `.claude/OWNER_GRANTS.md` names it, so the
-  dev-phase window does not open it. No hook blocks a write of the two flags
-  today. So the gate binds by prose only.
+  dev-phase window does not open it. No hook blocks a write of the three
+  flags today. So the gate binds by prose only.
 - **Do.**
   1. Add a rule with the id `ws43-sandbox-flip` to `OWNER_GATES` in
      `plan-guard.mjs`.
-  2. Make it match `MAF_CODING_SCOPE` with a non-empty value, and
-     `SANDBOX_EGRESS_ENABLED` with a true value.
-  3. Do not add the two names to `enforcement-flip`. An
+  2. Make it match `MAF_CODING_SCOPE` with any non-empty value. That covers
+     the targets `code_task`, `app_builder`, `mutation:*` and `metorite:*`
+     (WS43-G3, WS43-G10). Add a test case for `mutation:*` and one for
+     `metorite:*`.
+  3. Make it match `SANDBOX_EGRESS_ENABLED` and `MAF_NATIVE_SESSIONS` with a
+     true value (WS43-G4, WS43-G13).
+  4. Do not add these names to `enforcement-flip`. An
      `ALLOW-UNTIL 2026-11-30` line covers that id, so the window would open
      them.
-  4. Add cases to `plan-guard.test.mjs`, then run
+  5. Add cases to `plan-guard.test.mjs`, then run
      `node .claude/hooks/plan-guard.test.mjs`.
 - **The id ends in `-flip` on purpose.** Then plan-guard also checks a file
-  write for the two flags (`plan-guard.mjs:478`).
+  write for the three flags (`plan-guard.mjs:478`).
 - **Why [OWNER].** An edit of `plan-guard.mjs` needs the `guard-write` grant
   (CLAUDE.md §3a). The fix round of PR #584 was told not to edit the guard.
 - **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
@@ -593,7 +617,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** on the box, run `grep -E 'DECIDE_ENABLED|CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY' /opt/acb/app/.env`. Two lines with `true` mean steps 2 and 3 are done. Then look for one `decide.decided` line in the gateway journal. In `shadow` the line is `decide.shadow`. A line means the box gets answers.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
-- **Next, after EM-T5b ships:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` on the box (decisions (b) and (c)). Then it reports one `decide.decided` line with a `request_id`.
+- **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
+- **Next, after EM-T5b-2 in full merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
@@ -3760,6 +3785,127 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §10.4.6 EM-T4e, As built
   item 6 · the R6 note in `infra/postgres/226_email_thread_index.sql`
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
+
+### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
+- **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
+  → `github-copilot` means the entry is still open.
+- **Why:** PR #585 moved task-manager to native MAF, and the review found a
+  live regression. A native agent gets the earlier turns of a chat as text.
+  `route.ts` (~678) sends `role` and `content` only, and the executor renders
+  them as one text block (`_build_event_message`). So in a confirm turn ("yes"
+  after a `my_tasks_clarify` proposal) the request holds no trace of the ids
+  in the earlier tool output. Its roles are only `system` and `user`. The
+  agent fetches again, and it can apply a proposal that the member never saw.
+  On the Copilot path (Tier 1.5) the resumed session holds the tool results.
+  So the supervisor split the PR: task-manager STAYS on the Copilot path, and
+  apis-config moved.
+- **The fix is WS-43t1 and WS-43t2** (`specs/maf_coding_engine.md` §15.9,
+  D84). They keep a MAF `AgentSession` for each organization, thread and
+  agent, in place of the text-only history.
+- ⚠️ **Move task-manager only after the soak.** `MAF_NATIVE_SESSIONS` must
+  stay ON in production for one week first (WS43-G13). A merge of WS-43t2 is
+  not enough. Then move the factory, the `pyproject.toml` dependency and the
+  registry label together (WS-8i), and run the live probe of §15.9.7.
+  `TestTaskManagerIsHeldOnTheCopilotPath` must then flip to a MAF check.
+- ⚠️ **The same gap affects the agents that are native already.** The confirm
+  turns of projects-assistant, email-assistant and crm-assistant cannot see
+  earlier tool output either. Their write tools ask on a card in the same
+  turn, which limits the damage. The same fix helps them. See also H-216.
+- **Authority:** `specs/maf_coding_engine.md` §15.9 (the owner, `work_plan.md` §4) ·
+  `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-216 · Tier 1's structured history branch never runs · [AGENT]
+- **Check:** `grep -n '_MAFMsg(role=m\["role"\], content=m\["content"\])' apps/services/orchestrator/orchestrator/executor.py`
+  → a hit means the entry is still open.
+- **Why:** `_compose_maf_run_input` (~5457) builds
+  `Message(role=..., content=...)`. MAF 1.19 refuses that keyword:
+  `TypeError: Message.__init__() got an unexpected keyword argument 'content'`.
+  The `except` swallows the error, so every native turn falls back to the
+  string prompt, and the token-budgeted `assemble_run_context` result is
+  never used. This predates PR #585. Build each message with `contents=`, and
+  add a test that drives the real `Message` class.
+- ⚠️ **A naive repair drops the member's memory.** Today the history,
+  `memory_context` and the persona reach the model only through the string
+  fallback, `_build_event_message`. The structured branch passes
+  `system_context` and no `memory_context`. So carry `memory_context` into
+  the structured branch in the same change. A test must show that it
+  reaches the model after the repair.
+- **Claimed by WS-43t1** (`specs/maf_coding_engine.md` §15.9.1). The repair
+  sits behind `MAF_NATIVE_SESSIONS`, and it carries `memory_context` through
+  a MAF context provider, never into stored history (§15.9.5).
+- **Authority:** `specs/maf_coding_engine.md` §15.9 · `specs/agent_architecture.md` §11.3.1 · PR #585 review
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
+- **Check:** `grep -rn "MCPStdioTool\|MCPStreamableHTTPTool" apps/ packages/ --include=*.py`
+  → no hit means MAF still has no MCP wiring, and the entry is still open.
+- **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
+  class reads (WS-8c). apis-config was a Copilot agent until PR #585. So an
+  `mcp_servers` row with agent scope `*` reached it before, and reaches only
+  Copilot agents now. WS-8c owns the real fix. Until it lands, do not expect
+  a `*` server to show up in apis-config. The same gap waits for task-manager
+  when H-215 moves it.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-219 · A steer note shows as extra detail rows on a tool card · [AGENT]
+- **Check:** `grep -rn "arrived from a participant" workbench/control_plane/src/`
+  → no hit means the cards still show the note as rows, and the entry is still open.
+- **Why:** a steer rides the next tool result. `decorate_tool_result`
+  (`steer.py` ~373-411) adds "[The following arrived from a participant…]"
+  and the notes to the result text. The tool cards parse that text line by
+  line: `ProjectToolCards.tsx` ~644, `TaskToolCards.tsx` ~171 and
+  `EmailToolCards.tsx` ~916. So in a shared session the note lines show as
+  detail rows on that one card. The model still gets the note. This is a
+  visual defect only. Since PR #585 an own tool of a native agent carries
+  the note too, so more cards can show it.
+- **Fix shape:** let the cards drop the steer block before they parse the
+  rows. Or send the note in a separate event that no card parses.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-220 · With the Router off, Thinking and Max do nothing on the local /v1 path · [AGENT]
+- **Check:** `grep -n "reasoning_effort" apps/services/gateway/gateway/routes/v1_compat.py`
+  → no hit means the local path still drops it, and the entry is still open.
+- **Why:** since PR #585 a native agent sends `reasoning_effort` for Thinking
+  and Max. When the Router is off, `v1_compat` serves the call itself. Its
+  `common` dict (~772-780) holds only `model`, `messages`, `tools`,
+  `tool_choice`, `temperature` and `max_tokens`. So it drops
+  `reasoning_effort`, and Thinking and Max then have no effect. With the Router on,
+  the Console forwards the field. Forward it on the local path too, and keep
+  `drop_params` so that a model with no reasoning support does not fail.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-221 · On DeepSeek, Max is the same as Thinking, and a plain model can refuse both · [AGENT]
+- **Check:** `grep -rn "drop_params" apps/services/customer_console/`
+  → no hit means the Console still refuses the field for a model with no reasoning support.
+- **Why:** two separate problems, from the PR #585 review.
+  1. On the seeded DeepSeek tiers, litellm maps `low`, `medium` and `high`
+     all to `thinking: {type: enabled}`. So Max gives the same depth as
+     Thinking, and the Max label promises more than DeepSeek gives. The label
+     is a product call. Ask the owner before you change the menu.
+  2. The Console sets no `drop_params` (`customer_console/main.py`
+     ~7714-7750). So a tier bound to a model with no reasoning support
+     raises `UnsupportedParamsError` on a Thinking or Max turn. Drop the
+     field for such a model, or map it per vendor, and add a test.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-222 · A native sub-agent takes the parent's steer note · [AGENT]
+- **Check:** `grep -n "decorate_tool_result(result)" apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means the entry is still open.
+- **Why:** the gate calls `decorate_tool_result` with no thread id
+  (`_tool_injection.py` ~357), so it reads the thread of the current run
+  context. A native sub-agent runs in its parent's context. Since PR #585 its
+  own tools carry the gate (`_tool_injection.py` ~992-995). So a sub-agent's
+  tool call drains the parent's steer, and the note goes to the sub-agent,
+  not to the orchestrator. The note is not lost, because the sub-agent's
+  answer goes back to the parent. Decide which agent should get it, and pass
+  that thread to the gate.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 # DONE — deleted, not archived
 

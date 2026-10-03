@@ -3,6 +3,10 @@
 > ⚠️ **HISTORICAL RECORD (2026-08-10 consolidation, D26).** No work dispatches from
 > this document. The active plan is `project-docs/work_plan.md` §2;
 > the classification of record is `project-docs/INDEX.md`.
+>
+> ⚠️ **Superseded in part on 2026-10-03 by D84.** §1 item 1 and §2.3 item 2 kept
+> the Copilot engine for the mutation sandbox and the `metorite` agent. D84
+> removes the Copilot SDK from the platform. See `maf_coding_engine.md` §15.
 
 
 **Status:** review complete · **Date:** 2026-07-22 · **Requested by:** Vijay

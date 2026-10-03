@@ -389,9 +389,19 @@ def test_gate_logs_every_decision_including_approvals(monkeypatch):
     import asyncio
 
     import structlog
+    from orchestrator import _tool_injection
     from orchestrator.executor import _gate_injected_tool
 
     monkeypatch.delenv("AGENT_PERMISSION_MODE", raising=False)  # enforce
+    # A fresh logger proxy. configure_logging sets cache_logger_on_first_use,
+    # and a cached logger keeps the processor list of THAT configure call.
+    # capture_logs edits the CURRENT list. So a `_log` an earlier test used,
+    # followed by a second configure_logging (test_observability.py makes
+    # one), hides every line from capture_logs. Since PR #585 an earlier test
+    # uses it: test_native_maf_wire.py calls a gated own tool on a real run.
+    monkeypatch.setattr(
+        _tool_injection, "_log", structlog.get_logger("orchestrator.tool_injection"),
+    )
 
     async def web_search(q):  # read_only → approved
         return "ok"
