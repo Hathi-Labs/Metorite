@@ -336,12 +336,9 @@ line — never reclaim a number by deleting the other entry.
   with a test that sends the SDK's real write request shape.
 
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
-- **Check:** run one `app-builder` chat on the box. Then read its
+- **Check:** run one `task-manager` chat on the box. Then read its
   `usage_event` rows. → A row with an empty member, app or run means this is
   still open.
-- ⚠️ **`task-manager` left the Copilot path on 2026-10-03.** It runs on
-  native MAF now, so a chat with it does not test this path. `app-builder` is
-  the one first-party Copilot agent that is left.
 - **Built 2026-09-26, on the `worktree-agent-a48231615ce91464f` branch.** The
   lock now holds `agent-framework-core` 1.19.0, `agent-framework-openai`
   1.14.4 and `agent-framework-github-copilot` 2.0.0. The wrapper pins
@@ -3764,20 +3761,29 @@ line — never reclaim a number by deleting the other entry.
   item 6 · the R6 note in `infra/postgres/226_email_thread_index.sql`
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
-### H-215 · On Tier 1 a confirm turn cannot see the tool output of the turn before · [AGENT]
-- **Check:** `grep -n "role: m.role, content: m.content" workbench/control_plane/src/app/api/agent/chat/route.ts`
-  → a hit means the entry is still open.
-- **Why:** a native MAF agent gets the earlier turns of a chat as text.
-  `route.ts` (~678) sends `role` and `content` only, and the executor
-  (`_build_event_message`, ~5626-5646) renders them as one text block. The
-  Copilot path kept tool results in its SDK session. So on Tier 1 a
-  propose-then-apply turn loses the ids. Example: "process my inbox", then
-  "yes". The agent lists again or runs `my_tasks_clarify` again, and the
-  second proposal can differ from the first. The apply step refuses a bad id.
-- **Fix shape:** put the tool calls and tool results of earlier turns into
-  the MAF input as structured messages. Or let each proposal tool return a
-  proposal id that the apply step reads back.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
+### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
+- **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
+  → `github-copilot` means the entry is still open.
+- **Why:** PR #585 moved task-manager to native MAF, and the review found a
+  live regression. A native agent gets the earlier turns of a chat as text.
+  `route.ts` (~678) sends `role` and `content` only, and the executor renders
+  them as one text block (`_build_event_message`). So in a confirm turn ("yes"
+  after a `my_tasks_clarify` proposal) the request holds no trace of the ids
+  in the earlier tool output. Its roles are only `system` and `user`. The
+  agent fetches again, and it can apply a proposal that the member never saw.
+  On the Copilot path (Tier 1.5) the resumed session holds the tool results.
+  So the supervisor split the PR: task-manager STAYS on the Copilot path, and
+  apis-config moved.
+- **The fix is a new slice:** a MAF `AgentSession` or history provider that is
+  kept for each thread, in place of the text-only history. The supervisor adds
+  it to `specs/agent_architecture.md`. After it ships, move task-manager: the
+  factory, the `pyproject.toml` dependency and the registry label, together.
+  `TestTaskManagerIsHeldOnTheCopilotPath` must then flip to a MAF check.
+- ⚠️ **The same gap affects the agents that are native already.** The confirm
+  turns of projects-assistant, email-assistant and crm-assistant cannot see
+  earlier tool output either. Their write tools ask on a card in the same
+  turn, which limits the damage. The same fix helps them. See also H-216.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-216 · Tier 1's structured history branch never runs · [AGENT]
@@ -3799,14 +3805,15 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
-### H-217 · Registry MCP servers no longer reach task-manager and apis-config · [AGENT]
+### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
 - **Check:** `grep -rn "MCPStdioTool\|MCPStreamableHTTPTool" apps/ packages/ --include=*.py`
   → no hit means MAF still has no MCP wiring, and the entry is still open.
 - **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
-  class reads (WS-8c). Both agents were Copilot agents until PR #585. So an
-  `mcp_servers` row with agent scope `*` reached them before, and reaches
-  only Copilot agents now. WS-8c owns the real fix. Until it lands, do not
-  expect a `*` server to show up in these two agents.
+  class reads (WS-8c). apis-config was a Copilot agent until PR #585. So an
+  `mcp_servers` row with agent scope `*` reached it before, and reaches only
+  Copilot agents now. WS-8c owns the real fix. Until it lands, do not expect
+  a `*` server to show up in apis-config. The same gap waits for task-manager
+  when H-215 moves it.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
