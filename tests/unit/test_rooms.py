@@ -1886,15 +1886,26 @@ def test_no_chat_or_room_path_opens_an_unbound_session() -> None:
     half."""
     import inspect
 
+    # WS-43t2 (maf_coding_engine.md §15.9.3): `native_session_store` is the
+    # one module that touches maf_agent_session. Its tenant comes from the run
+    # binding, as an argument, because tenant_session is sync and takes no
+    # ambient tenant.
     from acb_memory import blob_store
     from gateway import chat_fold, rooms, run_trace
     from gateway.routes import agent, chat
     from gateway.routes import rooms as room_routes
+    from orchestrator import native_session_store
 
-    for module in (chat, rooms, room_routes, run_trace, blob_store, chat_fold):
+    for module in (chat, rooms, room_routes, run_trace, blob_store, chat_fold,
+                   native_session_store):
         src = inspect.getsource(module)
         assert "import get_session" not in src, module.__name__
         assert "with get_session()" not in src, module.__name__
+    for fn in (native_session_store.read_state, native_session_store.write_row):
+        src = inspect.getsource(fn)
+        assert "with tenant_session(organization_id) as s:" in src, fn.__name__
+        param = inspect.signature(fn).parameters["organization_id"]
+        assert param.default is inspect.Parameter.empty, fn.__name__
     for fn in (agent._room_agents, agent._resolve_agent_for_run,
                agent._mint_run_row, agent._resolve_room):
         src = inspect.getsource(fn)

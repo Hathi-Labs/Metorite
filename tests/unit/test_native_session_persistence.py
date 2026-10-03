@@ -53,6 +53,16 @@ from tests.unit._native_maf_harness import (
     tool_turn,
 )
 
+# The R8 half (sections 11 and 12) reuses the H3 rehearsal's phase-4 catalog.
+# Resolved by name as fixtures, so ruff sees them as unused (F401) and the
+# test signatures as redefinitions (F811). The imports are load-bearing.
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _APP_ROLE,
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+
 agent_framework = pytest.importorskip("agent_framework", reason="agent_framework not installed")
 executor = pytest.importorskip("orchestrator.executor", reason="orchestrator not installed")
 
@@ -1198,3 +1208,499 @@ def test_a_fresh_session_never_takes_the_string(fake_db) -> None:
     )
     assert [(m.role, m.text) for m in run_input] == [("user", "hi")]
     assert _MEMORY in provider.text
+
+
+# ── 11. R8: the store on the phase-4 catalog, as the NOBYPASSRLS role ────────
+
+_ALICE = "alice@f20-a.test"
+_BOB = "bob@f20-a.test"
+_CAROL = "carol@f20-b.test"
+_AGENT_Y = "probe-other"
+_CLOCK = [0]
+
+
+def _tick() -> int:
+    """A browser clock that agrees with the server's, and never repeats.
+
+    The mint stamps the server clock, and the browser stamps its own. The
+    rows sort by ``timestamp_ms``, so a test clock far from the server's would
+    sort a prompt before the answer that came first.
+    """
+    import time
+
+    _CLOCK[0] = max(_CLOCK[0] + 5, int(time.time() * 1000))
+    return _CLOCK[0]
+
+
+@pytest.fixture(scope="module")
+def _session_catalog(promoted):  # noqa: F811
+    """Alice and Bob in org A, Carol in org B. Seeded as the superuser."""
+    from sqlalchemy import text
+
+    with promoted.admin_engine.begin() as c:
+        for email, org in ((_ALICE, promoted.org_a), (_BOB, promoted.org_a),
+                           (_CAROL, promoted.org_b)):
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, "
+                "organization_id) VALUES (:e, :e, 'employee', 'active', :o) "
+                "ON CONFLICT DO NOTHING"), {"e": email, "o": org})
+        # Migration 222 grants the function to `acb_app` only. The rehearsal
+        # role has a suite-private name, so it gets the same grant here.
+        c.execute(text(
+            f"GRANT EXECUTE ON FUNCTION public.chat_session_exists(text) TO {_APP_ROLE}"))
+    return promoted
+
+
+@pytest.fixture
+def graph_as_app(_session_catalog, monkeypatch):
+    """``acb_graph`` sessions open as the app role, one fresh backend each, so
+    the store's ``tenant_session`` meets FORCE RLS as production does."""
+    import acb_graph.db as graph_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    eng = create_engine(_session_catalog.app_url, poolclass=NullPool, future=True)
+    factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
+    monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
+    try:
+        yield _session_catalog
+    finally:
+        eng.dispose()
+
+
+def _admin(cat: Any, sql: str, **params: Any) -> list[Any]:
+    from sqlalchemy import text
+
+    with cat.admin_engine.begin() as c:
+        result = c.execute(text(sql), params)
+        return list(result.fetchall()) if result.returns_rows else []
+
+
+def _tid() -> str:
+    import uuid
+
+    return f"f20-{uuid.uuid4().hex[:12]}"
+
+
+def _chat(org: str, tid: str, *, owner: str = _ALICE, agent: str = _PROBE_AGENT) -> None:
+    """The chat row, as the mint's ``_ensure_session`` makes it."""
+    from gateway.routes.chat import _ensure_session
+
+    _ensure_session(tid, owner, agent, organization_id=org)
+
+
+def _user_row(org: str, tid: str, content: str, *, member: str = _ALICE) -> str:
+    """The browser's save of a user turn, through the real upsert."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    mid = f"u-{uuid.uuid4().hex[:10]}"
+    record = MessageRecord(id=mid, role="user", content=content, timestamp=_tick())
+    assert _upsert_messages(tid, [record], actor_email=member, organization_id=org) == []
+    return mid
+
+
+def _agent_row(org: str, tid: str, content: str, *, member: str = _ALICE,
+               agent: str = _PROBE_AGENT) -> str:
+    """The two server writes of an agent reply: the mint, then the fold."""
+    import uuid
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    mid = f"a-{uuid.uuid4().hex[:10]}"
+    ts = _tick()
+    minted = MessageRecord(id=mid, role="assistant", content="", timestamp=ts,
+                           author_email=agent, author_kind="agent")
+    assert _upsert_messages(tid, [minted], actor_email=member, agent_name=agent,
+                            mint=True, organization_id=org) == []
+    folded = MessageRecord(id=mid, role="assistant", content=content, timestamp=ts)
+    assert _upsert_messages(tid, [folded], actor_email=member, agent_name=agent,
+                            author_from_run=True, organization_id=org) == []
+    return mid
+
+
+def _one_turn(org: str, tid: str, current: str, answer: str, *, agent: str = _PROBE_AGENT,
+              member: str = _ALICE, browser: Any = None) -> Any:
+    """One whole turn as production writes it: the browser saves the prompt,
+    the run loads, appends and saves, and the fold writes the answer."""
+    _user_row(org, tid, current, member=member)
+    turn = _begin(tid, current, agent=agent, org=org, browser=browser)
+    _answer(turn, current, answer)
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, answer, member=member, agent=agent)
+    return turn
+
+
+def _stored(cat: Any, tid: str) -> list[Any]:
+    return _admin(cat, "SELECT agent_name, transcript_digest, session_json "
+                       "FROM maf_agent_session WHERE thread_id = :t ORDER BY agent_name", t=tid)
+
+
+@_DB_GATE
+def test_r8_the_table_is_forced_scoped_and_keyed_to_the_chat(graph_as_app) -> None:
+    rel = _admin(graph_as_app, "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                               "WHERE relname = 'maf_agent_session'")
+    assert [tuple(r) for r in rel] == [(True, True)]
+    pol = _admin(graph_as_app, "SELECT polname FROM pg_policy "
+                               "WHERE polrelid = 'maf_agent_session'::regclass")
+    assert [r[0] for r in pol] == ["maf_agent_session_tenant_isolation"]
+    fks = _admin(graph_as_app, """
+        SELECT confrelid::regclass::text, confdeltype FROM pg_constraint
+         WHERE conrelid = 'maf_agent_session'::regclass AND contype = 'f'""")
+    assert ("chat_session", "c") in {(r[0], r[1]) for r in fks}
+    pk = _admin(graph_as_app, """
+        SELECT a.attname FROM pg_index i
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+         WHERE i.indrelid = 'maf_agent_session'::regclass AND i.indisprimary""")
+    assert {r[0] for r in pk} == {"organization_id", "thread_id", "agent_name"}
+
+
+@_DB_GATE
+def test_r8_org_b_cannot_read_or_write_org_a_row(graph_as_app, app_engine, store_log) -> None:  # noqa: F811
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError, ProgrammingError
+
+    org_a, org_b = graph_as_app.org_a, graph_as_app.org_b
+    tid = _tid()
+    _chat(org_a, tid)
+    _one_turn(org_a, tid, _PROPOSE, _ASK)
+    assert len(_stored(graph_as_app, tid)) == 1
+    with app_engine.connect() as c:
+        with c.begin():
+            role = c.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles "
+                                  "WHERE rolname = current_user")).first()
+        assert tuple(role) == (False, False)
+        with c.begin():
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org_b})
+            seen = c.execute(text("SELECT count(*) FROM maf_agent_session "
+                                  "WHERE thread_id = :t"), {"t": tid}).scalar_one()
+            changed = c.execute(text("UPDATE maf_agent_session SET agent_name = 'x' "
+                                     "WHERE thread_id = :t"), {"t": tid}).rowcount
+        assert (seen, changed) == (0, 0)
+        with pytest.raises((DBAPIError, ProgrammingError)) as refused, c.begin():
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org_b})
+            c.execute(text(
+                "INSERT INTO maf_agent_session (organization_id, thread_id, agent_name, "
+                "session_json, transcript_digest, session_fingerprint) VALUES "
+                "(CAST(:a AS uuid), :t, 'evil', '{}'::jsonb, :d, :d)"),
+                {"a": org_a, "t": tid, "d": "0" * 64})
+        assert "row-level security" in str(refused.value).lower()
+    # A fresh backend that binds no tenant reads nothing (fail closed).
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    fresh = create_engine(graph_as_app.app_url, poolclass=NullPool, future=True)
+    try:
+        with fresh.connect() as c, c.begin():
+            unbound = c.execute(text("SELECT count(*) FROM maf_agent_session")).scalar_one()
+    finally:
+        fresh.dispose()
+    assert unbound == 0
+    # Through the store: org B's load of the same thread finds nothing at all.
+    state = store.read_state(org_b, tid, _PROBE_AGENT)
+    assert state.chat_exists is False and state.stored is None
+    assert store.read_state(org_a, tid, _PROBE_AGENT).stored is not None
+    assert len(_stored(graph_as_app, tid)) == 1
+
+
+@_DB_GATE
+def test_r8_a_real_turn_then_hits(graph_as_app, store_log) -> None:
+    """§15.9.4: turns built in the shape the server keeps them load as a hit,
+    though the browser's copy of each answer differs in its bytes. Both
+    digests read the server rows. A digest of the browser copy would see
+    the earlier answer differ and drop the session every turn."""
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _one_turn(org, tid, _PROPOSE, _ASK)
+    browser = [{"role": "user", "content": _PROPOSE},
+               {"role": "assistant", "content": _ASK + "\n\n(rendered by the browser)"}]
+    _user_row(org, tid, "yes")
+    turn = _begin(tid, "yes", org=org, browser=browser)
+    assert turn.loaded
+    _answer(turn, "yes", "Applied.")
+    assert _finish(turn) == "saved"
+    _agent_row(org, tid, "Applied.")
+    # A page reload between the turns: the browser now holds the server's copy
+    # of the first answer, and its own render of the second.
+    browser = [{"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK},
+               {"role": "user", "content": "yes"},
+               {"role": "assistant", "content": "**Applied.**"}]
+    _user_row(org, tid, "thanks")
+    turn = _begin(tid, "thanks", org=org, browser=browser)
+    assert turn.loaded
+    assert store_log.outcomes() == ["no_row", "hit", "hit"]
+    assert [m.text for m in turn.session.state[store.HISTORY_SOURCE_ID]["messages"]] == [
+        _PROPOSE, _ASK, "yes", "Applied.",
+    ]
+
+
+@_DB_GATE
+def test_r8_cross_thread_and_cross_agent_never_load(graph_as_app, store_log) -> None:
+    org = graph_as_app.org_a
+    first, second = _tid(), _tid()
+    for tid in (first, second):
+        _chat(org, tid)
+    _one_turn(org, first, _PROPOSE, _ASK)
+    # The same transcript on another thread, with no session of its own.
+    _user_row(org, second, _PROPOSE)
+    _agent_row(org, second, _ASK)
+    for tid in (first, second):
+        _user_row(org, tid, "yes")
+    assert _begin(second, "yes", org=org).outcome == "no_row"
+    assert _begin(first, "yes", org=org, agent=_AGENT_Y).outcome == "no_row"
+    assert _begin(first, "yes", org=org).outcome == "hit"
+    assert store_log.outcomes() == ["no_row", "no_row", "no_row", "hit"]
+
+
+@_DB_GATE
+@pytest.mark.parametrize("trigger", ["regenerate", "agent_switch", "edit", "delete"])
+def test_r8_each_staleness_trigger_drops_the_session(trigger: str, graph_as_app, store_log) -> None:
+    """§15.9.4: a regenerate, an agent switch, an edited and a deleted message.
+    Each gives ``digest_drop``, and the run uses the text history."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    u1 = _user_row(org, tid, "hello")
+    _agent_row(org, tid, "hi there")
+    _one_turn(org, tid, _PROPOSE, _ASK)
+    browser = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi there"},
+               {"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK}]
+    current = "yes"
+    if trigger == "regenerate":
+        # AgentChat.tsx drops the answer and its prompt in the BROWSER, and
+        # sends the prompt again. The server still holds both old rows.
+        browser = browser[:2]
+        current = _PROPOSE
+    elif trigger == "agent_switch":
+        _one_turn(org, tid, "what is due?", "two tasks", agent=_AGENT_Y)
+        browser += [{"role": "user", "content": "what is due?"},
+                    {"role": "assistant", "content": "two tasks"}]
+    elif trigger == "edit":
+        edited = MessageRecord(id=u1, role="user", content="hello, edited", timestamp=_tick())
+        assert _upsert_messages(tid, [edited], actor_email=_ALICE, organization_id=org) == []
+        browser[0] = {"role": "user", "content": "hello, edited"}
+    else:
+        _admin(graph_as_app, "DELETE FROM chat_message WHERE session_id = :t AND id = :m",
+               t=tid, m=u1)
+        browser = browser[1:]
+    _user_row(org, tid, current)
+    turn = _begin(tid, current, org=org, browser=browser)
+    assert turn.outcome == "digest_drop" and not turn.loaded
+    assert store_log.outcomes()[-1] == "digest_drop"
+    assert turn.session.state.get(store.HISTORY_SOURCE_ID) is None, "a fresh session"
+
+
+@_DB_GATE
+def test_r8_a_room_member_change_drops_the_session(graph_as_app, store_log) -> None:
+    """§15.9.5: tool output never reaches further than the room it ran in."""
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _one_turn(org, tid, _PROPOSE, _ASK)
+    _admin(graph_as_app,
+           "INSERT INTO chat_session_participant (session_id, subject, role, organization_id) "
+           "VALUES (:t, :b, 'member', CAST(:o AS uuid))", t=tid, b=_BOB, o=org)
+    _user_row(org, tid, "yes")
+    assert _begin(tid, "yes", org=org).outcome == "fingerprint_drop"
+    _admin(graph_as_app, "DELETE FROM chat_session_participant WHERE session_id = :t "
+                         "AND subject = :b", t=tid, b=_BOB)
+    assert _begin(tid, "yes", org=org).outcome == "hit"
+    # A personal agent's instance key is part of the fingerprint too.
+    assert _begin(tid, "yes", org=org, instance=f"u:{_ALICE}").outcome == "fingerprint_drop"
+    assert store_log.outcomes() == ["no_row", "fingerprint_drop", "hit", "fingerprint_drop"]
+
+
+@_DB_GATE
+def test_r8_a_delete_during_a_running_turn_leaves_no_row(graph_as_app, store_log) -> None:
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    _admin(graph_as_app, "DELETE FROM chat_session WHERE id = :t", t=tid)
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "chat_gone"
+    assert store_log.named("native_session.chat_gone")
+    assert _stored(graph_as_app, tid) == []
+
+
+@_DB_GATE
+def test_r8_a_save_never_attaches_to_another_tenants_chat(graph_as_app, store_log) -> None:
+    """The foreign key ignores RLS, so it alone would let org B attach a row
+    to org A's chat id (the S15 fix round 1 shape, §21.11). The store's
+    ``WHERE EXISTS`` reads ``chat_session`` under org B's bind and sees no
+    chat, so nothing is written and the store logs "chat gone"."""
+    org_a, org_b, tid = graph_as_app.org_a, graph_as_app.org_b, _tid()
+    _chat(org_a, tid)
+    turn = store.SessionTurn(
+        organization_id=org_b, thread_id=tid, agent_name=_PROBE_AGENT,
+        outcome=store.NO_ROW, session=agent_framework.AgentSession(),
+        history=store.SessionHistoryProvider(),
+        fingerprint="0" * 64, save_digest="0" * 64,
+    )
+    _answer(turn, "hi", "hello")
+    assert _finish(turn) == "chat_gone"
+    assert _stored(graph_as_app, tid) == []
+    assert store_log.named("native_session.chat_gone")
+
+
+@_DB_GATE
+def test_r8_a_deleted_chat_takes_every_agent_session_with_it(graph_as_app) -> None:
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _one_turn(org, tid, _PROPOSE, _ASK)
+    _one_turn(org, tid, "what is due?", "two tasks", agent=_AGENT_Y)
+    assert [r[0] for r in _stored(graph_as_app, tid)] == [_PROBE_AGENT, _AGENT_Y]
+    _admin(graph_as_app, "DELETE FROM chat_session WHERE id = :t", t=tid)
+    assert _stored(graph_as_app, tid) == []
+
+
+@_DB_GATE
+def test_r8_the_foreign_key_refuses_a_session_of_no_chat(graph_as_app, app_engine) -> None:  # noqa: F811
+    """The second lock behind the store's EXISTS guard: a save that races a
+    delete fails on the key, and the store reads that as "chat gone"."""
+    from sqlalchemy import text
+
+    with pytest.raises(Exception) as refused, app_engine.connect() as c, c.begin():
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                  {"o": graph_as_app.org_a})
+        c.execute(text(
+            "INSERT INTO maf_agent_session (organization_id, thread_id, agent_name, "
+            "session_json, transcript_digest, session_fingerprint) VALUES "
+            "(CAST(:o AS uuid), 'f20-no-such-chat', 'x', '{}'::jsonb, :d, :d)"),
+            {"o": graph_as_app.org_a, "d": "0" * 64})
+    assert store._is_foreign_key_error(refused.value), refused.value
+
+
+@_DB_GATE
+def test_r8_the_byte_backstop_writes_nothing(graph_as_app, store_log, monkeypatch) -> None:
+    from acb_common import get_settings
+
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _user_row(org, tid, _PROPOSE)
+    turn = _begin(tid, _PROPOSE, org=org)
+    _answer(turn, _PROPOSE, "x" * 4_000)
+    monkeypatch.setattr(get_settings(), "maf_session_max_bytes", 2_000)
+    assert _finish(turn) == "too_large"
+    assert _stored(graph_as_app, tid) == []
+    monkeypatch.setattr(get_settings(), "maf_session_max_bytes", 2 * 1024 * 1024)
+    assert _finish(turn) == "saved"
+    assert len(_stored(graph_as_app, tid)) == 1
+
+
+@_DB_GATE
+def test_r8_concurrent_turns_in_one_room_fail_safe(graph_as_app, store_log) -> None:
+    """Two members send at once, and both runs load the same session. The last
+    save wins whole, never merged, and the next turn drops it, because the
+    server rows hold both turns and the session holds one."""
+    org, tid = graph_as_app.org_a, _tid()
+    _chat(org, tid)
+    _admin(graph_as_app,
+           "INSERT INTO chat_session_participant (session_id, subject, role, organization_id) "
+           "VALUES (:t, :b, 'member', CAST(:o AS uuid))", t=tid, b=_BOB, o=org)
+    _one_turn(org, tid, _PROPOSE, _ASK)
+    alice = _begin(tid, "apply itm-1", org=org)
+    bob = _begin(tid, "apply itm-2", org=org)
+    assert alice.loaded and bob.loaded
+    _user_row(org, tid, "apply itm-1", member=_ALICE)
+    _user_row(org, tid, "apply itm-2", member=_BOB)
+    _answer(alice, "apply itm-1", "applied 1")
+    _answer(bob, "apply itm-2", "applied 2")
+
+    async def _both() -> list[str]:
+        return list(await asyncio.gather(
+            store.finish_turn(alice, token_budget=50_000),
+            store.finish_turn(bob, token_budget=50_000),
+        ))
+
+    assert asyncio.run(_both()) == ["saved", "saved"]
+    rows = _stored(graph_as_app, tid)
+    assert len(rows) == 1
+    texts = [m["contents"][0]["text"] for m in
+             rows[0][2]["state"][store.HISTORY_SOURCE_ID]["messages"]]
+    assert texts in ([_PROPOSE, _ASK, "apply itm-1", "applied 1"],
+                     [_PROPOSE, _ASK, "apply itm-2", "applied 2"])
+    assert rows[0][1] in (alice.save_digest, bob.save_digest)
+    _agent_row(org, tid, "applied 1")
+    _agent_row(org, tid, "applied 2", member=_BOB)
+    _user_row(org, tid, "and now?")
+    assert _begin(tid, "and now?", org=org).outcome == "digest_drop"
+
+
+# ── 12. R8: the two-turn probe through the real executor and the real fold ──
+
+
+@_DB_GATE
+@pytest.mark.usefixtures("_a_tenant", "_flag_on")
+def test_r8_the_probe_through_the_real_executor_and_the_real_fold(
+    graph_as_app, monkeypatch, store_log,
+) -> None:
+    """§15.9.7 and the "a real turn must hit" case of §15.9.4, end to end.
+
+    Turn 1 runs in the shape ``route.ts`` sends: the gateway's mint, the
+    browser's save of the prompt, the real ``run_agent_stream`` and the real
+    fold of the run's own events. Turn 2 sends "yes" with the browser's copy
+    of turn 1, and its load logs ``hit``. Its model request holds turn 1's
+    tool call and its result, and no stored row holds the memory.
+    """
+    import time
+
+    import acb_auth.access as auth_access
+    import gateway.chat_fold as chat_fold
+    import orchestrator.stream_relay as relay
+    from gateway.routes.agent import _mint_run_row
+
+    # The fold stamps a ROOM run's clearance through acb_auth, on the async
+    # engine, which this suite does not point at the catalog. A solo run's
+    # stamp is None (chat_fold._run_authority), so it is None here. Without
+    # this, that read reaches whatever DATABASE_URL names, and a missing table
+    # there sets acb_auth's process-wide `_tables_missing` latch, which then
+    # breaks the cutover cases of test_h3_rls_promotion_rehearsal.py.
+    async def _solo_authority(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(chat_fold, "_run_authority", _solo_authority)
+    monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
+
+    org, tid = graph_as_app.org_a, _tid()
+    model = _probe_model()
+
+    def _turn(n: int, message: str, browser: list[dict[str, str]]) -> list[dict[str, Any]]:
+        mid = f"assistant-{tid}-{n}"
+        _mint_run_row(tid, mid, member=_ALICE, agent_name=_PROBE_AGENT, organization_id=org)
+        _user_row(org, tid, message)
+        payload = {"mode": "chat", "message": message, "messages": browser,
+                   "think_mode": "auto", "memory_context": _MEMORY}
+        events, _ = _drive_probe(monkeypatch, model, payload, thread_id=tid,
+                                 organization_id=org, run_id=f"run-r8-probe-{n}")
+        assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
+        # The fold replays the relay log. Here the log is this run's events,
+        # with stream ids as Redis would stamp them.
+        base = int(time.time() * 1000)
+        log = [{**e, "_stream_id": f"{base + i}-0"} for i, e in enumerate(events)]
+
+        async def _replay(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+            return log
+
+        monkeypatch.setattr(relay, "replay_events", _replay)
+        folded = asyncio.run(chat_fold.persist_final_assistant_message(
+            tid, mid, user_id=_ALICE, agent_name=_PROBE_AGENT,
+            run_id=f"run-r8-probe-{n}", organization_id=org,
+        ))
+        assert folded is not None
+        return events
+
+    _turn(1, _PROPOSE, [])
+    answer = _admin(graph_as_app, "SELECT content FROM chat_message WHERE session_id = :t "
+                                  "AND role = 'assistant'", t=tid)
+    assert [r[0] for r in answer] == [_ASK], "the fold did not seal turn 1"
+    # route.ts sends the browser's copy, which is its own render of the turn.
+    _turn(2, "yes", [{"role": "user", "content": _PROPOSE},
+                     {"role": "assistant", "content": _ASK + " "}])
+    assert store_log.outcomes() == ["no_row", "hit"]
+    _assert_turn_two_holds_turn_one(model.bodies[2])
+    assert _MEMORY in model.bodies[2]["messages"][0]["content"]
+    rows = _stored(graph_as_app, tid)
+    assert len(rows) == 1 and _MEMORY not in json.dumps(rows[0][2])
