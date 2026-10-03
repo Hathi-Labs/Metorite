@@ -5,6 +5,7 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
+import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -21,6 +22,8 @@ interface AccountSidebarProps {
    * dialog. Without this prop the account menu is not drawn.
    */
   onDisconnect?: (account: EmailAccount) => void;
+  /** Rename and recolour a mailbox (EM-T8b). The page owns the dialog. */
+  onEditMailbox?: (account: EmailAccount) => void;
   /** Open one of the Email Automation feature views. */
   onOpenAutomation?: (feature: AutomationFeature) => void;
   /** Currently-open automation feature, for highlighting. */
@@ -55,6 +58,7 @@ export function AccountSidebar({
   onAddAccount,
   onSetDefault,
   onDisconnect,
+  onEditMailbox,
   onOpenAutomation,
   activeAutomation,
   showMailbox = true,
@@ -66,6 +70,14 @@ export function AccountSidebar({
 
   const menuItems = (account: EmailAccount): CtxItem[] => {
     const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
+    if (onEditMailbox) {
+      items.push({
+        kind: "item",
+        label: "Name and colour",
+        icon: themedIcon("Palette"),
+        onSelect: () => onEditMailbox(account),
+      });
+    }
     if (!account.isDefault && onSetDefault) {
       items.push({
         kind: "item",
@@ -130,19 +142,10 @@ export function AccountSidebar({
                   onClick={() => onAccountSelect(account.id)}
                   className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
                 >
-                  <div
-                    className="w-7 h-7 rounded-full flex items-center justify-center text-white flex-shrink-0"
-                    style={{
-                      backgroundColor: account.color,
-                      fontSize: "10px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {account.avatar}
-                  </div>
+                  <MailboxAvatar account={account} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
-                      <span className="text-xs font-medium truncate">{account.label}</span>
+                      <span className="text-xs font-medium truncate">{mailboxLabel(account)}</span>
                       {account.isDefault && (
                         <AppIcon name="Star"
                           size={10}
@@ -172,7 +175,7 @@ export function AccountSidebar({
                 {selectedAccountId === account.id && (
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
-                {onDisconnect && (
+                {(onDisconnect || onEditMailbox) && (
                   <Button
                     variant="ghost"
                     size="icon-sm"

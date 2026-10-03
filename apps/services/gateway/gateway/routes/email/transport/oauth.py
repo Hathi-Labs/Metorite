@@ -36,6 +36,7 @@ from email_ingestion.providers.outlook import GRAPH_SCOPES
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from gateway.routes.email.core import _default_label, _log, _tenant_session, router
+from gateway.routes.email.mailbox_identity import NEXT_SLOT_SQL
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,
     sign_oauth_state,
@@ -487,17 +488,18 @@ async def _save_account(
         nothing_old = import_months == 0
         result = await db.execute(
             text(
-                """INSERT INTO email_accounts
+                f"""INSERT INTO email_accounts
                    (id, user_id, provider, email_address, label,
                     avatar_color, credentials_encrypted, is_default,
                     organization_id, import_since, initial_sync_done,
-                    import_phase)
+                    import_phase, color_slot)
                    VALUES (:id, :user_id, :provider, :email, :label,
                             :color, :creds,
                             NOT EXISTS (SELECT 1 FROM email_accounts
                                         WHERE lower(user_id) = :member),
                             CAST(:org AS uuid), :import_since,
-                            :initial_sync_done, :import_phase)
+                            :initial_sync_done, :import_phase,
+                            {NEXT_SLOT_SQL})
                    RETURNING id"""
             ),
             {

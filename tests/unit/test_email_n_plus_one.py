@@ -277,6 +277,8 @@ def _account_row(i: int, **over: Any) -> SimpleNamespace:
         # carries them now, so this fake keeps working when #580 merges.
         import_phase=None, import_count=None, import_estimate=None,
         import_reached_at=None,
+        # The colour slot of EM-T8b (migration 227).
+        color_slot=i,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -308,6 +310,10 @@ class _AccountsDb:
             return SimpleNamespace(scalar=lambda: n)
         if "FROM email_accounts" in sql and "WHERE user_id = :user_id" in sql:
             mine = [r for r in self.rows if self.owners[r.id] == p["user_id"]]
+            return SimpleNamespace(fetchall=lambda: mine)
+        if sql == "SELECT id, email_address, label FROM email_accounts WHERE user_id = :uid":
+            # The display labels of EM-T8b read the mailboxes of the member.
+            mine = [r for r in self.rows if self.owners[r.id] == p["uid"]]
             return SimpleNamespace(fetchall=lambda: mine)
         if sql.startswith("SELECT 1 FROM email_accounts"):
             hit = self.owners.get(p["id"]) == p["uid"]

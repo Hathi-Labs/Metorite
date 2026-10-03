@@ -20,6 +20,9 @@ import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
+import { MailboxAvatar } from "./components/MailboxChip";
+import { MailboxEditDialog, type MailboxEdit } from "./components/MailboxEditDialog";
+import { updateEmailAccount } from "./lib/api";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
@@ -52,6 +55,8 @@ export default function EmailPage() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   // The mailbox the disconnect dialog asks about. `null` closes the dialog.
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
+  // The mailbox whose name and colour the member edits (EM-T8b).
+  const [editingMailbox, setEditingMailbox] = useState<EmailAccount | null>(null);
 
   // Mobile-specific state
   const [mobileView, setMobileView] = useState<"inbox" | "detail">("inbox");
@@ -338,6 +343,30 @@ export default function EmailPage() {
     [closeDrawer]
   );
 
+  // Rename and recolour a mailbox (EM-T8b, §11.7.2 item 5).
+  const handleEditMailbox = useCallback(
+    (account: EmailAccount) => {
+      setEditingMailbox(account);
+      closeDrawer();
+    },
+    [closeDrawer]
+  );
+
+  // The display label of ANOTHER mailbox can change with this one (§11.4: a
+  // default steps aside for a chosen label), so the accounts are read again.
+  const saveMailboxEdit = useCallback(
+    async (id: string, edit: MailboxEdit): Promise<string | null> => {
+      try {
+        await updateEmailAccount(id, { label: edit.label, colorSlot: edit.colorSlot });
+      } catch (e) {
+        return e instanceof Error && e.message ? e.message : "The mailbox could not be saved.";
+      }
+      await refreshAccounts();
+      return null;
+    },
+    [refreshAccounts]
+  );
+
   const handleAddAccount = useCallback(() => {
     setShowAddModal(true);
   }, []);
@@ -374,6 +403,7 @@ export default function EmailPage() {
       onAddAccount={handleAddAccount}
       onSetDefault={setDefaultAccount}
       onDisconnect={handleDisconnectRequest}
+      onEditMailbox={handleEditMailbox}
       showAutomation={false}
     />
   );
@@ -533,7 +563,7 @@ export default function EmailPage() {
           t.tagName === "TEXTAREA" ||
           t.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || paletteOpen) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -582,7 +612,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, paletteOpen, automationFeature,
+    disconnecting, editingMailbox, paletteOpen, automationFeature,
   ]);
 
   // Command palette entries (Cmd/Ctrl+K).
@@ -671,6 +701,7 @@ export default function EmailPage() {
               onAddAccount={handleAddAccount}
               onSetDefault={setDefaultAccount}
               onDisconnect={handleDisconnectRequest}
+              onEditMailbox={handleEditMailbox}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
             />
@@ -830,14 +861,7 @@ export default function EmailPage() {
               }}
               className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity"
             >
-              {selectedAccount && (
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-white flex-shrink-0 text-[10px] font-semibold"
-                  style={{ backgroundColor: selectedAccount.color }}
-                >
-                  {selectedAccount.avatar}
-                </div>
-              )}
+              {selectedAccount && <MailboxAvatar account={selectedAccount} />}
               <div className="min-w-0">
                 <div className="text-xs font-medium text-foreground">
                   {folderLabel(selectedFolder)}
@@ -1143,6 +1167,12 @@ export default function EmailPage() {
           />
         </div>
       </Modal>
+
+      <MailboxEditDialog
+        account={editingMailbox}
+        onSave={saveMailboxEdit}
+        onClose={() => setEditingMailbox(null)}
+      />
 
       <DisconnectDialog
         account={disconnecting}

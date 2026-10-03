@@ -54,9 +54,19 @@ export interface EmailAccount {
   id: string;
   provider: "gmail" | "microsoft" | "imap";
   emailAddress: string;
+  /** The label the member stored. "" means none. Draw `displayLabel`. */
   label: string;
-  avatar: string; // initials
-  color: string; // hex color for avatar bg
+  /**
+   * The label to draw (EM-T8b, §11.4): the label the member chose, else one
+   * the gateway made from the address. A gateway before EM-T8b sends none,
+   * and the UI then draws the address.
+   */
+  displayLabel?: string;
+  /**
+   * The slot of the categorical ramp of the mailbox chip, 1 to 12 (EM-T8b,
+   * D-EM-21). Null or absent: the chip hashes the mailbox id.
+   */
+  colorSlot?: number | null;
   unreadCount: number;
   syncEnabled: boolean;
   lastSyncedAt?: string;
