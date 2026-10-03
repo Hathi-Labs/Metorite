@@ -101,6 +101,19 @@ _HISTORY = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _no_fit_stats_leak():
+    """These cases call the assembler on the test thread, and it sets the
+    ``last_fit_stats`` ContextVar there. A later suite that runs the executor
+    with no history reads that value and shows a false "Long conversation"
+    notice (``test_no_pressure_notice_when_history_fits``). Restore it."""
+    from acb_llm.context import last_fit_stats
+
+    token = last_fit_stats.set(None)
+    yield
+    last_fit_stats.reset(token)
+
+
 @pytest.fixture
 def _flag_on(monkeypatch):
     from acb_common import get_settings
