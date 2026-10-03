@@ -20,7 +20,7 @@
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3384,7 +3384,7 @@ wrong-sender defects first.
 |---|---|---|---|
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
-| **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
+| **EM-T8c** | 🟢 AGENT-SAFE | ✅ **MERGED #592 (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
@@ -3484,6 +3484,8 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 
 #### 11.7.3 EM-T8c — the From row and the second connect
 
+**Status.** ✅ MERGED (#592, 2026-10-03, no migration), with review fix round 1.
+
 1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
    lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
    mark and cannot send.
@@ -3498,6 +3500,48 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 6. **The backfill state (MB-10)** is keyed by mailbox and folder.
 7. **The Integrations connect leg (MB-16)** sends the import range and hides IMAP. As an
    alternative, it links to the connect flow inside Email.
+
+**As built (2026-10-03).**
+
+- **A reply from another mailbox goes as new mail.** A provider cannot answer a mail of another
+  mailbox, and `/send` refuses it (MB-6). So the composer drops the reply target, and the
+  warning says that the reply starts a new conversation. The thread of the mail shows no
+  optimistic copy, because the reply lands in the other mailbox.
+- **The usual sender** comes from `GET /email/contacts/sent-from`, not from `/contacts/suggest`.
+  It maps each address to the mailbox of the member that last wrote to it, with the owner
+  predicate in the SQL. A failure answers `{}`.
+- **The domain warning** reads `work_domain` from the accounts API, so the UI keeps no list of
+  consumer domains.
+- **A mailbox that cannot send** is one whose sign-in failed: a live call answered 401, or the
+  accounts API returns `needs_reconnect`. The gateway sets that flag only for a sync error of the
+  sign-in. A 429 or a 503 during an import also marks the sync as failed. A send still works
+  then, so that error does not block a send. The reconnect banner still shows for any sync error.
+- **A change of From during a save** makes the draft of that save stale. The composer keeps a
+  list of stale drafts and deletes them only once the new mailbox holds the message. While a
+  stale draft exists, a send takes the draft path, which waits for the real send.
+- **The pop-out keeps the From** of the inline reply. The full composer opens on the mailbox of
+  the mail and starts on the chosen From, so it drops the reply target itself.
+- **The picker** is the house dropdown (`SelectButton`), with the label of each mailbox and its
+  address as the hint. A mailbox that cannot send stays in the list, disabled, with the reason.
+- **A reply that leaves its conversation** always shows the warning. When the mailbox of the
+  conversation cannot send, the warning offers no switch back.
+- **An address already present** is found in the browser. Before an ADD, the page keeps the
+  ids of the mailboxes of the member in the session storage of the tab. A reconnect names its
+  mailbox and stores none. The callback page reads the ids once, removes them, and shows the
+  notice when the id that returns is one of them. The gateway needs no `reconnected` flag.
+- **The return** sets `?account=<id>` on the target of the callback, so an old selection in
+  `redirect_after` does not win. It also removes `connect=1`, or the add dialog opens again.
+- **"Load older"** that ends after a switch of mailbox writes no rows into the new view.
+- **Integrations** sends Add to `/email?connect=1`. Its own leg, with Gmail and IMAP, is gone.
+  Reconnect stays on Integrations, with the mailbox as its hint.
+
+**Fences.** `tests/unit/test_email_from_row.py` (R8 for `sent-from`) and
+`src/app/email/lib/fromRow.test.ts` name their fence ids.
+
+**Verification.** `uv run pytest tests/unit/test_email_from_row.py -v -rs` (R8 PASSED, not SKIPPED).
+In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/app/integrations src/components/email src/lib/theme`.
+The theme suite holds the design-system fences, so leave it in.
 
 #### 11.7.4 EM-T8d — All inboxes
 

@@ -35,6 +35,8 @@ import {
   adminConsentUrl,
   callbackView,
   retryTarget,
+  wasConnectedBefore,
+  withSelectedMailbox,
   type CallbackView,
   type ConnectProviderId,
 } from "../../lib/connect";
@@ -197,19 +199,25 @@ function CallbackContent() {
   const [countdown, setCountdown] = useState(3);
   const success = view.kind === "connected";
 
+  // A connect that returned a mailbox the member already had signed it in
+  // again (EM-T8c, §11.6 case 2). Read once, on the first render.
+  const [alreadyConnected] = useState(() => success && wasConnectedBefore(accountId));
+
   // Into Email after a short pause, so the member reads which mailbox it was.
+  // The target selects the mailbox of the connect (MB-9).
   useEffect(() => {
     if (!success) return;
-    const target = safeRedirectTarget(redirectAfter);
+    const target = withSelectedMailbox(safeRedirectTarget(redirectAfter), accountId);
     if (countdown <= 0) {
       router.push(target);
       return;
     }
     const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(timer);
-  }, [success, countdown, redirectAfter, router]);
+  }, [success, countdown, redirectAfter, accountId, router]);
 
-  const openEmail = () => router.push(success ? safeRedirectTarget(redirectAfter) : "/email");
+  const openEmail = () =>
+    router.push(success ? withSelectedMailbox(safeRedirectTarget(redirectAfter), accountId) : "/email");
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -226,6 +234,12 @@ function CallbackContent() {
             <div>
               <h2 className="text-base font-semibold text-foreground break-words">{view.title}</h2>
               <p className="mt-1 text-sm text-muted-foreground">{view.body}</p>
+              {alreadyConnected ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {email || "This mailbox"} was already connected. Metorite signed it in
+                  again. To add a different mailbox, choose another account at Microsoft.
+                </p>
+              ) : null}
             </div>
           </div>
 

@@ -231,7 +231,10 @@ describe("the composer sends from the mailbox it was given (D-EM-20)", () => {
       "const composeAccountId = composeDefaults?.accountId || selectedAccountId;",
     );
     expect(page).toContain("accountId={composeAccountId ?? \"\"}");
-    expect(page).toMatch(/await sendEmail\(\{\s*accountId: composeAccountId,/);
+    // EM-T8c: the From row of the composer may choose another mailbox, and
+    // its choice wins. The composer mailbox is only the fallback.
+    expect(page).toContain("const sender = params.accountId || composeAccountId;");
+    expect(page).toContain("await sendEmail({ ...params, accountId: sender });");
   });
 
   it("gives each toolbar reply and the forward the mailbox of the mail", () => {
