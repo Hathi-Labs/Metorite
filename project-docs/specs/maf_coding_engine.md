@@ -6,8 +6,8 @@
 (the no-Copilot fence) are built (2026-10-03). WS-43c (the sandbox broker,
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
-§7.9): until `covers()` is true for it, a shared agent gets no shell tool,
-and a guard refuses its Copilot CLI shell. Every other slice is spec
+§7.9): a shared agent gets no shell tool until `covers()` is true for it,
+and a guard always refuses its Copilot CLI shell. Every other slice is spec
 only.** Owner decisions, 2026-10-03.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**
@@ -923,50 +923,91 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** Until `covers(agent, org)` is true, a shared agent runs no shell
-on the host. It gets no `SHELL_TOOLS` member, and the Copilot CLI's own shell
-refuses each of its commands. The owner decided this on 2026-10-03 (D85). It
-is in force on production from the merge, with no flag, in every
-`AGENT_PERMISSION_MODE`.
+**The rule.** A shared agent runs no shell on the host. D85 has two halves,
+and each half has its own flag and its own way out:
 
-**The seam.** `orchestrator/_tool_injection.py` holds the decision, in one
-function. Two halves read it.
+| Half | What it blocks | Flag in the run | What lifts it |
+|---|---|---|---|
+| The tool half | the injected `SHELL_TOOLS` (`code_task`, `run_script`, `install_dependency`) | `shell_tools_withheld` | `covers(agent, org)`, when the broker runs those tools |
+| The host half | the Copilot CLI's own shell, which runs on the host | `host_shell_refused` | only a Copilot CLI that runs inside a broker sandbox. None exists, so today it is always refused |
 
-- `_withheld_shell_tools(agent_name, agent_config)` reads
-  `sharing.instancing` through `AgentManifest.from_config`.
-- A `personal` agent withholds nothing. Every other agent withholds all three
-  tools. That includes `shared`, the default when a config has no `sharing`
-  block. It also includes `team`, a config that does not parse, and
+The owner decided this on 2026-10-03 (D85). It is in force on production from
+the merge, with no flag, in every `AGENT_PERMISSION_MODE`.
+
+⚠️ **A cover never lifts the host half.** The broker runs the shell TOOLS in
+a container. The CLI is not in that container, so its shell still runs on
+the host. The verifier set this rule in fix round 1.
+
+**Who is in scope.** `_tool_injection._d85_leaves_alone` answers it for both
+halves:
+
+- A `personal` agent is out of scope. The owner left personal agents out
+  (H-225).
+- The root `metorite` dev agent is out of scope until the owner decides
+  (`_D85_OWNER_PENDING`, H-228). It edits platform code and runs the tests
+  through its CLI shell, and D86 says leave the older agents alone.
+- Every other agent is in scope: `shared` (the default when a config has no
+  `sharing` block), `team`, a config that does not parse, and
   `agent_config=None`.
+
+**The tool half.** `_withheld_shell_tools(agent_name, agent_config)`.
+
 - `_sandbox_covers(agent, org)` gives the tools back. The org comes from
   `executor._current_run_org()`, never from input (R11). No org means no
   cover.
 - `_resolve_injected_scope(withheld=)` takes the names out of the scope. The
   injected list, the addendum and the skill bodies read that one scope. So
   the coding section of the addendum does not render for a shared agent.
+  `list_integrations` has its own section, so that prose stays.
 - A last filter runs after the no-match fallback, so no branch puts a shell
   tool back.
 - Each call site in the executor passes `agent_config`. That is five
   injection sites and three skill-body sites.
 
-**The second half: the Copilot CLI shell.**
+**The host half.** `_host_shell_refused(agent_name, agent_config)`.
 
-- The executor binds `shell_withheld` into the artifact context of each run
-  from `_withheld_shell_tools`. It does so at the run, at the batch run and
-  for each sub-agent, which gets its own answer.
+- `_copilot_cli_in_broker_sandbox` is the only way out, and it is `False`
+  for every agent. The container of `copilot_sandbox.py` is not the broker's
+  (§4.2).
+- The executor binds both flags into the artifact context of each run. It
+  does so at the run, at the batch run and for each sub-agent. A sub-agent
+  gets its own answers.
 - `permission_policy.guard_shared_agent_shell` refuses a shell request when
-  that flag is not `False`. A shell request is the `shell` kind, or any
-  request with command text. A frame with no flag refuses, which fails
-  closed.
-- `_copilot_session._copilot_permission_handler()` returns each handler
-  inside that guard, in `enforce`, `audit` and `approve_all`. Every Copilot
-  path takes its handler from there: the run, the sub-agent, the Tier 2
-  client, the batch helper and `code_session`.
-- ⚠️ The guard ignores `AGENT_PERMISSION_MODE` on purpose. Production runs
-  `audit` (`permissions_sandbox_b6.md`), and in `audit` the B6 handler
-  approves everything. A block that obeyed `audit` would block nothing.
-- The Tier 2 client also passes `--deny-tool shell` when the flag is set,
-  whatever the runtime label says.
+  `host_shell_refused` is not `False`. A shell request is the `shell` kind,
+  or any request with command text. A frame with no flag refuses, which
+  fails closed.
+- `_copilot_session._install_copilot_permission_handler` is the one way a
+  Copilot agent gets its handler. It ALWAYS wraps what is in the slot. An
+  empty slot gets the B6 handler. A slot that the agent's factory filled
+  (`approve_all` or any other handler) keeps that handler, inside the guard.
+  The run, the sub-agent, Tier 1.5, Tier 2, the batch helper and
+  `code_session` all call it.
+- If the policy module cannot load, the factory refuses every request. It
+  never falls back to a bare `approve_all`.
+- The guard ignores `AGENT_PERMISSION_MODE`. Production runs `enforce`. The
+  box's `.env` sets no mode, so `_mode()` falls back to `enforce`, and all
+  70 `permission.decision` lines of the 14 days to 2026-10-03 read
+  `mode=enforce`. The guard ignores the mode so that a later switch cannot
+  waive an owner decision.
+- Tier 2 always passes `--deny-tool shell`. Tier 1.5 returns for every
+  Copilot-shaped agent, and a `github-copilot` label makes an agent
+  Copilot-shaped, so Tier 2 never serves that label. Its old "allow the
+  shell" branch for that label could not run. Tier 2 also carries the run
+  context now (H-201), as every Copilot path must.
+- `MetoriteCopilotAgent` sets `enable_file_hooks=False` on create and on
+  resume, so no hook file in the working dir runs a command without a
+  permission request.
+
+**The write and read checks (B6, fixed in the same round).** SDK 1.0 names a
+write's target `file_name`, so `decide()` saw no path, and a CLI write went
+through as `write_in_workspace` wherever it went. It now reads `file_name`.
+Production runs `enforce`, so a CLI write outside the workspace is now
+refused there.
+
+A `read` request used to take the write branch. It now has its own rule.
+Inside the workspace it is approved, and outside it, or with no workspace,
+it is refused. Those are the outcomes a read got before, under its own
+reason codes.
 
 **Today's effect.**
 
@@ -978,6 +1019,11 @@ function. Two halves read it.
 - ⚠️ app-builder loses its build shell, `node build/build_t2.mjs`, so a
   Custom App build stops in the App Workshop. That pane is `preview`. WS-43h
   gives the shell back in the sandbox, and D86 parks WS-43h (§16.2).
+- A repo-registered Copilot agent with its own `approve_all` loses the CLI
+  shell too, when it is shared. `agent-sales-assistant` has no `sharing`
+  block, so it is shared. Its own tools run their scripts through Python
+  `subprocess`. The SDK sends those calls as `custom-tool`, and the guard
+  passes them on, so they still work.
 - email-assistant and whatsapp-assistant are personal, and they keep their
   tools.
 
@@ -998,16 +1044,15 @@ data never leaves the platform.
 
 **What the block does not reach.**
 
-- An agent that sets its own `on_permission_request`. The executor installs
-  its handler only into an empty slot. The root `metorite` agent
-  (`agents.py`) and the external `agent-sales-assistant` set `approve_all`
-  (H-211). `mutation_runner.py` sets it inside the mutation container. D85
-  does not change them.
-- The Copilot CLI's file tools on task-manager and app-builder. They write
-  inside the workspace, and they run no command.
+- The root `metorite` agent, until the owner decides (H-228).
+  `mutation_runner.py` sets `approve_all` inside the mutation container,
+  which no tenant run reaches.
+- The Copilot CLI's file tools on task-manager and app-builder. They run no
+  command, and the write and read checks above contain them.
 - The executor's dependency self-heal calls `install_dependency` directly
   when a tool import fails (`executor.py`, `executor.tool_dep_selfheal`). The
-  model does not choose that package.
+  model does not choose that package. Its error text no longer tells an
+  agent without the tool to call it.
 - The risk block of the addendum names every annotated tool, so it still
   names `code_task` and `run_script`. That list classifies risk, and it does
   not describe the coding skill.
@@ -1179,7 +1224,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
 | WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true |
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
-| WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, or refuses one of a personal or covered agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_withheld`. The task-manager probe refuses a `my_tasks_*` tool |
+| WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new

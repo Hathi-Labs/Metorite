@@ -75,12 +75,12 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
 
 
 def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
-    """True when the sandbox broker runs this agent's shell tools (D85).
+    """True when the sandbox broker runs this agent's shell TOOLS (D85).
 
     It answers one question: does the broker run ``code_task``,
     ``run_script`` and ``install_dependency`` for this agent in this org
-    (``maf_coding_engine.md`` §7.7 condition 2)? Only then may the D85 block
-    lift.
+    (``maf_coding_engine.md`` §7.7 condition 2)? Only then may the tool half
+    of D85 lift. It never lifts the host half: see :func:`_host_shell_refused`.
 
     TODO(WS-43f): return ``orchestrator.sandbox_broker.covers(agent_name,
     organization_id)`` here, for the targets whose shell tools the broker
@@ -93,10 +93,67 @@ def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
     return False
 
 
+def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> bool:
+    """True when this agent's Copilot CLI itself runs in a broker sandbox.
+
+    Only that may lift the host half of D85. No such path exists: the
+    container of ``copilot_sandbox.py`` is not the broker's (it holds the
+    model loop, a key and a network, §4.2), and WS-43h moves app-builder off
+    the CLI instead of into it. So this is ``False`` for every agent, and a
+    shared agent's CLI shell is always refused today.
+    """
+    del agent_name, organization_id
+    return False
+
+
+#: Agents that D85 leaves as they are, until the owner decides (HANDOFF H-228).
+#: ``metorite`` is the root dev agent (repo-root ``agents.py``). It edits
+#: platform code and runs the tests through its Copilot CLI shell, with its own
+#: ``approve_all`` (H-211). Its root ``config.json`` has no ``sharing`` block,
+#: so D85 would read it as shared and take its shell. D86 says leave the older
+#: agents alone, so this PR does not change it. The match is on the registry
+#: name the executor runs. Registering a name needs ``agents:manage``
+#: (``POST /agent``), and a name is unique in the registry. Fence:
+#: ``test_shared_agent_shell_tools.py`` pins this set to exactly one name.
+_D85_OWNER_PENDING: frozenset[str] = frozenset({"metorite"})
+
+
+def _d85_leaves_alone(agent_name: str | None, agent_config: dict[str, Any] | None) -> bool:
+    """True for an agent that D85 does not touch, in either half.
+
+    * A ``personal`` agent. The owner left personal agents out of scope
+      (HANDOFF H-225 asks for the same rule there).
+    * A name in :data:`_D85_OWNER_PENDING`, until the owner decides (H-228).
+
+    Every other agent is in scope: ``shared`` (the default when the config has
+    no ``sharing`` block), ``team``, a config that does not parse, and
+    ``agent_config=None``. So a caller that forgets the config fails closed.
+    """
+    if agent_name in _D85_OWNER_PENDING:
+        return True
+    try:
+        from acb_skills.manifest import AgentManifest
+        instancing = AgentManifest.from_config(
+            agent_config, name=agent_name,
+        ).sharing.instancing
+    except Exception:  # a config that does not parse is shared
+        instancing = "shared"
+    return instancing == "personal"
+
+
+def _run_org() -> str | None:
+    """The tenant of the run on this frame, from the run binding only (R11)."""
+    try:
+        from orchestrator.executor import _current_run_org
+        return _current_run_org()
+    except Exception:  # no run binding means no cover
+        return None
+
+
 def _withheld_shell_tools(
     agent_name: str | None, agent_config: dict[str, Any] | None,
 ) -> frozenset[str]:
-    """The shell tools this run must NOT inject (D85, the interim block).
+    """The shell TOOLS this run must not inject (D85, the tool half).
 
     ``acb_skills.manifest.SHELL_TOOLS`` (``code_task``, ``run_script`` and
     ``install_dependency``) run code on the HOST today. ``run_script`` has the
@@ -104,40 +161,44 @@ def _withheld_shell_tools(
     every member of an organization from one process, so the owner blocked
     these tools for it on 2026-10-03 until the sandbox covers it.
 
-    * ``sharing.instancing == "personal"`` withholds nothing. Personal agents
-      keep today's behaviour, which the owner left out of scope (HANDOFF
-      H-225 asks for the same rule there).
-    * Every other agent withholds all three. That is ``shared`` (the default
-      when the config has no ``sharing`` block), ``team`` and a config that
-      does not parse. ``agent_config=None`` reads as shared, so a caller that
-      forgets the config fails closed.
-    * :func:`_sandbox_covers` gives the tools back for one agent in one org.
-      The org comes from the run binding (``_current_run_org``), never from
-      the request or a tool argument (R11). No org means no cover.
+    It withholds nothing for an agent that :func:`_d85_leaves_alone`, and all
+    three for every other one, unless :func:`_sandbox_covers` says the broker
+    runs them for this agent in the run's org. The org comes from the run
+    binding, never from the request or a tool argument (R11). No org means
+    no cover. The executor binds the answer as ``shell_tools_withheld``.
     """
     try:
-        from acb_skills.manifest import SHELL_TOOLS, AgentManifest
+        from acb_skills.manifest import SHELL_TOOLS
     except ImportError:
         # acb_skills is absent, so _collect_injectable_platform_tools() returns
         # [] and this run injects no tool at all.
         return frozenset()
-    try:
-        instancing = AgentManifest.from_config(
-            agent_config, name=agent_name,
-        ).sharing.instancing
-    except Exception:  # a config that does not parse is shared
-        instancing = "shared"
-    if instancing == "personal":
+    if _d85_leaves_alone(agent_name, agent_config):
         return frozenset()
-    org: str | None = None
-    try:
-        from orchestrator.executor import _current_run_org
-        org = _current_run_org()
-    except Exception:  # no run binding means no cover
-        org = None
+    org = _run_org()
     if agent_name and org and _sandbox_covers(agent_name, org):
         return frozenset()
     return frozenset(SHELL_TOOLS)
+
+
+def _host_shell_refused(
+    agent_name: str | None, agent_config: dict[str, Any] | None,
+) -> bool:
+    """True when the Copilot CLI's OWN shell must be refused (D85, host half).
+
+    The CLI runs on the HOST, beside the gateway. ``covers()`` never lifts
+    this: the broker runs the shell TOOLS in a container, and the CLI is not
+    in that container. Only :func:`_copilot_cli_in_broker_sandbox` could lift
+    it, and it is ``False`` for every agent today. So it is ``True`` for every
+    agent in scope, and ``False`` for one that :func:`_d85_leaves_alone`.
+
+    The executor binds the answer as ``host_shell_refused``, and
+    ``permission_policy.guard_shared_agent_shell`` reads it.
+    """
+    if _d85_leaves_alone(agent_name, agent_config):
+        return False
+    org = _run_org()
+    return not (agent_name and org and _copilot_cli_in_broker_sandbox(agent_name, org))
 
 
 def _drop_withheld(tools: list[Any], withheld: frozenset[str]) -> list[Any]:

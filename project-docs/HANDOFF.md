@@ -3947,19 +3947,53 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-03 · WS-43c, the sandbox broker
 
 ### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
-- **Check:** `grep -n 'if instancing == "personal":' apps/services/orchestrator/orchestrator/_tool_injection.py`
+- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
   → a hit means a personal agent still keeps its host shell tools.
 - **Why:** D85 blocks `code_task`, `run_script`, `install_dependency` and the
   Copilot CLI shell for shared agents only, because the owner left personal
   agents out of scope.
   email-assistant and whatsapp-assistant still run code on the host. There,
   `run_script` has the network and the credentials of the integrations.
-  A shared agent can also reach that code through `call_agent`. When WS-43f
-  makes `covers()` live, apply the same rule to a personal
+  When WS-43f makes `covers()` live, apply the same rule to a personal
   agent: no shell tool without a cover. Ask the owner first, because the
   change takes a tool from a live agent.
+- **The delegation path.** A shared agent can reach that code through
+  `call_agent`. For example, projects-assistant delegates to email-assistant,
+  and email-assistant then calls `code_task` or `run_script` on the host. The
+  sub-run works in the `u:` dir of the acting member (H-201 P2-c), so it
+  reads that member's own files only. It still runs on the shared server.
+- **Test plan for the delegation path.**
+  1. In `tests/unit/test_shared_agent_shell_tools.py`, add a probe through
+     `executor._run_sub_agent_streaming`. A shared parent context
+     (`host_shell_refused=True`) delegates to email-assistant with its real
+     config. Today the sub-agent holds `run_script` and `code_task`, so pin
+     that first as the "before".
+  2. Make the change in `_tool_injection._d85_leaves_alone`, then turn the
+     probe around: no shell tool for the personal sub-agent without a cover.
+  3. Add the same probe for whatsapp-assistant, and one for a personal
+     Copilot-shaped sub-agent, whose CLI shell the guard then refuses.
+  4. Mutation: restore the `personal` early return. All three probes turn red.
 - **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
 - **Added:** 2026-10-03 · the D85 interim block
+
+### H-228 · Decide whether the root `metorite` dev agent keeps its host shell · [OWNER]
+- **Check:** `grep -n 'frozenset({"metorite"})' apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means the root agent is still out of D85's scope.
+- **What happens.** The root `metorite` agent (repo-root `agents.py`) edits
+  platform code and runs the tests through its Copilot CLI shell, with its own
+  `approve_all` (H-211). Its root `config.json` has no `sharing` block, so D85
+  reads it as a shared agent. D86 says leave the older agents alone. So PR
+  #598 keeps it out of scope by name (`_D85_OWNER_PENDING`), and it keeps its
+  tools and its shell.
+- **The question for the owner.** Does it keep its host shell until WS-43m
+  moves it to MAF? Or does D85 bind it now, so it loses the shell? Spec §15.4
+  plans the MAF move, with no shell and with admins of the first-party
+  organization only.
+- **Why it matters.** A name exemption is a hole by design. Any member who can
+  reach that agent can run any command on the host, in every permission mode.
+- **Authority:** `work_plan.md` D85 and D86 · `specs/maf_coding_engine.md`
+  §7.9 and §15.4 · H-211
+- **Added:** 2026-10-03 · fix round 1 of PR #598
 
 ### H-226 · Let the Projects agent write code over the rows, once the sandbox covers it · [AGENT]
 - **Check:** `grep -n 'Never run `run_script` or `code_task` over them' apps/agents/agent-projects/instructions.md`
