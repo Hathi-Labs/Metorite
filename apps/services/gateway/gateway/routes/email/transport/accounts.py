@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user, require_permission
+from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import (
     _decrypt_credentials,
@@ -21,7 +22,7 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 #: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
@@ -70,28 +71,34 @@ class EmailAccountModel(BaseModel):
     #: True when the member closed the guided setup (EM-T6a item 11).
     onboarding_done: bool = False
     #: The progress of the first import (EM-T6b item 11). The phase is
-    #: ``counting``, ``importing`` or ``done``, and ``None`` before the first
-    #: import or for a mailbox from before EM-T6. ``import_reached_at`` is the
-    #: oldest mail written so far, as ISO text. ``import_estimate`` is
-    #: ``None`` when the provider gives no count.
+    #: ``counting``, ``importing``, ``done`` or ``limit`` (EM-T6c), and
+    #: ``None`` before the first import or for a mailbox from before EM-T6.
+    #: ``import_reached_at`` is the oldest mail written so far, as ISO text.
+    #: ``import_estimate`` is ``None`` when the provider gives no count.
     import_phase: str | None = None
     import_count: int | None = None
     import_estimate: int | None = None
     import_reached_at: str | None = None
+    #: The storage meter of the mailbox in bytes, and its limit (EM-T6c item
+    #: 14). ``stored_bytes`` is ``None`` before the first meter run.
+    stored_bytes: int | None = None
+    storage_limit_bytes: int = Field(default_factory=storage_limit_bytes)
 
 
 #: The account columns that every account read returns, after the base ones.
 _PROGRESS_COLUMNS = (
-    "import_phase, import_count, import_estimate, import_reached_at")
+    "import_phase, import_count, import_estimate, import_reached_at, "
+    "stored_bytes")
 
 
 def _progress(row: Any) -> dict[str, Any]:
-    """The import progress of an account row, for ``EmailAccountModel``."""
+    """The import progress and the meter of an account row."""
     return {
         "import_phase": row.import_phase,
         "import_count": row.import_count,
         "import_estimate": row.import_estimate,
         "import_reached_at": _iso(row.import_reached_at),
+        "stored_bytes": row.stored_bytes,
     }
 
 

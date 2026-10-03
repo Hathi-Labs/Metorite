@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion import storage as ingest_storage
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     HUMAN_SENDER_CATEGORIES_LOWER,
@@ -599,7 +600,8 @@ async def get_message(
                           em.snippet, em.has_attachments,
                           em.is_read, em.is_starred, em.is_flagged,
                           em.importance, em.categories,
-                          em.received_at, em.synced_at, em.snoozed_until
+                          em.received_at, em.synced_at, em.snoozed_until,
+                          ea.stored_bytes
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
                    WHERE em.id = :message_id AND ea.user_id = :user_id"""
@@ -609,6 +611,9 @@ async def get_message(
         row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Message not found")
+        # At the storage limit, an open shows the body and stores nothing
+        # (WS-17 EM-T6c, owner answer Q4). A reopen loads it live again.
+        store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
 
         # Mark as read
         await db.execute(
@@ -638,20 +643,24 @@ async def get_message(
                         _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
                         if full.body_html else None
                     )
-                    await db.execute(
-                        text(
-                            """UPDATE email_messages
-                               SET body_text = :bt, body_html = :bh,
-                                   has_attachments = :ha, updated_at = now()
-                               WHERE id = :id"""
-                        ),
-                        {
-                            "id": message_id,
-                            "bt": body_text,
-                            "bh": body_html,
-                            "ha": full.has_attachments,
-                        },
-                    )
+                    if store_body:
+                        await db.execute(
+                            text(
+                                """UPDATE email_messages
+                                   SET body_text = :bt, body_html = :bh,
+                                       has_attachments = :ha, updated_at = now()
+                                   WHERE id = :id"""
+                            ),
+                            {
+                                "id": message_id,
+                                "bt": body_text,
+                                "bh": body_html,
+                                "ha": full.has_attachments,
+                            },
+                        )
+                    else:
+                        _log.info("get_message.body_not_stored_at_limit",
+                                  message_id=message_id)
                     # Persist attachment metadata fetched with the full message.
                     for att in full.attachments:
                         await db.execute(
