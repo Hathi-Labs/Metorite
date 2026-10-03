@@ -909,12 +909,17 @@ if _HAS_MAF:
                 if isinstance(opts, dict) and enriched:
                     opts["instructions"] = enriched
 
-            # Apply thinking mode to agent options
+            # Apply thinking mode to agent options. The orchestrator is a
+            # native MAF agent, so it may get ``reasoning_effort`` only:
+            # ``_apply_thinking_mode`` writes ``model_params``/``thinking``,
+            # which ``AsyncCompletions.create()`` refuses (PR #585 review).
             think_mode = input_data.get("think_mode", "auto")
             if think_mode and think_mode != "auto":
-                opts = agent.default_options
-                if isinstance(opts, dict):
-                    _apply_thinking_mode(opts, think_mode)
+                from orchestrator._model_resolution import (
+                    _apply_thinking_mode_for_agent,
+                )
+
+                _apply_thinking_mode_for_agent(agent, think_mode)
 
             # ── Resolve the selected LiteLLM tier and pin it on the agent ──
             # Native MAF agents read their model from default_options["model"]; if

@@ -107,16 +107,21 @@ def _apply_byok_provider_for_copilot_sdk(
 
 
 def _apply_thinking_mode(opts: dict, think_mode: str) -> None:
-    """Apply thinking/reasoning mode to an agent options dict.
+    """Apply thinking/reasoning mode to a COPILOT-SDK agent's options dict.
 
     Maps our three thinking modes to model-specific parameters:
     - ``"thinking"``: chain-of-thought with a moderate budget
     - ``"max"``:      chain-of-thought with the maximum budget
     - ``"auto"``:     no override (the model decides)
 
-    For Copilot-SDK models this adds a ``thinking`` block; for LiteLLM models it
-    adds ``reasoning_effort``.  Both are set because one agent options dict may
-    be consumed by either path.
+    ⚠️ **Never hand this a native MAF agent's ``default_options``.**
+    ``OpenAIChatCompletionClient`` passes every key of that dict to
+    ``AsyncCompletions.create()``, and ``model_params`` / ``thinking`` are not
+    keywords it takes. Every Thinking or Max turn then raised
+    ``unexpected keyword argument 'model_params'`` before a single model
+    request (PR #585 review). Native agents go through
+    :func:`_apply_thinking_mode_native`, which sets ``reasoning_effort`` only.
+    :func:`_apply_thinking_mode_for_agent` picks the right one.
 
     Moved here from ``gateway.main`` so the two run paths share ONE
     implementation — ``/copilot/chat`` and ``/agent/run/stream`` having their own
@@ -133,13 +138,35 @@ def _apply_thinking_mode(opts: dict, think_mode: str) -> None:
         opts["thinking"] = {"type": "enabled", "budget_tokens": 16000}
 
 
+#: Think mode → the OpenAI ``reasoning_effort`` a native MAF agent sends.
+#: The same two values the Copilot path (Tier 1.5) sends for Thinking and Max.
+#: "auto" is absent on purpose: a native agent sends no ``reasoning_effort``
+#: then, which is how it behaved before this map existed.
+NATIVE_REASONING_EFFORT: dict[str, str] = {"thinking": "medium", "max": "high"}
+
+
+def _apply_thinking_mode_native(opts: dict, think_mode: str) -> bool:
+    """Set ONLY ``reasoning_effort`` on a native MAF agent's ``default_options``.
+
+    ``OpenAIChatCompletionClient`` forwards each key to
+    ``AsyncCompletions.create()``, and ``reasoning_effort`` is one of its
+    keywords. Returns True when a value was set.
+    """
+    effort = NATIVE_REASONING_EFFORT.get(think_mode)
+    if effort is None:
+        return False
+    opts["reasoning_effort"] = effort
+    return True
+
+
 def _apply_thinking_mode_for_agent(agent: Any, think_mode: str) -> bool:
     """Apply *think_mode* to whichever options dict *agent* actually uses.
 
     Copilot-SDK agents carry ``_default_options``; native MAF agents carry
     ``default_options``.  ``_apply_model_for_maf_agent`` already relies on that
     distinction — this mirrors it so a named agent honours the chat UI's thinking
-    toggle on either runtime.
+    toggle on either runtime. A native agent gets ``reasoning_effort`` and
+    nothing else (:func:`_apply_thinking_mode_native`).
 
     Returns True when the mode was applied.  ``"auto"`` (or empty) is a no-op, so
     the default path is untouched.
@@ -147,12 +174,13 @@ def _apply_thinking_mode_for_agent(agent: Any, think_mode: str) -> bool:
     if not think_mode or think_mode == "auto":
         return False
     opts = getattr(agent, "_default_options", None)
-    if not isinstance(opts, dict):
-        opts = getattr(agent, "default_options", None)
+    if isinstance(opts, dict):
+        _apply_thinking_mode(opts, think_mode)
+        return True
+    opts = getattr(agent, "default_options", None)
     if not isinstance(opts, dict):
         return False
-    _apply_thinking_mode(opts, think_mode)
-    return True
+    return _apply_thinking_mode_native(opts, think_mode)
 
 
 def _apply_model_for_maf_agent(

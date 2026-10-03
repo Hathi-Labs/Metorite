@@ -263,13 +263,19 @@ name = "agent-apis-config"
 version = "0.1.0"
 source = { editable = "apps/agents/agent-apis-config" }
 dependencies = [
-    { name = "agent-framework-github-copilot" },
+    { name = "acb-common" },
+    { name = "acb-llm" },
+    { name = "agent-framework-core" },
+    { name = "agent-framework-openai" },
     { name = "httpx" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-github-copilot", specifier = ">=2.0.0" },
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-llm", editable = "packages/acb_llm" },
+    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-openai", specifier = ">=1.14.4" },
     { name = "httpx", specifier = ">=0.27" },
 ]
 
