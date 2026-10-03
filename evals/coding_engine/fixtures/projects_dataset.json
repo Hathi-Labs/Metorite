@@ -1,0 +1,44 @@
+{
+  "_about": "WS-43v. A synthetic Projects dataset for the light eval of maf_coding_engine.md section 16. No real data. Each date is relative to the day of the run, so 'last month' and 'overdue' stay true. dataset.py turns it into rows.",
+  "organization_id": "0e43a5e1-0000-4000-8000-00000000e043",
+  "members": [
+    {"email": "priya.menon@eval.example", "name": "Priya Menon", "hr_read": false, "role": "acting member, a lead with no HR grant"},
+    {"email": "hari.rao@eval.example", "name": "Hari Rao", "hr_read": false, "role": "a second member of the same organization"},
+    {"email": "asha.kumar@eval.example", "name": "Asha Kumar", "hr_read": false},
+    {"email": "ben.thomas@eval.example", "name": "Ben Thomas", "hr_read": false},
+    {"email": "chen.wei@eval.example", "name": "Chen Wei", "hr_read": false},
+    {"email": "dev.patel@eval.example", "name": "Dev Patel", "hr_read": false},
+    {"email": "esha.iyer@eval.example", "name": "Esha Iyer", "hr_read": false},
+    {"email": "farid.khan@eval.example", "name": "Farid Khan", "hr_read": false}
+  ],
+  "spaces": [
+    {"name": "Engineering", "projects": ["Alpha", "Beta"]},
+    {"name": "Studio", "projects": ["Design"]}
+  ],
+  "tasks": [
+    {"number": 1, "project": "Alpha", "title": "Calibrate the extruder PID loop", "status": "in_progress", "assignees": ["asha.kumar@eval.example"], "created": {"days": -30}, "due": {"days": -5}, "estimate_mins": 240},
+    {"number": 2, "project": "Alpha", "title": "Write the bed-levelling probe driver", "status": "todo", "assignees": ["asha.kumar@eval.example"], "created": {"days": -21}, "due": {"days": 10}, "estimate_mins": 480},
+    {"number": 3, "project": "Alpha", "title": "Replace the hot-end thermistor table", "status": "todo", "assignees": ["asha.kumar@eval.example"], "created": {"days": -18}, "due": {"days": -2}, "estimate_mins": 120},
+    {"number": 4, "project": "Alpha", "title": "Profile the slicer memory use", "status": "in_progress", "assignees": ["asha.kumar@eval.example"], "created": {"days": -12}, "due": null, "estimate_mins": 180},
+    {"number": 5, "project": "Alpha", "title": "Draft the firmware release notes", "status": "todo", "assignees": ["ben.thomas@eval.example"], "created": {"days": -25}, "due": {"days": -9}, "estimate_mins": 60},
+    {"number": 6, "project": "Alpha", "title": "Review the stepper current limits", "status": "in_progress", "assignees": ["ben.thomas@eval.example"], "created": {"days": -9}, "due": {"days": 20}, "estimate_mins": 90},
+    {"number": 7, "project": "Alpha", "title": "Port the filament sensor to the new board", "status": "todo", "assignees": ["chen.wei@eval.example"], "created": {"days": -15}, "due": {"days": 6}, "estimate_mins": 300},
+    {"number": 8, "project": "Alpha", "title": "Fix the Z-axis homing race", "status": "in_progress", "assignees": ["chen.wei@eval.example"], "created": {"days": -20}, "due": {"days": -3}, "estimate_mins": 150},
+    {"number": 9, "project": "Alpha", "title": "Add a test rig for the cooling fan", "status": "todo", "assignees": ["chen.wei@eval.example"], "created": {"days": -6}, "due": null, "estimate_mins": 200},
+    {"number": 10, "project": "Alpha", "title": "Tune the input shaper", "status": "done", "assignees": ["asha.kumar@eval.example"], "completed": {"months_ago": 1, "day": 5}, "lead_days": 2, "estimate_mins": 120, "cycle_hours": 20},
+    {"number": 11, "project": "Alpha", "title": "Update the wiring diagram", "status": "done", "assignees": ["ben.thomas@eval.example"], "completed": {"months_ago": 1, "day": 8}, "lead_days": 5, "estimate_mins": 90, "cycle_hours": 30},
+    {"number": 12, "project": "Alpha", "title": "Clean up the G-code parser", "status": "done", "assignees": ["chen.wei@eval.example"], "completed": {"months_ago": 1, "day": 12}, "lead_days": 7, "estimate_mins": 240, "cycle_hours": 52},
+    {"number": 13, "project": "Alpha", "title": "Benchmark the motion planner", "status": "done", "assignees": ["asha.kumar@eval.example"], "completed": {"months_ago": 1, "day": 16}, "lead_days": 10, "estimate_mins": 300, "cycle_hours": 70},
+    {"number": 14, "project": "Alpha", "title": "Archive the old build scripts", "status": "done", "assignees": ["ben.thomas@eval.example"], "completed": {"months_ago": 1, "day": 20}, "lead_days": 13, "estimate_mins": 30, "cycle_hours": 9},
+    {"number": 15, "project": "Alpha", "title": "Document the heater fault codes", "status": "done", "assignees": ["chen.wei@eval.example"], "completed": {"months_ago": 1, "day": 24}, "lead_days": 21, "estimate_mins": 60, "cycle_hours": 41},
+    {"number": 16, "project": "Alpha", "title": "Migrate the CI to the new runners", "status": "done", "assignees": ["chen.wei@eval.example"], "completed": {"months_ago": 2, "day": 12}, "lead_days": 40, "estimate_mins": 600, "cycle_hours": 120},
+    {"number": 17, "project": "Beta", "title": "Design the enclosure latch", "status": "todo", "assignees": ["ben.thomas@eval.example"], "created": {"days": -14}, "due": {"days": -4}, "estimate_mins": 180},
+    {"number": 18, "project": "Beta", "title": "Order the aluminium extrusions", "status": "done", "assignees": ["asha.kumar@eval.example"], "completed": {"months_ago": 1, "day": 10}, "lead_days": 1, "estimate_mins": 30, "cycle_hours": 4},
+    {"number": 19, "project": "Design", "title": "Redo the onboarding illustrations", "status": "done", "assignees": ["dev.patel@eval.example"], "completed": {"months_ago": 1, "day": 6}, "lead_days": 6, "estimate_mins": 480, "cycle_hours": 30},
+    {"number": 20, "project": "Design", "title": "Refresh the icon set", "status": "done", "assignees": ["esha.iyer@eval.example"], "completed": {"months_ago": 1, "day": 12}, "lead_days": 9, "estimate_mins": 360, "cycle_hours": 50},
+    {"number": 21, "project": "Design", "title": "Prototype the dashboard layout", "status": "done", "assignees": ["farid.khan@eval.example"], "completed": {"months_ago": 1, "day": 16}, "lead_days": 4, "estimate_mins": 240, "cycle_hours": 20},
+    {"number": 22, "project": "Design", "title": "Write the colour guidelines", "status": "done", "assignees": ["dev.patel@eval.example"], "completed": {"months_ago": 1, "day": 18}, "lead_days": 11, "estimate_mins": 300, "cycle_hours": 61},
+    {"number": 23, "project": "Design", "title": "Audit the form spacing", "status": "in_progress", "assignees": ["esha.iyer@eval.example"], "created": {"days": -8}, "due": {"days": 5}, "estimate_mins": 120},
+    {"number": 24, "project": "Design", "title": "Mock up the mobile menu", "status": "done", "assignees": ["farid.khan@eval.example"], "completed": {"months_ago": 2, "day": 20}, "lead_days": 7, "estimate_mins": 200, "cycle_hours": 33}
+  ]
+}

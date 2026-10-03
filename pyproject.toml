@@ -57,6 +57,9 @@ dev = [
     # radon = reporting (cc + mi); xenon = CI enforcement (fails past threshold).
     "radon>=6.0",
     "xenon>=0.9",
+    # WS-43v: the WS43-E12 checker opens the agent's .xlsx with openpyxl, on
+    # the host (evals/coding_engine/checkers.py). The sandbox image pins 3.1.5.
+    "openpyxl>=3.1",
 ]
 
 [tool.uv.workspace]
