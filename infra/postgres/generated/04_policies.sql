@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 138
+-- Tables in this phase: 139
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -514,6 +514,13 @@ ALTER TABLE pm_import_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_import_runs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_import_runs_tenant_isolation ON pm_import_runs;
 CREATE POLICY pm_import_runs_tenant_isolation ON pm_import_runs
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE maf_agent_session ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maf_agent_session FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS maf_agent_session_tenant_isolation ON maf_agent_session;
+CREATE POLICY maf_agent_session_tenant_isolation ON maf_agent_session
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
