@@ -1021,8 +1021,9 @@ WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
 - WS-43b adds `not sandbox_docker` to the default `-m` filter in
   `pyproject.toml`. So the unit job of `pr-check.yml:287`, which runs all of
   `tests/unit/`, deselects them and never builds the image.
-- WS-43b adds `.github/workflows/sandbox-docker.yml`. It runs on a pull
-  request that touches a sandbox path, and once a night. It builds the image
+- WS-43b adds `.github/workflows/sandbox-docker.yml`. It runs on every pull
+  request, once a night and on demand. It has no path filter, so it reports
+  on every pull request and can be a required check. It builds the image
   once and runs `pytest -m sandbox_docker -rs`.
 - ⚠️ That workflow fails on any skip. A Docker test that skips proves nothing.
 
@@ -1272,12 +1273,17 @@ nothing builds it on the box.
   passwd entry gets `HOME=/`, and `--read-only` makes that dir unwritable.
 - The image is 601 294 266 bytes on disk, as the GitHub runner measured it,
   and about 205 MB compressed.
+- Advisory for WS-43c, with no fence yet: under `--read-only`, the image needs
+  the `/tmp` tmpfs. `HOME` is `/tmp`, and matplotlib fails with no writable
+  dir there. So the broker must never drop that tmpfs.
 
-**The fence.** The unit job of `pr-check.yml` runs 44 static tests. Each checker also
-runs on bad input, so a checker that goes blind fails. The 4 `sandbox_docker`
-tests run only in `sandbox-docker.yml`. WS43-F10's last clause, a broker that
-accepts a mutable tag, needs the broker. WS-43c adds that test to the same
-file.
+**The fence.** The unit job of `pr-check.yml` runs 58 static tests. Each
+checker also runs on bad input, so a checker that goes blind fails. The 4
+`sandbox_docker` tests run only in `sandbox-docker.yml`. The owner adds the
+check "Sandbox Docker tests" to the required checks of `main`.
+
+WS43-F10's last clause, a broker that accepts a mutable tag, needs the broker.
+WS-43c adds that test to the same file.
 
 **Two facts that the text above does not say.**
 

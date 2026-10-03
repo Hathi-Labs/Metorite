@@ -10,12 +10,16 @@ Two halves.
 ``apps/services/orchestrator/sandbox/requirements.txt``, and it fails when:
 
 - a ``FROM`` line or a ``COPY --from`` names an image with no digest,
-- a requirement has no exact pin or no hash, or pip stops enforcing hashes,
+- a requirement has no exact pin or no hash, or pip stops enforcing hashes or
+  starts to accept an sdist (``--only-binary=:all:``),
+- an ``ENV`` or ``ARG`` of any stage carries a credential name, in either form,
 - Node loses its exact 22.x version or its SHA-256, or the build stops checking
   the tarball against that SHA-256,
 - the final stage runs as root, or names ``copilot``,
-- the default run stops deselecting ``sandbox_docker``, or the workflow stops
-  failing on a skip.
+- the default run stops deselecting ``sandbox_docker``, or a pytest command of
+  the unit job passes its own ``-m`` (continuation lines included),
+- the workflow stops failing on a skip, or its pull_request trigger gets a
+  filter, so it stops reporting on every PR.
 
 Each checker also runs on synthetic bad input. So a checker that goes blind is
 a red test, and not a silent gap.
@@ -38,8 +42,10 @@ import shutil
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 _REPO = Path(__file__).resolve().parents[2]
 _ORCH = _REPO / "apps" / "services" / "orchestrator"
@@ -215,12 +221,44 @@ def _pip_problems(text: str) -> list[str]:
     for run in installs:
         if "--require-hashes" not in run.split():
             problems.append("a pip install has no --require-hashes")
+        if not re.search(r"--only-binary(=|\s+):all:(\s|$)", run):
+            problems.append("a pip install has no --only-binary=:all:, so an sdist can run code")
         if "requirements.txt" not in run:
             problems.append("a pip install does not read requirements.txt")
     copies = [args for word, args in _instructions(text) if word == "COPY"]
     if not any("sandbox/requirements.txt" in c.split() for c in copies):
         problems.append("no COPY of sandbox/requirements.txt")
     return problems
+
+
+def _declared(args: str) -> dict[str, str]:
+    """Return the names, with their values, that one ENV or ARG line sets.
+
+    Docker takes two forms. ``ENV A=1 B=2`` sets each ``name=value`` pair. The
+    legacy ``ENV NAME value`` sets one name, and the rest of the line is the
+    value. ``ARG NAME`` with no default sets the name to an empty value.
+    """
+    parts = args.split(maxsplit=1)
+    if not parts:
+        return {}
+    if "=" not in parts[0]:
+        value = parts[1].strip() if len(parts) > 1 else ""
+        return {parts[0]: value.strip("\"'")}
+    return {
+        match.group(1): match.group(2).strip("\"'")
+        for match in re.finditer(r"(?:^|\s)(\w+)=(\S*)", args)
+    }
+
+
+def _secret_env_problems(text: str) -> list[str]:
+    """No ENV or ARG of any stage may carry a credential name, in either form."""
+    return [
+        f"{word} {name} has a secret-like name"
+        for word, args in _instructions(text)
+        if word in ("ENV", "ARG")
+        for name in _declared(args)
+        if _SECRET_NAME_RE.search(name)
+    ]
 
 
 def _node_problems(text: str) -> list[str]:
@@ -230,12 +268,10 @@ def _node_problems(text: str) -> list[str]:
     args_declared: set[str] = set()
     for word, args in steps:
         if word in ("ENV", "ARG"):
-            for match in re.finditer(r"(\w+)=(\S+)", args):
-                env[match.group(1)] = match.group(2).strip("\"'")
-                if word == "ARG":
-                    args_declared.add(match.group(1))
+            names = _declared(args)
+            env.update(names)
             if word == "ARG":
-                args_declared.update(re.findall(r"^(\w+)$", args))
+                args_declared.update(names)
     problems: list[str] = []
     version = env.get("NODE_VERSION", "")
     if not re.fullmatch(r"22\.\d+\.\d+", version):
@@ -271,6 +307,41 @@ def _copilot_problems(text: str) -> list[str]:
     return [
         f"{word} names copilot" for word, args in _instructions(text) if "copilot" in args.lower()
     ]
+
+
+def _workflow(text: str) -> dict[str, Any]:
+    doc = yaml.safe_load(text)
+    assert isinstance(doc, dict), "the workflow is not a YAML mapping"
+    return doc
+
+
+def _triggers(doc: dict[str, Any]) -> dict[str, Any]:
+    """YAML 1.1 reads the bare key ``on`` as the boolean True."""
+    triggers = doc.get("on", doc.get(True))
+    assert isinstance(triggers, dict), f"the workflow has no `on:` mapping: {triggers!r}"
+    return triggers
+
+
+def _run_blocks(doc: dict[str, Any], job: str) -> list[str]:
+    """Return each ``run:`` block of one job, with its backslash continuations joined."""
+    steps = doc["jobs"][job].get("steps") or []
+    return [re.sub(r"\\[ \t]*\r?\n", " ", step["run"]) for step in steps if step.get("run")]
+
+
+def _marker_overrides(doc: dict[str, Any], job: str) -> list[str]:
+    """Return each pytest command of the job that passes its own ``-m``.
+
+    A ``-m`` on the command line replaces the addopts filter, so that command
+    would run the Docker tests again. ``python -m pytest`` carries a ``-m`` of
+    its own, so only the text after ``pytest`` counts.
+    """
+    commands = [
+        line.strip()
+        for block in _run_blocks(doc, job)
+        for line in block.splitlines()
+        if re.search(r"\bpytest\b", line)
+    ]
+    return [c for c in commands if re.search(r"(?:^|\s)-m", c.split("pytest", 1)[1])]
 
 
 # --------------------------------------------------------------------------
@@ -324,14 +395,12 @@ def test_the_image_holds_no_copilot_and_no_sdk() -> None:
     assert not found, f"requirements.txt pins an SDK: {found}"
 
 
-def test_the_final_stage_sets_no_secret_env() -> None:
-    names = [
-        match.group(1)
-        for word, args in _final_stage(_dockerfile())
-        if word in ("ENV", "ARG")
-        for match in re.finditer(r"(\w+)=", args)
-    ]
-    assert not [n for n in names if _SECRET_NAME_RE.search(n)], names
+def test_the_dockerfile_sets_no_secret_env() -> None:
+    assert _secret_env_problems(_dockerfile()) == []
+
+
+#: The key of the unit-test job ("Unit tests") in pr-check.yml.
+_UNIT_JOB = "test"
 
 
 def test_the_default_run_deselects_sandbox_docker() -> None:
@@ -342,27 +411,32 @@ def test_the_default_run_deselects_sandbox_docker() -> None:
     assert match, f"addopts has no -m filter: {pytest_config['addopts']!r}"
     assert re.search(r"\bnot sandbox_docker\b", match.group(1)), match.group(1)
     assert any(m.startswith("sandbox_docker:") for m in pytest_config["markers"])
-    # A `-m` on the command line replaces the addopts filter. So the unit job
-    # must not pass one, or it would run the Docker tests again.
-    pr_check = (_WORKFLOWS / "pr-check.yml").read_text(encoding="utf-8")
-    unit_runs = [ln for ln in pr_check.splitlines() if re.search(r"pytest\s+tests/unit", ln)]
-    assert unit_runs, "pr-check.yml no longer runs tests/unit"
-    # `python -m pytest` carries a -m of its own, so read only what follows pytest.
-    overrides = [ln for ln in unit_runs if re.search(r"\s-m\s", ln.split("pytest", 1)[1])]
-    assert not overrides, overrides
+    doc = _workflow((_WORKFLOWS / "pr-check.yml").read_text(encoding="utf-8"))
+    assert _UNIT_JOB in doc["jobs"], f"pr-check.yml has no `{_UNIT_JOB}` job"
+    blocks = _run_blocks(doc, _UNIT_JOB)
+    assert any(re.search(r"\bpytest\s+tests/unit/?(\s|$)", b) for b in blocks), (
+        "the unit job no longer runs tests/unit"
+    )
+    # EVERY pytest command of the job counts, the continuation lines included.
+    assert _marker_overrides(doc, _UNIT_JOB) == []
 
 
 def test_the_workflow_runs_sandbox_docker_and_fails_on_a_skip() -> None:
     """Done-when 5, second half: sandbox-docker.yml runs the marker and refuses a skip."""
-    text = (_WORKFLOWS / "sandbox-docker.yml").read_text(encoding="utf-8")
-    # The header comment quotes the command too. Read the steps only.
-    workflow = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-    assert re.search(r"pytest -m sandbox_docker -rs\b", workflow)
-    assert "--junitxml=" in workflow
-    assert "CODING_SANDBOX_IMAGE=" in workflow
-    assert re.search(r"if skipped:\s+sys\.exit\(", workflow), "the skip check is gone"
-    assert re.search(r"if tests == 0:\s+sys\.exit\(", workflow), "the no-test check is gone"
-    assert "schedule:" in workflow and "pull_request:" in workflow
+    doc = _workflow((_WORKFLOWS / "sandbox-docker.yml").read_text(encoding="utf-8"))
+    triggers = _triggers(doc)
+    assert {"pull_request", "schedule", "workflow_dispatch"} <= set(triggers), triggers
+    # No filter on the PR trigger: the check must report on EVERY pull request,
+    # or it cannot be a required check (a filtered workflow reports nothing).
+    filters = {"paths", "paths-ignore", "branches", "branches-ignore"}
+    assert not filters & set(triggers["pull_request"] or {}), triggers["pull_request"]
+    (job,) = doc["jobs"]
+    steps = "\n".join(_run_blocks(doc, job))
+    assert re.search(r"pytest -m sandbox_docker -rs\b", steps)
+    assert "--junitxml=" in steps
+    assert "CODING_SANDBOX_IMAGE=" in steps
+    assert re.search(r"if skipped:\s+sys\.exit\(", steps), "the skip check is gone"
+    assert re.search(r"if tests == 0:\s+sys\.exit\(", steps), "the no-test check is gone"
 
 
 # --------------------------------------------------------------------------
@@ -444,12 +518,90 @@ def test_the_hash_check_accepts_a_hashed_pin() -> None:
             "RUN pip install --require-hashes -r /r.txt\nRUN pip install pandas\n",
             id="second-unhashed-install",
         ),
+        pytest.param(
+            "COPY sandbox/requirements.txt /r.txt\nRUN pip install --require-hashes -r /r.txt\n",
+            id="no-only-binary",
+        ),
+        pytest.param(
+            "COPY sandbox/requirements.txt /r.txt\n"
+            "RUN pip install --require-hashes --only-binary=numpy -r /r.txt\n",
+            id="only-binary-for-one-package",
+        ),
         pytest.param("RUN pip install --require-hashes -r /requirements.txt\n", id="no-copy"),
         pytest.param("RUN true\n", id="no-install"),
     ],
 )
 def test_the_pip_check_refuses(text: str) -> None:
     assert _pip_problems(text)
+
+
+@pytest.mark.parametrize("flag", ["--only-binary=:all:", "--only-binary :all:"])
+def test_the_pip_check_accepts_a_hashed_wheel_only_install(flag: str) -> None:
+    text = (
+        "COPY sandbox/requirements.txt /opt/requirements.txt\n"
+        f"RUN pip install --require-hashes {flag} \\\n    -r /opt/requirements.txt\n"
+    )
+    assert _pip_problems(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("ENV GITHUB_TOKEN placeholder\n", id="legacy-form"),
+        pytest.param("ENV HOME=/tmp GITHUB_TOKEN=placeholder\n", id="pair-form"),
+        pytest.param("ARG LLM_API_KEY\n", id="arg-no-default"),
+        pytest.param("ARG DB_PASSWORD=placeholder\n", id="arg-default"),
+        pytest.param(
+            f"FROM {_BASE_NAME}@sha256:{_SHA_A} AS b\nENV SECRET placeholder\n"
+            f"FROM {_BASE_NAME}@sha256:{_SHA_A}\n",
+            id="builder-stage",
+        ),
+    ],
+)
+def test_the_secret_env_check_refuses(text: str) -> None:
+    assert _secret_env_problems(text)
+
+
+def test_the_secret_env_check_accepts_plain_names() -> None:
+    text = f"ENV HOME=/tmp NODE_SHA256={_SHA_A}\nENV LANG C.UTF-8\nARG NODE_VERSION\n"
+    assert _secret_env_problems(text) == []
+
+
+def _unit_job(*runs: str) -> dict[str, Any]:
+    steps = "".join(f"      - run: |\n{run}" for run in runs)
+    return _workflow(f"jobs:\n  test:\n    steps:\n{steps}")
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        pytest.param(
+            "          uv run python -m pytest tests/unit/test_x.py \\\n"
+            "            -m sandbox_docker -q -rs\n",
+            id="m-on-a-continuation-line",
+        ),
+        pytest.param(
+            "          uv run python -m pytest tests/unit/ -x -v -m 'not integration'\n",
+            id="m-on-the-same-line",
+        ),
+        pytest.param(
+            "          echo start\n          uv run pytest tests/unit -msandbox_docker\n",
+            id="m-glued-on-a-later-line",
+        ),
+    ],
+)
+def test_the_marker_override_check_refuses(run: str) -> None:
+    doc = _unit_job("          uv run python -m pytest tests/unit/ -x -v\n", run)
+    assert _marker_overrides(doc, "test")
+
+
+def test_the_marker_override_check_accepts_python_dash_m() -> None:
+    doc = _unit_job(
+        "          uv run python -m pytest tests/unit/ -x -v\n",
+        "          uv run python -m pytest tests/unit/test_a.py \\\n"
+        "            tests/unit/test_b.py -v -rs --maxfail=1\n",
+    )
+    assert _marker_overrides(doc, "test") == []
 
 
 _NODE_RUN = (
