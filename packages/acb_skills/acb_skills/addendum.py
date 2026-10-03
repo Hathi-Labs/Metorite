@@ -266,8 +266,13 @@ When your built-in tools can't do something, WRITE A PROGRAM for it — and keep
 - **code_task(task)** — Delegate a coding job to the platform's coding engine: it writes, edits, runs, and debugs scripts inside YOUR workspace in one bounded session. Describe what to build (inputs, expected output, and the existing script's name if changing one). It follows the script contract: reusable scripts live under ``agent-data/scripts/``, the catalog lives in ``agent-data/SCRIPTS.md``, and existing scripts are edited in place rather than duplicated. Scripts persist durably — they survive restarts and redeploys, so a capability you build once stays yours.
 - **run_script(path, args?)** — Execute a script that already exists (e.g. ``agent-data/scripts/report.py``, ``.py`` or ``.sh``) and get its output. No reasoning step — much faster and cheaper than code_task. Check ``recall_notes("SCRIPTS.md")`` for your script catalog.
 This also covers your BUILT-IN skills: if one of your repo-baked skill scripts (under ``skills/``) misbehaves, call ``code_task`` describing the problem — it fixes the source in place, and the change is committed locally and queued for HUMAN APPROVAL in the inbox (live once approved). Workspace scripts under ``agent-data/`` need no approval.
-- **list_integrations()** — See which platform integrations (Zoho CRM, Gmail, SerpAPI, …) are configured for you and the env-var NAMES your scripts can read for each (e.g. ``ZOHO_CLIENT_ID`` via ``os.getenv``). Call this BEFORE writing a script against an external service: scripts receive exactly your declared integrations' credentials at run time — nothing else — so never hard-code keys or ask the user to paste one. If an integration you need is listed as unavailable, tell the user what needs configuring.
 Workflow: need a new capability → ``code_task``; repeat a known job → ``run_script``; small tweak to an existing script → ``code_task`` naming the script. Files a script writes under ``outputs/`` are persisted and appear in the Files panel automatically.
+"""),
+    # Its own section since D85 (fix round 1 of PR #598): it sat inside the
+    # shell-gated coding section, so an agent without the shell tools lost the
+    # prose of a tool it still holds.
+    Section("core", ("list_integrations",), """### Integrations
+- **list_integrations()** — See which platform integrations (Zoho CRM, Gmail, SerpAPI, …) are configured for you and the env-var NAMES your scripts can read for each (e.g. ``ZOHO_CLIENT_ID`` via ``os.getenv``). Call this BEFORE writing a script against an external service: scripts receive exactly your declared integrations' credentials at run time — nothing else — so never hard-code keys or ask the user to paste one. If an integration you need is listed as unavailable, tell the user what needs configuring.
 """),
     Section("core", ("save_note", "recall_notes"), """### Working memory (repo-scoped notes)
 - **save_note(path, fact)** — Append a dated bullet to a markdown notes file under ``agent-data/``.  Your canonical working memory is ``agent-data/NOTES.md`` — read it at session start with ``recall_notes("NOTES.md")``.
@@ -382,7 +387,9 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "(agent-data/scripts/*.py|.sh) directly, cheap; "
         "code_task(task) — bounded coding session that writes/edits/"
         "tests scripts in your workspace (check agent-data/SCRIPTS.md "
-        "first; prefer run_script for re-runs); "
+        "first; prefer run_script for re-runs)"
+    )),
+    Section("core", ("list_integrations",), (
         "list_integrations() — which platform integrations your "
         "scripts can use (env var names, values injected at run time)"
     )),

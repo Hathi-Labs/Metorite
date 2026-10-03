@@ -44,7 +44,11 @@ from typing import Any
 #
 # Keys the executor binds: session_id, agent_name, run_id, workspace_root,
 # instance, member, integrations, integration_warnings, gateway_url,
-# gateway_token, and permission_check_root for a sandboxed Copilot session.
+# gateway_token, permission_check_root for a sandboxed Copilot session, and
+# the two D85 flags: shell_tools_withheld (the injected shell tools are
+# withheld, a cover may lift it) and host_shell_refused (the Copilot CLI's
+# own shell on the host is refused, read by
+# permission_policy.guard_shared_agent_shell).
 #
 # A frame with no run context reads an EMPTY mapping. Every reader then fails
 # closed: it writes nothing and emits to no session. No reader may fall back

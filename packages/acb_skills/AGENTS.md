@@ -43,7 +43,14 @@ clone cache.
    `addendum.rendered_parts` both ask it, so with `DECIDE_ENABLED` off the
    tool is not injected and no section names it.
    Fence: tests/unit/test_decide_tool.py.
-5c. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
+5c. permission_policy.py -- the B6 risk-aware handler, plus the D85 guard
+   `guard_shared_agent_shell`. The guard refuses a shell request when the
+   run's artifact context does not say `host_shell_refused=False`, in every
+   `AGENT_PERMISSION_MODE`. The orchestrator decides the flag, because this
+   package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
+   target is `file_name`, and a `read` request is a read, contained in the
+   workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
+5d. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
    Every host reader and writer of a dir that a sandbox container mounts opens
    its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux
    5.6 or later, else a walk that opens each part with `O_NOFOLLOW`. A link at
@@ -51,7 +58,7 @@ clone cache.
    `code_tools`, the rehydrate of `acb_memory` and the gateway's workspace
    routes. Do not open a mounted dir any other way. Fence:
    tests/unit/test_sandbox_safe_open.py (WS43-F14).
-5d. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (WS-43d, D86,
+5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (WS-43d, D86,
    spec §7.4 and §16.3). `run_command`, MAF's eight file tools over
    `TenantFileStore`, and a `SkillsProvider` over `agent-data/skills/`. Only
    `attach_for_run` hands them out, to ONE run, as a per-run view, and only

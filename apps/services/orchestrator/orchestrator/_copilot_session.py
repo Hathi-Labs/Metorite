@@ -23,28 +23,91 @@ from acb_llm.attribution import attributed_copilot_provider
 _log = get_logger("orchestrator.copilot_session")
 
 
-def _copilot_permission_handler() -> Any:
+def _refuse_every_request(request: Any, invocation: Any) -> Any:
+    """The handler when the permission policy cannot load: refuse it all (D85).
+
+    The old fallback was a bare ``approve_all``, which waived the D85 shell
+    guard together with B6. A run that cannot load its policy has no safe
+    default, so it may do nothing that needs a permission.
+    """
+    del request, invocation
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: the permission policy did not load, so this "
+            "run may do nothing that needs a permission."
+        ),
+    )
+
+
+def _copilot_permission_handler(existing: Any = None) -> Any:
     """Return the Copilot-SDK permission handler for a run (B6 / HH-6).
 
-    ``AGENT_PERMISSION_MODE=approve_all`` → the SDK's blanket ``approve_all``
-    (escape hatch / old behaviour). Otherwise → our risk-aware handler, which
-    blocks dangerous shell + out-of-workspace writes, defers destructive tools to
-    their own request_confirmation gate, and logs every privileged op. Falls back
-    to ``approve_all`` if the policy module can't be imported (never break runs).
+    With no *existing* handler: ``AGENT_PERMISSION_MODE=approve_all`` → the
+    SDK's blanket ``approve_all`` (escape hatch / old behaviour). Otherwise →
+    our risk-aware handler, which blocks dangerous shell + out-of-workspace
+    writes, defers destructive tools to their own request_confirmation gate,
+    and logs every privileged op.
+
+    *existing* is a handler that the agent's own factory set (its
+    ``on_permission_request``). It stays the agent's handler, and B6 does not
+    replace it (H-211 owns that).
+
+    D85: whichever handler it picks, it returns it inside
+    ``permission_policy.guard_shared_agent_shell``. So a shared agent's
+    Copilot CLI shell is refused in every mode, and whatever handler its
+    factory set, until the sandbox covers it. If the policy module cannot
+    load, it returns :func:`_refuse_every_request`, never a bare
+    ``approve_all``. Call :func:`_install_copilot_permission_handler`, which
+    is the one way a Copilot agent gets its handler.
     """
     from copilot import PermissionHandler as _PH  # noqa: PLC0415
 
+    try:
+        from acb_skills.permission_policy import (  # noqa: PLC0415
+            guard_shared_agent_shell,
+            risk_aware_permission_handler,
+        )
+    except Exception:  # noqa: BLE001
+        _log.error("copilot.permission_policy_unavailable")
+        return _refuse_every_request
+    if existing is not None:
+        return guard_shared_agent_shell(existing)
     if os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() == (
         "approve_all"
     ):
-        return _PH.approve_all
+        return guard_shared_agent_shell(_PH.approve_all)
+    return guard_shared_agent_shell(risk_aware_permission_handler)
+
+
+def _install_copilot_permission_handler(agent: Any) -> None:
+    """Give a Copilot agent its permission handler, always with the D85 guard.
+
+    THE one way every Copilot path sets ``_permission_handler``: the run, the
+    sub-agent, the Tier 1.5 and Tier 2 runs, the batch helper and
+    ``code_session``. It ALWAYS wraps what is there. A slot that is empty
+    gets the B6 handler. A slot that the agent's factory filled (any
+    ``on_permission_request``, ``approve_all`` included) keeps that handler,
+    inside the guard. An agent with no ``_permission_handler`` slot is not a
+    Copilot agent, and it is left alone. Calling it twice is a no-op, because
+    the guard does not wrap itself. If the factory raises, the slot gets
+    :func:`_refuse_every_request`, never the old unguarded handler.
+    """
+    if not hasattr(agent, "_permission_handler"):
+        return
     try:
-        from acb_skills.permission_policy import (  # noqa: PLC0415
-            risk_aware_permission_handler,
+        agent._permission_handler = _copilot_permission_handler(
+            agent._permission_handler,
         )
-        return risk_aware_permission_handler
-    except Exception:  # noqa: BLE001
-        return _PH.approve_all
+    except Exception as exc:  # fail closed: never leave the old handler
+        _log.error(
+            "copilot.permission_handler_install_failed",
+            agent=getattr(agent, "name", type(agent).__name__),
+            error=str(exc)[:200],
+        )
+        # The factory's own handler must not stay unguarded. A slot that
+        # cannot take even this raises here, and the run fails closed.
+        agent._permission_handler = _refuse_every_request
 
 
 def _copilot_infinite_session_config() -> dict[str, Any] | None:
