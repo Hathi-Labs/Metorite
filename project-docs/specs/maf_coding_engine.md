@@ -1402,6 +1402,11 @@ These facts change or add to the text above:
   background task runs the kill sweep, and it holds the dir lock until the
   sweep ends. A survivor restarts the container.
 - The reaper sleeps at least 1 s, so a setting of 0 cannot spin.
+- A dropped container never takes the dir lock from a live one on the same
+  dir, so a new thread on that dir shares the live lock.
+- Outside the `sandbox_docker` marker, `tests/conftest.py` refuses the real
+  Docker binary. So a unit test that runs the gateway lifespan cannot sweep
+  the containers of a dev box.
 - The quota also bounds the count of entries, with
   `sandbox_workspace_max_files` (default 100000).
 - The broker refuses uid 0, and it refuses gid 0 too.
