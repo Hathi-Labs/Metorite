@@ -4047,8 +4047,8 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 
 ##### EM-T8f-3 — the views of each mailbox and the chat picker
 
-**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-views`, with review
-fix round 1. No migration and no backend change.
+**Status.** ✅ MERGED #602 (2026-10-03), with review fix round 1. No migration and no backend
+change.
 
 **As built (2026-10-03).**
 
