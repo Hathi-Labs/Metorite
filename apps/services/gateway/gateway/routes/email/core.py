@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from acb_common import get_logger
 from fastapi import APIRouter, HTTPException
@@ -833,9 +834,21 @@ def email_memory_scope(user_email: str, account_id: str | None) -> str:
     NOT pushed into the agent's memory ContextVar — the email-assistant reuses
     that same var as its ``X-User-Email`` gateway-auth identity, so a scoped
     value there would break the agent's tool calls.
+
+    The account id goes into the key in canonical form, ``str(UUID(id))``,
+    when it parses as a UUID (WS-17 EM-T8f-1, review round 2). Some writers
+    take the id from the REQUEST. Postgres finds the row for an id in
+    capitals or with no hyphens, and the key then differed from the key of
+    the database id, so the disconnect purge missed it. An id that is not a
+    UUID stays as it is. The canonical form of a canonical id is the same id,
+    so a key that a writer built from a database id does not change.
     """
     uid = (user_email or "").strip().lower()
-    aid = (account_id or "").strip()
+    aid = str(account_id or "").strip()
+    if aid:
+        # Not a UUID: the key keeps the id as it is.
+        with suppress(ValueError):
+            aid = str(UUID(aid))
     return f"{uid}#acct:{aid}" if (uid and aid) else uid
 
 

@@ -107,6 +107,14 @@ export interface EmailAccount {
   importCount?: number | null;
   /** The provider's count of the range, or null when it gave none (EM-T6b). */
   importEstimate?: number | null;
+  /**
+   * When the member connected the mailbox, as ISO text with six digits of
+   * microseconds (EM-T8f-1). A disconnect of the default makes the oldest
+   * mailbox that is left the default, and `nextDefaultAfter` in
+   * `lib/mailboxSettings.ts` reads this to name it (EM-T8f-2). Null or absent
+   * sorts last.
+   */
+  createdAt?: string | null;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────
@@ -443,6 +451,18 @@ export interface UnsubscribeResult {
 }
 
 // ── Assistant rules ─────────────────────────────────────────────────────────
+
+/**
+ * The answer of `POST /email/rules/copy` (EM-T8f-1). `copied` holds the names
+ * in the target. `renamed` holds each rule whose name the target held.
+ * `leftOut` holds each rule the copy did not take, with the reason the
+ * gateway gives: `disabled`, `forward_to_own_address` or `reply_rule_exists`.
+ */
+export interface RuleCopyResult {
+  copied: string[];
+  renamed: Array<{ name: string; copiedAs: string }>;
+  leftOut: Array<{ name: string; reason: string }>;
+}
 
 export type RuleActionType =
   | "ARCHIVE"

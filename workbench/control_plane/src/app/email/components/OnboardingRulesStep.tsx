@@ -29,18 +29,33 @@
  *   `onboarding_done: true`. The page writes the returned account into the
  *   store, so the setup never shows again.
  * - It names no model and offers no model choice (EM-T5b).
+ * - With two or more mailboxes it names its own mailbox, and it offers
+ *   "Copy the rules of <label>" for each other mailbox, beside the presets
+ *   (EM-T8f-2, D-EM-24). `ruleCopier` guards the copy: one copy at a time,
+ *   and one copy of each mailbox. A second copy would add each rule again as
+ *   "(copy)". The answer shows the copied, renamed and left-out rules.
  */
 
 import { useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import {
+  copyRules,
   getAssistantSettings,
   installPresetRules,
   listRules,
   saveAssistantSettings,
   updateEmailAccount,
 } from "../lib/api";
+import {
+  COPY_STEP,
+  ruleCopier,
+  rulesStepCopyChoices,
+  rulesStepMailbox,
+  runRuleCopy,
+  type CopyChoice,
+  type CopyReport,
+} from "../lib/mailboxSettings";
 import {
   RULES_STEP_COPY as COPY,
   hasEnabledReplyRule,
@@ -54,7 +69,9 @@ import {
   type RulesStepApi,
   type RulesStepPhase,
 } from "../lib/onboarding";
+import { mailboxLabel } from "../lib/mailbox";
 import type { AutomationFeature, AutomationRule, EmailAccount } from "../lib/types";
+import { MailboxChip } from "./MailboxChip";
 import { Toggle } from "./automation/ui";
 
 /** The live calls. `finishOnboarding` is the PATCH of item 11. */
@@ -64,7 +81,10 @@ const RULES_API: RulesStepApi = {
   getAssistantSettings,
   saveAssistantSettings,
   finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),
+  copyRules,
 };
+
+type StepMailbox = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel" | "colorSlot">;
 
 export interface RulesStepViewProps {
   phase: RulesStepPhase;
@@ -72,7 +92,7 @@ export interface RulesStepViewProps {
   installed: number;
   /** True after "Use the recommended rules" added none. */
   installedNone: boolean;
-  busy: "install" | "finish" | null;
+  busy: "install" | "finish" | "copy" | null;
   error: string | null;
   /** True when an enabled reply rule exists, so drafting can act. */
   replyRule: boolean;
@@ -87,6 +107,16 @@ export interface RulesStepViewProps {
   onDraftChange: (on: boolean) => void;
   onInsights: () => void;
   onDone: () => void;
+  /** The own mailbox of the step, when the member has two or more. The step
+   *  names it (EM-T8f-2). Null or absent: one mailbox, no change. */
+  mailbox?: StepMailbox | null;
+  /** "Copy the rules of <label>", one for each other mailbox (D-EM-24). */
+  copyFrom?: ReadonlyArray<CopyChoice>;
+  /** The mailbox whose rules the copy in flight reads. */
+  copyingFrom?: string | null;
+  /** The answer of the last copy, in plain words. */
+  copyReport?: CopyReport | null;
+  onCopy?: (fromAccountId: string) => void;
 }
 
 export function RulesStepView(p: RulesStepViewProps) {
@@ -106,7 +136,16 @@ export function RulesStepView(p: RulesStepViewProps) {
         <Icon name={ready ? "CheckCircle2" : "Sparkles"} size={14} aria-hidden />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium text-foreground">{ready ? COPY.readyTitle : COPY.title}</p>
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-medium text-foreground">
+          <span>{ready ? COPY.readyTitle : COPY.title}</span>
+          {p.mailbox ? (
+            <>
+              <span className="font-normal text-muted-foreground">for</span>
+              <MailboxChip account={p.mailbox} />
+              <span className="truncate text-[11px] font-normal text-muted-foreground">{p.mailbox.emailAddress}</span>
+            </>
+          ) : null}
+        </p>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{ready ? readyBody : COPY.body}</p>
 
         {p.phase === "choose" && (
@@ -122,6 +161,19 @@ export function RulesStepView(p: RulesStepViewProps) {
               >
                 {COPY.recommended}
               </Button>
+              {(p.copyFrom ?? []).map((c) => (
+                <Button
+                  key={c.id}
+                  variant="secondary"
+                  size="sm"
+                  icon="Copy"
+                  loading={p.busy === "copy" && p.copyingFrom === c.id}
+                  disabled={locked}
+                  onClick={() => p.onCopy?.(c.id)}
+                >
+                  {COPY_STEP.copyFrom(c.label)}
+                </Button>
+              ))}
               <Button variant="secondary" size="sm" disabled={locked} onClick={p.onChooseOwn}>
                 {COPY.chooseOwn}
               </Button>
@@ -174,6 +226,19 @@ export function RulesStepView(p: RulesStepViewProps) {
           </>
         )}
 
+        {p.copyReport && (
+          <div role="status" className="mt-1.5 text-[11px] text-muted-foreground">
+            <p className="text-foreground">{p.copyReport.summary}</p>
+            {p.copyReport.lines.length > 0 && (
+              <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                {p.copyReport.lines.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {p.error && (
           <p role="alert" className="mt-1.5 text-[11px] text-destructive">
             {p.error}
@@ -197,12 +262,16 @@ export function OnboardingRulesStep({
   account,
   onOpenAutomation,
   onFinished,
+  mailboxes = [],
 }: {
   account: Pick<EmailAccount, "id" | "importSince" | "importPhase" | "importCount">;
   /** Opens an automation view. `pastFrom` opens Process past emails on that date. */
   onOpenAutomation: (feature: AutomationFeature, pastFrom?: string | null) => void;
   /** Called with the account the PATCH returned. The page writes it to the store. */
   onFinished: (updated: EmailAccount) => void;
+  /** Each mailbox of the member, this one too. The step names its own
+   *  mailbox and offers a copy of the rules of each other one (EM-T8f-2). */
+  mailboxes?: ReadonlyArray<EmailAccount>;
 }) {
   // null: the read of the rules is in flight.
   const [rules, setRules] = useState<ReadonlyArray<Pick<AutomationRule, "enabled" | "name" | "system_type">> | null>(
@@ -210,7 +279,12 @@ export function OnboardingRulesStep({
   );
   const [installed, setInstalled] = useState(0);
   const [installTried, setInstallTried] = useState(false);
-  const [busy, setBusy] = useState<"install" | "finish" | null>(null);
+  const [busy, setBusy] = useState<"install" | "finish" | "copy" | null>(null);
+  // The guard of the copy: one copy at a time, and one copy of each mailbox.
+  // The check is synchronous, so a double click starts one copy (EM-T8f-2).
+  const [copier] = useState(() => ruleCopier(RULES_API.copyRules));
+  const [copyingFrom, setCopyingFrom] = useState<string | null>(null);
+  const [copyReport, setCopyReport] = useState<CopyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The stored value, read once the step is ready. Disabled until then.
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
@@ -275,6 +349,27 @@ export function OnboardingRulesStep({
     }
   };
 
+  // "Copy the rules of <label>" (EM-T8f-2, D-EM-24). `copier.start` refuses
+  // while a copy runs and after a copy of that mailbox, so a second copy can
+  // never add each rule again as "(copy)".
+  const copyFrom = async (fromId: string) => {
+    const source = mailboxes.find((m) => m.id === fromId);
+    const pending = source ? copier.start(fromId, account.id) : null;
+    if (!source || !pending) return;
+    setBusy("copy");
+    setCopyingFrom(fromId);
+    setError(null);
+    // The answer, then a re-read that moves the step on, with the copied
+    // names when the re-read fails. `runRuleCopy` decides (review F4).
+    await runRuleCopy(pending, mailboxLabel(source), () => RULES_API.listRules(account.id), {
+      report: setCopyReport,
+      failed: () => setError(COPY_STEP.failed),
+      rules: setRules,
+    });
+    setCopyingFrom(null);
+    setBusy(null);
+  };
+
   const changeDraft = async (on: boolean) => {
     setDraftBusy(true);
     setError(null);
@@ -309,6 +404,11 @@ export function OnboardingRulesStep({
       onDraftChange={(on) => void changeDraft(on)}
       onInsights={() => onOpenAutomation("analytics")}
       onDone={() => void finish()}
+      mailbox={rulesStepMailbox(mailboxes, account.id)}
+      copyFrom={rulesStepCopyChoices(mailboxes, account.id).filter((c) => !copier.copied(c.id, account.id))}
+      copyingFrom={copyingFrom}
+      copyReport={copyReport}
+      onCopy={(fromId) => void copyFrom(fromId)}
     />
   );
 }

@@ -864,7 +864,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/email/components/automation/ai-settings/RulesTab.tsx": 3,
     "app/email/components/automation/ai-settings/SettingsTab.tsx": 3,
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
-    "app/notes/components/FollowupEmailModal.tsx": 1,
     "app/notes/components/MeetingPrep.tsx": 1,
     "app/notes/components/NotesSettingsModal.tsx": 1,
     "app/notes/meeting/[id]/page.tsx": 1,

@@ -552,12 +552,26 @@ export function adminConsentMailto(link: string): string {
 
 // ── Disconnect ─────────────────────────────────────────────────────────────
 
-export function disconnectCopy(address: string): { title: string; body: string; note: string; confirm: string } {
+/**
+ * The words of the disconnect dialog.
+ *
+ * `name` names the mailbox as "label · address" (`disconnectNames` in
+ * `lib/mailboxSettings.ts`, EM-T8f-2). `nextDefault` names the mailbox that
+ * becomes the default, when the mailbox that goes is the default. The dialog
+ * names it before the removal (§11.6 case 18).
+ */
+export function disconnectCopy(
+  name: string,
+  nextDefault: string | null = null,
+): { title: string; body: string; note: string; confirm: string } {
+  const body =
+    `Metorite stops syncing ${name} and deletes its sign-in tokens. ` +
+    "The synced mail, rules and AI settings of this mailbox are deleted from Metorite.";
   return {
     title: "Disconnect this mailbox?",
-    body:
-      `Metorite stops syncing ${address} and deletes its sign-in tokens. ` +
-      "The synced mail, rules and AI settings of this mailbox are deleted from Metorite.",
+    body: nextDefault
+      ? `${body}\n\nThis is your default mailbox. After the disconnect, ${nextDefault} becomes the default.`
+      : body,
     note: "Your mail stays in your Microsoft or Google mailbox. To use it here again, connect it again.",
     confirm: "Disconnect",
   };

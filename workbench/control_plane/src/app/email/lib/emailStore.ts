@@ -11,6 +11,7 @@ import {
 import { QUICK_ACTIONS, MOCK_ACCOUNTS, MOCK_EMAILS, MOCK_FOLDERS } from "./mockData";
 import { splitQuotedText } from "./quoting";
 import { disconnectFailureText, type DisconnectOutcome } from "./connect";
+import { nextDefaultAfter } from "./mailboxSettings";
 
 /**
  * Dev-only demo mode. With NEXT_PUBLIC_EMAIL_DEMO=1 (set in .env.local) the
@@ -1833,15 +1834,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   deleteAccount: async (id) => {
     try {
-      const removed = get().accounts.find((a) => a.id === id);
       await api.deleteEmailAccount(id);
+      // The gateway makes the oldest mailbox that is left the default
+      // (`ORDER BY created_at, id`). Mirror it, so the star does not vanish
+      // until the next read. `nextDefaultAfter` is the one rule, and the
+      // dialog named the same mailbox. ⚠️ Never the first row: a default set
+      // in this session moves the flag and not the row (EM-T8f-2).
+      const next = nextDefaultAfter(get().accounts, id);
       let accounts = get().accounts.filter((a) => a.id !== id);
-      // If we deleted the default mailbox, the backend re-elects the earliest
-      // remaining one — mirror that locally so the Star doesn't vanish until the
-      // next refetch (accounts come ordered is_default DESC, created_at).
-      if (removed?.isDefault && accounts.length > 0 && !accounts.some((a) => a.isDefault)) {
-        accounts = accounts.map((a, i) => (i === 0 ? { ...a, isDefault: true } : a));
-      }
+      if (next) accounts = accounts.map((a) => ({ ...a, isDefault: a.id === next.id }));
       // The sums lose the mailbox that went at once. They show no count until
       // a new round lands (EM-T8f-3 review F4).
       set({ accounts, allFolderCounts: null });

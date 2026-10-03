@@ -4,17 +4,75 @@
  * FollowupEmailModal — HITL compose preview for a meeting recap email.
  * Fetches an LLM draft + the user's email accounts, lets them edit everything,
  * and sends via the existing /email/send (spec §3.9). Nothing sends on its own.
+ *
+ * The From picker starts on the default mailbox and names each mailbox as
+ * "label · address" (WS-17 EM-T8f-2, §11.6 case 23). `notesFromOptions` and
+ * `notesFromStart` in `app/email/lib/mailboxSettings.ts` decide both. The
+ * picker is the house `SelectButton`, not a native `<select>`.
  */
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { SelectButton } from "@/components/ui/SelectButton";
 import { useEffect, useState } from "react";
+import { notesFromOptions, notesFromStart } from "@/app/email/lib/mailboxSettings";
 import {
   draftFollowupEmail,
   listEmailAccounts,
   sendEmail,
 } from "../lib/api";
 import type { EmailAccount } from "../lib/types";
+
+/**
+ * The From field of the follow-up. It holds no hook, so a test can call it
+ * and pick a mailbox through the `onChange` of its `SelectButton` (EM-T8f-2
+ * review F2). The modal passes `setAccountId` as `onPick`.
+ */
+export function FollowupFromField({
+  accounts,
+  accountId,
+  onPick,
+}: {
+  accounts: ReadonlyArray<EmailAccount>;
+  accountId: string;
+  onPick: (accountId: string) => void;
+}) {
+  return (
+    <div className="block">
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        From
+      </span>
+      <div className="mt-1">
+        <SelectButton
+          label="Send from"
+          value={accountId}
+          options={notesFromOptions(accounts)}
+          widthClass="w-full"
+          onChange={onPick}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The body that Send posts to `/email/send`, or the reason it cannot send.
+ *  `account_id` is the mailbox in the From field. */
+export function followupSendRequest(
+  accountId: string,
+  to: string,
+  subject: string,
+  body: string,
+):
+  | { error: string }
+  | { payload: { account_id: string; to: string[]; subject: string; body_text: string } } {
+  const recipients = to
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!accountId) return { error: "Choose an account to send from." };
+  if (recipients.length === 0) return { error: "Add at least one recipient." };
+  return { payload: { account_id: accountId, to: recipients, subject, body_text: body } };
+}
 
 export default function FollowupEmailModal({
   meetingId,
@@ -45,7 +103,7 @@ export default function FollowupEmailModal({
         setSubject(draft.subject);
         setBody(draft.body_text);
         setAccounts(accts);
-        setAccountId(accts.find((a) => a.is_default)?.id ?? accts[0]?.id ?? "");
+        setAccountId(notesFromStart(accts));
       } catch (e) {
         setError(String(e instanceof Error ? e.message : e));
       } finally {
@@ -55,23 +113,15 @@ export default function FollowupEmailModal({
   }, [meetingId]);
 
   async function send() {
-    const recipients = to
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!accountId) return setError("Choose an account to send from.");
-    if (recipients.length === 0)
-      return setError("Add at least one recipient.");
+    // The mailbox that the member picked goes out as `account_id`
+    // (`followupSendRequest`, EM-T8f-2 review F2).
+    const request = followupSendRequest(accountId, to, subject, body);
+    if ("error" in request) return setError(request.error);
     setSending(true);
     setError(null);
     try {
-      await sendEmail({
-        account_id: accountId,
-        to: recipients,
-        subject,
-        body_text: body,
-      });
-      onSent(`Follow-up sent to ${recipients.length} recipient(s)`);
+      await sendEmail(request.payload);
+      onSent(`Follow-up sent to ${request.payload.to.length} recipient(s)`);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
       setSending(false);
@@ -116,22 +166,7 @@ export default function FollowupEmailModal({
                 No email account connected. Add one in the Email app to send.
               </div>
             ) : (
-              <label className="block">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  From
-                </span>
-                <select
-                  value={accountId}
-                  onChange={(e) => setAccountId(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                >
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.label || a.email_address}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <FollowupFromField accounts={accounts} accountId={accountId} onPick={setAccountId} />
             )}
             <label className="block">
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
