@@ -19,6 +19,8 @@ import re
 from functools import cache
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 SEAM = "apps/services/orchestrator/orchestrator/sandbox_broker.py"
 
@@ -243,3 +245,37 @@ def test_the_broker_starts_no_process_but_docker() -> None:
         n for n in docker_cli.body if isinstance(n, ast.FunctionDef) and n.name == "_binary"
     )
     assert 'which("docker")' in ast.unparse(binary).replace("'", '"')
+
+
+# ── review round 3: the unit suite never reaches the daemon ─────────────────
+
+
+def test_the_unit_suite_never_reaches_the_docker_daemon() -> None:
+    """tests/conftest.py refuses the real binary outside the sandbox_docker marker.
+
+    Every test that runs the real gateway lifespan starts the startup sweep.
+    Without the refusal, that sweep removed every labelled container on a dev
+    box's daemon, other sessions' included.
+    """
+    from orchestrator import sandbox_broker
+
+    with pytest.raises(sandbox_broker.SandboxUnavailable, match="Unit tests never reach"):
+        sandbox_broker.DockerCLI()._binary()
+
+
+async def test_the_real_startup_sweep_spawns_no_process_in_a_unit_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from orchestrator import sandbox_broker
+
+    spawned: list[tuple[object, ...]] = []
+
+    async def record(*args: object, **kwargs: object) -> None:
+        spawned.append(args)
+        raise AssertionError("a unit test started a process")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record)
+    await sandbox_broker.SandboxBroker().startup()  # the lifespan's sweep
+    assert spawned == [], "the startup sweep reached the docker daemon"
