@@ -1397,6 +1397,10 @@ These facts change or add to the text above:
   a container by its id or by that label, and never by its name.
 - A cancel at any step of `acquire()` frees the slot and the lease. A
   cancelled `docker run` kills the CLI, and the broker removes that start.
+- A cancel or an error once a command started kills only the CLI. So a
+  background task runs the kill sweep, and it holds the dir lock until the
+  sweep ends. A survivor restarts the container.
+- The reaper sleeps at least 1 s, so a setting of 0 cannot spin.
 - The quota also bounds the count of entries, with
   `sandbox_workspace_max_files` (default 100000).
 - The broker refuses uid 0, and it refuses gid 0 too.
