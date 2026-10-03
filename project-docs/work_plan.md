@@ -480,7 +480,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 |---|---|---|---|---|
 | WS-1 | **Action Broker truth + completion** (BO-1) | 🟢 | `FOUNDATION_BUILDOUT_CHECKLIST.md` §BO-1 · board record 2026-08-09 | Broker loop LIVE and writing; handlers register at SIX sites; `crm.zoho_*` handlers live and the Zoho sync loop is **running** (§6 WS-26 (a)). **BO-1a + BO-1b BUILT 2026-08-11** (branch `ws-1-broker-routing`, one PR): all six gated ClickUp action names have handlers behind an AST-derived fence, and a broker-QUEUED push writes `sync_state='awaiting_approval'` with no `provider_task_id` instead of a false `synced`. Open: **BO-1d** (the flip blocker, see below), then **BO-1c** the email-verb decision + handlers. 🔴 `ACTION_BROKER_ENFORCE` flip (§6) — ⚠️ **corrected 2026-08-11 (repair round 1): this row previously said "both blockers now clear", and the flip is NOT safe.** BO-1a and BO-1b cleared the *handler-routing* and *sync-state* blockers only. **BO-1d is now minted and open**: four callers never read the gate's pending marker — `routes/tasks/accounts.py:335` (`POST /tasks/accounts/{id}/projects`) and `:403` (`…/folders`) and `routes/tasks/planning.py:377` (`POST /tasks/plan/apply`, `target:"clickup"`) all index `created["id"]` unconditionally and hard-**500** under enforcement; `routes/tasks/items.py:790` (`_push_patch_upstream`) silently swallows a queued update, reporting local success with nothing upstream. Do not flip until BO-1d lands. Standing residuals either way: the var is set in **no** environment; a `pending_actions` row queued before a flip stays approvable after one (check `SELECT action, status FROM pending_actions` first); and no reconciliation of an approved write back onto its `gtd_items` row (BO-1b's own non-goal) — the next `/tasks/sync` pull inserts it as a second row. (2026-08-11) |
 | WS-2 | **Secrets** (BO-8: rotate Zoho token, purge history, fail-closed) | 🔴 | checklist §BO-8 + `FOUNDATION_CONTINUATION.md` | OWNER-GATE end-to-end (force-push history purge, credential rotation). Standing P0 since 2026-07-11. WS-26e / WS-27g cutovers execute the Zoho / ClickUp revoke halves (§6 WS-26 (c), WS-27 (c)). |
-| WS-3 | **Isolation ladder** (BO-7 · HH-6 · T0–T2) | 🟢 a+b · ⏸ T2 | `permissions_sandbox_b6.md` §P5 · board record 2026-08-09 | P5-a (credential scoping), P5-b.1 (ceilings), WS-3a (record+refuse), WS-3b (rootfs+network) shipped. **T2/P5-c re-framed by D16 (2026-08-08):** parked as a **precondition of the §5.1 pooled cutover** (customer 8–12) — no longer "until a second org appears". Acceptance stays unwritten until the owner un-parks (§6 first blockquote). **D83 (2026-10-03) un-parks T2 for the WS-43 sandbox terminal only**, and P5-c stays ⏸. P5-b.3 scoped gateway key: unbuilt *and undesigned*. MT-0b's `organization.first_party` (migration 157, scratch-applied) retires this row's old "no `first_party` field exists anywhere" note. 🔴 flips: `AGENT_PERMISSION_MODE`, `ISOLATION_TIER_ENFORCE` (§6). (2026-08-03 · re-framed 2026-08-09) ⚠️ **H-213: measured 2026-10-03, the code holds neither WS-3a nor WS-3b.** |
+| WS-3 | **Isolation ladder** (BO-7 · HH-6 · T0–T2) | 🟢 WS-3a and WS-3b dispatchable, 🔴 **NOT built** (H-213, measured 2026-10-03) · ⏸ T2 | `permissions_sandbox_b6.md` §P5 · board record 2026-08-09 | P5-a (credential scoping) and P5-b.1 (ceilings) shipped. WS-3a (record+refuse) and WS-3b (rootfs+network) are specced and NOT built. This row said "shipped" until 2026-10-03, and the code holds neither (H-213). **T2/P5-c re-framed by D16 (2026-08-08):** parked as a **precondition of the §5.1 pooled cutover** (customer 8–12) — no longer "until a second org appears". Acceptance stays unwritten until the owner un-parks (§6 first blockquote). **D83 (2026-10-03) un-parks T2 for the WS-43 sandbox terminal only**, and P5-c stays ⏸. P5-b.3 scoped gateway key: unbuilt *and undesigned*. MT-0b's `organization.first_party` (migration 157, scratch-applied) retires this row's old "no `first_party` field exists anywhere" note. 🔴 flips: `AGENT_PERMISSION_MODE`, `ISOLATION_TIER_ENFORCE` (§6). (2026-08-03 · re-framed 2026-08-09) |
 | WS-4 | **Event-bus consumer + durable queue** (BO-20) | 🟢 a+f+b1 | checklist §BO-20 — **file at the REPO ROOT** · board record 2026-08-09 | §BO-20.0 answered: **Option A, in-process** (owner 2026-08-02). Built: BO-20a consumer (reviewed, four P2s repaired) · BO-20b slice 1 · BO-20f receiver parity (inert). Next, AGENT-SAFE in strict order: **BO-20b slice 2** (strict `dispatch_event` path + PEL/XAUTOCLAIM reclaim — the record pins eight traps; read it first) → BO-20c → (BO-20d, BO-20e). 🔴 `INGESTION_CONSUMER` flip (§6) + provisioning `ZOHO_WEBHOOK_SECRET`/`GMAIL_PUBSUB_TOKEN` on the box — ⚠️ D15 coda: those become **per-org** secrets at MT-1a+; one box-wide value cannot serve N tenants. (2026-08-03) |
 | WS-5 | **CI gates real** (BO-17/BO-18) | 🟡 Docs | checklist §F · board record 2026-08-09 | Audited 2026-08-01 → NO-GO (§F has zero testable done-whens). ~~"main has no branch protection"~~ **struck 2026-08-09** — protection was ENABLED 2026-08-03 (exceptions row 1); the row had never been swept. Deploy still lints with non-blocking `ruff check .`. Ready slice: **BO-17a main-guard** (`correctness` on push-to-main, deliberately NOT in `needs:`) — AGENT-SAFE. 🔴 GitHub *settings* changes (required checks, `needs:` wiring, `skip_tests` removal). BO-18 → WS-2. (2026-08-01 · corrected 2026-08-09) |
 | WS-6 | **Observability wiring + attribution** (BO-5 + D1) | 🟡 partial | `observability_e2.md` §7 · board record 2026-08-09 | WS-6a + WS-6c BUILT 2026-08-02, pending review — attribution reaches **logs + Redis only, nothing durable**. WS-6b/6d/6e **HELD NO-GO**: no mechanism carries run identity across the HTTP hop to `/v1` (contextvars don't cross it; `agent_run` rows are written at run boundary); do not dispatch until §7 names one. 🔴 WS-6f–i activation flips (§6). (2026-08-02) |
@@ -498,7 +498,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-11 | **Workflows Slice 3** (gallery, fan-in/join, loops) | 🟢 | `workflows_app.md` §8.3 · board record 2026-08-09 | Slice 3 = **8.3a** gallery · **8.3b** fan-in/join · **8.3c** loops (owner-approved, D10.2; R1 governs the node *catalog*, not control flow). 8.3b/8.3c each must **invert a pinned test** (`test_fan_in_rejected_v1`, `test_cycle_rejected`) — leave either standing and the ticket closes green having built nothing. Template *content* is an owner input; the report-digest template belongs to WS-15. Slice 4 after BO-20b2 → c → (d, e) + 🔴 `INGESTION_CONSUMER` flip; its sandbox-dependent parts follow MT-0c-2's trigger (D16) — the old bare "BO-7" dependency is restated. (2026-08-03) |
 | WS-12 | **Framework uplift** | 🟡 Ph4 | `multi_agent_orchestration.md` **Phase 4 only** (D6) · board record 2026-08-09 | Ph0 shipped; Ph1 struck; Ph2–3 superseded (D6); Ph5 struck. One SDK major remains: `github-copilot-sdk 0.1.32 → 1.0.2` (`openai 2.38.0` already in-tree). ~~🔴 Phase 4.0 target choice~~ **ANSWERED 2026-08-10 (D25.6): minimal bump** — 4.1 evidence then the 4.x slices are dispatchable; 🔴 Phase 4.6 recorded human soak stands (§6). Phase 4.1 throwaway-venv resolution evidence is AGENT-SAFE and must never mutate `.venv`/`uv.lock`. (2026-08-10) |
 | WS-23 | **Skills registry + per-agent toggles** *(added 2026-08-01)* | 🟡 built | `specs/skills_registry.md` · board record 2026-08-09 | S1–S4 shipped pending review: registry + measured catalog, per-agent toggles (intersection-only, core floor non-toggleable), scope-out proposal, index diet (full surface 19,259 → 12,644 tokens). The ≤2k target is **unreachable by trimming** — §7.5 progressive disclosure is designed, costed, and deliberately unbuilt. 🔴 `SKILLS_FAIL_CLOSED`, `SKILLS_INDEX_ONLY` flips (§6). (2026-08-01) |
-| WS-43 | **MAF coding engine and sandbox terminal** — `code_task` on a MAF harness session, and its shell commands in a container per organization, agent and thread *(minted 2026-10-03 by **D82** and **D83**)* | 🟢 **spec only** · WS-43a (eval) and WS-43b (image) next | **`specs/maf_coding_engine.md`** | WS-43a to WS-43h are AGENT-SAFE and ship dark (`MAF_CODING_SCOPE` empty, `sandbox_egress_enabled` off). 🔴 OWNER-GATE: Docker access on the box (G-1), the image on the box (G-2), `MAF_CODING_SCOPE` on production (G-3), egress on production and its allowlist (G-4), gVisor or rootless Docker (G-5), the eval on the production Router (G-6), and the merge of WS-43i (G-7). ⚠️ D83 un-parks T2 for this sandbox only. P5-c, P5-d and the pooled-cutover T2 stay parked (G-8). `agent-task-manager` and `agent-apis-config` are not in this row. The PR on `maf-task-apis` owns them. |
+| WS-43 | **MAF coding engine and sandbox terminal** — `code_task` on a MAF harness session, and its shell commands in a container per organization, agent and thread *(minted 2026-10-03 by **D82** and **D83**)* | 🟢 **spec only** · WS-43a (eval) and WS-43b (image) next | **`specs/maf_coding_engine.md`** | WS-43a to WS-43i are AGENT-SAFE and ship dark (`MAF_CODING_SCOPE` empty, `sandbox_egress_enabled` off). The scope names each organization, so the rollout goes one organization at a time. 🔴 OWNER-GATE, gate id `ws43-sandbox-flip`: Docker access and the host firewall on the box (WS43-G1), the image on the box (WS43-G2), `MAF_CODING_SCOPE` on production (WS43-G3), egress on production and its allowlist (WS43-G4), gVisor or rootless Docker (WS43-G5), the eval on the production Router (WS43-G6), and the merge of WS-43j (WS43-G7). ⚠️ The dev-phase window does NOT open these gates, and no grant line names the id. They bind by prose until H-214 adds a plan-guard rule. ⚠️ D83 un-parks T2 for this sandbox only. P5-c, P5-d and the pooled-cutover T2 stay parked (WS43-G8). WS-8 owns `agent-task-manager` and `agent-apis-config` (PR #585, WS-8i and WS-8j). |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -4405,13 +4405,15 @@ container of D83.
 `code_task` keeps its name, its signature and its script contract. §11 keeps
 its text, with a dated amendment box.
 
-**How it ships.** Behind `MAF_CODING_SCOPE`, default empty. The Copilot path
-stays until WS-43h shows parity through the Router. The removal of the Copilot
-path (WS-43i) is an owner gate.
+**How it ships.** Behind `MAF_CODING_SCOPE`, default empty. Each entry of the
+scope names one organization, so the rollout goes one organization at a time.
+The Copilot path stays until WS-43i shows parity through the Router. The
+removal of the Copilot path (WS-43j) is an owner gate.
 
 **Fences:** `tests/unit/test_maf_code_session.py`,
-`tests/unit/test_maf_harness_contract.py` and
-`tests/unit/test_run_command_tool.py`, all new.
+`tests/unit/test_maf_harness_contract.py`,
+`tests/unit/test_run_command_tool.py` and
+`tests/unit/test_no_host_git_on_sandbox_dir.py`, all new.
 
 ### D83 — The T2 container tier is un-parked for the sandbox terminal only. It amends D16 and D10.1 (2026-10-03)
 
@@ -4420,9 +4422,11 @@ Owning spec: **`specs/maf_coding_engine.md`** §3.
 
 **What changes.** D10.1 parked T2, and D16 made it a precondition of the
 pooled cutover. D83 un-parks T2 for one kind of container: the one that runs
-the shell commands of the coding engine. One container serves one
-organization, one agent and one thread. It has no network by default, and
-only an approved request opens an allowlist.
+the shell commands of the coding engine. Three users of the sandbox broker
+get it: the `code_task` session, the app-builder agent, and `run_script` and
+`install_dependency` for an agent that the broker covers. One container
+serves one organization, one agent and one thread. It has no network by
+default, and only an approved request opens an allowlist.
 
 **What stays parked.** P5-c (a whole agent run in a container), P5-d, P5-b.3,
 and T2 as a precondition of the pooled cutover (MT-0c-2). An agent asked to
@@ -4430,13 +4434,17 @@ build any of them still refuses it by name.
 
 **Why the un-park is narrow.** The agent loop, the tools and every key stay in
 the gateway. Only the text of a command crosses into the container. So the
-container needs no network and holds no secret.
+container needs no network. The broker gives it no key, and it refuses any
+mount that could hold one, such as a clone whose `.git/config` holds the
+GitHub token.
 
 **Fences:** `tests/unit/test_sandbox_broker_seam.py`,
 `tests/unit/test_sandbox_broker_argv.py`,
 `tests/unit/test_sandbox_broker_tenant.py`,
-`tests/unit/test_sandbox_egress_proxy.py` and
-`tests/unit/test_sandbox_network_grant.py`, all new.
+`tests/unit/test_sandbox_egress_proxy.py`,
+`tests/unit/test_sandbox_network_grant.py`,
+`tests/unit/test_app_builder_engine.py` and
+`tests/unit/test_sandbox_safe_open.py`, all new.
 
 ---
 
@@ -4740,12 +4748,18 @@ and one thing that cannot be written until a second person exists.
 > It still refuses P5-c, P5-d, P5-b.3 and T2 for the pooled cutover, by name.
 >
 > **WS-43 — the sandbox terminal on the box.** *(Registered 2026-10-03 with D82 and
-> D83.)* To build WS-43a to WS-43h is AGENT-SAFE, and each slice ships dark. These
-> acts are OWNER-GATE: Docker access for the gateway user on the box, the image on
-> the box, and `MAF_CODING_SCOPE` or `SANDBOX_EGRESS_ENABLED` on production. So are
-> the production allowlist, gVisor or rootless Docker, the eval on the production
-> Router, and the merge of WS-43i. `specs/maf_coding_engine.md` §12 lists them as
-> G-1 to G-8.
+> D83. Gate id `ws43-sandbox-flip`.)* To build WS-43a to WS-43i is AGENT-SAFE, and
+> each slice ships dark. These acts are OWNER-GATE: Docker access for the gateway
+> user and the host firewall rule on the box, the image on the box, and
+> `MAF_CODING_SCOPE` or `SANDBOX_EGRESS_ENABLED` on production. So are the
+> production allowlist, gVisor or rootless Docker, the eval on the production
+> Router, and the merge of WS-43j. `specs/maf_coding_engine.md` §12 lists them as
+> WS43-G1 to WS43-G8.
+>
+> ⚠️ **The dev-phase window of CLAUDE.md §3a does NOT open these gates.** No line of
+> `.claude/OWNER_GRANTS.md` names `ws43-sandbox-flip`, and the grants for `deploy`,
+> `deploy-write`, `env-write` and `enforcement-flip` do not cover it. Until H-214
+> adds a plan-guard rule, this text is the only fence.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**

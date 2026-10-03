@@ -1963,6 +1963,11 @@ ratchet exists to stop a contract changing by accident, and it caught this corre
 
 **MT-0c-2 · The container/microVM tier (WS-3 T2) · 🔴 STAYS OWNER-GATE, STAYS PARKED**
 
+> ⚠️ **Amended 2026-10-03 by D83 (owner decision).** The owner un-parked T2 for
+> the WS-43 sandbox terminal only: the container that runs the shell commands
+> of the coding engine (`maf_coding_engine.md` §3). The rest of MT-0c-2 stays
+> parked, and T2 stays a precondition of the §5.1 pooled cutover.
+
 **Why parked is still right, and this is the substance of the decision.** D10 parked T2
 because *"the ladder must hold against trusted colleagues, not hostile users."* That
 reasoning **still holds for the silo phase** (§5.1): with one tenant per box, an escaped
