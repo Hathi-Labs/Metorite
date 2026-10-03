@@ -59,6 +59,11 @@ clone cache.
    never injected (`_collect_injectable_platform_tools` never returns them).
    The boundaries are structural, in every permission mode: the cover, the
    broker exec with no host fallback, and the store's map and safe opener.
+   A covered run does not hold the host floor tools that open the dir with
+   plain path calls (`WITHHELD_HOST_TOOLS`): a per-run chat middleware hides
+   them and a function middleware refuses them. The store takes only the
+   heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
+   author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
    The store maps `outputs/` to the thread's own folder and `.run/` to the
    run data, and it mirrors each kept write and delete. Fences:

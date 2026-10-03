@@ -1552,13 +1552,33 @@ These facts change or add to the text above:
   Every thread of one organization mounts the same working dir, so another
   thread could plant a package in this thread's `.local`. This track has no
   network, so no install needs the user site.
-- **A residual risk to decide before WS-43w.** The threads of one
-  organization share the working dir, and its `agent-data/` and `inputs/` are
-  writable from each container. So a script or a skill that one member's
-  thread wrote can run in another member's thread, beside that member's run
-  data, and copy it to a shared folder. The run data is safe from another
-  thread's container and from the routes, and not from code that a member
-  chooses to run.
+- **Fix round 1 of PR #603 closed the shared-code path:**
+  - The `projects` container mounts `/workspace` read-only. Its only writable
+    paths are its own output folder and its run data.
+  - `PYTHONSAFEPATH=1`, so `python3 -c` and a script never import a module
+    from `/workspace` or from a script's own dir.
+  - The file tools take only the heads `agent-data/`, `inputs/`, `outputs/`
+    and `.run/`, and no name that starts with a dot.
+  - A skill folder belongs to the member who first writes into it. The
+    marker is `.metorite-author`, and every writer refuses that name. A run
+    loads, lists, reads and runs only its own member's skills. The routes
+    refuse another member's skill with 403.
+  - A covered run does not hold `write_artifact`, `share_artifact`,
+    `save_note`, `recall_notes`, `get_errors` or `run_diagnostics`. A per-run
+    chat middleware takes them out of each model request, and a function
+    middleware refuses a call to one. The file tools do that work, with the
+    safe opener and the lock.
+  - `write_artifact`, `share_artifact` and `save_note` refuse another chat's
+    output folder and another member's skill in every run.
+  - The opener passes `O_NONBLOCK` and refuses a file that is not regular,
+    so a FIFO never blocks a host thread.
+  - The steer drain runs at the eight file tools and the skill tools.
+- **The residual risk that stays.** `agent-data/` and `inputs/` stay shared
+  by the organization, as H-201 built them. A member's model can still read
+  a note from another member's run, and that note can carry an injection.
+  The model can also choose to run a script of a shared folder by its full
+  path. Neither reaches another member's run data without that member's own
+  model acting on it.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
