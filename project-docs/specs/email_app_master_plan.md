@@ -20,7 +20,7 @@
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3176,7 +3176,7 @@ the sender lists, the knowledge, the contacts and the drafting memory are per ma
 `GET /email/messages`, `/email/search`, `/senders` and `/analytics/overview` read all the
 mailboxes of the member when the request has no `account_id`. A member can own several rows.
 `is_default` marks one of them (migration 223), and a delete moves the default to the oldest
-mailbox that is left (`transport/accounts.py:481-494`).
+mailbox that is left (`transport/accounts.py:612-628`).
 
 **The UI shows one mailbox at a time.** The selected mailbox is `selectedAccountId` in
 `emailStore.ts:258`, kept in the URL `?account=` and in local storage. The left rail lists the
@@ -3197,7 +3197,7 @@ last column.
 | **MB-8** | **Two Outlook mailboxes look the same.** Each new row gets the label "Outlook" and the colour `#6366f1`. The API cannot change the colour. The UI draws the hex value, which breaks design rule 1. | `core.py:785-787`, `oauth.py:510`, `accounts.py:74-78`, `AccountSidebar.tsx:133-141` | EM-T8b |
 | **MB-9** | **After a second connect, Email shows the old mailbox.** The return URL keeps `?account=<old>`, and the callback page ignores the `account_id` it gets. The setup steps of the new mailbox stay hidden. | `page.tsx:329`, `oauth/callback/page.tsx:187` | EM-T8c |
 | **MB-10** | **A switch of mailbox keeps the "load older" state of the old mailbox.** The backfill cursor is keyed by folder only. | `emailStore.ts:244-246`, `:951-965` | EM-T8c |
-| **MB-11** | **The AI settings never name the mailbox they change.** The mobile automation drawer has no mailbox picker. | `AutomationView.tsx:95-110`, `page.tsx:381-394` | EM-T8f |
+| **MB-11** | **The AI settings never name the mailbox they change.** The mobile automation drawer has no mailbox picker. | `AutomationView.tsx:95-110`, `page.tsx:467-480` | EM-T8f |
 | **MB-12** | **The all-mailbox list merges conversations across mailboxes.** It groups by `thread_id` with no `account_id`. The thread count has no owner predicate. | `messages.py:192-196`, `:283`, `:364-377` | EM-T8d |
 | **MB-13** | **The unread badge of a mailbox counts junk and deleted mail.** | `accounts.py:150-158` | EM-T8d |
 | **MB-14** | **The AI drafts "as" the sign-in address of the member, not as the mailbox.** "Self" covers only the current mailbox, so mail between two mailboxes of one member counts as external. | `drafting.py:816`, `automation/identity.py:64-91` | EM-T8e |
@@ -3224,6 +3224,7 @@ that design. The owner can reverse any of them. Q-MB-1 is the one open owner que
 | **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
 | **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
 | **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
+| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. |
 
 ### 11.3 How the AI keeps the mailboxes apart
 
@@ -3370,7 +3371,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
 | 21 | A label filter in All inboxes | Not shown. A label belongs to one mailbox. | EM-T8d |
 | 22 | The recipient is known only from another mailbox | The composer shows "You usually write to this person from <label>" with a switch | EM-T8c |
-| 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f |
+| 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f-2 |
 | 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
 | 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
 
@@ -3944,18 +3945,138 @@ chat in light mode, at compact density, and under a changed accent (CLAUDE.md §
 
 #### 11.7.6 EM-T8f — settings for each mailbox
 
-1. **The AI settings header** names the mailbox, with a picker, on desktop and mobile (MB-11).
-2. **Copy rules.** `POST /email/rules/copy` with `from_account_id` and `to_account_id`. Both must
-   belong to the member. It copies the enabled rules and their actions. A name already present in
-   the target gets " (copy)". The rules step of a new mailbox offers it.
-3. **The disconnect dialog** names the new default before the removal (edge case 18).
-4. **The Mem0 purge (MB-17).** A disconnect deletes the memories under `#acct:<id>`.
-5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
-   folder. The page shows one import panel for each importing mailbox, each one named (edge case
-   19).
-6. **From EM-T8e-3 (moved 2026-10-03).** The chat picker shows the colour dot of each mailbox. A
-   chat whose mailbox the member removes says so (edge case 17). Both need
-   `src/components/AgentChat.tsx`.
+**Status.** 📝 Narrowed 2026-10-03, verified against the code at a5085fec. Three pull
+requests, T8f-1 to T8f-3. No migration.
+
+**Not in scope.** These acts are OWNER-GATE:
+- a sweep of the `#acct:<id>` memories that earlier disconnects left behind (a production one-off)
+- a test disconnect of a real production mailbox
+- the `MEM0_ENABLED` flip
+"The counts that go" in the disconnect dialog (§11.4) is not built in EM-T8f.
+
+##### EM-T8f-1 — copy rules, the memory purge and `created_at` (backend, R8)
+
+**Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
+`automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`
+and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-1 edits both.
+
+1. **Copy rules (item 2).**
+   - `POST /email/rules/copy` takes `from_account_id` and `to_account_id`. Each must be a mailbox
+     of the member, else 404. The same id twice gives 422.
+   - It copies each enabled rule with each column except `id`, `account_id`, `organization_id`
+     and the timestamps. It copies each action of that rule.
+   - It copies no disabled rule, rule pattern, rule guidance, learned pattern, assistant setting,
+     voice profile or knowledge (D-EM-18).
+   - A name that the target holds gets " (copy)", then " (copy 2)". A copy never fails on the
+     unique name.
+   - Each copied rule gets `created_at = now()`, so the new-mail floor of the target never moves
+     back into the imported mail.
+   - A reply rule keeps DRAFT_EMAIL only when the stored `draft_replies` of the target is true
+     (D-EM-6). D-EM-29 governs a FORWARD to an own address.
+   - The answer lists the copied names, the renamed names and the rules that it left out.
+2. **The memory purge (item 4, MB-17).**
+   - After the DELETE of a disconnect commits, a task with a strong reference deletes each Mem0
+     memory under `email_memory_scope(owner, account_id)`. It logs
+     `email.disconnect.memory_purged` with the count.
+   - The helper refuses a scope that has no `#acct:`. A purge of the bare member scope would
+     delete every personal memory of the member.
+   - A 404, a 409 or a failed DELETE makes no purge call.
+   - A failed purge still answers 204 and logs `email.disconnect.memory_purge_failed`. The log
+     never holds the text of a memory.
+   - `mem0_client.py` gains `delete_scope(user_id) -> int`. It pages until the scope is empty.
+3. **`created_at` on the account model.** Each account read returns it, so the UI can name the
+   next default (item 3).
+
+**Fences (R7).**
+- `tests/unit/test_email_rule_copy.py` (R8, the app role):
+  - `email-rule-copy-owner`: a mailbox of another member, or of a second organization, gives
+    404 and writes no row. The same id twice gives 422.
+  - `email-rule-copy-enabled-only`: each column and each action of an enabled rule matches its
+    source. No disabled rule, pattern, guidance or learned pattern arrives.
+  - `email-rule-copy-names`: "X", then "X (copy)", then "X (copy 2)", with no error.
+  - `email-rule-copy-floor`: the new-mail floor of the target is the time of the copy.
+  - `email-rule-copy-drafting`: with `draft_replies` false or absent, no copied reply rule holds
+    DRAFT_EMAIL. With it true, the rule keeps it.
+  - `email-rule-copy-forward-loop`: a FORWARD to an own address is left out and named.
+- `tests/unit/test_email_disconnect_memory_purge.py` (a fake Mem0 client):
+  - `email-disconnect-purges-memory`: a 204 deletes each memory under `<owner>#acct:<id>`, over
+    more than one page. It deletes no memory of the bare scope or of another mailbox.
+  - `email-purge-refuses-bare-scope`: an empty account id deletes nothing.
+  - `email-purge-after-delete`: a 404, a 409 or a failed DELETE makes no purge call. A failed
+    purge still gives 204, and its log holds no memory text.
+  - `email-account-created-at`: each account read returns `created_at`.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_rule_copy.py tests/unit/test_email_disconnect_memory_purge.py tests/unit/test_email_disconnect_order.py tests/unit/test_email_multi_account.py tests/unit/test_email_presets.py tests/unit/test_email_rules_admin.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_mailbox_identity.py tests/unit/test_tenant_coverage.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email packages/acb_memory tests/unit/test_email_rule_copy.py tests/unit/test_email_disconnect_memory_purge.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.py` or
+`test_memory_e2e.py`.
+
+##### EM-T8f-2 — the settings UI (after EM-T8f-1)
+
+**Scope.** `components/automation/AutomationView.tsx`, `page.tsx`, `OnboardingRulesStep.tsx`,
+`lib/onboarding.ts`, `DisconnectDialog.tsx`, `lib/connect.ts`, `lib/emailStore.ts`, `lib/api.ts`,
+`lib/types.ts`, a new `lib/mailboxSettings.ts`, and
+`src/app/notes/components/FollowupEmailModal.tsx`.
+
+1. **The AI settings header (item 1, MB-11)** names the mailbox as label and address. It has a
+   picker on desktop and on mobile. The picker has no All inboxes option. A pick calls
+   `selectAccount`, because `RulesTab` reads the folders of the selected mailbox.
+2. **The copy step (item 2).** The rules step of a new mailbox offers "Copy the rules of
+   <label>" for each other mailbox of the member. The step names its own mailbox when the member
+   has two or more.
+3. **The disconnect dialog (item 3, edge case 18).** One pure function, `nextDefaultAfter`,
+   orders by `createdAt`, then `id`, as `transport/accounts.py:612-628` does. It compares the ISO
+   text, so microseconds count. The dialog shows the label and the address. When the removed
+   mailbox is the default, it names the new default. The store mirror uses the same function.
+4. **Notes (edge case 23).** The From picker of Notes shows "label · address".
+
+**Fences (R7).** `src/app/email/lib/mailboxSettings.test.ts`:
+- `email-settings-header-names-mailbox`: each automation header names the label and the
+  address. The picker has no All option, and a pick calls `selectAccount`.
+- `email-rules-step-copy`: one copy for each other mailbox, and none with one mailbox.
+- `email-disconnect-names-default`: `nextDefaultAfter` orders by `createdAt`, then `id`. The test
+  reads the ORDER BY in `transport/accounts.py` and fails when the two differ.
+- `email-notes-from-label`: the Notes options show "label · address".
+
+##### EM-T8f-3 — the views of each mailbox and the chat picker
+
+**Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `page.tsx`,
+`OnboardingPanel.tsx`, `FirstSyncBanner.tsx`, `src/components/AgentChat.tsx`,
+`EmailAssistantChat.tsx` and `lib/chatScope.ts`. It needs no backend change.
+
+1. **Summed counts (item 5).** All inboxes sums the provider `message_count` of Inbox, Drafts,
+   Sent, Archive, Junk and Deleted over each mailbox. A mailbox whose read fails adds nothing.
+   A custom folder shows no count.
+2. **Import panels (item 5, edge case 19).** One panel for each importing mailbox, each one
+   named.
+3. **The chat picker (item 6).** Each mailbox option carries the dot of `mailboxAccent()`, never
+   a hex value or a raw palette class. All inboxes carries none. The prop stays optional, because
+   `src/app/chat/page.tsx` also draws the picker.
+4. **The removed-mailbox note (item 6, edge case 17).** When the scope mailbox leaves, the chat
+   shows one note that names it and the new scope.
+
+**Fences (R7).** In `allInboxes.test.ts` and `chatScope.test.ts`:
+- `email-all-folder-sums`: each well-known folder shows the sum, and a failed read adds 0.
+- `email-import-panel-each`: one panel for each importing mailbox, each named.
+- `email-chat-picker-dot`: each mailbox option carries `mailboxAccent()`, and All inboxes none.
+  The picker in `AgentChat.tsx` uses no raw palette class.
+- `email-chat-removed-note`: one note that names the removed mailbox and the new scope.
+
+**Verification for T8f-2 and T8f-3.** In `workbench/control_plane`, run this command:
+
+```
+npx tsc --noEmit && npx vitest run src/app/email src/app/notes src/components src/lib/theme
+```
+
+Then look at the header, the dialog, the sidebar and the chat picker in light mode, at compact
+density and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
