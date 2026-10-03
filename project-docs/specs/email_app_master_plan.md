@@ -3770,7 +3770,9 @@ They found live answers that still drew a done card. This round fixes them.
 - **A thread read that refused fetches nothing.** With no `email_id` and no "Thread:" head, the
   thread card shows the text. A fetch with no mailbox would merge the two mailboxes.
 - **The send card shows each bcc address and each attachment.** A mail body can ask the model
-  to add a hidden recipient or a file, so the member must see both before the send.
+  to add a hidden recipient or a file, so the member must see both before the send. The card
+  keeps 500 characters, and the sender of a mail sets the subject of a reply. So both come
+  before the subject, and the subject is clipped. Fence: `email-chat-send-card-shows-hidden`.
 - **No mailbox connected.** A send and each item 3 tool change nothing and say so. Fence:
   `email-chat-no-mailbox`.
 - **`instructions.md`** no longer says that unsubscribe takes the mailbox from the mail.

