@@ -3886,6 +3886,30 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
+### H-223 · The sandbox quota flag lives on one handle, and two handles can share one dir · [AGENT]
+- **Check:** `grep -n "handle.over_quota = used" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit means the entry is still open.
+- **Why:** `measure_workspace` sets `over_quota` on the handle of the exec
+  that measured. Two threads of one organization on one shared agent mount
+  the same `o:<org>` dir in two containers (review P2-b of PR #591). So each
+  other handle on that dir runs one more exec past the quota before its own
+  measure sets its flag. Keep the flag per mount source, as the lock is.
+- **Authority:** `specs/maf_coding_engine.md` §7.1 rule 10 · PR #591 review, round 2
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
+### H-224 · A cancelled `docker run` can leave a Created sandbox container · [AGENT]
+- **Check:** `grep -n "_remove_container(handle.container_id, handle.start_id)" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit, and no retry of the start-label removal, means the entry is still open.
+- **Why:** a cancel during `docker run -d` kills the CLI. The broker then
+  removes that start by its id or its `metorite.start` label. If the daemon
+  records the create after that removal ran, the container stays in the
+  Created state. The next start of the same name removes it, and so does the
+  startup sweep. Until then it holds the name, and Docker counts it. Retry the
+  label removal once after a short wait, or let the reaper remove labelled
+  containers that are not in the registry.
+- **Authority:** `specs/maf_coding_engine.md` §7.1 rules 12 and 13 · PR #591 review, round 2
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

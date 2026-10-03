@@ -152,6 +152,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     _asyncio.ensure_future(_sweep_copilot_sandboxes())
 
+    # WS-43c: the sandbox broker's startup sweep (orchestrator/sandbox_broker.py,
+    # maf_coding_engine.md §7.1 rule 13). It ALWAYS runs, whatever
+    # MAF_CODING_SCOPE holds: a restart ends every run, so every container
+    # labelled metorite.sandbox=1 goes, also one an earlier scope left. With no
+    # Docker it logs one line and the gateway starts. The task runs in the
+    # background, and the broker's acquire() waits for it.
+    try:
+        from orchestrator.sandbox_broker import start_sandbox_broker
+
+        start_sandbox_broker()
+    except Exception as exc:
+        _log.warning("gateway.sandbox_broker_start_failed", error=str(exc)[:200])
+
     # Warm-clone every live agent that has a source (GitHub repo or local path)
     # but no clone on disk yet.  Clones are created lazily on first run, so a
     # reboot/deploy that wiped the cache leaves registered agents invisible in
@@ -401,6 +414,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.crm.sync_zoho import stop_crm_zoho_sync
         await stop_crm_zoho_sync()
+    except Exception:
+        pass
+
+    # Stop the sandbox broker's reaper (WS-43c). The next startup sweeps every
+    # labelled container, so shutdown removes none.
+    try:
+        from orchestrator.sandbox_broker import stop_sandbox_broker
+        await stop_sandbox_broker()
     except Exception:
         pass
 
