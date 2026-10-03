@@ -91,11 +91,35 @@ SELF_ADDRESSES_SQL = f"SELECT LOWER(o.email_address) AS addr {_MEMBER_MAILBOXES_
 #: The id of each mailbox of the member who owns ``:aid``, ``:aid`` included.
 SELF_MAILBOX_IDS_SQL = f"SELECT o.id {_MEMBER_MAILBOXES_FROM}"
 
+def recipient_lists_sql(alias: str) -> str:
+    """The To, Cc and Bcc lists of the mail ``alias`` as one JSON array.
+
+    A list that is NULL or not an array counts as empty, so one NULL list
+    never makes the whole array NULL. The Sent-copy proof and the rule of a
+    thread with only the member's mailboxes both read recipients here."""
+    return (
+        f"CASE WHEN jsonb_typeof({alias}.to_addresses) = 'array' "
+        f"THEN {alias}.to_addresses ELSE '[]'::jsonb END "
+        f"|| CASE WHEN jsonb_typeof({alias}.cc_addresses) = 'array' "
+        f"THEN {alias}.cc_addresses ELSE '[]'::jsonb END "
+        f"|| CASE WHEN jsonb_typeof({alias}.bcc_addresses) = 'array' "
+        f"THEN {alias}.bcc_addresses ELSE '[]'::jsonb END")
+
 #: A Sent copy proves that the member sent the mail ``:mid`` of the mailbox
-#: ``:aid`` from ANOTHER of their mailboxes (EM-T8e-1 review round 1). The copy
-#: has the same ``internet_message_id`` and sits in the ``sent`` folder of a
-#: mailbox of the member that is not ``:aid``. A forged From has no such copy.
+#: ``:aid`` from ANOTHER of their mailboxes (EM-T8e-1 review rounds 1 and 2).
+#: Four tests, and each one refuses a forgery:
+#:
+#: - the same ``internet_message_id``, which is not empty
+#: - the ``sent`` folder: a forged mail to both mailboxes puts a copy with the
+#:   same Message-ID in the INBOX of the other mailbox
+#: - a mailbox of the member that is not ``:aid``
+#: - the copy names the address of ``:aid`` in To, Cc or Bcc: an outsider who
+#:   got a real mail of B can replay its Message-ID to A, and B's Sent copy of
+#:   that mail names the outsider, not A (round 2)
+#:
 #: ``idx_email_messages_internet_message_id`` (migration 89) serves the join.
+#: ⚠️ Only the Outlook provider stores ``internet_message_id`` today, so the
+#: proof exists only between two Outlook mailboxes (§11.6 edge case 26).
 _PROVEN_OWN_SEND_SQL = f"""
     SELECT 1
       FROM email_messages m
@@ -106,6 +130,11 @@ _PROVEN_OWN_SEND_SQL = f"""
        AND s.account_id <> m.account_id
        AND LOWER(COALESCE(s.folder, '')) = 'sent'
        AND s.account_id IN ({SELF_MAILBOX_IDS_SQL})
+       AND EXISTS (
+             SELECT 1 FROM jsonb_array_elements({recipient_lists_sql("s")}) AS r(addr)
+              WHERE LOWER(r.addr->>'email') = (
+                    SELECT LOWER(ea.email_address) FROM email_accounts ea
+                     WHERE ea.id = m.account_id))
      LIMIT 1"""
 
 #: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, so

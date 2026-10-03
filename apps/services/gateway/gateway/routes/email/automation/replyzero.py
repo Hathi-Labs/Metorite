@@ -15,6 +15,7 @@ from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
+    recipient_lists_sql,
     resolve_org_domains,
     resolve_self,
     resolve_self_addresses,
@@ -219,28 +220,31 @@ def _match_conversation_key(match: dict[str, Any] | None) -> str:
     return key if key in _CONVERSATION_RULE_STATUS else ""
 
 
-#: D-EM-27 (EM-T8e-1 review round 1): does the thread of ``:aid`` have a
-#: participant OUTSIDE the mailboxes of the member? A participant is the sender
-#: of a mail that is not in Sent, and each To and Cc address of each mail. An
-#: empty address counts as outside, so a row we cannot read keeps the status
-#: it had before. ``has_external`` of :class:`ThreadContext` cannot answer
-#: this: it reads senders only, and a colleague is ``internal``, not external.
+#: D-EM-27 (EM-T8e-1 review rounds 1 and 2): does the thread of ``:aid`` have
+#: a participant OUTSIDE the mailboxes of the member? A participant is the
+#: sender of a mail that is not in Sent, and each To, Cc and Bcc address of
+#: each mail. Two cases keep the status that the thread had before:
+#:
+#: - An empty address counts as outside.
+#: - A mail with no recipient at all (each list empty or NULL) counts as
+#:   outside, because its recipients are unknown, not "only the member".
+#:
+#: ``has_external`` of :class:`ThreadContext` cannot answer this: it reads
+#: senders only, and a colleague is ``internal``, not external.
 _THREAD_OUTSIDE_SQL = f"""
     SELECT COUNT(*) AS n,
            COALESCE(BOOL_OR(
              (LOWER(COALESCE(m.folder, '')) <> 'sent'
               AND LOWER(COALESCE(m.from_address->>'email', ''))
                   NOT IN ({SELF_ADDRESSES_SQL}))
+             OR jsonb_array_length(rc.addrs) = 0
              OR EXISTS (
-               SELECT 1 FROM jsonb_array_elements(
-                   CASE WHEN jsonb_typeof(m.to_addresses) = 'array'
-                        THEN m.to_addresses ELSE '[]'::jsonb END
-                   || CASE WHEN jsonb_typeof(m.cc_addresses) = 'array'
-                           THEN m.cc_addresses ELSE '[]'::jsonb END) AS p(addr)
+               SELECT 1 FROM jsonb_array_elements(rc.addrs) AS p(addr)
                 WHERE LOWER(COALESCE(p.addr->>'email', ''))
                       NOT IN ({SELF_ADDRESSES_SQL}))
            ), false) AS outside
       FROM email_messages m
+      CROSS JOIN LATERAL (SELECT {recipient_lists_sql("m")} AS addrs) AS rc
      WHERE m.account_id = :aid AND m.thread_id = :tid"""
 
 #: The reason on the row of a thread that has only the member's mailboxes.

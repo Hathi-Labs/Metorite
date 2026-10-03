@@ -3362,7 +3362,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. | EM-T8g |
 | 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. | EM-T8g |
 | 13 | Two Outlook mailboxes return the same conversation id | The conversation key includes `account_id`. A conversation never spans two mailboxes (MB-12). | EM-T8d |
-| 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27). A thread with no participant outside the member's mailboxes is FYI. It is never NEEDS_REPLY and never AWAITING. The cold check skips such a mail only when a Sent copy in another mailbox of the member proves the send. | EM-T8e |
+| 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27). A thread with no participant outside the member's mailboxes is FYI. It is never NEEDS_REPLY and never AWAITING. A mail with no recipient keeps its status. The cold check skips such a mail only when a Sent copy proves the send (edge case 26). | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
 | 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e (the note: EM-T8f) |
@@ -3374,7 +3374,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f-2 |
 | 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
 | 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
-| 26 | An outside sender forges From as another mailbox of the member | The cold check runs, because no Sent copy proves the send. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read the mail as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
+| 26 | An outside sender forges From as another mailbox of the member | The cold check runs. Only a Sent copy that proves the send stops it. The copy has the same Message-ID, and that ID is not empty. It sits in the `sent` folder of another mailbox of the member. It names this mailbox in To, Cc or Bcc, so a replayed Message-ID proves nothing. **Known limit:** only the Outlook provider stores the Message-ID, so the proof exists only between two Outlook mailboxes. A Gmail or IMAP pair gets the cold check, as before EM-T8e-1. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read a forged From as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
 
 ### 11.7 Slices
 
@@ -3712,7 +3712,8 @@ other findings.
   are the other two.
 - **A forged From (P2).** The cold check skips a mail from another mailbox only with proof. The
   proof is a mail with the same `internet_message_id` in the `sent` folder of another mailbox of
-  the member (`identity.proven_own_send`). Edge case 26 records the accepted risk.
+  the member (`identity.proven_own_send`). Edge case 26 records the accepted risk. Review
+  round 2 adds one more test: the copy names this mailbox.
 - **Mail between own mailboxes is never open (P2, D-EM-27).** `replyzero._thread_is_self_only`
   asks whether the thread has a participant outside the member's mailboxes. A participant is the
   sender of a mail that is not in Sent, and each To and Cc address. Without one, the thread is
@@ -3729,11 +3730,89 @@ other findings.
   For another mailbox of the member, the guard refuses an exact address only. So the guard no
   longer refuses `gmail.com` in a work mailbox when another mailbox is a Gmail address.
 - **Mutation result.** A mutation run took out each fix of the first build and of this round,
-  one at a time. It killed 42 of 42 mutants, among them the eight sites with no fence before. One
-  more mutant cannot fail, because it changes nothing. `_determine_status_of` can drop the set it
-  passes, and `build_thread_context` then reads the same set itself.
+  one at a time. It killed 42 of 42 mutants, among them the eight sites with no fence before.
+  Review round 2 names each mutant with its test. One more mutant cannot fail, because it
+  changes nothing. `_determine_status_of` can drop the set it passes, and
+  `build_thread_context` then reads the same set itself.
 - **Tests.** Two more hermetic suites answer the new reads: `test_email_reply_zero.py` and
   `test_email_thread_single_classification.py`.
+
+**Review round 2 (2026-10-03).** The re-verifier passed round 1 with no P0 and no P1. This round
+fixes its five small findings.
+
+- **Rebase.** Main moved: #602 (EM-T8f-3) changed `work_plan.md` and this spec. The WS-17 row
+  keeps the text of main and adds only the EM-T8e-1 entry.
+- **A replayed Message-ID (F1, P2).** An outsider who got a real mail of B can forge `From: B`
+  to A with the same Message-ID. The Sent copy of B named the outsider, and the cold check still
+  stopped. Now the copy must name this mailbox in To, Cc or Bcc.
+- **The provider in the Fix fence (F3).** The 404 rolls back the local rows, so a label write
+  that ran before the check left no local trace. A recording provider now counts the writes.
+  It sees none for the mail of B, and one for the control mail of A.
+- **Bcc and unknown recipients (F4, P3).** The participant rule reads To, Cc and Bcc. A mail with
+  no recipient in any list keeps its status, because its recipients are unknown.
+  `identity.recipient_lists_sql` is the one reader of the three lists, for the proof and the rule.
+- **Four more fences (F5).** They cover an empty Message-ID, a NULL Cc, the DONE row on the
+  self-only path and the folder test of the proof. The folder test matters most. One forged mail
+  to both A and B puts a copy with the same Message-ID in the inbox of mailbox B as well. Only
+  the folder test refuses that copy.
+- **Known limit (F2), not fixed.** Only the Outlook provider stores `internet_message_id`. Gmail
+  and IMAP never set it. So "mail between two own mailboxes is never cold" holds only from
+  Outlook to Outlook. Other pairs get the cold check, which is as safe as before EM-T8e-1.
+- **Mutation result.** The run killed 50 of 50 mutants: 42 from the first build and round 1,
+  and 8 from round 2. Each fence below is in `tests/unit/test_email_ai_context.py`.
+
+| Mutant | What the mutant breaks | The test that kills it |
+|---|---|---|
+| `b_self_set` | the set holds the current mailbox only | `test_the_set_is_the_mailboxes_of_the_member_in_this_org` |
+| `b_org_pred` | the organization compare in the SQL | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `b_payload` | the set in the `/rules/test` payload | `test_the_rule_match_payload_reads_another_mailbox_as_self` |
+| `b_recipient_role` | the set in the recipient role | `test_the_rule_match_payload_reads_another_mailbox_as_self` |
+| `b_thread_scopes` | the set in the thread scopes | `test_the_thread_and_the_conversation_read_another_mailbox_as_ours` |
+| `b_conversation` | the set in the conversation check | `test_the_thread_and_the_conversation_read_another_mailbox_as_ours` |
+| `b_digest` | the set in the digest window | `test_the_digest_leaves_another_mailbox_out` |
+| `b_digest_ours` | the set in the digest counterparty | `test_the_digest_leaves_another_mailbox_out` |
+| `b_cleanup` | the set in the cleanup scope | `test_the_cleanup_scope_leaves_another_mailbox_out` |
+| `b_sender_cats` | the set in the sender categories | `test_the_sender_categories_leave_another_mailbox_out` |
+| `b_resolve` | the pair check of `resolve_thread` | `test_resolve_refuses_a_thread_of_another_mailbox` |
+| `b_rule_test` | the mailbox check of `/rules/test` | `test_rule_test_refuses_a_mail_of_another_mailbox` |
+| `b_feedback_rules` | the rule check of `/rules/feedback` | `test_feedback_refuses_a_rule_of_another_mailbox` |
+| `b_drafter` | the sending mailbox in the reply prompt | `test_the_reply_prompt_names_the_sending_mailbox` |
+| `b_rule_copy` | the mailbox From of a rule draft copy | `test_a_rule_draft_copy_stores_the_mailbox_as_from` |
+| `b_reply_copy` | the mailbox From of the `/draft-reply` copy | `test_the_draft_reply_copy_stores_the_mailbox_as_from` |
+| `b_compose` | the sending mailbox in compose-assist | `test_new_mail_in_compose_assist_names_the_sending_mailbox` |
+| `b_thread_box` | the thread read from the mailbox of the mail | `test_it_reads_the_thread_of_a_and_the_voice_of_b` |
+| `b_voice_box` | the sent examples from the sending mailbox | `test_it_reads_the_thread_of_a_and_the_voice_of_b` |
+| `r1_runner_recent` | the set in `test_rules_recent` | `test_the_preview_on_recent_mail` |
+| `r1_runner_one` | the set in `run_rules_on_message` | `test_the_run_of_one_message` |
+| `r1_runner_past` | the set in Process past emails | `test_process_past_emails` |
+| `r1_runner_job` | the set in the automatic run | `test_the_automatic_run_and_its_cold_check` |
+| `r1_backfill` | the set in the Reply Zero backfill | `test_the_reply_zero_backfill` |
+| `r1_proj_scope` | the set in `_PROJ_SCOPE` | `test_the_digest_categories_leave_another_mailbox_out` |
+| `r1_decide_facts` | the set in the decide facts | `test_the_decide_facts_and_the_cc_note_read_the_set` |
+| `r1_cc_note` | the set in the Cc note | `test_the_decide_facts_and_the_cc_note_read_the_set` |
+| `r1_fb_mail` | the mail check of `/rules/feedback` | `test_feedback_refuses_a_mail_of_another_mailbox` |
+| `r1_fb_thread` | the thread check of `/rules/feedback` | `test_feedback_refuses_a_thread_of_another_mailbox` |
+| `r1_guidance` | the rule check of `/rules/guidance` | `test_guidance_refuses_a_rule_of_another_mailbox` |
+| `r1_cold_no_proof` | the proof for a self sender | `test_the_cold_check_skips_only_a_proven_own_send[forged]` |
+| `r1_proof_any_box` | the test "another mailbox" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[own_copy]` |
+| `r1_proof_any_member` | the test "a mailbox of the member" | `test_a_sent_copy_of_another_member_proves_nothing` |
+| `r1_selfonly_recompute` | the self-only check of the status authority | `test_the_status_authority_files_it_as_fyi` |
+| `r1_selfonly_determine` | the self-only check of the resolver | `test_the_resolver_asks_no_model_for_it` |
+| `r1_selfonly_project` | the self-only check of the projection | `test_the_projection_never_opens_it` |
+| `r1_selfonly_no_recipients` | the recipients in the participant rule | `test_the_participant_rule` |
+| `r1_nudge` | the mailbox in the nudge payload | `test_the_follow_up_nudge_names_the_mailbox` |
+| `r1_save_copy` | the mailbox From of the `/drafts/save` copy | `test_a_saved_draft_copy_stores_the_mailbox_as_from` |
+| `r1_pin_wide` | the exact test for another mailbox, with a substring test in its place | `test_the_pin_guard_refuses_own_mailboxes_only[gmail.com]` |
+| `r1_pin_no_exact` | the exact rule for another mailbox | `test_the_pin_guard_refuses_own_mailboxes_only[SELF-B]` |
+| `r1_pin_no_substring` | the substring rule for this mailbox | `test_the_pin_guard_refuses_own_mailboxes_only[fracktal-t8e.test]` |
+| `r2_proof_no_recipient` | the test "names this mailbox" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[replayed]` |
+| `r2_proof_empty_id` | the test "not empty" of the Message-ID | `test_the_cold_check_skips_only_a_proven_own_send[empty_id]` |
+| `r2_proof_no_folder` | the test "`sent` folder" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[inbox_copy]` |
+| `r2_cc_no_case` | the `CASE` around the Cc list | `test_the_participant_rule_reads_bcc_and_unknown_lists[outsider-null-cc]` |
+| `r2_no_bcc` | the Bcc list | `test_the_cold_check_skips_only_a_proven_own_send[proven_bcc]` |
+| `r2_no_empty_rule` | the rule for a mail with no recipient | `test_the_participant_rule_reads_bcc_and_unknown_lists[no-recipients]` |
+| `r2_preserve_done` | `preserve_done` on the self-only path | `test_a_done_row_stays_done` |
+| `r2_feedback_check_late` | the mail check before the label write | `test_feedback_refuses_a_mail_of_another_mailbox` |
 
 **Scope.** `apps/services/gateway/gateway/routes/email/**` and new tests. Not in scope: the
 agent, the UI, `routes/crm/**`, and the three files that EM-T8d edits (`transport/messages.py`,

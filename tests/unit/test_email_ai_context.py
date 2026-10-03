@@ -118,25 +118,39 @@ def _account(admin, *, org: str, owner: str, address: str) -> str:
         {"u": owner, "m": address, "o": org})
 
 
+def _addr_list(addrs: tuple | None) -> str | None:
+    """A recipient list as JSON, or None for a NULL column."""
+    if addrs is None:
+        return None
+    return json.dumps([{"email": t, "name": ""} for t in addrs])
+
+
 def _mail(admin, *, org: str, account: str, frm: str, to: tuple = (),
-          cc: tuple = (), thread: str | None = None, folder: str = "inbox",
+          cc: tuple | None = (), bcc: tuple | None = None,
+          thread: str | None = None, folder: str = "inbox",
           subject: str = "Hello", body: str = "Hello there.",
           categories: tuple = (), minutes: int = 0,
           imid: str | None = None) -> str:
+    """One stored mail. ``cc`` and ``bcc`` take None for a NULL column."""
     return _insert(admin, (
         "INSERT INTO email_messages (account_id, provider_message_id, "
-        "thread_id, folder, from_address, to_addresses, cc_addresses, subject, "
-        "body_text, snippet, categories, received_at, internet_message_id, "
-        "organization_id) VALUES "
+        "thread_id, folder, from_address, to_addresses, cc_addresses, "
+        "bcc_addresses, subject, body_text, snippet, categories, received_at, "
+        "internet_message_id, organization_id) VALUES "
         "(CAST(:a AS uuid), :pm, :tid, :f, CAST(:frm AS jsonb), "
-        "CAST(:to AS jsonb), CAST(:cc AS jsonb), :s, :b, :b, "
-        "CAST(:cats AS text[]), :at, :imid, CAST(:o AS uuid)) RETURNING id"),
+        "CAST(:to AS jsonb), CAST(:cc AS jsonb), CAST(:bcc AS jsonb), :s, :b, "
+        ":b, CAST(:cats AS text[]), :at, :imid, CAST(:o AS uuid)) RETURNING id"),
         {"a": account, "pm": f"pm-{uuid.uuid4().hex[:12]}", "tid": thread,
          "f": folder, "frm": json.dumps({"email": frm, "name": ""}),
-         "to": json.dumps([{"email": t, "name": ""} for t in to]),
-         "cc": json.dumps([{"email": t, "name": ""} for t in cc]),
+         "to": _addr_list(to), "cc": _addr_list(cc), "bcc": _addr_list(bcc),
          "s": subject, "b": body, "cats": list(categories),
          "at": _T0 + timedelta(minutes=minutes), "imid": imid, "o": org})
+
+
+def _message_id() -> str:
+    """A Message-ID. The seed writes it by hand. In production only the
+    Outlook provider stores one (§11.6 edge case 26)."""
+    return f"<{uuid.uuid4().hex}@outlook.test>"
 
 
 def _sent_by_b(f, *, to: tuple, subject: str = "From B",
@@ -144,9 +158,10 @@ def _sent_by_b(f, *, to: tuple, subject: str = "From B",
     """A mail that the member really sent from mailbox B to mailbox A.
 
     B's Sent copy and A's inbox copy share one ``internet_message_id``, which
-    is the proof ``identity.proven_own_send`` reads. Returns the id of the
-    copy in A, and the Message-ID."""
-    imid = f"<{uuid.uuid4().hex}@gmail.test>"
+    is the proof ``identity.proven_own_send`` reads. Only the Outlook provider
+    stores that column, so in production the proof exists only between two
+    Outlook mailboxes. Returns the id of the copy in A, and the Message-ID."""
+    imid = _message_id()
     _mail(f.admin, org=f.org, account=f.b, frm=f.b_addr, to=to, folder="sent",
           subject=subject, thread=thread, imid=imid)
     in_a = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=to,
@@ -422,21 +437,42 @@ class TestSelfIsEachMailboxOfTheMember:
         assert got is pinned
 
     @pytest.mark.parametrize(("case", "checked"), [
-        ("proven", False),    # B's Sent copy proves the send: skipped
-        ("forged", True),     # From says B, and there is no Sent copy
-        ("own_copy", True),   # the only copy is in A itself: not another box
-        ("stranger", True),   # the positive control
+        ("proven", False),       # B's Sent copy names A: the send is proved
+        ("proven_bcc", False),   # B's Sent copy names A in Bcc only
+        ("forged", True),        # From says B, and there is no Sent copy
+        ("own_copy", True),      # the only copy is in A itself: not another box
+        ("replayed", True),      # round 2: B's real Sent copy went to Ravi
+        ("inbox_copy", True),    # round 2: B holds the forgery in its INBOX
+        ("empty_id", True),      # round 2: an empty Message-ID proves nothing
+        ("stranger", True),      # the positive control
     ])
     async def test_the_cold_check_skips_only_a_proven_own_send(
         self, family, monkeypatch, case, checked,
     ):
-        """Review round 1: a forged From of mailbox B gets the cold check. Only
-        a Sent copy in ANOTHER mailbox of the member proves the send."""
+        """Review rounds 1 and 2: a forged From of mailbox B gets the cold
+        check. Only a Sent copy in ANOTHER mailbox of the member proves the
+        send, and that copy names this mailbox in To, Cc or Bcc.
+
+        ``replayed``: B really sent a mail to Ravi. Ravi then forged
+        ``From: B`` to A with the same Message-ID. ``inbox_copy``: one forged
+        mail went to both A and B, so B holds it in its inbox. Only the
+        ``sent`` folder test refuses that one."""
         f = family
-        if case == "proven":
-            mail, _ = _sent_by_b(f, to=(f.a_addr,))
+        imid = _message_id()
+        b_copy = {
+            "proven": ("sent", (f.a_addr,), None, imid),
+            "proven_bcc": ("sent", (RAVI,), (f.a_addr,), imid),
+            "replayed": ("sent", (RAVI,), None, imid),
+            "inbox_copy": ("inbox", (f.a_addr, f.b_addr), None, imid),
+            "empty_id": ("sent", (f.a_addr,), None, ""),
+        }.get(case)
+        if b_copy is not None:
+            folder, to, bcc, imid = b_copy
+            _mail(f.admin, org=f.org, account=f.b, frm=f.b_addr, to=to, bcc=bcc,
+                  folder=folder, imid=imid)
+            mail = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
+                         to=(f.a_addr,), imid=imid)
         elif case == "own_copy":
-            imid = f"<{uuid.uuid4().hex}@gmail.test>"
             _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,),
                   folder="sent", imid=imid)
             mail = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
@@ -444,7 +480,7 @@ class TestSelfIsEachMailboxOfTheMember:
         else:
             frm = f.b_addr if case == "forged" else "pitch@vendor.test"
             mail = _mail(f.admin, org=f.org, account=f.a, frm=frm,
-                         to=(f.a_addr,), imid=f"<{uuid.uuid4().hex}@x.test>")
+                         to=(f.a_addr,), imid=imid)
         llm = AsyncMock(return_value=(False, ""))
         monkeypatch.setattr(senders_mod, "_llm_is_cold", llm)
         async with _as_app(f.p, f.org), _tenant_session() as db:
@@ -458,7 +494,7 @@ class TestSelfIsEachMailboxOfTheMember:
         self, family, monkeypatch,
     ):
         f = family
-        imid = f"<{uuid.uuid4().hex}@x.test>"
+        imid = _message_id()
         _mail(f.admin, org=f.org, account=f.d, frm=f.b_addr, to=(f.a_addr,),
               folder="sent", imid=imid)
         mail = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
@@ -531,7 +567,7 @@ def live(family, monkeypatch):
                              thread=f"lb-{f.tag}")
     f.from_x = _mail(f.admin, org=f.org, account=f.a, frm="pitch@vendor.test",
                      to=(f.a_addr,), subject="from x", thread=f"lx-{f.tag}",
-                     imid=f"<{uuid.uuid4().hex}@vendor.test>", minutes=1)
+                     imid=_message_id(), minutes=1)
     _rule(f.admin, org=f.org, account=f.a, name="Newsletter",
           created_at=_T0 - timedelta(days=1))
     _exec(f.admin, (
@@ -956,20 +992,41 @@ class TestThePairIsRefused:
             "SELECT count(*) FROM email_rule_patterns "
             "WHERE rule_id = CAST(:r AS uuid)"), {"r": f.rule_b}) == 0
 
-    async def test_feedback_refuses_a_mail_of_another_mailbox(self, pair):
+    async def test_feedback_refuses_a_mail_of_another_mailbox(
+        self, pair, monkeypatch,
+    ):
         """Review round 1: a LABEL rule of A with a mail of B put A's label on
-        B's mail, locally and at the provider, and answered 200."""
+        B's mail, locally and at the provider, and answered 200.
+
+        Round 2: the 404 rolls back the local rows, so only the provider shows
+        a write that ran before the check. A recording provider counts each
+        label write: 0 for the mail of B, and 1 for the control mail of A."""
         f = pair
+        writes: list[tuple[str, tuple]] = []
+
+        class _Recorder(_Provider):
+            def __init__(self, message_id: str) -> None:
+                self.message_id = message_id
+
+            async def set_labels(self, pmid, add=None, remove=None) -> None:
+                writes.append((self.message_id, tuple(add or ())))
+
+        async def _for_message(_db, message_id, _owner):
+            return _Recorder(str(message_id)), "pm", f.a, None
+
+        monkeypatch.setattr(actions_mod, "_provider_for_message", _for_message)
         async with _as_app(f.p, f.org):
             with pytest.raises(HTTPException) as exc:
                 await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
                     account_id=f.a, sender=RAVI, expected=f.label_rule_a,
                     message_id=f.mail_b), user=f.user)
+            assert writes == [], "a provider label write reached the mail of B"
             ok = await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
-                account_id=f.a, sender=RAVI, expected="none",
+                account_id=f.a, sender=RAVI, expected=f.label_rule_a,
                 message_id=f.mail_a), user=f.user)
         assert exc.value.status_code == 404
-        assert "created" in ok, "the positive control: a mail of A passes"
+        assert ok["label_correction"]["added"] == ["Receipt"], "the control"
+        assert writes == [(f.mail_a, ("Receipt",))], "one write, on the mail of A"
         assert _categories_of(f, f.mail_b) == [], "nothing was written on B"
 
     async def test_feedback_refuses_a_thread_of_another_mailbox(
@@ -1058,6 +1115,47 @@ class TestMailBetweenOwnMailboxesIsNeverOpen:
             mixed = await replyzero_mod._thread_is_self_only(db, f.a, f.mixed)
             none = await replyzero_mod._thread_is_self_only(db, f.a, "no-such")
         assert (own, mixed, none) == (True, False, False)
+
+    @pytest.mark.parametrize(("reply", "self_only"), [
+        # (to, cc, bcc) of A's Sent reply. None is a NULL column.
+        (("B", None, None), True),       # NULL lists are not an outsider
+        (("RAVI", None, None), False),   # an outsider beside a NULL Cc
+        (("B", (), ("RAVI",)), False),   # an outsider in Bcc only
+        ((None, (), ("RAVI",)), False),  # empty To and Cc, an outsider in Bcc
+        ((None, None, None), False),     # no recipient at all: unknown
+    ], ids=["null-lists", "outsider-null-cc", "bcc-outsider", "bcc-only",
+            "no-recipients"])
+    async def test_the_participant_rule_reads_bcc_and_unknown_lists(
+        self, family, reply, self_only,
+    ):
+        """Review round 2 (F4): Bcc is a recipient list, a NULL list is an
+        empty one, and a mail with no recipient at all keeps the status."""
+        f = family
+        t = f"pr-{uuid.uuid4().hex[:8]}"
+        named = {"B": (f.b_addr,), "RAVI": (RAVI,), None: ()}
+        to, cc, bcc = reply
+        _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,),
+              cc=None, thread=t, subject="plan")
+        _mail(f.admin, org=f.org, account=f.a, frm=f.a_addr, to=named[to],
+              cc=None if cc is None else tuple(named[c][0] for c in cc),
+              bcc=None if bcc is None else tuple(named[c][0] for c in bcc),
+              thread=t, folder="sent", subject="Re: plan", minutes=5)
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            got = await replyzero_mod._thread_is_self_only(db, f.a, t)
+        assert got is self_only
+
+    async def test_a_done_row_stays_done(self, threads):
+        """Round 2 (M5): an automated self-only write never reopens or
+        replaces a thread that the member marked Done."""
+        f = threads
+        _exec(f.admin, (
+            "INSERT INTO email_thread_status (account_id, thread_id, status, "
+            "reason, organization_id) VALUES (CAST(:a AS uuid), :t, 'DONE', "
+            "'Marked done', CAST(:o AS uuid))"), {"a": f.a, "t": f.own, "o": f.org})
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            await replyzero_mod.recompute_thread_status(
+                db, f.a, f.own, trigger="backfill", acc_email=f.a_addr)
+        assert _status(f, f.own)[0] == "DONE"
 
     async def test_the_status_authority_files_it_as_fyi(self, threads):
         f = threads
