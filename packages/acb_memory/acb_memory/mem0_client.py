@@ -75,6 +75,11 @@ __all__ = [
 #: many rows, and the method reads again until a read is empty.
 DELETE_SCOPE_PAGE = 100
 
+#: The most reads of one ``delete_scope`` call. 1000 pages of 100 rows is
+#: 100,000 memories in one scope. Past it the call raises, so a fault fails a
+#: test run and does not hang it.
+DELETE_SCOPE_MAX_PAGES = 1000
+
 
 class MemoryClient:
     """Thin wrapper around the mem0ai MemoryClient with lazy initialisation.
@@ -279,19 +284,34 @@ class MemoryClient:
         and reads again until a read is empty. ``show_expired=True`` makes the
         read include expired rows, so they go too.
 
-        The match on ``user_id`` is exact, so the scope ``a@x#acct:1`` does not
-        touch ``a@x`` or ``a@x#acct:10``. A scope check that is special to one
+        A plain string matches ``user_id`` exactly, so the scope ``a@x#acct:1``
+        does not touch ``a@x`` or ``a@x#acct:10``. Two values do NOT match
+        exactly, and this method refuses both with ``ValueError`` before any
+        call (EM-T8f-1 review, round 1):
+
+        * ``"*"``. The pgvector store of mem0ai 2.2.1 turns it into
+          ``payload ? 'user_id'``, which matches every memory of every tenant.
+          mem0 trims the value first, so ``" * "`` is the same value.
+        * A value that is not a ``str``. A dict is an operator filter, for
+          example ``{"in": [...]}``.
+
+        A blank value is refused too. A scope check that is special to one
         caller stays with that caller (``routes/email/memory_purge.py``).
 
         Unlike ``delete``, this method RAISES on a Mem0 error. A purge that
-        fails in silence reads the same as a purge that worked. A blank scope
-        raises ``ValueError`` before any call. With Mem0 off the answer is 0.
-        A read that gives the same page twice raises ``RuntimeError``, so a
-        delete that has no effect cannot loop for ever.
+        fails in silence reads the same as a purge that worked. With Mem0 off
+        the answer is 0. A read that gives the same page twice raises
+        ``RuntimeError``, so a delete that has no effect cannot loop for ever.
+        More than ``DELETE_SCOPE_MAX_PAGES`` reads raise ``RuntimeError`` too,
+        so a fault fails a run and does not hang it.
         """
-        scope = (user_id or "").strip()
+        if not isinstance(user_id, str):
+            raise ValueError("delete_scope needs a str scope key")
+        scope = user_id.strip()
         if not scope:
             raise ValueError("delete_scope needs a scope key")
+        if scope == "*":
+            raise ValueError("delete_scope refuses the wildcard scope")
         client = self._get_client()
         if client is None:
             return 0
@@ -299,7 +319,7 @@ class MemoryClient:
         def _sync() -> int:
             deleted = 0
             seen: set[tuple[str, ...]] = set()
-            while True:
+            for _page in range(DELETE_SCOPE_MAX_PAGES):
                 page = client.get_all(
                     filters={"user_id": scope},
                     top_k=DELETE_SCOPE_PAGE,
@@ -316,6 +336,9 @@ class MemoryClient:
                 for memory_id in ids:
                     client.delete(memory_id=memory_id)
                     deleted += 1
+            raise RuntimeError(
+                f"mem0 delete_scope read {DELETE_SCOPE_MAX_PAGES} pages and the scope "
+                "is not empty")
 
         return await asyncio.to_thread(_sync)
 

@@ -16,9 +16,16 @@ R7 fences named here:
 * ``email-rule-copy-floor``: the new-mail floor of the target is the time of
   the copy.
 * ``email-rule-copy-drafting``: with ``draft_replies`` false or absent, no
-  copied reply rule holds DRAFT_EMAIL. With it true, the rule keeps it.
+  copied reply rule holds DRAFT_EMAIL. With it true, the rule keeps it. A rule
+  that is not a reply rule keeps its DRAFT_EMAIL in each case.
+* ``email-rule-copy-one-reply-rule`` (review round 1, P1): the target keeps
+  one reply rule at most. A source reply rule is left out as
+  ``reply_rule_exists`` when the target holds one, so the switch OFF stops
+  every reply draft after a copy.
 * ``email-rule-copy-forward-loop``: a rule with a FORWARD to an own address is
   left out and named.
+* ``email-rule-copy-409``: a copy that cannot land answers 409 and writes
+  nothing.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``
@@ -45,6 +52,7 @@ from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.routes.email import core
 from gateway.routes.email.automation import rule_copy
+from gateway.routes.email.automation import rules as rules_mod
 from gateway.routes.email.automation.rules import NEW_MAIL_FLOOR_SQL
 from sqlalchemy import text
 
@@ -95,6 +103,25 @@ class TestTheForwardRule:
     def test_a_forward_to_an_own_address(self, action, own):
         rule = {"actions": [{"type": "LABEL", "label": "x"}, action]}
         assert rule_copy.forwards_to_own_address(rule, {"box-b@x.test"}) is own
+
+
+class TestTheLeftOutReason:
+
+    def _rule(self, **over: Any) -> dict[str, Any]:
+        return {"name": "Needs Reply", "system_type": None, "enabled": True,
+                "actions": [], **over}
+
+    def test_each_reason(self):
+        own = {"b@x.test"}
+        reason = rule_copy._left_out_reason
+        assert reason(self._rule(enabled=False), own, False) == rule_copy.LEFT_OUT_DISABLED
+        assert reason(self._rule(actions=[{"type": "FORWARD", "to_address": "b@x.test"}]),
+                      own, False) == rule_copy.LEFT_OUT_FORWARD_LOOP
+        assert reason(self._rule(), own, True) == rule_copy.LEFT_OUT_REPLY_EXISTS
+        assert reason(self._rule(name="X", system_type="REPLY"), own, True) == (
+            rule_copy.LEFT_OUT_REPLY_EXISTS)
+        assert reason(self._rule(), own, False) is None
+        assert reason(self._rule(name="Vendors"), own, True) is None
 
 
 class TestTheRoute:
@@ -473,36 +500,146 @@ class TestTheFloorOfTheTarget:
 @_DB_GATE
 class TestDraftingFollowsTheTarget:
 
+    @pytest.mark.parametrize("reply_name,reply_type", [
+        ("Needs Reply", None), ("Answer these", "REPLY"),
+    ], ids=["reply-by-name", "reply-by-system-type"])
     @pytest.mark.parametrize("setting,keeps", [
         (None, False), (False, False), (True, True),
     ], ids=["no-settings-row", "draft-replies-off", "draft-replies-on"])
     async def test_a_reply_rule_keeps_draft_email_only_when_the_target_drafts(
-        self, member, promoted, setting, keeps,  # noqa: F811
+        self, member, promoted, setting, keeps, reply_name, reply_type,  # noqa: F811
     ):
         p = promoted
         src, dst = member.box(), member.box()
         _settings(p.admin_engine, org=p.org_b, account=src, draft_replies=True)
         if setting is not None:
             _settings(p.admin_engine, org=p.org_b, account=dst, draft_replies=setting)
-        # One reply rule by name, one by system type.
-        by_name = _rule(p.admin_engine, org=p.org_b, account=src, name="Needs Reply")
-        by_type = _rule(p.admin_engine, org=p.org_b, account=src,
-                        name="Answer these", system_type="REPLY")
-        for rid in (by_name, by_type):
-            _action(p.admin_engine, org=p.org_b, rule=rid, type_="LABEL", label="Reply")
+        reply = _rule(p.admin_engine, org=p.org_b, account=src, name=reply_name,
+                      system_type=reply_type)
+        # A rule that the switch does not govern: the member put DRAFT_EMAIL
+        # there, and it stays whatever the target's setting is.
+        vendors = _rule(p.admin_engine, org=p.org_b, account=src, name="Vendors")
+        for rid in (reply, vendors):
+            _action(p.admin_engine, org=p.org_b, rule=rid, type_="LABEL", label="x")
             _action(p.admin_engine, org=p.org_b, rule=rid, type_="DRAFT_EMAIL")
-        # The target holds "Needs Reply", so the copy is renamed. The rule
-        # still follows the target, because the test is on the source rule.
-        _rule(p.admin_engine, org=p.org_b, account=dst, name="Needs Reply")
 
         out = await member.copy(src, dst)
 
-        assert sorted(out.copied) == ["Answer these", "Needs Reply (copy)"]
+        assert sorted(out.copied) == sorted([reply_name, "Vendors"])
         after = _rules_of(p.admin_engine, dst)
-        for name in out.copied:
-            types = [a["type"] for a in _actions_of(p.admin_engine, after[name]["id"])]
-            want = ["LABEL", "DRAFT_EMAIL"] if keeps else ["LABEL"]
-            assert types == want, f"{name}: {types}"
+
+        def types(name: str) -> list[str]:
+            return [a["type"] for a in _actions_of(p.admin_engine, after[name]["id"])]
+
+        assert types(reply_name) == (["LABEL", "DRAFT_EMAIL"] if keeps else ["LABEL"])
+        assert types("Vendors") == ["LABEL", "DRAFT_EMAIL"], (
+            "a rule that is not a reply rule lost its DRAFT_EMAIL")
+
+
+# ── R8: email-rule-copy-one-reply-rule ───────────────────────────────────────
+
+
+@_DB_GATE
+class TestTheTargetKeepsOneReplyRule:
+    """The "Auto draft replies" switch edits only the first reply rule. A second
+    reply rule in the target would go on drafting while the switch shows OFF."""
+
+    async def test_after_a_copy_the_switch_off_stops_every_reply_draft(
+        self, member, promoted,  # noqa: F811
+    ):
+        """The case of review round 1 (P1): the target holds Needs Reply and
+        drafts. Before the fix, "Needs Reply (copy)" arrived with DRAFT_EMAIL,
+        and the switch could not turn it off."""
+        p = promoted
+        src, dst = member.box(), member.box()
+        _settings(p.admin_engine, org=p.org_b, account=dst, draft_replies=True)
+        for box in (src, dst):
+            rid = _rule(p.admin_engine, org=p.org_b, account=box, name="Needs Reply")
+            _action(p.admin_engine, org=p.org_b, rule=rid, type_="LABEL", label="x")
+            _action(p.admin_engine, org=p.org_b, rule=rid, type_="DRAFT_EMAIL")
+
+        out = await member.copy(src, dst)
+
+        assert out.copied == []
+        assert [(x.name, x.reason) for x in out.left_out] == [
+            ("Needs Reply", rule_copy.LEFT_OUT_REPLY_EXISTS)]
+        assert set(_rules_of(p.admin_engine, dst)) == {"Needs Reply"}
+        # The member turns drafting OFF, as SettingsTab does.
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn), core._tenant_session() as db:
+                await rules_mod.sync_draft_reply_action(db, dst, False)
+        finally:
+            release_tenant(token)
+        drafting = _rows(p.admin_engine,
+                         "SELECT r.name FROM email_rules r JOIN email_actions a "
+                         "ON a.rule_id = r.id WHERE r.account_id = CAST(:a AS uuid) "
+                         "AND a.type = 'DRAFT_EMAIL'", a=dst)
+        assert drafting == [], f"a rule still drafts with the switch OFF: {drafting}"
+
+    @pytest.mark.parametrize("held_name,held_type,enabled", [
+        ("Reply", None, True), ("to reply", None, False), ("Inbox triage", "REPLY", True),
+    ], ids=["legacy-name", "disabled-legacy-name", "by-system-type"])
+    async def test_any_reply_rule_of_the_target_counts(
+        self, member, promoted, held_name, held_type, enabled,  # noqa: F811
+    ):
+        p = promoted
+        src, dst = member.box(), member.box()
+        _rule(p.admin_engine, org=p.org_b, account=dst, name=held_name,
+              system_type=held_type, enabled=enabled)
+        _rule(p.admin_engine, org=p.org_b, account=src, name="Needs Reply")
+        _rule(p.admin_engine, org=p.org_b, account=src, name="Vendors")
+
+        out = await member.copy(src, dst)
+
+        assert out.copied == ["Vendors"]
+        assert [(x.name, x.reason) for x in out.left_out] == [
+            ("Needs Reply", rule_copy.LEFT_OUT_REPLY_EXISTS)]
+
+    async def test_a_second_reply_rule_of_the_source_is_left_out(
+        self, member, promoted,  # noqa: F811
+    ):
+        p = promoted
+        src, dst = member.box(), member.box()
+        _rule(p.admin_engine, org=p.org_b, account=src, name="Answer these",
+              system_type="REPLY")
+        _rule(p.admin_engine, org=p.org_b, account=src, name="Needs Reply")
+
+        out = await member.copy(src, dst)
+
+        assert len(out.copied) == 1 and len(out.left_out) == 1
+        assert out.left_out[0].reason == rule_copy.LEFT_OUT_REPLY_EXISTS
+        assert set(out.copied) | {out.left_out[0].name} == {"Answer these", "Needs Reply"}
+        assert set(_rules_of(p.admin_engine, dst)) == set(out.copied)
+
+
+# ── R8: the 409 of a copy that cannot land ───────────────────────────────────
+
+
+@_DB_GATE
+class TestACopyThatCannotLand:
+
+    async def test_a_source_rule_that_left_gives_409_and_writes_nothing(
+        self, member, promoted,  # noqa: F811
+    ):
+        """The INSERT finds no source row on each try, as when the rule left
+        during the copy. After ``_MAX_NAME_TRIES`` tries the copy answers 409,
+        and it never answers a name."""
+        p = promoted
+        src, dst = member.box(), member.box()
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(app_dsn), core._tenant_session() as db:
+                with pytest.raises(HTTPException) as err:
+                    await rule_copy._copy_one(
+                        db, {"id": str(uuid.uuid4()), "name": "Ghost"},
+                        src, dst, set(), keep_draft=True)
+        finally:
+            release_tenant(token)
+        assert err.value.status_code == 409
+        assert _rules_of(p.admin_engine, dst) == {}
 
 
 # ── R8: email-rule-copy-forward-loop ─────────────────────────────────────────

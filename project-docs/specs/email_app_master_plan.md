@@ -3224,7 +3224,7 @@ that design. The owner can reverse any of them. Q-MB-1 is the one open owner que
 | **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
 | **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
 | **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
-| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. |
+| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out each WHOLE rule that has a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. The reason for the whole rule is in the As-built notes of EM-T8f-1 (§11.7.6). |
 
 ### 11.3 How the AI keeps the mailboxes apart
 
@@ -4120,24 +4120,42 @@ migration.
   strict `getaddresses` of Python 3.12 gives no address for a field that it cannot parse. The
   guard would then let a loop through, so it does not use that parser.
 - **The answer.** `copied` holds the names in the target. `renamed` holds `{name, copied_as}`.
-  `left_out` holds `{name, reason}`, and the reason is `disabled` or `forward_to_own_address`.
+  `left_out` holds `{name, reason}`. The reason is `disabled`, `forward_to_own_address` or
+  `reply_rule_exists`.
 - **The names.** The compare of names ignores case. The INSERT has
   `ON CONFLICT (account_id, name) DO NOTHING`, so a name that another writer takes moves the copy
   to the next name. After 50 tries the route answers 409, and the copy writes nothing.
-- **Drafting (D-EM-6).** The test is on the source rule, so a renamed copy of Needs Reply follows
-  the setting of the target too. A DRAFT_EMAIL on a rule that is not a reply rule stays.
+- **One reply rule (D-EM-6).** The target keeps one reply rule at most (`rules._is_reply_rule`).
+  The "Auto draft replies" switch edits only the first reply rule. A second one would go on
+  drafting while the switch shows OFF. So a source reply rule is left out as `reply_rule_exists`
+  when the target holds a reply rule, enabled or not. It is also left out when the copy already
+  took a reply rule.
+- **Drafting (D-EM-6).** The copied reply rule keeps DRAFT_EMAIL only when the target drafts. A
+  DRAFT_EMAIL on a rule that is not a reply rule stays, because the switch does not govern it.
 - **The columns.** Three tuples in `rule_copy.py` name each column of `email_rules` and
   `email_actions`. The fence reads `information_schema` and fails on a column in no tuple.
 - **The purge.** `MemoryClient.delete_scope` reads pages of 100 rows with `show_expired=True`.
-  Unlike `delete`, it raises on a Mem0 error. A page that comes back twice raises, so a delete
-  with no effect cannot loop. With Mem0 off the count is 0.
-- **The log.** A purge logs the account id and the count. A failure logs the error class only. No
-  purge log holds an address or the text of a memory.
+  Unlike `delete`, it raises on a Mem0 error. A page that comes back twice raises, and so do more
+  than 1000 pages. So a fault fails a run and does not hang it. With Mem0 off the count is 0.
+- **The refusals.** `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value,
+  before any read. The pgvector store of mem0ai 2.2.1 turns `"*"` into `payload ? 'user_id'`,
+  which matches each memory of each tenant. The purge also refuses an account id that is not a
+  UUID, and it builds the key from `str(UUID(id))`. The writers use that form, and a path id in
+  capitals finds the row in Postgres but no Mem0 key.
+- **Two passes.** Three writers fill the key. The third is the precedent of each draft, which a
+  background task adds, and no lock holds it. So the purge runs `delete_scope` twice, 120 seconds
+  apart. An add that lands after the second pass stays.
+- **The log.** A purge logs the account id and the counts `first` and `second`. A failed pass
+  logs the pass and the error class only. No purge log holds an address or the text of a memory.
 - **`created_at`.** Each account read returns ISO text with six digits of microseconds. Two values
   then sort as text in the order of time.
 - **Findings, not built here.** `MemoryClient.get_all` passes no `top_k`, and mem0ai 2.2.1 then
   returns 20 rows at most. The memory panel can show only 20. `routes/admin/members.py` deletes
   the mailboxes of a purged member and starts no Mem0 purge.
+- **Deferred: a durable sweeper.** The purge task lives in one gateway process. A restart during
+  the 120 seconds loses the second pass, and an add after the second pass stays. A durable sweep
+  of `#acct:<id>` keys with no mailbox row closes both. It is not built here. A run of it against
+  production is OWNER-GATE, as the sweep of older disconnects is.
 - **Verification (2026-10-03).** With `DATABASE_URL` unset, the block below gave 278 passed and 2
   skipped. The two skips are the WS-29 gates of `test_tenant_coverage.py`, which read
   `DATABASE_URL`. With `DATABASE_URL` set to the base database as well, those two gates failed
@@ -4145,6 +4163,32 @@ migration.
   loop. `test_live_catalog_has_column_force_and_policy` reads a ladder that an earlier suite
   replayed with no FORCE RLS phase. Both fail the same way on the base tree. Each of 16
   mutations of the fences went red.
+
+**Review fix round 1 (2026-10-03).** An adversarial reviewer and a verifier checked 41c9c0b4.
+They found no P0, and no leak across members or organizations. The round fixed one P1, four P2s,
+four fence gaps and two doc defects. The agent rebased the branch on `a6b5b3ae` (#602). The
+rebase dropped the two narrowing commits, because #602 carries them.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| P1: a renamed copy of a reply rule drafts after the switch goes OFF | The target keeps one reply rule (`reply_rule_exists`) | the check off | `TestTheTargetKeepsOneReplyRule` |
+| P1, second half | The copy counts the reply rule that it took | `reply_held` not set | `test_a_second_reply_rule_of_the_source_is_left_out` |
+| P2: a late Mem0 add lands after the purge | A second pass after 120 seconds, logged as `first` and `second` | no second pass | `TestTheSecondPass` |
+| P2: `delete_scope("*")` deletes each memory of each tenant | Refuse `"*"`, a non-`str` and a blank value | each check off | `test_delete_scope_refuses_before_any_read` |
+| P2: the page loop has no cap | 1000 pages, then `RuntimeError` | `while True` | `TestThePageCap` |
+| P2: a path id in capitals misses the Mem0 key | The key holds `str(UUID(id))` | the raw id | `test_a_path_id_in_another_form_purges_the_canonical_key` |
+| M5: no fence for a rule that is not a reply rule | That rule keeps DRAFT_EMAIL | `keep_draft=target_drafts` | `TestDraftingFollowsTheTarget` |
+| M6: no fence for zero microseconds | A seed with a whole second | plain `isoformat()` | `test_each_account_read_returns_created_at` |
+| M7: no fence for the 409 | A copy that cannot land | the 409 path answers a name | `TestACopyThatCannotLand` |
+| M8: no fence for the strong reference | The set holds the running task | no `_PURGES.add` | `TestTheStrongReference` |
+
+- **Docs.** The D-EM-29 row in §11.2 now says that the copy leaves out the whole rule (F1). The
+  docstring of `memory_purge.py` names the three writers (F9).
+- **Mutation check.** 27 mutations went red: the 11 of the table and the 16 of the build, with
+  their round 1 anchors. The script restored each file and checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 307 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 127 email suites, with the memory and
+  seam suites, gave 2291 passed. The ruff gate passed.
 
 **Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
 `automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`

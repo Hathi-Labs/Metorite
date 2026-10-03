@@ -1,9 +1,9 @@
 """EM-T8f-1 — a disconnect purges the Mem0 memory of the mailbox (MB-17).
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §11.7.6, EM-T8f-1 items
-2 and 3.
+2 and 3, and the notes of review round 1.
 
-Two writers put the drafting memory of a mailbox into Mem0 under
+Three writers put the drafting memory of a mailbox into Mem0 under
 ``<owner>#acct:<id>``. Before EM-T8f-1 a disconnect left those memories
 behind. ``transport/accounts.py::delete_account`` now starts
 ``memory_purge.schedule_mailbox_memory_purge`` after its DELETE commits.
@@ -12,18 +12,29 @@ R7 fences named here:
 
 * ``email-disconnect-purges-memory``: a 204 deletes each memory under
   ``<owner>#acct:<id>``, over more than one page. It deletes no memory of the
-  bare scope, of another mailbox, or of another member.
-* ``email-purge-refuses-bare-scope``: an empty account id deletes nothing.
+  bare scope, of another mailbox, or of another member. The key holds the
+  canonical form of the id, so a path id in capitals or with no hyphens still
+  finds it.
+* ``email-purge-second-pass``: a second pass, ``SECOND_PASS_DELAY_S`` after the
+  first, deletes a memory that a late add wrote between the passes.
+* ``email-purge-refuses-bare-scope``: an empty or invalid account id deletes
+  nothing. ``delete_scope`` refuses ``"*"``, a value that is not a ``str``,
+  and a blank value, before any read.
+* ``email-purge-page-cap``: a scope that never empties raises after
+  ``DELETE_SCOPE_MAX_PAGES`` reads, fast.
+* ``email-purge-strong-reference``: ``_PURGES`` holds the task while it runs,
+  and lets it go after.
 * ``email-purge-after-delete``: a 404, a 409 or a failed DELETE makes no purge
   call. A failed purge still gives 204, and its log holds no memory text.
-* ``email-account-created-at``: each account read returns ``created_at``
-  (R8).
+* ``email-account-created-at``: each account read returns ``created_at``, with
+  six digits of microseconds even when they are zero (R8).
 
 **Hermetic.** The doubles of ``test_email_disconnect_order.py`` (the
 ``wired`` fixture) stand in for the session, the scheduler and Graph. The
 REAL ``MemoryClient.delete_scope`` runs over ``_FakeMem0``, a stand-in for
 the mem0ai ``Memory`` that matches ``user_id`` exactly and caps a read at
-``top_k``, as pgvector does.
+``top_k``, as pgvector does. ``memory_purge._sleep`` is replaced, so no test
+waits two minutes.
 
 **R8.** The real DELETE under FORCE RLS as ``acb_app_h3rls``, with the fake
 Mem0, and the four account reads against the real catalog.
@@ -76,7 +87,9 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 #: The text of every seeded memory starts with this. It must never reach a log.
 SECRET = "secret-memory-text"
-MAILBOX = f"{OWNER}#acct:acc-1"
+#: The mailbox under test, in the canonical form that the writers use.
+ACC = "6f1c2d3e-4a5b-4c6d-8e7f-90a1b2c3d4e5"
+MAILBOX = f"{OWNER}#acct:{ACC}"
 
 
 # ── the fake Mem0 ────────────────────────────────────────────────────────────
@@ -84,34 +97,49 @@ MAILBOX = f"{OWNER}#acct:acc-1"
 
 class _FakeMem0:
     """Stands in for mem0ai ``Memory``. ``get_all`` matches ``user_id``
-    exactly and returns at most ``top_k`` rows. ``delete`` removes one row."""
+    exactly and returns at most ``top_k`` rows. ``delete`` removes one row.
+
+    ``endless`` makes each read return one new row and each delete do
+    nothing, so the scope never empties and no page comes back twice. Past
+    ``safety`` reads it raises ``_SafetyStop``, so a regression of the page
+    cap fails the test and never hangs the run.
+    """
 
     def __init__(self, scopes: dict[str, int], *, fail: str | None = None,
-                 stuck: bool = False) -> None:
+                 stuck: bool = False, endless: bool = False) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         for scope, n in scopes.items():
             for i in range(n):
-                mid = str(uuid.uuid4())
-                self.rows[mid] = {"id": mid, "user_id": scope,
-                                  "memory": f"{SECRET} {scope} {i}"}
+                self.add(scope, f"{SECRET} {scope} {i}")
         self.reads: list[tuple[str, int, bool]] = []
         self.deleted: list[str] = []
         self.fail = fail
         self.stuck = stuck
+        self.endless = endless
+        self.safety = 2 * mem0_client.DELETE_SCOPE_MAX_PAGES + 10
+
+    def add(self, scope: str, memory: str) -> None:
+        mid = str(uuid.uuid4())
+        self.rows[mid] = {"id": mid, "user_id": scope, "memory": memory}
 
     def get_all(self, *, filters: dict[str, Any], top_k: int = 20,
                 show_expired: bool = False) -> dict[str, Any]:
         scope = filters["user_id"]
         self.reads.append((scope, top_k, show_expired))
-        if self.fail == "read":
+        if len(self.reads) > self.safety:
+            raise _SafetyStop("the page loop has no cap")
+        if self.fail == "read" or (self.fail == "first-read" and len(self.reads) == 1):
             raise RuntimeError(f"pgvector refused near {SECRET}")
+        if self.endless:
+            return {"results": [{"id": str(uuid.uuid4()), "user_id": scope,
+                                 "memory": SECRET}]}
         hits = [dict(r) for r in self.rows.values() if r["user_id"] == scope]
         return {"results": hits[:top_k]}
 
     def delete(self, memory_id: str) -> dict[str, str]:
         if self.fail == "delete":
             raise RuntimeError(f"row {self.rows[memory_id]['memory']} is locked")
-        if self.stuck:
+        if self.stuck or self.endless:
             return {"message": "ok"}
         self.deleted.append(memory_id)
         del self.rows[memory_id]
@@ -119,6 +147,10 @@ class _FakeMem0:
 
     def left(self, scope: str) -> int:
         return sum(1 for r in self.rows.values() if r["user_id"] == scope)
+
+
+class _SafetyStop(Exception):
+    """The fake stopped a loop that the code under test did not stop."""
 
 
 class _Log:
@@ -134,17 +166,29 @@ class _Log:
 
 @pytest.fixture()
 def mem0(monkeypatch):
-    """Wire a ``_FakeMem0`` under the REAL ``MemoryClient``, and a recording
-    log into ``memory_purge``. Returns a setup function."""
+    """Wire a ``_FakeMem0`` under the REAL ``MemoryClient``, a recording log
+    and an instant sleep into ``memory_purge``. Returns a setup function.
 
-    def _setup(scopes: dict[str, int], **kw: Any) -> SimpleNamespace:
+    ``between`` runs in place of the wait between the two passes.
+    """
+
+    def _setup(scopes: dict[str, int], *, between: Any = None,
+               **kw: Any) -> SimpleNamespace:
         fake = _FakeMem0(scopes, **kw)
         client = mem0_client.MemoryClient()
         client._client = fake
         monkeypatch.setattr(mem0_client, "get_memory_client", lambda: client)
         log = _Log()
         monkeypatch.setattr(memory_purge, "_log", log)
-        return SimpleNamespace(fake=fake, client=client, log=log)
+        delays: list[float] = []
+
+        async def _sleep(seconds: float) -> None:
+            delays.append(seconds)
+            if between is not None:
+                await between(fake)
+
+        monkeypatch.setattr(memory_purge, "_sleep", _sleep)
+        return SimpleNamespace(fake=fake, client=client, log=log, delays=delays)
 
     return _setup
 
@@ -166,15 +210,25 @@ async def _drain() -> None:
 def _seeded() -> dict[str, int]:
     """250 memories of the mailbox, and three of each neighbour scope.
 
-    ``acc-10`` starts with ``acc-1``, so a prefix match would take it.
+    The ``0`` key starts with the mailbox key, so a prefix match would take it.
     """
     return {
         MAILBOX: 250,
         OWNER: 3,
-        f"{OWNER}#acct:acc-2": 3,
-        f"{OWNER}#acct:acc-10": 3,
-        "someone@else.test#acct:acc-1": 3,
+        f"{OWNER}#acct:{uuid.uuid4()}": 3,
+        f"{MAILBOX}0": 3,
+        f"someone@else.test#acct:{ACC}": 3,
     }
+
+
+def _purged(first: int, second: int) -> tuple[str, str, dict[str, Any]]:
+    return ("info", "email.disconnect.memory_purged",
+            {"account_id": ACC, "first": first, "second": second})
+
+
+def _failed(phase: str) -> tuple[str, str, dict[str, Any]]:
+    return ("warning", "email.disconnect.memory_purge_failed",
+            {"account_id": ACC, "phase": phase, "error": "RuntimeError"})
 
 
 # ── email-disconnect-purges-memory ───────────────────────────────────────────
@@ -185,52 +239,98 @@ class TestADisconnectPurgesTheMemoryOfTheMailbox:
     async def test_a_204_deletes_each_memory_of_the_mailbox_over_pages(
         self, wired, mem0,  # noqa: F811
     ):
-        wired({"acc-1": _row()})
+        wired({ACC: _row()})
         m = mem0(_seeded())
-        assert await accounts.delete_account("acc-1", user=_user()) is None
+        assert await accounts.delete_account(ACC, user=_user()) is None
         await _drain()
         assert m.fake.left(MAILBOX) == 0, "a memory of the mailbox is left"
         assert len(m.fake.deleted) == 250
         pages = [r for r in m.fake.reads if r[0] == MAILBOX]
-        assert len(pages) == 4, "250 rows at 100 a page is three pages and one empty read"
+        # 250 rows at 100 a page: three pages and one empty read, then the
+        # second pass reads once and finds nothing.
+        assert len(pages) == 5
         assert all(top_k == mem0_client.DELETE_SCOPE_PAGE == 100 and expired
                    for _s, top_k, expired in pages)
         assert {r[0] for r in m.fake.reads} == {MAILBOX}, "it read another scope"
-        assert ("info", "email.disconnect.memory_purged",
-                {"account_id": "acc-1", "count": 250}) in m.log.lines
+        assert _purged(250, 0) in m.log.lines
 
     async def test_it_deletes_no_memory_of_another_scope(self, wired, mem0):  # noqa: F811
-        wired({"acc-1": _row()})
-        m = mem0(_seeded())
-        await accounts.delete_account("acc-1", user=_user())
+        wired({ACC: _row()})
+        seeded = _seeded()
+        m = mem0(seeded)
+        await accounts.delete_account(ACC, user=_user())
         await _drain()
-        for scope, n in _seeded().items():
+        for scope, n in seeded.items():
             if scope != MAILBOX:
                 assert m.fake.left(scope) == n, f"the purge touched {scope}"
 
     async def test_the_owner_is_the_member_in_any_case(self, wired, mem0):  # noqa: F811
         # The writers key on the lower-case member, so the purge does too.
-        wired({"acc-1": _row(user_id=OWNER.upper())})
+        wired({ACC: _row(user_id=OWNER.upper())})
         m = mem0(_seeded())
-        await accounts.delete_account("acc-1", user=_user(OWNER.upper()))
+        await accounts.delete_account(ACC, user=_user(OWNER.upper()))
         await _drain()
         assert m.fake.left(MAILBOX) == 0
+
+    @pytest.mark.parametrize("path_id", [ACC.upper(), ACC.replace("-", ""),
+                                         "{" + ACC + "}"],
+                             ids=["capitals", "no-hyphens", "braces"])
+    async def test_a_path_id_in_another_form_purges_the_canonical_key(
+        self, wired, mem0, path_id,  # noqa: F811
+    ):
+        # Postgres reads each of these forms as the same uuid, so the DELETE
+        # finds the row. The writers keyed Mem0 on the canonical form.
+        wired({path_id: _row()})
+        m = mem0(_seeded())
+        assert await accounts.delete_account(path_id, user=_user()) is None
+        await _drain()
+        assert m.fake.left(MAILBOX) == 0, "the purge missed the canonical key"
+        assert {r[0] for r in m.fake.reads} == {MAILBOX}
 
     async def test_the_purge_starts_after_the_delete_block_closes(
         self, wired, monkeypatch,  # noqa: F811
     ):
-        ledger = wired({"acc-1": _row()})
+        ledger = wired({ACC: _row()})
 
         def _record(owner: str, account_id: str) -> None:
             ledger.events.append(("purge", ledger.open, owner, account_id))
 
         monkeypatch.setattr(accounts, "schedule_mailbox_memory_purge", _record)
-        await accounts.delete_account("acc-1", user=_user())
+        await accounts.delete_account(ACC, user=_user())
         purge = ledger.first("purge")
-        assert purge == ("purge", 0, OWNER, "acc-1"), "the purge ran inside a block"
+        assert purge == ("purge", 0, OWNER, ACC), "the purge ran inside a block"
         closes = [i for i, e in enumerate(ledger.events) if e[0] == "close"]
         assert ledger.index("purge") > ledger.index("delete")
         assert ledger.index("purge") > closes[-1], "the purge ran before the commit"
+
+
+# ── email-purge-second-pass ──────────────────────────────────────────────────
+
+
+class TestTheSecondPass:
+
+    async def test_a_late_add_between_the_passes_is_deleted(self, wired, mem0):  # noqa: F811
+        async def _late_add(fake: _FakeMem0) -> None:
+            # A background add of the drafter lands after the first pass.
+            fake.add(MAILBOX, f"{SECRET} late")
+
+        wired({ACC: _row()})
+        m = mem0(_seeded(), between=_late_add)
+        await accounts.delete_account(ACC, user=_user())
+        await _drain()
+        assert m.delays == [memory_purge.SECOND_PASS_DELAY_S]
+        assert m.fake.left(MAILBOX) == 0, "the late add survived the purge"
+        assert _purged(250, 1) in m.log.lines
+
+    def test_the_passes_are_two_minutes_apart(self):
+        assert memory_purge.SECOND_PASS_DELAY_S == 120.0
+
+    async def test_a_failed_first_pass_still_runs_the_second(self, mem0):
+        m = mem0({MAILBOX: 7}, fail="first-read")
+        assert await memory_purge.purge_mailbox_memory(OWNER, ACC) is None
+        assert m.fake.left(MAILBOX) == 0
+        assert _failed("first") in m.log.lines
+        assert not [ln for ln in m.log.lines if ln[1] == "email.disconnect.memory_purged"]
 
 
 # ── email-purge-refuses-bare-scope ───────────────────────────────────────────
@@ -239,8 +339,10 @@ class TestADisconnectPurgesTheMemoryOfTheMailbox:
 class TestThePurgeRefusesTheBareScope:
 
     @pytest.mark.parametrize("owner,account_id", [
-        (OWNER, ""), (OWNER, "   "), ("", "acc-1"), ("  ", "acc-1"),
-    ], ids=["no-account", "blank-account", "no-owner", "blank-owner"])
+        (OWNER, ""), (OWNER, "   "), (OWNER, None), (OWNER, "acc-1"),
+        ("", ACC), ("  ", ACC),
+    ], ids=["no-account", "blank-account", "none-account", "not-a-uuid",
+            "no-owner", "blank-owner"])
     async def test_a_key_with_no_mailbox_deletes_nothing(
         self, mem0, owner, account_id,
     ):
@@ -250,16 +352,60 @@ class TestThePurgeRefusesTheBareScope:
         assert [line[1] for line in m.log.lines] == [
             "email.disconnect.memory_purge_refused"]
 
-    def test_the_scope_helper_raises(self):
-        with pytest.raises(memory_purge.BareScopeRefused):
+    def test_the_scope_helper_raises_and_builds_the_canonical_key(self):
+        with pytest.raises(memory_purge.ScopeRefused):
             memory_purge.mailbox_memory_scope(OWNER, "")
-        assert memory_purge.mailbox_memory_scope(OWNER, "acc-1") == MAILBOX
+        assert memory_purge.mailbox_memory_scope(OWNER, ACC.upper()) == MAILBOX
+        assert memory_purge.mailbox_memory_scope(OWNER, uuid.UUID(ACC)) == MAILBOX
 
-    async def test_delete_scope_refuses_a_blank_key_before_any_read(self, mem0):
+    @pytest.mark.parametrize("bad", [
+        "", "  ", "*", " * ", None, 7, {"in": [OWNER]}, [MAILBOX],
+    ], ids=["empty", "blank", "wildcard", "padded-wildcard", "none", "int",
+            "operator-dict", "list"])
+    async def test_delete_scope_refuses_before_any_read(self, mem0, bad):
         m = mem0(_seeded())
         with pytest.raises(ValueError):
-            await m.client.delete_scope("  ")
-        assert m.fake.reads == []
+            await m.client.delete_scope(bad)
+        assert m.fake.reads == [] and m.fake.deleted == []
+
+
+# ── email-purge-page-cap ─────────────────────────────────────────────────────
+
+
+class TestThePageCap:
+
+    async def test_a_scope_that_never_empties_raises_and_does_not_hang(self, mem0):
+        m = mem0({}, endless=True)
+        with pytest.raises(RuntimeError, match="pages"):
+            await asyncio.wait_for(m.client.delete_scope(MAILBOX), timeout=30)
+        assert len(m.fake.reads) == mem0_client.DELETE_SCOPE_MAX_PAGES
+
+    def test_the_cap_is_a_thousand_pages(self):
+        assert mem0_client.DELETE_SCOPE_MAX_PAGES == 1000
+
+
+# ── email-purge-strong-reference ─────────────────────────────────────────────
+
+
+class TestTheStrongReference:
+
+    async def test_the_set_holds_the_task_while_it_runs(self, mem0):
+        gate = asyncio.Event()
+
+        async def _hold(_fake: _FakeMem0) -> None:
+            await gate.wait()
+
+        m = mem0({MAILBOX: 3}, between=_hold)
+        task = memory_purge.schedule_mailbox_memory_purge(OWNER, ACC)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not task.done(), "the task should wait between the passes"
+        assert task in memory_purge._PURGES, "nothing holds the running purge"
+        gate.set()
+        assert await asyncio.wait_for(task, timeout=10) == 3
+        await asyncio.sleep(0)
+        assert task not in memory_purge._PURGES, "a finished purge kept its task"
+        assert m.fake.left(MAILBOX) == 0
 
 
 # ── email-purge-after-delete ─────────────────────────────────────────────────
@@ -269,8 +415,8 @@ class TestNoPurgeWithoutADelete:
 
     @pytest.mark.parametrize("rows,delete_fails,status", [
         ({}, None, 404),
-        ({"acc-1": _row(user_id="other@em-t4f.test")}, None, 404),
-        ({"acc-1": _row()}, "lock", 409),
+        ({ACC: _row(user_id="other@em-t4f.test")}, None, 404),
+        ({ACC: _row()}, "lock", 409),
     ], ids=["no-such-mailbox", "another-members-mailbox", "lock-timeout"])
     async def test_a_refused_disconnect_makes_no_purge_call(
         self, wired, mem0, rows, delete_fails, status,  # noqa: F811
@@ -279,17 +425,17 @@ class TestNoPurgeWithoutADelete:
         wired(rows, delete_fails=fails)
         m = mem0(_seeded())
         with pytest.raises(HTTPException) as err:
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account(ACC, user=_user())
         assert err.value.status_code == status
         await _drain()
         assert m.fake.reads == [] and m.fake.deleted == []
         assert not _purges_here()
 
     async def test_a_failed_delete_makes_no_purge_call(self, wired, mem0):  # noqa: F811
-        wired({"acc-1": _row()}, delete_fails=RuntimeError("connection reset"))
+        wired({ACC: _row()}, delete_fails=RuntimeError("connection reset"))
         m = mem0(_seeded())
         with pytest.raises(RuntimeError):
-            await accounts.delete_account("acc-1", user=_user())
+            await accounts.delete_account(ACC, user=_user())
         await _drain()
         assert m.fake.reads == [] and m.fake.deleted == []
 
@@ -297,24 +443,23 @@ class TestNoPurgeWithoutADelete:
     async def test_a_failed_purge_still_gives_204_and_logs_no_memory_text(
         self, wired, mem0, fail,  # noqa: F811
     ):
-        rows = {"acc-1": _row()}
+        rows = {ACC: _row()}
         ledger = wired(rows)
         m = mem0(_seeded(), fail=fail)
-        assert await accounts.delete_account("acc-1", user=_user()) is None
-        assert "acc-1" not in rows, "the mailbox was not deleted"
+        assert await accounts.delete_account(ACC, user=_user()) is None
+        assert ACC not in rows, "the mailbox was not deleted"
         await _drain()
-        assert ("warning", "email.disconnect.memory_purge_failed",
-                {"account_id": "acc-1", "error": "RuntimeError"}) in m.log.lines
+        assert _failed("first") in m.log.lines
+        assert _failed("second") in m.log.lines
         assert SECRET not in repr(m.log.lines) + repr(ledger.logs)
         assert OWNER not in repr(m.log.lines), "a purge log holds the address"
 
     async def test_a_delete_with_no_effect_ends_as_a_failure(self, wired, mem0):  # noqa: F811
-        wired({"acc-1": _row()})
+        wired({ACC: _row()})
         m = mem0(_seeded(), stuck=True)
-        assert await accounts.delete_account("acc-1", user=_user()) is None
+        assert await accounts.delete_account(ACC, user=_user()) is None
         await _drain()
-        assert ("warning", "email.disconnect.memory_purge_failed",
-                {"account_id": "acc-1", "error": "RuntimeError"}) in m.log.lines
+        assert _failed("first") in m.log.lines
 
     async def test_with_mem0_off_the_purge_counts_zero(self, monkeypatch):
         client = mem0_client.MemoryClient()
@@ -336,13 +481,17 @@ def _assert_non_priv(app_eng) -> None:
 
 
 def _seed_account(admin, *, org: str, owner: str, default: bool,
-                  age: str) -> str:
+                  age: str, whole_second: bool = False) -> str:
+    """One mailbox. ``whole_second`` gives a ``created_at`` with zero
+    microseconds, which a plain ``isoformat()`` prints with no fraction."""
+    at = ("date_trunc('second', now()) - CAST(:age AS interval)" if whole_second
+          else "now() - CAST(:age AS interval)")
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, is_default, created_at, organization_id) "
-            "VALUES (:u, 'microsoft', :m, 'blob-r8', :d, "
-            "now() - CAST(:age AS interval), CAST(:o AS uuid)) RETURNING id"),
+            f"VALUES (:u, 'microsoft', :m, 'blob-r8', :d, {at}, "
+            "CAST(:o AS uuid)) RETURNING id"),
             {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@em-t8f.test",
              "d": default, "age": age, "o": org}).scalar_one())
 
@@ -362,8 +511,9 @@ def _iso(value: datetime) -> str:
 @_DB_GATE
 class TestOnARealDatabase:
 
+    @pytest.mark.parametrize("form", ["canonical", "capitals"])
     async def test_the_real_delete_purges_the_mailbox_of_the_row_owner(
-        self, promoted, app_engine, r8_doubles, mem0,  # noqa: F811
+        self, promoted, app_engine, r8_doubles, mem0, form,  # noqa: F811
     ):
         _assert_non_priv(app_engine)
         p = promoted
@@ -375,10 +525,11 @@ class TestOnARealDatabase:
         user = UserContext(email=owner, role=UserRole.EMPLOYEE,
                            organization_id=p.org_b)
         app_dsn = p.app_url.render_as_string(hide_password=False)
+        path_id = acc if form == "canonical" else acc.upper()
         token = bind_tenant(p.org_b)
         try:
             async with tenant_engine_scope(app_dsn):
-                assert await accounts.delete_account(acc, user=user) is None
+                assert await accounts.delete_account(path_id, user=user) is None
                 await _drain()
             assert m.fake.left(scope) == 0
             assert m.fake.left(owner) == 2, "the purge took the bare scope"
@@ -419,12 +570,12 @@ class TestOnARealDatabase:
     ):
         """``email-account-created-at``: the list, the create, the default
         and the update each return the time of the connect, with six digits
-        of microseconds."""
+        of microseconds. ``old`` has zero microseconds on purpose."""
         _assert_non_priv(app_engine)
         p = promoted
         owner = f"member-{uuid.uuid4().hex[:8]}@em-t8f.test"
         old = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
-                            default=True, age="2 days")
+                            default=True, age="2 days", whole_second=True)
         new = _seed_account(p.admin_engine, org=p.org_b, owner=owner,
                             default=False, age="1 hour")
 
@@ -454,6 +605,7 @@ class TestOnARealDatabase:
                     user=user)
             want = {old: _iso(_created_at(p.admin_engine, old)),
                     new: _iso(_created_at(p.admin_engine, new))}
+            assert want[old].endswith(".000000+00:00"), "the seed has a fraction"
             assert {a.id: a.created_at for a in listed} == want
             assert made.created_at == want[new]
             assert patched.created_at == want[old]

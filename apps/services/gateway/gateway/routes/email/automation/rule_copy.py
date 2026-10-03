@@ -21,16 +21,23 @@ What a copy does not take: a disabled rule, a rule pattern, rule guidance, a
 learned pattern, an assistant setting, the voice profile or knowledge. A
 mailbox is the boundary of the AI context (D-EM-18).
 
-Three rules change what arrives:
+Four rules change what arrives:
 
 1. A name that the target holds, in any case, gets " (copy)", then
    " (copy 2)", and so on. The INSERT also has ``ON CONFLICT (account_id,
    name) DO NOTHING``, so a name that another writer takes during the copy
    moves the copy to the next name. A copy never fails on the unique name.
-2. A reply rule keeps DRAFT_EMAIL only when the stored ``draft_replies`` of
-   the TARGET is true (D-EM-6). The test is on the source rule, so a renamed
-   copy of Needs Reply follows it too.
-3. A rule with a FORWARD to an address of a mailbox of the member is left out
+2. The target keeps ONE reply rule at most (``rules._is_reply_rule``). A
+   source reply rule is left out with the reason ``reply_rule_exists`` when
+   the target holds a reply rule, or when the copy already took one. The
+   "Auto draft replies" switch edits only the first reply rule
+   (``rules.sync_draft_reply_action``). A second one, for example
+   "Needs Reply (copy)", would go on drafting while the switch shows OFF
+   (D-EM-6). "Add defaults" refuses the same case (``_seed_preset_rules``).
+3. A reply rule keeps DRAFT_EMAIL only when the stored ``draft_replies`` of
+   the TARGET is true (D-EM-6). Any other rule keeps its DRAFT_EMAIL, because
+   the member put it there and the switch does not govern it.
+4. A rule with a FORWARD to an address of a mailbox of the member is left out
    whole, and the answer names it (D-EM-29). Until EM-T8g ships the loop
    guard, such a forward can send mail around in a loop. A copy without the
    FORWARD would keep the other actions of the rule, for example an ARCHIVE,
@@ -93,6 +100,7 @@ _ADDRESS = re.compile(r"[^\s<>,;\"'()]+@[^\s<>,;\"'()]+")
 #: The reasons of ``left_out``.
 LEFT_OUT_DISABLED = "disabled"
 LEFT_OUT_FORWARD_LOOP = "forward_to_own_address"
+LEFT_OUT_REPLY_EXISTS = "reply_rule_exists"
 
 #: The most names one rule tries. Each try that fails means that a row with
 #: that name exists, so a real copy never gets near it. When the source rule
@@ -198,11 +206,29 @@ async def _own_addresses(db: Any, owner: str) -> set[str]:
     return {(r.email_address or "").strip().lower() for r in rows if r.email_address}
 
 
-async def _target_names(db: Any, account_id: str) -> set[str]:
+async def _target_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
+    """The name and the system type of each rule of the target, enabled or not.
+
+    A disabled reply rule still counts, because a member can enable it again.
+    """
     rows = (await db.execute(text(
-        "SELECT name FROM email_rules WHERE account_id = CAST(:aid AS uuid)"
+        "SELECT name, system_type FROM email_rules "
+        "WHERE account_id = CAST(:aid AS uuid)"
     ), {"aid": account_id})).fetchall()
-    return {(r.name or "").lower() for r in rows}
+    return [{"name": r.name or "", "system_type": r.system_type} for r in rows]
+
+
+def _left_out_reason(
+    rule: dict[str, Any], own: set[str], reply_held: bool,
+) -> str | None:
+    """Why the copy leaves out this source rule, or ``None`` to copy it."""
+    if not rule["enabled"]:
+        return LEFT_OUT_DISABLED
+    if forwards_to_own_address(rule, own):
+        return LEFT_OUT_FORWARD_LOOP
+    if reply_held and _is_reply_rule(rule):
+        return LEFT_OUT_REPLY_EXISTS
+    return None
 
 
 async def _copy_one(
@@ -254,21 +280,21 @@ async def copy_rules(
         await _assert_account_owner(db, src, owner)
         await _assert_account_owner(db, dst, owner)
         source_rules = await _load_rules(db, src)
-        taken = await _target_names(db, dst)
+        target = await _target_rules(db, dst)
+        taken = {r["name"].lower() for r in target}
+        reply_held = any(_is_reply_rule(r) for r in target)
         target_drafts = await stored_draft_replies(db, dst)
         own = await _own_addresses(db, owner)
         for rule in source_rules:
-            if not rule["enabled"]:
-                left_out.append(RuleCopyLeftOut(
-                    name=rule["name"], reason=LEFT_OUT_DISABLED))
+            reason = _left_out_reason(rule, own, reply_held)
+            if reason is not None:
+                left_out.append(RuleCopyLeftOut(name=rule["name"], reason=reason))
                 continue
-            if forwards_to_own_address(rule, own):
-                left_out.append(RuleCopyLeftOut(
-                    name=rule["name"], reason=LEFT_OUT_FORWARD_LOOP))
-                continue
+            is_reply = _is_reply_rule(rule)
             name = await _copy_one(
                 db, rule, src, dst, taken,
-                keep_draft=target_drafts or not _is_reply_rule(rule))
+                keep_draft=target_drafts or not is_reply)
+            reply_held = reply_held or is_reply
             copied.append(name)
             if name != rule["name"]:
                 renamed.append(RuleCopyRename(name=rule["name"], copied_as=name))
