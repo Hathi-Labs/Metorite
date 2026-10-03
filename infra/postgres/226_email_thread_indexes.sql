@@ -1,0 +1,80 @@
+-- ============================================================================
+-- 226_email_thread_indexes.sql — WS-17 EM-T4e: two indexes for the thread reads.
+--
+-- ⚠️ The number was taken from the directory at BUILD time (R1) and is
+--    re-checked at merge. `tests/unit/test_email_n_plus_one.py` finds this
+--    file by CONTENT (`idx_email_messages_thread_received`), never by number,
+--    so a renumber in review costs nothing.
+--
+-- What: two plain btree indexes.
+--
+--   idx_email_messages_thread_received
+--       email_messages (account_id, thread_id, received_at DESC NULLS LAST)
+--   idx_email_thread_status_last_message
+--       email_thread_status (last_message_id)
+--
+-- Why:  `project-docs/specs/email_app_master_plan.md` §7 Tier 1 item 4 and
+--       §10.4.6 EM-T4e.
+--
+-- ── The thread index, and why NULLS LAST ────────────────────────────────────
+--
+-- The read of a thread is `WHERE account_id = :aid AND thread_id = :tid`, and
+-- it orders on `received_at`. Migration 17 gave it `idx_email_messages_thread`
+-- on `(account_id, thread_id)`. That index finds the rows, and then a Sort
+-- node orders them.
+--
+-- The spec names `received_at DESC`. A plain `DESC` means `DESC NULLS FIRST`.
+-- `build_thread_context` orders `ASC NULLS FIRST`, and a backward scan of
+-- `DESC NULLS FIRST` gives `ASC NULLS LAST`. So that index cannot give the
+-- order, and the planner keeps the smaller index of 17 and the Sort.
+-- Measured on the scratch database, 32 000 rows and 3 200 threads:
+--
+--   received_at DESC             Sort <- Index Scan using idx_email_messages_thread
+--   received_at DESC NULLS LAST  Index Scan Backward using the new index, no Sort
+--
+-- That table held the mail of each mailbox in one block. When the mail of
+-- several mailboxes is interleaved in the table, as syncs write it, the
+-- planner reads a thread of 4 or more through the new index with a bitmap
+-- scan, and then it sorts. The two plans cost almost the same.
+--
+-- The gateway has eleven reads of the shape `account_id = :aid AND
+-- thread_id = :tid ... ORDER BY received_at`, in `routes/email` and
+-- `routes/tasks`. Ten order `DESC NULLS LAST` (a forward scan) or
+-- `ASC NULLS FIRST` (a backward scan), so this index gives their order. One
+-- orders `DESC LIMIT 1`, and the index still finds its rows.
+--
+-- ── The status index ────────────────────────────────────────────────────────
+--
+-- `email_thread_status.last_message_id` had no index. It has NO foreign key,
+-- and this migration adds none: a delete of a message must not cascade into
+-- a status row (§10.4.6 non-goals).
+--
+-- ── R6, expand/contract ─────────────────────────────────────────────────────
+--
+-- Every statement here is ADDITIVE. `idx_email_messages_thread` stays. The new
+-- index covers its two columns, so its drop is a later contract step, and a
+-- migration of its own.
+--
+-- No new table, so nothing for R5 to key. No column is renamed or tightened,
+-- so old code meets this schema unchanged. The running gateway does not know
+-- the index, and it does not need to.
+--
+-- Idempotent: `CREATE INDEX IF NOT EXISTS`. A second run changes nothing.
+--
+-- ── Locking ─────────────────────────────────────────────────────────────────
+--
+-- Plain `CREATE INDEX` — the idiom every other migration here uses. It takes a
+-- SHARE lock: reads continue, writes to `email_messages` and
+-- `email_thread_status` wait. `apply_migrations.sh` sets `lock_timeout` and
+-- retries, so a stale reader delays this rather than freezing the table. NOT
+-- `CONCURRENTLY`: on failure it leaves an INVALID index behind that a later
+-- replay will not repair, and the runner's retry loop would turn one lock
+-- blip into a dead index nobody looks for. A sync that writes mail during the
+-- build waits for it.
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_email_messages_thread_received
+    ON email_messages (account_id, thread_id, received_at DESC NULLS LAST);
+
+CREATE INDEX IF NOT EXISTS idx_email_thread_status_last_message
+    ON email_thread_status (last_message_id);
