@@ -3817,6 +3817,64 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
+### H-219 · A steer note shows as extra detail rows on a tool card · [AGENT]
+- **Check:** `grep -rn "arrived from a participant" workbench/control_plane/src/`
+  → no hit means the cards still show the note as rows, and the entry is still open.
+- **Why:** a steer rides the next tool result. `decorate_tool_result`
+  (`steer.py` ~373-411) adds "[The following arrived from a participant…]"
+  and the notes to the result text. The tool cards parse that text line by
+  line: `ProjectToolCards.tsx` ~644, `TaskToolCards.tsx` ~171 and
+  `EmailToolCards.tsx` ~916. So in a shared session the note lines show as
+  detail rows on that one card. The model still gets the note. This is a
+  visual defect only. Since PR #585 an own tool of a native agent carries
+  the note too, so more cards can show it.
+- **Fix shape:** let the cards drop the steer block before they parse the
+  rows. Or send the note in a separate event that no card parses.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-220 · With the Router off, Thinking and Max do nothing on the local /v1 path · [AGENT]
+- **Check:** `grep -n "reasoning_effort" apps/services/gateway/gateway/routes/v1_compat.py`
+  → no hit means the local path still drops it, and the entry is still open.
+- **Why:** since PR #585 a native agent sends `reasoning_effort` for Thinking
+  and Max. When the Router is off, `v1_compat` serves the call itself. Its
+  `common` dict (~772-780) holds only `model`, `messages`, `tools`,
+  `tool_choice`, `temperature` and `max_tokens`. So it drops
+  `reasoning_effort`, and Thinking and Max then have no effect. With the Router on,
+  the Console forwards the field. Forward it on the local path too, and keep
+  `drop_params` so that a model with no reasoning support does not fail.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-221 · On DeepSeek, Max is the same as Thinking, and a plain model can refuse both · [AGENT]
+- **Check:** `grep -rn "drop_params" apps/services/customer_console/`
+  → no hit means the Console still refuses the field for a model with no reasoning support.
+- **Why:** two separate problems, from the PR #585 review.
+  1. On the seeded DeepSeek tiers, litellm maps `low`, `medium` and `high`
+     all to `thinking: {type: enabled}`. So Max gives the same depth as
+     Thinking, and the Max label promises more than DeepSeek gives. The label
+     is a product call. Ask the owner before you change the menu.
+  2. The Console sets no `drop_params` (`customer_console/main.py`
+     ~7714-7750). So a tier bound to a model with no reasoning support
+     raises `UnsupportedParamsError` on a Thinking or Max turn. Drop the
+     field for such a model, or map it per vendor, and add a test.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-222 · A native sub-agent takes the parent's steer note · [AGENT]
+- **Check:** `grep -n "decorate_tool_result(result)" apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means the entry is still open.
+- **Why:** the gate calls `decorate_tool_result` with no thread id
+  (`_tool_injection.py` ~357), so it reads the thread of the current run
+  context. A native sub-agent runs in its parent's context. Since PR #585 its
+  own tools carry the gate (`_tool_injection.py` ~992-995). So a sub-agent's
+  tool call drains the parent's steer, and the note goes to the sub-agent,
+  not to the orchestrator. The note is not lost, because the sub-agent's
+  answer goes back to the parent. Decide which agent should get it, and pass
+  that thread to the gate.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
