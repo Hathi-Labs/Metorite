@@ -27,6 +27,7 @@ import {
   REPLY_RULE_NAMES,
   REPLY_SYSTEM_TYPES,
   RULES_STEP_COPY,
+  firstSyncPanels,
   firstSyncSurface,
   hasEnabledReplyRule,
   importProgress,
@@ -99,10 +100,14 @@ describe("a mailbox with sync off shows no frozen panel (EM-T6b review)", () => 
   });
 
   it("the page draws a pending surface only through isFirstSyncPending", () => {
+    // EM-T8f-3: the page draws one surface for each pending mailbox, and
+    // `firstSyncPanels` picks them by `isFirstSyncPending`.
     const page = codeOnly(read("page.tsx"));
-    expect(page).toMatch(
-      /pendingAccount =\s*\(selectedAccount && isFirstSyncPending\(selectedAccount\) \? selectedAccount : null\) \?\?\s*accounts\.find\(isFirstSyncPending\)/,
+    expect(page).toContain(
+      "const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);",
     );
+    expect(firstSyncPanels([{ ...running, id: "a", syncEnabled: false }], null)).toEqual([]);
+    expect(firstSyncPanels([{ ...running, id: "a" }], null).map((p) => p.account.id)).toEqual(["a"]);
   });
 });
 
@@ -445,7 +450,10 @@ describe("the page wiring", () => {
     expect(page).toMatch(
       /\{selectedAccount && onboardingStage\(selectedAccount\) === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
     );
-    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<FirstSyncBanner address"));
+    // "<FirstSyncBanner" alone: since EM-T8f-3 a `key` comes before `address`,
+    // and an indexOf of -1 would pass this check with no banner at all.
+    expect(page.indexOf("<FirstSyncBanner")).toBeGreaterThan(-1);
+    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<FirstSyncBanner"));
     expect(page.indexOf("<OnboardingRulesStep")).toBeLessThan(page.indexOf("<EmailToolbar />"));
   });
 

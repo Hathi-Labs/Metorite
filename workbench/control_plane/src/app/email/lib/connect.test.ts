@@ -48,6 +48,7 @@ import {
   reconnectProvider,
   shouldPollFirstSync,
 } from "./connect";
+import { firstSyncPanels } from "./onboarding";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -289,11 +290,14 @@ describe("first sync shows progress (done-when 5)", () => {
     expect(PAGE).toMatch(
       /return \(\) => \{\s*cancelled = true;\s*clearInterval\(id\);\s*document\.removeEventListener\("visibilitychange", onVisible\);/,
     );
-    // The banner follows the same rule as the poll, so an errored account shows no spinner.
-    expect(PAGE).toMatch(
-      /pendingAccount =[\s\S]*?isFirstSyncPending\(selectedAccount\)[\s\S]*?accounts\.find\(isFirstSyncPending\)/,
+    // The banner follows the same rule as the poll, so an errored account shows
+    // no spinner. Since EM-T8f-3 the page draws one surface for each pending
+    // mailbox, and `firstSyncPanels` picks them by `isFirstSyncPending`.
+    expect(PAGE).toContain(
+      "const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);",
     );
-    expect(PAGE).toContain("<FirstSyncBanner address={pendingAccount.emailAddress} />");
+    expect(PAGE).toMatch(/<FirstSyncBanner\s+key=\{account\.id\}\s+address=\{account\.emailAddress\}/);
+    expect(firstSyncPanels([{ id: "a", initialSyncDone: false, syncStatus: "error" }], null)).toEqual([]);
   });
 
   it("an errored first sync is not pending, shows no spinner and stops the poll (fix round 1, P1)", () => {

@@ -38,6 +38,8 @@ import {
   chatMailboxOptions,
   chatScope,
   chatSettingsRead,
+  rememberChatScope,
+  type ChatScopeMemory,
   type ChatScopePick,
 } from "../lib/chatScope";
 import { getAssistantSettings } from "../lib/api";
@@ -93,6 +95,21 @@ export function EmailAssistantChat({
     [pageScope],
   );
   const mailboxOptions = useMemo(() => chatMailboxOptions(accounts), [accounts]);
+
+  // The scope is a pure derivation, so a mailbox that leaves is gone from it.
+  // The chat holds the scope of the render before, and when the mailbox of
+  // that scope leaves, it shows one note that names it and the new scope
+  // (EM-T8f-3, §11.6 case 17). rememberChatScope gives back the same object
+  // for the same scope, so this update stops after one more render.
+  const [scopeMemory, setScopeMemory] = useState<ChatScopeMemory | null>(null);
+  const nextScopeMemory = rememberChatScope(scopeMemory, accounts, pickerId);
+  if (nextScopeMemory !== scopeMemory) setScopeMemory(nextScopeMemory);
+  const scopeNotice = nextScopeMemory.note
+    ? {
+        text: nextScopeMemory.note,
+        onDismiss: () => setScopeMemory((m) => (m ? { ...m, note: null } : m)),
+      }
+    : null;
 
   // The CHAT mailbox's assistant settings. Two things ride on this, both
   // per-account: which chat model to run (the single source of truth is
@@ -370,6 +387,7 @@ export function EmailAssistantChat({
             mailboxes={mailboxOptions}
             activeMailboxId={pickerId}
             onMailboxChange={pickChatScope}
+            notice={scopeNotice}
             memories={memories}
             memoryUserId={userId}
             expectedMessageCount={activeSession.messageCount}
