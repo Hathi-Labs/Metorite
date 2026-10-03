@@ -4109,6 +4109,43 @@ requests, T8f-1 to T8f-3. No migration.
 
 ##### EM-T8f-1 — copy rules, the memory purge and `created_at` (backend, R8)
 
+**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-settings`. No
+migration.
+
+**As-built notes.**
+- **The forward rule (D-EM-29).** The copy leaves out the whole rule, and not only its FORWARD.
+  Without the FORWARD, the other actions of the rule stay. An ARCHIVE would then hide mail that
+  the member meant to forward. The answer names the rule. The owner can reverse this.
+- **The address scan.** The guard finds each `x@y` token in the To, Cc and Bcc of a FORWARD. The
+  strict `getaddresses` of Python 3.12 gives no address for a field that it cannot parse. The
+  guard would then let a loop through, so it does not use that parser.
+- **The answer.** `copied` holds the names in the target. `renamed` holds `{name, copied_as}`.
+  `left_out` holds `{name, reason}`, and the reason is `disabled` or `forward_to_own_address`.
+- **The names.** The compare of names ignores case. The INSERT has
+  `ON CONFLICT (account_id, name) DO NOTHING`, so a name that another writer takes moves the copy
+  to the next name. After 50 tries the route answers 409, and the copy writes nothing.
+- **Drafting (D-EM-6).** The test is on the source rule, so a renamed copy of Needs Reply follows
+  the setting of the target too. A DRAFT_EMAIL on a rule that is not a reply rule stays.
+- **The columns.** Three tuples in `rule_copy.py` name each column of `email_rules` and
+  `email_actions`. The fence reads `information_schema` and fails on a column in no tuple.
+- **The purge.** `MemoryClient.delete_scope` reads pages of 100 rows with `show_expired=True`.
+  Unlike `delete`, it raises on a Mem0 error. A page that comes back twice raises, so a delete
+  with no effect cannot loop. With Mem0 off the count is 0.
+- **The log.** A purge logs the account id and the count. A failure logs the error class only. No
+  purge log holds an address or the text of a memory.
+- **`created_at`.** Each account read returns ISO text with six digits of microseconds. Two values
+  then sort as text in the order of time.
+- **Findings, not built here.** `MemoryClient.get_all` passes no `top_k`, and mem0ai 2.2.1 then
+  returns 20 rows at most. The memory panel can show only 20. `routes/admin/members.py` deletes
+  the mailboxes of a purged member and starts no Mem0 purge.
+- **Verification (2026-10-03).** With `DATABASE_URL` unset, the block below gave 278 passed and 2
+  skipped. The two skips are the WS-29 gates of `test_tenant_coverage.py`, which read
+  `DATABASE_URL`. With `DATABASE_URL` set to the base database as well, those two gates failed
+  and the other 278 passed. `test_app_role_cannot_bypass_rls` reuses an engine of a stopped event
+  loop. `test_live_catalog_has_column_force_and_policy` reads a ladder that an earlier suite
+  replayed with no FORCE RLS phase. Both fail the same way on the base tree. Each of 16
+  mutations of the fences went red.
+
 **Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
 `automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`
 and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-1 edits both.
