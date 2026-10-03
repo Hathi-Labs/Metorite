@@ -5,9 +5,12 @@ import Icon from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
 import { useEmailStore } from "../lib/emailStore";
 import {
-  fileToSendAttachment,
+  fileToSendAttachment, getSentFrom,
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
+import { fromWarning, sendBlocked, swapSignature } from "../lib/mailbox";
+import { FromRow } from "./FromRow";
+import { mailboxLabel } from "./MailboxChip";
 import { useDraftSession } from "../lib/useDraftSession";
 import { DraftAssistant } from "./DraftAssistant";
 import { splitQuotedText } from "../lib/quoting";
@@ -19,8 +22,15 @@ import { ComposerQuote, AiButton } from "./ComposerAI";
 interface ComposePanelProps {
   open: boolean;
   onClose: () => void;
+  /** The mailbox the composer opens on: the mailbox of the mail a reply
+   *  answers, else the selected one. The From row can change it (EM-T8c). */
   accountId: string;
+  /** The From that the inline reply chose before a pop-out. Absent, the
+   *  composer sends from `accountId`. */
+  defaultFromId?: string;
   onSend: (params: {
+    /** The mailbox that sends: the choice of the From row. */
+    accountId: string;
     to: string[];
     cc?: string[];
     bcc?: string[];
@@ -53,6 +63,7 @@ export function ComposePanel({
   open,
   onClose,
   accountId,
+  defaultFromId,
   onSend,
   defaultTo = "",
   defaultSubject = "",
@@ -74,7 +85,34 @@ export function ComposePanel({
   // the live backend steps and the per-round revision history.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
-  const { saveDraft, sendDraft, deleteEmail } = useEmailStore();
+  const { saveDraft, sendDraft, deleteEmail, accounts, authErrors } = useEmailStore();
+  // ── The sending mailbox (EM-T8c, D-EM-20) ──
+  // The pick of the From row holds only while the composer opens on the same
+  // mailbox, so a new compose session starts on its own mailbox.
+  const [fromPick, setFromPick] = useState<{ base: string; id: string } | null>(null);
+  const fromId = fromPick && fromPick.base === accountId ? fromPick.id : accountId;
+  // A reply answers a mail of `accountId`. From any other mailbox it goes as
+  // new mail: the provider cannot answer a mail of another mailbox, and the
+  // gateway refuses it (MB-6).
+  const conversationId = replyToMessageId ? accountId : null;
+  const sameConversation = fromId === accountId;
+  const replyTarget = sameConversation ? replyToMessageId : undefined;
+  const replyContextId = sameConversation ? messageId : undefined;
+  // Drafts of an old mailbox, deleted once the new mailbox has its own copy.
+  const staleDraftsRef = useRef<string[]>([]);
+  // The From of NOW, for a save that started before a change of From.
+  const liveFromRef = useRef(fromId);
+  useEffect(() => {
+    liveFromRef.current = fromId;
+  }, [fromId]);
+  /** Delete each draft of an old mailbox. Call it only once the new mailbox
+   *  holds the message, or the member could lose it. */
+  const dropStaleDrafts = () => {
+    for (const id of staleDraftsRef.current) void deleteEmail(id);
+    staleDraftsRef.current = [];
+  };
+  // For each recipient, the mailbox that wrote to them last.
+  const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   // Gmail-style auto-save: the composed message persists as a Drafts row as you
   // type (draftIdRef holds the local id so repeated saves update it in place).
   const draftIdRef = useRef<string | null>(null);
@@ -96,13 +134,13 @@ export function ComposePanel({
   const [sigText, setSigText] = useState("");
   useEffect(() => {
     let alive = true;
-    void getSignatureText(accountId).then((s) => {
+    void getSignatureText(fromId).then((s) => {
       if (alive) setSigText(s);
     });
     return () => {
       alive = false;
     };
-  }, [accountId]);
+  }, [fromId]);
 
   // A fresh compose session each time the window opens: re-sync fields from the
   // (possibly new) props and forget any prior draft so we don't update it.
@@ -114,10 +152,14 @@ export function ComposePanel({
     setBody(replyToBody || "");
     // Seed the signature into the body (idempotent — a popped-out reply or an
     // undo-send reopen may already carry it). Async: never clobber typing.
-    void getSignatureText(accountId).then((sig) => {
+    void getSignatureText(defaultFromId || accountId).then((sig) => {
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
     draftIdRef.current = null;
+    staleDraftsRef.current = [];
+    // A pop-out keeps the From that the inline reply chose (EM-T8c review).
+    setFromPick(defaultFromId && defaultFromId !== accountId
+      ? { base: accountId, id: defaultFromId } : null);
     dirty.current = false;
     setDraftStatus("idle");
     // Restore any carried attachments/artifacts (undo-send reopen); a fresh
@@ -139,20 +181,20 @@ export function ComposePanel({
    *  the AI never rewrites the trailing email. Each run refines the CURRENT
    *  text, so the panel stays open for as many rounds as the user wants. */
   const runAi = async () => {
-    if (!accountId || ai.busy) return;
+    if (!fromId || ai.busy) return;
     setSendError(null);
     const { main, quoted } = splitQuotedText(body);
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const instruction = aiInstruction.trim();
     const draft = await ai.run(
       {
-        accountId,
+        accountId: fromId,
         body: main,
         instruction,
-        mode: replyToMessageId ? "reply" : "new",
+        mode: replyTarget ? "reply" : "new",
         // The local message id lets the drafter load the replied-to thread +
         // direction context (parity with the inline reply's "Draft with AI").
-        messageId,
+        messageId: replyContextId,
         to: toArr,
         subject,
       },
@@ -175,22 +217,34 @@ export function ComposePanel({
 
   // Debounced auto-save once the user edits the draft.
   useEffect(() => {
-    if (!open || !accountId || !dirty.current) return;
+    if (!open || !fromId || !dirty.current) return;
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     if (!body.trim() && toArr.length === 0 && !subject.trim()) return;
+    const savingFrom = fromId;
     const handle = setTimeout(async () => {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId,
+          accountId: savingFrom,
           draftId: draftIdRef.current ?? undefined,
-          replyToMessageId: draftIdRef.current ? undefined : (replyToMessageId || undefined),
+          replyToMessageId: draftIdRef.current ? undefined : (replyTarget || undefined),
           to: toArr,
           cc: cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [],
           subject,
           body: combinedBody(),
         });
+        if (liveFromRef.current !== savingFrom) {
+          // The From changed while this save ran. Its draft belongs to the
+          // old mailbox, so it is stale, and the next save starts a new one
+          // in the new mailbox (EM-T8c review).
+          staleDraftsRef.current.push(saved.id);
+          setDraftStatus("idle");
+          return;
+        }
         draftIdRef.current = saved.id;
+        // A provider draft cannot move between mailboxes: the new mailbox
+        // saved its own, so the drafts of the old one go (§11.6 case 7).
+        dropStaleDrafts();
         setDraftStatus("saved");
       } catch {
         setDraftStatus("idle");
@@ -198,12 +252,60 @@ export function ComposePanel({
     }, 1200);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [to, cc, subject, body, open, accountId]);
+  }, [to, cc, subject, body, open, fromId]);
+
+  // Which mailbox last wrote to each recipient, for the From warning. It
+  // runs only for a member with two or more mailboxes, after a short pause.
+  useEffect(() => {
+    if (!open || accounts.length < 2) return;
+    const list = [...to.split(","), ...cc.split(",")].map((s) => s.trim()).filter(Boolean);
+    let alive = true;
+    const handle = setTimeout(() => {
+      void getSentFrom(list).then((map) => {
+        if (alive) setUsualSender(map);
+      });
+    }, 600);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [to, cc, open, accounts.length]);
 
   if (!open) return null;
 
+  const fromAccount = accounts.find((a) => a.id === fromId) ?? null;
+  const fromBlocked = sendBlocked(fromAccount, authErrors);
+  const warning = fromWarning({
+    fromId,
+    accounts,
+    conversationAccountId: conversationId,
+    recipients: [...to.split(","), ...cc.split(",")],
+    usualSender,
+    authErrors,
+  });
+
+  /** Change the sending mailbox. The signature follows it, and a saved
+   *  draft moves to the new mailbox on the next save. */
+  const changeFrom = async (next: string) => {
+    if (!next || next === fromId) return;
+    const [oldSig, newSig] = await Promise.all([
+      getSignatureText(fromId), getSignatureText(next),
+    ]);
+    if (draftIdRef.current) {
+      staleDraftsRef.current.push(draftIdRef.current);
+      draftIdRef.current = null;
+    }
+    dirty.current = true;
+    setBody((prev) => swapSignature(prev, oldSig, newSig));
+    setFromPick({ base: accountId, id: next });
+  };
+
   const handleSend = async () => {
     if (!to.trim() || sending) return;
+    if (fromBlocked) {
+      setSendError(`Reconnect ${fromAccount ? mailboxLabel(fromAccount) : "this mailbox"} to send from it.`);
+      return;
+    }
     setSending(true);
     setSendError(null);
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
@@ -213,13 +315,16 @@ export function ComposePanel({
       // Native draft-send whenever there's a draft OR attachments: Cc/Bcc AND
       // attachment content now ride ON the provider draft, so the draft write-
       // path (create/update with attachments) → native send handles everything.
-      // A fresh message with no attachments still sends directly.
-      if (draftIdRef.current || hasAttachments) {
+      // A fresh message with no attachments still sends directly. A change of
+      // From with an old draft also takes the draft path: that path awaits the
+      // real send, so the old draft goes only after the new mailbox sent it
+      // (§11.6 case 8). The direct path returns before the send runs.
+      if (draftIdRef.current || hasAttachments || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
-          accountId,
+          accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
           replyToMessageId: draftIdRef.current
-            ? undefined : (replyToMessageId || undefined),
+            ? undefined : (replyTarget || undefined),
           to: toArr,
           cc: ccArr,
           subject,
@@ -227,15 +332,17 @@ export function ComposePanel({
           attachments: attachments.length ? attachments : undefined,
           artifacts: artifacts.length ? artifacts : undefined,
         });
-        await sendDraft(accountId, saved.id);
+        await sendDraft(fromId, saved.id);
+        dropStaleDrafts();
         onClose();
       } else {
         await onSend({
+          accountId: fromId,
           to: toArr,
           cc: ccArr.length ? ccArr : undefined,
           subject,
           bodyText: combinedBody(),
-          replyToMessageId: replyToMessageId,
+          replyToMessageId: replyTarget,
           attachments: attachments.length ? attachments : undefined,
           artifacts: artifacts.length ? artifacts : undefined,
         });
@@ -267,13 +374,23 @@ export function ComposePanel({
 
         {/* Fields — the scrolling region when the window hits its max height */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+          {/* From — two or more mailboxes (EM-T8c, D-EM-20) */}
+          <FromRow
+            accounts={accounts}
+            value={fromId}
+            defaultValue={accountId}
+            onChange={(id) => void changeFrom(id)}
+            warning={warning}
+            authErrors={authErrors}
+          />
+
           {/* To */}
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground w-8 flex-shrink-0">To:</span>
             <RecipientInput
               value={to}
               onChange={(v) => { dirty.current = true; setTo(v); }}
-              accountId={accountId}
+              accountId={fromId}
               ariaLabel="To recipients"
               placeholder="Email address..."
               className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
@@ -286,7 +403,7 @@ export function ComposePanel({
             <RecipientInput
               value={cc}
               onChange={(v) => { dirty.current = true; setCc(v); }}
-              accountId={accountId}
+              accountId={fromId}
               ariaLabel="Cc recipients"
               placeholder="Cc..."
               className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
@@ -390,7 +507,9 @@ export function ComposePanel({
               <span className="text-[10px] text-muted-foreground">Draft saved to Drafts</span>
             ) : (
               <span className="text-[10px] text-muted-foreground">
-                Sent from your connected email account
+                {fromAccount
+                  ? `From ${mailboxLabel(fromAccount)} · ${fromAccount.emailAddress}`
+                  : "Sent from your connected email account"}
               </span>
             )}
           </div>
