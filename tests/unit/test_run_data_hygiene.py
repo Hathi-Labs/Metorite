@@ -82,6 +82,9 @@ async def test_a_projects_start_mounts_the_thread_folder_and_the_run_data(sandbo
     assert f"type=bind,source={b.workspace},target=/workspace" in mounts
     assert f"type=bind,source={b.workspace / b.outputs_rel},target=/workspace/outputs" in mounts
     assert f"type=bind,source={b.run_data},target=/workspace/.run" in mounts
+    marker = b.workspace / ".cc-instance"
+    assert f"type=bind,source={marker},target=/workspace/.cc-instance,readonly" in mounts
+    assert marker.read_text(encoding="utf-8") == b.instance
     assert (b.workspace / b.outputs_rel).is_dir() and b.run_data.is_dir()
     assert (b.workspace / ".run").is_dir(), "the host made no mountpoint, so Docker would, as root"
     assert not any(f"source={b.workspace / 'outputs'}," in m for m in mounts), (
@@ -325,6 +328,13 @@ def test_another_member_cannot_list_or_read_a_threads_output_folder(graph_as_app
     assert carol.get(f"/agent/workspace/{s1}").json()["files"] == []
     assert carol.get(f"/agent/workspace/{sc}/file", params={"path": chart}).status_code == 404
 
+    # A container writes the dir it mounts. A rewritten partition marker must
+    # not switch the rule off (the rule reads the path, never the marker).
+    (_tenant_dir(a) / ".cc-instance").write_text(f"u:{_BOB}", encoding="utf-8")
+    assert bob.get(f"/agent/workspace/{s2}/file", params={"path": chart}).status_code == 404
+    tree_b = {f["path"] for f in bob.get(f"/agent/workspace/{s2}").json()["files"]}
+    assert not any(p.startswith(f"outputs/{slug1}/") for p in tree_b)
+
 
 @_DB_GATE
 def test_a_link_in_a_workspace_is_never_served_or_written_through(graph_as_app, disk) -> None:  # noqa: F811
@@ -412,6 +422,9 @@ async def test_docker_a_thread_sees_only_its_own_outputs_and_run_data(real_proje
     # The cover cannot be moved from inside: the mountpoint is busy.
     moved = await broker.exec(h2, "mv /workspace/outputs /workspace/elsewhere", 30)
     assert moved.exit_code != 0
+    # The partition marker that the gateway reads is read-only in the container.
+    marked = await broker.exec(h2, "echo u:evil > /workspace/.cc-instance", 30)
+    assert marked.exit_code != 0
     if real_projects["bind"]:
         assert (b1.workspace / b1.outputs_rel / "t1.txt").read_text().strip() == "T1"
         assert (b1.run_data / "rows.csv").read_text().strip() == "rows"

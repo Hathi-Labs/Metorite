@@ -855,16 +855,28 @@ def _safe_upload(root: Path, folder: str, name: str, data: bytes) -> str:
 # A file of ``outputs/`` that is not in a thread folder is served as before.
 
 
-def _own_thread_slug(workspace: Path, session_id: str) -> str | None:
+def _own_thread_slug(
+    workspace: Path, session_id: str, organization_id: str | None,
+) -> str | None:
     """This session's thread slug in a shared agent's tenant dir, else ``None``.
 
     ``None`` means the rule does not apply: a personal agent's own dir or an
     app workspace holds no other member's thread.
-    """
-    from acb_skills.agent_paths import instance_slug, is_tenant_instance
 
-    _agent, instance = _blob_key_for_workspace(workspace)
-    if not is_tenant_instance(instance):
+    ⚠️ The tenant dir is told from its PATH and the caller's own tenant, and
+    never from its ``.cc-instance`` marker. A container writes the dir it
+    mounts, so a marker it rewrote would switch this rule off.
+    """
+    if not organization_id:
+        return None
+    from acb_skills.agent_paths import instance_slug, state_root, tenant_instance
+
+    try:
+        ws = workspace.resolve()
+        root = state_root().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if ws.parent.parent != root or ws.name != instance_slug(tenant_instance(organization_id)):
         return None
     return instance_slug(str(session_id or ""))
 
@@ -1091,7 +1103,7 @@ async def get_workspace_tree(
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
     # WS-43d (§16.3): another thread's output folder is not listed.
-    own = _own_thread_slug(workspace, session_id)
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
     files = [f for f in files if not _is_other_thread_path(f.path, own)]
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
@@ -1127,7 +1139,7 @@ async def get_workspace_file(
     rel = _open_rel(workspace, path)
     # WS-43d (§16.3): another thread's output folder answers as absent, and
     # BEFORE the fault-in, so the store cannot restore it either.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
         raise HTTPException(status_code=404, detail="File not found")
     st = await asyncio.to_thread(_safe_stat, workspace, rel)
     if st is None:
@@ -1582,7 +1594,7 @@ async def delete_workspace_file(
 
     rel = _open_rel(workspace, path)
     # WS-43d (§16.3): another thread's output folder answers as absent.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
         raise HTTPException(status_code=404, detail="File not found")
     # Only allow deletion of files within the visible workspace dirs.
     if not _is_visible_workspace_path(rel):
@@ -1723,7 +1735,7 @@ async def get_workspace_history(
     except ImportError:
         return {"history": []}
     agent, instance = _blob_key_for_workspace(workspace)
-    own = _own_thread_slug(workspace, session_id)
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
     if path and _is_other_thread_path(path, own):
         return {"history": []}
     rows = await file_history(
@@ -1785,7 +1797,7 @@ async def write_workspace_file(
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
     # WS-43d (§16.3): another thread's output folder answers as absent.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id)):
+    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
         raise HTTPException(status_code=404, detail="File not found")
 
     _existed = await asyncio.to_thread(_safe_stat, workspace, rel) is not None

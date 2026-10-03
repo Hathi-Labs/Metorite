@@ -81,6 +81,11 @@ RUN_DATA_TARGET = "/workspace/.run"
 #: The placeholder dir in the working dir that ``/workspace/.run`` mounts on.
 #: The host makes it, so Docker never makes it as root.
 RUN_DATA_MOUNTPOINT = ".run"
+#: The tenant dir's partition marker (``agent_paths._INSTANCE_MARKER``). The
+#: gateway's write-through reads it, so the ``projects`` target covers it with
+#: a read-only mount of itself, and no container can rewrite it.
+INSTANCE_MARKER = ".cc-instance"
+INSTANCE_MARKER_TARGET = "/workspace/.cc-instance"
 
 #: The agent whose target is ``app_builder``, and the one whose target is
 #: ``projects``. Every other agent is ``code_task`` (§7.7 condition 1, §16.3).
@@ -455,6 +460,9 @@ def prepare_projects_dirs(binding: RunBinding) -> None:
         safe_open.ensure_dir(binding.workspace, binding.outputs_rel)
         safe_open.ensure_dir(binding.workspace, RUN_DATA_MOUNTPOINT)
         safe_open.ensure_dir(_real_state_root(), binding.run_data_rel)
+        marker = binding.instance.encode("utf-8")
+        if safe_open.read_bytes(binding.workspace, INSTANCE_MARKER, limit=4096) != marker:
+            safe_open.write_bytes(binding.workspace, INSTANCE_MARKER, marker)
     except (safe_open.UnsafePath, FileExistsError, NotADirectoryError) as exc:
         raise SandboxRefused(
             "A dir of this thread's sandbox is not a real dir, so no sandbox starts."
@@ -481,6 +489,9 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
     - The run-data dir at ``/workspace/.run``, in this thread's container
       only. It lies under ``state_root()/.run-data``, outside every kept
       folder, so the blob store never holds it.
+    - The partition marker ``.cc-instance`` at itself, READ-ONLY. The
+      gateway's write-through and fault-in read it, so a container must not
+      rewrite it.
 
     :func:`prepare_projects_dirs` makes the dirs. This checks them again.
     """
@@ -493,9 +504,14 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
         if isinstance(exc, SandboxError):
             raise
         raise SandboxRefused("This thread's id cannot name a sandbox folder.") from exc
+    marker = ws / INSTANCE_MARKER
+    _check_source_text(marker)
+    if _is_link(marker) or not marker.is_file() or marker.resolve() != marker:
+        raise SandboxRefused("The partition marker of the working dir is not a real file.")
     return [
         Mount(outputs, OUTPUTS_TARGET, readonly=False),
         Mount(run_data, RUN_DATA_TARGET, readonly=False),
+        Mount(marker, INSTANCE_MARKER_TARGET, readonly=True),
     ]
 
 
