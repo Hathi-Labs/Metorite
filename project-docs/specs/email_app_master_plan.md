@@ -3731,7 +3731,7 @@ The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
 
 ##### EM-T8e-2 — the chat tools bind to one mailbox (agent)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03). Branch `email-chat-binding`. No migration.
+**Status.** ✅ MERGED #597 (2026-10-03). No migration.
 
 **As built (2026-10-03).**
 
