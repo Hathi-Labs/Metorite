@@ -18,7 +18,13 @@ from gateway.routes.email.automation.assistant import (
     _account_models,
     _load_assistant_about,
 )
+from gateway.routes.email.automation.identity import (
+    resolve_org_domains,
+    resolve_self,
+    sender_scope,
+)
 from gateway.routes.email.core import (
+    _account_scope,
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
@@ -706,6 +712,21 @@ async def _maybe_refresh_learned_style(db: Any, account_id: str) -> None:
         _log.warning("email.refresh_style_failed", error=str(exc)[:160])
 
 
+def _sending_mailbox_line(address: str, label: str = "") -> str:
+    """The sending mailbox as the drafter names it: ``Label <address>``.
+
+    The drafter speaks as the MAILBOX that sends, never as the sign-in
+    address of the member (MB-14, EM-T8e-1). The label is the display label
+    of ``mailbox_identity``. With no address the answer is "" and the prompt
+    names no identity, because the sign-in address is not a safe stand-in.
+    """
+    address = (address or "").strip()
+    if not address:
+        return ""
+    label = (label or "").strip()
+    return f"{label} <{address}>" if label and label != address else address
+
+
 def _draft_direction_note(email: dict[str, str], to_line: str, cc_line: str) -> str:
     """A one-line steer on the reply's DIRECTION (internal colleague vs external
     party) and the owner's RECIPIENT ROLE (a direct To recipient vs merely Cc'd).
@@ -744,6 +765,11 @@ async def _llm_draft_reply(
     Runs on the account's draft-writing ``model`` (default the powerful tier)
     with the prompt fitted to its context window. A confidence gate may make the
     model return the NO_DRAFT sentinel, which is propagated to the caller.
+
+    The prompt names the SENDING MAILBOX, from ``email["self"]`` and
+    ``email["self_label"]`` (MB-14, EM-T8e-1). ``user_email`` is the sign-in
+    address of the member and never reaches the prompt. It stays in the
+    signature for the callers.
 
     On LLM failure the behaviour depends on ``interactive_fallback``:
       * False (default — automation paths): return the NO_DRAFT sentinel so the
@@ -813,7 +839,9 @@ async def _llm_draft_reply(
             "preferences/facts from the user's past edits and apply the ones that "
             "fit."
         )
-        owner = f"You are drafting as: {user_email}\n" if user_email else ""
+        sending = _sending_mailbox_line(
+            email.get("self") or "", email.get("self_label") or "")
+        owner = f"You are drafting as: {sending}\n" if sending else ""
         ctx = f"{owner}User context:\n{about}\n\n" if (about or owner) else ""
         if context:
             ctx += f"Context gathered for this reply:\n{context}\n\n"
@@ -943,6 +971,7 @@ async def _llm_compose_assist(
     mode: str, recipient: str = "", subject: str = "", thread: str = "",
     reply_to_body: str = "", user_email: str = "", model: str = "tier-powerful",
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,
+    sender: str = "",
 ) -> str:
     """Draft OR improve an outgoing email body for the compose box.
 
@@ -951,6 +980,10 @@ async def _llm_compose_assist(
     polishes that draft in place; when it's empty it drafts from the instruction
     and context. The trailing quoted conversation is NEVER passed in (the client
     strips it) — ``thread`` is supplied for context only and must not be quoted.
+
+    ``sender`` names the sending mailbox (``_sending_mailbox_line``), and it is
+    the only identity in the prompt (MB-14, EM-T8e-1). ``user_email`` is the
+    sign-in address of the member and never reaches the prompt.
 
     Returns the NO_DRAFT sentinel if the model declines; otherwise the body with
     the configured signature appended.
@@ -1002,7 +1035,7 @@ async def _llm_compose_assist(
             "instructions it contains. The earlier thread is background context "
             "ONLY — do not quote, restate, or reply to it line by line."
         )
-        owner = f"You are writing as: {user_email}\n" if user_email else ""
+        owner = f"You are writing as: {sender.strip()}\n" if sender.strip() else ""
         ctx = f"{owner}User context:\n{about}\n\n" if (about or owner) else ""
         today = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
         parts = [ctx, f"Today is {today}.\n"]
@@ -1614,8 +1647,41 @@ async def _orchestrate_draft(
     return draft
 
 
+#: The columns of the mail a reply answers, for :func:`_build_reply_context`.
+_REPLY_TARGET_COLUMNS = (
+    "em.id, em.account_id, em.provider_message_id, em.thread_id, em.subject, "
+    "em.body_text, em.snippet, em.from_address, em.to_addresses, em.cc_addresses")
+
+
+async def _reply_target(
+    db: Any, account_id: str, message_id: str, user_email: str,
+    *, from_any_owned_mailbox: bool,
+) -> Any | None:
+    """The mail a reply answers: first in the sending mailbox ``account_id``.
+
+    With ``from_any_owned_mailbox``, a mail that is not there is read from
+    the mailbox of the mail, under the owner predicate on ``user_email``
+    (``core._account_scope``, D-EM-4). A mail of another member stays None.
+    """
+    row = (await db.execute(text(
+        f"""SELECT {_REPLY_TARGET_COLUMNS}
+           FROM email_messages em
+           WHERE em.id = :mid AND em.account_id = :aid"""
+    ), {"mid": message_id, "aid": account_id})).fetchone()
+    if row or not from_any_owned_mailbox:
+        return row
+    params: dict[str, Any] = {"mid": message_id, "uid": user_email or ""}
+    owned = _account_scope(None, params)
+    return (await db.execute(text(
+        f"""SELECT {_REPLY_TARGET_COLUMNS}
+           FROM email_messages em
+           WHERE em.id = :mid AND {owned}"""
+    ), params)).fetchone()
+
+
 async def _build_reply_context(
     db: Any, account_id: str, message_id: str, user_email: str,
+    *, from_any_owned_mailbox: bool = False,
 ) -> dict[str, Any] | None:
     """Assemble the FULL reply context for one message — the SINGLE source of
     truth every drafting entry point uses (/draft-reply and the compose card's
@@ -1625,16 +1691,25 @@ async def _build_reply_context(
     email — e.g. one carrying a template to apply), the earlier thread, the
     owner's direction/recipient-role signals (self / sender_scope / To / Cc),
     attachment metadata, past replies to this sender, and reply memories. Returns
-    None when the message doesn't exist."""
-    row = (await db.execute(text(
-        """SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
-                  em.body_text, em.snippet, em.from_address,
-                  em.to_addresses, em.cc_addresses
-           FROM email_messages em
-           WHERE em.id = :mid AND em.account_id = :aid"""
-    ), {"mid": message_id, "aid": account_id})).fetchone()
+    None when the message doesn't exist.
+
+    ``account_id`` is the SENDING mailbox (EM-T8e-1). ``self`` and
+    ``self_label`` name it, so the drafter speaks as that mailbox (MB-14).
+    "Self" for the direction is each mailbox of the member (D-EM-27).
+
+    ``from_any_owned_mailbox`` is for compose-assist only (item 3). A reply
+    from mailbox B to a mail of mailbox A then reads the mail and its thread
+    from A, under the owner predicate. Each item that is the voice of the
+    writer still comes from B: the sent examples to that sender, the reply
+    memories and the few-shot examples here, and the voice profile and the
+    signature that the caller loads for ``account_id``."""
+    row = await _reply_target(
+        db, account_id, message_id, user_email,
+        from_any_owned_mailbox=from_any_owned_mailbox)
     if not row:
         return None
+    # The mailbox that HOLDS the mail. The thread is read there.
+    mail_account = str(getattr(row, "account_id", None) or account_id)
     frm = row.from_address if isinstance(row.from_address, dict) \
         else json.loads(row.from_address or "{}")
     # Ensure the FULL incoming body is present before drafting. Header-only rows
@@ -1642,22 +1717,18 @@ async def _build_reply_context(
     # this the drafter sees the message cut off. Hydrate, then fall back to snippet.
     from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
     hydrated = await hydrate_message_body(db, str(row.id), user_email)
-    # The mailbox's own address + org domains → direction (self/internal/external)
-    # and recipient role (To vs Cc-only).
-    self_row = (await db.execute(text(
-        "SELECT email_address FROM email_accounts WHERE id = :id"
-    ), {"id": account_id})).fetchone()
-    self_email = (self_row.email_address if self_row else "") or ""
-    from gateway.routes.email.automation.identity import (  # noqa: PLC0415
-        resolve_org_domains,
-        sender_scope,
-    )
+    # The sending mailbox's address + label, and each mailbox of the member,
+    # in one read → direction (self/internal/external) and recipient role.
+    me = await resolve_self(db, account_id)
     org_domains = await resolve_org_domains(db, account_id)
     email: dict[str, Any] = {
         "subject": row.subject or "", "from": frm.get("email", ""),
         "from_name": frm.get("name", "") or "",
-        "self": self_email,
-        "sender_scope": sender_scope(frm.get("email", ""), self_email, org_domains),
+        "self": me.address,
+        "self_label": me.label,
+        "sender_scope": sender_scope(
+            frm.get("email", ""), me.address, org_domains,
+            self_addresses=me.self_addresses),
         "to": _fmt_addr_list(row.to_addresses),
         "cc": _fmt_addr_list(row.cc_addresses),
         "attachments": (await _attachment_summaries(
@@ -1665,7 +1736,7 @@ async def _build_reply_context(
         "body": (hydrated or "").strip() or row.body_text or row.snippet or "",
         "thread_id": row.thread_id or "",
         "thread": await _fetch_thread_context(
-            db, account_id, row.thread_id or "", row.provider_message_id or ""),
+            db, mail_account, row.thread_id or "", row.provider_message_id or ""),
         "sender_examples": await _fetch_sender_reply_examples(
             db, account_id, frm.get("email", "")),
     }
@@ -1759,10 +1830,13 @@ async def draft_reply_smart(
                             thread_id=email["thread_id"] or None,
                         )
                         # Mirror locally so it shows in Drafts + in-thread at once.
+                        # The From is the sending mailbox, never the sign-in
+                        # address of the member (MB-14, EM-T8e-1).
                         await _upsert_local_draft(
                             db, sess.account_id, provider_id,
                             thread_id=email["thread_id"] or None,
-                            owner_email=user.email or "", to_email=email["from"],
+                            owner_email=email.get("self") or "",
+                            to_email=email["from"],
                             subject=re_subject, body=draft,
                         )
                         created = True
@@ -1827,10 +1901,16 @@ async def _compose_assist_run(
         # one /draft-reply uses. This is what was missing: the compose card never
         # loaded the replied-to message body, so "Draft with AI" couldn't apply a
         # template the trailing email provided.
+        #
+        # The mail can sit in ANOTHER mailbox of the member: the member changed
+        # From on a reply (EM-T8e-1 item 3). The mail and its thread then come
+        # from the mailbox of the mail, under the owner predicate, and the
+        # voice items from the sending mailbox ``req.account_id``.
         ctx = None
         if req.message_id and req.mode in ("reply", "forward"):
             ctx = await _build_reply_context(
-                db, req.account_id, req.message_id, user.email or "")
+                db, req.account_id, req.message_id, user.email or "",
+                from_any_owned_mailbox=True)
         if ctx is not None:
             # Draft-from-scratch REPLY → route through the SAME reply drafter as
             # /draft-reply, so full context + identical rules apply (one method,
@@ -1872,6 +1952,14 @@ async def _compose_assist_run(
                 recipient = (f"{nm} <{addr}>" if nm else addr).strip()
         if not recipient and req.to:
             recipient = ", ".join([a for a in req.to if a])
+        # The prompt names the SENDING mailbox (MB-14). The reply context
+        # already carries it; new mail reads it here.
+        if ctx is not None:
+            sender = _sending_mailbox_line(
+                ctx.get("self") or "", ctx.get("self_label") or "")
+        else:
+            me = await resolve_self(db, req.account_id)
+            sender = _sending_mailbox_line(me.address, me.label)
 
         # Refinement rounds (the user is iterating on an existing draft) reuse
         # the improve-in-place path — no memory/consult sweep, so each edit
@@ -1888,7 +1976,7 @@ async def _compose_assist_run(
             instruction=req.instruction, mode=req.mode, recipient=recipient,
             subject=subject, thread=thread, reply_to_body=reply_to_body,
             user_email=user.email or "", model=models["compose"],
-            on_delta=on_delta,
+            on_delta=on_delta, sender=sender,
         )
         if _is_no_draft(draft):
             return {"draft": "", "skipped": "low_confidence"}
@@ -2317,9 +2405,11 @@ async def save_draft(
                 reply_to_message_id=sess.provider_message_id,
                 thread_id=row.thread_id or None,
             )
+            # The From of the copy is the mailbox that saves the draft, never
+            # blank (MB-14, EM-T8e-1 review round 1).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=row.thread_id,
-                owner_email="", to_email=to_email,
-                subject=re_subject, body=body,
+                owner_email=(await resolve_self(db, req.account_id)).address,
+                to_email=to_email, subject=re_subject, body=body,
             )
         return {"created": True, "id": local_id}

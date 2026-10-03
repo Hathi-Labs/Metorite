@@ -6,7 +6,7 @@ import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
-import { foldersInScope } from "../lib/emailStore";
+import { allInboxesFolders } from "../lib/emailStore";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -27,6 +27,9 @@ interface AccountSidebarProps {
   onEditMailbox?: (account: EmailAccount) => void;
   /** All inboxes is the view (EM-T8d, D-EM-22). */
   viewAll?: boolean;
+  /** All inboxes: the count of each well-known folder, summed over each
+   *  mailbox (`allFolderCounts` of the store, EM-T8f-3). Null until it lands. */
+  folderSums?: Readonly<Record<string, number>> | null;
   /** Open All inboxes. Without it, the row is not drawn. */
   onSelectAll?: () => void;
   /** Open one of the Email Automation feature views. */
@@ -65,6 +68,7 @@ export function AccountSidebar({
   onDisconnect,
   onEditMailbox,
   viewAll = false,
+  folderSums = null,
   onSelectAll,
   onOpenAutomation,
   activeAutomation,
@@ -77,12 +81,11 @@ export function AccountSidebar({
   const showAll = !!onSelectAll && accounts.length > 1;
   const allUnread = accounts.reduce((n, a) => n + (a.unreadCount || 0), 0);
   const isSelected = (id: string) => !viewAll && selectedAccountId === id;
-  // In All inboxes only the folders that every mailbox has show. A custom
-  // folder belongs to one mailbox, and a count belongs to one mailbox, so the
-  // tree draws none (§11.4 "Folders").
-  const shownFolders = viewAll
-    ? foldersInScope(folders, true).map((f) => ({ ...f, count: 0 }))
-    : folders;
+  // In All inboxes only the folders that every mailbox has show, because a
+  // custom folder belongs to one mailbox. Each well-known folder shows its
+  // sum over each mailbox, and each other folder shows no count (§11.4
+  // "Folders", EM-T8f-3).
+  const shownFolders = viewAll ? allInboxesFolders(folders, folderSums) : folders;
   // The account menu: which account, and where to draw it.
   const [menu, setMenu] = useState<{ account: EmailAccount; x: number; y: number } | null>(null);
 

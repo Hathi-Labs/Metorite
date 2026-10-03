@@ -341,15 +341,18 @@ describe("the page draws the panel where FirstSyncBanner drew (items 7 and 12)",
   const PAGE = codeOnly(read("page.tsx"));
 
   it("draws the panel only for progress, and the banner for each other pending mailbox", () => {
+    // EM-T8f-3: one surface for each pending mailbox, from `firstSyncPanels`.
     expect(PAGE).toMatch(
-      /\{pendingAccount &&\s*\(firstSyncSurface\(pendingAccount\) === "progress" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner address=\{pendingAccount\.emailAddress\} \/>/,
+      /\{importPanels\.map\(\(\{ account, surface, named \}\) =>\s*surface === "progress" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner\s+key=\{account\.id\}\s+address=\{account\.emailAddress\}/,
     );
-    // One decision: the page does not test the phase itself. It reads the
-    // stage once, for the rules step of part 2.
+    // One decision: the page does not test the phase itself. The surface
+    // comes from firstSyncSurface, and the page reads the stage once, for
+    // the rules step of part 2.
+    expect(codeOnly(read("lib/onboarding.ts"))).toContain("surface: firstSyncSurface(account)");
     expect(PAGE).not.toMatch(/importPhase/);
     expect(PAGE.match(/onboardingStage\(/g)).toEqual(["onboardingStage("]);
     expect(PAGE).toContain('onboardingStage(selectedAccount) === "rules"');
-    expect(PAGE).toContain("progress={importProgress(pendingAccount, { now: new Date() })}");
+    expect(PAGE).toContain("progress={importProgress(account, { now: new Date() })}");
   });
 
   it("sits in the mail pane after the reconnect banner, and not in a modal", () => {

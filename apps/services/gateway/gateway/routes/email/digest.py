@@ -13,6 +13,10 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.email.automation.identity import (
+    SELF_ADDRESSES_SQL,
+    resolve_self_addresses,
+)
 from gateway.routes.email.automation.senders import canonical_cleanup_category
 from gateway.routes.email.core import (
     _assert_account_owner,
@@ -35,11 +39,16 @@ from sqlalchemy import text
 # from the account and would otherwise inflate the NEXT digest's counts.
 #
 # ``_INBOUND`` is the shared predicate: inbox folder, not from self. ``em`` is the
-# table alias; ``:aid``/``:days``/``:self`` come from the shared params.
+# table alias; ``:aid``/``:days`` come from the shared params.
+#
+# "Self" is EACH mailbox of the member (D-EM-27, EM-T8e-1), not only this one:
+# mail from another mailbox of the member is not new inbound mail. The set is
+# ``identity.SELF_ADDRESSES_SQL`` over ``:aid``. A NULL sender stays out, as it
+# did beside one address, and an empty set (no visible row) leaves every row in.
+_NOT_FROM_SELF_EM = f"LOWER(em.from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})"
 _DIGEST_WIN = ("em.account_id = :aid AND em.received_at >= "
                "now() - make_interval(days => :days)")
-_DIGEST_INBOUND = ("LOWER(em.folder) = 'inbox' "
-                   "AND (:self = '' OR LOWER(em.from_address->>'email') <> :self)")
+_DIGEST_INBOUND = f"LOWER(em.folder) = 'inbox' AND {_NOT_FROM_SELF_EM}"
 
 
 async def _digest_totals(db: Any, params: dict[str, Any]) -> dict[str, int]:
@@ -59,10 +68,11 @@ async def _digest_totals(db: Any, params: dict[str, Any]) -> dict[str, int]:
 
 
 # The digest's scope, in the ANALYTICS helpers' ``m`` alias: this account,
-# inbox only, never the account's own address (self-notes, BCC-to-self, and the
-# digest email itself, which would inflate the NEXT digest's counts).
+# inbox only, never an address of the member's own mailboxes (self-notes,
+# BCC-to-self, mail between two mailboxes of the member, and the digest email
+# itself, which would inflate the NEXT digest's counts).
 _PROJ_SCOPE = ("m.account_id = :aid AND LOWER(COALESCE(m.folder, '')) = 'inbox' "
-               "AND (:self = '' OR LOWER(m.from_address->>'email') <> :self)")
+               f"AND LOWER(m.from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})")
 _PROJ_WIN = "m.received_at >= now() - make_interval(days => :days)"
 _PROJ_PREV_WIN = ("m.received_at >= now() - make_interval(days => :days * 2) "
                   "AND m.received_at < now() - make_interval(days => :days)")
@@ -186,14 +196,13 @@ async def _digest_thread_list(
             ORDER BY {order}
             LIMIT :lim"""
     ), {"aid": account_id, "lim": limit})).fetchall()
-    self_row = (await db.execute(text(
-        "SELECT LOWER(email_address) AS self FROM email_accounts "
-        "WHERE id = :aid"), {"aid": account_id})).fetchone()
-    self_email = (getattr(self_row, "self", "") or "") if self_row else ""
+    # A last message from ANY mailbox of the member is ours (D-EM-27), so the
+    # counterparty is then its first recipient, not the member.
+    selves = await resolve_self_addresses(db, account_id)
 
     out: list[dict[str, Any]] = []
     for r in rows:
-        ours = (r.from_email or "").lower() == self_email
+        ours = (r.from_email or "").lower() in selves
         who = ((r.to_name or r.to_email) if ours
                else (r.from_name or r.from_email)) or ""
         out.append({
@@ -555,11 +564,11 @@ async def _generate_digest(
     ledger. One computation, two projections.
     """
     params: dict[str, Any] = {"aid": account_id, "days": period_days}
+    # The windowed scopes exclude each mailbox of the member through
+    # ``SELF_ADDRESSES_SQL`` over ``:aid`` (D-EM-27), so no ``:self`` bind.
     self_row = (await db.execute(text(
-        "SELECT LOWER(email_address) AS self, user_id "
-        "FROM email_accounts WHERE id = :aid"
+        "SELECT user_id FROM email_accounts WHERE id = :aid"
     ), {"aid": account_id})).fetchone()
-    params["self"] = (getattr(self_row, "self", "") or "") if self_row else ""
     # The analytics noisy-senders aggregate excludes the user's OWN connected
     # addresses via a per-user subquery (:uid) — hand it the account owner.
     params["uid"] = (getattr(self_row, "user_id", "") or "") if self_row else ""

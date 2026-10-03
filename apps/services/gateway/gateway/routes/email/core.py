@@ -611,6 +611,36 @@ async def _assert_account_owner(db: Any, account_id: str, user_email: str) -> No
         raise HTTPException(status_code=404, detail="Account not found")
 
 
+#: A mail of the mailbox ``:aid`` has the thread ``:tid`` (D-EM-19).
+THREAD_IN_MAILBOX_SQL = (
+    "SELECT 1 FROM email_messages "
+    "WHERE account_id = :aid AND thread_id = :tid LIMIT 1")
+
+
+async def _assert_thread_in_mailbox(
+    db: Any, account_id: str, thread_id: str,
+) -> None:
+    """404 when no mail of ``account_id`` has ``thread_id`` (D-EM-19,
+    EM-T8e-1). A route that takes the pair calls this before it writes, so a
+    thread of another mailbox never gets a row of this one."""
+    row = (await db.execute(text(THREAD_IN_MAILBOX_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+
+async def _assert_mail_in_mailbox(
+    db: Any, account_id: str, message_id: str,
+) -> None:
+    """404 when ``message_id`` is not a mail of ``account_id`` (D-EM-19,
+    EM-T8e-1)."""
+    row = (await db.execute(text(
+        "SELECT 1 FROM email_messages WHERE id = :mid AND account_id = :aid"
+    ), {"mid": message_id, "aid": account_id})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+
 def _safe_json(content: str) -> Any | None:
     """Extract a JSON object/array from an LLM response.
 

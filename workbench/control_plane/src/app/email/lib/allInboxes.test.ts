@@ -15,6 +15,15 @@
 //   * `email-all-limits`: All inboxes drops the label filter, offers no "load
 //     older", keeps a mail that "Open in inbox" opens, and new mail goes from
 //     the default mailbox.
+//
+// WS-17 EM-T8f-3 (§11.7.6) adds two fences here:
+//   * `email-all-folder-sums`: in All inboxes, each well-known folder shows
+//     its sum over each mailbox, a failed read adds 0, and a custom folder
+//     shows no count. `allInboxesStore.test.ts` holds the store half: the
+//     reads of each mailbox, their bound, and the list that never waits.
+//   * `email-import-panel-each`: one panel for each importing mailbox, the
+//     mailbox in view first. With two or more mailboxes each panel names its
+//     mailbox with the chip.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -22,7 +31,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { AccountSidebar } from "../components/AccountSidebar";
-import { ALL_INBOXES, listScope, pickInitialView } from "./emailStore";
+import { FirstSyncBanner } from "../components/FirstSyncBanner";
+import { OnboardingPanel } from "../components/OnboardingPanel";
+import {
+  ALL_INBOXES,
+  SUMMED_FOLDERS,
+  allInboxesFolders,
+  listScope,
+  pickInitialView,
+  sumFolderCounts,
+} from "./emailStore";
+import { firstSyncPanels, importProgress } from "./onboarding";
 import type { EmailAccount, EmailFolder } from "./types";
 
 const ROOT = join(__dirname, "..");
@@ -119,12 +138,161 @@ describe("the switcher (§11.4)", () => {
     expect(render(false, [box("a", "Fracktal", 2)])).not.toContain("All inboxes");
   });
 
-  it("draws only the folders of every mailbox, with no count, in All inboxes", () => {
+  it("draws only the folders of every mailbox, with no count before the sums land", () => {
     const html = render(true, [box("a", "Fracktal", 2), box("b", "Personal", 3)]);
     expect(html).toContain(">Inbox<");
     expect(html).not.toContain(">Projects<");
+    // The 7 is the count of ONE mailbox. It never reads as the sum.
     expect(html).not.toContain(">7<");
     expect(html).toContain('aria-pressed="true"');
+  });
+});
+
+describe("email-all-folder-sums", () => {
+  const tree = (counts: Record<string, number>, extra: EmailFolder[] = []): EmailFolder[] => [
+    ...SUMMED_FOLDERS.map((key) => ({ icon: "Inbox", key, label: key, count: counts[key] ?? 0, type: "system" as const })),
+    ...extra,
+  ];
+  const custom = { icon: "Folder", key: "projects", label: "Projects", count: 9, type: "user" } as EmailFolder;
+
+  it("names the six well-known folders of §11.4", () => {
+    expect([...SUMMED_FOLDERS]).toEqual(["inbox", "drafts", "sent", "archive", "junk", "trash"]);
+  });
+
+  it("sums each well-known folder over each mailbox", () => {
+    const sums = sumFolderCounts([
+      tree({ inbox: 7, sent: 2, trash: 1 }, [custom]),
+      tree({ inbox: 5, drafts: 1, archive: 4, junk: 3 }),
+    ]);
+    expect(sums).toEqual({ inbox: 12, drafts: 1, sent: 2, archive: 4, junk: 3, trash: 1 });
+  });
+
+  it("adds 0 for a mailbox whose read failed", () => {
+    expect(sumFolderCounts([tree({ inbox: 7 }), null]).inbox).toBe(7);
+    expect(sumFolderCounts([null, null])).toEqual({ inbox: 0, drafts: 0, sent: 0, archive: 0, junk: 0, trash: 0 });
+  });
+
+  it("sums no other folder, not even a key that an object already has", () => {
+    const sums = sumFolderCounts([[
+      { key: "projects", count: 9 },
+      { key: "constructor", count: 3 },
+      { key: "all", count: 40 },
+      { key: "starred", count: 2 },
+    ]]);
+    expect(Object.keys(sums).sort()).toEqual([...SUMMED_FOLDERS].sort());
+    expect(Object.values(sums).every((n) => n === 0)).toBe(true);
+  });
+
+  it("gives each well-known folder its sum, and each other folder no count", () => {
+    const shown = allInboxesFolders(
+      [{ icon: "Mails", key: "all", label: "All", count: 40, type: "system" } as EmailFolder, ...tree({ inbox: 7 }), custom],
+      { inbox: 12, drafts: 1, sent: 2, archive: 4, junk: 3, trash: 1 },
+    );
+    expect(shown.map((f) => [f.key, f.count])).toEqual([
+      ["all", 0], ["inbox", 12], ["drafts", 1], ["sent", 2], ["archive", 4], ["junk", 3], ["trash", 1],
+    ]);
+  });
+
+  it("gives no count before the sums land", () => {
+    expect(allInboxesFolders(tree({ inbox: 7, sent: 2 }), null).every((f) => f.count === 0)).toBe(true);
+  });
+
+  it("draws the sums in the switcher, and the page passes them to both", () => {
+    const html = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: [box("a", "Fracktal", 2), box("b", "Personal", 3)],
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders: [...tree({ inbox: 7 }), custom],
+      folderSums: { inbox: 12, drafts: 0, sent: 5, archive: 0, junk: 0, trash: 0 },
+      selectedFolder: "drafts",
+      onFolderSelect: () => {},
+      viewAll: true,
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+    expect(html).toContain(">12<");
+    expect(html).toContain(">5<");
+    expect(html).not.toContain(">7<");
+    expect(html).not.toContain(">Projects<");
+    // One mailbox in view draws its own tree, with its own counts.
+    const one = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: [box("a", "Fracktal", 2), box("b", "Personal", 3)],
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders: [...tree({ inbox: 7 }), custom],
+      folderSums: { inbox: 12, drafts: 0, sent: 5, archive: 0, junk: 0, trash: 0 },
+      selectedFolder: "drafts",
+      onFolderSelect: () => {},
+      viewAll: false,
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+    expect(one).toContain(">7<");
+    expect(one).toContain(">Projects<");
+    expect(one).not.toContain(">12<");
+    const page = codeOnly(read("page.tsx"));
+    expect(page.match(/folderSums=\{allFolderCounts\}/g)).toHaveLength(2);
+  });
+});
+
+describe("email-import-panel-each", () => {
+  const importing = (id: string, extra: Partial<EmailAccount> = {}): EmailAccount => ({
+    ...box(id, id.toUpperCase(), 0),
+    importSince: "2026-07-01T00:00:00Z",
+    onboardingDone: false,
+    syncStatus: "syncing",
+    initialSyncDone: false,
+    importPhase: "importing",
+    ...extra,
+  });
+  const done = (id: string): EmailAccount => ({ ...box(id, id.toUpperCase(), 0), initialSyncDone: true });
+
+  it("gives one panel for each importing mailbox, the mailbox in view first", () => {
+    const accounts = [importing("a"), done("b"), importing("c"), importing("d", { importPhase: null })];
+    const panels = firstSyncPanels(accounts, "c");
+    expect(panels.map((p) => [p.account.id, p.surface])).toEqual([
+      ["c", "progress"], ["a", "progress"], ["d", "banner"],
+    ]);
+    // All inboxes has no mailbox in view: the order of the list.
+    expect(firstSyncPanels(accounts, null).map((p) => p.account.id)).toEqual(["a", "c", "d"]);
+  });
+
+  it("gives no panel to an errored or paused mailbox", () => {
+    const accounts = [importing("a", { syncStatus: "error" }), importing("b", { syncEnabled: false }), importing("c")];
+    expect(firstSyncPanels(accounts, "a").map((p) => p.account.id)).toEqual(["c"]);
+  });
+
+  it("names each panel with two or more mailboxes, and changes nothing for one", () => {
+    expect(firstSyncPanels([importing("a"), importing("b")], null).map((p) => p.named)).toEqual([true, true]);
+    expect(firstSyncPanels([importing("a"), done("b")], null).map((p) => p.named)).toEqual([true]);
+    expect(firstSyncPanels([importing("a")], null).map((p) => p.named)).toEqual([false]);
+  });
+
+  it("draws the chip and the address of its mailbox on each surface", () => {
+    const a = importing("a", { displayLabel: "Fracktal", emailAddress: "vj@fracktal.in" });
+    const progress = importProgress(a, { now: new Date(2026, 9, 3) });
+    const panel = renderToStaticMarkup(createElement(OnboardingPanel, { address: a.emailAddress, progress, mailbox: a }));
+    const banner = renderToStaticMarkup(createElement(FirstSyncBanner, { address: a.emailAddress, mailbox: a }));
+    for (const html of [panel, banner]) {
+      expect(html).toContain('aria-label="Mailbox Fracktal, vj@fracktal.in"');
+      expect(html).toContain("Connected as vj@fracktal.in");
+    }
+    expect(panel).toContain('aria-label="Mailbox import, vj@fracktal.in"');
+    // One mailbox: no chip, the same panel as before.
+    const plain = renderToStaticMarkup(createElement(OnboardingPanel, { address: a.emailAddress, progress }));
+    expect(plain).not.toContain("Mailbox Fracktal");
+    expect(plain).toContain('aria-label="Mailbox import"');
+    expect(renderToStaticMarkup(createElement(FirstSyncBanner, { address: a.emailAddress }))).not.toContain("Mailbox Fracktal");
+  });
+
+  it("draws each panel on the page, keyed and named by its mailbox", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);");
+    expect(page).toContain("{importPanels.map(({ account, surface, named }) =>");
+    expect(page.match(/key=\{account\.id\}/g)).toHaveLength(2);
+    expect(page.match(/mailbox=\{named \? account : undefined\}/g)).toHaveLength(2);
+    // No single pending mailbox is left on the page.
+    expect(page).not.toMatch(/\bpendingAccount\b/);
   });
 });
 
