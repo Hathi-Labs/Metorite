@@ -1,8 +1,10 @@
-"""WS43-F20, the cases WS-43t1 owns: the structured history path.
+"""WS43-F20: the structured history path (WS-43t1) and the session store (WS-43t2).
 
-Spec: ``project-docs/specs/maf_coding_engine.md`` §15.9 and the WS-43t1 slice.
-HANDOFF H-216. WS-43t2 adds the rest of WS43-F20 (the session store, the
-dedup, the staleness and room rules, the two-turn probe of §15.9.7).
+Spec: ``project-docs/specs/maf_coding_engine.md`` §15.9 and the WS-43t1 and
+WS-43t2 slices. HANDOFF H-216 and H-215. Sections 1 to 6 are WS-43t1's.
+Sections 7 to 12 are WS-43t2's: the store, the dedup, the staleness and room
+rules, the bounds, the odd runs, and the two-turn probe of §15.9.7. Each
+section's own header names its fence and its mutations.
 
 The structured branch of the native run input never ran. It built
 ``Message(role=..., content=...)``, MAF 1.19 refused the keyword, and the
@@ -48,6 +50,7 @@ from tests.unit._native_maf_harness import (
     load_agent_module,
     parse_frames,
     text_turn,
+    tool_turn,
 )
 
 agent_framework = pytest.importorskip("agent_framework", reason="agent_framework not installed")
@@ -147,6 +150,16 @@ def test_the_flag_is_off_by_default() -> None:
     assert executor._native_sessions_enabled() is False
 
 
+@pytest.fixture
+def _flag_off(monkeypatch):
+    """Pin ``MAF_NATIVE_SESSIONS`` OFF, so an environment that sets it cannot
+    turn a flag-off case into a flag-on one (WS-43t1 verifier note)."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", False)
+
+
+@pytest.mark.usefixtures("_flag_off")
 @pytest.mark.parametrize("case", sorted(_GOLDEN))
 def test_flag_off_the_run_input_is_todays_string_byte_for_byte(case: str) -> None:
     payload, golden = _GOLDEN[case]
@@ -161,7 +174,7 @@ def test_flag_off_the_run_calls_the_agent_itself() -> None:
     assert executor._agent_for_run(agent, None) is agent
 
 
-@pytest.mark.usefixtures("_a_tenant")
+@pytest.mark.usefixtures("_a_tenant", "_flag_off")
 def test_flag_off_the_wire_carries_the_string_prompt(monkeypatch) -> None:
     """Through the real executor: one user message holds today's prompt, with
     the memory and the history inside it as text."""
@@ -547,3 +560,641 @@ def test_the_window_binds_when_it_is_the_smaller(monkeypatch) -> None:
     assert count_message_tokens(sent, "probe-small-window") <= budget
     assert run_input[-1].text == "now"
     assert len(run_input) < 41
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# WS-43t2 — the session store (§15.9.2 to §15.9.7)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Sections 7 to 10 need no database. They drive the store's rules and the
+# executor's wiring, with the store's two database calls replaced by
+# `_FakeDb`. Sections 11 and 12 are R8: the real store, the real SQL and the
+# real chat helpers, on the H3 phase-4 catalog, as the NOBYPASSRLS role
+# `acb_app_h3rls` (`projects_ai_chat.md` §21.10). They skip without
+# TENANT_LADDER_DATABASE_URL, and a skip is not a pass.
+#
+# Each rule was proved by a mutation that turned a case red. The PR lists the
+# mutation, the command and the red result for each one.
+
+store = pytest.importorskip(
+    "orchestrator.native_session_store", reason="orchestrator not installed",
+)
+
+_PROBE_AGENT = "probe-native"
+_PROPOSE = "Process my inbox."
+_ASK = "Apply itm-1 and itm-2?"
+_ORG = "org-f20-a"
+
+
+def propose_items() -> str:
+    """Propose the inbox items to apply. Returns their ids."""
+    return json.dumps({"items": ["itm-1", "itm-2"]})
+
+
+class _LogSpy:
+    """Records the store's log lines, so a case can count the outcome lines."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str, dict[str, Any]]] = []
+
+    def __getattr__(self, level: str) -> Any:
+        def _record(event: str, **fields: Any) -> None:
+            self.lines.append((level, event, fields))
+
+        return _record
+
+    def named(self, event: str) -> list[dict[str, Any]]:
+        return [f for _level, name, f in self.lines if name == event]
+
+    def outcomes(self) -> list[str]:
+        return [f["outcome"] for f in self.named("native_session.load")]
+
+
+class _FakeDb:
+    """The store's two database calls, in memory, for the hermetic cases.
+
+    It holds no SQL, so it proves no SQL. The R8 cases of sections 11 and 12
+    run the real statements.
+    """
+
+    def __init__(self) -> None:
+        self.chats: dict[str, dict[str, Any]] = {}
+        self.stored: dict[tuple[str, str, str], Any] = {}
+        self.reads: list[tuple[str, str, str]] = []
+        self.writes: list[dict[str, Any]] = []
+
+    def chat(
+        self, tid: str, *, owner: str = "alice@f20.test",
+        participants: list[str] | None = None, rows: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self.chats[tid] = {
+            "owner": owner,
+            "participants": list(participants or [owner]),
+            "rows": list(rows or []),
+        }
+
+    def read_state(self, org: str, tid: str, agent: str) -> Any:
+        self.reads.append((org, tid, agent))
+        chat = self.chats.get(tid)
+        if chat is None:
+            return store.LoadState(chat_exists=False)
+        return store.LoadState(
+            chat_exists=True, session_user=chat["owner"],
+            participants=list(chat["participants"]), rows=list(chat["rows"]),
+            stored=self.stored.get((org, tid, agent)),
+        )
+
+    def write_row(
+        self, org: str, tid: str, agent: str, body: str, digest: str, fingerprint: str,
+    ) -> bool:
+        self.writes.append({"org": org, "tid": tid, "agent": agent, "body": body})
+        if tid not in self.chats:
+            return False
+        self.stored[(org, tid, agent)] = store.StoredRow(json.loads(body), digest, fingerprint)
+        return True
+
+
+@pytest.fixture(autouse=True)
+def fake_db(request, monkeypatch):
+    """Every case without the R8 fixture gets the in-memory store.
+
+    So no hermetic case, and none of WS-43t1's flag-on cases, opens a
+    database connection. An R8 case asks for ``graph_as_app`` and gets the
+    real calls.
+    """
+    if "graph_as_app" in request.fixturenames:
+        yield None
+        return
+    db = _FakeDb()
+    monkeypatch.setattr(store, "read_state", db.read_state)
+    monkeypatch.setattr(store, "write_row", db.write_row)
+    yield db
+
+
+@pytest.fixture
+def store_log(monkeypatch) -> _LogSpy:
+    spy = _LogSpy()
+    monkeypatch.setattr(store, "_log", spy)
+    return spy
+
+
+def _message(role: str, text: str) -> Any:
+    return agent_framework.Message(role=role, contents=[text])
+
+
+def _probe_model() -> ScriptedModel:
+    """Turn 1 calls ``propose_items`` and asks. Turn 2 answers the yes."""
+    return ScriptedModel([
+        tool_turn("propose_items", call_id="call_propose_1"),
+        text_turn(_ASK),
+        text_turn("Applied itm-1 and itm-2."),
+    ])
+
+
+def _drive_probe(
+    monkeypatch, model: ScriptedModel, payload: dict[str, Any], *,
+    thread_id: str | None, organization_id: str | None, run_id: str,
+) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Run a native MAF agent with one tool through the REAL ``run_agent_stream``.
+
+    Only the HTTP transport is scripted. Each run builds a new agent, as
+    ``build_agents`` does in production, over ONE scripted model, so the
+    request bodies of both turns land in ``model.bodies``.
+    """
+    routes_agent = pytest.importorskip("gateway.routes.agent", reason="gateway not installed")
+    built: list[Any] = []
+
+    def _build() -> list[Any]:
+        agent = _scripted_agent(model, tools=[propose_items])
+        built.append(agent)
+        return [agent]
+
+    class _Loaded:
+        agent_dir = REPO_ROOT / _APIS[1]
+
+        def __init__(self) -> None:
+            self.agent_name = _PROBE_AGENT
+            self.config: dict[str, Any] = {}
+
+        def build_agents(self) -> list[Any]:
+            return _build()
+
+    class _Ctx:
+        def __enter__(self) -> _Loaded:
+            return _Loaded()
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+
+    async def _collect() -> list[str]:
+        return [
+            line async for line in executor.run_agent_stream(
+                _PROBE_AGENT, dict(payload), run_id=run_id, thread_id=thread_id,
+                organization_id=organization_id,
+            )
+        ]
+
+    return parse_frames(asyncio.run(_collect())), built
+
+
+def _assert_turn_two_holds_turn_one(body: dict[str, Any]) -> None:
+    """§15.9.7 step 4: turn 2's request holds turn 1's tool call and its result.
+
+    And the dedup of §15.9.4: each earlier turn is there ONCE, because a
+    loaded session makes the input the current turn only.
+    """
+    messages = body["messages"]
+    calls = [
+        call for m in messages if m.get("role") == "assistant"
+        for call in (m.get("tool_calls") or [])
+    ]
+    assert [c["function"]["name"] for c in calls] == ["propose_items"], messages
+    results = [m for m in messages if m.get("role") == "tool"]
+    assert len(results) == 1 and results[0]["tool_call_id"] == calls[0]["id"]
+    assert "itm-1" in results[0]["content"] and "itm-2" in results[0]["content"]
+    assert [m["content"] for m in messages if m.get("role") == "user"] == [_PROPOSE, "yes"]
+    assert [m.get("content") for m in messages if m.get("role") == "assistant"][-1] == _ASK
+
+
+# ── 7. The store's rules, as pure functions ──────────────────────────────────
+
+
+def test_the_load_digest_covers_the_rows_through_the_last_user_row() -> None:
+    """The rows after the last user row are the answer of the run that saved
+    the session. The save hashes the rows before its user turn, then that
+    turn, so the two digests meet."""
+    before = [("user", "hello"), ("assistant", "hi")]
+    saved = store.transcript_digest([*before, ("user", _PROPOSE)])
+    server = [*before, ("user", _PROPOSE), ("assistant", "an answer the fold sealed")]
+    for rows in (server, [*server, ("user", "yes")]):
+        prior = store.rows_before_turn(rows, "yes")
+        assert store.transcript_digest(store.covered_rows(prior)) == saved
+    assert store.covered_rows([("assistant", "x")]) == []
+    assert store.server_rows([("user", "  a "), ("assistant", ""), ("system", "s")]) == [
+        ("user", "a"),
+    ]
+
+
+def test_the_browser_view_check_sees_a_regenerate() -> None:
+    """A regenerate drops the last turn and its prompt from the browser only.
+    The server keeps both rows, so only this check can see it."""
+    covered = [("user", "first"), ("assistant", "a1"), ("user", "second")]
+    assert store.browser_agrees(None, covered)
+    normal = [{"role": "user", "content": "first"}, {"role": "assistant", "content": "a1!"},
+              {"role": "user", "content": "second"}, {"role": "assistant", "content": "a2"}]
+    assert store.browser_agrees(normal, covered)
+    regenerated = normal[:2]
+    assert not store.browser_agrees(regenerated, covered)
+    assert not store.browser_agrees([], covered)
+    # Two equal confirm turns in a row are a real pair, not a regenerate.
+    yes_yes = [("user", "yes"), ("assistant", "next?"), ("user", "yes")]
+    browser = [{"role": "user", "content": "yes"}, {"role": "assistant", "content": "next?"},
+               {"role": "user", "content": "yes"}, {"role": "assistant", "content": "done"}]
+    assert store.browser_agrees(browser, yes_yes)
+
+
+def test_the_fingerprint_moves_with_the_room_and_the_instance() -> None:
+    base = {"agent_name": _PROBE_AGENT, "thread_id": "t1", "instance": ""}
+    solo = store.session_fingerprint(members=["alice@x.io"], **base)
+    assert solo == store.session_fingerprint(members=["alice@x.io", "alice@x.io"], **base)
+    assert solo != store.session_fingerprint(members=["alice@x.io", "bob@x.io"], **base)
+    assert solo != store.session_fingerprint(members=["bob@x.io"], **base)
+    assert solo != store.session_fingerprint(
+        members=["alice@x.io"], agent_name=_PROBE_AGENT, thread_id="t1",
+        instance="u:alice@x.io",
+    )
+    assert len(solo) == 64 and int(solo, 16) >= 0
+
+
+def test_the_append_keeps_a_repeated_answer() -> None:
+    """MAF's own ``save_messages`` drops a message with no id when a stored
+    one has the same role and content. Two "yes" turns must both stay."""
+    provider = store.SessionHistoryProvider()
+    state: dict[str, Any] = {}
+
+    async def _two() -> None:
+        await provider.save_messages(None, [_message("user", "yes")], state=state)
+        await provider.save_messages(None, [_message("user", "yes")], state=state)
+
+    asyncio.run(_two())
+    assert [m.text for m in state["messages"]] == ["yes", "yes"]
+
+
+def test_the_compaction_is_the_one_that_15_9_6_names() -> None:
+    """The source names the two strategies in order, and no model-calling
+    strategy. The restore imports no pickle: ``from_dict`` uses only MAF's
+    state type registry."""
+    import ast
+    import inspect
+
+    src = inspect.getsource(store)
+    assert "TokenBudgetComposedStrategy(" in src
+    assert src.index("ToolResultCompactionStrategy(") < src.index("SlidingWindowStrategy(")
+    names = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    } | {
+        (node.module or "").split(".")[0]
+        for node in ast.walk(ast.parse(src)) if isinstance(node, ast.ImportFrom)
+    }
+    assert "SummarizationStrategy" not in names
+    assert not imported & {"pickle", "dill", "marshal", "shelve", "cloudpickle"}
+    assert "AgentSession.from_dict(" in src
+
+
+def test_the_compaction_holds_the_budget_and_keeps_the_newest_tool_group() -> None:
+    from agent_framework import CharacterEstimatorTokenizer, Content
+
+    messages: list[Any] = []
+    for i in range(12):
+        call = f"call_{i}"
+        messages += [
+            _message("user", f"turn {i} " + "u" * 400),
+            agent_framework.Message(role="assistant", contents=[
+                Content.from_function_call(call_id=call, name="propose_items", arguments="{}"),
+            ]),
+            agent_framework.Message(role="tool", contents=[
+                Content.from_function_result(call_id=call, result="r" * 2_000 + f" itm-{i}"),
+            ]),
+            _message("assistant", f"answer {i}"),
+        ]
+    from agent_framework._compaction import annotate_token_counts
+
+    budget = 3_000
+    out = asyncio.run(store.compact_history(messages, budget))
+    # Count the way the strategy counts, on the messages the save keeps.
+    agent_framework.annotate_message_groups(out)
+    annotate_token_counts(out, tokenizer=CharacterEstimatorTokenizer())
+    assert agent_framework.included_token_count(out) <= budget
+    assert len(out) < len(messages)
+    results = [c for m in out for c in m.contents if c.type == "function_result"]
+    assert results and results[-1].call_id == "call_11", "the newest tool group was cut"
+
+
+# ── 8. The load: one outcome line, and the fallbacks ─────────────────────────
+
+
+def _begin(tid: str, current: str, *, browser: Any = None, instance: str = "",
+           agent: str = _PROBE_AGENT, org: str = _ORG) -> Any:
+    return asyncio.run(store.begin_turn(
+        organization_id=org, thread_id=tid, agent_name=agent, instance=instance,
+        current_message=current, browser_history=browser, token_budget=50_000,
+    ))
+
+
+def _finish(turn: Any, budget: int = 50_000) -> str:
+    return asyncio.run(store.finish_turn(turn, token_budget=budget))
+
+
+def _answer(turn: Any, current: str, answer: str) -> None:
+    """What a run appends to its session: its user turn and its answer."""
+    messages = list(turn.session.state.get(store.HISTORY_SOURCE_ID, {}).get("messages", []))
+    messages += [_message("user", current), _message("assistant", answer)]
+    turn.session.state[store.HISTORY_SOURCE_ID] = {"messages": messages}
+
+
+def test_each_load_logs_exactly_one_outcome_line(fake_db, store_log) -> None:
+    tid = "thread-f20-outcomes"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    assert turn.outcome == "no_row" and not turn.loaded
+    _answer(turn, _PROPOSE, _ASK)
+    assert _finish(turn) == "saved"
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("assistant", _ASK), ("user", "yes")]
+    assert _begin(tid, "yes").outcome == "hit"
+    fake_db.chats[tid]["participants"].append("bob@f20.test")
+    assert _begin(tid, "yes").outcome == "fingerprint_drop"
+    fake_db.chats[tid]["participants"].pop()
+    fake_db.chats[tid]["rows"][0] = ("user", "Process my INBOX.")
+    assert _begin(tid, "yes").outcome == "digest_drop"
+    assert store_log.outcomes() == ["no_row", "hit", "fingerprint_drop", "digest_drop"]
+    for line in store_log.named("native_session.load"):
+        assert line["agent"] == _PROBE_AGENT and line["thread_id"] == tid
+
+
+def test_a_failed_load_falls_back_and_logs_one_line(fake_db, store_log, monkeypatch) -> None:
+    def _boom(*_a: Any) -> Any:
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(store, "read_state", _boom)
+    assert _begin("thread-f20-down", "hi") is None
+    assert store_log.outcomes() == ["no_row"]
+    assert store_log.named("native_session.load")[0]["reason"] == "load_failed"
+    fake_db.chat("thread-f20-corrupt", rows=[("user", "hi")])
+    monkeypatch.setattr(store, "read_state", fake_db.read_state)
+    fp = store.session_fingerprint(
+        members=["alice@f20.test"], agent_name=_PROBE_AGENT,
+        thread_id="thread-f20-corrupt", instance="",
+    )
+    fake_db.stored[(_ORG, "thread-f20-corrupt", _PROBE_AGENT)] = store.StoredRow(
+        {"type": "session", "session_id": "s", "state": {"x": {"type": "not-a-type"}}},
+        store.transcript_digest([]), fp,
+    )
+    turn = _begin("thread-f20-corrupt", "hi")
+    assert turn.outcome == "no_row" and not turn.loaded
+    assert store_log.named("native_session.load")[-1]["reason"] == "restore_failed"
+
+
+def test_a_thread_with_no_chat_row_runs_with_no_session(fake_db, store_log) -> None:
+    assert _begin("email-chat:x:y", "hi") is None
+    assert store_log.named("native_session.load")[0]["reason"] == "no_chat"
+    assert fake_db.writes == []
+
+
+def test_the_save_holds_the_turns_and_nothing_else(fake_db) -> None:
+    """§15.9.5: a stored session holds the message history only. A provider's
+    own state key is never stored, whatever it holds."""
+    tid = "thread-f20-only-turns"
+    fake_db.chat(tid, rows=[("user", "hi")])
+    turn = _begin(tid, "hi")
+    _answer(turn, "hi", "hello")
+    turn.session.state["metorite-run-context"] = {"text": _MEMORY}
+    assert _finish(turn) == "saved"
+    body = json.loads(fake_db.writes[-1]["body"])
+    assert list(body["state"]) == [store.HISTORY_SOURCE_ID]
+    assert _MEMORY not in fake_db.writes[-1]["body"]
+
+
+def test_the_byte_backstop_refuses_a_save(fake_db, store_log, monkeypatch) -> None:
+    from acb_common import get_settings
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["maf_session_max_bytes"].default == 2 * 1024 * 1024
+    monkeypatch.setattr(get_settings(), "maf_session_max_bytes", 300)
+    tid = "thread-f20-too-big"
+    fake_db.chat(tid, rows=[("user", "hi")])
+    turn = _begin(tid, "hi")
+    _answer(turn, "hi", "x" * 1_000)
+    assert _finish(turn) == "too_large"
+    assert fake_db.writes == []
+    refused = store_log.named("native_session.save_refused")
+    assert refused and refused[0]["limit"] == 300 and refused[0]["bytes"] > 300
+
+
+def test_a_foreign_key_failure_on_the_save_is_chat_gone(fake_db, store_log, monkeypatch) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    def _fk(*_a: Any) -> bool:
+        raise IntegrityError(
+            "INSERT", {}, Exception("violates foreign key constraint maf_agent_session_thread_id_fkey"),
+        )
+
+    tid = "thread-f20-fk"
+    fake_db.chat(tid, rows=[("user", "hi")])
+    turn = _begin(tid, "hi")
+    _answer(turn, "hi", "hello")
+    monkeypatch.setattr(store, "write_row", _fk)
+    assert _finish(turn) == "chat_gone"
+    assert store_log.named("native_session.chat_gone")
+
+
+# ── 9. The executor: the probe, the dedup and the odd runs ───────────────────
+
+
+@pytest.mark.usefixtures("_a_tenant", "_flag_on")
+def test_the_two_turn_probe_carries_turn_one_tool_output(monkeypatch, fake_db, store_log) -> None:
+    """§15.9.7, hermetic: the real executor, the real MAF agent and client,
+    the in-memory store. Turn 2's request holds turn 1's tool call and its
+    result, the memory reaches the model, and no stored session holds it."""
+    tid = "thread-f20-probe"
+    fake_db.chat(tid)
+    model = _probe_model()
+    events, built = _drive_probe(
+        monkeypatch, model,
+        {"mode": "chat", "message": _PROPOSE, "messages": [], "memory_context": _MEMORY},
+        thread_id=tid, organization_id=_ORG, run_id="run-f20-probe-1",
+    )
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
+    assert store_log.outcomes() == ["no_row"]
+    assert len(fake_db.writes) == 1
+    # What the server keeps for turn 1: the browser's save and the fold.
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("assistant", _ASK), ("user", "yes")]
+    events, built2 = _drive_probe(
+        monkeypatch, model,
+        {"mode": "chat", "message": "yes", "memory_context": _MEMORY, "messages": [
+            {"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK},
+        ]},
+        thread_id=tid, organization_id=_ORG, run_id="run-f20-probe-2",
+    )
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
+    assert store_log.outcomes() == ["no_row", "hit"]
+    _assert_turn_two_holds_turn_one(model.bodies[2])
+    assert _MEMORY in model.bodies[2]["messages"][0]["content"]
+    assert all(_MEMORY not in w["body"] for w in fake_db.writes)
+    # MAF appends a history provider to the agent it runs on when the run has
+    # no history provider. The run's copy carried one, so no agent holds it.
+    assert [a.context_providers for a in [*built, *built2]] == [[], []]
+
+
+@pytest.mark.usefixtures("_a_tenant", "_flag_on")
+def test_a_dropped_session_falls_back_to_the_text_history(monkeypatch, fake_db, store_log) -> None:
+    """A digest_drop runs on the browser's text history as structured turns,
+    and saves a fresh session for the next turn."""
+    tid = "thread-f20-drop"
+    fake_db.chat(tid)
+    model = _probe_model()
+    _drive_probe(monkeypatch, model, {"mode": "chat", "message": _PROPOSE, "messages": []},
+                 thread_id=tid, organization_id=_ORG, run_id="run-f20-drop-1")
+    # Somebody edited turn 1 on the server.
+    fake_db.chats[tid]["rows"] = [("user", "Process my OTHER inbox."), ("assistant", _ASK)]
+    history = [{"role": "user", "content": "Process my OTHER inbox."},
+               {"role": "assistant", "content": _ASK}]
+    events, _ = _drive_probe(monkeypatch, model,
+                             {"mode": "chat", "message": "yes", "messages": history},
+                             thread_id=tid, organization_id=_ORG, run_id="run-f20-drop-2")
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED"
+    assert store_log.outcomes() == ["no_row", "digest_drop"]
+    body = model.bodies[2]["messages"]
+    assert not [m for m in body if m.get("role") == "tool"], "a dropped session leaked"
+    assert [m["content"] for m in body if m.get("role") == "user"] == [
+        "Process my OTHER inbox.", "yes",
+    ]
+    assert len(fake_db.writes) == 2
+
+
+@pytest.mark.usefixtures("_a_tenant", "_flag_on")
+@pytest.mark.parametrize("case", ["no_thread", "delegated", "no_current_turn"])
+def test_an_odd_run_neither_loads_nor_saves(case: str, monkeypatch, fake_db, store_log) -> None:
+    """§15.9.5: no thread id, a delegated run, and an event with history but
+    no current turn. None of them touches the store."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    tid = None if case == "no_thread" else "thread-f20-odd"
+    fake_db.chat("thread-f20-odd")
+    payload: dict[str, Any] = {"mode": "chat", "message": _PROPOSE, "messages": []}
+    if case == "no_current_turn":
+        payload = {"messages": [{"role": "user", "content": "x"}], "event": "deal.updated"}
+    model = ScriptedModel([text_turn("ok")])
+    with artifact_context_scope():
+        if case == "delegated":
+            bind_artifact_context(run_id="run-of-the-parent", session_id="thread-parent")
+        events, _ = _drive_probe(monkeypatch, model, payload, thread_id=tid,
+                                 organization_id=_ORG, run_id=f"run-f20-{case}")
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
+    assert fake_db.reads == [] and fake_db.writes == []
+    assert store_log.outcomes() == []
+
+
+def test_the_skip_reasons(monkeypatch) -> None:
+    agent = _scripted_agent(ScriptedModel([text_turn("x")]))
+    skip = executor._native_session_skip
+    msg = {"message": "hi"}
+    assert skip(agent, "a", msg, run_id="r", caller_thread_id=None, delegated=False) == "no_thread"
+    assert skip(agent, "a", msg, run_id="r", caller_thread_id="a:r", delegated=False) == "no_thread"
+    assert skip(agent, "a", msg, run_id="r", caller_thread_id="t", delegated=True) == "delegated"
+    assert skip(agent, "a", {"messages": [1]}, run_id="r", caller_thread_id="t",
+                delegated=False) == "no_current_turn"
+    assert skip(agent, "a", msg, run_id="r", caller_thread_id="t", delegated=False) is None
+    owned = _scripted_agent(ScriptedModel([text_turn("x")]),
+                            context_providers=[agent_framework.InMemoryHistoryProvider()])
+    assert skip(owned, "a", msg, run_id="r", caller_thread_id="t",
+                delegated=False) == "agent_history_provider"
+
+
+@pytest.mark.usefixtures("_flag_on")
+def test_no_organization_means_no_store(monkeypatch, fake_db) -> None:
+    """The organization is the run binding. With none, nothing loads."""
+    monkeypatch.setattr(executor, "_current_run_org", lambda: None)
+    agent = _scripted_agent(ScriptedModel([text_turn("x")]))
+    turn = asyncio.run(executor._begin_native_session(
+        agent, _PROBE_AGENT, {"message": "hi"}, {},
+        run_id="r", caller_thread_id="thread-f20-no-org", delegated=False, instance="",
+    ))
+    assert turn is None and fake_db.reads == []
+
+
+def test_the_organization_is_resolved_before_the_worker_hop(monkeypatch, fake_db) -> None:
+    """``tenant_session`` is sync and takes no ambient tenant. The executor
+    reads the run binding on the event loop and hands the value in, and the
+    worker sees exactly that value."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_native_sessions", True)
+    monkeypatch.setattr(executor, "_current_run_org", lambda: "org-from-the-run-binding")
+    fake_db.chat("thread-f20-org")
+    agent = _scripted_agent(ScriptedModel([text_turn("x")]))
+    asyncio.run(executor._begin_native_session(
+        agent, _PROBE_AGENT, {"message": "hi", "organization_id": "org-from-the-payload"}, {},
+        run_id="r", caller_thread_id="thread-f20-org", delegated=False, instance="",
+    ))
+    assert fake_db.reads == [("org-from-the-run-binding", "thread-f20-org", _PROBE_AGENT)]
+
+
+@pytest.mark.usefixtures("_a_tenant", "_flag_off")
+def test_flag_off_the_store_is_never_touched(monkeypatch, fake_db) -> None:
+    fake_db.chat("thread-f20-flag-off")
+    model = ScriptedModel([text_turn("ok")])
+    events, _ = _drive_probe(monkeypatch, model, {"mode": "chat", "message": "hi"},
+                             thread_id="thread-f20-flag-off", organization_id=_ORG,
+                             run_id="run-f20-flag-off")
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED"
+    assert fake_db.reads == [] and fake_db.writes == []
+
+
+def test_tier_2_passes_native_only_for_a_maf_agent() -> None:
+    """The Tier 2 call site passes ``native=not _is_copilot_sdk`` (WS-43t1
+    verifier note). ``native=True`` there would give a Copilot SDK agent the
+    structured input and a session."""
+    import inspect
+
+    src = inspect.getsource(executor.run_agent_stream)
+    tier_1, tier_2 = src.split("_run_input, _run_ctx = _compose_maf_run(", 1)
+    assert "native=True, session_turn=_session_turn," in tier_1
+    assert "if not _is_copilot_sdk and hasattr(agent, \"run\"):" in tier_1
+    call = tier_2.split(")", 1)[0]
+    assert "native=not _is_copilot_sdk," in call
+    assert "session_turn=_session_turn," in call
+    assert "native=True" not in call
+
+
+# ── 10. The dedup, through the composer ──────────────────────────────────────
+
+
+@pytest.mark.usefixtures("_flag_on")
+def test_a_loaded_session_makes_the_input_the_current_turn_only(fake_db) -> None:
+    tid = "thread-f20-dedup"
+    fake_db.chat(tid, rows=[("user", _PROPOSE)])
+    turn = _begin(tid, _PROPOSE)
+    _answer(turn, _PROPOSE, _ASK)
+    _finish(turn)
+    fake_db.chats[tid]["rows"] = [("user", _PROPOSE), ("assistant", _ASK)]
+    history = [{"role": "user", "content": _PROPOSE}, {"role": "assistant", "content": _ASK}]
+    hit = _begin(tid, "yes", browser=history)
+    assert hit.loaded
+    payload = {"message": "yes", "messages": history, "memory_context": "m"}
+    run_input, provider = executor._compose_maf_run(
+        "probe", "run-1", payload, _INTEGRATIONS, native=True, session_turn=hit,
+    )
+    assert [(m.role, m.text) for m in run_input] == [("user", "yes")]
+    assert provider is not None and "m" in provider.text
+    # With no session, the same payload carries the whole history.
+    run_input, _ = executor._compose_maf_run(
+        "probe", "run-1", payload, _INTEGRATIONS, native=True,
+    )
+    assert [m.text for m in run_input] == [_PROPOSE, _ASK, "yes"]
+
+
+@pytest.mark.usefixtures("_flag_on")
+def test_a_fresh_session_never_takes_the_string(fake_db) -> None:
+    """A first turn with no history still gets structured input, because the
+    session stores its input messages and the string carries the memory."""
+    tid = "thread-f20-first"
+    fake_db.chat(tid)
+    turn = _begin(tid, "hi")
+    run_input, provider = executor._compose_maf_run(
+        "probe", "run-1", {"message": "hi", "memory_context": _MEMORY}, _INTEGRATIONS,
+        native=True, session_turn=turn,
+    )
+    assert [(m.role, m.text) for m in run_input] == [("user", "hi")]
+    assert _MEMORY in provider.text

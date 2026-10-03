@@ -61,20 +61,26 @@ class RunContextProvider(ContextProvider):
             context.extend_instructions(self.source_id, self.text)
 
 
-def agent_for_run(agent: Any, provider: ContextProvider | None) -> Any:
+def agent_for_run(
+    agent: Any,
+    provider: ContextProvider | None,
+    history: ContextProvider | None = None,
+) -> Any:
     """Return the object to call ``run`` on for this run.
 
-    No provider: *agent* itself, so a flag-off run is unchanged. A provider:
-    a shallow copy of *agent* whose ``context_providers`` is a NEW list, the
-    agent's own providers plus *provider*. The copy shares the client, the
-    options and the tools, so it sends what the agent would send. The list
-    of the shared agent is never mutated.
+    No provider and no history: *agent* itself, so a flag-off run is
+    unchanged. Otherwise a shallow copy of *agent* whose
+    ``context_providers`` is a NEW list: the agent's own providers, then
+    *history* (the session history of WS-43t2), then *provider*. The copy
+    shares the client, the options and the tools, so it sends what the agent
+    would send. The list of the shared agent is never mutated.
     """
-    if provider is None:
+    extra = [p for p in (history, provider) if p is not None]
+    if not extra:
         return agent
     view = copy.copy(agent)
     view.context_providers = [
         *list(getattr(agent, "context_providers", None) or []),
-        provider,
+        *extra,
     ]
     return view

@@ -548,6 +548,12 @@ class Settings(BaseSettings):
     # gates the confirm-turn moves (§15.9.8). Fence:
     # tests/unit/test_native_session_persistence.py (WS43-F20).
     maf_native_sessions: bool = False
+    # The byte backstop of a stored session (§15.9.6), `MAF_SESSION_MAX_BYTES`.
+    # The compaction runs first. A `session_json` still larger than this is
+    # not saved, the store logs `native_session.save_refused`, and the next
+    # turn uses the text history. The reader is
+    # `orchestrator.native_session_store.finish_turn`.
+    maf_session_max_bytes: int = 2 * 1024 * 1024
 
     # Copilot SDK chat (coworker sessions via /copilot/chat)
     # Auth order: LITELLM_MASTER_KEY → gateway /v1  |  GITHUB_TOKEN → api.githubcopilot.com
