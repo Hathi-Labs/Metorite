@@ -36,34 +36,53 @@ interface Party {
 }
 
 /** The To and Cc rows of a reply. `reply` answers the sender only.
- *  `reply-all` adds the To and Cc of the original. Each own address leaves,
- *  and a duplicate keeps its first place (To before Cc). */
+ *  `reply-all` adds the To and Cc of the original. A duplicate keeps its
+ *  first place (To before Cc).
+ *
+ *  `sending` is the address of the mailbox that sends the reply. Three cases:
+ *  - The sending mailbox sent the original. The reply answers its
+ *    recipients, as Outlook and Gmail do, without the own addresses. When
+ *    only own addresses are left (mail from A to B of one member), they stay,
+ *    and only the sending address leaves.
+ *  - Another mailbox of the member sent it (mail from B, read in A). The
+ *    sender stays: the member answers their own other address on purpose.
+ *  - Anyone else sent it. The sender stays.
+ *  In each case reply-all copies no other own address (D-EM-27, MB-7). */
 export function replyRecipients(
   src: { from: Party; to?: Party[] | null; cc?: Party[] | null },
   mode: "reply" | "reply-all",
   own: ReadonlySet<string>,
+  sending?: string | null,
 ): { to: string[]; cc: string[] } {
+  const sendKey = (sending || "").trim().toLowerCase();
+  const isOwn = (key: string) => own.has(key) || (!!sendKey && key === sendKey);
   const seen = new Set<string>();
-  const keep = (addrs: Array<string | null | undefined>): string[] => {
+  const keep = (
+    addrs: Array<string | null | undefined>,
+    drop: (key: string) => boolean,
+  ): string[] => {
     const out: string[] = [];
     for (const raw of addrs) {
       const addr = (raw || "").trim();
       const key = addr.toLowerCase();
-      if (!addr || own.has(key) || seen.has(key)) continue;
+      if (!addr || drop(key) || seen.has(key)) continue;
       seen.add(key);
       out.push(addr);
     }
     return out;
   };
-  // A reply to mail that the member sent answers its recipients, as Outlook
-  // and Gmail do. Before, the own address left and the To row was empty.
-  const fromSelf = own.has((src.from.email || "").trim().toLowerCase());
-  const toRaw = fromSelf
-    ? (src.to || []).map((t) => t.email)
-    : mode === "reply-all"
-      ? [src.from.email, ...(src.to || []).map((t) => t.email)]
-      : [src.from.email];
-  const to = keep(toRaw);
-  const cc = mode === "reply-all" ? keep((src.cc || []).map((c) => c.email)) : [];
+  const fromKey = (src.from.email || "").trim().toLowerCase();
+  // With no sending address, any own address counts as the sender.
+  const fromSelf = sendKey ? fromKey === sendKey : own.has(fromKey);
+  const toList = (src.to || []).map((t) => t.email);
+  let to: string[];
+  if (fromSelf) {
+    to = keep(toList, isOwn);
+    if (to.length === 0) to = keep(toList, (key) => !!sendKey && key === sendKey);
+  } else {
+    to = keep([src.from.email], () => false);
+    if (mode === "reply-all") to = [...to, ...keep(toList, isOwn)];
+  }
+  const cc = mode === "reply-all" ? keep((src.cc || []).map((c) => c.email), isOwn) : [];
   return { to, cc };
 }

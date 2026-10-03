@@ -3,6 +3,8 @@ automation layer via a deferred import)."""
 
 from __future__ import annotations
 
+import uuid
+
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.core import (
@@ -114,19 +116,20 @@ async def send_email(
     """Send a new email from a connected account.
 
     A reply names the mail it answers in ``reply_to_message_id``, as its
-    provider id or as its local id. That mail must be in the sending mailbox,
-    or the route answers 404 before any provider call (EM-T8a, D-EM-19,
-    MB-6). A local id becomes the provider id here, so a chat reply threads
-    (MB-5).
+    provider id or as its local id. That mail must be in the sending mailbox
+    of the member, or the route answers 404 before any provider call, the
+    sign-in of the provider too (EM-T8a, D-EM-19, MB-6). A local id becomes
+    the provider id here, so a chat reply threads (MB-5).
     """
+    owner = user.email or "anonymous"
     async with _tenant_session() as db:
+        reply_pmid, reply_thread_id = await _reply_target(
+            db, req.account_id, req.reply_to_message_id, owner)
         # Ownership check + auth + rotated-cred persist all live in the session
         # helper (401 on auth failure, 404 on a foreign account).
         async with provider_session(
-            db, user.email or "anonymous", account_id=req.account_id,
+            db, owner, account_id=req.account_id,
         ) as sess:
-            reply_pmid, reply_thread_id = await _reply_target(
-                db, req.account_id, req.reply_to_message_id)
             attachments: list[dict] | None = None
             if req.attachments:
                 import base64 as _b64
@@ -209,32 +212,57 @@ async def send_email(
         return {"id": msg_id, "ok": True}
 
 
+#: The 404 of a reply whose mail is not in the sending mailbox (EM-T8a).
+REPLY_NOT_IN_MAILBOX = (
+    "The mail this reply answers is not in the sending mailbox. "
+    "Reply from the mailbox that received it."
+)
+
+
+def _as_uuid(value: str) -> str | None:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 async def _reply_target(
-    db, account_id: str, reply_to: str | None,
+    db, account_id: str, reply_to: str | None, owner: str,
 ) -> tuple[str | None, str | None]:
     """The provider id and the thread id of the mail a send answers.
 
     ``reply_to`` is the provider id or the local id of a mail IN THE SENDING
-    MAILBOX. Anything else answers 404, so a reply never asks the provider to
-    answer a mail of another mailbox (EM-T8a, D-EM-19, MB-6). A new message
+    MAILBOX, and that mailbox must belong to ``owner``. Anything else answers
+    404, so a reply never asks the provider to answer a mail of another
+    mailbox (EM-T8a, D-EM-19, MB-6). The route calls this BEFORE the provider
+    session, so a refused reply makes no provider call at all. A new message
     has no ``reply_to`` and gets ``(None, None)``.
+
+    Each arm of the match uses an index: the primary key for a local id, and
+    the unique ``(account_id, provider_message_id)`` for a provider id. A
+    cast ``id::text`` would read every row of the mailbox.
     """
     if not reply_to:
         return None, None
+    aid = _as_uuid(account_id)
+    if aid is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    params = {"aid": aid, "rid": reply_to, "uid": owner}
+    local_id = _as_uuid(reply_to)
+    if local_id is not None:
+        params["lid"] = local_id
+        match = "(em.id = CAST(:lid AS uuid) OR em.provider_message_id = :rid)"
+    else:
+        match = "em.provider_message_id = :rid"
     row = (await db.execute(text(
-        "SELECT provider_message_id, thread_id FROM email_messages "
-        "WHERE account_id = CAST(:aid AS uuid) "
-        "AND (provider_message_id = :rid OR id::text = :rid) "
-        "ORDER BY (provider_message_id = :rid) DESC LIMIT 1"
-    ), {"aid": account_id, "rid": reply_to})).fetchone()
+        "SELECT em.provider_message_id, em.thread_id FROM email_messages em "
+        "JOIN email_accounts ea ON ea.id = em.account_id "
+        "WHERE em.account_id = CAST(:aid AS uuid) AND ea.user_id = :uid "
+        f"AND {match} "
+        "ORDER BY (em.provider_message_id = :rid) DESC LIMIT 1"
+    ), params)).fetchone()
     if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "The mail this reply answers is not in the sending mailbox. "
-                "Reply from the mailbox that received it."
-            ),
-        )
+        raise HTTPException(status_code=404, detail=REPLY_NOT_IN_MAILBOX)
     return row.provider_message_id, row.thread_id
 
 

@@ -176,9 +176,17 @@ async def oauth_authorize(
         ) from None
 
     client_hint = _login_hint(login_hint)
-    another = client_hint is None and await _member_has_mailbox(
-        str(user.organization_id), user.email.strip().lower(), provider,
-    )
+    another = False
+    if client_hint is None:
+        try:
+            another = await _member_has_mailbox(
+                str(user.organization_id), user.email.strip().lower(), provider,
+            )
+        except Exception as exc:
+            # The picker is right for a first connect too, so a failed read
+            # shows it rather than answer 500 (EM-T8a review).
+            _log.warning("email.oauth_mailbox_check_failed", error=str(exc)[:200])
+            another = True
     hint = None if another else (client_hint or _login_hint(user.email))
     app = oauth_app(provider)
     if not app.client_id:

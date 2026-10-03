@@ -216,8 +216,11 @@ export default function EmailPage() {
       syncStatus[selectedAccountId] === "processing"
     : false;
 
-  // Reset mobile view when folder/account changes
+  // Reset mobile view when folder/account changes. A mail that "Open in
+  // inbox" opened in its OWN mailbox switches the account too, and it keeps
+  // the detail view: the override marks that case (EM-T8a review).
   useEffect(() => {
+    if (useEmailStore.getState().selectedEmailOverride) return;
     setMobileView("inbox");
   }, [selectedFolder, selectedAccountId]);
 
@@ -471,8 +474,10 @@ export default function EmailPage() {
         // the selected view (EM-T8a, D-EM-19, edge case 25).
         case "reply": {
           const quoteSrc = email.bodyText || email.snippet || "";
+          const accts = useEmailStore.getState().accounts;
           const { to } = replyRecipients(
-            email, "reply", ownAddresses(useEmailStore.getState().accounts));
+            email, "reply", ownAddresses(accts),
+            accts.find((a) => a.id === email.accountId)?.emailAddress);
           openCompose({
             accountId: email.accountId || undefined,
             to: to.join(", "),
@@ -485,8 +490,10 @@ export default function EmailPage() {
         case "reply-all": {
           const quoteSrc = email.bodyText || email.snippet || "";
           // Each address of the member leaves the recipients (D-EM-27, MB-7).
+          const accts = useEmailStore.getState().accounts;
           const { to, cc } = replyRecipients(
-            email, "reply-all", ownAddresses(useEmailStore.getState().accounts));
+            email, "reply-all", ownAddresses(accts),
+            accts.find((a) => a.id === email.accountId)?.emailAddress);
           openCompose({
             accountId: email.accountId || undefined,
             to: to.join(", "),

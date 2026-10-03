@@ -3326,7 +3326,7 @@ wrong-sender defects first.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
-| **EM-T8b** | 🟢 AGENT-SAFE | **The mailbox identity.** Migration 227 adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
+| **EM-T8b** | 🟢 AGENT-SAFE | **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
@@ -3335,13 +3335,16 @@ wrong-sender defects first.
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
-**Status.** 🔨 In build (2026-10-03, branch `email-multi-inbox`).
+**Status.** 🔨 BUILT with review fix round 1, not merged (2026-10-03, branch `email-multi-inbox`).
 
 **Scope.**
 
 1. **The authorize leg (MB-1).** When the member already has a mailbox of that provider in this
    organization, the leg sends `prompt=select_account` and no `login_hint`. The first connect keeps
-   the hint, as EM-T3a item 3 specified. A `login_hint` that the client sends still wins.
+   the hint, as EM-T3a item 3 specified. A `login_hint` that the client sends still wins. When
+   the read of the mailboxes fails, the leg shows the picker, which is right for a first connect
+   too. Reconnect on the Integrations page sends the mailbox address as its hint, as the banner
+   in Email does.
 2. **The inline composer (MB-2).** `EmailDetail` takes the mailbox from `email.accountId`. Each
    of these uses it: the signature, the draft save, the AI draft and the thread load. The send,
    the draft send, the optimistic sent row and the sync after the send use it too. `selectedAccountId` is only the fallback for
@@ -3349,30 +3352,40 @@ wrong-sender defects first.
 3. **Open in inbox (MB-3).** `openEmailById` opens the mail in its own mailbox. When the mailbox
    differs from the selected one, the store selects the mailbox of the mail first.
 4. **The chat send (MB-4, MB-5).** In reply mode, `send_email` reads the original mail and uses its
-   `account_id` and its `provider_message_id`. When the model passes another `account_id`, the
-   tool uses the mailbox of the mail and says so in its result. The confirmation card shows
-   "From <address>" for each send, new or reply. `send_draft` and `draft_reply` show the same line.
-5. **The server check (MB-6).** `/send` answers 404 when `reply_to_message_id` names no mail of the
-   sending mailbox. The check runs before the provider call.
-6. **Reply-all (MB-7).** The recipients leave out the address of each mailbox of the member.
+   `account_id`. It passes the local id of the mail, and `/send` maps it to the provider id. When
+   the model passes another `account_id`, the tool uses the mailbox of the mail and says so in
+   its result. The confirmation card shows "From <address>" for each send, new or reply.
+   `send_draft` shows the same line. `draft_reply` drafts in the mailbox of the mail, and the
+   first line of its result names that mailbox. The chat draft card reads the mailbox from that
+   line, so its Save and Send act there, and its confirm names the From mailbox.
+5. **The server check (MB-6).** `/send` answers 404 when `reply_to_message_id` names no mail of a
+   sending mailbox of the member. The check runs before the provider session, so a refused reply
+   makes no provider call, the sign-in included. Each arm of the match uses an index.
+6. **Reply and reply-all (MB-7).** The recipients leave out the address of each mailbox of the
+   member. The in-thread draft card uses the same rule. Two cases keep an own address:
+   - A reply to mail from another mailbox of the member answers that mailbox.
+   - A reply to mail that the sending mailbox sent answers its recipients, as Outlook does. When
+     those recipients are only own mailboxes, they stay.
+7. **On a phone,** a mail that Open in inbox opened in its own mailbox keeps the detail view.
 
 **Fences (R7).**
 
 - A unit test proves that a second connect of a member sends `prompt=select_account` and no
   `login_hint`, and that a first connect keeps the hint.
-- A unit test proves that `/send` with a reply id of another mailbox answers 404, and that the
-  provider is never called.
+- An R8 test proves that `/send` with a reply id of another mailbox answers 404, and that the
+  route opens no provider session. The same holds for the mailbox of another member.
 - A unit test proves that the chat reply sends from the mailbox of the original mail. It also
   proves that the reply uses the provider id, and that the card names the From address.
 - A vitest source fence proves that `EmailDetail.tsx` passes no bare `selectedAccountId` to a send,
   draft, signature or thread call.
 
-**Verification.** `uv run pytest tests/unit/test_email_oauth_state.py tests/unit/test_email_send_mailbox.py tests/unit/test_email_tool_consolidation.py -q`.
-`npx tsc --noEmit && npx vitest run src/app/email` in `workbench/control_plane`.
+**Verification.** `uv run pytest tests/unit/test_email_multi_inbox.py tests/unit/test_email_oauth_state.py tests/unit/test_email_tool_consolidation.py -v -rs`.
+The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components/email`.
 
 #### 11.7.2 EM-T8b — the mailbox identity
 
-1. **Migration 227** (R1: check the number again at merge). It adds `color_slot SMALLINT NULL`,
+1. **A migration** (R1: take the number at build time, and check it again at merge). It adds `color_slot SMALLINT NULL`,
    with a check of 1 to 12. It sets a slot for each existing row, in the order of `created_at`
    for each member and organization. The column stays nullable (R6).
 2. **The connect** writes the lowest slot that no other mailbox of the member uses.

@@ -15,8 +15,11 @@ R7 fences named here:
   member, of the provider and of the organization, under FORCE RLS as the
   non-privileged role.
 * ``email-send-reply-in-mailbox`` (MB-6, R8): ``/send`` answers 404 when the
-  mail a reply answers is not in the sending mailbox, and the provider is
-  never called. A local id becomes the provider id (MB-5).
+  mail a reply answers is not in a sending mailbox of the member, and the
+  route opens no provider session at all. A local id becomes the provider id
+  (MB-5).
+* ``email-authorize-check-fails-open-to-picker``: when the mailbox question
+  fails, the authorize leg shows the account picker rather than answer 500.
 * ``email-chat-reply-mailbox`` (MB-4): the chat reply sends from the mailbox
   of the original mail, and each send card names the From mailbox. A send
   from a mailbox the member does not have stops before its card.
@@ -140,6 +143,17 @@ async def test_a_malformed_client_hint_counts_as_no_hint(has_mailbox) -> None:
     assert "login_hint" not in q
 
 
+async def test_a_failed_mailbox_read_shows_the_picker(monkeypatch) -> None:
+    async def _boom(org, member, provider):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(oauth, "_member_has_mailbox", _boom)
+    q = _query(await oauth.oauth_authorize("microsoft", user=_member(),
+                                           redirect_after=""))
+    assert q["prompt"] == ["select_account"]
+    assert "login_hint" not in q
+
+
 async def test_gmail_one_more_mailbox_adds_the_account_chooser(has_mailbox) -> None:
     q = _query(await oauth.oauth_authorize("gmail", user=_member(),
                                            redirect_after=""))
@@ -244,16 +258,18 @@ def two_mailboxes(promoted, app_engine, monkeypatch):  # noqa: F811
     mail_a = _seed_message(p.admin_engine, org=p.org_b, account_id=box_a,
                            provider_id="pm-a", thread_id="thread-a")
     provider = _Provider()
+    entered: list[str] = []
 
     @asynccontextmanager
     async def _session(db, user_email, account_id):
+        entered.append(account_id)
         yield SimpleNamespace(provider=provider)
 
     monkeypatch.setattr(send, "provider_session", _session)
     me = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
     app_dsn = p.app_url.render_as_string(hide_password=False)
 
-    async def _send(account_id: str, reply_to: str | None):
+    async def _send(account_id: str, reply_to: str | None, user=me):
         req = send.SendEmailRequest(
             account_id=account_id, to=["ravi@contoso.test"], subject="Re: Hello",
             body_text="Thanks", reply_to_message_id=reply_to)
@@ -261,13 +277,13 @@ def two_mailboxes(promoted, app_engine, monkeypatch):  # noqa: F811
         try:
             async with tenant_engine_scope(app_dsn):
                 return await send.send_email(req, background=BackgroundTasks(),
-                                             user=me)
+                                             user=user)
         finally:
             release_tenant(token)
 
     try:
-        yield SimpleNamespace(send=_send, provider=provider, box_a=box_a,
-                              box_b=box_b, mail_a=mail_a)
+        yield SimpleNamespace(send=_send, provider=provider, entered=entered,
+                              box_a=box_a, box_b=box_b, mail_a=mail_a, org=p.org_b)
     finally:
         _delete_accounts(p.admin_engine, box_a, box_b)
 
@@ -284,14 +300,34 @@ class TestTheSendRouteKeepsTheReplyInItsMailbox:
         with pytest.raises(HTTPException) as exc:
             await t.send(t.box_b, reply_to)
         assert exc.value.status_code == 404
+        assert exc.value.detail == send.REPLY_NOT_IN_MAILBOX
         assert t.provider.calls == [], "the provider was asked to reply anyway"
+        assert t.entered == [], "the route opened a provider session first"
 
     async def test_an_unknown_reply_id_answers_404(self, two_mailboxes):
         t = two_mailboxes
         with pytest.raises(HTTPException) as exc:
             await t.send(t.box_a, "pm-nowhere")
         assert exc.value.status_code == 404
-        assert t.provider.calls == []
+        assert t.provider.calls == [] and t.entered == []
+
+    async def test_a_reply_through_the_mailbox_of_another_member_answers_404(
+        self, two_mailboxes,
+    ):
+        t = two_mailboxes
+        mallory = UserContext(email="mallory@em-t8a.test", role=UserRole.EMPLOYEE,
+                              organization_id=t.org)
+        with pytest.raises(HTTPException) as exc:
+            await t.send(t.box_a, "pm-a", user=mallory)
+        assert exc.value.status_code == 404
+        assert t.entered == [], "a reply checked the mailbox of another member"
+
+    async def test_a_malformed_account_id_answers_404(self, two_mailboxes):
+        t = two_mailboxes
+        with pytest.raises(HTTPException) as exc:
+            await t.send("not-a-uuid", "pm-a")
+        assert exc.value.status_code == 404
+        assert t.entered == []
 
     @pytest.mark.parametrize("which", ["provider id", "local id"])
     async def test_a_reply_from_its_own_mailbox_threads(self, two_mailboxes, which):
@@ -411,6 +447,10 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
 
 
 async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:
-    await agents.draft_reply("m1", "box-b")
+    out = await agents.draft_reply("m1", "box-b")
     assert chat.posts == [("/email/draft-reply", {
         "account_id": "box-a", "message_id": "m1", "create_draft": False})]
+    # The first line names the mailbox, and the chat card reads its id.
+    assert out.split("\n", 1)[0] == (
+        "Draft from Fracktal · dana@fracktal.in (mailbox box-a):")
+    assert out.endswith("\n\nHi Ravi")

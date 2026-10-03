@@ -758,7 +758,13 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
         {"account_id": account_id, "message_id": email_id, "create_draft": save},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
-    return f"Draft{note}:\n\n{res.get('draft', '')}"
+    # The first line names the mailbox. The chat card reads "(mailbox <id>)"
+    # from it, so its Save and Send use the mailbox of the mail (EM-T8a).
+    sender = await _mailbox_name(account_id) or str(account_id)
+    return (
+        f"Draft from {sender} (mailbox {account_id}){note}:\n\n"
+        f"{res.get('draft', '')}"
+    )
 
 
 # ── Sender categorization tools ──────────────────────────────────────────────

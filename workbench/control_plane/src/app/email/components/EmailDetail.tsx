@@ -459,7 +459,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         `Date: ${src.receivedAt}\nSubject: ${src.subject}\n\n${quoteSrc}`
       );
     } else {
-      const { to, cc } = replyRecipients(src, mode, own);
+      const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
       setReplyTo(to.join(", "));
       setReplyCc(cc.join(", "));
       setReplyQuote(
@@ -478,7 +478,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
   const switchReplyMode = (mode: "reply" | "reply-all") => {
     const src = replyTargetRef.current ?? view;
-    const { to, cc } = replyRecipients(src, mode, own);
+    const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
     setReplyTo(to.join(", "));
     setReplyCc(cc.join(", "));
     // Reply All reveals Cc/Bcc; narrowing to Reply hides them (and drops Bcc).

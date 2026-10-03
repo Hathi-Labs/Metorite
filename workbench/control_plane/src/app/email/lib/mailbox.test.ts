@@ -13,6 +13,12 @@
 //     from another mailbox before it shows it (MB-3).
 //   * `email-compose-carries-mailbox`: the toolbar replies and the pop-out pass
 //     the mailbox of the mail to the composer, and the page sends from it.
+//   * `email-draftcard-own-addresses`: the in-thread draft card builds its
+//     recipients with `replyRecipients` and every own address (MB-7).
+//   * `email-open-by-id-mobile`: on a phone, a mail that "Open in inbox"
+//     opened in its own mailbox keeps the detail view.
+//   * `email-integrations-reconnect-hint`: Reconnect on Integrations sends the
+//     mailbox as `login_hint`, so the member gets no account picker (MB-1).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +26,8 @@ import { describe, expect, it } from "vitest";
 import { mailboxOf, ownAddresses, replyRecipients } from "./mailbox";
 
 const ROOT = join(__dirname, "..");
-const read = (rel: string) => readFileSync(join(ROOT, rel), "utf-8");
+const read = (rel: string) =>
+  readFileSync(join(ROOT, rel), "utf-8").replace(/\r\n/g, "\n");
 /** Source with line comments and block comments removed. */
 const codeOnly = (src: string) =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -78,6 +85,34 @@ describe("the recipients of a reply (MB-7)", () => {
     expect(cc).toEqual(["kim@contoso.test"]);
   });
 
+  it("answers the other mailbox when it sent the mail (A reads mail from B)", () => {
+    const fromB = {
+      from: { email: "dana@outlook.com" },
+      to: [{ email: "dana@fracktal.in" }],
+      cc: [{ email: "kim@contoso.test" }],
+    };
+    expect(replyRecipients(fromB, "reply", own, "dana@fracktal.in")).toEqual({
+      to: ["dana@outlook.com"],
+      cc: [],
+    });
+    expect(replyRecipients(fromB, "reply-all", own, "dana@fracktal.in")).toEqual({
+      to: ["dana@outlook.com"],
+      cc: ["kim@contoso.test"],
+    });
+  });
+
+  it("answers the other own mailbox of mail that A sent to B", () => {
+    const aToB = {
+      from: { email: "dana@fracktal.in" },
+      to: [{ email: "dana@outlook.com" }],
+    };
+    for (const mode of ["reply", "reply-all"] as const) {
+      expect(replyRecipients(aToB, mode, own, "dana@fracktal.in").to).toEqual([
+        "dana@outlook.com",
+      ]);
+    }
+  });
+
   it("answers the recipients of mail that the member sent", () => {
     const sent = {
       from: { email: "dana@outlook.com" },
@@ -120,11 +155,26 @@ describe("EmailDetail acts in the mailbox of the mail (MB-2)", () => {
   it("builds reply recipients from every own address", () => {
     expect(src).toContain("const own = ownAddresses(accounts);");
     expect(src).not.toMatch(/ownEmail\b/);
-    expect((src.match(/replyRecipients\(src, mode, own\)/g) ?? []).length).toBe(2);
+    expect(
+      (src.match(/replyRecipients\(src, mode, own, sendingAddress\)/g) ?? []).length,
+    ).toBe(2);
   });
 
   it("hands the mailbox to the pop-out composer", () => {
     expect(src).toMatch(/openCompose\(\{\s*accountId: mailboxId \?\? undefined,/);
+  });
+});
+
+describe("the in-thread draft card leaves out every own address (MB-7)", () => {
+  const src = codeOnly(read("components/ConversationView.tsx"));
+
+  it("builds both recipient rows with replyRecipients and every own address", () => {
+    expect(src).toContain("const own = ownAddresses(accounts);");
+    expect(src).toContain(
+      'replyRecipients(replyTo, "reply-all", own, sendingAddress)',
+    );
+    expect(src).toContain('replyRecipients(replyTo, "reply", own, sendingAddress)');
+    expect(src).not.toMatch(/ownEmail\b/);
   });
 });
 
@@ -143,6 +193,26 @@ describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
 
   it("switches only to a mailbox that the member has", () => {
     expect(fn).toContain("get().accounts.some((a) => a.id === email.accountId)");
+  });
+
+  it("keeps the detail view on a phone after the switch", () => {
+    const page = codeOnly(read("page.tsx"));
+    const at = page.indexOf("setMobileView(\"inbox\");\n  }, [selectedFolder, selectedAccountId]);");
+    expect(at).toBeGreaterThan(-1);
+    const effect = page.slice(page.lastIndexOf("useEffect(() => {", at), at);
+    expect(effect).toContain("if (useEmailStore.getState().selectedEmailOverride) return;");
+  });
+});
+
+describe("Reconnect on Integrations names the mailbox (MB-1)", () => {
+  const integrations = codeOnly(
+    readFileSync(join(ROOT, "..", "integrations", "page.tsx"), "utf-8").replace(/\r\n/g, "\n"),
+  );
+
+  it("sends the mailbox address as login_hint", () => {
+    expect(integrations).toContain('if (loginHint) params.set("login_hint", loginHint);');
+    expect(integrations).toContain("handleConnect(provider, account.emailAddress);");
+    expect(integrations).not.toContain("handleReconnect(account.provider)");
   });
 });
 
