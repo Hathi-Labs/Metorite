@@ -28,13 +28,17 @@ from gateway.routes.email.automation.drafting import (
     _store_ai_draft,
     _upsert_local_draft,
 )
-from gateway.routes.email.automation.identity import resolve_self
+from gateway.routes.email.automation.identity import (
+    draft_skip_in_pair,
+    resolve_self,
+)
 from gateway.routes.email.core import (
     RESERVED_INDICATORS,
     _attachment_summaries,
     _log,
     _persist_rotated_creds,
     _provider_for_message,
+    _savepoint,
 )
 from sqlalchemy import text
 
@@ -330,6 +334,32 @@ async def _draft_from_address(
     return (await resolve_self(db, account_id)).address
 
 
+async def _skip_for_paired_mailbox(
+    db: Any, account_id: str, message_id: str,
+) -> bool:
+    """True when the automatic draft of this mail must not start, because of
+    a paired mailbox (WS-17 EM-T8g-3 items 3 and 5, §11.6 edge case 11).
+
+    A paired mailbox holds a copy of this mail whose thread already holds a
+    draft or a newer sent mail. Or another run for the same mail holds the
+    try-lock, so two overlapping runs make one draft at most. The read is
+    best-effort in a savepoint, like the thread check: a failure drafts as
+    before. The log names no address."""
+    if not account_id:
+        return False
+    skip: str | None = None
+    try:
+        async with _savepoint(db):
+            skip = await draft_skip_in_pair(db, account_id, str(message_id))
+    except Exception as exc:
+        _log.warning("email.draft_dedupe_failed", account_id=account_id,
+                     error=str(exc)[:160])
+    if skip:
+        _log.info("email.draft_skipped_other_mailbox",
+                  account_id=account_id, reason=skip)
+    return bool(skip)
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -444,6 +474,10 @@ async def _apply_rule_actions(
                         _log.info("email.draft_skipped_existing",
                                   account_id=account_id)
                         continue
+                # The draft dedupe across mailboxes (WS-17 EM-T8g-3 items 3
+                # and 5): after the thread check, before the model call.
+                if await _skip_for_paired_mailbox(db, account_id, message_id):
+                    continue
                 # Static template wins; otherwise the orchestrating drafter
                 # (memory + sales/task-manager + thread history) writes a
                 # context-aware reply. Only the AI path needs the thread.

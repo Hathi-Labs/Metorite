@@ -530,6 +530,14 @@ FOLDER_ALL_EXCLUDES = ("junk", "trash", "sent", "drafts")
 # search offers them as explicit scopes.
 FOLDER_ALL_SEARCH_EXCLUDES = ("junk", "trash")
 
+# The folders whose mail is NOT a copy of a mail in another mailbox (WS-17
+# EM-T8g-3, §11.6 edge cases 10 and 11). "Also in" and the draft dedupe both
+# read it, so one mail never counts as a copy in one place and not the other.
+# A draft is unfinished text with no counterparty, and the member threw junk
+# and trash away. Canonical keys only, for the reason above: the ingest maps
+# "draft" to "drafts" and "spam" to "junk".
+NOT_A_COPY_FOLDERS = ("drafts", "junk", "trash")
+
 
 # ── Label vocabulary ────────────────────────────────────────────────────────
 # Every label the RULE ENGINE writes to email_messages.categories. It lives in

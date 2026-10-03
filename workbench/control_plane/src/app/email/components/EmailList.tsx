@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Email } from "../lib/types";
+import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
 import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
@@ -55,6 +55,42 @@ function renderHighlight(hl: string): { __html: string } {
     .replace(/&lt;mark&gt;/g, '<mark class="bg-primary/25 text-foreground rounded-sm px-0.5">')
     .replace(/&lt;\/mark&gt;/g, "</mark>");
   return { __html: withMarks };
+}
+
+/**
+ * The mailboxes that a row names after "Also in" (WS-17 EM-T8g-3 item 2,
+ * D-EM-22): each mailbox of `alsoIn` that the member still has, in the order
+ * of the switcher. A member with one mailbox sees none. The mailbox of the
+ * row and a mailbox that left the list are skipped. The gateway already pairs
+ * two mailboxes only when neither one is separate (D-EM-30).
+ */
+export function alsoInMailboxes<T extends { id: string }>(
+  email: Pick<Email, "accountId" | "alsoIn">,
+  accounts: ReadonlyArray<T>,
+): T[] {
+  if (accounts.length < 2 || !email.alsoIn?.length) return [];
+  const want = new Set(email.alsoIn);
+  return accounts.filter((a) => a.id !== email.accountId && want.has(a.id));
+}
+
+/** "Also in" and the chip of each mailbox of `alsoInMailboxes`, or nothing. */
+export function AlsoInLine({
+  email,
+  accounts,
+}: {
+  email: Pick<Email, "accountId" | "alsoIn">;
+  accounts: ReadonlyArray<EmailAccount>;
+}) {
+  const boxes = alsoInMailboxes(email, accounts);
+  if (boxes.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <span>Also in</span>
+      {boxes.map((box) => (
+        <MailboxChip key={box.id} account={box} />
+      ))}
+    </div>
+  );
 }
 
 // Snooze-until presets, computed at click time. "Later today" is +3h; the rest
@@ -513,6 +549,10 @@ export function EmailList({
                     {email.snippet}
                   </div>
                 )}
+
+                {/* "Also in" (EM-T8g-3, D-EM-22): each other mailbox that
+                    holds a copy of this mail, with its chip. */}
+                <AlsoInLine email={email} accounts={accounts} />
 
                 {/* Categories / user labels — click to filter the list.
                     When an email has NO category (rules haven't run or the

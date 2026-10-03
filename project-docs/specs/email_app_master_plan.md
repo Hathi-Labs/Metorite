@@ -3391,7 +3391,7 @@ wrong-sender defects first.
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
-| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | ✅ **T8g-1 MERGED #608 (2026-10-04, migration 229).** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | ✅ **T8g-1 MERGED #608 (2026-10-04, migration 229). T8g-2 MERGED #610 (2026-10-04).** 🔨 **T8g-3 BUILT, not merged (2026-10-04).** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
@@ -4549,6 +4549,7 @@ compact density and under a changed accent (CLAUDE.md §4).
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
 ✅ T8g-1 MERGED #608 (2026-10-04, migration 229). ✅ T8g-2 MERGED #610 (2026-10-04), with review fix rounds 1 and 2.
+🔨 T8g-3 BUILT, not merged (2026-10-04). It adds no migration.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -5039,6 +5040,142 @@ changed accent.
   Scope line names `list_senders` only, but round 1 also changes `bulk_action`.
 
 ##### EM-T8g-3 — "Also in" and the draft dedupe (after T8g-1, R8)
+
+**Status.** 🔨 BUILT, not merged (2026-10-04), on the branch `email-also-in`. It adds no migration
+and no index.
+
+**As-built notes.**
+
+- **The pair set (item 4).** `identity.PAIRED_MAILBOX_IDS_SQL` is the self set of `:aid` without
+  `:aid`, and both mailboxes are in All inboxes. `paired_mailbox_ids_sql(anchor)` gives the same
+  rule over a column, for a page of mail. Any anchor that is not a bind name or a column raises.
+  The text of the self set over `:aid` did not change.
+- **The copy.** A copy is a mail of a paired mailbox with the same `internet_message_id`, not
+  empty, outside drafts, junk and trash. `core.NOT_A_COPY_FOLDERS` holds the three folders, and
+  "Also in" and the dedupe both read it.
+- **"Also in" (item 1).** `identity.also_in_by_message` reads `also_in` for one page in one
+  statement, `ALSO_IN_SQL`. A LATERAL pair set takes the mailbox of each row. The read binds
+  `:uid` too, so a mail id of another member gives no row. An empty page runs no read.
+- **The lazy import.** The list and search reach the read through
+  `messages._also_in_by_message`. The automation layer imports `transport.send` at load time, so
+  a load-time import from `transport` would be a cycle.
+- **The index (R6).** The agent measured the plans on 40,000 rows after ANALYZE. Migration 89's
+  `idx_email_messages_internet_message_id` serves each lookup of a copy as an index condition on
+  `(account_id, internet_message_id)`. `idx_email_messages_thread` (migration 17) serves the
+  thread read of the dedupe. So the slice needs no migration.
+- **The dedupe (items 3 and 5).** `actions._skip_for_paired_mailbox` runs in the REPLY and
+  DRAFT_EMAIL branch, after the thread check and before the model call. It calls
+  `identity.draft_skip_in_pair`, which runs two statements.
+  - The first takes `pg_try_advisory_xact_lock` on a hash of the organization, the member and the
+    Message-ID. A lock that another run holds gives `busy`.
+  - The second asks if the thread of a copy holds a draft, or a sent mail newer than the copy.
+    A yes gives `answered`.
+- **Why two statements.** READ COMMITTED takes a new snapshot for each statement. So the check
+  after the lock sees each draft that a run committed before it released the lock.
+- **No pair, no lock.** A mail with an empty Message-ID, a member with no paired mailbox and a
+  separate mailbox take no lock. So a pooled run never holds off the draft of a separate mailbox
+  (D-EM-30).
+- **The log.** A skip logs `email.draft_skipped_other_mailbox` with `account_id` and `reason`, and
+  no address. The read runs in a savepoint. A failed read logs `email.draft_dedupe_failed` and
+  drafts as before, as the thread check does.
+- **The callers.** The dedupe is in `_apply_rule_actions`, so the automatic run, the approval and
+  Process past get it. The retry never reaches the branch, because `_RETRY_SKIPPED_ACTIONS` holds
+  REPLY and DRAFT_EMAIL.
+- **The row (item 2).** `alsoInMailboxes` and `AlsoInLine` in `components/EmailList.tsx` draw
+  "Also in" and a `MailboxChip` for each mailbox, in the order of the switcher. A member with one
+  mailbox sees none. The row shows it in each view, not only in All inboxes, because D-EM-22 says
+  "each row".
+- **The API.** `mapEmail` reads `also_in` into `Email.alsoIn`. A gateway before EM-T8g-3 sends no
+  field, and the row then names no other mailbox.
+- **The fence files.** The four server fences are in `tests/unit/test_email_duplicates.py`: 18
+  R8 cases and 16 hermetic cases. `email-also-in-row` is in
+  `workbench/control_plane/src/app/email/lib/alsoIn.test.ts`: 9 cases.
+
+**Narrowed.**
+
+- Only Outlook mailboxes pair (the Known limit). This slice fills `internet_message_id` for no
+  other provider.
+- The thread check runs first. It can trash an AI draft of this mailbox that nobody changed
+  ("replace"). When the dedupe then skips, only the paired mailbox holds a draft.
+- In a race, the run that meets the lock makes no draft. If the run that holds the lock then makes
+  none (low confidence), the mail has no draft. Item 5 asks for one draft at most, so that is in
+  scope.
+- A copy in trash does not stop a draft, also when its thread holds a draft. The member threw that
+  copy away.
+
+**Outside the stated scope.**
+
+- `tests/unit/test_email_ai_context.py`: `test_a_rule_draft_copy_stores_the_mailbox_as_from` now
+  patches `draft_skip_in_pair`, as it patches the thread check. A bare `AsyncMock` session warns
+  about a coroutine that nothing awaits.
+- `apps/services/gateway/AGENTS.md` and `workbench/AGENTS.md`: one line each for this slice.
+- The §11.7 table row now names T8g-2 MERGED #610 too.
+
+**Not checked.** This session had no browser. Nobody looked at the row in light mode, at compact
+density or under a changed accent (CLAUDE.md §4). The security review is still due.
+
+**Verification (2026-10-04, on the final tree).**
+
+- Only `TENANT_LADDER_DATABASE_URL` was set, on a private database for each run.
+- The block below gave 227 passed and 0 skipped. All 34 cases of `test_email_duplicates.py`
+  passed, and none skipped.
+- All 130 email suites with `-k "not calendar"` gave 2377 passed and 6 deselected.
+- One earlier run on the same tree failed one case:
+  `test_email_otp_token.py::test_an_expired_code_does_not_verify`. That case gives a code one
+  second of margin before `expires > now()`. The suite then passed alone twice, and a full run
+  passed. This slice changes no file on that path.
+- The ruff gate passed. Full ruff on the changed files shows no new finding. The C901 finding of
+  `_apply_rule_actions` was on the base tree, and the slice moves it from 32 to 33.
+- In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run src/app/email
+  src/components src/lib/theme` gave 47 files and 961 tests passed.
+
+**Mutation check.**
+
+- The final run killed 33 of 33 mutants: 25 on the server and 8 in the UI. The script restored
+  each file and checked its hash.
+- A first run reported each server mutant as killed, but a bare `bash` found WSL, so no test ran.
+  The script now needs a passing run with no mutant. It counts a kill only when pytest names a red
+  case.
+- A rerun with only the R8 cases found two gaps. The "Also in" test took its folders from the
+  constant under test. Only a hermetic case fenced the order of the two statements.
+- The test now names the three folders. `test_the_lock_comes_before_the_check_on_a_real_database`
+  puts the other run in the gap between the two statements. Both mutants now go red on R8 cases.
+
+| Mutant | What the mutant breaks | A case that goes red |
+|---|---|---|
+| `i_pair_this_separate` | a separate `:aid` pairs | `test_b_drafts_when_either_mailbox_is_separate[this]` |
+| `i_pair_other_separate` | a separate mailbox pairs with `:aid` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_pair_self_included` | the pair set holds `:aid` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_org_predicate` | no organization predicate | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `i_anchor_any` | any anchor passes | `test_a_column_anchors_it_for_a_page_and_nothing_else_does` |
+| `i_also_folder` | a copy in junk, drafts or trash counts | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_also_empty_id` | an empty Message-ID pairs | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_also_owner` | the read binds no `:uid` | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `c_junk_is_a_copy` | junk holds a copy | `test_a_copy_in_junk_is_no_copy` |
+| `m_read_per_row` | the list reads once for each row | `test_one_page_makes_one_read` |
+| `m_no_field` | the list sends no `also_in` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `s_no_field` | search sends no `also_in` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `d_no_lock` | the guard takes no lock | `test_two_overlapping_runs_make_one_draft` |
+| `d_session_lock` | the lock outlives the transaction | `test_two_overlapping_runs_make_one_draft` |
+| `d_busy_drafts` | a held lock drafts | `test_two_overlapping_runs_make_one_draft` |
+| `d_check_before_lock` | the check runs before the lock | `test_the_lock_comes_before_the_check_on_a_real_database` |
+| `d_no_lock_pair` | a mail with no pair takes the lock | `test_a_separate_mailbox_is_never_held_off` |
+| `d_no_draft_arm` | a draft in the thread of the copy stops nothing | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `d_no_sent_arm` | a sent reply stops nothing | `test_a_newer_sent_mail_in_the_thread_of_the_copy_stops_it` |
+| `d_no_newer` | an older sent mail stops the draft | `test_an_older_sent_mail_does_not_stop_it` |
+| `d_no_copy_folder` | a copy in junk stops the draft | `test_a_copy_in_junk_is_no_copy` |
+| `d_no_pair_check` | any other mailbox stops the draft | `test_b_drafts_when_either_mailbox_is_separate[other]` |
+| `a_no_call` | the rule path skips the dedupe | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `a_fail_closed` | a failed read stops the draft | `test_a_failed_read_drafts_as_before` |
+| `a_no_log` | a skip writes no log | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `f_one_mailbox` | a member with one mailbox sees a label | `names none for a member with one mailbox` |
+| `f_own_row` | the row names its own mailbox | `skips the mailbox of the row and a mailbox that left the list` |
+| `f_order` | the labels follow the order of `also_in` | `names each mailbox of also_in, in the order of the switcher` |
+| `f_no_row` | the list draws no "Also in" | `is in each row of the list, beside the other mailboxes of the member` |
+| `f_no_chip` | a label with no `MailboxChip` | `draws 'Also in' and the chip of each mailbox` |
+| `f_no_words` | the chips with no words "Also in" | `draws 'Also in' and the chip of each mailbox` |
+| `f_api_no_field` | `mapEmail` drops `also_in` | `maps also_in from the list and from search` |
+| `f_api_no_filter` | `mapEmail` keeps a value that is not an id | `maps also_in from the list and from search` |
 
 **Gate.** 🟢 AGENT-SAFE · R8 · security review, because both read across the mailboxes of the
 member.

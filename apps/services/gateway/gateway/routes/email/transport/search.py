@@ -48,6 +48,7 @@ from gateway.routes.email.core import (
     folder_scope,
     router,
 )
+from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
@@ -328,6 +329,9 @@ async def search_messages(
                  LIMIT :limit OFFSET :offset"""
         ), params)).fetchall()
 
+        # "Also in" (EM-T8g-3 item 1): one read for the page, as in the list.
+        also_in = await _also_in_by_message(db, [row.id for row in rows], uid)
+
         emails_out = []
         for row in rows:
             m = _row_to_message(row)
@@ -336,6 +340,7 @@ async def search_messages(
             d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)
             d["highlight"] = getattr(row, "highlight", "") or ""
             d["thread_count"] = 1
+            d["also_in"] = also_in.get(m.id, [])
             emails_out.append(d)
 
         return {

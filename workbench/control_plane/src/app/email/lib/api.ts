@@ -172,7 +172,15 @@ function mapEmail(raw: Record<string, unknown>): Email {
     // Present only on /email/search results.
     rank: raw.rank != null ? Number(raw.rank) : undefined,
     highlight: raw.highlight != null ? String(raw.highlight) : undefined,
+    // EM-T8g-3. A gateway before EM-T8g-3 sends no field, and the row then
+    // names no other mailbox.
+    alsoIn: idList(raw.also_in),
   };
+}
+
+/** The non-empty strings of a list, or an empty list for any other value. */
+function idList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : [];
 }
 
 // ── Email Accounts ───────────────────────────────────────────────────────

@@ -768,7 +768,9 @@ async def test_a_rule_draft_copy_stores_the_mailbox_as_from() -> None:
     provider = SimpleNamespace(create_draft=AsyncMock(return_value="pd-1"))
     with patch.object(actions_mod, "_upsert_local_draft", upsert), \
             patch.object(actions_mod, "_resolve_existing_thread_draft",
-                         AsyncMock(return_value="none")):
+                         AsyncMock(return_value="none")), \
+            patch.object(actions_mod, "draft_skip_in_pair",
+                         AsyncMock(return_value=None)):
         done = await actions_mod._apply_rule_actions(
             AsyncMock(), provider, "m1", "pm-1",
             [{"type": "DRAFT_EMAIL", "content": "Thanks, we are on it."}],
