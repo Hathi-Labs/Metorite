@@ -11,11 +11,12 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** EM-T6b is next.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
+> ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). 🔨 EM-T8a is in build. It fixes the wrong-sender defects first.
@@ -569,8 +570,7 @@ or API client to create a pattern by hand.
 3. **Consent.** Microsoft shows the verified Metorite app. The member accepts. With the interim app,
    Microsoft shows "CommandCenter" by Fracktal Works, so this step passes only after §10.5.
 4. **First sync.** Metorite shows "Connected as you@company.com" and a progress state. The inbox
-   appears when the first sync finishes. The scheduler commits the messages of a sync in one
-   transaction at the end, so the inbox does not fill bit by bit (corrected 2026-10-02, EM-T3b).
+   fills batch by batch, newest first (EM-T6b).
    A first sync that fails shows the reconnect banner, not the progress state.
 5. **Admin approval required.** When the Microsoft tenant of the customer blocks consent by members, Microsoft returns an
    error to the callback. Metorite shows a guided page, never a raw error. The page gives two
@@ -596,7 +596,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
@@ -1528,7 +1528,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). The other six parts are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03). EM-T4a-2, EM-T4a-3, EM-T4a-4, EM-T4b and EM-T4d are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1979,6 +1979,8 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_outlook_delta_sh
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
 
+**Status (2026-10-03).** 🔨 BUILT, not merged. The branch is `email-t4e`, and the migration is 226. The fence is `tests/unit/test_email_n_plus_one.py`, with R8 on a private database.
+
 1. `_load_rules` reads the actions of all rules of the account in one query. It groups them in Python.
 2. `list_accounts` reads the counts of all accounts in one grouped query, at both sites.
 3. Add one migration with the next free number at build time (R1). Copy the locking note of migration 170.
@@ -2004,6 +2006,17 @@ uv run pytest tests/unit/test_email_n_plus_one.py tests/unit/test_email_rules_en
   tests/unit/test_email_multi_account.py tests/unit/test_email_rules_admin.py -q -rs
 uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_n_plus_one.py
 ```
+
+**As built (2026-10-03).**
+
+1. `_load_rules` reads the rules, and then the actions of all the rules in one read (`_ACCOUNT_ACTIONS_SQL`). Python groups the actions by rule. With no rule, it makes one read only.
+2. The read of the actions orders on `created_at, ctid`. One write gives all the actions of a rule the same `created_at`. The old read of one rule gave such a tie in table order. One sort over all the rules does not keep that order, so the read names `ctid`.
+3. `_unread_counts` in `transport/accounts.py` reads the unread count of each mailbox in one grouped read. `_account_scope` holds the owner predicate. `list_accounts` and `set_default_account` both call it. `list_accounts` returns each field that it returned before.
+4. Migration 226 (`226_email_thread_index.sql`) creates `idx_email_messages_thread_received` with `CREATE INDEX IF NOT EXISTS`. It adds no foreign key, and it copies the locking note of migration 170. That note names the real holder of the lock: a sync phase that writes `email_messages`. The build took 42 ms on 16 000 rows, warm.
+   - ⚠️ **The status index of item 4 is OUT of scope** (review, 2026-10-03). No query filters on `email_thread_status.last_message_id`. Each read joins the status row to `email_messages` on the primary key of the message (`digest.py`, `followups.py`, `replyzero.py`). The status upsert changes `last_message_id` on almost every write. So that index adds write cost and serves no read. The fence checks that 226 puts no index on the column.
+5. ⚠️ **One change from item 4.** The thread index is `received_at DESC NULLS LAST`, not `received_at DESC`. A plain `DESC` is `DESC NULLS FIRST`. `build_thread_context` orders `ASC NULLS FIRST`, and a backward scan of `DESC NULLS LAST` gives that order. With a plain `DESC` on the scratch database, the planner kept the index of migration 17 and a Sort. With `NULLS LAST`, it used the new index and no Sort. Ten of the eleven thread reads in `routes/email` and `routes/tasks` get their order from it.
+6. ⚠️ **A finding.** §7 item 4 calls the composite index missing. But migration 17 already has `idx_email_messages_thread` on `(account_id, thread_id)`, and that index finds the rows of a thread. The new index can remove the Sort, and nothing more. For a thread of 2 to 30 messages, the planner gives the two plans almost the same cost. When the syncs of several mailboxes interleave their mail in the table, the planner reads a thread of 4 or more through the new index with a bitmap scan, and then it sorts. The drop of the old index is a later contract step (R6), in a migration of its own. `HANDOFF.md` H-210 carries it.
+7. The R8 `EXPLAIN` test seeds that interleaved layout. The plan of the planner names the new index, which is the done-when. With `enable_sort` off, the plan is a backward scan of the new index, and a plain `DESC` index fails that check.
 
 ##### EM-T4f — a disconnect stops the sync first, then deletes, and removes the Graph subscription
 
@@ -2134,7 +2147,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b to EM-T6e are not merged. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b is MERGED (#580, 2026-10-03). EM-T6c to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2257,6 +2270,37 @@ The first ruff run names the new files only. The second run is the blocking set 
 The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger line of the new migration and `\d email_accounts` on the box.
 
 ##### EM-T6b — newest first, in batches, with progress and resume (backend)
+
+**Status.** ✅ MERGED (#580, 2026-10-03), with fix rounds 1, 2, 3 and 4. It sits on `main` with EM-T6a (#577), EM-T4f (#578) and EM-T6d part 1 (#579).
+
+**As built.**
+
+- `import_batches` takes the keyword `on_estimate`. Outlook awaits it once, before the first batch. The core then writes the estimate in a block of its own.
+- The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
+- Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
+- A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
+- Outlook pages each folder by time (fix rounds 1 and 2). Each next page is a new query with `lt` the second after the oldest message of the last page, and the stream drops the ids that it read again. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
+- Exchange keeps a fraction of a second, and Graph shows whole seconds. `le 10:00:05` is `le 10:00:05.000`, so it dropped the rest of a split second. In a simulation of 200,000 messages it lost 400. With `lt` the loss is 0, and the resume bound uses `lt` too.
+- When one second fills a whole page, one query with `$top=1000` reads that second, and the next page starts below it. A page that adds no message ends the folder, and so does `IMPORT_MAX_PAGES` (5000). Both log `sync.import_folder_capped`.
+- A 403 or a 404 on a first page skips only Archive or a user folder (fix round 4). The log says `sync.import_folder_skipped` with the status. A 403 or a 404 on any other system folder fails the import, and so does any other failure. The next sync resumes.
+- A page that answers 429, 503 or 504 waits for `Retry-After`, with the bound of `_graph_send`, and tries once more. The recurring sweep does the same.
+- When an import fails, the cycle still runs the recurring sweep and phase (c), so new mail lands (owner answer Q2). Phase (d) then writes `sync_status = 'error'` with the error, and the next sync resumes the import. A failed import on a mailbox that never synced keeps `last_synced_at` NULL (fix round 3), so the next sweep reads back to `created_at`.
+- When a sweep folder stops short of the catch-up watermark, the sweep keeps the pages that it read and sets `catch_up_incomplete`. Phase (d) writes that mail and keeps `last_synced_at`. Fix round 3: a first page that fails with a status other than 403 or 404 also leaves its folder short.
+- The recurring sweep uses the rule of the import for a 403 or a 404 (fix round 4). It skips Archive or a user folder. A 403 or a 404 on Inbox, Sent, Drafts, Junk or Deleted Items fails the cycle, and the error path writes `sync_status = 'error'`. Before fix round 4, the sweep skipped each folder that answered 403 or 404, and the member saw no error.
+- A short catch-up writes a `sync_error` note with the folder name only, and the loop backs off as for a failure. Only a cycle of the loop adds to the count (fix round 4). The webhook, the manual sync, the rerun and the deep downloads run when mail arrives or when a member acts. If they counted, a busy mailbox could abandon a gap in a few minutes. The loop backs off, so 6 cycles of the loop take about 3 hours.
+- After 6 short cycles of the loop in a row, the watermark moves on, and the log says `sync.catch_up_abandoned` with the folder and the gap. The abandon stays until a complete cycle (fix round 4). Until then, a short cycle of any caller adds no count, keeps no watermark and does not back off. It writes the note of the abandon again.
+- A complete cycle reads every folder back to the watermark. It clears the count and the abandon. A restart clears them too, because they live in the process. The later full fix is a watermark for each folder.
+- The note of a short catch-up reaches the API only (fix round 4, a recorded decision). `sync_status` stays `idle`, and `GET /email/accounts` returns `sync_error` for each mailbox. The UI shows `sync_error` only when `sync_status` is `error`, so the member does not see the note. EM-T6b has no UI (the non-goals). Follow-up for EM-T6d: show the note on an idle mailbox.
+- When the deep sync of a member act ends with no error, one block reconciles deletions against `(id, folder, received_at)` of each message that its import wrote. Only a provider with `import_full_snapshot` does this, which today is Outlook.
+- Three guards protect that reconcile (fix rounds 2 and 3). It keeps a row whose `updated_at` is after phase (a), because a move, a rule action or a draft during the import writes the row, and Graph gives a moved message a new id. When a folder has more candidates than 50, or 2% of its rows, the reconcile leaves that folder and logs `sync.import_reconcile_skipped`.
+- Then, with no session open, Outlook looks up each candidate by `internetMessageId`, at most 50 for each folder. A message that Graph still has keeps its row, because the member moved it in the Outlook client. A failed lookup, or a row with no internet message id, keeps its row too. The trash checks `updated_at` again in its own block.
+- EM-T6d part 2 (#581) closed the follow-up of the EM-T6b review. `isFirstSyncPending` and `onboardingStage` check `syncEnabled`, so the panel does not freeze when the member turns sync off during the import.
+- `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
+- A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.
+- The `synced` result and `messages_synced` count the rows of the import and of the recurring sweep together.
+- Phase (c) and each batch of an import use one write, `_write_messages`.
+- The EM-T6a tests of the first import and of a deep sync now read the import call. The R8 fakes of `test_email_scheduler_tenancy.py` and `test_email_sync_one_at_a_time.py` get an empty import.
+- The catch-up sweep is not in batches. After a long pause, it holds the new mail in memory and writes it in one block at phase (c).
 
 **Scope.**
 

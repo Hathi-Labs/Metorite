@@ -395,7 +395,10 @@ async def _assert_refused(spy, resp) -> None:
 
 async def test_a_tampered_state_is_refused(spy) -> None:
     body, tag = _state().split(".")
-    await _assert_refused(spy, await _callback(f"{body}.x{tag[1:]}"))
+    # Flip the first character to a DIFFERENT one. Writing a fixed "x" was a
+    # no-op whenever the tag already began with "x", about 1 run in 64.
+    flipped = ("x" if tag[0] != "x" else "y") + tag[1:]
+    await _assert_refused(spy, await _callback(f"{body}.{flipped}"))
 
 
 async def test_an_expired_state_is_refused(spy) -> None:
