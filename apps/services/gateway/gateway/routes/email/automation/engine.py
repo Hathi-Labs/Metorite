@@ -13,7 +13,9 @@ from typing import Any
 from fastapi import HTTPException
 from gateway import decide_features
 from gateway.routes.email.automation.identity import (
+    own_addresses,
     resolve_org_domains,
+    resolve_self_addresses,
     sender_scope,
 )
 from gateway.routes.email.automation.rules import _load_rules
@@ -48,17 +50,24 @@ def _addr_emails(field: Any) -> set[str]:
             for it in (items or []) if isinstance(it, dict) and it.get("email")}
 
 
-def _recipient_role(self_email: str, to_field: Any, cc_field: Any) -> str:
+def _recipient_role(
+    self_email: str, to_field: Any, cc_field: Any,
+    self_addresses: frozenset[str] | set[str] = frozenset(),
+) -> str:
     """Deterministic role of the mailbox owner on this email — a COMPUTED signal
     so the classifier need not parse address lists to tell a direct recipient
     from a Cc'd one. Returns 'direct' (in To), 'cc' (only in Cc), or '' (neither /
-    unknown: Bcc, a mailing list, or self not resolvable)."""
-    me = (self_email or "").strip().lower()
-    if not me:
+    unknown: Bcc, a mailing list, or self not resolvable).
+
+    The owner is each address in ``self_email`` and ``self_addresses``, so a
+    member who is in To under another of their mailboxes is a direct
+    recipient (D-EM-27, EM-T8e-1)."""
+    mine = own_addresses(self_email, self_addresses)
+    if not mine:
         return ""
-    if me in _addr_emails(to_field):
+    if mine & _addr_emails(to_field):
         return "direct"
-    if me in _addr_emails(cc_field):
+    if mine & _addr_emails(cc_field):
         return "cc"
     return ""
 
@@ -67,6 +76,7 @@ def email_dict_from_row(
     row: Any, self_email: str = "", about: str = "", self_name: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attachments: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, str]:
     """Build the classifier's email dict from an ``email_messages`` row.
 
@@ -77,7 +87,12 @@ def email_dict_from_row(
 
     Also carries ``sender_scope`` (self / internal / external — see identity.py):
     the provenance signal that stops an OUTBOUND/internal email (e.g. an invoice
-    your org sent a customer) being mislabelled as a RECEIVED category."""
+    your org sent a customer) being mislabelled as a RECEIVED category.
+
+    ``self_addresses`` is the address of each mailbox of the member
+    (``identity.resolve_self_addresses``). Pass it as a KEYWORD, as
+    ``extra_domains``. Mail from another mailbox of the member is then
+    ``self``, not external (D-EM-27). ``self`` stays the current mailbox."""
     raw_from = getattr(row, "from_address", None)
     frm = raw_from if isinstance(raw_from, dict) else json.loads(raw_from or "{}")
     received = getattr(row, "received_at", None)
@@ -94,12 +109,13 @@ def email_dict_from_row(
         "date": received.isoformat() if hasattr(received, "isoformat") else "",
         "thread_id": getattr(row, "thread_id", "") or "",
         "sender_scope": sender_scope(
-            frm.get("email", ""), self_email or "", extra_domains),
+            frm.get("email", ""), self_email or "", extra_domains,
+            self_addresses=self_addresses),
         # Deterministic recipient role (direct/cc/'') — a computed CC-vs-To signal
         # the classifier reads instead of parsing the To/Cc lines itself.
         "recipient_role": _recipient_role(
             self_email or "", getattr(row, "to_addresses", None),
-            getattr(row, "cc_addresses", None)),
+            getattr(row, "cc_addresses", None), self_addresses),
         # "Attachments: file.pdf (…)" line (or "") — see core._attachment_summaries.
         "attachments": attachments or "",
     }
@@ -1452,18 +1468,31 @@ async def classify_matches(
     return resolved or []
 
 
-async def _email_payload_from_id(db: Any, message_id: str, user_email: str) -> dict[str, str]:
+async def _email_payload_from_id(
+    db: Any, message_id: str, user_email: str, account_id: str | None = None,
+) -> dict[str, str]:
+    """The classifier payload of one stored mail of the member.
+
+    With ``account_id``, the mail must be a mail of that mailbox, or the
+    answer is 404 (D-EM-19, EM-T8e-1). ``POST /email/rules/test`` passes it,
+    so a mail of mailbox B is never tested against the rules of mailbox A.
+    """
+    in_mailbox = " AND em.account_id = :aid" if account_id else ""
+    params: dict[str, Any] = {"mid": message_id, "uid": user_email}
+    if account_id:
+        params["aid"] = account_id
     row = (await db.execute(text(
-        """SELECT em.id, em.account_id, em.subject, em.body_text, em.snippet,
+        f"""SELECT em.id, em.account_id, em.subject, em.body_text, em.snippet,
                   em.from_address, em.to_addresses, em.cc_addresses, em.thread_id,
                   em.received_at, ea.email_address
            FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id
-           WHERE em.id = :mid AND ea.user_id = :uid"""
-    ), {"mid": message_id, "uid": user_email})).fetchone()
+           WHERE em.id = :mid AND ea.user_id = :uid{in_mailbox}"""
+    ), params)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Message not found")
     org_domains = await resolve_org_domains(db, str(row.account_id))
+    selves = await resolve_self_addresses(db, str(row.account_id))
     attach = (await _attachment_summaries(db, [row.id])).get(str(row.id), "")
     return email_dict_from_row(
         row, getattr(row, "email_address", "") or "",
-        extra_domains=org_domains, attachments=attach)
+        extra_domains=org_domains, attachments=attach, self_addresses=selves)
