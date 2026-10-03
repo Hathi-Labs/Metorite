@@ -118,8 +118,30 @@ NEW_MAIL_FLOOR_SQL = (
 )
 
 
+#: The actions of EVERY rule of one account, in one read (EM-T4e). Binds
+#: ``:aid``. Before it, ``_load_rules`` read the actions once for each rule.
+#: ``ORDER BY created_at, ctid`` keeps the order of the old read in each rule.
+#: One write puts all the actions of a rule in one transaction, so they share
+#: ``created_at``. The old read then gave them in the order of the table
+#: (``ctid``), and the sort kept that order. One sort over all the rules does
+#: not keep it, so ``ctid`` is named.
+_ACCOUNT_ACTIONS_SQL = """
+    SELECT a.rule_id, a.id, a.type, a.label, a.subject, a.content,
+           a.to_address, a.cc_address, a.bcc_address, a.url,
+           a.delay_minutes, a.attachments, a.label_ai, a.content_manual
+      FROM email_actions a
+      JOIN email_rules r ON r.id = a.rule_id
+     WHERE r.account_id = :aid
+     ORDER BY a.created_at, a.ctid
+"""
+
+
 async def _load_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
-    """Load rules + their actions for an account, in canonical system order."""
+    """Load rules + their actions for an account, in canonical system order.
+
+    Two reads for any number of rules (EM-T4e): the rules, then the actions
+    of all of them, which Python groups by rule. With no rule, one read.
+    """
     rule_rows = (await db.execute(text(
         """SELECT id, account_id, name, instructions, enabled, automated,
                   run_on_threads, conditional_operator, from_pattern, to_pattern,
@@ -127,15 +149,15 @@ async def _load_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
            FROM email_rules WHERE account_id = :aid
            ORDER BY created_at"""
     ), {"aid": account_id})).fetchall()
+    if not rule_rows:
+        return []
+    actions_by_rule: dict[str, list[Any]] = {}
+    for a in (await db.execute(
+            text(_ACCOUNT_ACTIONS_SQL), {"aid": account_id})).fetchall():
+        actions_by_rule.setdefault(str(a.rule_id), []).append(a)
     rules: list[dict[str, Any]] = []
     for r in rule_rows:
-        act_rows = (await db.execute(text(
-            """SELECT id, type, label, subject, content, to_address, cc_address,
-                      bcc_address, url, delay_minutes, attachments,
-                      label_ai, content_manual
-               FROM email_actions WHERE rule_id = :rid
-               ORDER BY created_at"""
-        ), {"rid": r.id})).fetchall()
+        act_rows = actions_by_rule.get(str(r.id), [])
         rules.append({
             "id": str(r.id), "account_id": str(r.account_id), "name": r.name,
             "instructions": r.instructions, "enabled": r.enabled,
