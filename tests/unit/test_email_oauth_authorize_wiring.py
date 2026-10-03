@@ -418,6 +418,14 @@ def oauth_module(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         get_settings(), "gateway_session_secret", "wiring-test-secret", raising=False,
     )
+
+    # The authorize leg asks the database whether the member already has a
+    # mailbox (EM-T8a). These tests run with no database, so the member has
+    # none. ``test_email_multi_inbox.py`` fences the other answer.
+    async def _no_mailbox(org, member, provider):
+        return False
+
+    monkeypatch.setattr(mod, "_member_has_mailbox", _no_mailbox)
     return mod
 
 

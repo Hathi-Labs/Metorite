@@ -1016,7 +1016,7 @@ function EmailTab() {
     void check();
   }, [accounts]); // re-check when accounts change
 
-  const handleConnect = useCallback((provider: "gmail" | "microsoft" | "imap") => {
+  const handleConnect = useCallback((provider: "gmail" | "microsoft" | "imap", loginHint?: string) => {
     if (provider === "imap") {
       setShowAdd(false);
       setShowIMAP(true);
@@ -1034,6 +1034,9 @@ function EmailTab() {
       const params = new URLSearchParams({
         redirect_after: window.location.href,
       });
+      // A reconnect names the mailbox, so Microsoft signs THAT one in. With no
+      // hint, a member who has a mailbox gets the account picker (EM-T8a).
+      if (loginHint) params.set("login_hint", loginHint);
       window.location.href = `/api/email/oauth/${provider}/authorize?${params.toString()}`;
     }
   }, []);
@@ -1067,9 +1070,10 @@ function EmailTab() {
   // Re-run the OAuth flow for an existing account. The gateway callback
   // refreshes the stored credentials in place (rather than rejecting as a
   // duplicate), so this repairs accounts whose refresh token went stale.
-  const handleReconnect = useCallback((provider: string) => {
+  const handleReconnect = useCallback((account: { provider: string; emailAddress: string }) => {
+    const { provider } = account;
     if (provider !== "gmail" && provider !== "microsoft") return;
-    handleConnect(provider);
+    handleConnect(provider, account.emailAddress);
   }, [handleConnect]);
 
   return (
@@ -1183,7 +1187,7 @@ function EmailTab() {
                   </div>
                   <div className="flex items-center gap-1">
                     {(account.provider === "gmail" || account.provider === "microsoft") && (
-                      <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => handleReconnect(account.provider)} title="Reconnect (re-authorize)" className="rounded-md">
+                      <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => handleReconnect(account)} title="Reconnect (re-authorize)" className="rounded-md">
                         <Icon name="RotateCcw" className="w-3.5 h-3.5" />
                       </Button>
                     )}
@@ -1223,7 +1227,7 @@ function EmailTab() {
                           {account.syncError || "Sync failed — the connection may have expired."}
                         </p>
                         {(account.provider === "gmail" || account.provider === "microsoft") && (
-                          <button onClick={() => handleReconnect(account.provider)}
+                          <button onClick={() => handleReconnect(account)}
                             className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:opacity-80">
                             <Icon name="RotateCcw" className="w-2.5 h-2.5" /> Reconnect account
                           </button>
