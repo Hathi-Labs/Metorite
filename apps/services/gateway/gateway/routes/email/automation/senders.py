@@ -1227,8 +1227,28 @@ def _cold_user_prompt(email: dict[str, str]) -> str:
 
 
 #: The probability at which ``decide`` calls an email cold (§10.4.8
-#: "Thresholds"). A start value: the old prompt asked for no margin.
+#: "Thresholds"). A start value: the old prompt asked for no margin. It is
+#: the bar of a blocker that only labels.
 _COLD_THRESHOLD = 0.5
+#: The bar of a blocker that ARCHIVES (EM-T5b-2 fix round 3). An archive
+#: moves mail, and a wrong move hides real mail from the inbox, so it needs
+#: the 0.7 of a rule that moves mail (``engine._RULE_MOVE_THRESHOLD``).
+_COLD_MOVE_THRESHOLD = 0.7
+
+
+def _cold_blocker_moves(blocker: str) -> bool:
+    """True when the blocker moves a cold email out of the inbox.
+
+    The ONE test: ``_maybe_block_cold`` archives on it, and
+    :func:`_cold_threshold` raises the bar on it, so the two cannot disagree.
+    """
+    return blocker == "ARCHIVE"
+
+
+def _cold_threshold(blocker: str) -> float:
+    """The probability at which ``decide`` calls an email cold for ``blocker``."""
+    return _COLD_MOVE_THRESHOLD if _cold_blocker_moves(blocker) else _COLD_THRESHOLD
+
 
 _COLD_QUESTION = "Is the email in `email` cold outreach?"
 _COLD_GUIDANCE = (
@@ -1240,14 +1260,14 @@ _COLD_GUIDANCE = (
 
 
 def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The ``decide`` request for the cold check (EM-T5b-1, shadow only).
+    """The ``decide`` request for the cold check (EM-T5b-1, ``shadow`` and ``on``).
 
     The state is the ``email`` and ``direction`` facts of the rule match,
     plus ``sender.prior_contact``. The only caller, ``_maybe_block_cold``,
     asks only after it found no mail from the owner to this sender, so the
     fact is always false.
     """
-    from acb_llm import BooleanQuestion  # shadow mode only
+    from acb_llm import BooleanQuestion  # `shadow` and `on` only
     from gateway.routes.email.automation.engine import (
         _email_direction,
         _email_facts,
@@ -1268,16 +1288,52 @@ def _cold_question(email: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any
     )}
 
 
+def _read_cold(
+    decision: Any, threshold: float,
+) -> tuple[tuple[bool, str], dict[str, Any]]:
+    """The cold verdict that a ``decide`` answer gives, in ``on``.
+
+    Cold at ``threshold`` or above, and only then (:func:`_cold_threshold`:
+    0.5 for a blocker that labels, 0.7 for one that archives). The caller
+    writes the cold row and blocks the email (a label, or a label and an
+    archive) on a True verdict, so nothing below the bar acts. The reason
+    holds a number and no tenant text, as the rule match reason does.
+    """
+    probability = float(decision["cold"].probability)
+    cold = probability >= threshold
+    reason = f"Cold outreach by AI (probability {probability:.2f})." if cold else ""
+    return (cold, reason), {"p_cold": probability, "cold": cold,
+                            "threshold": threshold}
+
+
 async def _llm_is_cold(
-    email: dict[str, str], *, account_id: str | None = None,
+    email: dict[str, str], *, blocker: str, account_id: str | None = None,
     message_id: str | None = None,
+    member: str | None = None,
 ) -> tuple[bool, str]:
     """Classify whether an email is cold outreach. (is_cold, reason).
 
     EM-T5: in ``shadow`` mode ``decide`` runs beside the old call, and the
     result is always the old call's (``gateway/decide_features.py``).
     ``message_id`` goes into each ``decide`` log line.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides and no LLM call is
+    made. With no decision the email is NOT cold (§10.4.8 item 6): no cold
+    row, no label and no archive, and the rule outcome stands. ``member`` is
+    the mailbox owner, for a deployment Router key.
+
+    ``blocker`` is the policy that acts on a True verdict. It has no default
+    on purpose: a caller states whether the verdict moves mail, because an
+    archive needs the higher bar (fix round 3, :func:`_cold_threshold`). The
+    shadow comparison uses the same bar, so its log shows what ``on`` does.
     """
+    threshold = _cold_threshold(blocker)
+    if decide_features.mode_for("email.cold_check") == "on":
+        verdict = await decide_features.ask(
+            "email.cold_check", account_id=account_id, message_id=message_id,
+            build=lambda: _cold_question(email),
+            read=lambda decision: _read_cold(decision, threshold), member=member)
+        return verdict if verdict is not None else (False, "")
 
     async def _old() -> tuple[bool, str]:
         try:
@@ -1304,7 +1360,7 @@ async def _llm_is_cold(
         "email.cold_check", _old, account_id=account_id, message_id=message_id,
         build=lambda: _cold_question(email),
         compare=decide_features.compare_boolean(
-            lambda r: r[0], qid="cold", threshold=_COLD_THRESHOLD),
+            lambda r: r[0], qid="cold", threshold=threshold),
     )
 
 
@@ -1354,8 +1410,13 @@ async def _maybe_block_cold(
     # compares without case (`_PRIOR_CONTACT_SQL`).
     if await _has_prior_contact(db, account_id, sender):
         return
+    # Lazy: the runner imports this module, and the engine sits beside it.
+    from gateway.routes.email.automation.engine import _decide_member
+
     is_cold, reason = await _llm_is_cold(
-        email, account_id=account_id, message_id=str(message_id))
+        email, blocker=blocker, account_id=account_id,
+        message_id=str(message_id),
+        member=await _decide_member(db, account_id, "email.cold_check"))
     if not is_cold:
         return
     await db.execute(text(
@@ -1365,7 +1426,7 @@ async def _maybe_block_cold(
     ), {"aid": account_id, "e": sender, "reason": reason})
     actions: list[str] = []
     try:
-        if blocker == "ARCHIVE":
+        if _cold_blocker_moves(blocker):
             await db.execute(text(
                 "UPDATE email_messages SET folder='archive', updated_at=now() "
                 "WHERE id=:id"), {"id": message_id})

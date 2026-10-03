@@ -14,11 +14,12 @@ Each feature that may ask ``acb_llm.decide`` has ONE mode here: ``off``,
   other than ``off``. An empty list allows no organization, and ``*`` allows
   every organization (EM-T5b-2, owner decision (b) of 2026-10-02).
 
-🔴 **``on`` is accepted for ``email.rule_match`` only** (EM-T5b-2, owner
-decision (c), the demo scope). In ``on`` the ``decide`` answer DECIDES
-(:func:`ask`), and the old LLM call is not made. For any other feature ``on``
-still resolves to ``off`` and logs ``decide.mode_refused``. So does an unknown
-feature or an unknown mode.
+🔴 **``on`` is accepted for the four email features** (EM-T5b-2 in full,
+2026-10-02, after the narrowed slice opened it for ``email.rule_match``
+only). In ``on`` the ``decide`` answer DECIDES (:func:`ask`), and the old LLM
+call is not made. With no answer the email stays undecided (D-EM-8). For a
+feature outside :data:`ON_FEATURES` ``on`` resolves to ``off`` and logs
+``decide.mode_refused``. So does an unknown feature or an unknown mode.
 
 EM-T5b-1 (2026-10-02): ``email.rule_pick`` is now ``email.rule_match``, which
 covers both the one-rule mode and the multi-rule mode. A ``build`` may return
@@ -83,6 +84,7 @@ __all__ = [
     "clip_fact",
     "compare_boolean",
     "compare_choice",
+    "configured_on",
     "instructions",
     "mode_for",
     "shadow",
@@ -105,9 +107,17 @@ FEATURES: tuple[str, ...] = (
 #: The three modes.
 MODES: tuple[str, ...] = ("off", "shadow", "on")
 
-#: The features that may run ``on`` (EM-T5b-2, owner decision (c)). ``on``
-#: for any other feature resolves to ``off`` and logs ``decide.mode_refused``.
-ON_FEATURES: frozenset[str] = frozenset({"email.rule_match"})
+#: The features that may run ``on``. The narrowed EM-T5b-2 held the rule
+#: match only (owner decision (c)). EM-T5b-2 in full opens the other three.
+#: ``on`` for any other feature resolves to ``off`` and logs
+#: ``decide.mode_refused``. EM-T5b-3 takes the email features out of
+#: :data:`FEATURES`, and then this set holds no email name.
+ON_FEATURES: frozenset[str] = frozenset({
+    "email.cold_check",
+    "email.sender_pin",
+    "email.thread_status",
+    "email.rule_match",
+})
 
 #: The value of ``decide_feature_orgs`` that allows every organization.
 ALL_ORGS = "*"
@@ -292,8 +302,10 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
                 modes[feature] = "off"
             continue
         if mode == "on" and feature not in ON_FEATURES:
-            # 🔴 EM-T5b-2 opens `on` for the rule match only (owner decision
-            # (c)). The other three features keep the old path.
+            # 🔴 `on` only for a feature in ON_FEATURES. Since EM-T5b-2 in
+            # full, that set holds all four email features, so no feature of
+            # FEATURES reaches this branch today. It stays as the guard for a
+            # feature that joins FEATURES without `on`.
             _log.warning(
                 "decide.mode_refused",
                 decide_feature=feature,
@@ -333,6 +345,21 @@ def mode_for(feature: str) -> str:
     if ALL_ORGS not in orgs and str(org) not in orgs:
         return "off"
     return mode
+
+
+def configured_on() -> tuple[str, ...]:
+    """The features that the box settings put in ``on``, in their order.
+
+    The startup check reads it, so it needs no tenant (EM-T5b-2 item 9). A
+    feature is ``on`` here when its mode is ``on`` and the organization list
+    names at least one organization. An empty list allows no organization,
+    so nothing runs ``on``, and the check stays quiet.
+    """
+    settings = get_settings()
+    if not _parse_orgs(settings.decide_feature_orgs or ""):
+        return ()
+    modes = _parse_modes(settings.decide_feature_modes or "")
+    return tuple(f for f in FEATURES if modes.get(f) == "on")
 
 
 # ── The comparison ──────────────────────────────────────────────────────────
