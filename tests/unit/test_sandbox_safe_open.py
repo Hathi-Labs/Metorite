@@ -17,16 +17,16 @@ Windows has no ``dir_fd``, so there the module checks each part and then
 opens. The race tests need the descriptor walk, so they run on POSIX only.
 CI runs Linux, and every test runs there.
 
-Mutations this suite catches (R7), each run red once by hand:
+Mutations this suite catches (R7), each run red once by hand on 2026-10-03:
 
-* ``_walk_open`` opens a part without ``O_NOFOLLOW``: the middle-link tests;
-* ``write_bytes`` drops ``O_NOFOLLOW`` on the leaf: the leaf-link write test;
-* ``remove_tree`` calls ``shutil.rmtree`` on a joined path: the link-in-tree
-  test still passes, so the race test is the one that catches it;
-* ``code_tools._sweep_to_blob_store`` reads with ``Path.read_bytes``: the
-  sweep test;
+* ``_walk_open`` opens a part without ``O_NOFOLLOW`` (Linux, the walk path):
+  three middle-link tests go red;
+* ``write_bytes`` drops ``O_NOFOLLOW`` on the leaf (Linux): two tests go red;
+* the sweep walks with ``rglob`` AND reads with ``Path.read_bytes``: the sweep
+  test goes red. Either layer alone still refuses the link, so a mutation of
+  one of them stays green, by design;
 * ``acb_memory.rehydrate_workspace`` writes with ``Path.write_bytes``: the
-  rehydrate test.
+  rehydrate test goes red.
 """
 from __future__ import annotations
 
