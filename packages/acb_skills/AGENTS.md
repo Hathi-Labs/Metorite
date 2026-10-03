@@ -43,6 +43,28 @@ clone cache.
    `addendum.rendered_parts` both ask it, so with `DECIDE_ENABLED` off the
    tool is not injected and no section names it.
    Fence: tests/unit/test_decide_tool.py.
+5c. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
+   Every host reader and writer of a dir that a sandbox container mounts opens
+   its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux
+   5.6 or later, else a walk that opens each part with `O_NOFOLLOW`. A link at
+   any depth fails the call. Callers: the store below, the sweep of
+   `code_tools`, the rehydrate of `acb_memory` and the gateway's workspace
+   routes. Do not open a mounted dir any other way. Fence:
+   tests/unit/test_sandbox_safe_open.py (WS43-F14).
+5d. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (WS-43d, D86,
+   spec §7.4 and §16.3). `run_command`, MAF's eight file tools over
+   `TenantFileStore`, and a `SkillsProvider` over `agent-data/skills/`. Only
+   `attach_for_run` hands them out, to ONE run, as a per-run view, and only
+   when `sandbox_broker.covers()` is true for the run's own tenant. They are
+   never injected (`_collect_injectable_platform_tools` never returns them).
+   The boundaries are structural, in every permission mode: the cover, the
+   broker exec with no host fallback, and the store's map and safe opener.
+   `decide()` runs too, with the whole command and with the real host path.
+   The store maps `outputs/` to the thread's own folder and `.run/` to the
+   run data, and it mirrors each kept write and delete. Fences:
+   tests/unit/test_run_command_tool.py (WS43-F6),
+   tests/unit/test_maf_code_session.py (WS43-F7, R8) and
+   tests/unit/test_projects_sandbox_tools.py (WS43-F21).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

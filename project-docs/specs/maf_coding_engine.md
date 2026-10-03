@@ -5,8 +5,9 @@
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
 (the no-Copilot fence) are built (2026-10-03). WS-43c (the sandbox broker,
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
-dark (2026-10-03). Every other slice is spec only.** Owner decisions,
-2026-10-03.
+dark (2026-10-03). WS-43d (Projects track step 1) is built and dark on the
+branch `ws43d-projects-tools`, and its PR waits for review and for D85
+(PR #598). Every other slice is spec only.** Owner decisions, 2026-10-03.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84** and **D86**.
 
@@ -1105,7 +1106,7 @@ until its PR merges.
 | WS-43a | Eval harness, then the first sweep | Nothing | AGENT-SAFE on a local stack. The sweep is NO-GO until the stack of WS-43a serves the Router |
 | WS-43b | The sandbox image and the Docker test workflow | Nothing | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43c | The sandbox broker and the scope setting | WS-43b | AGENT-SAFE |
-| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86) | WS-43c | AGENT-SAFE |
+| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, in review | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
 | WS-43e | `code_task` on a MAF harness session, and no host git | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
@@ -1447,7 +1448,7 @@ These facts change or add to the text above:
   the Docker tests use a named volume in place of each bind mount, and the
   bind-mount test skips.
 
-### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Active: Projects track step 1 (D86)**
+### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Built 2026-10-03, dark, in review: Projects track step 1 (D86)**
 
 **Narrowed by D86.** This slice now serves projects-assistant first (§16.3).
 Everything below stays. These items are added:
@@ -1519,6 +1520,56 @@ uv run pytest tests/unit/test_run_data_hygiene.py -q -rs -m sandbox_docker
 ```
 
 **Gate.** AGENT-SAFE. It ships dark: no organization is in the scope.
+
+**Built 2026-10-03 on the branch `ws43d-projects-tools`. It ships dark.**
+These facts change or add to the text above:
+
+- **`covers()` needs the D85 seam.** Condition 3 of §16.3 reads
+  `_tool_injection._withheld_shell_tools`. PR #598 adds it, so until #598
+  merges, `covers()` is false for every organization, also with a scope set.
+- **A second check at run time.** At the start of each turn, the provider
+  adds no tool when the run holds `code_task`, `run_script` or
+  `install_dependency`. So the sandbox tools never sit beside a host shell.
+- **`lifts_shell_block(agent, org)` is the D85 hook.** It is false for the
+  `projects` target, and `covers()` for every other target until WS-43f. When
+  #598 merges, `_sandbox_covers` calls it, and never `covers()` alone.
+- **The broker is healthy** when Docker answered in the last 60 s, the
+  free-space floor holds, and the image is pinned. Before the first answer it
+  is not healthy, so a flip fails closed.
+- **The factory** (`agent-projects/agents.py`) calls
+  `sandbox_tools.attach_for_run`. That gives a per-run view through
+  `_native_run_context.agent_with_providers`, the one copy of WS-43t1.
+- **`host_dir()` is the lock of `host_files()` with no start.** The file tools
+  and the skill list use it, so a read needs no container.
+- **The file tools call `decide()`** with the real host path of each write and
+  delete. The containment root of the call is the root of that path, set as
+  `permission_check_root` for the call only.
+- **The run data ends in the executor's `finally`** of every run, the
+  delegated run too. The thread's container then mounts a deleted dir, so the
+  broker marks it stale and removes it. The next run starts a fresh one.
+- **The host makes the `.run` mountpoint** in the working dir, so Docker
+  never makes it as root.
+- **A thread id must name a folder that the routes can recognise.** A UUID
+  does. Any other id gets no sandbox (`agent_paths.is_thread_slug`).
+- **The route rule, as built.** Under `outputs/`, the session routes hide
+  and refuse the folder of another thread. A file of `outputs/` that is in no
+  thread folder is served as before. `write_artifact` still writes there, so
+  S8 does not change. A thread folder is a name that `is_thread_slug`
+  accepts.
+- **Skills offer no resources.** The model reads a skill's other files with
+  the file tools, which hold the lock.
+- **The steer drain** runs for `run_command` and a skill script. It does not
+  run for the eight file tools.
+- **The risk block of the addendum names no sandbox tool**
+  (`tool_annotations.SANDBOX_TOOL_NAMES`), so every other agent's prompt is
+  byte-identical.
+- **`acb_skills` declares `agent-framework-core`**, because the store and the
+  tools build on MAF's file tools.
+- **The rehydrate imports the safe opener at the call site**, from the lower
+  package `acb_memory`.
+- **On Docker Desktop** a named volume stands in for each bind mount, and it
+  outlives the host dir. So only CI shows that the run data is gone from a
+  fresh container.
 
 ### WS-43e — `code_task` on a MAF harness session, and no host git 🔲
 
@@ -2791,7 +2842,7 @@ assistants for now.
 
 | Slice | State under D86 |
 |---|---|
-| WS-43d | ▶ **Active.** Projects track step 1, narrowed (§16.3) |
+| WS-43d | ▶ **Built, dark, in review.** Projects track step 1, narrowed (§16.3). `covers()` waits for D85 (PR #598) |
 | WS-43u | ▶ **Active.** Projects track step 2: the instructions |
 | WS-43v | ▶ **Active.** Projects track step 3: the light eval |
 | WS-43w | ▶ **Active.** Projects track step 4: the owner flip for Fracktal |
