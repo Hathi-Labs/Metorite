@@ -464,6 +464,30 @@ jobs:
             exit 1
           fi
 
+      # WS-43c (maf_coding_engine.md §5.2 and §10). The sandbox broker's
+      # Docker fences need a real daemon, and the default run above deselects
+      # them (`not sandbox_docker` in pyproject.toml). This step runs them on
+      # Linux, where the bind mount of the tenant dir works as it does in
+      # production. Docker Desktop on a dev box refuses host bind mounts, so
+      # this step is the ONLY proof of WS-43c done-when 3.
+      #
+      # ⚠️ It fails on ANY skip, because a Docker test that skips proves
+      # nothing. `shell: bash` sets pipefail, so a failed test fails the step
+      # through the tee. WS-43b's sandbox-docker.yml can take this over.
+      - name: Assert the sandbox broker Docker fences ran (WS-43c)
+        shell: bash
+        run: |
+          uv run python -m pytest tests/unit/test_sandbox_exec_hygiene.py \
+            -m sandbox_docker -q -rs 2>&1 | tee /tmp/sandbox.txt
+          if grep -qE "SKIPPED|[0-9]+ skipped" /tmp/sandbox.txt; then
+            echo "::error::A sandbox_docker test skipped. A skip proves nothing (maf_coding_engine.md §10)."
+            exit 1
+          fi
+          if ! grep -qE "[0-9]+ passed" /tmp/sandbox.txt; then
+            echo "::error::No sandbox_docker test ran."
+            exit 1
+          fi
+
   # BO-23. The backup and restore scripts shipped on 2026-08-03 and had never
   # been executed anywhere — they reached Postgres only through
   # `docker exec acb-postgres`, which exists on one machine. The first run of an
