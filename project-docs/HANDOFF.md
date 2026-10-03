@@ -3809,31 +3809,10 @@ line — never reclaim a number by deleting the other entry.
 - ⚠️ **The same gap affects the agents that are native already.** The confirm
   turns of projects-assistant, email-assistant and crm-assistant cannot see
   earlier tool output either. Their write tools ask on a card in the same
-  turn, which limits the damage. The same fix helps them. See also H-216.
+  turn, which limits the damage. The same fix helps them. WS-43t1 (PR #595)
+  is the first half, and WS-43t2 carries the tool output.
 - **Authority:** `specs/maf_coding_engine.md` §15.9 (the owner, `work_plan.md` §4) ·
   `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
-- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
-
-### H-216 · Tier 1's structured history branch never runs · [AGENT]
-- **Check:** `grep -n '_MAFMsg(role=m\["role"\], content=m\["content"\])' apps/services/orchestrator/orchestrator/executor.py`
-  → a hit means the entry is still open.
-- **Why:** `_compose_maf_run_input` (~5457) builds
-  `Message(role=..., content=...)`. MAF 1.19 refuses that keyword:
-  `TypeError: Message.__init__() got an unexpected keyword argument 'content'`.
-  The `except` swallows the error, so every native turn falls back to the
-  string prompt, and the token-budgeted `assemble_run_context` result is
-  never used. This predates PR #585. Build each message with `contents=`, and
-  add a test that drives the real `Message` class.
-- ⚠️ **A naive repair drops the member's memory.** Today the history,
-  `memory_context` and the persona reach the model only through the string
-  fallback, `_build_event_message`. The structured branch passes
-  `system_context` and no `memory_context`. So carry `memory_context` into
-  the structured branch in the same change. A test must show that it
-  reaches the model after the repair.
-- **Claimed by WS-43t1** (`specs/maf_coding_engine.md` §15.9.1). The repair
-  sits behind `MAF_NATIVE_SESSIONS`, and it carries `memory_context` through
-  a MAF context provider, never into stored history (§15.9.5).
-- **Authority:** `specs/maf_coding_engine.md` §15.9 · `specs/agent_architecture.md` §11.3.1 · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
