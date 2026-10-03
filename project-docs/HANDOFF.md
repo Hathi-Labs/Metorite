@@ -95,6 +95,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
+- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open.
+- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
+  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
+  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
+  container mounts the clone at `/workspace/repo`, and it has a network. So
+  code that the model writes in that container can read the token and send
+  it out.
+- **Do.**
+  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
+     token from the environment. Then `.git/config` holds a URL with no
+     token.
+  2. Rewrite the remote URL of each existing clone once, in the loader.
+  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
+- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
+  a private repo on a dev box before the merge.
+- **Authority:** `specs/maf_coding_engine.md` §15.3 ·
+  `permissions_sandbox_b6.md` §P5-b.3
+- **Added:** 2026-10-03 · the D84 spec session
+
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the two WS-43 flags · [OWNER]
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED" .claude/hooks/plan-guard.mjs`.
   No hit means this is open.
