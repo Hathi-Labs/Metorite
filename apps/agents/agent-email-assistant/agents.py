@@ -215,6 +215,29 @@ async def _account_labels() -> dict[str, str]:
         return {}
 
 
+async def _mailbox_name(account_id: str) -> str | None:
+    """"Label · address" of one mailbox of the member, for a send card.
+
+    ``None`` when the member has mailboxes and none of them has this id, so a
+    send can stop before its card. When the list cannot be read, the id
+    itself, and the gateway still checks the mailbox (EM-T8a, D-EM-20).
+    """
+    try:
+        accounts = await _get("/email/accounts")
+    except Exception:
+        return str(account_id)
+    if not accounts:
+        return str(account_id)
+    for a in accounts:
+        if str(a.get("id")) == str(account_id):
+            addr = a.get("email_address") or ""
+            label = a.get("label") or ""
+            if label and addr and label.lower() != addr.lower():
+                return f"{label} · {addr}"
+            return addr or label or str(account_id)
+    return None
+
+
 async def list_accounts() -> str:
     """List the user's connected email accounts (id, address, unread count) —
     also answers "how many unread do I have?" via the per-account + total."""
@@ -721,7 +744,15 @@ async def manage_inbox(
 
 async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str:
     """Draft a context-aware reply to an email. Set save=true to also create a
-    provider draft in the user's Drafts folder."""
+    provider draft in the user's Drafts folder. The draft is always made in
+    the mailbox that received the email, whatever ``account_id`` says."""
+    try:
+        orig = await _get(f"/email/messages/{email_id}")
+    except Exception:
+        orig = None
+    own = str((orig or {}).get("account_id") or "")
+    if own:
+        account_id = own
     res = await _post(
         "/email/draft-reply",
         {"account_id": account_id, "message_id": email_id, "create_draft": save},
@@ -1329,6 +1360,12 @@ async def send_email(
     pass ``to`` and ``subject``. (To leave a reply in Drafts instead of sending,
     use draft_reply.)
 
+    A reply ALWAYS goes out from the mailbox that received the original. If
+    ``account_id`` names another mailbox, the tool uses the right one and says
+    so. A new message goes out from ``account_id``: when the user has several
+    mailboxes and did not say which one, ask before you call this. The
+    confirmation card names the From address (EM-T8a, D-EM-20, D-EM-23).
+
     Args:
         body: plain-text body.
         to: recipient address(es) — required for a new message; derived from the
@@ -1343,9 +1380,16 @@ async def send_email(
             to see what's available; write_artifact to create one first.
     """
     to = list(to or [])
-    # Reply mode: fill missing recipient / subject from the original message.
+    moved = ""
+    # Reply mode: the mailbox of the original sends, always (MB-4). Then fill
+    # the missing recipient and subject from the original message.
+    if reply_to_email_id:
+        orig = await _get(f"/email/messages/{reply_to_email_id}") or {}
+        own = str(orig.get("account_id") or "")
+        if own and own != str(account_id):
+            moved = own
+            account_id = own
     if reply_to_email_id and (not to or not subject):
-        orig = await _get(f"/email/messages/{reply_to_email_id}")
         frm = orig.get("from_address", {}) or {}
         if not to:
             addr = frm.get("email", "")
@@ -1357,6 +1401,12 @@ async def send_email(
     if not to:
         return "No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (
+            f"No connected mailbox has the id {account_id}. Call list_accounts "
+            "and ask the user which mailbox to send from."
+        )
 
     payload: dict[str, Any] = {
         "account_id": account_id,
@@ -1382,14 +1432,23 @@ async def send_email(
     verb = "reply" if reply_to_email_id else "email"
     if not await request_confirmation(
         title=f"Send this {verb}?",
-        detail=f"To {', '.join(to)}{_cc_note} · Subject: {subject or '(none)'}",
+        detail=(
+            f"From {sender} · To {', '.join(to)}{_cc_note} · "
+            f"Subject: {subject or '(none)'}"
+        ),
         context=body,
     ):
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
     note = f" with {len(refs)} attachment(s)" if refs else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
-    return f"{lead} {', '.join(to)}{note} (id={res.get('id', '')})."
+    out = f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
+    if moved:
+        out += (
+            " The reply went from the mailbox that received the original, "
+            "not from the mailbox you named."
+        )
+    return out
 
 
 # ── Attachments / artifacts ──────────────────────────────────────────────────
@@ -1420,9 +1479,15 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
     confirmation card before sending."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (
+            f"No connected mailbox has the id {account_id}. Call list_accounts "
+            "and use the mailbox that holds the draft."
+        )
     if not await request_confirmation(
         title="Send this draft?",
-        detail="Send the saved draft now? (Drafts → Sent)",
+        detail=f"From {sender} · Send the saved draft now? (Drafts → Sent)",
     ):
         return "Send cancelled — the draft was not sent."
     await _post(

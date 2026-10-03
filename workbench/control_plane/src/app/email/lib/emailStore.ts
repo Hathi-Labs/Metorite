@@ -289,6 +289,9 @@ interface EmailState {
   // UI
   composeOpen: boolean;
   composeDefaults: {
+    /** The mailbox that sends. A reply carries the mailbox of the mail it
+     *  answers. Absent = the selected mailbox (EM-T8a, D-EM-20). */
+    accountId?: string;
     to: string;
     subject: string;
     replyToBody?: string;
@@ -369,7 +372,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { to: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */
@@ -1018,6 +1021,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const email = await api.getEmail(id);
       // A late-arriving fetch must not clobber a newer selection.
       if (get().selectedEmailId !== id) return;
+      // A mail of ANOTHER mailbox (a chat card's "Open in inbox") opens in its
+      // own mailbox. The view switches first, so the sidebar, the folders and
+      // every act name the mailbox that holds the mail (EM-T8a, MB-3).
+      // `selectAccount` clears the selection, so the mail is set after it.
+      if (email.accountId && email.accountId !== get().selectedAccountId &&
+          get().accounts.some((a) => a.id === email.accountId)) {
+        get().selectAccount(email.accountId);
+        set({ selectedEmailId: id, viewerCommand: null });
+      }
       set({ selectedEmailOverride: email });
     } catch {
       set({ error: "Couldn't open that email." });
@@ -1381,6 +1393,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       set({
         composeOpen: true,
         composeDefaults: {
+          accountId: p.accountId,
           to: p.to.join(", "),
           subject: p.subject,
           replyToBody: main,

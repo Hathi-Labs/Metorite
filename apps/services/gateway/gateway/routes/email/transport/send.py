@@ -111,13 +111,22 @@ async def send_email(
     background: BackgroundTasks,
     user: UserContext = Depends(get_current_user),
 ):
-    """Send a new email from a connected account."""
+    """Send a new email from a connected account.
+
+    A reply names the mail it answers in ``reply_to_message_id``, as its
+    provider id or as its local id. That mail must be in the sending mailbox,
+    or the route answers 404 before any provider call (EM-T8a, D-EM-19,
+    MB-6). A local id becomes the provider id here, so a chat reply threads
+    (MB-5).
+    """
     async with _tenant_session() as db:
         # Ownership check + auth + rotated-cred persist all live in the session
         # helper (401 on auth failure, 404 on a foreign account).
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
+            reply_pmid, reply_thread_id = await _reply_target(
+                db, req.account_id, req.reply_to_message_id)
             attachments: list[dict] | None = None
             if req.attachments:
                 import base64 as _b64
@@ -154,21 +163,12 @@ async def send_email(
                 (sig_row.signature if sig_row else "") or "",
                 req.body_text, req.body_html)
 
-            # Resolve the conversation id of the message being replied to so the
-            # provider threads the reply. ``reply_to_message_id`` from the client
-            # is a provider *message* id; Gmail needs the *thread* id (passing a
-            # message id as threadId fails to thread — the "separate email"
-            # bug), while Outlook still replies via the message id. Look it up
-            # once and hand both to the provider, which uses whichever it needs.
-            reply_thread_id: str | None = None
-            if req.reply_to_message_id:
-                trow0 = (await db.execute(text(
-                    "SELECT thread_id FROM email_messages "
-                    "WHERE account_id = :aid AND provider_message_id = :pmid"
-                ), {"aid": req.account_id,
-                    "pmid": req.reply_to_message_id})).fetchone()
-                reply_thread_id = trow0.thread_id if trow0 else None
-
+            # ``_reply_target`` resolved the conversation id of the message
+            # being replied to, so the provider threads the reply. Gmail needs
+            # the *thread* id (passing a message id as threadId fails to
+            # thread — the "separate email" bug), while Outlook still replies
+            # via the message id. Both go to the provider, which uses whichever
+            # it needs.
             msg_id = await sess.provider.send_message(
                 to=req.to,
                 subject=req.subject,
@@ -176,7 +176,7 @@ async def send_email(
                 body_html=send_html,
                 cc=req.cc,
                 bcc=req.bcc,
-                reply_to_message_id=req.reply_to_message_id,
+                reply_to_message_id=reply_pmid,
                 attachments=attachments,
                 thread_id=reply_thread_id,
             )
@@ -207,6 +207,35 @@ async def send_email(
                 pass
 
         return {"id": msg_id, "ok": True}
+
+
+async def _reply_target(
+    db, account_id: str, reply_to: str | None,
+) -> tuple[str | None, str | None]:
+    """The provider id and the thread id of the mail a send answers.
+
+    ``reply_to`` is the provider id or the local id of a mail IN THE SENDING
+    MAILBOX. Anything else answers 404, so a reply never asks the provider to
+    answer a mail of another mailbox (EM-T8a, D-EM-19, MB-6). A new message
+    has no ``reply_to`` and gets ``(None, None)``.
+    """
+    if not reply_to:
+        return None, None
+    row = (await db.execute(text(
+        "SELECT provider_message_id, thread_id FROM email_messages "
+        "WHERE account_id = CAST(:aid AS uuid) "
+        "AND (provider_message_id = :rid OR id::text = :rid) "
+        "ORDER BY (provider_message_id = :rid) DESC LIMIT 1"
+    ), {"aid": account_id, "rid": reply_to})).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "The mail this reply answers is not in the sending mailbox. "
+                "Reply from the mailbox that received it."
+            ),
+        )
+    return row.provider_message_id, row.thread_id
 
 
 class ImportArtifactRequest(BaseModel):

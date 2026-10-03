@@ -121,6 +121,15 @@ async def oauth_authorize(
     ``login_hint`` query replaces it only when it parses as an address, and
     a malformed one is dropped (EM-T3a item 3).
 
+    **One more mailbox (EM-T8a, D-EM-26, MB-1).** When the member already has
+    a mailbox of this provider in this organization and the client sent no
+    hint, the URL carries ``prompt=select_account`` and no ``login_hint``.
+    The default hint is the sign-in address of the member, which is the
+    address of the first mailbox. Microsoft then signs that mailbox in again
+    and the callback takes the reconnect path, so the member could never add
+    a second one. A reconnect still sends the mailbox address as its hint,
+    and a client hint always wins.
+
     ``import_months`` is the import range of a new mailbox, 0 to 6 months, and
     1 when absent (EM-T6a, D-EM-11). Any other value answers 400 before the
     route signs a state. The state carries it to the callback.
@@ -166,7 +175,11 @@ async def oauth_authorize(
             detail="The connect request is too long or malformed.",
         ) from None
 
-    hint = _login_hint(login_hint) or _login_hint(user.email)
+    client_hint = _login_hint(login_hint)
+    another = client_hint is None and await _member_has_mailbox(
+        str(user.organization_id), user.email.strip().lower(), provider,
+    )
+    hint = None if another else (client_hint or _login_hint(user.email))
     app = oauth_app(provider)
     if not app.client_id:
         raise HTTPException(status_code=400, detail=_NOT_CONFIGURED[provider])
@@ -181,7 +194,7 @@ async def oauth_authorize(
         params.update({
             "scope": " ".join(GMAIL_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "consent select_account" if another else "consent",
         })
     else:
         # The authority is always `common`, so a sign-in tenant cannot make
@@ -189,9 +202,13 @@ async def oauth_authorize(
         # provider asks for on refresh, so the two legs cannot drift.
         base = f"{MICROSOFT_OAUTH_BASE}/authorize"
         params["scope"] = " ".join(GRAPH_SCOPES)
+        if another:
+            # One more mailbox: Microsoft must ask which account, or it signs
+            # in the account the browser holds (EM-T8a, D-EM-26).
+            params["prompt"] = "select_account"
     if hint:
         # A hint, never an identity: the callback still binds the member of
-        # the session. No `prompt=select_account` (EM-T3a item 3).
+        # the session. A first connect sends no prompt (EM-T3a item 3).
         params["login_hint"] = hint
     auth_url = f"{base}?{urlencode(params)}"
 
@@ -425,6 +442,26 @@ async def _verified_claims(
         _log.warning("email.oauth_org_mismatch", provider=provider)
         return None
     return claims
+
+
+async def _member_has_mailbox(org: str, member: str, provider: str) -> bool:
+    """True when ``member`` already has a mailbox of ``provider`` in ``org``.
+
+    The authorize leg asks this to choose between the sign-in hint of a first
+    connect and the account picker of one more mailbox (EM-T8a, D-EM-26).
+    ``member`` is in lower case, as in :func:`_save_account`. One block, and
+    no provider I/O inside it.
+    """
+    async with _tenant_session(org) as db:
+        row = (await db.execute(
+            text(
+                """SELECT 1 FROM email_accounts
+                   WHERE lower(user_id) = :member AND provider = :provider
+                   LIMIT 1"""
+            ),
+            {"member": member, "provider": provider},
+        )).fetchone()
+    return row is not None
 
 
 async def _save_account(

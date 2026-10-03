@@ -40,6 +40,7 @@ import {
 } from "./lib/connect";
 import { firstSyncSurface, importProgress, onboardingStage } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
+import { ownAddresses, replyRecipients } from "./lib/mailbox";
 import { isSearchActive } from "./lib/searchFilters";
 
 export default function EmailPage() {
@@ -117,6 +118,9 @@ export default function EmailPage() {
     softRefresh,
     replaceAccount,
   } = useEmailStore();
+  // The mailbox that the composer sends from: the mailbox of the mail a
+  // reply answers, else the selected one (EM-T8a, D-EM-20).
+  const composeAccountId = composeDefaults?.accountId || selectedAccountId;
 
   // Fetch on mount
   useEffect(() => {
@@ -463,10 +467,15 @@ export default function EmailPage() {
         case "mark-read":
           updateEmail(email.id, { isRead: true });
           break;
+        // A reply and a forward send from the mailbox of the mail, never from
+        // the selected view (EM-T8a, D-EM-19, edge case 25).
         case "reply": {
           const quoteSrc = email.bodyText || email.snippet || "";
+          const { to } = replyRecipients(
+            email, "reply", ownAddresses(useEmailStore.getState().accounts));
           openCompose({
-            to: email.from.email,
+            accountId: email.accountId || undefined,
+            to: to.join(", "),
             subject: email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
             quote: `On ${email.receivedAt}, ${email.from.name} wrote:\n> ${quoteSrc.replace(/\n/g, "\n> ")}`,
             replyToMessageId: email.providerMessageId,
@@ -475,9 +484,13 @@ export default function EmailPage() {
         }
         case "reply-all": {
           const quoteSrc = email.bodyText || email.snippet || "";
-          const allTo = [email.from.email, ...(email.to || []).filter(t => t.email !== email.from.email).map(t => t.email)].join(", ");
+          // Each address of the member leaves the recipients (D-EM-27, MB-7).
+          const { to, cc } = replyRecipients(
+            email, "reply-all", ownAddresses(useEmailStore.getState().accounts));
           openCompose({
-            to: allTo,
+            accountId: email.accountId || undefined,
+            to: to.join(", "),
+            cc: cc.length ? cc.join(", ") : undefined,
             subject: email.subject.startsWith("Re:") ? email.subject : `Re: ${email.subject}`,
             quote: `On ${email.receivedAt}, ${email.from.name} wrote:\n> ${quoteSrc.replace(/\n/g, "\n> ")}`,
             replyToMessageId: email.providerMessageId,
@@ -487,6 +500,7 @@ export default function EmailPage() {
         case "forward": {
           const quoteSrc = email.bodyText || email.snippet || "";
           openCompose({
+            accountId: email.accountId || undefined,
             to: "",
             subject: email.subject.startsWith("Fwd:") ? email.subject : `Fwd: ${email.subject}`,
             quote: `---------- Forwarded message ----------\nFrom: ${email.from.name} <${email.from.email}>\nDate: ${email.receivedAt}\nSubject: ${email.subject}\n\n${quoteSrc}`,
@@ -1102,11 +1116,11 @@ export default function EmailPage() {
       <ComposePanel
         open={composeOpen}
         onClose={closeCompose}
-        accountId={selectedAccountId ?? ""}
+        accountId={composeAccountId ?? ""}
         onSend={async (params) => {
-          if (!selectedAccountId) return;
+          if (!composeAccountId) return;
           await sendEmail({
-            accountId: selectedAccountId,
+            accountId: composeAccountId,
             ...params,
           });
         }}

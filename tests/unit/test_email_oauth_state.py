@@ -45,6 +45,14 @@ def _secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
     monkeypatch.setenv("MSFT_OAUTH_CLIENT_ID", "test-client-id")
 
+    # The authorize leg asks the database whether the member already has a
+    # mailbox (EM-T8a). These tests run with no database, so the member has
+    # none. ``test_email_multi_inbox.py`` fences the other answer.
+    async def _no_mailbox(org, member, provider):
+        return False
+
+    monkeypatch.setattr(oauth, "_member_has_mailbox", _no_mailbox)
+
 
 def _state(**over) -> str:
     kw = {"org": ORG, "member": MEMBER, "provider": "microsoft", "redirect_after": ""}
