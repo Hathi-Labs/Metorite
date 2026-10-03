@@ -17,7 +17,10 @@ R7 fences named here:
   counts equal the old per-account ``COUNT``. Hermetic, and R8 under FORCE RLS
   with a mailbox of another member and a mailbox in another organization.
 * ``email-226-fresh-and-rerun``: 226 applies to a fresh ladder database, and a
-  second run changes nothing. It adds no foreign key on ``last_message_id``.
+  second run changes nothing. It adds no index and no foreign key on
+  ``email_thread_status.last_message_id``: the review of 2026-10-03 took the
+  status index out of scope, because no query filters on that column and the
+  status upsert rewrites it on almost every write.
 * ``email-thread-read-uses-index``: ``EXPLAIN`` of the thread read that
   ``build_thread_context`` sends names ``idx_email_messages_thread_received``
   on a seeded table, with no Sort node (R8, as the non-privileged role).
@@ -70,6 +73,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _ROOT / "infra" / "postgres"
 
 THREAD_INDEX = "idx_email_messages_thread_received"
+#: The status index that §10.4.6 item 4 named and the review took out of
+#: scope. 226 must not create it, under this name or any other.
 STATUS_INDEX = "idx_email_thread_status_last_message"
 
 
@@ -569,6 +574,14 @@ class TestUnreadCountsOnARealDatabase:
                     old = {b: int((await db.execute(
                         text(_OLD_UNREAD_SQL), {"account_id": b})).scalar() or 0)
                         for b in boxes}
+                    # The helper by itself. ``list_accounts`` looks up its own
+                    # rows only, so a count of another member's mailbox would
+                    # not show in its answer. Here it shows.
+                    direct = await accounts._unread_counts(db, OWNER)
+            assert set(direct) <= set(boxes), direct
+            assert other not in direct, "the count read another member's mailbox"
+            assert elsewhere not in direct
+            assert direct == {boxes[0]: 2, boxes[2]: 5}
             got = {a.id: a.unread_count for a in listed}
             assert got == {boxes[0]: 2, boxes[1]: 0, boxes[2]: 5}
             assert got == old, "the grouped count differs from the old count"
@@ -624,6 +637,16 @@ def _index_def(conn, name: str) -> str | None:
         "SELECT indexdef FROM pg_indexes WHERE indexname = :n"), {"n": name}).scalar()
 
 
+def _last_message_indexes(conn) -> list[str]:
+    """Each index on ``email_thread_status`` with ``last_message_id`` in it."""
+    return [r[0] for r in conn.execute(text(
+        "SELECT ic.relname FROM pg_index i "
+        "JOIN pg_class ic ON ic.oid = i.indexrelid "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        "WHERE i.indrelid = 'email_thread_status'::regclass "
+        "AND a.attname = 'last_message_id'")).all()]
+
+
 def _last_message_fks(conn) -> list[str]:
     return [r[0] for r in conn.execute(text(
         "SELECT c.conname FROM pg_constraint c "
@@ -632,7 +655,7 @@ def _last_message_fks(conn) -> list[str]:
         "AND a.attname = 'last_message_id'")).all()]
 
 
-def test_226_is_two_plain_idempotent_index_builds() -> None:
+def test_226_is_one_plain_idempotent_index_build() -> None:
     sql = _migration_226().read_text(encoding="utf-8")
     code = "\n".join(line for line in sql.splitlines()
                      if not line.lstrip().startswith("--"))
@@ -640,8 +663,6 @@ def test_226_is_two_plain_idempotent_index_builds() -> None:
     assert statements == [
         f"CREATE INDEX IF NOT EXISTS {THREAD_INDEX} ON email_messages "
         "(account_id, thread_id, received_at DESC NULLS LAST)",
-        f"CREATE INDEX IF NOT EXISTS {STATUS_INDEX} ON email_thread_status "
-        "(last_message_id)",
     ]
 
 
@@ -688,16 +709,15 @@ class TestTheMigration:
         url, eng = fresh_db
         with eng.connect() as c:
             assert _index_def(c, THREAD_INDEX) is None
-            assert _index_def(c, STATUS_INDEX) is None
 
         _run_226(url)
         with eng.connect() as c:
             assert _index_def(c, THREAD_INDEX) == (
                 f"CREATE INDEX {THREAD_INDEX} ON public.email_messages USING btree "
                 "(account_id, thread_id, received_at DESC NULLS LAST)")
-            assert _index_def(c, STATUS_INDEX) == (
-                f"CREATE INDEX {STATUS_INDEX} ON public.email_thread_status "
-                "USING btree (last_message_id)")
+            assert _index_def(c, STATUS_INDEX) is None
+            assert _last_message_indexes(c) == [], (
+                "226 must not index email_thread_status.last_message_id")
             assert _last_message_fks(c) == [], "226 must not add a foreign key"
             before = _shape(c)
 
@@ -705,13 +725,13 @@ class TestTheMigration:
         with eng.connect() as c:
             assert _shape(c) == before, "a second run of 226 changed something"
 
-    def test_the_promoted_catalog_has_both_and_a_rerun_changes_nothing(
+    def test_the_promoted_catalog_has_the_index_and_a_rerun_changes_nothing(
         self, promoted,  # noqa: F811
     ):
         admin = promoted.admin_engine
         with admin.connect() as c:
             assert _index_def(c, THREAD_INDEX) is not None
-            assert _index_def(c, STATUS_INDEX) is not None
+            assert _last_message_indexes(c) == []
             assert _last_message_fks(c) == []
             before = _shape(c)
         _run_226(admin.url)
