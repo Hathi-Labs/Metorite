@@ -4291,9 +4291,8 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 
 ##### EM-T8f-2 — the settings UI (after EM-T8f-1)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-settings-ui`. The branch sits
-on `email-mailbox-settings` (EM-T8f-1), because this slice calls the copy route and reads
-`created_at`. No migration and no backend change.
+**Status.** ✅ MERGED #606 (2026-10-03), after EM-T8f-1 #605, whose copy route and `created_at` it
+calls. No migration and no backend change.
 
 **As-built notes.**
 
