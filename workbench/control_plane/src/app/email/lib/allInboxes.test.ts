@@ -177,11 +177,14 @@ describe("All inboxes on the page and in the list", () => {
     expect(list).not.toMatch(/setLabelColor\(name, c\)/);
   });
 
-  // `email-all-automation-names-mailbox` (F4, F5): automation and the chat act
-  // on one mailbox, so opening one leaves All inboxes for a mailbox the
-  // switcher names, the mailbox of the open mail first.
-  it("opens automation and the chat in a named mailbox", () => {
-    expect(page).toContain("if (!automationFeature || !viewAll) return;");
+  // `email-all-automation-names-mailbox` (F4, F5): automation acts on one
+  // mailbox, so opening it leaves All inboxes for a mailbox the switcher
+  // names, the mailbox of the open mail first. EM-T8e-3 rewrote the chat half:
+  // the chat has its own All inboxes scope, so the move skips it
+  // (`email-chat-keeps-all-inboxes` in `chatScope.test.ts`).
+  it("opens automation in a named mailbox", () => {
+    expect(page).toContain(
+      'if (!automationFeature || automationFeature === "chat" || !viewAll) return;');
     expect(page).toContain("const target = open?.accountId || defaultAccountId || st.selectedAccountId;");
     expect(page).toContain("st.selectAccount(target);");
   });

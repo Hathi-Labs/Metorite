@@ -3854,6 +3854,33 @@ tells the model to leave `account_id` out, and only EM-T8e-2 makes that argument
 
 ##### EM-T8e-3 — the chat scope (UI)
 
+**Status.** 🔨 BUILT, not merged (2026-10-03). The branch is `email-chat-scope`. Merge it after
+EM-T8e-2, because the All inboxes persona tells the model to leave `account_id` out.
+
+**As built (2026-10-03).**
+
+- **The decisions are pure functions.** `lib/chatScope.ts` holds the scope of the chat, the
+  options of the picker and the settings read. Vitest runs in node and cannot render
+  `EmailAssistantChat`, so a source scan checks the wiring.
+- **The picker (item 1).** "All inboxes" comes first, for two or more mailboxes. Each mailbox
+  shows as "label · address". When the label is the address, the address shows once. A pick
+  stays while the page scope stays. When the page scope changes, the chat follows the page.
+- **The persona (item 2).** `chatMailboxName()` makes "label · address" from `mailboxLabel()`.
+  It reads the store shape and the gateway shape, so `chat/page.tsx` gets the MB-15 fix with no
+  change. The list writes each mailbox as "label · address (account_id <id>)" in both scopes.
+  All inboxes ignores `selectedAccountId` and `settings`. An open mail names its mailbox.
+- **The fallback (item 3)** calls `pickInitialView`. The note "the chat says so" is not built.
+- **The page (item 4)** passes the prop `pageScope`, which is `ALL_INBOXES` or a mailbox id. The
+  prop `selectedAccountId` is gone.
+- **Item 5** is a test only. No card file changed.
+
+**Fences.** `src/app/email/lib/chatScope.test.ts` names the five fence ids. A mutation run killed
+13 of 13 mutants. `allInboxes.test.ts` keeps the automation half of
+`email-all-automation-names-mailbox`.
+
+**Not checked.** This session had no browser. Nobody looked at the chat in light mode, at compact
+density or under a changed accent.
+
 **Scope.** `workbench/control_plane/src/app/email/` (`EmailAssistantChat.tsx`,
 `lib/emailAssistantPersona.ts` and `page.tsx`) and tests. No agent file and no gateway file. Not
 in scope: `src/components/AgentChat.tsx`, which draws the picker, `src/components/email/
