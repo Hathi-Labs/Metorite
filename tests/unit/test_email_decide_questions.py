@@ -255,7 +255,8 @@ def _pin_db(rows: list[Any] | None = None) -> AsyncMock:
 
 async def _cold(monkeypatch, message_id: str | None = MID):
     _llm(monkeypatch, snd, {"cold": True, "reason": "r"})
-    return await snd._llm_is_cold(EMAIL, account_id=ACC, message_id=message_id)
+    return await snd._llm_is_cold(
+        EMAIL, blocker="LABEL", account_id=ACC, message_id=message_id)
 
 
 async def _pin(monkeypatch, message_id: str | None = MID):

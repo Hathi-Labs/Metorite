@@ -2,9 +2,10 @@
 
 <!-- ste-tier: strict -->
 
-**Status: ACTIVE. WS-43t1 is built and dark (2026-10-03, PR #595). Every
-other slice is spec only.** Owner decisions, 2026-10-03. Board row **WS-43**.
-This spec records **D82**, **D83** and **D84**.
+**Status: ACTIVE. WS-43k is built (2026-10-03). WS-43t1 is built and dark
+(2026-10-03, PR #595). Every other slice is spec only.** Owner decisions,
+2026-10-03. Board row **WS-43**. This spec records **D82**, **D83** and
+**D84**.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
 PR #584 applied three reviews on the same day. **Amended 2026-10-03 by D84**
@@ -1582,10 +1583,16 @@ uv run pytest tests/unit/test_sandbox_broker_seam.py \
 
 **Gate.** **OWNER-GATE** to merge (WS43-G7). It removes the fallback.
 
-### WS-43k — The no-Copilot ratchet fence 🔲
+### WS-43k — The no-Copilot ratchet fence ✅ BUILT 2026-10-03
 
 **Scope.** `tests/unit/test_no_copilot_sdk.py` (WS43-F15), as §15.6 says. No
 product code changes.
+
+**As built.** The parse at `main` `4de997c9` found the same 9 files as the
+table of §15.6, and the allowlist names them. The test also catches the
+identifier `github_copilot`, a module path with a `github_copilot` part, and a
+class or function with one of the two names. A relative import such as
+`from .copilot import router` is the Notes copilot, so it does not count.
 
 **Done when:**
 
@@ -2300,7 +2307,7 @@ backup before the production apply.
 
 ### 15.8 What D84 does not do
 
-- It builds nothing. Every slice is 🔲.
+- It builds nothing. Each slice heading carries its own status mark.
 - It does not edit the `.env` of the box. A `COPILOT_*` variable that no code
   reads does no harm. To delete one is owner housekeeping under the
   `env-write` gate.

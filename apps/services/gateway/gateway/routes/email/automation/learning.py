@@ -68,7 +68,7 @@ _PIN_FALSE = ("A person, a sender of mixed content, or a sender that can send "
 def _sender_pin_question(
     sender: str, rule: dict[str, Any], rows: list[Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The ``decide`` request for the sender pin (EM-T5b-1, shadow only).
+    """The ``decide`` request for the sender pin (EM-T5b-1, ``shadow`` and ``on``).
 
     The state holds facts about the sender and its recent mail. The rule
     name and text go in ``criteria.true``, never in the state. Both computed
@@ -76,7 +76,7 @@ def _sender_pin_question(
     ``engine._NO_REPLY_PREFIXES``.
     """
     # Imported here: `cleanup` and `engine` sit above this module.
-    from acb_llm import BooleanQuestion  # shadow mode only
+    from acb_llm import BooleanQuestion  # `shadow` and `on` only
     from gateway.routes.email.automation.cleanup import _SHARED_DOMAINS
     from gateway.routes.email.automation.engine import _NO_REPLY_PREFIXES
 
@@ -107,6 +107,17 @@ def _sender_pin_question(
     )}
 
 
+def _read_pin(decision: Any) -> tuple[bool, dict[str, Any]]:
+    """The pin verdict that a ``decide`` answer gives, in ``on``.
+
+    A pin is permanent, so it needs :data:`_PIN_THRESHOLD` or above, and
+    nothing below the bar writes a pattern.
+    """
+    probability = float(decision["always"].probability)
+    pin = probability >= _PIN_THRESHOLD
+    return pin, {"p_always": probability, "pin": pin}
+
+
 async def _ai_confirms_sender_pattern(
     db: Any, account_id: str, sender: str, rule: dict[str, Any],
     *, message_id: str | None = None,
@@ -127,6 +138,11 @@ async def _ai_confirms_sender_pattern(
 
     Fails CLOSED. No model, no samples, unparseable answer, anything unexpected
     → no pattern. Not learning is free; a wrong pin is silent and permanent.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides and no LLM call is
+    made. A pin needs :data:`_PIN_THRESHOLD` (0.9) or above. With no decision
+    there is no pin (§10.4.8 item 6). The call names the mailbox owner, for
+    a deployment Router key.
     """
     rows = (await db.execute(text(
         """SELECT subject, snippet FROM email_messages
@@ -137,6 +153,17 @@ async def _ai_confirms_sender_pattern(
     ), {"aid": account_id, "sender": sender})).fetchall()
     if len(rows) < 3:
         return False
+
+    if decide_features.mode_for("email.sender_pin") == "on":
+        # Imported here: the engine sits above this module.
+        from gateway.routes.email.automation.engine import _decide_member
+
+        pinned = await decide_features.ask(
+            "email.sender_pin", account_id=account_id, message_id=message_id,
+            build=lambda: _sender_pin_question(sender, rule, list(rows)),
+            read=_read_pin,
+            member=await _decide_member(db, account_id, "email.sender_pin"))
+        return pinned is True
 
     samples = "\n".join(
         f"- {(r.subject or '(no subject)')[:120]}"
