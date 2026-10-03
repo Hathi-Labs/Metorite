@@ -46,7 +46,7 @@ import {
 import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
 import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
-import { ownAddresses, replyRecipients } from "./lib/mailbox";
+import { attentionMailbox, ownAddresses, pooledMailboxes, replyRecipients } from "./lib/mailbox";
 import { isSearchActive } from "./lib/searchFilters";
 
 export default function EmailPage() {
@@ -128,6 +128,7 @@ export default function EmailPage() {
     viewAll,
     selectAll,
     allFolderCounts,
+    setInAllInboxes,
   } = useEmailStore();
   // The mailbox that the composer sends from: the mailbox of the mail a
   // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
@@ -222,12 +223,13 @@ export default function EmailPage() {
 
   // Derived data
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  // The count of the header in All inboxes. A separate mailbox is not in All
+  // inboxes, so it does not count (EM-T8g-2 item 2).
+  const pooledCount = pooledMailboxes(accounts).length;
   // The mailbox that the reconnect banner names: the selected one, or in All
   // inboxes the first mailbox that needs it, so a second mailbox cannot fail
-  // out of sight (EM-T8d review).
-  const attentionAccount =
-    (viewAll ? accounts : selectedAccount ? [selectedAccount] : [])
-      .find((a) => a.syncStatus === "error" || authErrors[a.id]) ?? null;
+  // out of sight (EM-T8d review). A separate mailbox counts too (EM-T8g-2).
+  const attentionAccount = attentionMailbox({ viewAll, selectedAccountId, accounts, authErrors });
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
@@ -422,6 +424,15 @@ export default function EmailPage() {
     [refreshAccounts]
   );
 
+  // "Keep separate" and "Show in All inboxes" (EM-T8g-2 item 1). The store
+  // sends the PATCH, and in All inboxes it reads the list again.
+  const toggleSeparate = useCallback(
+    (id: string, pooled: boolean) => {
+      void setInAllInboxes(id, pooled);
+    },
+    [setInAllInboxes]
+  );
+
   const handleAddAccount = useCallback(() => {
     setShowAddModal(true);
   }, []);
@@ -459,6 +470,7 @@ export default function EmailPage() {
       onSetDefault={setDefaultAccount}
       onDisconnect={handleDisconnectRequest}
       onEditMailbox={handleEditMailbox}
+      onToggleSeparate={toggleSeparate}
       viewAll={viewAll}
       folderSums={allFolderCounts}
       onSelectAll={handleSelectAll}
@@ -778,6 +790,7 @@ export default function EmailPage() {
               onSetDefault={setDefaultAccount}
               onDisconnect={handleDisconnectRequest}
               onEditMailbox={handleEditMailbox}
+              onToggleSeparate={toggleSeparate}
               viewAll={viewAll}
               folderSums={allFolderCounts}
               onSelectAll={handleSelectAll}
@@ -908,7 +921,7 @@ export default function EmailPage() {
                 {/* The scope of the list, for two or more mailboxes (§11.4). */}
                 {accounts.length > 1 && (viewAll ? (
                   <span className="text-[11px] text-muted-foreground truncate flex-shrink-0">
-                    All inboxes · {accounts.length} mailboxes
+                    All inboxes · {pooledCount} mailboxes
                   </span>
                 ) : selectedAccount ? (
                   <>
@@ -982,7 +995,7 @@ export default function EmailPage() {
                   {folderLabel(selectedFolder)}
                 </div>
                 <div className="text-[10px] text-muted-foreground truncate">
-                  {viewAll ? `All inboxes · ${accounts.length} mailboxes` : selectedAccount?.emailAddress ?? ""}
+                  {viewAll ? `All inboxes · ${pooledCount} mailboxes` : selectedAccount?.emailAddress ?? ""}
                 </div>
               </div>
             </button>

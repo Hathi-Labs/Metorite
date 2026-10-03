@@ -5,7 +5,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Email } from "../lib/types";
 import { timeLabel } from "../lib/utils";
-import { useEmailStore, isRealFolder, foldersInScope, scopeBusy } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
@@ -154,9 +154,12 @@ export function EmailList({
   // Held in the store so the desktop unified toolbar shares it; aliased to the
   // local names the rows / select-all / context-menu code below already use.
   const selected = selectedIds;
+  // The checked rows of the list on screen. Each bulk act and each count reads
+  // these, never a check whose row left the list (EM-T8g-2 review round 2).
+  const checked = checkedRows({ emails, selectedIds });
   const toggleOne = toggleEmailSelected;
   const allSelected = emails.length > 0 && emails.every((e) => selected.has(e.id));
-  const someSelected = selected.size > 0 && !allSelected;
+  const someSelected = checked.length > 0 && !allSelected;
   const toggleAll = () =>
     allSelected ? clearEmailSelection() : setSelectedEmails(emails.map((e) => e.id));
   const clearSelection = clearEmailSelection;
@@ -171,13 +174,13 @@ export function EmailList({
     const y = Math.min(py, window.innerHeight - menuH);
     // Right-clicking a row that's part of a multi-selection acts on the whole
     // selection (Windows/Outlook behaviour); otherwise it's a single-email menu.
-    const bulk = selected.has(email.id) && selected.size > 1;
+    const bulk = checked.includes(email.id) && checked.length > 1;
     setCtx({
       x: Math.max(8, x),
       y: Math.max(8, y),
       email,
       bulk,
-      count: bulk ? selected.size : 1,
+      count: bulk ? checked.length : 1,
     });
   };
   const openContext = (e: React.MouseEvent, email: Email) => {
@@ -284,10 +287,10 @@ export function EmailList({
           • multi-select   → bulk-action bar
           • one email open → New + per-message actions
           • nothing open   → New + message count */}
-      {isMobile && (selected.size > 0 ? (
+      {isMobile && (checked.length > 0 ? (
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border flex-shrink-0 bg-primary/10 overflow-x-auto scrollbar-hide">
           <span className="text-[10px] font-medium text-foreground px-1">
-            {selected.size} selected
+            {checked.length} selected
           </span>
           <div className="flex-1" />
           <ToolbarBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdate({ isRead: true })} />
@@ -366,7 +369,7 @@ export function EmailList({
             <CheckboxSquare checked={allSelected} indeterminate={someSelected} />
           </button>
           <span className="text-[10px] text-muted-foreground select-none">
-            {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            {checked.length > 0 ? `${checked.length} selected` : "Select all"}
           </span>
         </div>
       )}
@@ -602,22 +605,22 @@ export function EmailList({
           appliedCategories={ctx.bulk ? new Set() : new Set(ctx.email.categories)}
           onApplyLabel={(name, add) =>
             ctx.bulk
-              ? applyLabelBulk([...selected], name, add)
+              ? applyLabelBulk(checked, name, add)
               : applyLabel(ctx.email.id, name, add)
           }
           onClearCategories={() =>
-            clearCategories(ctx.bulk ? [...selected] : [ctx.email.id])
+            clearCategories(ctx.bulk ? checked : [ctx.email.id])
           }
           onClose={() => setCtx(null)}
           snoozedView={selectedFolder === "snoozed"}
           onSnooze={(until) =>
-            (ctx.bulk ? [...selected] : [ctx.email.id]).forEach((id) =>
+            (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
               snoozeEmail(id, until),
             )
           }
           onReply={(k) => onToolbarAction(k, ctx.email)}
           onAddToTasks={() =>
-            (ctx.bulk ? [...selected] : [ctx.email.id]).forEach((id) =>
+            (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
               captureEmailToTasks(id),
             )
           }

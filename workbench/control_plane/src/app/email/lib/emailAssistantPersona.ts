@@ -18,9 +18,11 @@
  * passes no scope and stays on one mailbox. Fence: `chatScope.test.ts`.
  */
 
-import { mailboxLabel } from "./mailbox";
+import { mailboxLabel, pooledMailboxes, type PoolFlag } from "./mailbox";
 
-export interface PersonaAccount {
+/** `PoolFlag` carries "Keep separate" in the store shape (EM-T8g-2, D-EM-28).
+ *  The All inboxes persona lists only the pooled mailboxes. */
+export interface PersonaAccount extends PoolFlag {
   id: string;
   /** The raw stored label. Never drawn: two Outlook mailboxes share "Outlook"
    *  (MB-15). The display label wins. */
@@ -105,10 +107,14 @@ export function buildEmailAssistantPersona(opts: {
       "manage the inbox entirely by chat using your tools.",
   ];
 
-  if (accounts.length > 0) {
+  // All inboxes lists only the pooled mailboxes. A separate mailbox stays out
+  // of the chat in All inboxes (EM-T8g-2 item 5, D-EM-28). One mailbox in
+  // scope lists each mailbox, so the member can still name another one.
+  const listed = allInboxes ? pooledMailboxes(accounts) : accounts;
+  if (listed.length > 0) {
     parts.push(
       "Connected accounts:\n" +
-        accounts
+        listed
           .map((a) => `• ${chatMailboxName(a)} (account_id ${a.id})`)
           .join("\n"),
     );
