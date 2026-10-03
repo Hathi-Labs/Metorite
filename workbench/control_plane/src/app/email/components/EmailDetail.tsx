@@ -7,6 +7,7 @@ import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
 import { useEmailStore, isRealFolder } from "../lib/emailStore";
 import { mailboxOf, ownAddresses, replyRecipients } from "../lib/mailbox";
+import { MailboxChip } from "./MailboxChip";
 import {
   fetchFullBody, getEmail, listThread, createRule,
   fileToSendAttachment,
@@ -413,8 +414,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The address of the mailbox that sends (the mailbox of the mail), for the
   // optimistic sent row. Reply-all leaves out EVERY address of the member, not
   // only this one (D-EM-27, MB-7).
-  const sendingAddress = accounts
-    .find((a) => a.id === mailboxId)?.emailAddress?.toLowerCase();
+  const mailboxAccount = accounts.find((a) => a.id === mailboxId);
+  const sendingAddress = mailboxAccount?.emailAddress?.toLowerCase();
   const own = ownAddresses(accounts);
 
   /** Open the inline composer with recipients + a quoted body prefilled.
@@ -877,6 +878,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
           </div>
         </div>
+
+        {/* The mailbox that holds this mail, for a member with two or more
+            mailboxes (EM-T8b, §11.4 "Reading pane"). */}
+        {mailboxAccount && accounts.length > 1 && (
+          <div className="-mt-2 mb-4 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span>In</span>
+            <MailboxChip account={mailboxAccount} />
+            <span className="truncate">· to {mailboxAccount.emailAddress}</span>
+          </div>
+        )}
 
         {/* Categories / labels — rendered in their assigned colours */}
         {view.categories && view.categories.length > 0 && (

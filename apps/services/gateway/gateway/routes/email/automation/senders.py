@@ -1250,7 +1250,7 @@ def _cold_threshold(blocker: str) -> float:
     return _COLD_MOVE_THRESHOLD if _cold_blocker_moves(blocker) else _COLD_THRESHOLD
 
 
-_COLD_QUESTION ="Is the email in `email` cold outreach?"
+_COLD_QUESTION = "Is the email in `email` cold outreach?"
 _COLD_GUIDANCE = (
     "- Cold outreach is unsolicited sales, marketing or recruiting mail from "
     "someone with no relationship with the mailbox owner.",

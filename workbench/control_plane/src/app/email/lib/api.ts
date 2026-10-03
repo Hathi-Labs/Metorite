@@ -63,8 +63,12 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     provider: asProvider(raw.provider),
     emailAddress: String(raw.email_address ?? ""),
     label: String(raw.label ?? ""),
-    avatar: (String(raw.email_address ?? "?").charAt(0) || "?").toUpperCase(),
-    color: String(raw.avatar_color ?? "#6366f1"),
+    // EM-T8b. The chip draws these, never `avatar_color` (a hex value).
+    displayLabel: typeof raw.display_label === "string" && raw.display_label
+      ? raw.display_label : undefined,
+    defaultLabel: typeof raw.default_label === "string" && raw.default_label
+      ? raw.default_label : undefined,
+    colorSlot: optionalSlot(raw.color_slot),
     unreadCount: Number(raw.unread_count ?? 0),
     syncEnabled: Boolean(raw.sync_enabled ?? true),
     lastSyncedAt: raw.last_synced_at ? String(raw.last_synced_at) : undefined,
@@ -82,6 +86,12 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     importCount: optionalCount(raw.import_count),
     importEstimate: optionalCount(raw.import_estimate),
   };
+}
+
+/** A slot of 1 to 12, or null when the gateway sent null, or absent. */
+function optionalSlot(v: unknown): number | null | undefined {
+  if (v === null) return null;
+  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 12 ? v : undefined;
 }
 
 /** A non-empty string, or null when the gateway sent null, or absent. */
@@ -512,11 +522,14 @@ export async function setDefaultEmailAccount(id: string): Promise<EmailAccount> 
 
 export async function updateEmailAccount(
   id: string,
-  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone">>
+  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot">>
 ): Promise<EmailAccount> {
   // Map camelCase → snake_case for the backend PATCH
   const body: Record<string, unknown> = {};
   if (updates.label !== undefined) body.label = updates.label;
+  // EM-T8b: the slot of the mailbox chip, 1 to 12. A blank label above goes
+  // back to the default label of the gateway.
+  if (updates.colorSlot !== undefined && updates.colorSlot !== null) body.color_slot = updates.colorSlot;
   if (updates.syncEnabled !== undefined) body.sync_enabled = updates.syncEnabled;
   // EM-T6d item 11: true closes the guided setup for good (EM-T6a stores
   // `onboarding_done_at`). The handler keeps its owner predicate.
