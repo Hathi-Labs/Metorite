@@ -162,7 +162,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from orchestrator.sandbox_broker import start_sandbox_broker
 
         start_sandbox_broker()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("gateway.sandbox_broker_start_failed", error=str(exc)[:200])
 
     # Warm-clone every live agent that has a source (GitHub repo or local path)
