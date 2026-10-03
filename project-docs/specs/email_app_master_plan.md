@@ -5025,6 +5025,19 @@ npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme
 Then look at the switcher and the menu. Look in light mode, at compact density and under a
 changed accent.
 
+**Follow-ups from the re-verify of EM-T8g-1 (2026-10-04).** All are P3, and none blocked #608.
+
+- **The rule question in a separate chat.** A member with two pooled mailboxes and one separate
+  mailbox opens the chat of the separate one. An item 3 tool with no `account_id` then asks, and
+  the question lists only the two pooled mailboxes. It fails closed, because nothing binds. The
+  better question lists each mailbox and marks the separate one "(separate)".
+- **Two fence gaps.** The bulk scope `pooled_only=not req.message_ids` has a fence for the sender
+  filter only, not for `folder` or `older_than_days`. Four answers of the item 3 tools have no
+  fence for the mailbox name: `run_rules` with scope "new", the install without a reset,
+  "already installed", and the update path of `save_knowledge`.
+- **Doc slips.** The T8g-1 notes count 21 R8 cases, but 9 are R8 and 12 are hermetic. The T8g-1
+  Scope line names `list_senders` only, but round 1 also changes `bulk_action`.
+
 ##### EM-T8g-3 — "Also in" and the draft dedupe (after T8g-1, R8)
 
 **Gate.** 🟢 AGENT-SAFE · R8 · security review, because both read across the mailboxes of the
