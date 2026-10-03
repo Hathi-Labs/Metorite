@@ -21,11 +21,13 @@ Three halves:
 
 Mutations this suite catches (R7), each run red once by hand:
 
-* ``mount_list`` drops ``projects_mounts``: the mount test and the Docker test;
-* ``end_run`` keeps the dir: the run-end tests;
-* the ``await _end_sandbox_run()`` taken out of one ``finally``: the hook test;
+* ``mount_list`` drops ``projects_mounts``: the mount test;
+* ``end_run`` keeps the dir: the run-end test;
+* the ``await _end_sandbox_run()`` taken out of the stream ``finally``: the
+  hook test;
 * the route rule ``_is_other_thread_path`` answers ``False``: the route test;
-* the sweep subdirs gain ``.run``: the blob-store test.
+* the route's ``_safe_write`` writes with ``Path.write_bytes``: the route link
+  test.
 """
 from __future__ import annotations
 
