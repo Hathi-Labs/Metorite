@@ -23,8 +23,9 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import SlotPicker from "@/components/ui/SlotPicker";
 import ManagerFrame from "./ManagerFrame";
-import { CATEGORICAL_SLOTS, accentForSlot } from "@/lib/categorical";
+import { accentForSlot } from "@/lib/categorical";
 import { useEffect, useState } from "react";
 
 import type { ProjectRow } from "../lib/api";
@@ -136,29 +137,7 @@ export default function SpaceSettings({
           {/* Twelve themed slots, never a hex field. Each swatch draws in
               the hue the ACTIVE theme gives that slot, so what you pick here
               is what every theme will honour. */}
-          <div
-            role="radiogroup"
-            aria-label="Icon colour"
-            className="flex flex-wrap gap-1.5"
-          >
-            {Array.from({ length: CATEGORICAL_SLOTS }, (_, index) => (
-              <button
-                key={index}
-                type="button"
-                role="radio"
-                aria-checked={index === slot}
-                aria-label={`Colour ${index + 1}`}
-                onClick={() => setSlot(index)}
-                className={`flex h-8 w-8 items-center justify-center rounded-md tech-transition ${
-                  index === slot ? "ring-2 ring-primary" : "hover:bg-muted"
-                }`}
-              >
-                <span
-                  className={`h-4 w-4 rounded-full ${accentForSlot(index).dot}`}
-                />
-              </button>
-            ))}
-          </div>
+          <SlotPicker value={slot} onChange={setSlot} label="Icon colour" />
         </div>
 
         <div className="space-y-1.5">

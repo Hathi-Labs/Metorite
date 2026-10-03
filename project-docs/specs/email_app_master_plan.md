@@ -19,7 +19,7 @@
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3233,7 +3233,8 @@ reading pane.
 address, in this order:
 
 1. A consumer domain (`outlook.com`, `hotmail.com`, `live.com`, `msn.com`, `gmail.com`,
-   `yahoo.com`, `icloud.com`) gives "Personal".
+   `yahoo.com`, `icloud.com` and others) gives "Personal". The list of record is
+   `CONSUMER_DOMAINS` in `routes/email/mailbox_identity.py`.
 2. Any other domain gives its first part, with a capital letter. `vj@fracktal.in` gives
    "Fracktal".
 3. When two mailboxes of the member get the same label, each one takes its local part instead.
@@ -3326,7 +3327,7 @@ wrong-sender defects first.
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
-| **EM-T8b** | 🟢 AGENT-SAFE | **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
+| **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
@@ -3389,6 +3390,8 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 
 #### 11.7.2 EM-T8b — the mailbox identity
 
+**Status.** ✅ MERGED (#588, 2026-10-03, migration 227), with review fix round 1.
+
 1. **A migration** (R1: take the number at build time, and check it again at merge). It adds `color_slot SMALLINT NULL`,
    with a check of 1 to 12. It sets a slot for each existing row, in the order of `created_at`
    for each member and organization. The column stays nullable (R6).
@@ -3401,8 +3404,27 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
    with it.
 5. **The mailbox menu** gains "Rename" and "Colour".
 
+**As built (2026-10-03).**
+
+- Migration 227 is `227_email_mailbox_color_slot.sql`. A rerun keeps a slot that the member chose.
+- `routes/email/mailbox_identity.py` is the one place that decides a label and a slot. A new
+  mailbox takes the least-used slot of the member, then the lowest, in SQL inside its INSERT.
+- The API also returns `default_label`: the label of the mailbox with its name cleared. The
+  rename dialog shows it for a blank name, so the UI derives no label of its own.
+- A stored label equal to the address is no choice, as a stored provider name is not. A `PATCH`
+  to "Outlook", "Gmail" or "Email" answers 400. `color_slot` is a strict integer.
+- A rename or a colour does not restart the sync loop. A sync toggle still does.
+- The menu has one item, "Name and colour", which opens one dialog for both.
+- `src/components/ui/SlotPicker.tsx` is the one colour picker. Space settings draw it too.
+- The reading pane shows "In <chip> · to <address>" under the subject, for two or more mailboxes.
+
 **Fences.** An R8 test for the backfill and for the slot of a new connect. A unit test for the
-label rule of §11.4. The conformance test with the debt entry removed.
+label rule of §11.4. The conformance test with the debt entry removed. The fence ids are in
+`tests/unit/test_email_mailbox_identity.py` and `src/app/email/lib/mailboxIdentity.test.ts`.
+
+**Verification.** `uv run pytest tests/unit/test_email_mailbox_identity.py tests/unit/test_email_n_plus_one.py -v -rs`.
+The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/lib/theme`.
 
 #### 11.7.3 EM-T8c — the From row and the second connect
 
