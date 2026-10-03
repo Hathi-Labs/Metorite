@@ -254,12 +254,21 @@ export function RulesTab({
   onPastJobStarted,
   openRuleId,
   onRuleOpened,
+  processPastFrom = null,
+  onProcessPastOpened,
 }: {
   accountId: string | null;
   onSeeHistory?: (ruleName: string) => void;
   onPastJobStarted?: () => void;
   openRuleId?: string | null;
   onRuleOpened?: () => void;
+  /** YYYY-MM-DD. Opens "Process past emails" at once, from this date. The
+   *  guided setup sends it after the member has a rule, because the
+   *  automatic run touches only new mail (EM-T6d, owner decision (d)). */
+  processPastFrom?: string | null;
+  /** Called once, after the dialog opened from `processPastFrom`. The page
+   *  then clears the date, so a return to this tab does not open it again. */
+  onProcessPastOpened?: () => void;
 }) {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -267,7 +276,16 @@ export function RulesTab({
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
-  const [showPast, setShowPast] = useState(false);
+  // The setup's request opens the dialog at mount. The tab then reports it,
+  // and the page clears the date (fix round 1, P2). Without that, a return to
+  // this tab mounted it again with the same date and opened the dialog again.
+  const [showPast, setShowPast] = useState(() => !!processPastFrom);
+  const pastReported = useRef(false);
+  useEffect(() => {
+    if (!processPastFrom || pastReported.current) return;
+    pastReported.current = true;
+    onProcessPastOpened?.();
+  }, [processPastFrom, onProcessPastOpened]);
   const [showAdd, setShowAdd] = useState(false);
   // Learned patterns nested under their rule — the deterministic pre-AI stage
   // shown WHERE the rules live, so "why does mail from X get filed as Y?" has
@@ -472,6 +490,7 @@ export function RulesTab({
       {showPast && accountId && (
         <ProcessPastEmailsDialog
           accountId={accountId}
+          initialStart={processPastFrom}
           onClose={() => setShowPast(false)}
           onStarted={onPastJobStarted}
         />
@@ -1541,14 +1560,17 @@ function spanDays(start: string, end: string): number {
 
 function ProcessPastEmailsDialog({
   accountId,
+  initialStart = null,
   onClose,
   onStarted,
 }: {
   accountId: string;
+  /** YYYY-MM-DD. The guided setup sends the start of the import range. */
+  initialStart?: string | null;
   onClose: () => void;
   onStarted?: () => void;
 }) {
-  const [start, setStart] = useState(isoDaysAgo(7));
+  const [start, setStart] = useState(initialStart ?? isoDaysAgo(7));
   const [end, setEnd] = useState(isoDaysAgo(0));
   const [includeRead, setIncludeRead] = useState(true); // true = all mail, false = unread only
   // OFF by default: a backfill is for filing old mail, not answering it. Every
