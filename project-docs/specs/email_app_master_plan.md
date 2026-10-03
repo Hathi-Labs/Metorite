@@ -3667,7 +3667,7 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
 
 ##### EM-T8e-1 — self, the drafter and the server checks (gateway)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03).
+**Status.** ✅ MERGED #601 (2026-10-03). No migration.
 
 **As built.**
 
