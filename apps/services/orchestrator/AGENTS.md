@@ -33,6 +33,12 @@ and streams chat responses as AG-UI events.
 
 12. **`Dockerfile.coding-sandbox` and `sandbox/requirements.txt` make the coding sandbox image** (WS-43b, `project-docs/specs/maf_coding_engine.md` §7.2). It holds no secret, no SDK and no CLI, and it runs as any non-root uid. The base carries a digest, Node.js carries one exact 22.x version and its SHA-256, and pip installs with `--require-hashes`. `tests/unit/test_coding_sandbox_image.py` (WS43-F10) fails when one of those pins goes. Its `sandbox_docker` half runs only in `.github/workflows/sandbox-docker.yml`, and that workflow fails on any skip. To build the image on the box is owner gate WS43-G2.
 
+13. **A native run's context rides a per-run MAF context provider** (WS-43t1, `project-docs/specs/maf_coding_engine.md` §15.9). It sits behind `MAF_NATIVE_SESSIONS`, which is off by default.
+   - `_compose_maf_run` returns the run input and a provider. Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone, or the run loses the member's memory.
+   - With the flag on and with history, the input is a list of `Message(role=..., contents=[...])`. `RunContextProvider` (`_native_run_context.py`) adds the integrations, `memory_context` and `system_context` to the instructions, never to the messages. So a stored session never holds them.
+   - `agent_for_run` returns a shallow copy of the agent with its own provider list. Never append a run's provider to the agent object itself, because one agent can serve two runs at once.
+   - With the flag off, the input is the string of `_compose_maf_run_input`, byte for byte. Fence: `tests/unit/test_native_session_persistence.py` (WS43-F20).
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

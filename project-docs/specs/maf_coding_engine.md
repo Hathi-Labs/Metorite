@@ -3,8 +3,9 @@
 <!-- ste-tier: strict -->
 
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
-(the no-Copilot fence) are built (2026-10-03). Every other slice is spec
-only.** Owner decisions, 2026-10-03.
+(the no-Copilot fence) are built (2026-10-03). WS-43t1 (the structured
+history path) is built and dark (2026-10-03, PR #595). Every other slice is
+spec only.** Owner decisions, 2026-10-03.
 Board row **WS-43**. This spec records **D82**, **D83** and **D84**.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
@@ -1901,7 +1902,7 @@ show the new file.
 
 **Gate.** **OWNER-GATE** to merge (WS43-G9). It is a one-way change.
 
-### WS-43t1 — The structured history path 🔲
+### WS-43t1 — The structured history path ✅ **BUILT 2026-10-03, dark**
 
 **It comes early.** It has no SQL. It repairs the structured branch of
 `_compose_maf_run_input` (`executor.py:5398`). Today that branch builds
@@ -1938,6 +1939,57 @@ uv run pytest tests/unit/test_native_session_persistence.py -q -rs
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**As built (2026-10-03, PR #595).** The flag is `MAF_NATIVE_SESSIONS`, and
+the setting is `maf_native_sessions`. It is off by default.
+
+- `_compose_maf_run` in `executor.py` is the one entry for the two native
+  call sites, Tier 1 and the Tier 2 fallback. With the flag off, it returns
+  the string of `_compose_maf_run_input` and no provider. A test compares
+  that string with golden strings from `main` `4de997c9`.
+- With the flag on and with history, it builds
+  `Message(role=..., contents=[...])` for each turn.
+- The context block goes to `RunContextProvider` in
+  `orchestrator/_native_run_context.py`. The provider adds the block to the
+  instructions, after the agent's own instructions and the prompt-cache
+  sentinel. It never adds a message.
+- `_agent_for_run` gives each run a shallow copy of the agent, with its own
+  provider list. MAF 1.19 has no provider argument on `run`, so this copy is
+  the attachment to one run. The shared agent object does not change.
+- `_cap_structured_history` applies the cap of §15.9.6 after the window fit.
+- `_context_preamble_parts` builds the context block for the string and for
+  the provider. So the two paths cannot carry different context.
+
+**Decisions this slice took.**
+
+1. The persona has no field of its own. `route.ts` sends it inside
+   `system_context`, so the provider carries it there.
+2. The provider writes instructions, not context messages. A MAF history
+   provider with `store_context_messages=True` stores none of the context. A
+   test proves it.
+3. With the flag off, the assembler still runs, and the executor ignores its
+   result, as before. The "Long conversation" notice reads its
+   `last_fit_stats`, so a removal would change a run with the flag off.
+4. With the flag on, the structured branch needs a current turn, as
+   `_run_with_maf_agent` does. A payload with history and no current turn is
+   an event, and the string serialises it.
+5. With the flag on, the assembler runs once. So the route's
+   `_history_loader`, a database read, runs once.
+
+**Fence.** `tests/unit/test_native_session_persistence.py` has 20 cases, and
+`evals/trajectories/test_native_structured_history_trajectory.py` has two.
+Five mutations each turned the fence red: `content=` again, no
+`memory_context` in the structured branch, the provider on the shared agent,
+no cap, and a second assembler run.
+
+**Baseline.** On `main`, `ruff check` finds 67 problems in `executor.py`, and
+`mypy` finds 46 errors. This slice adds none. It removes the one mypy error
+that H-216 caused, so 45 remain.
+
+**For WS-43t2.** When `run` gets a `session` and the agent has no history
+provider, MAF 1.19 appends an `InMemoryHistoryProvider` to
+`self.context_providers`. Call `run` on the per-run copy, and that append
+stays inside the run.
 
 ### WS-43t2 — The session store 🔲
 
@@ -2316,6 +2368,8 @@ backup before the production apply.
 - The structured branch of `_compose_maf_run_input` (`executor.py:5398`)
   never runs. It builds `Message(role=..., content=...)` at `:5454`, MAF 1.19
   refuses the keyword, and the `except` falls back to the text (H-216).
+  **WS-43t1 repaired that branch behind the flag** (PR #595). With the flag
+  off, every native turn still gets the text.
 
 So a confirm turn loses the tool output of the turn before. The PR #585
 verifier proved it on `agent-task-manager` (H-215). The Copilot path kept tool
