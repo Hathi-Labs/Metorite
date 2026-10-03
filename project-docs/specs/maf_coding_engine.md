@@ -1034,13 +1034,15 @@ reason codes.
 - email-assistant and whatsapp-assistant are personal, and they keep their
   tools.
 
-**`_sandbox_covers` is a local predicate.** It returns `False` for every
-agent, as `covers()` does until WS-43f. It answers one question: does the
-broker run the three shell tools of this agent (§7.7 condition 2)? WS-43c
-(PR #591) added `sandbox_broker.covers`, and WS-43f points `_sandbox_covers`
-at it (WS-43f done-when 6). ⚠️ The `projects` target of D86 is not such a
-cover. Under it `covers()` is true for projects-assistant, and the D85 seam
-keeps the three host shell tools withheld (§16.3).
+**`_sandbox_covers` asks `sandbox_broker.lifts_shell_block`.** WS-43d
+pointed it there after the merge of PR #598, so it never asks `covers()`
+alone. It answers one question: does the broker run the three shell tools
+of this agent (§7.7 condition 2)? `lifts_shell_block` is `False` for the
+`projects` target, and it is `covers()` for every other target. That is
+`False` for every agent until WS-43f (WS-43f done-when 6). ⚠️ The
+`projects` target of D86 is not such a cover. Under it `covers()` is true
+for projects-assistant, and the D85 seam keeps the three host shell tools
+withheld (§16.3).
 
 **projects-assistant goes first (D85, D86).** D85 lets its code work on the
 project and task data that the asking member can see, in the sandbox only.
@@ -1685,14 +1687,18 @@ uv run pytest tests/unit/test_run_data_hygiene.py -q -rs -m sandbox_docker
 These facts change or add to the text above:
 
 - **`covers()` needs the D85 seam.** Condition 3 of §16.3 reads
-  `_tool_injection._withheld_shell_tools`. PR #598 adds it, so until #598
-  merges, `covers()` is false for every organization, also with a scope set.
+  `_tool_injection._withheld_shell_tools`, which PR #598 added. Without the
+  seam, `covers()` is false for every organization, also with a scope set.
 - **A second check at run time.** At the start of each turn, the provider
   adds no tool when the run holds `code_task`, `run_script` or
   `install_dependency`. So the sandbox tools never sit beside a host shell.
 - **`lifts_shell_block(agent, org)` is the D85 hook.** It is false for the
-  `projects` target, and `covers()` for every other target until WS-43f. When
-  #598 merges, `_sandbox_covers` calls it, and never `covers()` alone.
+  `projects` target, and `covers()` for every other target until WS-43f.
+  `_sandbox_covers` calls it, and never `covers()` alone. A test passes the
+  agent's own `config.json` as `agent_config`, as the executor does. A
+  covered run gets `run_command` and the file tools. It never gets
+  `code_task`, `run_script`, `install_dependency`, `web_search` or
+  `fetch_page` (WS43-F21).
 - **The broker is healthy** when Docker answered in the last 60 s, the
   free-space floor holds, and the image is pinned. Before the first answer it
   is not healthy, so a flip fails closed.
@@ -1845,7 +1851,9 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
    a test names each condition.
 5. WS43-E9 passes for a covered agent on the local stack.
 6. `_tool_injection._sandbox_covers` returns `sandbox_broker.covers(agent,
-   org)` for the targets whose shell tools the broker runs. So the D85 block
+   org)` for the targets whose shell tools the broker runs. WS-43d already
+   routes it through `lifts_shell_block`, which is `covers()` for each
+   target but `projects`. So the D85 block
    lifts for such a covered agent only (§7.9). The `projects` target does not
    lift it (§16.3). WS43-F23 passes with the real function in place.
 
