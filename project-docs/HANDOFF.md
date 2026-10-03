@@ -3994,25 +3994,6 @@ line — never reclaim a number by deleting the other entry.
   §13.7 · `specs/maf_coding_engine.md` §7.9 and §16.3
 - **Added:** 2026-10-03 · the D85 interim block
 
-### H-229 · Give chat attachments platform-side text extraction, because D85 removed a live Projects flow · [AGENT]
-- **Check:** `grep -rn "docx" apps/services/gateway/gateway/routes/ packages/acb_skills/acb_skills/ | grep -i "extract"`
-  → no hit means a member's uploaded `.docx` still has no reader that a shared agent holds.
-- **What happens.** The PR #598 reviewer read the production logs. On
-  2026-10-02 and 2026-10-03, the projects-assistant of a customer org used
-  `code_task` to read an uploaded `.docx`. D85 takes `code_task` from that
-  shared agent, so that flow now stops. The agent has no other tool that
-  reads a Word file.
-- **Do.** Extract the text of a chat attachment on the platform side, before
-  the agent sees it. Start with `.docx`, `.pdf` and `.xlsx`. The agent then
-  reads plain text through a tool that it already holds, and no code runs on
-  the host. The supervisor starts this slice next.
-- **Test plan.** Upload a `.docx` in the Projects chat of a customer org, and
-  ask for its contents. The agent must answer from the text. Add a fence that
-  the extractor needs no shell tool.
-- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9 ·
-  PR #598 review, P2
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
 ### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
 - **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
   → no hit means `spawn_copilot_agent` still starts the sandbox for any organization.
@@ -4091,6 +4072,33 @@ line — never reclaim a number by deleting the other entry.
   state files, allow its state dir by name in `decide()`, and add a test.
 - **Authority:** `specs/maf_coding_engine.md` §7.9 · the PR #598 verifier
 - **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-235 · Finish chat attachments: `.xlsx`, the safe opener under PR #603, and one live read · [AGENT]
+- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py; grep -c "from acb_skills import safe_open" packages/acb_skills/acb_skills/attachment_tools.py`
+  → a `0` on either line means this is open. Step 3 stays open until a live read is on record.
+- **What happens.** H-229 built `read_attachment` for `.docx`, PDF, `.txt`,
+  `.md` and `.csv` (`projects_ai_chat.md` §22). Three items stay open.
+  1. H-229 asked for `.xlsx` too. The supervisor narrowed the slice, so the
+     tool refuses a `.xlsx` with one sentence.
+  2. PR #603 (WS-43d) mounts the tenant dir into a sandbox container for a
+     covered run. Then a container can make a link or a FIFO in
+     `inputs/<thread slug>/` while the host reads. The tool checks each part
+     with `lstat` and opens with `O_NOFOLLOW`, which closes only the static
+     case. The `WithholdHostTools` of #603 does not name `read_attachment`,
+     so a covered run keeps the tool.
+  3. No live read is on record. The test plan of H-229 needs production.
+- **Do.**
+  1. Read `.xlsx` in `acb_skills/attachment_text.py`: the zip, the shared
+     strings and each sheet, with the same caps and a test for each cap.
+  2. After PR #603 merges, open the file through `acb_skills.safe_open`
+     inside `broker.host_files()` in a covered run. Or add `read_attachment`
+     to `WITHHELD_HOST_TOOLS`, and give the file tools the thread folder.
+  3. After the deploy, upload a `.docx` in the Projects chat of the
+     smoke-chat org, and ask for its contents. The answer must quote the
+     file, and the gateway log must show `attachment.read`.
+- **Authority:** `specs/projects_ai_chat.md` §22.7 ·
+  `specs/maf_coding_engine.md` §7.9 · the H-229 slice
+- **Added:** 2026-10-04 · the H-229 slice
 
 # DONE — deleted, not archived
 

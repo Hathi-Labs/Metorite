@@ -23,7 +23,9 @@ artifact routes, §21.14), part 3 (a tenant dir for a shared agent,
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).
 D85 reverses O1 of S7e on 2026-10-03: code over member data runs only in
 the sandbox, and until then projects-assistant holds no `run_script` and no
-`code_task` (§13.7).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+`code_task` (§13.7). H-229 (chat attachments, read on the platform, §22) was
+built 2026-10-04: projects-assistant reads an attached `.docx`, PDF or text
+file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -738,6 +740,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
+| **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -4300,6 +4303,154 @@ R8 test runs on the phase 4 catalog, as the NOBYPASSRLS app role.
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_h201_run_context.py \
   tests/unit/test_h201_tenant_workdirs.py -q -rs
+```
+
+The `-rs` output must show no skip.
+
+## 22. Chat attachments, read on the platform (H-229)
+
+**Status: BUILT 2026-10-04.** HANDOFF H-229. D85 (`maf_coding_engine.md`
+§7.9). The audit read the code at `main` `0711c8b3`.
+
+### 22.1 The answer
+
+D85 took `code_task` from every shared agent on 2026-10-03. On 2026-10-02
+and 2026-10-03, the projects-assistant of a customer org used `code_task` on
+the production host to read a member's `.docx`. D85 stopped that flow.
+
+`read_attachment` gives the flow back, and no code runs. The tool parses the
+file in the gateway process and returns its text. projects-assistant holds
+it in its `tool_scope`.
+
+### 22.2 What was already there
+
+- The rail draws the shared `AgentChat`. Its paperclip is
+  `FileUploadButton`, which posts to `POST /api/agent/workspace/{sid}/upload`.
+  The Next route sends the files to the gateway route of the same name.
+- The gateway route wrote each file to `inputs/` of the session's workspace.
+  For projects-assistant, that workspace is the tenant dir of §21.15. Every
+  member of the org shares that dir. So one member's upload lay in a folder
+  that each session of the agent could read. That is a gap in D12.
+- The browser tells the agent about a file in the next message: "📎 Uploaded
+  … You can read them with the read_file tool". No `read_file` tool exists.
+  So the agent read the file through `code_task`.
+
+### 22.3 What H-229 builds
+
+1. **One path rule.** `acb_skills.agent_paths.upload_dir_rel(instance,
+   thread_id)` gives `inputs/<thread slug>/` in a tenant dir. Every other
+   workspace keeps `inputs/`. The thread slug is `thread_slug(thread_id)`,
+   the `instance_slug` form that `maf_coding_engine.md` §16.3 uses for the
+   outputs. The upload route writes there, and the tool reads there.
+2. **One tool.** `acb_skills.attachment_tools.read_attachment(name,
+   offset=0)`. The run's artifact context gives the workspace and the
+   thread. The model gives a file name only.
+3. **One parser module.** `acb_skills.attachment_text` reads `.docx`,
+   `.pdf`, `.txt`, `.md` and `.csv`. The standard library reads a `.docx`
+   as a zip of XML. `pypdf` reads a PDF.
+4. **The agent.** The `tool_scope` of projects-assistant names
+   `read_attachment`. The Files section of `instructions.md` tells the
+   model to use it. The new skill family `attachments` holds the tool, and
+   `tool_annotations` marks it read-only.
+5. **One dependency.** `acb-skills` adds `pypdf>=6.19`, which is pure
+   Python. `uv.lock` adds `pypdf` and no other package. A `.docx` needs no
+   new package.
+
+### 22.4 Rules
+
+1. **No code runs.** The tool parses bytes, and it starts no process. The
+   one subprocess in `pypdf` runs `jbig2dec` for a JBIG2 stream. Each parse
+   sets `jbig2dec_binary=None`, so that path is off.
+2. **The caps.** A file has at most 25 MB, the upload cap. A `.docx` reads
+   one part, the main document, and at most 20 MB of it once unpacked. A
+   PDF reads at most 100 pages, and one stream unpacks to at most 8 MB. A
+   text file keeps 5,000 lines. One call returns 40,000 characters, and a
+   longer file gives the offset of the next page.
+3. **A deadline.** A parse stops itself after 20 seconds. The tool waits
+   25 seconds at most.
+4. **A zip bomb costs no more than the cap.** A part that declares more
+   than 20 MB is refused before it is opened. A part that hides its size
+   unpacks no more than the read asks for, which is the cap plus one byte.
+5. **A clean refusal.** Each failure gives one sentence for the member. No
+   parser exception reaches the model.
+6. **This chat only (D12).** The tool keeps only the last part of the
+   name. So a path into another thread's folder, or a `..` climb, reads
+   this thread's folder. A link at any level below the workspace is
+   refused. A file that is not a regular file is refused.
+7. **An older upload.** A file in the flat `inputs/` reads only when the
+   blob history shows that this session uploaded those bytes. The row must
+   say `create`, `user`, this `session_id` and the same sha256.
+8. **The text is data.** The tool output says so, and the instructions
+   say so.
+9. **A bounded load.** At most two parses run at a time in the process. A
+   third call gets "Another file is being read now".
+
+### 22.5 Acceptance
+
+Each item has a test in `tests/unit/test_read_attachment.py`.
+
+1. A real `.docx`, a real PDF, `.txt`, `.md` and `.csv` give their text.
+2. A file over the cap, a zip bomb, a DTD in a Word part, a password PDF
+   and a malformed PDF each get a clean refusal.
+3. A trap on every process call stays empty for every kind. A JBIG2 page
+   reaches `jbig2dec` in plain `pypdf`, and never through the tool.
+4. A colleague's upload in the same org is refused, also through a path or
+   a `..` climb. The R8 test uploads through the real route as one member,
+   and reads as another member of the same org.
+5. An older flat upload reads only in its own thread, on the real store
+   as the NOBYPASSRLS app role.
+6. The real request body of projects-assistant carries `read_attachment`
+   and no shell tool. The tool result in the next request carries the text.
+7. The golden trajectory `evals/trajectories/test_attachment_scope_trajectory.py`
+   locks the thread rule offline.
+
+### 22.6 Mutations
+
+Each mutation below turns at least one test red.
+
+| Mutation | Tests that fail |
+|---|---|
+| a table row is dropped | 1 |
+| no size cap in `extract_text` | 1 |
+| no size check before the tool reads | 1 |
+| no declared-size check in a `.docx` | 1 |
+| an unbounded read of the main part | 1 |
+| a pypdf error escapes | 3 |
+| a DTD is parsed | 1 |
+| no thread folder in a tenant dir | 3 |
+| the name keeps its path | 1 |
+| the history ignores the session | 2 |
+| `jbig2dec` stays on | 1 |
+| a parse starts a process | 3 |
+| the scope loses the tool | 2 |
+| D85 counts it as a shell tool | 2 |
+| the PDF loop has no deadline | 1 |
+| no parse slot | 1 |
+
+### 22.7 What H-229 does not do
+
+- It reads no `.xlsx`. HANDOFF H-235 carries it.
+- A `.docx` read covers the main body, its tables included. It does not read
+  the headers, the footers, the footnotes or the comments.
+- A scanned PDF has no text layer, so it reads as pages with no text. The
+  tool runs no OCR.
+- The workspace tree and the file route still list and serve the whole
+  `inputs/` of the tenant dir. H-227 owns that rule, for `outputs/` too.
+- PR #603 (WS-43d) adds `acb_skills.safe_open` and a sandbox run. In a
+  covered run, a container can write into the tenant dir. Then this tool
+  must open its file through `safe_open` inside `broker.host_files()`.
+  H-235 carries that.
+- The browser message still names `read_file`. The instructions name the
+  right tool.
+- A team agent keeps the flat `inputs/`.
+
+### 22.8 Verification
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_read_attachment.py \
+  tests/unit/test_h201_tenant_workdirs.py \
+  evals/trajectories/test_attachment_scope_trajectory.py -q -rs
 ```
 
 The `-rs` output must show no skip.

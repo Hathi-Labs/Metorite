@@ -50,6 +50,17 @@ clone cache.
    package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
    target is `file_name`, and a `read` request is a read, contained in the
    workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
+5d. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
+   spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
+   `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
+   chat. `attachment_text` parses bytes only: no subprocess, no code, and
+   pypdf's `jbig2dec` is off. Every cap is a module constant there.
+   `attachment_tools` takes the workspace and the thread from
+   `artifact_context()`, and only a file name from the model.
+   `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands:
+   `inputs/<thread slug>/` in a shared agent's tenant dir, else `inputs/`.
+   The gateway upload route and this tool both call it. Do not add a second
+   reader of an attachment. Fence: tests/unit/test_read_attachment.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
