@@ -14,6 +14,7 @@ from uuid import uuid4
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import (
+    _account_scope,
     _decrypt_credentials,
     _default_label,
     _instantiate_provider,
@@ -152,11 +153,36 @@ _ORG_CONNECTION_COUNTS_SQL = """
 """
 
 
+async def _unread_counts(
+    db: Any, owner: str, account_id: str | None = None,
+) -> dict[str, int]:
+    """The unread count of each mailbox of ``owner``, in ONE grouped read.
+
+    EM-T4e (``email_app_master_plan.md`` §10.4.6). Before it, each account
+    row cost one ``COUNT``. Both account reads that return ``unread_count``
+    call this. ``_account_scope`` holds the owner predicate, so the read
+    counts only the mailboxes of ``owner``. ``account_id`` narrows it to one
+    of them. A mailbox with no unread mail has no row here, and reads 0.
+    """
+    params: dict[str, Any] = {"uid": owner}
+    scope = _account_scope(account_id, params)
+    rows = (await db.execute(text(
+        "SELECT em.account_id, count(*) AS unread FROM email_messages em "
+        f"WHERE {scope} AND em.is_read = false GROUP BY em.account_id"
+    ), params)).fetchall()
+    return {str(r.account_id): int(r.unread) for r in rows}
+
+
 @router.get("/accounts", response_model=list[EmailAccountModel])
 async def list_accounts(
     user: UserContext = Depends(get_current_user),
 ):
-    """List all connected email accounts for the current user."""
+    """List all connected email accounts for the current user.
+
+    Two reads for any number of accounts: the rows, then one grouped count
+    (EM-T4e).
+    """
+    owner = user.email or "anonymous"
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -168,20 +194,13 @@ async def list_accounts(
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
             ),
-            {"user_id": user.email or "anonymous"},
+            {"user_id": owner},
         )
         rows = result.fetchall()
+        unread_by_account = await _unread_counts(db, owner) if rows else {}
         accounts: list[EmailAccountModel] = []
         for row in rows:
-            # Count unread messages for this account
-            unread_result = await db.execute(
-                text(
-                    """SELECT COUNT(*) FROM email_messages
-                       WHERE account_id = :account_id AND is_read = false"""
-                ),
-                {"account_id": row.id},
-            )
-            unread = unread_result.scalar() or 0
+            unread = unread_by_account.get(str(row.id), 0)
 
             accounts.append(EmailAccountModel(
                 id=str(row.id),
@@ -410,14 +429,8 @@ async def set_default_account(
         )
         row = result.fetchone()
 
-        unread_result = await db.execute(
-            text(
-                """SELECT COUNT(*) FROM email_messages
-                   WHERE account_id = :account_id AND is_read = false"""
-            ),
-            {"account_id": account_id},
-        )
-        unread = unread_result.scalar() or 0
+        unread = (await _unread_counts(db, owner, account_id)).get(
+            str(row.id), 0)
         return EmailAccountModel(
             id=str(row.id),
             provider=row.provider,
