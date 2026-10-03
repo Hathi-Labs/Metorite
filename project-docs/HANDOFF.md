@@ -3675,6 +3675,46 @@ line — never reclaim a number by deleting the other entry.
   item 6 · the R6 note in `infra/postgres/226_email_thread_index.sql`
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
+### H-215 · On Tier 1 a confirm turn cannot see the tool output of the turn before · [AGENT]
+- **Check:** `grep -n "role: m.role, content: m.content" workbench/control_plane/src/app/api/agent/chat/route.ts`
+  → a hit means the entry is still open.
+- **Why:** a native MAF agent gets the earlier turns of a chat as text.
+  `route.ts` (~678) sends `role` and `content` only, and the executor
+  (`_build_event_message`, ~5626-5646) renders them as one text block. The
+  Copilot path kept tool results in its SDK session. So on Tier 1 a
+  propose-then-apply turn loses the ids. Example: "process my inbox", then
+  "yes". The agent lists again or runs `my_tasks_clarify` again, and the
+  second proposal can differ from the first. The apply step refuses a bad id.
+- **Fix shape:** put the tool calls and tool results of earlier turns into
+  the MAF input as structured messages. Or let each proposal tool return a
+  proposal id that the apply step reads back.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-216 · Tier 1's structured history branch never runs · [AGENT]
+- **Check:** `grep -n '_MAFMsg(role=m\["role"\], content=m\["content"\])' apps/services/orchestrator/orchestrator/executor.py`
+  → a hit means the entry is still open.
+- **Why:** `_compose_maf_run_input` (~5457) builds
+  `Message(role=..., content=...)`. MAF 1.19 refuses that keyword:
+  `TypeError: Message.__init__() got an unexpected keyword argument 'content'`.
+  The `except` swallows the error, so every native turn falls back to the
+  string prompt, and the token-budgeted `assemble_run_context` result is
+  never used. This predates PR #585. Build each message with `contents=`, and
+  add a test that drives the real `Message` class.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-217 · Registry MCP servers no longer reach task-manager and apis-config · [AGENT]
+- **Check:** `grep -rn "MCPStdioTool\|MCPStreamableHTTPTool" apps/ packages/ --include=*.py`
+  → no hit means MAF still has no MCP wiring, and the entry is still open.
+- **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
+  class reads (WS-8c). Both agents were Copilot agents until PR #585. So an
+  `mcp_servers` row with agent scope `*` reached them before, and reaches
+  only Copilot agents now. WS-8c owns the real fix. Until it lands, do not
+  expect a `*` server to show up in these two agents.
+- **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
+- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-03. `task-manager` and `apis-config` run on native MAF now (§11.3).
+**Updated:** 2026-10-03. `task-manager` and `apis-config` run on native MAF now (§11.3). The same PR fixed two bugs on the native path (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -705,25 +705,39 @@ now build an `agent_framework.Agent` with an `OpenAIChatCompletionClient` and
   move onto `build_declarative_agent`.
 - **The fence.** `tests/unit/test_task_apis_native_maf.py` pins the agent type, the tool
   names against origin/main, the registry label and the Tier 1 route.
+  `tests/unit/test_native_maf_wire.py` drives a real client through the real executor.
 
-The native path keeps what these agents used. `ask_questions` blocks on Tier 1. History comes
-from `assemble_run_context`. The executor gates every injected tool with `_gate_injected_tool`.
+The native path keeps what these agents used. `ask_questions` blocks on Tier 1. The executor
+gates every tool with `_gate_injected_tool`, the injected ones and the agent's own ones.
 `write_artifact` and the run's artifact context work without `carry_run_context`.
 
-Five things worked only on the Copilot path. None of them is a blocker:
+The review of this move found two live bugs in the native path. The same PR fixed both, for
+every native MAF agent:
 
-1. **The agent's own tools lose the B6 wrapper on Tier 1.** The Copilot path wrapped them in
-   `_gate_injected_tool`. Tier 1 wraps injected tools only. `decide()` approves these tools by
-   name anyway. So the loss is the `permission.decision` log line and the mid-run steer drain
-   at an own-tool call. This is true today for every native MAF agent.
-2. **The Copilot CLI tools are gone.** The shell, the file tools, the `sql` todo table and the
+1. **Think mode ended every Thinking or Max turn in RUN_ERROR.** `_apply_thinking_mode` wrote
+   `model_params` and `thinking` into `default_options`. `OpenAIChatCompletionClient` passes
+   each key to `AsyncCompletions.create()`, which refuses both. Now the executor gives a
+   native agent `reasoning_effort` only: `medium` for Thinking and `high` for Max, the Tier 1.5 values.
+   Auto sends nothing, as before. `/copilot/chat` uses the same rule.
+2. **A steer was lost when a turn called only the agent's own tools.** Tier 1 wrapped only the
+   injected tools, and that wrapper is the one steer drain. `_gate_own_maf_tools` now wraps
+   the own tools too. Their names and schemas on the wire did not change.
+
+Four things worked only on the Copilot path. None of them is a blocker:
+
+1. **The Copilot CLI tools are gone.** The shell, the file tools, the `sql` todo table and the
    native `ask_user` do not exist on Tier 1. Neither instructions file names them.
    `write_artifact` and `manage_todo_list` cover the same jobs.
-3. **No SDK session resume.** Tier 1 rebuilds the history on each turn.
-4. **A delegated run is a batch run.** When another agent calls one of these two, it returns
-   one result. It does not stream its text to the parent.
-5. **The "Metorite Platform Tools" addendum is Copilot-only.** A native agent gets the
-   registry block, the UI directive and the output-discipline block in its place.
+2. **Tier 1 sends earlier turns as text only.** No SDK session holds the tool results. So a
+   confirm turn ("yes") does not see the ids in the tool output of the turn before (H-215).
+   The structured branch of `_compose_maf_run_input` also never runs, because MAF 1.19
+   refuses `Message(role=, content=)` (H-216).
+3. **Registry MCP servers do not reach these two now.** `merge_mcp_servers` is a no-op on
+   MAF (WS-8c). So an `mcp_servers` row with agent scope `*` reaches only Copilot agents
+   (H-217).
+4. **A delegated run is a batch run, and the addendum is Copilot-only.** When another agent
+   calls one of these two, it returns one result. A native agent gets the registry block, the
+   UI directive and the output-discipline block, not "Metorite Platform Tools".
 
 ---
 
