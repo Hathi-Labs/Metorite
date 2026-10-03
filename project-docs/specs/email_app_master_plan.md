@@ -2600,7 +2600,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 
 The fences are the R8 classes `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheSenderPinOnJev`, and the hermetic cases, in `tests/unit/test_email_decide_on.py`.
 
-**To turn the three features on.** After the merge, the orchestrator sets these two values on the box and restarts the gateway:
+**To turn the three features on, after the owner's "go".** The orchestrator sets these two values on the box and restarts the gateway:
 
 ```text
 DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on
@@ -2981,7 +2981,7 @@ The changed automation files carry old ruff findings, so compare them with the b
 
 The R8 cases must show PASSED, not SKIPPED.
 
-**After the merge.** The owner gave the "go" for all organizations (decisions (a) to (d), and the owner's direction for EM-T5b-2 in full). The orchestrator sets the value of "To turn the three features on" above. Report the act, the box and the evidence in the same message. The evidence is one `decide.decided` line for each feature, each with a `request_id`.
+**After the merge.** ⚠️ **The three features stay off in production until the owner says "go".** Decision (c) of §10.2 kept the thread status, the cold check and the sender pin on the old path for the demo, and no later decision of the owner turns them on for all organizations. The verifier of fix round 3 found that gap on 2026-10-03. Each `on` adds paid `decide` calls for each mailbox. When the owner says "go", record it as a dated decision in §10.2. Then set the value of "To turn the three features on" above, and report the act, the box and the evidence in the same message. The evidence is one `decide.decided` line for each feature, each with a `request_id`.
 
 ##### EM-T5b-3 — hardcode, and delete the old path
 
