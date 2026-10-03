@@ -76,6 +76,8 @@ __all__ = [
     "require_agent_name",
     "state_root",
     "tenant_instance",
+    "thread_slug",
+    "upload_dir_rel",
     "workspace_blob_key",
 ]
 
@@ -191,6 +193,38 @@ def is_tenant_instance(instance: object) -> bool:
         and instance.startswith(TENANT_INSTANCE_PREFIX)
         and len(instance) > len(TENANT_INSTANCE_PREFIX)
     )
+
+
+def thread_slug(thread_id: object) -> str:
+    """The folder name of one chat thread: :func:`instance_slug` of its id.
+
+    ``maf_coding_engine.md`` §16.3 names this form for the thread's outputs.
+    H-229 uses it for the thread's uploads. An empty id raises ``ValueError``,
+    so a caller with no thread fails closed.
+    """
+    tid = str(thread_id or "").strip()
+    if not tid:
+        raise ValueError("a thread folder needs a thread id")
+    return instance_slug(tid)
+
+
+def upload_dir_rel(instance: object, thread_id: object) -> str:
+    """Where a chat upload lands, relative to the workspace root (H-229).
+
+    THE one rule. The upload route writes there, and ``read_attachment``
+    reads there, so the two cannot disagree.
+
+    * A shared agent's tenant dir (``o:<org>``) is one folder for every member
+      of the organization. So an upload lands in ``inputs/<thread slug>/``, and
+      only a run of that thread reads it (D12).
+    * Any other workspace keeps ``inputs/``. A personal agent's dir holds only
+      its member's files.
+
+    A tenant dir with no thread id raises ``ValueError``.
+    """
+    if is_tenant_instance(instance):
+        return f"inputs/{thread_slug(thread_id)}"
+    return "inputs"
 
 
 def agent_code_dir(agent_name: str) -> Path:

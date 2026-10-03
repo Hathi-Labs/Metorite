@@ -763,6 +763,15 @@ def _collect_injectable_platform_tools() -> list[Any]:
     except ImportError:
         pass
 
+    # Chat attachments (H-229) — the text of a file the member attached in
+    # THIS chat, by pure parsing: no subprocess, no code. It is no shell
+    # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    try:
+        from acb_skills.attachment_tools import read_attachment
+        _all_tools = [*_all_tools, read_attachment]
+    except ImportError:
+        pass
+
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     try:
         from acb_skills.memory_tools import (

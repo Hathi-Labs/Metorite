@@ -21,8 +21,9 @@ DELETE /agent/workspace/{session_id}/file?path=<rel_path>
     Delete a file from the workspace.
 
 POST /agent/workspace/{session_id}/upload
-    Upload one or more files (multipart/form-data).  Files land in .tmp/
-    under the workspace root.  Returns the list of created FileEntry objects.
+    Upload one or more files (multipart/form-data).  Files land in the
+    session's attachment folder: ``inputs/<thread slug>/`` in a shared agent's
+    tenant dir, else ``inputs/`` (H-229).  Returns the created FileEntry objects.
 
 PATCH /agent/workspace/{session_id}
     Set or update the workspace_path for a session (called by write_artifact tool).
@@ -1238,12 +1239,17 @@ async def upload_files(
     files: list[UploadFile],
     _user: UserContext = Depends(get_current_user),
 ) -> list[FileEntry]:
-    """Upload one or more files into the session workspace .tmp/ directory.
+    """Upload one or more files into the session's attachment folder.
 
-    Files are stored under ``{workspace_root}/.tmp/`` and are automatically
-    tracked by Git.  The agent receives a system message with the list of
-    uploaded files and their paths so it can reference them.
+    The folder is ``acb_skills.agent_paths.upload_dir_rel`` (H-229). A shared
+    agent's tenant dir is one folder for every member of the organization, so
+    there a file lands in ``inputs/<thread slug>/``, the folder of this
+    session's thread, and only a run of that thread reads it
+    (``read_attachment``, D12). Any other workspace keeps ``inputs/``. The
+    browser tells the agent the names and the paths in the next message.
     """
+    from acb_skills.agent_paths import upload_dir_rel
+
     await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
@@ -1257,8 +1263,11 @@ async def upload_files(
         )
     _refuse_shared_clone_write(workspace)
 
-    # Upload to inputs/ (visible workspace directory) — not .tmp/
-    upload_dir = workspace / "inputs"
+    # The session id is the thread id, and the room check above admitted the
+    # caller to it. The rule is shared with the tool that reads the folder.
+    upload_dir = workspace / upload_dir_rel(
+        _blob_key_for_workspace(workspace)[1], session_id,
+    )
     try:
         upload_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

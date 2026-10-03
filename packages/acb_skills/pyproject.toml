@@ -15,6 +15,7 @@ dependencies = [
     # acb_skills, so there is no cycle.
     "acb-common",
     "acb-llm",
+    "pypdf>=6.19",
 ]
 
 [build-system]
