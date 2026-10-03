@@ -94,30 +94,38 @@ interface MailboxLike {
   emailAddress: string;
   displayLabel?: string;
   workDomain?: string | null;
-  syncStatus?: string;
+  needsReconnect?: boolean;
 }
 
-/** The label to name a mailbox in a sentence. */
-function nameOf(m: MailboxLike): string {
-  return (m.displayLabel || "").trim() || m.emailAddress;
+/** The label to show for a mailbox: the server's display label, else the
+ *  address. The one copy of this rule; the chip and the From row use it. */
+export function mailboxLabel(account: Pick<MailboxLike, "emailAddress" | "displayLabel">): string {
+  return (account.displayLabel || "").trim() || account.emailAddress;
 }
 
-/** True when the mailbox cannot send until the member reconnects it. The same
- *  rule draws the reconnect banner: a sync error, or a 401 of a live call. */
-export function needsReconnect(
-  m: Pick<MailboxLike, "id" | "syncStatus"> | null | undefined,
+/**
+ * True when the mailbox cannot send until the member reconnects it: a live
+ * call answered 401, or the server says the last sync failed on the sign-in.
+ *
+ * Narrower than the reconnect banner, which shows for any sync error. A 429
+ * or a 503 during an import also marks the sync as failed, and a send works
+ * then, so it must not block one (EM-T8c review).
+ */
+export function sendBlocked(
+  m: Pick<MailboxLike, "id" | "needsReconnect"> | null | undefined,
   authErrors: Readonly<Record<string, string>>,
 ): boolean {
   if (!m) return false;
-  return m.syncStatus === "error" || !!authErrors[m.id];
+  return !!authErrors[m.id] || m.needsReconnect === true;
 }
 
 export interface FromWarning {
   kind: "conversation" | "usual" | "domain";
   text: string;
-  /** The mailbox that the one-click switch selects. */
-  switchTo: string;
-  switchLabel: string;
+  /** The mailbox that the one-click switch selects. Absent when that mailbox
+   *  cannot send, so the warning shows with no switch. */
+  switchTo?: string;
+  switchLabel?: string;
 }
 
 /**
@@ -145,15 +153,19 @@ export function fromWarning(args: {
   if (!from) return null;
   const usable = (id: string | null | undefined) => {
     const m = accounts.find((a) => a.id === id);
-    return m && m.id !== fromId && !needsReconnect(m, authErrors) ? m : null;
+    return m && m.id !== fromId && !sendBlocked(m, authErrors) ? m : null;
   };
-  const conv = usable(conversationAccountId);
-  if (conv) {
+  // A reply that leaves its conversation always says so, even when the
+  // mailbox of the conversation cannot send: then the warning offers no
+  // switch back (D-EM-20).
+  const convAccount = conversationAccountId && conversationAccountId !== fromId
+    ? accounts.find((a) => a.id === conversationAccountId) : undefined;
+  if (convAccount) {
+    const back = usable(convAccount.id);
     return {
       kind: "conversation",
-      text: `This conversation is in ${nameOf(conv)}. The recipients will see a new address, and the reply starts a new conversation.`,
-      switchTo: conv.id,
-      switchLabel: nameOf(conv),
+      text: `This conversation is in ${mailboxLabel(convAccount)}. The recipients will see a new address, and the reply starts a new conversation.`,
+      ...(back ? { switchTo: back.id, switchLabel: mailboxLabel(back) } : {}),
     };
   }
   const addrs = recipients.map((r) => r.trim().toLowerCase()).filter((r) => r.includes("@"));
@@ -162,9 +174,9 @@ export function fromWarning(args: {
     if (usual) {
       return {
         kind: "usual",
-        text: `You usually write to ${addr} from ${nameOf(usual)}.`,
+        text: `You usually write to ${addr} from ${mailboxLabel(usual)}.`,
         switchTo: usual.id,
-        switchLabel: nameOf(usual),
+        switchLabel: mailboxLabel(usual),
       };
     }
   }
@@ -172,14 +184,14 @@ export function fromWarning(args: {
     const domain = addr.split("@")[1];
     if (!domain || from.workDomain === domain) continue;
     const owner = accounts.find(
-      (a) => a.id !== fromId && a.workDomain === domain && !needsReconnect(a, authErrors),
+      (a) => a.id !== fromId && a.workDomain === domain && !sendBlocked(a, authErrors),
     );
     if (owner) {
       return {
         kind: "domain",
-        text: `You are writing to a ${domain} address from ${nameOf(from)}.`,
+        text: `You are writing to a ${domain} address from ${mailboxLabel(from)}.`,
         switchTo: owner.id,
-        switchLabel: nameOf(owner),
+        switchLabel: mailboxLabel(owner),
       };
     }
   }

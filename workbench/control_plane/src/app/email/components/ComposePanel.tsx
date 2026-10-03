@@ -8,7 +8,7 @@ import {
   fileToSendAttachment, getSentFrom,
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
-import { fromWarning, needsReconnect, swapSignature } from "../lib/mailbox";
+import { fromWarning, sendBlocked, swapSignature } from "../lib/mailbox";
 import { FromRow } from "./FromRow";
 import { mailboxLabel } from "./MailboxChip";
 import { useDraftSession } from "../lib/useDraftSession";
@@ -25,6 +25,9 @@ interface ComposePanelProps {
   /** The mailbox the composer opens on: the mailbox of the mail a reply
    *  answers, else the selected one. The From row can change it (EM-T8c). */
   accountId: string;
+  /** The From that the inline reply chose before a pop-out. Absent, the
+   *  composer sends from `accountId`. */
+  defaultFromId?: string;
   onSend: (params: {
     /** The mailbox that sends: the choice of the From row. */
     accountId: string;
@@ -60,6 +63,7 @@ export function ComposePanel({
   open,
   onClose,
   accountId,
+  defaultFromId,
   onSend,
   defaultTo = "",
   defaultSubject = "",
@@ -94,8 +98,19 @@ export function ComposePanel({
   const sameConversation = fromId === accountId;
   const replyTarget = sameConversation ? replyToMessageId : undefined;
   const replyContextId = sameConversation ? messageId : undefined;
-  // A draft of the old mailbox, deleted once the new mailbox saved its own.
-  const staleDraftRef = useRef<string | null>(null);
+  // Drafts of an old mailbox, deleted once the new mailbox has its own copy.
+  const staleDraftsRef = useRef<string[]>([]);
+  // The From of NOW, for a save that started before a change of From.
+  const liveFromRef = useRef(fromId);
+  useEffect(() => {
+    liveFromRef.current = fromId;
+  }, [fromId]);
+  /** Delete each draft of an old mailbox. Call it only once the new mailbox
+   *  holds the message, or the member could lose it. */
+  const dropStaleDrafts = () => {
+    for (const id of staleDraftsRef.current) void deleteEmail(id);
+    staleDraftsRef.current = [];
+  };
   // For each recipient, the mailbox that wrote to them last.
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   // Gmail-style auto-save: the composed message persists as a Drafts row as you
@@ -137,12 +152,14 @@ export function ComposePanel({
     setBody(replyToBody || "");
     // Seed the signature into the body (idempotent — a popped-out reply or an
     // undo-send reopen may already carry it). Async: never clobber typing.
-    void getSignatureText(accountId).then((sig) => {
+    void getSignatureText(defaultFromId || accountId).then((sig) => {
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
     draftIdRef.current = null;
-    staleDraftRef.current = null;
-    setFromPick(null);
+    staleDraftsRef.current = [];
+    // A pop-out keeps the From that the inline reply chose (EM-T8c review).
+    setFromPick(defaultFromId && defaultFromId !== accountId
+      ? { base: accountId, id: defaultFromId } : null);
     dirty.current = false;
     setDraftStatus("idle");
     // Restore any carried attachments/artifacts (undo-send reopen); a fresh
@@ -203,11 +220,12 @@ export function ComposePanel({
     if (!open || !fromId || !dirty.current) return;
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     if (!body.trim() && toArr.length === 0 && !subject.trim()) return;
+    const savingFrom = fromId;
     const handle = setTimeout(async () => {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId: fromId,
+          accountId: savingFrom,
           draftId: draftIdRef.current ?? undefined,
           replyToMessageId: draftIdRef.current ? undefined : (replyTarget || undefined),
           to: toArr,
@@ -215,13 +233,18 @@ export function ComposePanel({
           subject,
           body: combinedBody(),
         });
+        if (liveFromRef.current !== savingFrom) {
+          // The From changed while this save ran. Its draft belongs to the
+          // old mailbox, so it is stale, and the next save starts a new one
+          // in the new mailbox (EM-T8c review).
+          staleDraftsRef.current.push(saved.id);
+          setDraftStatus("idle");
+          return;
+        }
         draftIdRef.current = saved.id;
         // A provider draft cannot move between mailboxes: the new mailbox
-        // saved its own, so the draft of the old one goes (§11.6 case 7).
-        if (staleDraftRef.current) {
-          void deleteEmail(staleDraftRef.current);
-          staleDraftRef.current = null;
-        }
+        // saved its own, so the drafts of the old one go (§11.6 case 7).
+        dropStaleDrafts();
         setDraftStatus("saved");
       } catch {
         setDraftStatus("idle");
@@ -251,7 +274,7 @@ export function ComposePanel({
   if (!open) return null;
 
   const fromAccount = accounts.find((a) => a.id === fromId) ?? null;
-  const fromBlocked = needsReconnect(fromAccount, authErrors);
+  const fromBlocked = sendBlocked(fromAccount, authErrors);
   const warning = fromWarning({
     fromId,
     accounts,
@@ -269,7 +292,7 @@ export function ComposePanel({
       getSignatureText(fromId), getSignatureText(next),
     ]);
     if (draftIdRef.current) {
-      staleDraftRef.current = draftIdRef.current;
+      staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
     dirty.current = true;
@@ -292,8 +315,11 @@ export function ComposePanel({
       // Native draft-send whenever there's a draft OR attachments: Cc/Bcc AND
       // attachment content now ride ON the provider draft, so the draft write-
       // path (create/update with attachments) → native send handles everything.
-      // A fresh message with no attachments still sends directly.
-      if (draftIdRef.current || hasAttachments) {
+      // A fresh message with no attachments still sends directly. A change of
+      // From with an old draft also takes the draft path: that path awaits the
+      // real send, so the old draft goes only after the new mailbox sent it
+      // (§11.6 case 8). The direct path returns before the send runs.
+      if (draftIdRef.current || hasAttachments || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
           accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
@@ -307,7 +333,7 @@ export function ComposePanel({
           artifacts: artifacts.length ? artifacts : undefined,
         });
         await sendDraft(fromId, saved.id);
-        if (staleDraftRef.current) void deleteEmail(staleDraftRef.current);
+        dropStaleDrafts();
         onClose();
       } else {
         await onSend({
@@ -321,7 +347,6 @@ export function ComposePanel({
           artifacts: artifacts.length ? artifacts : undefined,
         });
         if (draftIdRef.current) void deleteEmail(draftIdRef.current);
-        if (staleDraftRef.current) void deleteEmail(staleDraftRef.current);
         // onClose is called by the store after successful send
       }
     } catch (err: any) {
@@ -353,6 +378,7 @@ export function ComposePanel({
           <FromRow
             accounts={accounts}
             value={fromId}
+            defaultValue={accountId}
             onChange={(id) => void changeFrom(id)}
             warning={warning}
             authErrors={authErrors}

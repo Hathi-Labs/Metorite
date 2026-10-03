@@ -3429,7 +3429,7 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 
 #### 11.7.3 EM-T8c — the From row and the second connect
 
-**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-from-row`, no migration).
+**Status.** 🔨 BUILT with review fix round 1, not merged (2026-10-03, branch `email-from-row`, no migration).
 
 1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
    lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
@@ -3457,13 +3457,26 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
   predicate in the SQL. A failure answers `{}`.
 - **The domain warning** reads `work_domain` from the accounts API, so the UI keeps no list of
   consumer domains.
-- **A mailbox that needs a reconnect** follows the rule of the reconnect banner: a sync error, or
-  a 401 of a live call.
-- **An address already present** is found in the browser. Before the connect, the page keeps the
-  ids of the mailboxes of the member in the session storage of the tab. The callback page shows
-  the notice when the id that returns is one of them. The gateway needs no `reconnected` flag.
+- **A mailbox that cannot send** is one whose sign-in failed: a live call answered 401, or the
+  accounts API returns `needs_reconnect`. The gateway sets that flag only for a sync error of the
+  sign-in. A 429 or a 503 during an import also marks the sync as failed, and a send still works
+  then, so it does not block a send. The reconnect banner still shows for any sync error.
+- **A change of From during a save** makes the draft of that save stale. The composer keeps a
+  list of stale drafts and deletes them only once the new mailbox holds the message. While a
+  stale draft exists, a send takes the draft path, which waits for the real send.
+- **The pop-out keeps the From** of the inline reply. The full composer opens on the mailbox of
+  the mail and starts on the chosen From, so it drops the reply target itself.
+- **The picker** is the house dropdown (`SelectButton`), with the label of each mailbox and its
+  address as the hint. A mailbox that cannot send stays in the list, disabled, with the reason.
+- **A reply that leaves its conversation** always shows the warning. When the mailbox of the
+  conversation cannot send, the warning offers no switch back.
+- **An address already present** is found in the browser. Before an ADD, the page keeps the
+  ids of the mailboxes of the member in the session storage of the tab. A reconnect names its
+  mailbox and stores none. The callback page reads the ids once, removes them, and shows the
+  notice when the id that returns is one of them. The gateway needs no `reconnected` flag.
 - **The return** sets `?account=<id>` on the target of the callback, so an old selection in
-  `redirect_after` does not win.
+  `redirect_after` does not win. It also removes `connect=1`, or the add dialog opens again.
+- **"Load older"** that ends after a switch of mailbox writes no rows into the new view.
 - **Integrations** sends Add to `/email?connect=1`. Its own leg, with Gmail and IMAP, is gone.
   Reconnect stays on Integrations, with the mailbox as its hint.
 
@@ -3471,7 +3484,9 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 `src/app/email/lib/fromRow.test.ts` name their fence ids.
 
 **Verification.** `uv run pytest tests/unit/test_email_from_row.py -v -rs` (R8 PASSED, not SKIPPED).
-In `workbench/control_plane`, run `npx tsc --noEmit && npx vitest run src/app/email src/app/integrations`.
+In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/app/integrations src/components/email src/lib/theme`.
+The theme suite holds the design-system fences, so leave it in.
 
 #### 11.7.4 EM-T8d — All inboxes
 

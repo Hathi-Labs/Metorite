@@ -7,7 +7,7 @@ import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
 import { useEmailStore, isRealFolder } from "../lib/emailStore";
 import {
-  fromWarning, mailboxOf, needsReconnect, ownAddresses, replyRecipients, swapSignature,
+  fromWarning, mailboxOf, ownAddresses, replyRecipients, sendBlocked, swapSignature,
 } from "../lib/mailbox";
 import { getSentFrom } from "../lib/api";
 import { FromRow } from "./FromRow";
@@ -55,8 +55,19 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // From another mailbox the reply goes as new mail: the provider cannot
   // answer a mail of another mailbox, and the gateway refuses it (MB-6).
   const sameConversation = fromId === mailboxId;
-  // A draft of the old mailbox, deleted once the new mailbox saved its own.
-  const staleDraftRef = useRef<string | null>(null);
+  // Drafts of an old mailbox, deleted once the new mailbox has its own copy.
+  const staleDraftsRef = useRef<string[]>([]);
+  // The From of NOW, for a save that started before a change of From.
+  const liveFromRef = useRef(fromId);
+  useEffect(() => {
+    liveFromRef.current = fromId;
+  }, [fromId]);
+  /** Delete each draft of an old mailbox. Call it only once the new mailbox
+   *  holds the message, or the member could lose it. */
+  const dropStaleDrafts = () => {
+    for (const id of staleDraftsRef.current) void deleteEmail(id);
+    staleDraftsRef.current = [];
+  };
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
@@ -163,6 +174,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
       setThread((cur) => mergeThread(cur ?? []));
     }
     const acct = mailboxId ?? undefined;
+    // A reply from another mailbox lands there, so that mailbox syncs too.
+    if (fromId && fromId !== acct) void triggerSync(fromId);
     const threadId = email?.threadId;
     if (acct) void triggerSync(acct);
     if (!threadId) return;
@@ -311,11 +324,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const body = replyQuote
       ? `${replyBody.replace(/\s+$/, "")}\n\n${replyQuote}`
       : replyBody;
+    const savingFrom = fromId;
     const handle = setTimeout(async () => {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId: fromId,
+          accountId: savingFrom,
           draftId: draftIdRef.current ?? undefined,
           // Reply/Reply-All thread onto the target message; Forward is
           // standalone, and so is a reply from another mailbox (EM-T8c).
@@ -324,12 +338,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
           subject,
           body,
         });
+        if (liveFromRef.current !== savingFrom) {
+          // The From changed while this save ran: its draft belongs to the
+          // old mailbox (EM-T8c review).
+          staleDraftsRef.current.push(saved.id);
+          setDraftStatus("idle");
+          return;
+        }
         draftIdRef.current = saved.id;
         // A provider draft cannot move between mailboxes (§11.6 case 7).
-        if (staleDraftRef.current) {
-          void deleteEmail(staleDraftRef.current);
-          staleDraftRef.current = null;
-        }
+        dropStaleDrafts();
         setDraftStatus("saved");
       } catch {
         setDraftStatus("idle");
@@ -467,7 +485,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const src = target ?? view;
     setReplyTargetId(src.id);
     setFromPick(null);
-    staleDraftRef.current = null;
+    staleDraftsRef.current = [];
     setSendErr(null);
     // New reply session: forget any previous draft so we don't update it.
     draftIdRef.current = null;
@@ -603,7 +621,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       return;
     }
     const fromAccount = accounts.find((a) => a.id === fromId);
-    if (needsReconnect(fromAccount, authErrors)) {
+    if (sendBlocked(fromAccount, authErrors)) {
       setSendErr(`Reconnect ${fromAccount ? mailboxLabel(fromAccount) : "this mailbox"} to send from it.`);
       return;
     }
@@ -623,7 +641,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
       // reply stays threaded). A plain reply with no draft/attachments still
       // sends fresh.
       const hasAtt = replyAttachments.length > 0 || replyArtifacts.length > 0;
-      if (draftIdRef.current || hasAtt) {
+      // A change of From with an old draft takes the draft path too: it awaits
+      // the real send, so the old draft goes only after the send (§11.6
+      // case 8). The direct path returns before the send runs.
+      if (draftIdRef.current || hasAtt || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
           accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
@@ -637,6 +658,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
           artifacts: replyArtifacts.length ? replyArtifacts : undefined,
         });
         await sendDraft(fromId, saved.id);
+        dropStaleDrafts();
       } else {
         sendEmail({
           accountId: fromId,
@@ -647,10 +669,6 @@ export function EmailDetail({ email }: EmailDetailProps) {
           bodyText: composedReply(replyBody),
           replyToMessageId: isForward || !sameConversation ? undefined : target.providerMessageId,
         });
-      }
-      if (staleDraftRef.current) {
-        void deleteEmail(staleDraftRef.current);
-        staleDraftRef.current = null;
       }
     } catch (e: any) {
       setSendErr(e?.message || "Failed to send");
@@ -696,7 +714,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       getSignatureText(fromId), getSignatureText(next),
     ]);
     if (draftIdRef.current) {
-      staleDraftRef.current = draftIdRef.current;
+      staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
     replyDirty.current = true;
@@ -706,9 +724,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
   const popOutToComposer = () => {
+    // The new mailbox holds the reply once its own draft exists, so the
+    // drafts of an old mailbox can go. Without one they stay, as a copy.
+    if (draftIdRef.current) dropStaleDrafts();
     openCompose({
-      // The pop-out keeps the mailbox of the mail (EM-T8a, MB-2).
+      // The pop-out opens on the mailbox of the mail (EM-T8a, MB-2), and it
+      // keeps the From that the member chose (EM-T8c review). The composer
+      // drops the reply target itself while the From is another mailbox.
       accountId: mailboxId ?? undefined,
+      fromAccountId: fromId && fromId !== mailboxId ? fromId : undefined,
       to: replyTo,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
@@ -1158,6 +1182,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 <FromRow
                   accounts={accounts}
                   value={fromId}
+                  defaultValue={mailboxId ?? undefined}
                   onChange={(id) => void changeFrom(id)}
                   warning={fromWarning({
                     fromId,

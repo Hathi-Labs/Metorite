@@ -70,6 +70,7 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
       ? raw.default_label : undefined,
     colorSlot: optionalSlot(raw.color_slot),
     workDomain: optionalString(raw.work_domain),
+    needsReconnect: raw.needs_reconnect === true,
     unreadCount: Number(raw.unread_count ?? 0),
     syncEnabled: Boolean(raw.sync_enabled ?? true),
     lastSyncedAt: raw.last_synced_at ? String(raw.last_synced_at) : undefined,

@@ -8,6 +8,9 @@ R7 fences named here:
 * ``email-work-domain``: :func:`work_domain` gives the domain of an
   organization address and ``None`` for a consumer domain, and every account
   read returns it. The UI keeps no domain list of its own.
+* ``email-needs-reconnect``: only a sync error of the sign-in sets
+  ``needs_reconnect``. A 429 or a 503 during an import does not, because a
+  send still works then.
 * ``email-sent-from`` (R8): ``GET /email/contacts/sent-from`` maps each
   address to the mailbox of the member that wrote to it last. It reads only
   the mailboxes of the member, it ignores case, and a mailbox of another
@@ -34,6 +37,7 @@ from acb_auth.roles import UserContext, UserRole
 from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.email.mailbox_identity import work_domain
 from gateway.routes.email.transport import accounts, contacts
+from gateway.routes.email.transport.accounts import needs_reconnect
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -58,6 +62,22 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 ])
 def test_the_work_domain(address, want) -> None:
     assert work_domain(address) == want
+
+
+@pytest.mark.parametrize(("status", "error", "want"), [
+    ("error", "Provider authentication failed", True),
+    ("error", "Client error '400 Bad Request' for url "
+              "'https://login.microsoftonline.com/common/oauth2/v2.0/token'", True),
+    ("error", "Missing OAuth credentials for token refresh", True),
+    ("error", "invalid_grant: AADSTS70008 the refresh token has expired", True),
+    ("error", "Server error '503 Service Unavailable' for url "
+              "'https://graph.microsoft.com/v1.0/me/messages'", False),
+    ("error", "Client error '429 Too Many Requests'", False),
+    ("idle", "Provider authentication failed", False),
+    ("error", None, False),
+])
+def test_only_a_failed_sign_in_needs_a_reconnect(status, error, want) -> None:
+    assert needs_reconnect(status, error) is want
 
 
 def _assert_non_priv(app_eng) -> None:

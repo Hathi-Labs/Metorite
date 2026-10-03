@@ -11,7 +11,11 @@
 //   * `email-from-composers`: both composers send, draft and sign from the
 //     chosen mailbox. A reply from another mailbox goes as new mail, and the
 //     draft of the old mailbox goes after the new one saved.
-//   * `email-from-blocked`: a mailbox that needs a reconnect cannot send.
+//   * `email-from-blocked`: only a failed sign-in blocks a send (a live 401,
+//     or the server flag `needs_reconnect`). Any other sync error does not.
+//   * `email-from-race`: a save that a change of From overtook is stale, and
+//     the old drafts go only after the new mailbox holds the message.
+//   * `email-from-popout`: the pop-out keeps the From of the inline reply.
 //   * `email-connect-return` (MB-9, §11.6 case 2): the callback selects the
 //     mailbox of the connect, and names a mailbox that was already connected.
 //   * `email-backfill-per-mailbox` (MB-10): "load older" keys its state by
@@ -24,14 +28,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { FromRow } from "../components/FromRow";
+import { FromRow, fromOptions } from "../components/FromRow";
 import {
   rememberMailboxesBeforeConnect,
   wasConnectedBefore,
   withSelectedMailbox,
 } from "./connect";
 import { backfillKey } from "./emailStore";
-import { fromWarning, needsReconnect, swapSignature } from "./mailbox";
+import { fromWarning, mailboxLabel, sendBlocked, swapSignature } from "./mailbox";
 import type { EmailAccount } from "./types";
 
 const ROOT = join(__dirname, "..");
@@ -93,25 +97,40 @@ describe("the From warning (§11.4)", () => {
     expect(fromWarning({ fromId: "work", accounts: all, recipients: ["bob@outlook.com"] })).toBeNull();
   });
 
-  it("never offers a mailbox that needs a reconnect", () => {
-    const broken = { ...work, syncStatus: "error" };
+  it("never offers a mailbox that cannot send", () => {
+    const broken = { ...work, needsReconnect: true };
     expect(fromWarning({
-      fromId: "home", accounts: [broken, home, side], conversationAccountId: "work",
-      recipients: ["kim@fracktal.in"],
+      fromId: "home", accounts: [broken, home, side], recipients: ["kim@fracktal.in"],
     })).toBeNull();
     expect(fromWarning({
       fromId: "home", accounts: all, recipients: ["kim@fracktal.in"],
       authErrors: { work: "401" },
     })).toBeNull();
   });
+
+  it("still warns that a reply leaves its conversation, with no switch back", () => {
+    const broken = { ...work, needsReconnect: true };
+    const w = fromWarning({
+      fromId: "home", accounts: [broken, home, side], conversationAccountId: "work",
+      recipients: [],
+    });
+    expect(w?.kind).toBe("conversation");
+    expect(w?.switchTo).toBeUndefined();
+  });
 });
 
-describe("a mailbox that needs a reconnect", () => {
-  it("follows the rule of the reconnect banner", () => {
-    expect(needsReconnect({ id: "a", syncStatus: "error" }, {})).toBe(true);
-    expect(needsReconnect({ id: "a", syncStatus: "idle" }, { a: "401" })).toBe(true);
-    expect(needsReconnect({ id: "a", syncStatus: "idle" }, {})).toBe(false);
-    expect(needsReconnect(null, {})).toBe(false);
+describe("a mailbox that cannot send", () => {
+  it("is one with a failed sign-in, never one with any sync error", () => {
+    expect(sendBlocked({ id: "a", needsReconnect: true }, {})).toBe(true);
+    expect(sendBlocked({ id: "a" }, { a: "401" })).toBe(true);
+    // A 429 during an import marks the sync as failed, and a send works then.
+    expect(sendBlocked({ id: "a", needsReconnect: false }, {})).toBe(false);
+    expect(sendBlocked(null, {})).toBe(false);
+  });
+
+  it("has one label rule, shared with the chip", () => {
+    expect(mailboxLabel(work)).toBe("Fracktal");
+    expect(mailboxLabel({ ...work, displayLabel: " " })).toBe("vj@fracktal.in");
   });
 });
 
@@ -133,18 +152,27 @@ describe("the From row", () => {
     expect(render([home])).toBe("");
   });
 
-  it("names each mailbox by label and address", () => {
+  it("draws the house dropdown with the sending mailbox", () => {
     const html = render(all);
     expect(html).toContain(">From<");
-    expect(html).toContain("Fracktal · vj@fracktal.in");
-    expect(html).toContain('aria-label="Send from"');
+    expect(html).toContain("Personal");
+    expect(html).not.toMatch(/<select\b/);
   });
 
-  it("marks a mailbox to reconnect, and blocks it when it sends", () => {
-    const html = render(all, { work: "401" });
-    expect(html).toContain("Fracktal · vj@fracktal.in (reconnect to send)");
-    const blocked = render(all, { home: "401" });
-    expect(blocked).toContain("Reconnect Personal to send from it");
+  it("offers each mailbox by label, with the address as its hint", () => {
+    expect(fromOptions(all, "home", {})).toEqual([
+      { value: "work", label: "Fracktal", hint: "vj@fracktal.in", keywords: "vj@fracktal.in", disabled: false },
+      { value: "home", label: "Personal", hint: "vj@outlook.com", keywords: "vj@outlook.com", disabled: false },
+      { value: "side", label: "Constellation", hint: "vj@constellation.io", keywords: "vj@constellation.io", disabled: false },
+    ]);
+  });
+
+  it("marks a mailbox that cannot send, and blocks it when it is the From", () => {
+    const [w] = fromOptions(all, "home", { work: "401" });
+    expect(w).toMatchObject({ disabled: true, hint: "vj@fracktal.in · reconnect to send" });
+    // The current mailbox stays choosable, so the member can see why.
+    expect(fromOptions(all, "work", { work: "401" })[0].disabled).toBe(false);
+    expect(render(all, { home: "401" })).toContain("Reconnect Personal to send from it");
   });
 });
 
@@ -173,16 +201,44 @@ describe("both composers act in the chosen mailbox (D-EM-20)", () => {
     expect(page).toContain("await sendEmail({ ...params, accountId: sender });");
   });
 
-  it("deletes the draft of the old mailbox once the new one saved", () => {
+  it("sends a reply from its own mailbox with its target", () => {
+    expect(compose).toContain("replyToMessageId: replyTarget,");
+    expect(compose).not.toMatch(/replyToMessageId: replyToMessageId\b/);
+  });
+
+  it("keeps a save that a change of From overtook out of the new mailbox", () => {
     for (const src of [compose, detail]) {
-      expect(src).toContain("staleDraftRef.current = draftIdRef.current;");
-      expect(src).toContain("void deleteEmail(staleDraftRef.current);");
+      expect(src).toContain("const savingFrom = fromId;");
+      expect(src).toContain("if (liveFromRef.current !== savingFrom) {");
+      expect(src).toContain("staleDraftsRef.current.push(saved.id);");
+      expect(src).toContain("staleDraftsRef.current.push(draftIdRef.current);");
     }
   });
 
-  it("refuses a send from a mailbox that needs a reconnect", () => {
+  it("drops the old drafts only after the new mailbox holds the message", () => {
+    for (const src of [compose, detail]) {
+      expect(src).toContain("staleDraftsRef.current.length > 0) {");
+      expect(src).toContain("dropStaleDrafts();");
+      // The direct path returns before the send runs, so it deletes none.
+      expect(src).not.toMatch(/sendEmail\([\s\S]{0,400}dropStaleDrafts/);
+    }
+  });
+
+  it("refuses a send from a mailbox that cannot send", () => {
+    expect(compose).toContain("const fromBlocked = sendBlocked(fromAccount, authErrors);");
     expect(compose).toContain("if (fromBlocked) {");
-    expect(detail).toContain("if (needsReconnect(fromAccount, authErrors)) {");
+    expect(detail).toContain("if (sendBlocked(fromAccount, authErrors)) {");
+  });
+
+  it("keeps the From of the inline reply in the pop-out", () => {
+    expect(detail).toContain("fromAccountId: fromId && fromId !== mailboxId ? fromId : undefined,");
+    expect(compose).toContain("setFromPick(defaultFromId && defaultFromId !== accountId");
+    expect(compose).toContain("void getSignatureText(defaultFromId || accountId)");
+    expect(codeOnly(read("page.tsx"))).toContain("defaultFromId={composeDefaults?.fromAccountId}");
+  });
+
+  it("syncs the mailbox that sent a reply from another mailbox", () => {
+    expect(detail).toContain("if (fromId && fromId !== acct) void triggerSync(fromId);");
   });
 });
 
@@ -192,6 +248,7 @@ describe("the return after a connect (MB-9)", () => {
     return {
       getItem: (k: string) => m.get(k) ?? null,
       setItem: (k: string, v: string) => void m.set(k, v),
+      removeItem: (k: string) => void m.delete(k),
     };
   };
 
@@ -202,19 +259,33 @@ describe("the return after a connect (MB-9)", () => {
     expect(withSelectedMailbox("/email", null)).toBe("/email");
   });
 
-  it("tells a reconnect from a new mailbox", () => {
+  it("drops connect=1, so the add dialog does not open again", () => {
+    expect(withSelectedMailbox("/email?connect=1&provider=microsoft", "new")).toBe(
+      "/email?account=new");
+  });
+
+  it("tells an add that found a known mailbox, and reads the ids once", () => {
     const store = memory();
     rememberMailboxesBeforeConnect(["a", "b"], store);
     expect(wasConnectedBefore("a", store)).toBe(true);
+    // Read once: a later callback (a reconnect stores no ids) finds none.
+    expect(wasConnectedBefore("a", store)).toBe(false);
+    rememberMailboxesBeforeConnect(["a", "b"], store);
     expect(wasConnectedBefore("c", store)).toBe(false);
-    expect(wasConnectedBefore(null, store)).toBe(false);
     expect(wasConnectedBefore("a", null)).toBe(false);
+  });
+
+  it("stores the ids for an add only, never for a reconnect", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toMatch(/if \(!loginHint\) \{\s*rememberMailboxesBeforeConnect\(/);
   });
 
   it("is wired into the connect and the callback page", () => {
     const page = codeOnly(read("page.tsx"));
     expect(page).toContain(
       "rememberMailboxesBeforeConnect(useEmailStore.getState().accounts.map((a) => a.id));");
+    expect(codeOnly(read("lib/emailStore.ts"))).toContain(
+      "if (backfillKey(now.selectedAccountId, now.selectedFolder) !== key) {");
     const callback = codeOnly(read("oauth/callback/page.tsx"));
     expect(callback).toContain("withSelectedMailbox(safeRedirectTarget(redirectAfter), accountId)");
     expect(callback).toContain("wasConnectedBefore(accountId)");
@@ -250,5 +321,6 @@ describe("Add on Integrations opens the connect flow of Email (MB-16)", () => {
     expect(integrations).not.toContain("AddEmailModal");
     expect(integrations).not.toContain("AddIMAPModal");
     expect(integrations).not.toContain('onConnect("imap")');
+    expect(integrations).not.toContain("IMAP/SMTP");
   });
 });

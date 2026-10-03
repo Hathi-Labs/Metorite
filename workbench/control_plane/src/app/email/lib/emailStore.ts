@@ -293,6 +293,8 @@ interface EmailState {
     /** The mailbox that sends. A reply carries the mailbox of the mail it
      *  answers. Absent = the selected mailbox (EM-T8a, D-EM-20). */
     accountId?: string;
+    /** The From that an inline reply chose before a pop-out (EM-T8c). */
+    fromAccountId?: string;
     to: string;
     subject: string;
     replyToBody?: string;
@@ -373,7 +375,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */
@@ -935,6 +937,17 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         page: nextPage,
         pageSize: PAGE_SIZE,
       });
+      // The member may have switched mailbox or folder while this ran. Then
+      // the page of the old view must not land in the new one (§11.6 case 20).
+      const now = get();
+      if (backfillKey(now.selectedAccountId, now.selectedFolder) !== key) {
+        set({
+          backfilling: false,
+          backfillToken: { ...now.backfillToken, [key]: res.next_page_token },
+          backfillExhausted: { ...now.backfillExhausted, [key]: res.exhausted },
+        });
+        return;
+      }
       const seen = new Set(emails.map((e) => e.id));
       const merged = [...emails, ...result.emails.filter((e) => !seen.has(e.id))];
       set({

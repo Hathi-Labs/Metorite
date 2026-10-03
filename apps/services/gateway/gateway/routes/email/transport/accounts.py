@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -100,6 +101,10 @@ class EmailAccountModel(BaseModel):
     #: The domain of the address when it is an organization domain, else
     #: ``None``. The From row warns from it (EM-T8c, §11.4).
     work_domain: str | None = None
+    #: True when the last sync failed on the sign-in of the provider, so the
+    #: mailbox cannot send until the member reconnects it. Any other sync
+    #: error leaves it False: a send does not read the sync status (EM-T8c).
+    needs_reconnect: bool = False
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -201,6 +206,26 @@ async def _unread_counts(
     return {str(r.account_id): int(r.unread) for r in rows}
 
 
+#: The texts of a sync error that mean the sign-in failed. The scheduler
+#: writes ``str(exc)``: a failed ``authenticate``, a refused refresh at the
+#: token endpoint of Microsoft or Google, or a blob with no refresh token.
+_AUTH_FAILURE = re.compile(
+    r"Provider authentication failed|oauth2/v2\.0/token|oauth2\.googleapis\.com/token"
+    r"|accounts\.google\.com/o/oauth2|Missing OAuth credentials|invalid_grant"
+    r"|AADSTS(?:50173|50076|50078|50079|700082|70008|54005|65001|500011)\b",
+    re.IGNORECASE,
+)
+
+
+def needs_reconnect(sync_status: str | None, sync_error: str | None) -> bool:
+    """True when the last sync failed on the sign-in (EM-T8c review).
+
+    Only a sign-in failure blocks a send. A 429 or a 503 during an import also
+    writes ``sync_status = 'error'``, and a send still works then.
+    """
+    return sync_status == "error" and bool(_AUTH_FAILURE.search(sync_error or ""))
+
+
 async def _display_labels(db: Any, owner: str) -> tuple[dict[str, str], dict[str, str]]:
     """The display label of each mailbox of ``owner``, in one read.
 
@@ -266,6 +291,7 @@ async def list_accounts(
                 display_label=labels.get(str(row.id), row.email_address),
                 default_label=defaults.get(str(row.id), row.email_address),
                 work_domain=work_domain(row.email_address),
+                needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
                 **_progress(row),
             ))
         return accounts
@@ -507,6 +533,7 @@ async def set_default_account(
             display_label=labels.get(str(row.id), row.email_address),
             default_label=defaults.get(str(row.id), row.email_address),
             work_domain=work_domain(row.email_address),
+            needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
             **_progress(row),
         )
 
@@ -792,7 +819,7 @@ async def update_account(
                     SET {', '.join(set_clauses)}
                     WHERE id = :id AND user_id = :user_id
                     RETURNING id, provider, email_address, label, avatar_color,
-                              sync_enabled, sync_status, last_synced_at,
+                              sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,
                               onboarding_done_at, color_slot, {_PROGRESS_COLUMNS}"""
             ),
@@ -811,6 +838,7 @@ async def update_account(
         avatar_color=row.avatar_color or "#6366f1",
         sync_enabled=row.sync_enabled,
         sync_status=row.sync_status or "idle",
+        sync_error=row.sync_error,
         last_synced_at=row.last_synced_at.isoformat()
         if row.last_synced_at else None,
         initial_sync_done=bool(row.initial_sync_done),
@@ -820,6 +848,7 @@ async def update_account(
         display_label=labels.get(str(row.id), row.email_address),
         default_label=defaults.get(str(row.id), row.email_address),
         work_domain=work_domain(row.email_address),
+        needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
         **_progress(row),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels

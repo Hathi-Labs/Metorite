@@ -5,22 +5,44 @@
  * `project-docs/specs/email_app_master_plan.md`, decision D-EM-20.
  *
  * The sending mailbox is visible and never silent. The row shows when the
- * member has two or more mailboxes: the chip of the sending mailbox and a
- * picker of every mailbox. A mailbox that needs a reconnect cannot send, so
- * the picker marks it and the composer blocks the send. One warning at a time
+ * member has two or more mailboxes: the chip of the sending mailbox and the
+ * house dropdown (`SelectButton`) of every mailbox, by label with the address
+ * as its hint. A mailbox that cannot send until a reconnect is offered but
+ * not choosable, and the composer blocks a send from it. One warning at a time
  * shows under the row, with a one-click switch to the mailbox that fits
  * better (`fromWarning` in `lib/mailbox.ts`).
  */
 
 import Button from "@/components/ui/Button";
-import { Select } from "@/components/ui/Input";
+import { SelectButton, type SelectOption } from "@/components/ui/SelectButton";
 import type { EmailAccount } from "../lib/types";
-import { needsReconnect, type FromWarning } from "../lib/mailbox";
-import { MailboxChip, mailboxLabel } from "./MailboxChip";
+import { mailboxLabel, sendBlocked, type FromWarning } from "../lib/mailbox";
+import { MailboxChip } from "./MailboxChip";
+
+/** The options of the From dropdown. A mailbox that cannot send stays in the
+ *  list, disabled, with the reason as its hint, unless it is the current one,
+ *  so the member can see why the send stops. */
+export function fromOptions(
+  accounts: ReadonlyArray<EmailAccount>,
+  value: string,
+  authErrors: Readonly<Record<string, string>>,
+): SelectOption[] {
+  return accounts.map((a) => {
+    const blocked = sendBlocked(a, authErrors);
+    return {
+      value: a.id,
+      label: mailboxLabel(a),
+      hint: blocked ? `${a.emailAddress} · reconnect to send` : a.emailAddress,
+      keywords: a.emailAddress,
+      disabled: blocked && a.id !== value,
+    };
+  });
+}
 
 export function FromRow({
   accounts,
   value,
+  defaultValue,
   onChange,
   warning,
   authErrors,
@@ -28,6 +50,9 @@ export function FromRow({
 }: {
   accounts: EmailAccount[];
   value: string;
+  /** The mailbox the composer opened on. Off it, the dropdown shows a single
+   *  arrow, so the member sees that the From changed. */
+  defaultValue?: string;
   onChange: (accountId: string) => void;
   warning: FromWarning | null;
   authErrors: Readonly<Record<string, string>>;
@@ -36,28 +61,21 @@ export function FromRow({
 }) {
   if (accounts.length < 2) return null;
   const current = accounts.find((a) => a.id === value) ?? null;
-  const blocked = needsReconnect(current, authErrors);
+  const blocked = sendBlocked(current, authErrors);
+  const switchTo = warning?.switchTo;
   return (
     <div className="space-y-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className={labelClassName}>From</span>
         {current ? <MailboxChip account={current} /> : null}
-        <Select
-          inputSize="sm"
-          className="min-w-0 flex-1"
+        <SelectButton
+          label="Send from"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
-          aria-label="Send from"
-        >
-          {accounts.map((a) => {
-            const reconnect = needsReconnect(a, authErrors);
-            return (
-              <option key={a.id} value={a.id} disabled={reconnect && a.id !== value}>
-                {`${mailboxLabel(a)} · ${a.emailAddress}${reconnect ? " (reconnect to send)" : ""}`}
-              </option>
-            );
-          })}
-        </Select>
+          defaultValue={defaultValue ?? value}
+          options={fromOptions(accounts, value, authErrors)}
+          widthClass="max-w-[18rem]"
+          onChange={onChange}
+        />
       </div>
       {blocked && current ? (
         <p role="alert" className="text-[11px] text-destructive">
@@ -66,16 +84,18 @@ export function FromRow({
       ) : warning ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] text-foreground">
           <span className="min-w-0 flex-1">{warning.text}</span>
-          <Button
-            variant="ghost"
-            size="none"
-            layout=""
-            type="button"
-            className="whitespace-nowrap px-1 text-[11px] font-medium text-primary"
-            onClick={() => onChange(warning.switchTo)}
-          >
-            Send from {warning.switchLabel}
-          </Button>
+          {switchTo ? (
+            <Button
+              variant="text"
+              size="none"
+              layout=""
+              type="button"
+              className="whitespace-nowrap px-1"
+              onClick={() => onChange(switchTo)}
+            >
+              Send from {warning.switchLabel}
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>

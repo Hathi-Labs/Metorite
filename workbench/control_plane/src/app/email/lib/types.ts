@@ -67,6 +67,9 @@ export interface EmailAccount {
   /** The domain of the address when it is an organization domain, else null.
    *  The From row warns from it (EM-T8c). */
   workDomain?: string | null;
+  /** True when the last sync failed on the sign-in, so the mailbox cannot
+   *  send until the member reconnects it (EM-T8c review). */
+  needsReconnect?: boolean;
   /**
    * The slot of the categorical ramp of the mailbox chip, 1 to 12 (EM-T8b,
    * D-EM-21). Null or absent: the chip hashes the mailbox id.

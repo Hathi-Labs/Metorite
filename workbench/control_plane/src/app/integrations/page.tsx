@@ -1128,10 +1128,6 @@ function EmailTab() {
                   </a>
                 )}
               </div>
-              <p className="text-[10px] text-muted-foreground mt-2">
-                You can still use <strong className="text-foreground">IMAP/SMTP</strong> to
-                connect email accounts without OAuth setup.
-              </p>
             </div>
           </div>
         </div>
@@ -1253,8 +1249,6 @@ function EmailTab() {
         )}
       </div>
 
-
-
       {/* Link to full email client */}
       <div className="px-4 py-2 border-t border-border shrink-0 flex items-center gap-2">
         <a href="/email" className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
@@ -1264,6 +1258,19 @@ function EmailTab() {
     </div>
   );
 }
+
+// ===========================================================================
+// MCPS TAB — MCP server registry (coming soon)
+// ===========================================================================
+
+const MCP_EXAMPLES = [
+  { name: "filesystem",    desc: "Read & write local files — give agents persistent workspace storage",      color: "text-sky-400",     bg: "bg-sky-500/10",     border: "border-sky-500/20" },
+  { name: "postgres",      desc: "Query your databases directly — agents can run SQL for reporting & ops",   color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
+  { name: "brave-search",  desc: "Live web search — agents can research topics and fetch fresh information", color: "text-orange-400",   bg: "bg-orange-500/10",  border: "border-orange-500/20" },
+  { name: "github",        desc: "Full GitHub API access — PRs, issues, code review, commit history",       color: "text-violet-400",  bg: "bg-violet-500/10",  border: "border-violet-500/20" },
+  { name: "slack",         desc: "Read & post to Slack channels — agents can coordinate with your team",    color: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/20" },
+  { name: "custom",        desc: "Any MCP-compliant server — point to a URL and register custom tools",     color: "text-muted-foreground", bg: "bg-secondary", border: "border-border" },
+];
 
 function McpsTab() {
   const [servers, setServers] = useState<any[]>([]);
