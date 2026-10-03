@@ -31,7 +31,9 @@ import {
   mailboxInitial,
   mailboxLabel,
 } from "../components/MailboxChip";
-import { seedLabel, slotToStored, storedToSlot } from "../components/MailboxEditDialog";
+import {
+  editPayload, seedLabel, slotToStored, storedToSlot,
+} from "../components/MailboxEditDialog";
 
 const ROOT = join(__dirname, "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf-8");
@@ -136,8 +138,17 @@ describe("a save of the colour alone keeps the name (EM-T8b review)", () => {
   });
 
   it("sends the label only when the member changed the field", () => {
+    // Behaviour, not text: the payload of an untouched field has no label.
+    expect(editPayload({ label: "Work", labelTouched: false, slot: 6 })).toEqual({ colorSlot: 7 });
+    expect(editPayload({ label: " Work ", labelTouched: true, slot: 0 })).toEqual({
+      label: "Work", colorSlot: 1,
+    });
+    expect(editPayload({ label: "  ", labelTouched: true, slot: 0 })).toEqual({
+      label: "", colorSlot: 1,
+    });
     const dialog = codeOnly(read("components/MailboxEditDialog.tsx"));
-    expect(dialog).toContain("...(labelTouched ? { label: label.trim() } : {}),");
+    expect(dialog).toContain("editPayload({ label, labelTouched, slot })");
+    expect(dialog).toContain("const [labelTouched, setLabelTouched] = useState(false);");
     const page = codeOnly(read("page.tsx"));
     expect(page).toContain("...(edit.label !== undefined ? { label: edit.label } : {}),");
   });

@@ -42,6 +42,19 @@ export interface MailboxEdit {
   colorSlot: number;
 }
 
+/** What a save sends. The label goes only when the member changed the field,
+ *  so a save of the colour alone never rewrites the name (EM-T8b review). */
+export function editPayload(edit: {
+  label: string;
+  labelTouched: boolean;
+  slot: number;
+}): MailboxEdit {
+  return {
+    ...(edit.labelTouched ? { label: edit.label.trim() } : {}),
+    colorSlot: slotToStored(edit.slot),
+  };
+}
+
 /** The text the name field starts with: the label the member chose, and
  *  blank for a mailbox with no chosen label. The gateway trims a chosen label
  *  for display, so the comparison trims too. */
@@ -94,10 +107,7 @@ function MailboxEditForm({
     if (busy) return;
     setBusy(true);
     setFailure(null);
-    const refused = await onSave(account.id, {
-      ...(labelTouched ? { label: label.trim() } : {}),
-      colorSlot: slotToStored(slot),
-    });
+    const refused = await onSave(account.id, editPayload({ label, labelTouched, slot }));
     setBusy(false);
     if (refused) setFailure(refused);
     else onClose();
