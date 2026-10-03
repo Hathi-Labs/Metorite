@@ -141,3 +141,74 @@ def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> 
     # The own tool the model called is the gated copy, not the bare function.
     tools = {t.name: t for t in built[0].default_options["tools"] if hasattr(t, "name")}
     assert getattr(tools["my_tasks_accounts"].func, "__cc_gated__", False)
+
+
+# ── 3. The gate never mutates a tool that agents share ───────────────────────
+
+
+async def _shared_probe_tool(text: str, count: int = 1) -> str:
+    """Echo the text.
+
+    Args:
+        text: The text to echo.
+        count: How many times.
+    """
+    return text * count
+
+
+def test_a_shared_module_level_tool_is_never_mutated(monkeypatch) -> None:
+    """R7 fence for the copy in ``_gate_own_maf_tools``.
+
+    A factory can hand the SAME module-level ``FunctionTool`` to every agent
+    it builds, and one process serves many runs. If the gate wrapped that
+    object in place, the next agent would hold a tool that is already
+    wrapped, and the shared tool would change for every caller in the
+    process. Each agent must get its own gated copy. The shared object keeps
+    its original function and its schema.
+    """
+    import json
+
+    import openai
+    from agent_framework import Agent, FunctionTool
+    from agent_framework.openai import OpenAIChatCompletionClient
+    from orchestrator._tool_injection import _inject_agent_tools
+
+    monkeypatch.delenv("AGENT_PERMISSION_MODE", raising=False)  # enforce
+    shared = FunctionTool(
+        func=_shared_probe_tool, name="shared_probe_tool", description="Echo the text.",
+    )
+    original_func = shared.func
+    spec_before = json.dumps(shared.to_json_schema_spec(), sort_keys=True)
+
+    def _agent(name: str) -> Agent:
+        client = OpenAIChatCompletionClient(
+            model="tier-balanced",
+            async_client=openai.AsyncOpenAI(base_url="http://127.0.0.1:9/v1", api_key="x"),
+        )
+        return Agent(client=client, instructions="x", name=name, tools=[shared])
+
+    first, second = _agent("probe-one"), _agent("probe-two")
+    # The precondition that makes this test mean something: each agent holds
+    # the very object the module holds.
+    assert first.default_options["tools"][0] is shared
+    assert second.default_options["tools"][0] is shared
+
+    _inject_agent_tools([first], agent_name="probe-one", tool_scope=["ask_questions"])
+    _inject_agent_tools([second], agent_name="probe-two", tool_scope=["ask_questions"])
+
+    assert shared.func is original_func, "the gate rewrote the shared tool in place"
+    assert not getattr(shared.func, "__cc_gated__", False)
+    assert json.dumps(shared.to_json_schema_spec(), sort_keys=True) == spec_before
+
+    held = []
+    for agent in (first, second):
+        [tool] = [
+            t for t in agent.default_options["tools"]
+            if getattr(t, "name", None) == "shared_probe_tool"
+        ]
+        assert tool is not shared, "the agent holds the shared object, not a copy"
+        assert getattr(tool.func, "__cc_gated__", False), "the agent's copy is not gated"
+        assert tool.func.__wrapped__ is original_func, "the copy wraps a wrapper"
+        assert json.dumps(tool.to_json_schema_spec(), sort_keys=True) == spec_before
+        held.append(tool)
+    assert held[0] is not held[1], "the two agents share one gated copy"
