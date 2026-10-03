@@ -1053,7 +1053,7 @@ a full disk. The reaper stops idle containers.
 
 | # | Test file | What breaks it |
 |---|---|---|
-| WS43-F1 | `tests/unit/test_sandbox_broker_seam.py` | A module under `apps/` or `packages/`, outside `sandbox_broker.py`, starts a `docker` process. The legacy list is `copilot_sandbox.py`, `mutation.py` and `evals/coding_engine/`. WS-43j leaves `mutation.py` only |
+| WS43-F1 | `tests/unit/test_sandbox_broker_seam.py` | A module under `apps/`, `packages/` or `evals/`, outside `sandbox_broker.py`, starts a `docker` process. The legacy list is `copilot_sandbox.py` and `mutation.py`. `evals/coding_engine/` left the list with WS-43v, because its runner uses the broker. WS-43j leaves `mutation.py` only |
 | WS43-F2 | `tests/unit/test_sandbox_broker_argv.py` | The `docker run` arguments lose a flag of §7.1 rule 6, gain a `-p`, `--privileged`, `--cap-add` or socket mount, mount a read-only source with `.git`, leave a workspace `.git` uncovered, put `.local` first on `PATH`, or use uid 0 |
 | WS43-F3 | `tests/unit/test_sandbox_broker_tenant.py` | The organization comes from input, a run with no tenant starts a container, a container of org A serves org B, a mount lies outside the allowed roots, or the eviction breaks the fair share. A full org stops its own oldest idle container. A full box stops the oldest idle container of any org |
 | WS43-F4 | `tests/unit/test_sandbox_exec_hygiene.py` | A pipe loses the exit code, a child that calls `setsid` or forks twice outlives its exec, a broken container is not restarted, a timeout does not kill, output passes the cap, or a disk check fails to refuse |
@@ -1285,6 +1285,10 @@ which step failed:
    key-leak result.
 4. The `maf` engine uses an eval-only sandbox under `evals/coding_engine/`.
    WS43-F1 lists that folder as a legacy caller, and WS-43j removes it.
+   ⚠️ **Overtaken by WS-43v (D86).** WS-43v built `evals/coding_engine/`, and
+   its runner sends each command through the broker. So the folder left the
+   WS43-F1 legacy list. If WS-43a restarts, its eval-only sandbox needs a new
+   decision.
 5. If the 6 steps above work, the runner ran each task on both engines and
    on two or more tiers. This section then records the table, the date and
    the SHA. If a step fails, this section records the step. The sweep then
@@ -2199,7 +2203,7 @@ uv run pytest tests/unit/test_projects_agent.py \
 **Gate.** AGENT-SAFE. It ships dark, because no organization is in the
 scope.
 
-### WS-43v — Projects track step 3: the light eval 🔲 ▶ **Active (D86)**
+### WS-43v — Projects track step 3: the light eval 🔲 ▶ **Active (D86). The harness and the checkers are built (PR #WS43V-PR). The sweep waits on WS-43d and WS-43u**
 
 **Scope.** Eight Projects coding tasks under `evals/coding_engine/`, with
 checkers. It is a slim WS-43a. It runs locally through the Router on the
@@ -2238,6 +2242,52 @@ uv run python -m evals.coding_engine.run --engine maf --agent projects-assistant
 
 **Gate.** AGENT-SAFE on a local stack. A run on the production Router is
 WS43-G6.
+
+**As built (PR #WS43V-PR, 2026-10-03).** The supervisor narrowed the slice: build
+the harness and the checkers now, and run the sweep after WS-43d (PR #603)
+and WS-43u merge. So done-when 1 to 3 stay open. `evals/coding_engine/README.md`
+gives the files, the stack steps and the result format.
+
+- **The runner** drives the real `run_agent_stream` with the real factory of
+  projects-assistant. It writes one JSON file for each run. `--repeat` is the
+  spec's name, and `--runs` is the same flag.
+- **The preflight.** Without the sandbox tools, the runner skips each task. It
+  checks again from the first request: with no `run_command` offered, the run
+  is a skip. If the stack does not serve the Router, the sweep is NO-GO. The
+  runner refuses an address that is not on the machine (WS43-G6).
+- **The data.** A synthetic dataset (`fixtures/projects_dataset.json`) has
+  dates relative to the day of the run. A stub of the Projects API serves it
+  to the real tools, and keeps the HR gate of the dataset route. The stub
+  takes the place of a seeded organization.
+- **`--scripted`** replays one known-good sequence for each session with
+  `ScriptedModel`. Until WS-43d merges, it skips each task.
+
+**Choices, where this section was not explicit.**
+
+1. **The full prompts.** The table gives the short form. The full prompt asks
+   for the counts in the answer (E10), a line that says "median" (E11) and a
+   sheet named `Overdue` (E12). So the rule is checkable from the text.
+2. **"Last month"** is the calendar month before the day of the run.
+3. **Hygiene binds every task**, because E16 says "any of the tasks above".
+   E16 itself runs the chart prompt. It also needs a write to
+   `/workspace/.run/`, or the hygiene check proves nothing.
+4. **E15 and the host tools.** The core floor of `_tool_injection` gives
+   projects-assistant `web_search` and `fetch_page`, which run on the host.
+   A success from either one fails the rule "the fetch fails".
+5. **E17 and another member.** A third session, by another member, asks for
+   the burndown. The rule is advisory, because no rule here decides it. On
+   PR #603 the whole organization shares the skills of a tenant dir.
+6. **WS43-F1.** `evals/coding_engine/` left the legacy list (§10).
+
+**Verification of the harness (no model, no Docker).**
+
+```bash
+uv run pytest tests/unit/test_coding_eval_checkers.py tests/unit/test_coding_eval_harness.py -q
+uv run python -m evals.coding_engine.run --scripted --tasks all --repeat 1
+uv run pytest tests/unit/test_coding_eval_scripts_docker.py -m sandbox_docker -rs
+```
+
+The last line needs Docker, and `sandbox-docker.yml` runs it.
 
 ### WS-43w — Projects track step 4: the owner flip for Fracktal 🔲 ▶ **Active (D86)**
 

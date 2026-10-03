@@ -150,3 +150,6 @@ skill-observations/
 
 # Redis snapshot from a locally-run redis-server (dev/verification only)
 dump.rdb
+
+# WS-43v: the results and the state dirs of the coding eval (evals/coding_engine/run.py)
+evals/coding_engine/results/
