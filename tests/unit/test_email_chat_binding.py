@@ -40,6 +40,10 @@ R7 fences named here:
   The test reads every ``return`` of those tools, not a fixed list.
 * ``email-chat-no-mailbox`` (review round 1): with no mailbox connected, a
   send and each tool of item 3 change nothing and say so.
+* ``email-chat-binding-skips-separate`` (EM-T8g-1, §11.7.7 item 5): the
+  question and the bind hold only the mailboxes in All inboxes. A
+  ``sent-from`` answer that names a separate mailbox counts as no answer.
+  When no mailbox is in All inboxes, the full list stays.
 
 Run::
 
@@ -78,15 +82,22 @@ BOX_A = "0a0a0a0a-0000-4000-8000-00000000000a"
 BOX_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 
 # Both mailboxes carry the raw label "Outlook", the way a connect writes it.
-# Only ``display_label`` tells them apart (MB-15, §11.4).
+# Only ``display_label`` tells them apart (MB-15, §11.4). Both are in All
+# inboxes, as each row of migration 229 is until the member changes it.
 TWO = [
     {"id": BOX_A, "email_address": "dana@fracktal.in", "label": "Outlook",
-     "display_label": "Fracktal", "unread_count": 2},
+     "display_label": "Fracktal", "unread_count": 2, "in_all_inboxes": True},
     {"id": BOX_B, "email_address": "dana@outlook.com", "label": "Outlook",
-     "display_label": "Personal", "unread_count": 1},
+     "display_label": "Personal", "unread_count": 1, "in_all_inboxes": True},
 ]
 A_TEXT = "Fracktal · dana@fracktal.in"
 B_TEXT = "Personal · dana@outlook.com"
+
+# EM-T8g-1: a third mailbox that the member keeps separate (D-EM-28).
+BOX_C = "0c0c0c0c-0000-4000-8000-00000000000c"
+NDA = {"id": BOX_C, "email_address": "dana@client-nda.test", "label": "Outlook",
+       "display_label": "Client NDA", "unread_count": 4, "in_all_inboxes": False}
+C_TEXT = "Client NDA · dana@client-nda.test"
 
 # Two mailboxes hold the thread id "t1" (edge case 13). "t3" is in B only.
 THREAD = [
@@ -638,3 +649,110 @@ async def test_the_send_card_shows_each_bcc_and_each_file_before_a_long_subject(
     assert "records@evil.test" in shown
     assert "outputs/payroll.xlsx" in shown
     assert shown.index("payroll.xlsx") < shown.index("Subject:")
+
+
+# ── email-chat-binding-skips-separate (EM-T8g-1) ─────────────────────────────
+
+def _separate(*rows: dict[str, Any]) -> list[dict[str, Any]]:
+    """Copies of ``rows``, each one kept separate."""
+    return [{**r, "in_all_inboxes": False} for r in rows]
+
+
+@pytest.mark.parametrize(("tool", "kwargs"), RULE_TOOLS, ids=[t for t, _ in RULE_TOOLS])
+async def test_the_rule_question_leaves_out_a_separate_mailbox(
+    gw: Gateway, tool: str, kwargs: dict[str, Any],
+) -> None:
+    gw.accounts = [*TWO, NDA]
+    out = await getattr(agents, tool)(**kwargs)
+    assert out.startswith("Which mailbox?")
+    assert f"• {A_TEXT} (account_id {BOX_A})" in out
+    assert f"• {B_TEXT} (account_id {BOX_B})" in out
+    assert BOX_C not in out and C_TEXT not in out
+    assert gw.writes == [] and gw.cards == []
+
+
+@pytest.mark.parametrize(("tool", "kwargs"), RULE_TOOLS, ids=[t for t, _ in RULE_TOOLS])
+async def test_one_pooled_mailbox_binds_and_never_the_separate_one(
+    gw: Gateway, tool: str, kwargs: dict[str, Any],
+) -> None:
+    gw.accounts = [NDA, TWO[0]]
+    out = await getattr(agents, tool)(**kwargs)
+    assert not out.startswith("Which mailbox?")
+    assert gw.writes, f"{tool} wrote nothing"
+    for _verb, path, body in gw.writes:
+        assert BOX_A in f"{path} {body}", (tool, path, body)
+        assert BOX_C not in f"{path} {body}", (tool, path, body)
+
+
+async def test_with_no_pooled_mailbox_the_full_list_stays(gw: Gateway) -> None:
+    gw.accounts = _separate(*TWO)
+    out = await agents.create_rule(name="Bank")
+    assert out.startswith("Which mailbox?")
+    assert f"• {A_TEXT} (account_id {BOX_A})" in out
+    assert f"• {B_TEXT} (account_id {BOX_B})" in out
+    # One mailbox that is separate is still the mailbox of the member.
+    gw.accounts = _separate(TWO[1])
+    await agents.create_rule(name="Bank")
+    assert gw.writes and all(BOX_B in f"{p} {b}" for _v, p, b in gw.writes)
+
+
+async def test_a_sent_from_answer_that_names_a_separate_mailbox_is_no_answer(
+    gw: Gateway,
+) -> None:
+    gw.accounts = [*TWO, NDA]
+    gw.sent_from = {"kim@contoso.test": BOX_C}
+    out = await agents.send_email(body="Hi", to=["kim@contoso.test"], subject="S")
+    assert out.startswith("Send from which mailbox?")
+    assert gw.writes == [] and gw.cards == []
+    assert f"• {A_TEXT} (account_id {BOX_A})" in out
+    assert f"• {B_TEXT} (account_id {BOX_B})" in out
+    assert BOX_C not in out and C_TEXT not in out
+
+
+async def test_a_sent_from_answer_that_names_a_pooled_mailbox_binds(
+    gw: Gateway,
+) -> None:
+    gw.accounts = [*TWO, NDA]
+    gw.sent_from = {"kim@contoso.test": BOX_B}
+    await agents.send_email(body="Hi", to=["kim@contoso.test"], subject="S")
+    [sent] = _sends(gw)
+    assert sent["account_id"] == BOX_B
+
+
+async def test_new_mail_with_one_pooled_mailbox_sends_from_it(gw: Gateway) -> None:
+    gw.accounts = [NDA, TWO[0]]
+    gw.sent_from = {"kim@contoso.test": BOX_C}
+    await agents.send_email(body="Hi", to=["kim@contoso.test"], subject="S")
+    [sent] = _sends(gw)
+    assert sent["account_id"] == BOX_A
+    assert all(p != "/email/contacts/sent-from" for p, _ in gw.gets)
+
+
+async def test_with_no_pooled_mailbox_sent_from_still_binds_no_separate_one(
+    gw: Gateway,
+) -> None:
+    """Strict: each mailbox is separate, so no answer of ``sent-from`` binds,
+    and the question lists them all."""
+    gw.accounts = _separate(*TWO)
+    gw.sent_from = {"kim@contoso.test": BOX_B}
+    out = await agents.send_email(body="Hi", to=["kim@contoso.test"], subject="S")
+    assert out.startswith("Send from which mailbox?")
+    assert f"• {A_TEXT} (account_id {BOX_A})" in out
+    assert f"• {B_TEXT} (account_id {BOX_B})" in out
+    assert gw.writes == [] and gw.cards == []
+
+
+async def test_a_row_with_no_field_is_in_all_inboxes(gw: Gateway) -> None:
+    """An answer from before migration 229 has no ``in_all_inboxes``. Its
+    mailbox is in All inboxes, as the column default says."""
+    old = {k: v for k, v in TWO[0].items() if k != "in_all_inboxes"}
+    gw.accounts = [NDA, old]
+    await agents.create_rule(name="Bank")
+    assert gw.writes and all(BOX_A in f"{p} {b}" for _v, p, b in gw.writes)
+
+
+async def test_a_named_separate_mailbox_still_acts(gw: Gateway) -> None:
+    """A tool that names the separate mailbox acts in it (D-EM-30)."""
+    gw.accounts = [*TWO, NDA]
+    await agents.create_rule(BOX_C, name="Bank")
+    assert gw.writes and all(BOX_C in f"{p} {b}" for _v, p, b in gw.writes)

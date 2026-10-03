@@ -32,7 +32,7 @@ from gateway.routes.email.mailbox_identity import (
     work_domain,
 )
 from gateway.routes.email.memory_purge import schedule_mailbox_memory_purge
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, StrictBool, StrictInt
 from sqlalchemy import text
 
 #: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
@@ -112,6 +112,10 @@ class EmailAccountModel(BaseModel):
     #: (``ORDER BY created_at, id`` in ``delete_account``). The UI names that
     #: mailbox before the removal (EM-T8f-1 item 3). ``None`` for a NULL.
     created_at: str | None = None
+    #: False when the member keeps the mailbox separate (EM-T8g-1, D-EM-28).
+    #: A read of more than one mailbox then leaves it out. Migration 229 gives
+    #: each row true, so the model default is true too.
+    in_all_inboxes: bool = True
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -141,6 +145,10 @@ class AccountUpdateModel(BaseModel):
     #: The slot of the mailbox chip, 1 to 12 (EM-T8b). Strict, so JSON
     #: ``true`` or ``"3"`` answers 422 instead of turning into a slot.
     color_slot: StrictInt | None = None
+    #: False keeps the mailbox separate, and true puts it back in All inboxes
+    #: (EM-T8g-1, D-EM-28). Strict, so ``"yes"``, ``"false"`` or ``0`` answers
+    #: 422 instead of turning into a choice the member did not make.
+    in_all_inboxes: StrictBool | None = None
 
 
 def _iso(value: Any) -> str | None:
@@ -280,7 +288,7 @@ async def list_accounts(
                           sync_enabled, sync_status, sync_error, last_synced_at,
                           is_default, initial_sync_done, import_since,
                           onboarding_done_at, color_slot, created_at,
-                          {_PROGRESS_COLUMNS}
+                          in_all_inboxes, {_PROGRESS_COLUMNS}
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -317,6 +325,7 @@ async def list_accounts(
                 work_domain=work_domain(row.email_address),
                 needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
                 created_at=_iso_us(row.created_at),
+                in_all_inboxes=bool(row.in_all_inboxes),
                 **_progress(row),
             ))
         return accounts
@@ -445,7 +454,8 @@ async def create_account(
                                        WHERE user_id = :user_id
                                          AND organization_id = CAST(:org AS uuid)),
                            CAST(:org AS uuid), {NEXT_SLOT_SQL})
-                   RETURNING is_default, color_slot, created_at"""
+                   RETURNING is_default, color_slot, created_at,
+                             in_all_inboxes"""
             ),
             {
                 "id": account_id,
@@ -489,6 +499,7 @@ async def create_account(
         default_label=defaults.get(account_id, req.email_address),
         work_domain=work_domain(req.email_address),
         created_at=_iso_us(created.created_at),
+        in_all_inboxes=bool(created.in_all_inboxes),
     )
 
 
@@ -530,7 +541,7 @@ async def set_default_account(
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
                              import_since, onboarding_done_at, color_slot,
-                             created_at, {_PROGRESS_COLUMNS}"""
+                             created_at, in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -561,6 +572,7 @@ async def set_default_account(
             work_domain=work_domain(row.email_address),
             needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
             created_at=_iso_us(row.created_at),
+            in_all_inboxes=bool(row.in_all_inboxes),
             **_progress(row),
         )
 
@@ -811,6 +823,11 @@ async def update_account(
     label again. A label longer than ``MAX_LABEL_LEN`` answers 400.
     ``color_slot`` must be 1 to 12, or the route answers 400. Neither field
     restarts the sync loop.
+
+    EM-T8g-1: ``in_all_inboxes`` false keeps the mailbox separate, and true
+    puts it back in All inboxes (D-EM-28). The owner predicate binds it, so
+    the mailbox of another member answers 404 and changes nothing. It does
+    not restart the sync loop, because the loop does not read it.
     """
     if updates.color_slot is not None and not valid_slot(updates.color_slot):
         raise HTTPException(status_code=400, detail="color_slot is a whole number from 1 to 12.")
@@ -845,6 +862,9 @@ async def update_account(
             set_clauses.append(
                 "onboarding_done_at = now()" if updates.onboarding_done
                 else "onboarding_done_at = NULL")
+        if updates.in_all_inboxes is not None:
+            set_clauses.append("in_all_inboxes = :in_all_inboxes")
+            params["in_all_inboxes"] = updates.in_all_inboxes
 
         if not set_clauses:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -860,7 +880,7 @@ async def update_account(
                               sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,
                               onboarding_done_at, color_slot, created_at,
-                              {_PROGRESS_COLUMNS}"""
+                              in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             params,
         )
@@ -889,11 +909,12 @@ async def update_account(
         work_domain=work_domain(row.email_address),
         needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
         created_at=_iso_us(row.created_at),
+        in_all_inboxes=bool(row.in_all_inboxes),
         **_progress(row),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels
-    # a sync in flight, so a rename, a colour or the guided setup does not
-    # restart it (EM-T8b; before, a rename did).
+    # a sync in flight, so a rename, a colour, the guided setup or "Keep
+    # separate" does not restart it (EM-T8b, EM-T8g-1; before, a rename did).
     if updates.sync_enabled is None:
         return model
 

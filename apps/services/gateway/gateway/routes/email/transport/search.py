@@ -201,13 +201,15 @@ async def search_messages(
     results come back newest-first. ``folder`` scopes the search — a folder key,
     ``all`` (everything but junk/trash), or ``starred``; omit it to span every
     folder. Unless ``account_id`` narrows it, the search spans all the user's
-    accounts."""
+    accounts, except a mailbox that the member keeps separate (EM-T8g-1)."""
     async with _tenant_session() as db:
         uid = user.email or "anonymous"
         text_q = (q or "").strip()
         params: dict[str, Any] = {"uid": uid, "q": text_q}
 
-        where = [_account_scope(account_id, params)]
+        # Search in All inboxes leaves out a separate mailbox. Its own
+        # account_id still searches it (EM-T8g-1, D-EM-30).
+        where = [_account_scope(account_id, params, pooled_only=True)]
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
             where.append(

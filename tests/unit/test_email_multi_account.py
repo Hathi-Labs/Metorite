@@ -140,3 +140,12 @@ def test_account_model_roundtrips_is_default() -> None:
     a = EmailAccountModel(
         id="a1", provider="gmail", email_address="me@x.com", is_default=True)
     assert a.model_dump()["is_default"] is True
+
+
+def test_account_model_is_in_all_inboxes_by_default() -> None:
+    """EM-T8g-1: migration 229 gives each row true, and so does the model."""
+    a = EmailAccountModel(id="a1", provider="gmail", email_address="me@x.com")
+    assert a.model_dump()["in_all_inboxes"] is True
+    kept = EmailAccountModel(
+        id="a2", provider="gmail", email_address="me@x.com", in_all_inboxes=False)
+    assert kept.model_dump()["in_all_inboxes"] is False

@@ -3391,7 +3391,7 @@ wrong-sender defects first.
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
-| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard is deferred. | §11.7.7 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | 🔨 **T8g-1 BUILT, not merged (2026-10-03, migration 229).** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
@@ -4548,6 +4548,8 @@ compact density and under a changed accent (CLAUDE.md §4).
 
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
+🔨 T8g-1 is BUILT and not merged (2026-10-03, migration 229). The work on T8g-2 and T8g-3 has
+not started.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -4568,6 +4570,84 @@ store and page files.
   connect a real mailbox or send real mail to test it.
 
 ##### EM-T8g-1 — "Keep separate", the server half (migration, gateway, agent, R8)
+
+**Status.** 🔨 BUILT, not merged (2026-10-03). Migration 229.
+
+**As-built notes.**
+- **The number (R1).** The build found 229 free. 227 is the last migration on main, and only the
+  parked branch `ws43t2-sessions` holds 228. No open pull request adds a migration. Check it again
+  at merge.
+- **The migration.** `229_email_keep_separate.sql` adds `in_all_inboxes BOOLEAN NOT NULL DEFAULT
+  true` to `email_accounts`. It adds no table, so `infra/postgres/generated/` does not change.
+- **One scope helper.** `core._owned_accounts_sql` gives the ids of the mailboxes of `:uid`, and
+  `core._account_scope` wraps it. Both take the keyword-only flag `pooled_only`. With the flag and
+  no `account_id`, the subquery adds `AND in_all_inboxes`. A named mailbox is never left out. With
+  no flag, the text does not change.
+- **The list and the facets.** `transport/messages._mailbox_clause` holds one rule for both. A
+  named mailbox gives its rows. A thread load with no `account_id` keeps the owner scope only. Any
+  other read adds `ea.in_all_inboxes`.
+- **`/senders`.** The mail, the dispositions that keep archived mail in the list, and the status
+  of each sender read only the mailboxes in All inboxes. So a disposition of a separate mailbox
+  never shows in All inboxes. The three "never list the member" subqueries keep each mailbox,
+  because a separate mailbox is still the member (D-EM-27).
+- **The API.** Each account read returns `in_all_inboxes`, and the create reads it from
+  `RETURNING`. `AccountUpdateModel.in_all_inboxes` is `StrictBool`, so `"yes"`, `"true"`, `0` and
+  `1` answer 422. The `PATCH` does not restart the sync loop.
+- **The chat binding.** `agents._pooled` gives the mailboxes in All inboxes, or the full list when
+  no mailbox is in All inboxes. A row with no `in_all_inboxes` is in All inboxes.
+  `_one_mailbox` and `_new_mail_mailbox` list and bind from that list. A tool that names a
+  separate mailbox still acts in it.
+- **Narrowed: the `sent-from` bind is strict.** A `sent-from` answer binds only a mailbox in All
+  inboxes. When each mailbox is separate, the question lists them all, and no answer binds. Item 5
+  does not say which rule wins in that case, so the build uses the rule that asks.
+- **Not changed.** `_unread_counts` counts each mailbox, because the switcher shows the count of a
+  separate mailbox too. The agent tool `list_accounts` lists each mailbox. `identity.py`,
+  `/contacts/sent-from`, the contacts reads and the CRM timeline do not change.
+- **Found, not fixed.** `read_thread` with a bare `thread_id` is a thread load. When a separate
+  mailbox holds the same thread id as a mailbox in All inboxes, the answer names both mailboxes.
+  Item 4 keeps the owner scope for a thread load, so this slice does not change it.
+- **Verification (2026-10-04, on the final tree).** Only `TENANT_LADDER_DATABASE_URL` was set, on a private
+  database. The block below gave 514 passed and 2 skipped. The two skips are the WS-29 gates of
+  `test_tenant_coverage.py`, which read `DATABASE_URL`. With `DATABASE_URL` set to the local
+  scratch database, both gates fail. One reads a ladder with no FORCE RLS phase, and the other
+  connects as a superuser. The two tests, the generator and `generated/` are the same as on main,
+  so the base tree fails the same way. Each R8 case of `test_email_keep_separate.py` passed, and
+  none skipped. All 129 email suites with `-k "not calendar"` gave 2329 passed. The ruff gate
+  passed, and full ruff on the changed files shows no new finding.
+- **Mutation check.** 27 of 27 mutants went red. The first run left `g_patch_restarts_sync` alive,
+  because the test cleared the log of restarts before the assert. The fixed test kills it. The
+  script restored each file and checked its hash. One more mutant cannot fail: the create can
+  drop the field, and the model default and the column default are both true.
+
+| Mutant | What the mutant breaks | The test that goes red |
+|---|---|---|
+| `g_core_no_pool` | the `in_all_inboxes` term of `_owned_accounts_sql` | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_core_pool_named` | a named mailbox is left out when it is separate | `test_its_own_account_id_still_reads_it` |
+| `g_core_default_text` | the text of `_account_scope` with no flag | `test_with_no_flag_the_text_does_not_change` |
+| `g_msg_no_pool` | the clause of the list and the facets | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_msg_thread_pooled` | a thread load leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `g_facets_skip` | the facets do not leave it out | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_search_no_pool` | search does not leave it out | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_scope` | the mail of `/senders` | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_disposition` | the dispositions that keep archived mail | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_status` | the status of each sender | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_self_pooled` | "never list the member" leaves out a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `g_bulk_pooled` | the bulk act leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `g_patch_no_write` | the `PATCH` does not write the field | `test_each_account_read_returns_the_field` |
+| `g_patch_restarts_sync` | the `PATCH` restarts the sync loop | `test_each_account_read_returns_the_field` |
+| `g_model_not_strict` | `"yes"` turns into a boolean | `TestTheUpdateModel` |
+| `g_list_field` | the list does not return the field | `test_each_account_read_returns_the_field` |
+| `g_default_field` | the default does not return the field | `test_each_account_read_returns_the_field` |
+| `g_update_field` | the `PATCH` does not return the field | `test_each_account_read_returns_the_field` |
+| `g_patch_owner` | the owner predicate of the `PATCH` | `test_a_patch_of_the_mailbox_of_another_member_is_404` |
+| `i_self_pooled` | the self set leaves out a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `m_default_false` | the column default is false | `TestTheColumn` |
+| `m_nullable` | the column is nullable | `TestTheColumn` |
+| `a_one_no_pool` | `_one_mailbox` lists a separate mailbox | `test_the_rule_question_leaves_out_a_separate_mailbox` |
+| `a_new_no_pool` | `_new_mail_mailbox` lists a separate mailbox | `test_a_sent_from_answer_that_names_a_separate_mailbox_is_no_answer` |
+| `a_sent_from_lenient` | `sent-from` binds a separate mailbox | `test_with_no_pooled_mailbox_sent_from_still_binds_no_separate_one` |
+| `a_no_fallback` | no list when each mailbox is separate | `test_with_no_pooled_mailbox_the_full_list_stays` |
+| `a_missing_is_separate` | a row with no field counts as separate | `test_a_row_with_no_field_is_in_all_inboxes` |
 
 **Gate.** 🟢 AGENT-SAFE · R8 · security review, because it changes `core._account_scope` (D-EM-4).
 

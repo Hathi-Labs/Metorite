@@ -209,6 +209,26 @@ async def _accounts() -> list[dict[str, Any]]:
     return [a for a in accounts if isinstance(a, dict) and a.get("id")]
 
 
+def _in_all_inboxes(account: dict[str, Any]) -> bool:
+    """False only for a mailbox that the member keeps separate (D-EM-28).
+
+    A row with no ``in_all_inboxes`` is in All inboxes, as the column default
+    of migration 229 says.
+    """
+    return account.get("in_all_inboxes", True) is not False
+
+
+def _pooled(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes in All inboxes, for a question or a bind (EM-T8g-1).
+
+    A member can keep a mailbox separate (D-EM-28). A tool that names no
+    mailbox then never lists it and never binds to it. When no mailbox is in
+    All inboxes, the full list stays, so a member with only separate
+    mailboxes still gets an answer.
+    """
+    return [a for a in accounts if _in_all_inboxes(a)] or accounts
+
+
 def _mailbox_text(account: dict[str, Any]) -> str:
     """"label · address" of one mailbox (MB-15, §11.4).
 
@@ -240,11 +260,12 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     §11.3 rule 4. A named mailbox wins. With no name, the only mailbox of the
     member acts. With two or more, the id is empty and the question asks
     "Which mailbox?". The tool then returns the question and changes nothing.
+    A separate mailbox is not in the list (``_pooled``, EM-T8g-1).
     """
     if account_id:
         return str(account_id), ""
     try:
-        accounts = await _accounts()
+        accounts = _pooled(await _accounts())
     except Exception:
         return "", (
             "Nothing changed. I could not read your mailboxes. Ask the user "
@@ -271,9 +292,14 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
     ``GET /email/contacts/sent-from`` names the mailbox that last wrote to the
     first recipient, in lower case. An empty answer, or a failed read, gives
     the question "Send from which mailbox?". The tool never guesses.
+
+    EM-T8g-1: the list and the bind hold only the mailboxes in All inboxes
+    (``_pooled``). An answer that names a separate mailbox counts as no
+    answer, and the question follows. This is also true when each mailbox is
+    separate and the question lists them all.
     """
     try:
-        accounts = await _accounts()
+        accounts = _pooled(await _accounts())
     except Exception:
         return "", (
             "Not sent. I could not read your mailboxes. Ask the user which "
@@ -291,7 +317,7 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
         except Exception:
             hit = {}
     aid = str(hit.get(addr) or "") if isinstance(hit, dict) else ""
-    if aid in {str(a["id"]) for a in accounts}:
+    if aid in {str(a["id"]) for a in accounts if _in_all_inboxes(a)}:
         return aid, ""
     return "", _mailbox_choices(
         "Send from which mailbox? Nothing was sent.",

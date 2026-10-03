@@ -447,18 +447,51 @@ async def _get_db(request_id: str | None = None):
     return _get_session_factory()()
 
 
-def _account_scope(account_id: str | None, params: dict[str, Any]) -> str:
+#: The predicate that leaves out a separate mailbox (EM-T8g-1, D-EM-28). It
+#: reads the column of migration 229 on ``email_accounts``. A caller that joins
+#: the table as ``ea`` writes ``ea.`` in front of it.
+IN_ALL_INBOXES_SQL = "in_all_inboxes"
+
+
+def _owned_accounts_sql(
+    account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+) -> str:
+    """The ids of the mailboxes of ``:uid``, as a subquery with no alias.
+
+    ``account_id`` narrows it to that one mailbox, and binds ``:aid``. With
+    ``pooled_only`` and no ``account_id``, the subquery leaves out each
+    separate mailbox (EM-T8g-1, D-EM-30). A named mailbox is never left out,
+    so a read by its ``account_id`` still gets its rows.
+    """
+    frag = "SELECT id FROM email_accounts WHERE user_id = :uid"
+    if account_id:
+        frag += " AND id = :aid"
+        params["aid"] = account_id
+    elif pooled_only:
+        frag += f" AND {IN_ALL_INBOXES_SQL}"
+    return frag
+
+
+def _account_scope(
+    account_id: str | None, params: dict[str, Any], *, pooled_only: bool = False,
+) -> str:
     """Return a SQL fragment scoping email_messages `em` to the user's accounts.
 
     Adds :uid (and optionally :aid) to `params`. The caller must have already
     set params["uid"] to the user's email.
+
+    ``pooled_only`` is for a read of more than one mailbox: the list, the
+    facets, search and ``/senders`` (EM-T8g-1). With it and no
+    ``account_id``, the fragment leaves out each separate mailbox. With no
+    flag the text does not change, and ``test_crm_email_timeline.py`` pins
+    that text. A read by mail id, a thread load and a bulk act by ids keep
+    the owner scope only (D-EM-30).
     """
-    frag = "em.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
-    if account_id:
-        frag += " AND id = :aid"
-        params["aid"] = account_id
-    frag += ")"
-    return frag
+    return (
+        "em.account_id IN ("
+        + _owned_accounts_sql(account_id, params, pooled_only=pooled_only)
+        + ")"
+    )
 
 
 # The scope sentinel behind both the sidebar's All folder and the search bar's
