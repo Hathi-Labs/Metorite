@@ -3787,6 +3787,9 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
 ### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
+- ⏸ **Parked by D86, 2026-10-03.** The owner parked the task-manager move
+  (WS-8i) and WS-43t2. Do not work this entry until the owner restarts them.
+  `specs/maf_coding_engine.md` §16.2 lists the parked slices.
 - **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
   → `github-copilot` means the entry is still open.
 - **Why:** PR #585 moved task-manager to native MAF, and the review found a

@@ -973,7 +973,7 @@ agent is allowed.
 
 #### B — one builder
 
-**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE.** The builder
+**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE. ⏸ Parked by D86, 2026-10-03** (`maf_coding_engine.md` §16). The builder
 already exists (`orchestrator/declarative.py`) and
 `tests/unit/test_declarative_builder.py` already asserts the 29 callables `skill-task-gtd`
 exports are exactly the 29 tools `agent-task-manager/agents.py` assembles by hand. **Do not
