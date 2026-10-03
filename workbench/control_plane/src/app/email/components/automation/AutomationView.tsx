@@ -28,6 +28,12 @@ interface AutomationViewProps {
   onDraftReply?: (messageId: string) => void;
   /** Open a waiting-on-them thread and start an AI follow-up nudge. */
   onNudge?: (messageId: string) => void;
+  /** YYYY-MM-DD. AI Settings opens "Process past emails" from this date. The
+   *  guided setup sends it, so the member sorts the mail they imported
+   *  (EM-T6d). */
+  processPastFrom?: string | null;
+  /** Called once the Rules tab opened that dialog, so the page clears the date. */
+  onProcessPastOpened?: () => void;
 }
 
 const META: Record<
@@ -77,6 +83,8 @@ export function AutomationView({
   onFilterSender,
   onDraftReply,
   onNudge,
+  processPastFrom = null,
+  onProcessPastOpened,
 }: AutomationViewProps) {
   const meta = META[feature];
   const Icon = meta.icon;
@@ -104,7 +112,12 @@ export function AutomationView({
       {/* Body */}
       <div className="flex-1 min-h-0">
         {feature === "ai-settings" && (
-          <AISettingsView accountId={accountId} selectedEmailId={selectedEmailId} />
+          <AISettingsView
+            accountId={accountId}
+            selectedEmailId={selectedEmailId}
+            processPastFrom={processPastFrom}
+            onProcessPastOpened={onProcessPastOpened}
+          />
         )}
         {feature === "digest" && (
           <DashboardView
