@@ -3224,7 +3224,8 @@ that design. The owner can reverse any of them. Q-MB-1 is the one open owner que
 | **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
 | **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
 | **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
-| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out each WHOLE rule that has a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. The reason for the whole rule is in the As-built notes of EM-T8f-1 (§11.7.6). |
+| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until the loop guard of §11.6 edge case 12 ships, `POST /email/rules/copy` leaves out each WHOLE rule that has a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. The reason for the whole rule is in the As-built notes of EM-T8f-1 (§11.7.6). |
+| **D-EM-30** | **What "separate" covers.** A separate mailbox leaves each read of more than one mailbox: the list, the facets, search, `/senders`, the sums and the chat in All inboxes. It stays in the identity of the member, so D-EM-27 self and the Sent-copy proof still read it. A read that names it still works, by its `account_id`, a mail id, a thread load or a bulk act by ids. "Also in" and the draft dedupe pair two mailboxes only when neither one is separate. All inboxes shows only when two or more mailboxes are not separate. The agent recorded this on 2026-10-03, and the owner can reverse it. |
 
 ### 11.3 How the AI keeps the mailboxes apart
 
@@ -3358,9 +3359,9 @@ opens All inboxes. After that, Email opens the last scope.
 | 7 | The member changes From on a saved reply draft | Email saves a new draft in the new mailbox, then deletes the draft in the old one. A provider draft cannot move between mailboxes. | EM-T8c |
 | 8 | The sending mailbox needs a reconnect | The send stops with "Reconnect <label> to send". The draft stays. | EM-T8c |
 | 9 | The sending mailbox is at the storage limit | The send runs. The limit is on the copy in Metorite only (D-EM-14). | — |
-| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). | EM-T8g |
-| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. | EM-T8g |
-| 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. | EM-T8g |
+| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). Known limit: only the Outlook provider stores `internet_message_id`. | EM-T8g-3 |
+| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. Known limit: only the Outlook provider stores `internet_message_id`. | EM-T8g-3 |
+| 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. Today a FORWARD makes a draft, so a loop needs a send by the member at each hop. | deferred (§11.7.7) |
 | 13 | Two Outlook mailboxes return the same conversation id | The conversation key includes `account_id`. A conversation never spans two mailboxes (MB-12). | EM-T8d |
 | 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27). A thread with no participant outside the member's mailboxes is FYI. It is never NEEDS_REPLY and never AWAITING. A mail with no recipient keeps its status. The cold check skips such a mail only when a Sent copy proves the send (edge case 26). | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
@@ -3378,7 +3379,7 @@ opens All inboxes. After that, Email opens the last scope.
 
 ### 11.7 Slices
 
-Each slice is one PR. Each slice ships behind no flag, because each one is a fix or a view that
+Each slice is one PR, or the pull requests that its section names. Each slice ships behind no flag, because each one is a fix or a view that
 shows only with two or more mailboxes. The order is the order of risk: EM-T8a fixes the live
 wrong-sender defects first.
 
@@ -3390,7 +3391,7 @@ wrong-sender defects first.
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
-| **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard is deferred. | §11.7.7 |
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
@@ -4545,12 +4546,182 @@ compact density and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
-1. **"Also in".** The list marks a row whose `internet_message_id` is in another mailbox of the
-   member.
-2. **The draft dedupe** (edge case 11).
-3. **The forward loop guard** (edge case 12).
-4. **"Keep separate"** (D-EM-28). A migration adds `in_all_inboxes BOOLEAN NOT NULL DEFAULT true`.
-   The All inboxes list, search and chat leave out a separate mailbox. R8 proves it.
+**Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
+T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
+
+**Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
+`transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
+store and page files.
+
+**Not in scope.**
+- **The forward loop guard (item 3).** A FORWARD action makes a provider draft and never sends
+  (`automation/actions.py:532-563`). So a loop needs a send by the member at each hop. The guard
+  ships with the first rule action that sends with no review. D-EM-29 stays until then.
+- **`internet_message_id` for Gmail and IMAP.** Only `providers/outlook.py:1674` sets it. D-EM-5
+  keeps Outlook the only provider in the connect flow. A fill also turns on the re-key reclaim of
+  `persist.py:232-246` for Gmail and IMAP. That needs its own slice and its own R8 test.
+- **`/analytics/overview`.** It reads each mailbox with no `account_id`, but no caller sends it so.
+- **The contacts reads and the CRM timeline.** D-EM-28 does not name them.
+- **OWNER-GATE.** The build has none. The production migration is agent-safe under the `deploy`
+  grant until 2026-11-30. Confirm the pre-migration backup, then report the ledger line. No
+  production member has two mailboxes (§11.1), so R8 and vitest are the acceptance. Do not
+  connect a real mailbox or send real mail to test it.
+
+##### EM-T8g-1 — "Keep separate", the server half (migration, gateway, agent, R8)
+
+**Gate.** 🟢 AGENT-SAFE · R8 · security review, because it changes `core._account_scope` (D-EM-4).
+
+**Scope.** A new migration, `transport/accounts.py`, `core.py`, `transport/messages.py`,
+`transport/search.py`, `automation/senders.py` (`list_senders` only),
+`apps/agents/agent-email-assistant/agents.py` and tests. No UI file.
+
+1. **The migration.** R1 applies: take the next free number at build time, and check it again at
+   merge. The audit found 229 free, because a parked branch holds 228. The migration is
+   `ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS in_all_inboxes BOOLEAN NOT NULL DEFAULT
+   true`. Its header gives the R6 reason: a constant default fills each row, and no code fills the
+   column. It creates no table, so `infra/postgres/generated/` does not change.
+2. **The API.** Each account read returns `in_all_inboxes`. `AccountUpdateModel` takes
+   `in_all_inboxes: StrictBool | None`. The `PATCH` writes under the owner predicate and does not
+   restart the sync loop.
+3. **The reads of more than one mailbox.** With no `account_id`, these reads leave out a separate
+   mailbox: `GET /email/messages` with no `thread_id`, the facets, `GET /email/search` and
+   `GET /email/senders`. With the `account_id` of a separate mailbox, each read gets its rows.
+   `core._account_scope` takes a keyword-only flag. With no flag, its text does not change.
+4. **The reads that keep the owner scope only.** These still reach a separate mailbox: a thread
+   load, each act by a mail id, and `POST /email/messages/bulk`. The reason is that `manage_inbox`
+   sends mail ids with no `account_id`. Compose-assist and `/contacts/sent-from` do not change.
+5. **The chat binding.** `_one_mailbox` and `_new_mail_mailbox` list and bind only the mailboxes
+   in All inboxes. A `sent-from` answer that names a separate mailbox counts as no answer. When no
+   mailbox is in All inboxes, the full list stays.
+6. **Self does not change** (D-EM-27, D-EM-30). `identity.py` keeps each mailbox of the member.
+
+**Fences (R7).** `tests/unit/test_email_keep_separate.py` (R8, the app role):
+- `email-keep-separate-column`: the column is NOT NULL with a default of true, and each old row
+  reads true.
+- `email-keep-separate-api`: each account read returns the field. A `PATCH` by another member
+  answers 404 and writes nothing. `"yes"` answers 422.
+- `email-keep-separate-reads`: with no `account_id`, the four reads of item 3 hold no row of a
+  separate mailbox. With its `account_id`, each one holds its rows.
+- `email-keep-separate-owner-scope`: a thread load, a read by id and a bulk act by ids reach a
+  separate mailbox.
+- `email-keep-separate-self`: a mail from a separate mailbox is still `self` in another mailbox.
+- `email-chat-binding-skips-separate` (`test_email_chat_binding.py`, fakes): the question and the
+  `sent-from` bind leave out a separate mailbox.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_keep_separate.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_conversation_collapse.py tests/unit/test_email_facets.py tests/unit/test_email_search_scope.py tests/unit/test_email_bulk_apply.py tests/unit/test_email_mailbox_identity.py tests/unit/test_email_multi_account.py tests/unit/test_email_n_plus_one.py tests/unit/test_email_from_row.py tests/unit/test_email_ai_context.py tests/unit/test_email_chat_binding.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_rule_copy.py tests/unit/test_crm_email_timeline.py tests/unit/test_email_contact_card.py tests/unit/test_tenant_coverage.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email apps/agents/agent-email-assistant tests/unit/test_email_keep_separate.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. With `DATABASE_URL` set, the two WS-29 gates of
+`test_tenant_coverage.py` also fail on the base tree, so compare those two with the base tree.
+
+##### EM-T8g-2 — "Keep separate", the UI half (after T8g-1 and EM-T8f-2)
+
+**Gate.** 🟢 AGENT-SAFE.
+
+**Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `lib/mailbox.ts`,
+`lib/chatScope.ts`, `lib/emailAssistantPersona.ts`, `lib/api.ts`, `lib/types.ts`, `page.tsx` and
+tests. No backend file.
+
+1. **The menu.** The mailbox menu offers "Keep separate", or "Show in All inboxes" for a separate
+   mailbox. A pick sends the `PATCH`. The switcher row of a separate mailbox shows the word
+   "Separate" beside its chip.
+2. **One helper.** `pooledMailboxes(accounts)` in `lib/mailbox.ts` gives the mailboxes in All
+   inboxes. The All inboxes row, its unread sum, the header count, the folder sums, `scopeBusy`,
+   `syncScope` and `pickInitialView` read it.
+3. **When All inboxes shows.** It shows for two or more pooled mailboxes. A toggle that leaves
+   fewer ends All inboxes for the default mailbox, as a disconnect does. A toggle in All inboxes
+   reads the list again, so the rows leave at once.
+4. **Open in inbox.** A mail of a separate mailbox opens in that mailbox, never in All inboxes.
+5. **The chat.** The All inboxes option needs two pooled mailboxes. The All inboxes persona lists
+   only pooled mailboxes. The picker still offers a separate mailbox as its own scope.
+6. **What does not change.** The chips, the From row and "In <chip>" count each mailbox (§11.0).
+   New mail in All inboxes starts on the default mailbox (D-EM-20), and the From row names it.
+
+**Fences (R7).**
+- `email-all-skips-separate` (`allInboxes.test.ts`): items 2 and 3, with one separate mailbox
+  among three.
+- `email-separate-menu` (`allInboxes.test.ts`): the two labels, the `PATCH` and the word
+  "Separate".
+- `email-separate-leaves-at-once` (`allInboxesStore.test.ts`): the toggle, the end of the scope,
+  and item 4.
+- `email-chat-separate` (`chatScope.test.ts`): item 5.
+
+**Verification.** In `workbench/control_plane`, run this command:
+
+```
+npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme
+```
+
+Then look at the switcher and the menu. Look in light mode, at compact density and under a
+changed accent.
+
+##### EM-T8g-3 — "Also in" and the draft dedupe (after T8g-1, R8)
+
+**Gate.** 🟢 AGENT-SAFE · R8 · security review, because both read across the mailboxes of the
+member.
+
+**Scope.** `core.py`, `transport/messages.py`, `transport/search.py`, `automation/actions.py`,
+`automation/identity.py`, `components/EmailList.tsx`, `lib/api.ts`, `lib/types.ts` and tests.
+
+**Known limit.** Only the Outlook provider stores `internet_message_id`, so items 1 and 3 pair
+two Outlook mailboxes only. Edge case 26 has the same limit. A mail with an empty id pairs with
+nothing.
+
+1. **"Also in" (item 1, edge case 10).** `GET /email/messages` and `GET /email/search` give each
+   row `also_in`, a list of mailbox ids. Each id is a paired mailbox that holds a mail with the
+   same non-empty `internet_message_id`, outside drafts, junk and trash. One read serves each page.
+2. **The row.** `EmailList.tsx` shows "Also in <label>" with the chip of each mailbox in
+   `also_in`, when the member has two or more mailboxes.
+3. **The draft dedupe (item 2, edge case 11).** This step is in the REPLY and DRAFT_EMAIL branch,
+   after the thread check. The run looks for a copy of the mail in a paired mailbox. When the thread of that
+   copy holds a draft or a newer sent mail, the run skips the draft. It logs
+   `email.draft_skipped_other_mailbox` with no address.
+4. **The pair set.** One SQL constant in `identity.py`, beside `SELF_MAILBOX_IDS_SQL`, gives the
+   paired mailboxes. It leaves out each separate mailbox, and it is empty when `:aid` is separate.
+5. **Two runs at once.** Two overlapping runs for one mail make one draft at most. The proposal is
+   a transaction-scoped try-lock on the member and the Message-ID.
+6. **Not in scope.** The drafts that the member starts (`/draft-reply`, `/drafts`, `/drafts/save`,
+   compose-assist) and the nudge drafts (`followups.py`).
+
+**Fences (R7).** `tests/unit/test_email_duplicates.py` (R8, the app role):
+- `email-also-in`: item 1. A copy in junk does not count. A mailbox of another member, of a
+  second organization, or a separate mailbox never counts.
+- `email-also-in-one-read`: one page makes one read for `also_in`.
+- `email-draft-dedupe`: B makes no draft when A holds a draft or a sent reply in the thread of its
+  copy. B drafts when A holds neither, and when either mailbox is separate.
+- `email-draft-dedupe-race`: two overlapping runs for one mail make one draft.
+- `email-also-in-row` (vitest): the row shows each label of `also_in`, and a member with one
+  mailbox sees none.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_duplicates.py tests/unit/test_email_keep_separate.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_search_scope.py tests/unit/test_email_n_plus_one.py tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_rules_engine.py tests/unit/test_email_ai_context.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_duplicates.py --select F821,F601,F602,F502,F7,B006
+```
+
+In `workbench/control_plane`, also run `npx tsc --noEmit` and `npx vitest run src/app/email src/components src/lib/theme`.
+
+##### The forward loop guard (item 3) — deferred
+
+**What the guard must do before D-EM-29 can change.**
+1. Each mail that a rule FORWARD sends carries a mark that the receiving mailbox can read. The
+   proposal is the header `X-Metorite-Forwarded`.
+2. The sync keeps the mark for each provider that can carry it. Today no provider write path
+   takes a header (`providers/base.py:434-446`, `:662-673`), and no column holds one.
+3. A FORWARD never runs on a mail that carries the mark. The other actions of the rule still run.
+4. An R8 fence runs A to B to A for two mailboxes of one member. The second FORWARD does not run.
+
+Then `POST /email/rules/copy` can keep a rule with a FORWARD to an own address, and D-EM-29 can
+change.
 
 ### 11.8 Open owner question
 
