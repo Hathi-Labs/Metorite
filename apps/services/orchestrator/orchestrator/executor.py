@@ -3311,8 +3311,9 @@ async def run_agent_stream(
 
             # Detect Copilot-SDK-backed agents by capability, NOT the registry
             # runtime label. An agent built with GitHubCopilotAgent but
-            # registered as runtime "maf" (task-manager and apis-config were,
-            # until 2026-10-03) still needs BYOK provider routing, or
+            # declared runtime "maf" (task-manager's config.json says "maf",
+            # and apis-config was one until 2026-10-03) still needs BYOK
+            # provider routing, or
             # agent.run() opens a NATIVE Copilot session (→ 402). The label
             # still counts too: "github-copilot" forces this path even for a
             # genuine MAF agent, which has no ``_default_options``, and the

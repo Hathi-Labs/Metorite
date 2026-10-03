@@ -149,11 +149,13 @@ def drive_native(
     think_mode: str | None = None,
     message: str = "hi",
     thread_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
     Returns the parsed events and the agents the run built. Only the HTTP
     transport is replaced. The static registry decides the runtime.
+    *history* is the earlier turns, in the shape the browser sends them.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -198,11 +200,14 @@ def drive_native(
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
 
     tid = thread_id or f"thread-{name}-{think_mode or 'none'}"
+    payload: dict[str, Any] = {"message": message}
+    if history:
+        payload["messages"] = list(history)
 
     async def _collect() -> list[str]:
         return [
             line async for line in executor.run_agent_stream(
-                name, {"message": message},
+                name, payload,
                 run_id=f"run-{name}-{think_mode or 'none'}",
                 thread_id=tid,
                 think_mode=think_mode or "auto",

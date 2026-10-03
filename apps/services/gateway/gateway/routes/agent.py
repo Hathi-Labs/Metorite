@@ -428,12 +428,14 @@ _AGENT_REGISTRY: list[dict] = [
         # it: their receiver (`/webhooks/clickup`) was deleted in S1.
         "tags": ["tasks", "project-management"],
         "status": "live",
-        # A native MAF agent since 2026-10-03 (agent_architecture.md §11.3):
-        # build_agents() returns an agent_framework.Agent. The executor reads
-        # THIS label as well as the agent's shape, so "github-copilot" here
-        # would send a MAF agent down the Copilot path, and that path assumes
-        # _default_options. Keep it "maf".
-        "agent_runtime": "maf",
+        # Runs through MAF (MetoriteCopilotAgent wrapper) with BYOK model support.
+        # ⚠️ HELD on the Copilot path (Tier 1.5) on purpose, 2026-10-03
+        # (agent_architecture.md §11.3.1, HANDOFF H-215). Its confirm turn
+        # ("yes" after a my_tasks_clarify proposal) needs the ids in the
+        # tool output of the turn before. The Copilot session keeps them,
+        # and Tier 1 sends earlier turns as text only. Flip this label and
+        # the factory together, and only after H-215.
+        "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": [],
         "optional_integrations": [],
@@ -448,8 +450,11 @@ _AGENT_REGISTRY: list[dict] = [
         ),
         "tags": ["configuration", "apis", "setup", "admin"],
         "status": "live",
-        # A native MAF agent since 2026-10-03, like task-manager above. Keep
-        # it "maf" for the same reason.
+        # A native MAF agent since 2026-10-03 (agent_architecture.md §11.3):
+        # build_agents() returns an agent_framework.Agent. The executor reads
+        # THIS label as well as the agent's shape, so "github-copilot" here
+        # would send a MAF agent down the Copilot path, and that path assumes
+        # _default_options. Keep it "maf".
         "agent_runtime": "maf",
         "local_path": "apps/agents/agent-apis-config",
         "integrations": [],

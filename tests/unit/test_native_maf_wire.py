@@ -11,8 +11,9 @@ script (:class:`tests.unit._native_maf_harness.ScriptedModel`).
    ``thinking`` into a native agent's ``default_options``. The client passes
    every key to ``AsyncCompletions.create()``, which refused both. So every
    Thinking or Max turn of every native agent (projects-assistant,
-   email-assistant, crm-assistant, task-manager) ended in RUN_ERROR before
-   one model request. A native agent now sends ``reasoning_effort`` only.
+   email-assistant, crm-assistant, whatsapp-assistant, apis-config) ended in
+   RUN_ERROR before one model request. A native agent now sends
+   ``reasoning_effort`` only.
 2. **Steer.** On Tier 1 a native agent's OWN tools had no
    ``_gate_injected_tool`` wrapper, and that wrapper is the only steer drain.
    A steer that arrived during a turn that called only own tools was lost.
@@ -43,7 +44,7 @@ _VALID_KEYS = frozenset(openai_params.CompletionCreateParamsBase.__annotations__
 
 #: Registry name → agent directory, for the native agents these tests drive.
 _NATIVE = {
-    "task-manager": "apps/agents/agent-task-manager",
+    "apis-config": "apps/agents/agent-apis-config",
     "projects-assistant": "apps/agents/agent-projects",
 }
 
@@ -102,15 +103,21 @@ def test_the_schema_the_model_sees_is_the_factorys(name: str, monkeypatch) -> No
 
 # ── 2. Steer ─────────────────────────────────────────────────────────────────
 
-_STEER_TEXT = "Also add a task to call the supplier."
+_STEER_TEXT = "Also cover the Drive API, please."
 
 
 @pytest.mark.usefixtures("_a_tenant")
 def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> None:
     """A second person steers while the model works. The turn then calls ONE
-    own tool (``my_tasks_accounts``, which calls nothing). The steer must
+    own tool (apis-config's ``web_search``, offline here). The steer must
     ride that tool's result into the next model request."""
+    import acb_skills.web_tools as web_tools
     from orchestrator import steer
+
+    async def _fake_serp(query: str, max_results: int) -> list[dict]:
+        return [{"title": "Sheets API", "href": "https://example.test/sheets", "body": "x"}]
+
+    monkeypatch.setattr(web_tools, "_serpapi_search", _fake_serp)
 
     thread_id = "thread-steer-own-tool"
     steer.clear_guidance(thread_id)
@@ -120,11 +127,11 @@ def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> 
             steer.buffer_guidance(thread_id, "bob@x.io", _STEER_TEXT)
 
     model = ScriptedModel(
-        [tool_turn("my_tasks_accounts"), text_turn("noted")],
+        [tool_turn("web_search", '{"query": "Google Sheets API"}'), text_turn("noted")],
         on_request=_steer_while_working,
     )
     events, built = drive_native(
-        "task-manager", _NATIVE["task-manager"], monkeypatch, model,
+        "apis-config", _NATIVE["apis-config"], monkeypatch, model,
         thread_id=thread_id,
     )
 
@@ -140,7 +147,7 @@ def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> 
 
     # The own tool the model called is the gated copy, not the bare function.
     tools = {t.name: t for t in built[0].default_options["tools"] if hasattr(t, "name")}
-    assert getattr(tools["my_tasks_accounts"].func, "__cc_gated__", False)
+    assert getattr(tools["web_search"].func, "__cc_gated__", False)
 
 
 # ── 3. The gate never mutates a tool that agents share ───────────────────────

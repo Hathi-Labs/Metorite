@@ -1,25 +1,30 @@
-"""task-manager and apis-config run on native MAF, not on the Copilot SDK.
+"""apis-config runs on native MAF. task-manager is HELD on the Copilot path.
 
-Spec: ``project-docs/specs/agent_architecture.md`` §3.1, §11.3. Owner approval
-2026-10-03.
+Spec: ``project-docs/specs/agent_architecture.md`` §3.1, §11.3, §11.3.1.
+Owner approval 2026-10-03. Split by the supervisor after the PR #585 review.
 
 Both agents built a ``GitHubCopilotAgent`` while their ``config.json`` said
-``"runtime": "maf"``. Neither used a Copilot-only capability. So the move is
-only worth something if three things hold, and each test class pins one:
+``"runtime": "maf"``. apis-config moved, and three things must hold for it.
+Each test class pins one:
 
 1. **The factory returns an ``agent_framework.Agent`` with the SAME tools.**
-   ``_ORIGIN_MAIN_TOOLS`` is the tool-name set each Copilot factory built on
-   origin/main (``f0264ce8``), copied by hand from a run of the old factories.
+   ``_ORIGIN_MAIN_TOOLS`` is the tool-name set the Copilot factory built on
+   origin/main (``f0264ce8``), copied by hand from a run of the old factory.
    It is a frozen list on purpose: a set derived from the current module would
    agree with whatever the module now says.
 2. **The registry label agrees.** The executor reads ``_AGENT_REGISTRY``'s
    ``agent_runtime`` as well as the agent's shape, and the sub-agent path
    reads ONLY the label. A ``"github-copilot"`` label sends a MAF agent down
    the Copilot path, which assumes ``_default_options``.
-3. **The executor runs them on Tier 1.** The real factory output goes through
+3. **The executor runs it on Tier 1.** The real factory output goes through
    the real ``run_agent_stream``. Only ``agent.run`` is replaced, so no model
    is called. Tier 1 calls ``run(..., stream=True)`` and never touches the
    Copilot session store.
+
+task-manager stays on Tier 1.5 until HANDOFF H-215. Its confirm turn needs
+the ids in the tool output of the turn before, and Tier 1 sends earlier turns
+as text only. ``TestTaskManagerIsHeldOnTheCopilotPath`` fails if someone
+flips one half of it.
 
 The agent modules load by file path, the way the Dynamic Agent Loader loads
 them. No gateway process, no Redis and no model are started.
@@ -36,35 +41,29 @@ import pytest
 
 from tests.unit._native_maf_harness import (
     REPO_ROOT,
+    ScriptedModel,
     _a_tenant,  # noqa: F401 — a fixture, used by name
+    drive_native,
     load_agent_module,
     parse_frames,
+    text_turn,
+    tool_turn,
 )
 
-#: The tool names each Copilot factory built on origin/main ``f0264ce8``
+#: The tool names the Copilot factory built on origin/main ``f0264ce8``
 #: (``build_agents()[0]._tools``). Frozen, never derived — see the docstring.
 _ORIGIN_MAIN_TOOLS: dict[str, frozenset[str]] = {
-    "task-manager": frozenset({
-        "my_tasks_accounts", "my_tasks_add_subtasks", "my_tasks_archive",
-        "my_tasks_capture", "my_tasks_capture_many", "my_tasks_clarify",
-        "my_tasks_complete", "my_tasks_day_digest", "my_tasks_delegate",
-        "my_tasks_detail", "my_tasks_estimate_stats", "my_tasks_inbox_insights",
-        "my_tasks_list", "my_tasks_list_projects", "my_tasks_list_schedule",
-        "my_tasks_move", "my_tasks_organize", "my_tasks_people",
-        "my_tasks_plan_day", "my_tasks_plan_project", "my_tasks_replan_day",
-        "my_tasks_rollover", "my_tasks_schedule", "my_tasks_set_one_thing",
-        "my_tasks_set_stage", "my_tasks_subtasks", "my_tasks_sync",
-        "my_tasks_unschedule", "my_tasks_update",
-    }),
     "apis-config": frozenset({"web_search"}),
 }
 
 #: Registry name → agent directory. The registry's ``local_path`` is the real
 #: mapping. ``test_the_registry_points_at_this_directory`` holds the two equal.
 _AGENT_DIRS: dict[str, str] = {
-    "task-manager": "apps/agents/agent-task-manager",
     "apis-config": "apps/agents/agent-apis-config",
 }
+
+#: The agent held on the Copilot path until H-215.
+_HELD = ("task-manager", "apps/agents/agent-task-manager")
 
 AGENTS = sorted(_AGENT_DIRS)
 
@@ -299,7 +298,7 @@ def test_the_executor_runs_the_real_factory_output_on_tier_1(
 
 @pytest.mark.usefixtures("_a_tenant")
 @pytest.mark.parametrize("name", AGENTS)
-def test_tier_1_gives_these_agents_what_the_copilot_path_did(
+def test_tier_1_gives_this_agent_what_the_copilot_path_did(
     name: str, monkeypatch,
 ) -> None:
     """HITL, the injected tools and their B6 gate, and the run's artifact
@@ -329,3 +328,70 @@ def test_tier_1_gives_these_agents_what_the_copilot_path_did(
         assert injected in by_name, f"{injected} was not injected into {name}"
         assert hasattr(by_name[injected], "__wrapped__"), f"{injected} is not gated"
     assert _ORIGIN_MAIN_TOOLS[name] <= set(by_name)
+
+
+# ── 4. A follow-up turn of apis-config needs no earlier tool output ──────────
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_an_apis_config_follow_up_turn_carries_the_list_it_answers(monkeypatch) -> None:
+    """Why apis-config may move and task-manager may not (H-215).
+
+    apis-config has no propose-then-apply tool. Its two-turn flow is "list
+    the APIs of a company" and then "help with the ones I pick". Turn 2 needs
+    the NAMES, and the assistant's own answer in turn 1 carries them. Tier 1
+    sends that answer as text, so it reaches the model. The search results of
+    turn 1 do not, and the agent searches again, which only reads.
+    """
+    import acb_skills.web_tools as web_tools
+
+    hit_url = "https://developers.google.com/sheets/api/guides/authorizing"
+
+    async def _fake_serp(query: str, max_results: int) -> list[dict]:
+        return [{"title": "Sheets API auth", "href": hit_url, "body": "OAuth"}]
+
+    monkeypatch.setattr(web_tools, "_serpapi_search", _fake_serp)
+    answer = "Google has these APIs: Sheets, Drive, Calendar. Which ones?"
+    first = ScriptedModel([tool_turn("web_search", '{"query": "Google APIs"}'), text_turn(answer)])
+    events1, _ = drive_native(
+        "apis-config", _AGENT_DIRS["apis-config"], monkeypatch, first,
+        message="I want to connect Google", thread_id="thread-ac-two-turn",
+    )
+    assert [e.get("type") for e in events1][-1] == "RUN_FINISHED"
+    turn1_tool = [m for m in first.bodies[-1]["messages"] if m.get("role") == "tool"]
+    assert any(hit_url in str(m.get("content")) for m in turn1_tool)
+
+    second = ScriptedModel([text_turn("Here are the steps for Sheets.")])
+    events2, _ = drive_native(
+        "apis-config", _AGENT_DIRS["apis-config"], monkeypatch, second,
+        message="Sheets", thread_id="thread-ac-two-turn",
+        history=[
+            {"role": "user", "content": "I want to connect Google"},
+            {"role": "assistant", "content": answer},
+        ],
+    )
+    assert [e.get("type") for e in events2][-1] == "RUN_FINISHED"
+    sent = json.dumps(second.bodies[0]["messages"])
+    assert "Sheets, Drive, Calendar" in sent, "turn 2 lost the list it answers"
+    # The gap H-215 names, and why it does not hurt this agent: the earlier
+    # tool output is absent, and nothing in turn 2 needs an id from it.
+    assert hit_url not in sent
+
+
+# ── 5. task-manager is held on the Copilot path (H-215) ─────────────────────
+
+
+class TestTaskManagerIsHeldOnTheCopilotPath:
+    """Both halves move together, and only after H-215. A MAF factory with a
+    ``github-copilot`` label ends every run in RUN_ERROR. A Copilot factory
+    with a ``maf`` label loses its session resume on the sub-agent path."""
+
+    def test_the_factory_still_builds_a_copilot_agent(self) -> None:
+        pytest.importorskip("agent_framework_github_copilot")
+        agent = load_agent_module(_HELD[1]).build_agents()[0]
+        assert type(agent).__name__ == "GitHubCopilotAgent"
+        assert isinstance(getattr(agent, "_default_options", None), dict)
+
+    def test_the_registry_label_is_still_github_copilot(self) -> None:
+        assert _registry_entry(_HELD[0])["agent_runtime"] == "github-copilot"
+        assert _registry_entry(_HELD[0])["local_path"] == _HELD[1]

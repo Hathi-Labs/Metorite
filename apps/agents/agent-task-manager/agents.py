@@ -24,16 +24,9 @@ are answered from Metorite's own store.
 writes it through the same routes the browser uses. Nothing here touches
 the retired task store any more.
 
-**A native MAF agent since 2026-10-03** (agent_architecture.md §11.3). It
-was a ``GitHubCopilotAgent``, so every turn spawned a Copilot CLI, resumed an
-SDK session and ran the SDK permission hook. It used none of that: its tools
-are plain callables and it has no MCP server. It now builds the same
-``agent_framework.Agent`` + ``OpenAIChatCompletionClient`` pair as
-agent-email-assistant and agent-crm, so the executor runs it on Tier 1.
-
 Exports:
-    build_agents() -> list[Agent]   (Dynamic Agent Loader entry point)
-    build_agent()  -> Agent
+    build_agents() -> list[GitHubCopilotAgent]   (Dynamic Agent Loader entry point)
+    build_agent()  -> GitHubCopilotAgent
 """
 from __future__ import annotations
 
@@ -41,7 +34,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from acb_common import get_settings
+from agent_framework_github_copilot import GitHubCopilotAgent
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_FILE.exists() else (
@@ -114,85 +107,41 @@ except ImportError:
 # Agent factory
 # ---------------------------------------------------------------------------
 
-#: The name the registry, the run allowlist and the usage ledger know.
-AGENT_NAME = "task-manager"
-
-#: The build-time model. The executor replaces it with the run's resolved tier
-#: (``_apply_model_for_maf_agent``), exactly as it did on the Copilot path.
-MODEL = "tier-balanced"
-
-
 def _llm_provider() -> dict[str, Any]:
-    """BYOK provider config pointing at the gateway's /v1 (litellm SDK).
+    """Return BYOK provider config pointing at the gateway's /v1 endpoint.
 
     The gateway uses the litellm Python SDK directly — no separate proxy.
 
-    Prefer the gateway's real key from Settings (``litellm_master_key``) over a
-    bare ``sk-local`` fallback. The Copilot path got its provider from the
-    executor at run time. The native path does not, so the key built here is
-    the one the run presents.
-
-    ⚠️ No member header here, on purpose (H-181). One agent serves every
-    person, so a header stamped at build time would bill the wrong member.
-    :func:`acb_llm.attribution.attributed_openai` stamps the member, the app
-    and the run on EACH request, from the run context.
+    ⚠️ No ``headers`` here, on purpose (H-181). This dict is built once per
+    agent, and one agent serves every person, so a header stamped here would
+    bill the wrong member. The orchestrator stamps ``X-CC-Member``,
+    ``X-CC-Module`` and ``X-CC-Run`` when each run creates or resumes its
+    session (``orchestrator._copilot_session.session_kwargs_for_this_run``).
     """
-    settings = get_settings()
-    base_url = (
-        os.environ.get("LITELLM_BASE_URL", "")
-        or getattr(settings, "litellm_base_url", "")
-        or "http://127.0.0.1:8080"
-    ).rstrip("/")
-    api_key = (
-        os.environ.get("LITELLM_MASTER_KEY", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:8080")
+    api_key = os.environ.get("LITELLM_MASTER_KEY", "sk-local")
     return {"type": "openai", "base_url": f"{base_url}/v1", "api_key": api_key}
 
 
-def build_agent() -> Any:
-    """Construct the task manager as a NATIVE MAF agent backed by the gateway.
-
-    Use ``OpenAIChatCompletionClient``, NOT ``OpenAIChatClient``. The latter
-    targets OpenAI's *Responses* API, which the gateway's ``v1_compat`` shim
-    does not implement. Imported lazily so the module still loads where the
-    optional deps differ.
-
-    No permission handler and no session wiring here: the executor owns both,
-    and a factory that sets one outranks platform policy (§3.2).
-    """
-    from acb_llm.attribution import attributed_openai
-    from agent_framework import Agent
-    from agent_framework.openai import OpenAIChatCompletionClient
-
-    prov = _llm_provider()
-    client = OpenAIChatCompletionClient(
-        model=MODEL,
-        # Stamp identity so v1_compat attributes this agent's model calls and
-        # cost to it on the observability bus (specs/observability_e2.md §6.2).
-        async_client=attributed_openai(
-            base_url=prov["base_url"],
-            api_key=prov["api_key"],
-            default_headers={"X-CC-Agent": AGENT_NAME, "X-CC-Source": "chat"},
-        ),
-    )
-    return Agent(
-        client=client,
+def build_agent() -> GitHubCopilotAgent:
+    # No on_permission_request here: the executor injects the risk-aware
+    # permission handler (permission_policy) when none is set.  Setting one
+    # here pre-populates ``_permission_handler``, which makes the executor's
+    # ``if ... is None`` guard skip — silently disabling B6 for this agent.
+    return GitHubCopilotAgent(
         instructions=INSTRUCTIONS,
-        name=AGENT_NAME,
-        description=(
-            "GTD task manager — captures thoughts, clarifies the inbox, "
-            "organizes it, and answers status, progress and workload "
-            "questions with citations."
-        ),
-        tools=list(_TOOLS),
+        tools=_TOOLS,
+        default_options={
+            "model": "tier-balanced",
+            "provider": _llm_provider(),
+            "mcp_servers": {},
+        },
     )
 
 
-def build_agents() -> list[Any]:
+def build_agents() -> list[GitHubCopilotAgent]:
     """Dynamic Agent Loader entry point."""
     return [build_agent()]
 
 
-__all__ = ["AGENT_NAME", "INSTRUCTIONS", "MODEL", "build_agent", "build_agents"]
+__all__ = ["INSTRUCTIONS", "build_agent", "build_agents"]
