@@ -19,6 +19,7 @@
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -65,9 +66,10 @@ stops delegating to it. That is the PM lens for everything below: **honesty firs
 second, new capability third.**
 
 ### Explicit non-goals (reset from the old spec)
-- **Multi-account / multi-provider parity is not a near-term goal.** The old success criterion
-  "Connect 2+ Gmail + 1+ Microsoft accounts" is retired. Gmail and IMAP code stays (latent,
-  test-covered where cheap) but no feature work targets them until a second real account exists.
+- ~~Multi-account / multi-provider parity is not a near-term goal.~~ **§11 replaces this for
+  several Outlook mailboxes of one member (2026-10-03, D-EM-17).** Provider parity is still not a
+  goal: D-EM-5 keeps Outlook the only provider in the connect flow. *(History: the old success
+  criterion "Connect 2+ Gmail + 1+ Microsoft accounts" is retired. Gmail and IMAP code stays latent.)*
 - **Inbound SMTP receiving** — dead subsystem, removing (§6 decisions).
 - **Inbox-zero feature-checklist parity as an end in itself** — parity was the scaffolding;
   the roadmap now optimizes for this customer's jobs, not the reference app's feature list.
@@ -3072,3 +3074,400 @@ These are one-time owner acts. No customer ever repeats them.
 
 **Effect on mailboxes connected today.** A refresh token belongs to the app that issued it. Each
 mailbox connected through an earlier app must reconnect once, through the EM-T3 banner.
+
+---
+
+## 11. Several mailboxes for one member — multi-inbox (2026-10-03)
+
+> **Owner request, 2026-10-03.** Plan the connection of several mailboxes in the Email app of
+> one member, as a product manager would. Find the use cases and the edge cases. Document the
+> feature, then start to build it.
+
+> **The two questions of the owner.** How does the AI manage context between the mailboxes? How
+> does the member always know which mailbox a mail is shown in, received in and sent from?
+
+> **This section wins over §1** where §1 says "Multi-account / multi-provider parity is not a
+> near-term goal". It does not change D-EM-5: Outlook stays the only provider in the connect flow.
+> The design is the same for Gmail when D-EM-5 changes.
+
+### 11.0 The answer, in five rules
+
+1. **A mailbox is the boundary of the AI context.** Each AI act reads and writes one mailbox. The
+   one exception is the All inboxes scope of the list, of search and of chat. That scope reads
+   the mailboxes of the member, and it names the mailbox of each result (§11.3).
+2. **A mail belongs to one mailbox, and each act on that mail runs in that mailbox.** The selected
+   view never decides it. The mailbox comes from the mail itself, in the UI and on the server.
+3. **A reply goes out from the mailbox that received the mail.** Each composer shows a From row
+   when the member has two or more mailboxes. A change of From shows a warning before the send.
+4. **Each mailbox has a name and a colour, and each surface that can show two mailboxes shows that
+   chip.** The colour is never the only signal. The name of the mailbox is always next to it.
+5. **A setting or a rule always names one mailbox.** No setting applies to all mailboxes by
+   surprise. A copy from one mailbox to another is an act that the member starts.
+
+A member with ONE mailbox sees no change. The All inboxes scope, the chips and the From row show
+only when the member has two or more mailboxes.
+
+### 11.1 Measured state (2026-10-03)
+
+**Production.** Two mailboxes are connected. Each one belongs to a different member in a
+different organization. No member owns two mailboxes yet, so no defect below has fired in
+production. The address of each mailbox is the sign-in address of its member. That fact makes
+defect MB-1 certain for the next second connect.
+
+**The backend is mostly ready.** Each child table of a mailbox has `account_id`, with
+`ON DELETE CASCADE`. The rules, the assistant settings, the voice profile, the learned patterns,
+the sender lists, the knowledge, the contacts and the drafting memory are per mailbox.
+`GET /email/messages`, `/email/search`, `/senders` and `/analytics/overview` read all the
+mailboxes of the member when the request has no `account_id`. A member can own several rows.
+`is_default` marks one of them (migration 223), and a delete moves the default to the oldest
+mailbox that is left (`transport/accounts.py:481-494`).
+
+**The UI shows one mailbox at a time.** The selected mailbox is `selectedAccountId` in
+`emailStore.ts:258`, kept in the URL `?account=` and in local storage. The left rail lists the
+mailboxes, with a default star and a `⋯` menu. There is no All inboxes scope and no From row.
+
+**The defects.** Each one is real in the code of `f0264ce8`. The slice that fixes it is in the
+last column.
+
+| Id | Defect | Evidence | Slice |
+|---|---|---|---|
+| **MB-1** | **A second Outlook connect signs in the first mailbox again.** The authorize leg sends the sign-in address of the member as `login_hint`, and it sends no `prompt=select_account`. The callback then takes the reconnect path for the first mailbox. | `transport/oauth.py:169`, `:192-195`, `:462-484` | EM-T8a |
+| **MB-2** | **An inline reply or forward sends from the selected mailbox, not from the mailbox of the mail.** The signature, the draft save, the AI draft, the thread load and the send all use `selectedAccountId`. | `EmailDetail.tsx:74`, `:213`, `:279-313`, `:546-627` | EM-T8a |
+| **MB-3** | **"Open in inbox" on a chat card does not switch the mailbox.** A mail of mailbox B opens while A is selected. A reply then goes out from A. | `EmailToolCards.tsx:468`, `emailStore.ts:1006-1025` | EM-T8a |
+| **MB-4** | **The chat send card does not show the From address**, and the model picks `account_id` from text. A chat reply is not tied to the mailbox of the mail. | `agents.py:1378-1386`, `instructions.md:32-33` | EM-T8a |
+| **MB-5** | **A chat reply passes the local message id where `/send` expects the provider id.** The reply does not thread, and it can fail. This is true with one mailbox too. | `agents.py:1366-1367`, `send.py:163-170` | EM-T8a |
+| **MB-6** | **`/send` accepts a `reply_to_message_id` that is not in the sending mailbox.** It asks the provider to reply to it. | `send.py:163-182` | EM-T8a |
+| **MB-7** | **Reply-all leaves out only the address of the selected mailbox.** A member who is on the thread under two addresses sends a copy to themself. | `EmailDetail.tsx:410-411` | EM-T8a |
+| **MB-8** | **Two Outlook mailboxes look the same.** Each new row gets the label "Outlook" and the colour `#6366f1`. The API cannot change the colour. The UI draws the hex value, which breaks design rule 1. | `core.py:785-787`, `oauth.py:510`, `accounts.py:74-78`, `AccountSidebar.tsx:133-141` | EM-T8b |
+| **MB-9** | **After a second connect, Email shows the old mailbox.** The return URL keeps `?account=<old>`, and the callback page ignores the `account_id` it gets. The setup steps of the new mailbox stay hidden. | `page.tsx:329`, `oauth/callback/page.tsx:187` | EM-T8c |
+| **MB-10** | **A switch of mailbox keeps the "load older" state of the old mailbox.** The backfill cursor is keyed by folder only. | `emailStore.ts:244-246`, `:951-965` | EM-T8c |
+| **MB-11** | **The AI settings never name the mailbox they change.** The mobile automation drawer has no mailbox picker. | `AutomationView.tsx:95-110`, `page.tsx:381-394` | EM-T8f |
+| **MB-12** | **The all-mailbox list merges conversations across mailboxes.** It groups by `thread_id` with no `account_id`. The thread count has no owner predicate. | `messages.py:192-196`, `:283`, `:364-377` | EM-T8d |
+| **MB-13** | **The unread badge of a mailbox counts junk and deleted mail.** | `accounts.py:150-158` | EM-T8d |
+| **MB-14** | **The AI drafts "as" the sign-in address of the member, not as the mailbox.** "Self" covers only the current mailbox, so mail between two mailboxes of one member counts as external. | `drafting.py:816`, `automation/identity.py:64-91` | EM-T8e |
+| **MB-15** | **The chat tags a result with the label of its mailbox, and two Outlook mailboxes share the label "Outlook".** | `agents.py:197-215`, `core.py:785-787` | EM-T8e |
+| **MB-16** | **The Integrations page connect leg sends no import range and still offers IMAP.** D-EM-5 hides IMAP. | `integrations/page.tsx:1019-1039` | EM-T8c |
+| **MB-17** | **A disconnect leaves the Mem0 drafting memories of the mailbox (`#acct:<id>`).** | no purge code, `core.py:790-809` | EM-T8f |
+
+### 11.2 Decisions (product design, 2026-10-03)
+
+The owner asked the agent to design this feature as a product manager. The decisions below are
+that design. The owner can reverse any of them. Q-MB-1 is the one open owner question (§11.8).
+
+| Id | Decision |
+|---|---|
+| **D-EM-17** | **A member can connect several mailboxes in one organization.** D-EM-4 applies to each one: a mailbox is private to the member who connects it. Two members can connect the same address, and each one gets a private copy. The same address in two organizations is two copies. |
+| **D-EM-18** | **A mailbox is the boundary of the AI context.** The rule match, the thread status, the cold check, the sender pin, automatic drafts, learning, the voice profile, Process past emails, the digest and the drafting memory each read and write one mailbox. Nothing that the AI learns in one mailbox changes another. |
+| **D-EM-19** | **An act on a mail runs in the mailbox of that mail.** Reply, forward, AI draft, summary, rule from this mail, archive, move, label, snooze and block sender all take the mailbox from the mail. The server refuses an act that names a mail of another mailbox. |
+| **D-EM-20** | **The sending mailbox is visible and never silent.** A reply or a forward goes out from the mailbox of the mail. New mail goes out from the mailbox in view. In All inboxes, new mail goes out from the default mailbox. The From row shows when the member has two or more mailboxes. A change of From on a reply shows a warning. |
+| **D-EM-21** | **Each mailbox has a label and a colour slot.** The default label comes from the address (§11.4). The colour slot is the lowest slot of the `--cat-1…12` ramp that no other mailbox of the member uses. The member can change both. Each chip shows the colour and the label together. |
+| **D-EM-22** | **All inboxes is a view, never a merge.** It lists the mail of each mailbox of the member, newest first, with a chip on each row. Each row keeps its mailbox. A conversation never spans two mailboxes. The same mail in two mailboxes shows twice, and each row says "Also in" the other mailbox. |
+| **D-EM-23** | **Chat has a visible scope: one mailbox, or All inboxes.** In All inboxes, the chat reads across the mailboxes of the member and names the mailbox of each result. Each write act binds to exactly one mailbox, by the order in §11.3. The confirmation card names the From address. |
+| **D-EM-24** | **Rules and AI settings are per mailbox, and a copy is explicit.** A new mailbox starts with no rules. Its setup step offers "Copy the rules of <label>" beside the presets. A copy is made once. After that, the two sets change apart. |
+| **D-EM-25** | **The default mailbox.** The first mailbox is the default, and the member can change it. The default sends new mail from All inboxes and from the other apps, for example Notes. When the default disconnects, the oldest mailbox that is left becomes the default, and Email says so. |
+| **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
+| **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
+| **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
+
+### 11.3 How the AI keeps the mailboxes apart
+
+**The model.** The context of a mailbox is the data that the AI may read when it acts for that
+mailbox. That data is the mail, the threads, the contacts and the sender lists of the mailbox.
+It is also the rules, the learned patterns, the voice profile, the signature, the knowledge, the
+embeddings and the drafting memory of the mailbox. Each item has `account_id`. The tables and the routes in §11.1 already carry it.
+
+**Three kinds of AI act, and the mailbox of each one.**
+
+| Kind | Acts | The mailbox it reads | How the mailbox is chosen |
+|---|---|---|---|
+| **Background** | The rule match (Jev), the thread status, the cold check, the sender pin, automatic drafts, learning, the voice profile, Process past emails, the morning brief | One mailbox only | The `account_id` of the mail or of the job. The loop runs once for each mailbox. |
+| **Bound to a mail** | Draft a reply, summarize a thread, make a rule from this mail, suggest a label | The mailbox of the mail, and for a draft also the voice and the signature of the sending mailbox | The mail. Never the selected view. |
+| **Chat** | Questions, search, triage, drafts, sends, rule changes | The scope: one mailbox, or each mailbox of the member that is not separate | The scope picker in the chat. A write act resolves to one mailbox by the order below. |
+
+**The order by which chat chooses the mailbox of a write act.**
+
+1. **An act on a mail that exists** (reply, forward, archive, move, label, unsubscribe): the
+   mailbox of that mail. The tool takes it from the mail. When the model names another mailbox,
+   the tool refuses and names the right one.
+2. **New mail, in the scope of one mailbox:** that mailbox.
+3. **New mail, in All inboxes:** the mailbox that the member names. If the member names none, the
+   mailbox that last wrote to that recipient. If no mailbox wrote to that recipient, the agent asks
+   "Send from which mailbox?" and lists the labels.
+4. **A rule or a setting:** one mailbox. In All inboxes, the agent asks which one. "All of them"
+   makes one copy for each mailbox, and the agent names each copy.
+
+Each confirmation card shows "From <label> · <address>" above the recipients. The server checks
+the mailbox again (D-EM-19), so a wrong choice by the model fails closed.
+
+**What the AI reads across mailboxes, and nothing else.** Three surfaces read more than one
+mailbox. They are the All inboxes list, search in All inboxes, and chat in All inboxes. Each one
+reads only the mailboxes of the member in the current organization. Row level security binds the
+organization, and the owner predicate binds the member. A separate mailbox (D-EM-28) is never in
+the three.
+
+**What stays per member, and why.**
+
+- **The chat memory** holds how the member likes to work, for example "keep replies short". It
+  holds no mail. It stays per member (`automation/chat.py:160-171`).
+- **The calendar context of the drafter** is the calendar of the member, who is one person in each
+  mailbox. It stays per member (`drafting.py:251-287`).
+- **The identity of the member** covers each mailbox (D-EM-27).
+
+**The drafter speaks as the mailbox.** A draft names the address and the display name of the
+sending mailbox, not the sign-in address (MB-14). The voice profile and the signature come from
+the sending mailbox. A reply from mailbox B to a mail in mailbox A reads the thread of the mail.
+It uses the voice and the signature of B.
+
+**The cost.** Each mailbox runs its own sync loop and its own Jev calls. The budget of EM-T4b
+counts for each mailbox. A 402 or a 403 from the Router starts a cool-down for the organization.
+The cool-down stops the triage of each mailbox in that organization.
+
+### 11.4 How the member always knows the mailbox
+
+**The mailbox chip.** A chip is a dot of the categorical ramp and the label of the mailbox. It
+uses `accentForSlot(color_slot)` from `src/lib/categorical.ts`, never a hex value. A narrow screen
+shows the dot and the first letter of the label. The full address is in the tooltip and in the
+reading pane.
+
+**The default label.** The member can rename a mailbox. Until then, Email makes the label from the
+address, in this order:
+
+1. A consumer domain (`outlook.com`, `hotmail.com`, `live.com`, `msn.com`, `gmail.com`,
+   `yahoo.com`, `icloud.com`) gives "Personal".
+2. Any other domain gives its first part, with a capital letter. `vj@fracktal.in` gives
+   "Fracktal".
+3. When two mailboxes of the member get the same label, each one takes its local part instead.
+   `sales@fracktal.in` gives "Sales".
+
+A stored label equal to the provider name ("Outlook", "Gmail" or "Email") counts as no label,
+because the connect wrote it, not the member.
+
+**Where the mailbox shows.**
+
+| Surface | What it shows | When |
+|---|---|---|
+| **Mailbox switcher**, top of the left rail | "All inboxes", then each mailbox: chip, label, address, unread count of its Inbox, a status mark (importing, reconnect, at the limit). "Add a mailbox" at the end. | Two or more mailboxes. One mailbox shows the address, as today. |
+| **View header** | "All inboxes · 3 mailboxes", or the chip and the address of the one mailbox | Two or more mailboxes |
+| **List row** | The chip, after the sender | All inboxes only. One mailbox in view needs no chip. |
+| **Reading pane** | "In <chip> · to <address>" under the subject | Two or more mailboxes |
+| **Composer** | A From row with a picker. A reply starts on the mailbox of the mail. | Two or more mailboxes |
+| **Composer warnings** | "This conversation is in Fracktal. The recipients will see a new address." "You usually write to this person from Fracktal." "You are writing to a fracktal.in address from Personal." Each warning has a one-click switch. | When it applies |
+| **Banners and progress** | The label and the address in each banner: reconnect, import, storage limit, first sync | Always |
+| **AI settings** | "AI settings for <chip> · <address>" with a mailbox picker. There is no All option. | Always, on desktop and on mobile |
+| **Process past emails** | The dialog title names the mailbox | Always |
+| **Chat** | The scope picker, a tag on each result, and "From" on each send card | Two or more mailboxes |
+| **Disconnect dialog** | The label, the address, the counts that go, and the new default when this one is the default | Always |
+
+**Unread counts.** The count of a mailbox is the unread mail in its Inbox, not in junk or deleted
+mail (MB-13). The count of All inboxes is the sum, without separate mailboxes.
+
+**Folders.** One mailbox in view shows its own folder tree. All inboxes shows the well-known
+folders: Inbox, Drafts, Sent, Archive, Junk and Deleted. Each count is the sum. A custom folder
+shows only under its own mailbox. The label filter shows only for one mailbox, because each
+mailbox has its own Outlook categories.
+
+**The scope in the URL.** `?account=all` or `?account=<id>`. An id that no longer exists falls back
+to All inboxes, or to the only mailbox, with no error. The first visit with two or more mailboxes
+opens All inboxes. After that, Email opens the last scope.
+
+### 11.5 Use cases
+
+| Id | The member wants to | What happens |
+|---|---|---|
+| **UC-1** | Connect a second mailbox | "Add a mailbox" in the switcher opens the range step. Microsoft asks which account (D-EM-26). Email opens the new mailbox, shows its import progress, then its rules step with "Copy the rules of <label>". |
+| **UC-2** | Triage the mail of all mailboxes in one place | All inboxes lists each mailbox, newest first, with chips. Archive, move and snooze act in the mailbox of each row. A bulk act across mailboxes groups the provider calls by mailbox. |
+| **UC-3** | Reply to a mail of mailbox B from All inboxes | The composer opens with From = B. The draft is saved in B and sent from B. |
+| **UC-4** | Write new mail from a chosen address | The From row starts on the mailbox in view, or on the default in All inboxes. The member picks another one before the send. |
+| **UC-5** | Ask the chat "what did Acme send me this week?" | In All inboxes, the chat searches each mailbox and tags each result with its chip. |
+| **UC-6** | Ask the chat to reply to one of those mails | The reply binds to the mailbox of that mail. The card shows "From B". |
+| **UC-7** | Set up the rules of the new mailbox | The rules step offers presets and "Copy the rules of <label>". Process past emails runs for that mailbox only. |
+| **UC-8** | See why a mailbox stopped | The switcher shows a status mark on its chip. The banner names the mailbox and offers "Reconnect <label>". The other mailboxes run on. |
+| **UC-9** | Remove one mailbox | The dialog names the mailbox and the counts. The other mailboxes, their rules and their mail stay. If it was the default, the dialog names the new default. |
+| **UC-10** | Keep a client mailbox apart | "Keep separate" in the mailbox menu. It leaves All inboxes and the All inboxes chat. Its own view still works. |
+| **UC-11** | Tell two mailboxes apart at a glance | Each one has its own label and colour. The member can rename and recolour it in the mailbox menu. |
+| **UC-12** | Reach the storage limit in one mailbox | Only that mailbox stops its import. Its chip shows the mark, and its banner names it. |
+
+### 11.6 Edge cases
+
+| # | Case | Behaviour | Slice |
+|---|---|---|---|
+| 1 | The browser is signed in to Microsoft as mailbox A, and the member adds mailbox B | `prompt=select_account` shows the account picker (D-EM-26) | EM-T8a |
+| 2 | The member picks A again in the Microsoft picker | A reconnect of A. Email says "<address> is already connected" and shows A. No new row. | EM-T8c |
+| 3 | Two members of one organization connect the same address | Two private copies, two syncs, two sets of rules (D-EM-17). Neither member sees the other copy. | — |
+| 4 | One member connects the same address in two organizations | Two copies, one in each organization. Row level security keeps them apart. | — |
+| 5 | Two mailboxes get the same default label | The local part becomes the label (§11.4). The address always shows in the switcher and the pane. | EM-T8b |
+| 6 | More than 12 mailboxes | The colour slots repeat. The labels still differ. Q-MB-1 can make this case impossible. | EM-T8b |
+| 7 | The member changes From on a saved reply draft | Email saves a new draft in the new mailbox, then deletes the draft in the old one. A provider draft cannot move between mailboxes. | EM-T8c |
+| 8 | The sending mailbox needs a reconnect | The send stops with "Reconnect <label> to send". The draft stays. | EM-T8c |
+| 9 | The sending mailbox is at the storage limit | The send runs. The limit is on the copy in Metorite only (D-EM-14). | — |
+| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). | EM-T8g |
+| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. | EM-T8g |
+| 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. | EM-T8g |
+| 13 | Two Outlook mailboxes return the same conversation id | The conversation key includes `account_id`. A conversation never spans two mailboxes (MB-12). | EM-T8d |
+| 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27) | EM-T8e |
+| 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
+| 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
+| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
+| 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
+| 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8d |
+| 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
+| 21 | A label filter in All inboxes | Not shown. A label belongs to one mailbox. | EM-T8d |
+| 22 | The recipient is known only from another mailbox | The composer shows "You usually write to this person from <label>" with a switch | EM-T8c |
+| 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f |
+| 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
+| 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
+
+### 11.7 Slices
+
+Each slice is one PR. Each slice ships behind no flag, because each one is a fix or a view that
+shows only with two or more mailboxes. The order is the order of risk: EM-T8a fixes the live
+wrong-sender defects first.
+
+| Slice | Gate | Scope | Done when |
+|---|---|---|---|
+| **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
+| **EM-T8b** | 🟢 AGENT-SAFE | **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
+| **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
+| **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
+| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
+| **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
+
+#### 11.7.1 EM-T8a — send from the right mailbox
+
+**Status.** ✅ MERGED (#587, 2026-10-03), with review fix round 1.
+
+**Scope.**
+
+1. **The authorize leg (MB-1).** When the member already has a mailbox of that provider in this
+   organization, the leg sends `prompt=select_account` and no `login_hint`. The first connect keeps
+   the hint, as EM-T3a item 3 specified. A `login_hint` that the client sends still wins. When
+   the read of the mailboxes fails, the leg shows the picker, which is right for a first connect
+   too. Reconnect on the Integrations page sends the mailbox address as its hint, as the banner
+   in Email does.
+2. **The inline composer (MB-2).** `EmailDetail` takes the mailbox from `email.accountId`. Each
+   of these uses it: the signature, the draft save, the AI draft and the thread load. The send,
+   the draft send, the optimistic sent row and the sync after the send use it too. `selectedAccountId` is only the fallback for
+   a mail with no `accountId`.
+3. **Open in inbox (MB-3).** `openEmailById` opens the mail in its own mailbox. When the mailbox
+   differs from the selected one, the store selects the mailbox of the mail first.
+4. **The chat send (MB-4, MB-5).** In reply mode, `send_email` reads the original mail and uses its
+   `account_id`. It passes the local id of the mail, and `/send` maps it to the provider id. When
+   the model passes another `account_id`, the tool uses the mailbox of the mail and says so in
+   its result. The confirmation card shows "From <address>" for each send, new or reply.
+   `send_draft` shows the same line. `draft_reply` drafts in the mailbox of the mail, and the
+   first line of its result names that mailbox. The chat draft card reads the mailbox from that
+   line, so its Save and Send act there, and its confirm names the From mailbox.
+5. **The server check (MB-6).** `/send` answers 404 when `reply_to_message_id` names no mail of a
+   sending mailbox of the member. The check runs before the provider session, so a refused reply
+   makes no provider call, the sign-in included. Each arm of the match uses an index.
+6. **Reply and reply-all (MB-7).** The recipients leave out the address of each mailbox of the
+   member. The in-thread draft card uses the same rule. Two cases keep an own address:
+   - A reply to mail from another mailbox of the member answers that mailbox.
+   - A reply to mail that the sending mailbox sent answers its recipients, as Outlook does. When
+     those recipients are only own mailboxes, they stay.
+7. **On a phone,** a mail that Open in inbox opened in its own mailbox keeps the detail view.
+
+**Fences (R7).**
+
+- A unit test proves that a second connect of a member sends `prompt=select_account` and no
+  `login_hint`, and that a first connect keeps the hint.
+- An R8 test proves that `/send` with a reply id of another mailbox answers 404, and that the
+  route opens no provider session. The same holds for the mailbox of another member.
+- A unit test proves that the chat reply sends from the mailbox of the original mail. It also
+  proves that the reply uses the provider id, and that the card names the From address.
+- A vitest source fence proves that `EmailDetail.tsx` passes no bare `selectedAccountId` to a send,
+  draft, signature or thread call.
+- The fix round of the review adds five fences, each named in its test file:
+  `email-authorize-check-fails-open-to-picker`, `email-chat-draft-card-mailbox`,
+  `email-draftcard-own-addresses`, `email-open-by-id-mobile` and
+  `email-integrations-reconnect-hint`.
+
+**Verification.** `uv run pytest tests/unit/test_email_multi_inbox.py tests/unit/test_email_oauth_state.py tests/unit/test_email_tool_consolidation.py -v -rs`.
+The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components/email`.
+
+#### 11.7.2 EM-T8b — the mailbox identity
+
+1. **A migration** (R1: take the number at build time, and check it again at merge). It adds `color_slot SMALLINT NULL`,
+   with a check of 1 to 12. It sets a slot for each existing row, in the order of `created_at`
+   for each member and organization. The column stays nullable (R6).
+2. **The connect** writes the lowest slot that no other mailbox of the member uses.
+3. **The API** returns `color_slot` and `display_label`, the label of §11.4. `PATCH` accepts
+   `label` and `color_slot`.
+4. **The UI.** One `MailboxChip` component, through `accentForSlot`. A NULL slot falls back to
+   `categoricalAccent(account.id)`. The switcher, the mobile top bar and the reading pane use it.
+   The hex avatar goes, and the `COLOR_DEBT` entry for `#6366f1` in `conformance.test.ts` goes
+   with it.
+5. **The mailbox menu** gains "Rename" and "Colour".
+
+**Fences.** An R8 test for the backfill and for the slot of a new connect. A unit test for the
+label rule of §11.4. The conformance test with the debt entry removed.
+
+#### 11.7.3 EM-T8c — the From row and the second connect
+
+1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
+   lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
+   mark and cannot send.
+2. **The warnings** of §11.4, each with a one-click switch. "You usually write to this person
+   from <label>" reads `/contacts/suggest` with no `account_id`.
+3. **The move of a draft** (edge case 7). The signature changes with the From, when the body still
+   holds the old signature unchanged.
+4. **The return after a connect (MB-9).** The callback page selects the `account_id` it gets.
+   The connect modal leaves `?account=` out of `redirect_after`.
+5. **A connect of an address already present** shows "<address> is already connected" (edge
+   case 2). The callback returns a `reconnected` flag.
+6. **The backfill state (MB-10)** is keyed by mailbox and folder.
+7. **The Integrations connect leg (MB-16)** sends the import range and hides IMAP. As an
+   alternative, it links to the connect flow inside Email.
+
+#### 11.7.4 EM-T8d — All inboxes
+
+1. **The store scope** is `"all"` or a mailbox id. The URL holds it (§11.4).
+2. **The list and search** call the backend with no `account_id` in All inboxes. Each row draws
+   its chip. The thread load passes the `account_id` of the mail.
+3. **The backend (MB-12).** The conversation key is `(account_id, thread_id)`. The thread filter
+   and the thread count take `account_id`, and the count takes the owner predicate. R8 proves
+   that two mailboxes with the same `thread_id` give two conversations.
+4. **The well-known folders** and their summed counts. Custom folders and label filters show only
+   for one mailbox.
+5. **The unread count (MB-13)** is the Inbox only.
+6. **The import panels** show one panel for each importing mailbox, each one named.
+
+#### 11.7.5 EM-T8e — the AI context
+
+1. **The fences of D-EM-18.** Each test puts a second mailbox of the same member in the
+   database (R8). One test for each background act proves that it reads one `account_id` only.
+2. **The chat scope.** The picker in `AgentChat` offers "All inboxes". The persona names the scope
+   and lists each mailbox as label and address. Each tool result carries "label · address", not
+   the label alone (MB-15).
+3. **The binding order of §11.3**, on the tool side. A tool that acts on a mail derives the mailbox
+   from the mail. A new send in All inboxes with no mailbox named answers with the question.
+4. **The drafter identity (MB-14).** The prompt names the address and the display name of the
+   sending mailbox. "Self" in `automation/identity.py` covers each mailbox of the member.
+5. **Removed mailbox** (edge case 17): the chat scope falls back to All inboxes.
+
+#### 11.7.6 EM-T8f — settings for each mailbox
+
+1. **The AI settings header** names the mailbox, with a picker, on desktop and mobile (MB-11).
+2. **Copy rules.** `POST /email/rules/copy` with `from_account_id` and `to_account_id`. Both must
+   belong to the member. It copies the enabled rules and their actions. A name already present in
+   the target gets " (copy)". The rules step of a new mailbox offers it.
+3. **The disconnect dialog** names the new default before the removal (edge case 18).
+4. **The Mem0 purge (MB-17).** A disconnect deletes the memories under `#acct:<id>`.
+
+#### 11.7.7 EM-T8g — duplicates and separation
+
+1. **"Also in".** The list marks a row whose `internet_message_id` is in another mailbox of the
+   member.
+2. **The draft dedupe** (edge case 11).
+3. **The forward loop guard** (edge case 12).
+4. **"Keep separate"** (D-EM-28). A migration adds `in_all_inboxes BOOLEAN NOT NULL DEFAULT true`.
+   The All inboxes list, search and chat leave out a separate mailbox. R8 proves it.
+
+### 11.8 Open owner question
+
+- **Q-MB-1. How many mailboxes can one member connect?** Each mailbox adds a sync loop, Jev calls
+  and up to 500 MB of storage. The proposal is 5 for each member at launch, with an admin view of
+  the count. Until the owner answers, the code sets no limit. The limit is a commercial choice, so
+  the agent does not make it.

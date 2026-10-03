@@ -6,6 +6,7 @@ import { useState, useEffect, useRef } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
 import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { mailboxOf, ownAddresses, replyRecipients } from "../lib/mailbox";
 import {
   fetchFullBody, getEmail, listThread, createRule,
   fileToSendAttachment,
@@ -37,6 +38,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
     captureEmailToTasks,
   } = useEmailStore();
+  // The mailbox of the open mail. Every act on it runs there: the signature,
+  // the thread, the drafts, the AI draft and the send. The selected view never
+  // decides it (EM-T8a, D-EM-19, MB-2).
+  const mailboxId = mailboxOf(email, selectedAccountId);
   const { isMobile } = useViewMode();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
   const [read, setRead] = useState(email?.isRead ?? true);
@@ -71,13 +76,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const [sigText, setSigText] = useState("");
   useEffect(() => {
     let alive = true;
-    void getSignatureText(selectedAccountId).then((s) => {
+    void getSignatureText(mailboxId).then((s) => {
       if (alive) setSigText(s);
     });
     return () => {
       alive = false;
     };
-  }, [selectedAccountId]);
+  }, [mailboxId]);
   const [replyAttachments, setReplyAttachments] = useState<SendAttachment[]>([]);
   const [replyArtifacts, setReplyArtifacts] = useState<ArtifactAttachmentRef[]>([]);
   const [sendErr, setSendErr] = useState<string | null>(null);
@@ -141,7 +146,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       optimisticSentRef.current = [...optimisticSentRef.current, sent];
       setThread((cur) => mergeThread(cur ?? []));
     }
-    const acct = selectedAccountId ?? undefined;
+    const acct = mailboxId ?? undefined;
     const threadId = email?.threadId;
     if (acct) void triggerSync(acct);
     if (!threadId) return;
@@ -159,7 +164,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const blockSender = async () => {
     if (!email) return;
     const sender = email.from.email;
-    const accountId = email.accountId || selectedAccountId;
+    const accountId = mailboxId;
     if (!sender || !accountId) return;
     try {
       await createRule({
@@ -210,13 +215,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const threadId = email.threadId;
     const tick = () => {
       if (document.visibilityState !== "visible") return;
-      listThread(selectedAccountId ?? undefined, threadId)
+      listThread(mailboxId ?? undefined, threadId)
         .then((t) => setThread(mergeThread(t)))
         .catch(() => {});
     };
     const id = setInterval(tick, 20000);
     return () => clearInterval(id);
-  }, [email?.threadId, selectedAccountId]);
+  }, [email?.threadId, mailboxId]);
 
   // Fetch full content whenever the selected email changes.
   useEffect(() => {
@@ -240,7 +245,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setDraftStatus("idle");
     // Pull the whole conversation so we can show a Gmail-style thread view.
     if (email.threadId) {
-      listThread(selectedAccountId ?? undefined, email.threadId)
+      listThread(mailboxId ?? undefined, email.threadId)
         .then((t) => { if (!cancelled) setThread(mergeThread(t)); })
         .catch(() => { if (!cancelled) setThread(null); });
     }
@@ -276,7 +281,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // NOTE: must stay ABOVE the `if (!email) return` early-return so the hook is
   // called on every render (moving it below crashes with a hooks-order error).
   useEffect(() => {
-    if (!replyMode || !selectedAccountId || !email) return;
+    if (!replyMode || !mailboxId || !email) return;
     if (!replyDirty.current) return; // ignore the prefilled quote — wait for edits
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
     if (!replyBody.trim() && toArr.length === 0) return;
@@ -294,7 +299,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId: selectedAccountId,
+          accountId: mailboxId,
           draftId: draftIdRef.current ?? undefined,
           // Reply/Reply-All thread onto the target message; Forward is standalone.
           replyToMessageId: isForward ? undefined : target.id,
@@ -310,7 +315,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     }, 1200);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, selectedAccountId, email?.id]);
+  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, mailboxId, email?.id]);
 
   // Bridge for the desktop unified toolbar: it issues a transient store command
   // (reply/forward/block/download) that this viewer executes via the live
@@ -405,10 +410,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
         ? "Reply All"
         : "Reply";
 
-  // The address of the account we're viewing from — excluded from reply-all
-  // recipients so we don't reply to ourselves.
-  const ownEmail = accounts
-    .find((a) => a.id === selectedAccountId)?.emailAddress?.toLowerCase();
+  // The address of the mailbox that sends (the mailbox of the mail), for the
+  // optimistic sent row. Reply-all leaves out EVERY address of the member, not
+  // only this one (D-EM-27, MB-7).
+  const sendingAddress = accounts
+    .find((a) => a.id === mailboxId)?.emailAddress?.toLowerCase();
+  const own = ownAddresses(accounts);
 
   /** Open the inline composer with recipients + a quoted body prefilled.
    *  `target` is the message being replied to (defaults to the open message);
@@ -437,7 +444,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // chain is kept separate in `replyQuote`, shown collapsed below the box and
     // reattached on send — so it can never be edited or AI-rewritten by mistake.
     setReplyBody("");
-    void getSignatureText(selectedAccountId).then((sig) => {
+    void getSignatureText(mailboxId).then((sig) => {
       // Seed only while the box is still untouched — never clobber typing.
       if (sig) setReplyBody((prev) => (prev.trim() ? prev : seededBody(sig)));
     });
@@ -452,19 +459,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         `Date: ${src.receivedAt}\nSubject: ${src.subject}\n\n${quoteSrc}`
       );
     } else {
-      const recips =
-        mode === "reply-all"
-          ? [src.from.email, ...(src.to || []).map((t) => t.email)]
-          : [src.from.email];
-      const to = recips.filter(
-        (e, i) => e && recips.indexOf(e) === i && e.toLowerCase() !== ownEmail
-      );
-      const cc =
-        mode === "reply-all"
-          ? (src.cc || [])
-              .map((c) => c.email)
-              .filter((e) => e && e.toLowerCase() !== ownEmail)
-          : [];
+      const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
       setReplyTo(to.join(", "));
       setReplyCc(cc.join(", "));
       setReplyQuote(
@@ -483,19 +478,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
   const switchReplyMode = (mode: "reply" | "reply-all") => {
     const src = replyTargetRef.current ?? view;
-    const recips =
-      mode === "reply-all"
-        ? [src.from.email, ...(src.to || []).map((t: {email: string}) => t.email)]
-        : [src.from.email];
-    const to = recips.filter(
-      (e, i) => e && recips.indexOf(e) === i && e.toLowerCase() !== ownEmail
-    );
-    const cc =
-      mode === "reply-all"
-        ? (src.cc || [])
-            .map((c: {email: string}) => c.email)
-            .filter((e: string | undefined) => e && e.toLowerCase() !== ownEmail)
-        : [];
+    const { to, cc } = replyRecipients(src, mode, own, sendingAddress);
     setReplyTo(to.join(", "));
     setReplyCc(cc.join(", "));
     // Reply All reveals Cc/Bcc; narrowing to Reply hides them (and drops Bcc).
@@ -543,7 +526,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  panel, draft text lands live, and the panel stays open so the next
    *  instruction refines this draft instead of starting over. */
   const runAiDraft = async () => {
-    if (!selectedAccountId || ai.busy) return;
+    if (!mailboxId || ai.busy) return;
     setSendErr(null);
     const target = replyTargetRef.current ?? email;
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
@@ -554,7 +537,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const instruction = seeded || aiInstruction.trim();
     const draft = await ai.run(
       {
-        accountId: selectedAccountId,
+        accountId: mailboxId,
         body: replyBody, // NEW text only — the quote is excluded by design
         instruction,
         mode: replyMode === "forward" ? "forward" : "reply",
@@ -572,8 +555,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
   const handleInlineSend = async () => {
     if (!email) return;
-    if (!selectedAccountId) {
-      setSendErr("No account selected");
+    if (!mailboxId) {
+      setSendErr("This mail has no mailbox to send from");
       return;
     }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
@@ -594,7 +577,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       const hasAtt = replyAttachments.length > 0 || replyArtifacts.length > 0;
       if (draftIdRef.current || hasAtt) {
         const saved = await saveDraft({
-          accountId: selectedAccountId,
+          accountId: mailboxId,
           draftId: draftIdRef.current ?? undefined,
           replyToMessageId: isForward ? undefined : target.id,
           to: toArr,
@@ -605,10 +588,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
           attachments: replyAttachments.length ? replyAttachments : undefined,
           artifacts: replyArtifacts.length ? replyArtifacts : undefined,
         });
-        await sendDraft(selectedAccountId, saved.id);
+        await sendDraft(mailboxId, saved.id);
       } else {
         sendEmail({
-          accountId: selectedAccountId,
+          accountId: mailboxId,
           to: toArr,
           cc: ccArr.length ? ccArr : undefined,
           bcc: bccArr.length ? bccArr : undefined,
@@ -624,9 +607,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // Show the reply in the conversation at once, then pull the real synced copy.
     const sent = email.threadId
       ? buildOptimisticSent({
-          accountId: selectedAccountId,
+          accountId: mailboxId,
           threadId: email.threadId,
-          fromEmail: ownEmail || "",
+          fromEmail: sendingAddress || "",
           to: toArr,
           cc: ccArr,
           subject: replySubject(),
@@ -654,6 +637,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
   const popOutToComposer = () => {
     openCompose({
+      // The pop-out keeps the mailbox of the mail (EM-T8a, MB-2).
+      accountId: mailboxId ?? undefined,
       to: replyTo,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
@@ -1093,7 +1078,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
               <RecipientInput
                 value={replyTo}
                 onChange={(v) => { replyDirty.current = true; setReplyTo(v); }}
-                accountId={selectedAccountId}
+                accountId={mailboxId}
                 ariaLabel="To recipients"
                 placeholder="Recipients (comma-separated)…"
                 className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1112,7 +1097,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyCc}
                     onChange={(v) => { replyDirty.current = true; setReplyCc(v); }}
-                    accountId={selectedAccountId}
+                    accountId={mailboxId}
                     ariaLabel="Cc recipients"
                     placeholder="Cc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1123,7 +1108,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyBcc}
                     onChange={(v) => { replyDirty.current = true; setReplyBcc(v); }}
-                    accountId={selectedAccountId}
+                    accountId={mailboxId}
                     ariaLabel="Bcc recipients"
                     placeholder="Bcc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"

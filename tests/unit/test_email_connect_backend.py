@@ -75,6 +75,14 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(name, TENANT_GUID)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
 
+    # The authorize leg asks the database whether the member already has a
+    # mailbox (EM-T8a). These tests run with no database, so the member has
+    # none. ``test_email_multi_inbox.py`` fences the other answer.
+    async def _no_mailbox(org, member, provider):
+        return False
+
+    monkeypatch.setattr(oauth, "_member_has_mailbox", _no_mailbox)
+
 
 def _no_app_in_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     s = get_settings()

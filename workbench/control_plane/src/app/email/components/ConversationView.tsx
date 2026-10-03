@@ -15,6 +15,7 @@ import { MessageContent } from "./MessageContent";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
+import { ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
 import { ContactTrigger, RecipientList } from "./ContactCard";
 
@@ -338,34 +339,24 @@ export function DraftCard({
   const {
     deleteEmail, selectedAccountId, saveDraft, sendDraft, accounts,
   } = useEmailStore();
-  const ownEmail = accounts
+  // The mailbox of the draft sends. Reply-all leaves out EVERY address of the
+  // member, not only this one (D-EM-27, MB-7, EM-T8a review).
+  const own = ownAddresses(accounts);
+  const sendingAddress = accounts
     .find((a) => a.id === (draft.accountId || selectedAccountId))
-    ?.emailAddress?.toLowerCase();
+    ?.emailAddress;
   // A real inbound message to reply to (vs a from-scratch / compose draft) —
   // gates the Reply / Reply All toggle and the reply-all recipient maths.
   const hasReplyTarget = !!replyTo && replyTo.id !== draft.id;
-  // REPLY-ALL recipients: the original sender + everyone on To, minus yourself;
-  // original Cc carried over. Falls back to whatever the draft already has.
-  const replyAllTo = (() => {
-    if (!replyTo) return draft.to.map((t) => t.email).filter(Boolean);
-    const all = [
-      replyTo.from?.email,
-      ...(replyTo.to || []).map((t) => t.email),
-    ];
-    const deduped = all.filter(
-      (e, i) => e && all.indexOf(e) === i && e.toLowerCase() !== ownEmail
-    );
-    return deduped.length ? deduped : draft.to.map((t) => t.email).filter(Boolean);
-  })();
-  const replyAllCc = (replyTo?.cc || [])
-    .map((c) => c.email)
-    .filter((e) => e && e.toLowerCase() !== ownEmail);
+  const draftTo = draft.to.map((t) => t.email).filter(Boolean);
+  // REPLY-ALL recipients: the original sender + everyone on To, minus the
+  // member; original Cc carried over. Falls back to what the draft has.
+  const all = replyTo ? replyRecipients(replyTo, "reply-all", own, sendingAddress) : null;
+  const replyAllTo = all && all.to.length ? all.to : draftTo;
+  const replyAllCc = all ? all.cc : [];
   // REPLY (sender only) recipients.
-  const replyOnlyTo = (() => {
-    const from = replyTo?.from?.email;
-    if (from && from.toLowerCase() !== ownEmail) return [from];
-    return draft.to.map((t) => t.email).filter(Boolean);
-  })();
+  const only = replyTo ? replyRecipients(replyTo, "reply", own, sendingAddress) : null;
+  const replyOnlyTo = only && only.to.length ? only.to : draftTo;
 
   // Split any quoted trailing chain out of the draft body so the editable box
   // holds only the new text (and AI never rewrites the quote); it's reattached
@@ -523,7 +514,7 @@ export function DraftCard({
         buildOptimisticSent({
           accountId,
           threadId: sentThreadId,
-          fromEmail: ownEmail || "",
+          fromEmail: sendingAddress?.toLowerCase() || "",
           to: recipients(),
           cc: ccList(),
           subject: draft.subject || "",
