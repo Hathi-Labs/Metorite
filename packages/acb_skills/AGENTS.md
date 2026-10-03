@@ -61,7 +61,9 @@ clone cache.
    broker exec with no host fallback, and the store's map and safe opener.
    A covered run does not hold the host floor tools that open the dir with
    plain path calls (`WITHHELD_HOST_TOOLS`): a per-run chat middleware hides
-   them and a function middleware refuses them. The store takes only the
+   them and a function middleware refuses them. The same set holds the host
+   web tools `web_search` and `fetch_page` (`HOST_NETWORK_TOOLS`), so a
+   covered run has no network at all (§16.3). The store takes only the
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.

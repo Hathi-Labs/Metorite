@@ -1572,11 +1572,19 @@ These facts change or add to the text above:
     marker is `.metorite-author`, and every writer refuses that name. A run
     loads, lists, reads and runs only its own member's skills. The routes
     refuse another member's skill with 403.
+  - **How a check reads the skill rule** (for the P3 eval, E17). The
+    marker `agent-data/skills/<name>/.metorite-author` holds the author's
+    email in lower case, and `agent_paths.skill_author()` reads it. In a run
+    of another member, the `<available_skills>` block of each request does
+    not name the skill, or the block is absent. A `load_skill` call for it
+    answers `Error: Skill '<name>' not found.` The source of the list is
+    `sandbox_tools.LockedSkillsSource(workspace, guard, member)`.
   - A covered run does not hold `write_artifact`, `share_artifact`,
     `save_note`, `recall_notes`, `get_errors` or `run_diagnostics`. A per-run
     chat middleware takes them out of each model request, and a function
     middleware refuses a call to one. The file tools do that work, with the
-    safe opener and the lock.
+    safe opener and the lock. The P3 review added `web_search` and
+    `fetch_page` to the set, by the §16.3 rule of no host web tool.
   - `write_artifact`, `share_artifact` and `save_note` refuse another chat's
     output folder and another member's skill in every run.
   - The opener passes `O_NONBLOCK` and refuses a file that is not regular,
@@ -2973,6 +2981,16 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
 - **The HR-only fields stay gated.** A script reads only the files that the
   agent wrote from tool results. So it cannot see more than the tools give.
 - **Nothing leaves the platform.** The container has `--network none`.
+- **A covered run holds no host web tool.** The core floor
+  (`_CORE_STANDARD_TOOL_NAMES`) gives every agent `web_search` and
+  `fetch_page`, and they run on the HOST with its network. Member data sits
+  in `.run/` and in the model's context. So a model that an injection steers
+  could send it out in a URL or a search query, with no container network at
+  all. A covered run does not hold the two tools
+  (`sandbox_tools.HOST_NETWORK_TOOLS`). The withhold middleware of the
+  host floor tools takes them out of each request and refuses a call to one.
+  The fence is `test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform`
+  (WS43-F21). It traps every real HTTP send of the host.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
