@@ -3428,7 +3428,7 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 
 #### 11.7.3 EM-T8c — the From row and the second connect
 
-**Status.** 🔨 BUILT with review fix round 1, not merged (2026-10-03, branch `email-from-row`, no migration).
+**Status.** 🔨 BUILT with review fix round 1, not merged (2026-10-03, branch `email-from-row-v2`, no migration).
 
 1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
    lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
@@ -3458,8 +3458,8 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
   consumer domains.
 - **A mailbox that cannot send** is one whose sign-in failed: a live call answered 401, or the
   accounts API returns `needs_reconnect`. The gateway sets that flag only for a sync error of the
-  sign-in. A 429 or a 503 during an import also marks the sync as failed, and a send still works
-  then, so it does not block a send. The reconnect banner still shows for any sync error.
+  sign-in. A 429 or a 503 during an import also marks the sync as failed. A send still works
+  then, so that error does not block a send. The reconnect banner still shows for any sync error.
 - **A change of From during a save** makes the draft of that save stale. The composer keeps a
   list of stale drafts and deletes them only once the new mailbox holds the message. While a
   stale draft exists, a send takes the draft path, which waits for the real send.

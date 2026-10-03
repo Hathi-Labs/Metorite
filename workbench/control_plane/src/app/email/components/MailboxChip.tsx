@@ -27,7 +27,6 @@ export function mailboxAccent(account: Pick<EmailAccount, "id" | "colorSlot">): 
     : categoricalAccent(account.id);
 }
 
-
 /** The first letter of the label, for a round avatar. */
 export function mailboxInitial(account: Pick<EmailAccount, "emailAddress" | "displayLabel">): string {
   return (mailboxLabel(account).match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
