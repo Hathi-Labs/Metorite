@@ -1041,8 +1041,8 @@ a full disk. The reaper stops idle containers.
 | WS43-F14 | `tests/unit/test_sandbox_safe_open.py` | The safe opener follows a symlink at any depth, a racing thread swaps a parent dir for a symlink and wins, a host reader or writer of §7.5 rule B skips the opener, or a skill under `agent-data/skills/` does not survive a lost disk copy and a rehydrate |
 | WS43-F15 | `tests/unit/test_no_copilot_sdk.py` | §15.6. A file off the allowlist imports `copilot`, a module under `copilot.` or `agent_framework_github_copilot`, names `GitHubCopilotAgent` in code, or loads one of those modules through `importlib.import_module` or `__import__`. The test reads the syntax tree, so a comment or a docstring does not trip it. An allowlist entry with no Copilot use fails it too. After WS-43r, `pyproject.toml` or `uv.lock` names `github-copilot-sdk` or `agent-framework-github-copilot` |
 | WS43-F16 | `tests/unit/test_mutation_runner_maf.py` | The MAF mutation runner imports `copilot` or sets a permission handler that approves all. The MAF branch of `_run_mutation_sandbox` passes `COPILOT_GITHUB_TOKEN` or any GitHub token. The token probe finds a token in the container. Or the mutation prompt asks for a `GitHubCopilotAgent` factory |
-| WS43-F17 | `tests/unit/test_root_agent_maf.py` | The root `metorite` agent gets a shell, a write tool or `approve_all`, reads a path outside its read roots or a denied path, answers a caller who is not a first-party admin, or makes a code change by a path other than `spawn_coding_agent` |
-| WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a registration that names `github-copilot` is accepted, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
+| WS43-F17 | `tests/unit/test_root_agent_maf.py` | The root `metorite` agent gets a shell, a write tool or `approve_all`, reads a path outside its read roots or a denied path, runs for a caller who is not a first-party admin on the chat route, the gateway run API or `call_agent`, or makes a code change by a path other than `spawn_coding_agent` |
+| WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a repo whose `config.json` declares `github-copilot` is accepted at registration or loads, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
 
@@ -1598,6 +1598,9 @@ product code changes.
    deletes its entry in the same PR.
 5. A product feature named "copilot", such as the Notes copilot, does not
    fail it. Nor does a comment or a docstring.
+6. The test reads each file with the `utf-8-sig` encoding. 8 files under
+   `apps/` and `packages/` start with a byte order mark.
+7. A file that does not parse FAILS the test. It never skips.
 
 **Verification.**
 
@@ -1658,8 +1661,9 @@ WS43-G3.
 3. It has no shell and no write tool.
 4. It refuses every denied path of §15.4, `.env` included, also through a
    symlink.
-5. Only a first-party admin can chat with it (§15.4). Every other caller gets
-   404.
+5. Only a first-party admin can run it (§15.4). The check sits at the run
+   boundary, and every other caller gets 404. WS43-F17 tests the chat
+   route, the gateway run API and `call_agent`.
 6. `config.json` reads `"runtime": "maf"`. The executor decides by the object
    (WS-43h), so the label does not send a run down the Copilot path.
 7. H-211's root half is closed: no first-party factory sets `approve_all`.
@@ -1685,11 +1689,14 @@ whatever its label says.
 
 1. A repo-registered agent with no runtime gets `maf`, at registration and
    in the back-fill.
-2. A registration that names `runtime: github-copilot` gets HTTP 400, with
-   the migration text of §15.5.
-3. When the loader builds a Copilot agent, it logs one deprecation line that
+2. `RegisterAgentRequest` (`gateway/routes/agent.py:1140`) has no runtime
+   field. The source is the repo's `config.json` `"runtime"`.
+3. A repo whose `config.json` declares `github-copilot` gets HTTP 400 at
+   registration. The loader refuses it at load time. Both give the
+   migration text of §15.5.
+4. When the loader builds a Copilot agent, it logs one deprecation line that
    names the agent and links §15.5.
-4. `acb_skills.loader.AgentRuntimeUnsupported` exists. A test proves that the
+5. `acb_skills.loader.AgentRuntimeUnsupported` exists. A test proves that the
    loader raises it for a Copilot agent once the switch of WS-43r is set.
 
 **Verification.**
@@ -1713,8 +1720,9 @@ Plane's `src/app/api/models/all/route.ts`, and fence WS43-F19.
    Router's tier slate. When it is false, the lists stay as they are.
 2. The slate is the set of names that `acb_llm.routed.router_tier` maps to.
    The chat picker reads it already, since PR #483 (D56).
-3. When `routing_is_on()` is true, `/health/runtime` reports the Router and
-   the sandbox broker, and no Copilot SDK check.
+3. When `routing_is_on()` is true, `/health/runtime` reports the Router, and
+   no Copilot SDK check. A sandbox broker line waits until the broker is
+   wired (WS-43c built and `MAF_CODING_SCOPE` set).
 4. The Control Plane shows no "GitHub Copilot SDK" model group when
    `routing_is_on()` is true.
 
@@ -1873,7 +1881,11 @@ WS43-F20.
 3. `system_context`, `memory_context` and the persona reach the model on
    every turn, through a MAF context provider. They never enter the message
    list that WS-43t2 will store.
-4. A test proves that `memory_context` reaches the model after the repair.
+4. The context provider is attached to each run, never to a shared agent
+   object. A WS43-F20 case runs two turns at once with different
+   `memory_context`, and neither sees the other's.
+5. A test proves that `memory_context` reaches the model after the repair.
+6. The structured branch applies the cap of §15.9.6.
 
 **Verification.**
 
@@ -1909,41 +1921,48 @@ regression (WS43-G13). §15.9 is the design.
 2. Every read and write goes through `acb_graph.tenant_session(org)`, with
    the organization from the run binding. With no organization, the store
    does nothing, and the run uses the text history.
-3. The new store module is in the source scan of
+3. `tenant_session` is sync (`acb_graph/db.py:97`). So the store reads
+   `_current_run_org()` on the event loop, BEFORE any `run_in_executor` hop,
+   and passes the value into the worker.
+4. The new store module is in the source scan of
    `tests/unit/test_rooms.py::test_no_chat_or_room_path_opens_an_unbound_session`.
-4. The two-turn probe of §15.9 passes as an in-repo test, with
+5. The two-turn probe of §15.9 passes as an in-repo test, with
    `tests/unit/_native_maf_harness.py` from PR #585.
-5. Each rule of §15.9 has a WS43-F20 case. The cases are the dedup, each
+6. Each rule of §15.9 has a WS43-F20 case. The cases are the dedup, each
    staleness trigger, the room fingerprint and the cross-agent key. They also
-   cover the delete path, no thread id and a delegated run.
-6. The stored history stays inside the budget of §15.9, and the compaction
-   is the one that §15.9 names.
-7. As the NOBYPASSRLS app role, org B cannot read or write a row of org A
+   cover the delete path and a save after the delete.
+7. More WS43-F20 cases cover no thread id, a delegated run, and a real
+   streamed turn that must hit.
+8. The stored history stays inside the cap of §15.9.6. The compaction is the
+   one that §15.9.6 names. A save above the byte backstop is refused.
+9. As the NOBYPASSRLS app role, org B cannot read or write a row of org A
    (R8).
-8. A load that fails, or finds no row, falls back to the text history, and
-   logs one line. It never fails the run.
+10. Each load logs one outcome line. A load that fails, or finds no row,
+   falls back to the text history. It never fails the run.
 
-**Verification.** The R8 method of `projects_ai_chat.md` §21.10: the
-`promoted` and `app_engine` fixtures of
-`tests/unit/test_h3_rls_promotion_rehearsal.py`, as the NOBYPASSRLS role.
+**Verification.** R8 rides on the `promoted` and `app_engine` fixtures of
+`tests/unit/test_h3_rls_promotion_rehearsal.py`. They connect as the
+NOBYPASSRLS app role that the fixtures create (`acb_app_h3rls`, which mirrors
+`acb_app`). Do not override `TENANT_LADDER_DATABASE_URL` after the export, and
+do not set `DATABASE_URL` to the dev ladder.
 
 ```bash
 bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
-export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5550/acb_tenant
-export DATABASE_URL=$TENANT_LADDER_DATABASE_URL
 uv run python scripts/gen_tenant_migration.py
 uv run pytest tests/unit/test_native_session_persistence.py \
-  tests/unit/test_tenant_coverage.py \
   tests/unit/test_h3_rls_promotion_rehearsal.py \
   tests/unit/test_rooms.py -q -rs
+uv run pytest tests/unit/test_tenant_coverage.py -q -rs   # without DATABASE_URL
 uv run ruff check apps/services/orchestrator/orchestrator/native_session_store.py
 uv run mypy apps/services/orchestrator/orchestrator/native_session_store.py
 ```
 
-`test_tenant_coverage.py` skips its database case without `DATABASE_URL`, and
-skips two more cases when the generator has not run. With the exports and the
-generator above, the `-rs` output must show no skip.
+Two skips are allowed, and no other. Without `DATABASE_URL`,
+`test_tenant_coverage.py` skips its two live-catalog tests:
+`test_live_catalog_has_column_force_and_policy` and
+`test_app_role_cannot_bypass_rls`. The promoted fixtures carry that proof
+instead.
 
 **Gate.** AGENT-SAFE. It ships dark. The table is an expand step (R6). The
 production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
@@ -2136,8 +2155,21 @@ that matches:
 
 **Who may chat with it.** It reads platform code, and `spawn_coding_agent`
 changes platform code. So only a member with the `admin` role in the
-first-party organization (`organization.first_party`, migration 157) may chat
-with it. Every other caller gets 404, as if it did not exist.
+first-party organization (`organization.first_party`, migration 157) may run
+it. Every other caller gets 404, as if it did not exist.
+
+**Where the rule is checked: once, at the run boundary.** A check in the chat
+route is not enough. These paths start a run with no chat route:
+
+- `call_agent`, `call_agents_parallel`, `call_agent_background` and
+  `delegate_to_agent`,
+- the gateway run API (`/agent/run` and `/agent/run/async`),
+- workflows, webhooks and cron.
+ `_delegation_refusal`
+(`acb_skills/agent_tools.py:50`) checks only cycles and depth. So the check
+sits where the executor loads the agent, in `run_agent` (`executor.py:2267`)
+and `run_agent_stream` (`:2923`). It reads the organization and the member
+from the run binding. A delegated run uses the member of its parent run.
 
 ### 15.5 Agents from a repo
 
@@ -2154,7 +2186,8 @@ would hide the loss of the Copilot CLI's own shell and file tools.
 
 1. WS-43n makes `maf` the default runtime of a repo-registered agent, at
    registration (`gateway/routes/agent.py:1589`) and in the back-fill
-   (`:1279-1284`). A registration that names `github-copilot` gets HTTP 400.
+   (`:1279-1284`). A repo whose `config.json` declares `github-copilot` gets
+   HTTP 400 at registration.
 2. Until WS-43r, a loaded Copilot agent still runs, and the loader logs one
    deprecation line that names it.
 3. After WS-43r, the loader raises `acb_skills.loader.AgentRuntimeUnsupported`,
@@ -2275,10 +2308,13 @@ this section as the one owner.
 | `agent_name` | `text NOT NULL` | The agent. Part of the key, so agent X's session never loads for agent Y in the same thread |
 | `session_json` | `jsonb NOT NULL` | The payload: `AgentSession.to_dict()`, after compaction |
 | `transcript_digest` | `text NOT NULL` | SHA-256 of the chat transcript that the session covers (§15.9.4) |
-| `clearance_fingerprint` | `text NOT NULL` | `_clearance.fingerprint` at the save (§15.9.5) |
+| `session_fingerprint` | `text NOT NULL` | The fingerprint of §15.9.5 at the save |
 | `updated_at` | `timestamptz NOT NULL DEFAULT now()` | |
 
-The primary key is `(organization_id, thread_id, agent_name)`.
+The primary key is `(organization_id, thread_id, agent_name)`. A foreign key
+from `thread_id` to `chat_session (id)` has `ON DELETE CASCADE`. So a deleted
+chat takes its sessions with it, and a save after the delete fails. The store
+logs that failure as "chat gone" and keeps no row.
 
 **The migration number.** It takes the next free number at build time (R1).
 This spec names no number, because numbers move. For example, 227 is already
@@ -2310,16 +2346,26 @@ table. WS-43t2 adds it to the source scan of
   session loads, the run input is the current user turn only. The session
   already holds the turns before it.
 - **Staleness.** At the save, the store records `transcript_digest`, a
-  SHA-256 over the role and content of every transcript message that the
-  session covers. At the load, it computes the same digest over the incoming
-  transcript, without the new user turn. A mismatch drops the session, and
-  the run falls back to the text history. These events each cause a
-  mismatch:
+  SHA-256. It hashes the role and content of each message that the SERVER
+  kept for the thread, the `chat_message` rows of S15. It stops at the final
+  assistant message of the run. At the load, it computes the same digest over the
+  persisted rows before the new user turn. Both sides read the server's
+  rows, never the transcript that the browser sends. So a byte difference in
+  the browser's copy cannot turn every load into a miss.
+- A mismatch drops the session, and the run falls back to the text history.
+  These events each cause a mismatch:
   - a regenerate (`AgentChat.tsx:1304`), which drops the last assistant turn
     and its prompt,
   - an agent switch in the thread, because the other agent's turns are not
     in this agent's session,
   - an edited message, or a deleted message.
+- **One outcome line per load.** Each load logs exactly one of `hit`,
+  `no_row`, `digest_drop` and `fingerprint_drop`, with the agent and the
+  thread. Without that line, the soak cannot tell a working store from one
+  that never hits.
+- **A real turn must hit.** A WS43-F20 case builds turn 2 from a real
+  streamed turn 1, in the message shape that `route.ts` sends. The load
+  must log `hit`.
 
 #### 15.9.5 Context, rooms, deletes and odd runs
 
@@ -2329,12 +2375,16 @@ table. WS-43t2 adds it to the source scan of
   `session.state`, so they must not be input messages. This rule carries
   `memory_context` into the structured path (H-216), and keeps it out of
   storage.
-- **Rooms.** At the save, the store records `_clearance.fingerprint`, as the
-  memory cache does (`gateway/routes/agent.py:1987-2104`). A load with a
-  different fingerprint drops the session. So tool output never reaches
-  further than the room's intersection allows.
-- **Deletes.** When a chat is deleted, its rows go in the same request, for
-  every agent of that thread.
+- **Rooms.** At the save, the store records `session_fingerprint`, a
+  SHA-256 over three inputs:
+  - the room's member set,
+  - each member's clearance fingerprint (`_clearance.fingerprint`, as the
+    memory cache uses at `gateway/routes/agent.py:1987-2104`),
+  - the instance key of a personal agent. A load with a different fingerprint drops the session. So tool
+  output never reaches further than the room's intersection allows.
+- **Deletes.** The foreign key of §15.9.2 removes the rows of a deleted chat,
+  for every agent of that thread. A WS43-F20 case saves after the delete and
+  finds no row.
 - **No thread id.** The run neither loads nor saves a session.
 - **A delegated run** (`call_agent`, `delegate_to_agent`, a MAF sub-agent)
   neither loads nor saves a session. The parent's session holds the
@@ -2342,11 +2392,21 @@ table. WS-43t2 adds it to the source scan of
 
 #### 15.9.6 The bounds and the compaction
 
-The stored history stays within the token budget of
-`acb_llm.context.fit_messages_to_context`, the function that
-`assemble_run_context` uses today. Before each save, MAF's
-`TokenBudgetComposedStrategy` runs with that budget, over two strategies in
-this order: `ToolResultCompactionStrategy`, then `SlidingWindowStrategy`.
+**The cap.** The history is capped at the smaller of two numbers: the
+budget of `acb_llm.context.fit_messages_to_context`, and
+`_HISTORY_MAX_TOKENS` (96000, `executor.py:5491`). The window budget alone is
+not today's bound. The text path caps at `_history_char_budget`
+(`executor.py:5524`), which takes the same minimum, because an uncapped
+history on a 1M-token window is a cost bug (`:5529`). The cap applies twice:
+in the structured branch of WS-43t1, and before each save of WS-43t2.
+
+**The compaction.** Before each save, MAF's `TokenBudgetComposedStrategy`
+runs with the cap, over two strategies in this order:
+`ToolResultCompactionStrategy`, then `SlidingWindowStrategy`.
+
+**A byte backstop.** If `session_json` is still larger than
+`maf_session_max_bytes` (default 2 MiB) after the compaction, the store
+refuses the save and logs it. The next turn uses the text history.
 
 `SummarizationStrategy` is excluded. It calls a model, and no run pays or is
 billed for that call.
@@ -2372,10 +2432,17 @@ The live probe on `agent-task-manager` belongs to WS-8i, after the soak.
 `MAF_NATIVE_SESSIONS`, default OFF. It covers every native MAF agent. With it
 off, nothing changes.
 
-⚠️ **The soak gates the moves.** No agent with a confirm turn moves to MAF,
-and WS-43q does not merge, before the soak. The soak is the flag ON in
-production for one week with no regression (WS43-G13). A merge of WS-43t2 is
-not enough.
+⚠️ **The soak gates the moves.** No agent with a confirm turn moves to MAF
+for every organization, and WS-43q does not merge, before the soak ends. A
+merge of WS-43t2 is not enough. The soak (WS43-G13) has two parts:
+
+1. The flag stays ON in production for one week, with no regression, for
+   every native agent. The outcome lines of §15.9.4 show the hit rate.
+2. WS-8i moves `agent-task-manager` for the first-party organization only.
+3. The soak needs 50 confirm turns or more, and 95 percent of them must log
+   `hit`.
+4. It also needs no apply on a proposal that the member did not see.
+5. The owner may change these numbers at WS43-G13.
 
 An agent with a confirm turn proposes in one turn and applies in the next.
 There are three: `agent-task-manager` (WS-8i), app-builder (the
