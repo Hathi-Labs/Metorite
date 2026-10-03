@@ -1552,7 +1552,16 @@ These facts change or add to the text above:
   Every thread of one organization mounts the same working dir, so another
   thread could plant a package in this thread's `.local`. This track has no
   network, so no install needs the user site.
-- **Fix round 1 of PR #603 closed the shared-code path:**
+- **Fix round 1 of PR #603 closed the shared-code path.** The verifier
+  showed it live. Thread T1 wrote `pandas.py` at the root with
+  `file_access_write`. In thread T2, a plain `python3 -c "import pandas"`
+  ran that file, because the cwd comes first on `sys.path`. T2 made no
+  choice to run it. The file copied T2's `/workspace/.run/rows.csv` into
+  `agent-data/`, the sweep mirrored it, and T1 read it back. Three layers
+  now stop it: the read-only mount, `PYTHONSAFEPATH` and the four heads of
+  the file tools. The `sandbox_docker` test
+  `test_docker_a_planted_root_pandas_never_leaks_another_threads_rows` goes
+  red if any one of the three goes. The round made these changes:
   - The `projects` container mounts `/workspace` read-only. Its only writable
     paths are its own output folder and its run data.
   - `PYTHONSAFEPATH=1`, so `python3 -c` and a script never import a module
@@ -1573,12 +1582,16 @@ These facts change or add to the text above:
   - The opener passes `O_NONBLOCK` and refuses a file that is not regular,
     so a FIFO never blocks a host thread.
   - The steer drain runs at the eight file tools and the skill tools.
+  - The sweep after a command covers only the thread's own output folder.
+    A file whose content has not changed is not mirrored or shown again.
 - **The residual risk that stays.** `agent-data/` and `inputs/` stay shared
   by the organization, as H-201 built them. A member's model can still read
   a note from another member's run, and that note can carry an injection.
-  The model can also choose to run a script of a shared folder by its full
-  path. Neither reaches another member's run data without that member's own
-  model acting on it.
+  The model can also run a script of a shared folder by its full path. That
+  is no longer implicit: no import by name, no cwd shadow and no skill of
+  another member runs it. And the container cannot write a shared folder,
+  so a script has no place to put another member's data where its author
+  can read it.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
