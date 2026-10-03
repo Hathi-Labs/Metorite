@@ -1422,16 +1422,52 @@ class SandboxBroker:
         checked first. After the command, every stray process dies, and the
         container restarts if one survives. A broken container restarts once,
         and the command does not run again.
+
+        ⚠️ A cancel or an error once the command started (a member presses
+        Stop, a tool times out) kills only the ``docker exec`` CLI. The
+        command keeps running in the container. So the lock passes to a
+        background task that runs the kill sweep, restarts on a survivor, and
+        only THEN frees the dir. This frame waits for that task and re-raises.
+        A second cancel ends the wait early, and the dir stays locked until the
+        sweep ends (review round 2).
         """
         if not isinstance(command, str) or not command.strip():
             raise SandboxRefused("The command is empty.")
         timeout = self._clamp_timeout(timeout_s)
         await self._wait_ready(handle)
-        async with handle.lock:
+        await handle.lock.acquire()
+        handed_off = False
+        try:
             self._require_live(handle)
             self._check_free_disk()
             await self._check_quota(handle)
-            return await self._exec_locked(handle, command, timeout)
+            try:
+                return await self._exec_locked(handle, command, timeout)
+            except BaseException:
+                handed_off = True
+                cleanup = self._spawn_background(self._clean_after_abort(handle))
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(cleanup)
+                raise
+        finally:
+            if not handed_off:
+                handle.lock.release()
+
+    async def _clean_after_abort(self, handle: SandboxHandle) -> None:
+        """Sweep after an exec that a cancel or an error cut short, then free the dir.
+
+        The exec's lock is held on entry, and only this task releases it.
+        """
+        try:
+            live = not handle.removed and handle.keepalive_pid is not None
+            if live and not await self._kill_strays(handle):
+                await self._restart(handle, "aborted_exec")
+        except Exception as exc:
+            _log.warning(
+                "sandbox_broker.abort_sweep_failed", name=handle.name, error=str(exc)[:300],
+            )
+        finally:
+            handle.lock.release()
 
     async def _exec_locked(
         self, handle: SandboxHandle, command: str, timeout: int,
@@ -1512,10 +1548,19 @@ class SandboxBroker:
             _log.info("sandbox_broker.reaped", count=len(victims))
         return len(victims)
 
+    def _reaper_interval(self) -> float:
+        """The reaper's sleep. The floor is 1 s, so a setting of 0 cannot spin."""
+        raw = getattr(self._settings(), "sandbox_reaper_interval_seconds", 60)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 60.0
+        return max(1.0, value)
+
     async def _reap_loop(self) -> None:
-        interval = float(getattr(self._settings(), "sandbox_reaper_interval_seconds", 60))
+        interval = self._reaper_interval()
         while self._live:
-            await asyncio.sleep(max(0.05, interval))
+            await asyncio.sleep(interval)
             try:
                 await self.reap_once()
             except Exception as exc:

@@ -819,7 +819,7 @@ async def test_the_background_reaper_runs_without_a_manual_call(
     broker: sb.SandboxBroker, docker: FakeDocker, clock: Clock, env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(env["settings"], "sandbox_reaper_interval_seconds", 0.05)
+    monkeypatch.setattr(env["settings"], "sandbox_reaper_interval_seconds", 0)  # floor: 1 s
     monkeypatch.setattr(env["settings"], "sandbox_idle_ttl_seconds", 100)
     with bound_run(ORG_A, thread="t-bg"):
         handle = await broker.acquire()
@@ -828,7 +828,7 @@ async def test_the_background_reaper_runs_without_a_manual_call(
     )
     await broker.release(handle)
     clock.now += 200
-    for _ in range(100):
+    for _ in range(200):
         if handle.removed:
             break
         await asyncio.sleep(0.02)
@@ -854,3 +854,14 @@ async def test_the_sweep_never_raises_when_the_removal_fails(
     monkeypatch.setattr(docker, "run", broken_rm)
     await broker.startup()  # must not raise
     assert await broker.sweep() == 0
+
+
+@pytest.mark.parametrize("setting,expected", [
+    (0, 1.0), (0.05, 1.0), (-5, 1.0), ("junk", 60.0), (1, 1.0), (30, 30.0),
+])
+def test_the_reaper_interval_has_a_floor_of_one_second(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, setting: Any, expected: float,
+) -> None:
+    """A setting of 0 must not make the reaper spin (review round 2)."""
+    monkeypatch.setattr(env["settings"], "sandbox_reaper_interval_seconds", setting)
+    assert sb.SandboxBroker()._reaper_interval() == expected

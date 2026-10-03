@@ -36,6 +36,7 @@ class FakeDocker:
         self.block_run: asyncio.Event | None = None
         self.block_rm: asyncio.Event | None = None
         self.block_ps: asyncio.Event | None = None
+        self.block_sweep: asyncio.Event | None = None
         self.started = 0
 
     async def run(self, args: Sequence[str], *, timeout: float) -> sb.DockerResult:
@@ -55,6 +56,8 @@ class FakeDocker:
         if verb == "exec" and sb.PID_PROBE in argv:
             return sb.DockerResult(0, "7\n", "")
         if verb == "exec" and sb.KILL_SWEEP in argv:
+            if self.block_sweep is not None:
+                await self.block_sweep.wait()
             if self.sweep_results:
                 return self.sweep_results.pop(0)
             return sb.DockerResult(0, "clean\n", "")

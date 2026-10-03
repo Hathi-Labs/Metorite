@@ -237,6 +237,90 @@ async def test_host_files_holds_the_exec_lock(
     assert events == ["host-done", "exec"]
 
 
+async def _two_on_one_dir(broker: sb.SandboxBroker) -> tuple[sb.SandboxHandle, sb.SandboxHandle]:
+    h1 = await _acquire(broker, thread="t-a")
+    h2 = await _acquire(broker, thread="t-b")
+    assert h1.lock is h2.lock, "two threads of one org share the tenant dir"
+    return h1, h2
+
+
+async def test_a_cancelled_exec_sweeps_before_the_dir_is_free(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    """Review round 2: a cancel kills only the CLI, so the sweep must still run.
+
+    The dir stays locked until exactly one sweep ends. A host call on the
+    other container of the same dir waits for it.
+    """
+    h1, h2 = await _two_on_one_dir(broker)
+
+    async def long(_argv: list[str]) -> None:
+        await asyncio.sleep(30)
+
+    docker.on_stream = long
+    docker.block_sweep = asyncio.Event()
+    task = asyncio.create_task(broker.exec(h1, "npm install", 300))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert len(docker.sweeps()) == 1, "the cancel must start the kill sweep"
+    seen: list[int] = []
+
+    async def host_call() -> None:
+        async with broker.host_files(h2):
+            seen.append(len(docker.sweeps()))
+
+    host = asyncio.create_task(host_call())
+    await asyncio.sleep(0.1)
+    assert h1.lock.locked() and not host.done(), "the dir was free while the sweep ran"
+    docker.block_sweep.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    await asyncio.wait_for(host, timeout=5)
+    assert seen == [1], "exactly one sweep must end before the dir is free"
+    assert not h1.lock.locked()
+
+
+async def test_a_second_cancel_still_holds_the_dir_until_the_sweep_ends(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    """A second cancel ends the exec's wait, and the sweep task keeps the lock."""
+    h1, h2 = await _two_on_one_dir(broker)
+
+    async def long(_argv: list[str]) -> None:
+        await asyncio.sleep(30)
+
+    docker.on_stream = long
+    docker.block_sweep = asyncio.Event()
+    task = asyncio.create_task(broker.exec(h1, "npm install", 300))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    assert h1.lock.locked(), "a second cancel freed the dir while the sweep ran"
+    docker.on_stream = None
+    host = asyncio.create_task(broker.exec(h2, "true", 5))
+    await asyncio.sleep(0.1)
+    assert not host.done()
+    docker.block_sweep.set()
+    assert (await asyncio.wait_for(host, timeout=5)).exit_code == 0
+    await broker.settle()
+
+
+async def test_an_error_before_the_command_needs_no_sweep(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = await _acquire(broker)
+    monkeypatch.setattr(env["settings"], "sandbox_min_free_disk_mb", 5120)
+    monkeypatch.setattr(broker, "free_disk_mb", lambda: 1)
+    with pytest.raises(sb.SandboxRefused):
+        await broker.exec(handle, "true", 5)
+    assert docker.sweeps() == [] and not handle.lock.locked()
+
+
 # ── the output cap ───────────────────────────────────────────────────────────
 
 
@@ -420,6 +504,12 @@ def test_the_quota_measure_follows_no_link(tmp_path: Path) -> None:
 # ═════════════════════════ the real-Docker half ═════════════════════════════
 
 
+#: The Docker half uses its own organization per test process. Two runs on one
+#: daemon (a dev box, a verifier) then never share a container name, and the
+#: teardown removes only this run's containers.
+DOCKER_ORG = f"dddddddd-0000-0000-0000-{uuid.uuid4().hex[:12]}"
+
+
 def _docker(*args: str, timeout: float = 180) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", *args], capture_output=True, text=True, timeout=timeout,
@@ -480,9 +570,11 @@ async def real(
     try:
         yield env
     finally:
-        for handle in list(broker._live.values()):
-            _docker("rm", "-f", handle.name)
+        await broker.settle()  # a sweep after a cancel may still run
         await broker.stop()
+        left = _docker("ps", "-aq", "--filter", f"label=metorite.org={DOCKER_ORG}").stdout.split()
+        if left:
+            _docker("rm", "-f", *left)
         for name in volumes:
             _docker("volume", "rm", "-f", name)
 
@@ -496,7 +588,7 @@ def _strays(handle: sb.SandboxHandle) -> list[str]:
 
 
 async def _real_handle(real: dict[str, Any], thread: str = "t-docker") -> sb.SandboxHandle:
-    with bound_run(ORG, thread=thread):
+    with bound_run(DOCKER_ORG, thread=thread):
         return await real["broker"].acquire()
 
 
@@ -591,6 +683,34 @@ async def test_docker_a_background_child_that_holds_stdout_cannot_hang_the_exec(
 
 
 @pytest.mark.sandbox_docker
+async def test_docker_a_cancelled_exec_leaves_nothing_running(real: dict[str, Any]) -> None:
+    """Review round 2: Stop kills the CLI, and the sweep must kill the command.
+
+    The checks use a raw ``docker exec``, so no later broker exec can sweep
+    for us and hide the defect.
+    """
+    handle = await _real_handle(real)
+    task = asyncio.create_task(real["broker"].exec(
+        handle, "while :; do echo x >> /tmp/beat; sleep 0.2; done", 300,
+    ))
+    await asyncio.sleep(2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=60)
+    assert _strays(handle) == [], "the command outlived the cancel"
+
+    def beats() -> str:
+        result = _docker("exec", handle.name, "sh", "-c", "wc -c < /tmp/beat")
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    first = beats()
+    await asyncio.sleep(1.5)
+    assert beats() == first, "the file kept growing after the cancel returned"
+    assert int(first) > 0, "the loop never ran, so the test proved nothing"
+
+
+@pytest.mark.sandbox_docker
 async def test_docker_a_timeout_kills(real: dict[str, Any]) -> None:
     handle = await _real_handle(real)
     started = time.monotonic()
@@ -652,7 +772,7 @@ async def test_docker_the_bind_mount_writes_show_on_the_host_with_the_gateway_ui
     """WS-43c done-when 3. Production binds the tenant dir, so CI proves it."""
     if not real["bind"]:
         pytest.skip("Docker Desktop refused the host bind mount (spec §5.2). CI runs this.")
-    with bound_run(ORG, thread="t-bind") as ws:
+    with bound_run(DOCKER_ORG, thread="t-bind") as ws:
         (ws / "outputs").mkdir(exist_ok=True)
         (ws / ".git" / "hooks").mkdir(parents=True)
         (ws / ".git" / "config").write_text("[remote]\n url = https://x-token:TOKEN@h\n")
