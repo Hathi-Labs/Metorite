@@ -30,8 +30,9 @@ LEGACY: dict[str, str] = {
         "the Copilot CLI sandbox, OFF behind copilot_sandbox_scope. WS-43j removes it.",
     "apps/services/orchestrator/orchestrator/mutation.py":
         "the self-mutation sandbox. It stays after WS-43j.",
-    "evals/coding_engine/":
-        "the eval-only sandbox of WS-43a. WS-43j removes it.",
+    # ``evals/coding_engine/`` left the list with WS-43v (D86). Its runner
+    # drives the real executor, so a command runs in the broker. It starts no
+    # docker process of its own, and this fence now holds it to that.
 }
 
 #: The most the legacy list may ever hold (spec §10 WS43-F1). The list only
@@ -164,7 +165,7 @@ def test_the_legacy_list_only_shrinks() -> None:
     for entry in LEGACY:
         path = REPO / entry
         if not path.exists():
-            continue  # evals/coding_engine/ arrives with WS-43a
+            continue
         still = [rel for rel in sites if rel == entry or rel.startswith(entry.rstrip("/") + "/")]
         assert still, (
             f"{entry} no longer starts docker. Remove it from the legacy list, "
