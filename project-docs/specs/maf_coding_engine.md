@@ -2,16 +2,18 @@
 
 <!-- ste-tier: strict -->
 
-**Status: ACTIVE. Spec only, nothing built.** Owner decision, 2026-10-03.
-Board row **WS-43**. This spec records **D82** and **D83**.
+**Status: ACTIVE. Spec only, nothing built.** Owner decisions, 2026-10-03.
+Board row **WS-43**. This spec records **D82**, **D83** and **D84**.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
-PR #584 applied three reviews on the same day.
+PR #584 applied three reviews on the same day. **Amended 2026-10-03 by D84**
+(§15), verified at `main` `2e6c22fc`: the GitHub Copilot SDK leaves the whole
+platform.
 
 **Ids in this spec.** Every id carries the `WS43-` prefix, so that no id
 repeats an id of another spec (R2). The prefixes are `WS43-E` (eval tasks),
 `WS43-F` (fences), `WS43-S` (security points), `WS43-G` (owner gates) and
-`WS43-Q` (open questions). The slices are `WS-43a` to `WS-43j`.
+`WS43-Q` (open questions). The slices are `WS-43a` to `WS-43t`.
 
 ## 0. One paragraph
 
@@ -26,6 +28,14 @@ request in the chat. One module, the sandbox broker, owns the Docker socket
 and every container. The app-builder agent moves to the same engine.
 Everything ships dark, behind a flag that names each organization. The
 Copilot path stays until an eval through the Router shows parity.
+
+**D84 widens this to the whole platform (§15).** Every other use of the
+Copilot SDK moves to MAF too. That covers self-mutation, the root `metorite`
+agent, the agents that a repo registers, the model list and the session
+store. Then the packages
+`github-copilot-sdk` and `agent-framework-github-copilot` leave the lock. The
+removal slices come last, after the parity eval, and each one is an owner
+merge.
 
 ## 1. The owner decision
 
@@ -376,6 +386,10 @@ needs all of them, so WS-43 uses Docker.
 9. A model eval first, then a parity eval, then the rollout record (§8).
 10. The retirement of the Copilot `code_task` path, after parity and an owner
     decision (WS-43j).
+11. Every other use of the Copilot SDK, and then the removal of the SDK
+    (D84, §15, WS-43k to WS-43t).
+12. Native session persistence for every native MAF agent, so a turn sees the
+    tool calls and results of the turns before it (§15.9, WS-43t).
 
 ### 6.2 Non-goals
 
@@ -386,8 +400,9 @@ needs all of them, so WS-43 uses Docker.
   network. Until the owner answers WS43-Q1, an agent that declares an
   integration keeps `run_script` on the host. The broker then does not cover
   that agent (§7.7).
-- **The root `metorite` agent, `mutation.py` and the self-anneal path.**
-  They do not change. H-211 records their permission defect.
+- ~~**The root `metorite` agent, `mutation.py` and the self-anneal path.**
+  They do not change.~~ *Struck 2026-10-03 by D84.* §15 moves all three to
+  MAF.
 - **MCP servers in the coding session.** D7 and WS-8c own MCP on MAF. The
   Copilot `code_task` session gets no MCP server today either.
 - **Live streaming of the inner steps** of `code_task` to the chat. The
@@ -427,8 +442,10 @@ broker for a container and for an exec, and never calls `docker` itself.
 
 **The scope setting.** WS-43c adds `maf_coding_scope` (`MAF_CODING_SCOPE`) to
 `acb_common/settings.py`. Its value is a comma list of `<target>:<org>`
-entries. A target is `code_task` or `app_builder`. An org is one organization
-id, or `*` for every organization.
+entries. A target is `code_task`, `app_builder`, `mutation` or `metorite`.
+An org is one organization id, or `*` for every organization. The targets
+`mutation` and `metorite` take `*` only, because they change platform code and
+not the data of one organization (§15.4).
 
 For example, `code_task:<org-id>,app_builder:<org-id>` turns on both targets
 for one organization. An empty value turns every target off.
@@ -912,9 +929,15 @@ every agent of that organization that holds `code_task`. The core floor gives
 `code_task` to every agent with injected platform tools (§4.1). That includes
 the agents that still run on Copilot.
 
-**Which agents do not move here.** WS-8 moves `agent-task-manager` and
-`agent-apis-config` (PR #585). The root `metorite` agent, the external
-`agent-sales-assistant` and `mutation.py` stay as they are.
+**Which agents move elsewhere.** WS-8 moves `agent-task-manager` and
+`agent-apis-config` (PR #585). §15 moves the root `metorite` agent, the
+self-mutation runner and the agents that a repo registers. The external
+`agent-sales-assistant` needs a change in its own repo (WS43-G11).
+
+**The order after D84.** WS-43t comes first of all, because the move of
+`agent-task-manager` (PR #585, WS-8i) waits on it. The new paths of WS-43k to
+WS-43o ship dark beside WS-43a to WS-43h. The removal slices WS-43j and WS-43p
+to WS-43s come after the parity eval of WS-43i, in that order.
 
 ## 9. Security review points
 
@@ -1011,6 +1034,12 @@ a full disk. The reaper stops idle containers.
 | WS43-F11 | `tests/unit/test_coding_eval_checkers.py` | An eval checker passes a wrong output or fails a right one |
 | WS43-F12 | `tests/unit/test_app_builder_engine.py` | app-builder ignores the scope, asks for a mount outside the broker's list, mounts a source with `.git`, takes the Copilot path because of the label, or leaves the token or the LLM key findable in its container |
 | WS43-F13 | `tests/unit/test_no_host_git_on_sandbox_dir.py` | A host `git` process starts on a sandbox dir. The test covers `_commit_repo_changes`, the push guard, the HEAD capture, the commit scan, the self-anneal and the self-mutation, and plants a hostile `.git/config` and hook. For a Custom Apps workspace, a container write to `/workspace/.git` succeeds, or a checkpoint runs a planted hook. The test also plants, at run time, a `subdir/.git` as a directory, a `subdir/.git` as a gitfile (`gitdir: …`) and a root `.gitattributes`, and a checkpoint runs something from one of them. Or `_git` in `apps/durability.py` drops `GIT_CONFIG_NOSYSTEM=1`, `core.fsmonitor=false` or the empty `core.hooksPath` |
+| WS43-F15 | `tests/unit/test_no_copilot_sdk.py` | §15.6. A file under `apps/` or `packages/`, or the root `agents.py`, imports `copilot` or `agent_framework_github_copilot`, or holds the text `github_copilot` or `GitHubCopilotAgent`, and is not on the allowlist. Or `pyproject.toml` or `uv.lock` names `github-copilot-sdk` or `agent-framework-github-copilot` after WS-43r |
+| WS43-F16 | `tests/unit/test_mutation_runner_maf.py` | The MAF mutation runner imports `copilot`, sets a permission handler that approves all, writes outside `/workspace/repo`, or leaves the GitHub token findable in the container. Or the mutation prompt asks for a `GitHubCopilotAgent` factory |
+| WS43-F17 | `tests/unit/test_root_agent_maf.py` | The root `metorite` agent gets a shell, a write tool or `approve_all`, or makes a code change by a path other than `spawn_coding_agent` |
+| WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
+| WS43-F19 | `tests/unit/test_router_model_list.py` | A model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
+| WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. The two-turn probe of H-215 fails: the confirm turn does not see the ids of the turn before. Or a session of org A loads for org B, a run of one thread loads another thread's session, the stored history passes the history budget, `memory_context` or the persona does not reach the model on the structured path, or the flag OFF changes the old behaviour |
 | WS43-F14 | `tests/unit/test_sandbox_safe_open.py` | The safe opener follows a symlink at any depth, a racing thread swaps a parent dir for a symlink and wins, a host reader or writer of §7.5 rule B skips the opener, or a skill under `agent-data/skills/` does not survive a lost disk copy and a rehydrate |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
@@ -1025,8 +1054,9 @@ WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
   once and runs `pytest -m sandbox_docker -rs`.
 - ⚠️ That workflow fails on any skip. A Docker test that skips proves nothing.
 
-**R8.** No slice here adds SQL. The blob mirror reuses
-`mirror_to_blob_store` and `delete_file`. A test that touches them runs on the
+**R8.** Two slices add SQL: WS-43t adds a table (§15.9), and WS-43s drops a
+column (§15.7). The blob mirror
+reuses `mirror_to_blob_store` and `delete_file`. A test that touches them runs on the
 dev database (`bash scripts/dev_db.sh`) as the NOBYPASSRLS app role, with
 `-rs` and no skip. If a slice adds a table, R5a and R8 apply to it.
 
@@ -1047,6 +1077,16 @@ until its PR merges.
 | WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7) |
+| WS-43k | The no-Copilot ratchet fence | Nothing | AGENT-SAFE |
+| WS-43l | Self-mutation on a MAF harness agent in the mutation container | WS-43k | AGENT-SAFE. Dark behind `mutation:*` |
+| WS-43m | The root `metorite` agent on MAF | WS-43h, WS-43l | AGENT-SAFE. Dark behind `metorite:*` |
+| WS-43n | Agents from a repo default to MAF | WS-43h | AGENT-SAFE. The external repo change is WS43-G11 |
+| WS-43o | The model list from the Router | Nothing | AGENT-SAFE |
+| WS-43p | Retire the Copilot mutation runner | WS-43i, WS-43l, 14 days on production | **OWNER-GATE** to merge (WS43-G9) |
+| WS-43q | Remove the Copilot runtime from the executor, the gateway and the settings | WS-43j, WS-43m, WS-43n, WS-43o, WS-43p, WS-43t, PR #585 | **OWNER-GATE** to merge (WS43-G9) |
+| WS-43r | Remove the packages and the CLI prefetch | WS-43q | **OWNER-GATE** to merge (WS43-G9, WS43-G12) |
+| WS-43s | Drop `chat_session.service_session_id` | WS-43r, one release on production | **OWNER-GATE** to merge (WS43-G9). A one-way migration |
+| WS-43t | Native session persistence. **It comes EARLY.** The `agent-task-manager` move (PR #585, WS-8i) and WS-43q wait on it | Nothing | AGENT-SAFE. Dark behind `MAF_NATIVE_SESSIONS`. The production flip is WS43-G13 |
 
 ### WS-43a — Eval harness and the first sweep 🔲
 
@@ -1536,6 +1576,290 @@ uv run pytest tests/unit/test_sandbox_broker_seam.py \
 
 **Gate.** **OWNER-GATE** to merge (WS43-G7). It removes the fallback.
 
+### WS-43k — The no-Copilot ratchet fence 🔲
+
+**Scope.** `tests/unit/test_no_copilot_sdk.py` (WS43-F15), as §15.6 says. No
+product code changes.
+
+**Done when:**
+
+1. The test scans every `.py` file under `apps/` and `packages/`, and the
+   root `agents.py`.
+2. The allowlist names each file that holds a Copilot use today, and the
+   slice that removes it (§15.6).
+3. A new Copilot import in a file off the list fails the test.
+4. A product feature named "copilot", such as the Notes copilot, does not
+   fail it.
+
+**Verification.**
+
+```bash
+uv run ruff check tests/unit/test_no_copilot_sdk.py
+uv run pytest tests/unit/test_no_copilot_sdk.py -q
+```
+
+**Gate.** AGENT-SAFE.
+
+### WS-43l — Self-mutation on a MAF harness agent in the mutation container 🔲
+
+**Scope.** `apps/services/orchestrator/mutation_runner.py`,
+`apps/services/orchestrator/Dockerfile.mutation`, the prompt in
+`orchestrator/mutation.py`, `spawn_copilot_agent` in
+`orchestrator/agents.py`, and fence WS43-F16. §15.3 is the design.
+
+**Done when:**
+
+1. With `mutation:*` in `MAF_CODING_SCOPE`, the container runs the MAF
+   runner. With no such entry, it runs the Copilot runner, unchanged.
+2. The MAF runner imports nothing from `copilot` and sets no permission
+   handler. Its shell runs in the container.
+3. The output lines that `mutation.py` parses stay the same.
+4. The mutation prompt (`mutation.py:640`) asks for a MAF `Agent` factory,
+   and never for a `GitHubCopilotAgent`.
+5. `spawn_coding_agent` exists. `spawn_copilot_agent` stays as an alias for
+   one release. Its text says that the change is a local commit and that a
+   person approves the push.
+6. The token probe finds no GitHub token in the mutation container (H-218).
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_mutation_runner_maf.py \
+  tests/unit/test_mutation_sandbox_hardening.py -q -rs
+```
+
+**Gate.** AGENT-SAFE. It ships dark. Setting `mutation:*` on production is
+WS43-G3.
+
+### WS-43m — The root `metorite` agent on MAF 🔲
+
+**Scope.** The root `agents.py` and `config.json`, and fence WS43-F17.
+§15.4 is the design.
+
+**Done when:**
+
+1. With `metorite:*` in the scope, `build_agents()` returns a MAF harness
+   agent. With no entry, it returns the Copilot agent, but with no
+   `approve_all`.
+2. The MAF agent has read-only file tools over its checkout, with the safe
+   opener of §7.5, and `spawn_coding_agent`. It has no shell and no write
+   tool.
+3. `config.json` reads `"runtime": "maf"`. The executor decides by the object
+   (WS-43h), so the label does not send a run down the Copilot path.
+4. H-211's root half is closed: no first-party factory sets `approve_all`.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_root_agent_maf.py \
+  tests/unit/test_no_copilot_sdk.py -q -rs
+```
+
+**Gate.** AGENT-SAFE. It ships dark.
+
+### WS-43n — Agents from a repo default to MAF 🔲
+
+**Scope.** `gateway/routes/agent.py` (`:1279-1284` and `:1589`), the loader's
+check of a built agent, and fence WS43-F18. §15.5 is the design.
+
+**Done when:**
+
+1. A repo-registered agent with no runtime gets `maf`, at registration and
+   in the back-fill.
+2. When the loader builds a Copilot agent, it logs one deprecation line that
+   names the agent and links §15.5.
+3. A test proves that, after WS-43r, the same agent raises
+   `AgentRuntimeUnsupported` with the migration text.
+4. The PR names each registered agent that still builds a Copilot agent. For
+   `agent-sales-assistant`, the change is a PR in its own repo (WS43-G11).
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_agent_runtime_default.py -q -rs
+```
+
+**Gate.** AGENT-SAFE. The external repo change is WS43-G11.
+
+### WS-43o — The model list from the Router 🔲
+
+**Scope.** `gateway/main.py` (the warm-up at `:113-140`, `/health/runtime`
+at `:1650`, `/copilot/models` at `:1791`), `gateway/routes/settings.py`
+(`:1536-1562` and `/settings/llm/copilot-model` at `:892`), the Control
+Plane's `src/app/api/models/all/route.ts`, and fence WS43-F19.
+
+**Done when:**
+
+1. With `router_serving_enabled` on, every model list reads the Router's tier
+   list (D56, CP-11). With it off, the lists stay as they are.
+2. `/health/runtime` reports the Router and the sandbox broker, and no
+   Copilot SDK check, when `router_serving_enabled` is on.
+3. Where CP-5 already removes a customer surface, this slice deletes it and
+   does not move it.
+4. The Control Plane shows no "GitHub Copilot SDK" model group when the
+   Router serves.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_router_model_list.py -q -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+**Gate.** AGENT-SAFE.
+
+### WS-43p — Retire the Copilot mutation runner 🔲
+
+**Scope.** Remove the Copilot branch of `mutation_runner.py`, the SDK and the
+CLI download from `Dockerfile.mutation`, `COPILOT_GITHUB_TOKEN`, and the
+`spawn_copilot_agent` alias. Shrink the WS43-F15 allowlist.
+
+**Done when:**
+
+1. `mutation:*` has run on production for 14 days with no regression.
+2. The owner says yes.
+3. The mutation container gets no GitHub token in any form.
+4. WS43-F15 and WS43-F16 pass with the shorter allowlist.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_no_copilot_sdk.py \
+  tests/unit/test_mutation_runner_maf.py \
+  tests/unit/test_mutation_sandbox_hardening.py -q -rs
+```
+
+**Gate.** **OWNER-GATE** to merge (WS43-G9).
+
+### WS-43q — Remove the Copilot runtime from the executor, the gateway and the settings 🔲
+
+**Scope.** The removal list of §15.2, rows 5 to 9. Shrink the WS43-F15
+allowlist to `pyproject.toml` and `uv.lock`.
+
+**Done when:**
+
+1. Every first-party agent builds a MAF agent. This needs PR #585 merged, and
+   WS-43h and WS-43m live.
+2. Each registered dynamic agent loads as MAF, or the owner accepts in
+   writing that the agent stops loading.
+3. Nothing reads or writes `chat_session.service_session_id` (R6, the
+   contract step). The column stays until WS-43s.
+4. `copilot_chat_model` becomes `default_chat_model`. The code reads
+   `DEFAULT_CHAT_MODEL` first and `COPILOT_CHAT_MODEL` as a fallback for one
+   release.
+5. `merge_mcp_servers` stays. It is the seam that WS-8c will read (D7).
+6. Root `AGENTS.md` and `apps/services/orchestrator/AGENTS.md` lose their
+   Copilot runtime paragraphs.
+7. The named suites below pass.
+
+**Verification.** Name the files. Do not run `tests/unit/` as a directory,
+because of the memory and calendar suite hazard of CLAUDE.md §6.
+
+```bash
+uv run ruff check .
+uv run pytest tests/unit/test_no_copilot_sdk.py \
+  tests/unit/test_permission_policy.py \
+  tests/unit/test_agent_manifest.py \
+  tests/unit/test_router_model_list.py \
+  tests/unit/test_agent_runtime_default.py \
+  tests/unit/test_root_agent_maf.py -q -rs
+```
+
+**Gate.** **OWNER-GATE** to merge (WS43-G9).
+
+### WS-43r — Remove the packages and the CLI prefetch 🔲
+
+**Scope.** `apps/services/orchestrator/pyproject.toml`, `uv.lock`, the CLI
+prefetch in `scripts/vps_apply.sh` (`:743-755`), the `COPILOT_CHAT_MODEL`
+fallback, and the empty WS43-F15 allowlist.
+
+**Done when:**
+
+1. Neither `pyproject.toml` nor `uv.lock` names `github-copilot-sdk` or
+   `agent-framework-github-copilot`.
+2. `scripts/vps_apply.sh` runs no `python -m copilot download-runtime`.
+3. WS43-F15 passes with an empty allowlist.
+4. A loaded Copilot agent raises `AgentRuntimeUnsupported` (WS43-F18).
+
+**Verification.**
+
+```bash
+uv lock --check
+uv run pytest tests/unit/test_no_copilot_sdk.py \
+  tests/unit/test_agent_runtime_default.py -q -rs
+```
+
+**Gate.** **OWNER-GATE** to merge (WS43-G9). The edit of
+`scripts/vps_apply.sh` is WS43-G12.
+
+### WS-43s — Drop `chat_session.service_session_id` 🔲
+
+**Scope.** One migration, with the next free number at build time (R1). It
+drops the column that `infra/postgres/10_service_session_id.sql` added.
+
+**Done when:**
+
+1. WS-43q has run on production for one release, and the column has had no
+   writer since then.
+2. The migration is guarded, so a replay and a fresh install both pass.
+3. The migration runs against a real database before review (R8).
+4. Before the production apply, the pre-migration backup is complete (R6).
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_no_copilot_sdk.py -q -rs
+```
+
+The migration ladder replay of `pr-check.yml` must pass, and its log must
+show the new file.
+
+**Gate.** **OWNER-GATE** to merge (WS43-G9). It is a one-way change.
+
+### WS-43t — Native session persistence 🔲
+
+**It comes early.** It has no dependency. The `agent-task-manager` move of
+PR #585 (WS-8i) waits on it for its confirm turns (H-215). WS-43q waits on it,
+because it replaces the Copilot session store. §15.9 is the design.
+
+**Scope.** The structured history path of `_compose_maf_run_input`
+(`executor.py:5398`), a new tenant-scoped table, the load and save around
+each native run, the setting `maf_native_sessions`, and fence WS43-F20.
+
+**Done when:**
+
+1. With `MAF_NATIVE_SESSIONS` on, each native run loads the session of its
+   organization, thread and agent. It saves the session when the run ends.
+2. The two-turn probe of H-215 passes on `agent-task-manager`. Turn 1
+   proposes, and turn 2 says "yes". Turn 2 sees the ids of turn 1, with no
+   second list and no second proposal.
+3. The structured path builds each message with `contents=`, and it carries
+   `memory_context` and the persona to the model (H-216). A test drives the
+   real MAF `Message` class.
+4. The stored history stays within the history budget of
+   `assemble_run_context`. Older turns go through compaction.
+5. The table is tenant-scoped, and it passes
+   `tests/unit/test_tenant_coverage.py` (R5a). As the NOBYPASSRLS app role,
+   org B cannot read the row of org A (R8).
+6. With the flag off, every native run behaves as it does today.
+7. A load that fails, or finds no row, falls back to the text history of
+   today, and logs one line. It never fails the run.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_native_session_persistence.py \
+  tests/unit/test_tenant_coverage.py -q -rs
+```
+
+The `-rs` output must show no skip. The migration ladder replay of
+`pr-check.yml` must pass, and its log must show the new file.
+
+**Gate.** AGENT-SAFE. It ships dark. The table is an expand step (R6). The
+production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
+
 ## 12. Owner gates
 
 **Gate id: `ws43-sandbox-flip`.** No line of `.claude/OWNER_GRANTS.md` names
@@ -1560,6 +1884,11 @@ An agent refuses each of these by name:
 | WS43-G6 | Run the eval against the production Router, or with a production key |
 | WS43-G7 | Merge WS-43j |
 | WS43-G8 | Un-park anything else that D16 parks: P5-c, P5-d, P5-b.3, or T2 for the pooled cutover |
+| WS43-G9 | Merge a Copilot removal slice: WS-43p, WS-43q, WS-43r or WS-43s. The migration of WS-43s is one-way |
+| WS43-G10 | Set the `mutation:*` or `metorite:*` target on production. WS43-G3 covers the setting, and this row names the targets |
+| WS43-G11 | Change a repo outside this one, such as `FracktalWorks/agent-sales-assistant` |
+| WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it |
+| WS43-G13 | Set `MAF_NATIVE_SESSIONS` on production |
 
 ## 13. Open questions
 
@@ -1569,6 +1898,7 @@ An agent refuses each of these by name:
 | WS43-Q2 | Which hosts go on the production allowlist beyond PyPI? | `pypi.org` and `files.pythonhosted.org` only |
 | WS43-Q3 | Do egress logs need a tenant-scoped table and a UI? | No. Log lines only |
 | WS43-Q4 | Which tier does `code_task` use? | `tier-balanced`, unless WS-43a shows another tier is better |
+| WS43-Q5 | Does self-mutation later move its loop to the host, with its commands in the broker? Then the mutation container needs no key and no network | No. The loop stays in the container (owner direction, §15.3) |
 
 ## 14. Side findings
 
@@ -1586,3 +1916,248 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-214.** `plan-guard.mjs` has no rule for `MAF_CODING_SCOPE` or
   `SANDBOX_EGRESS_ENABLED`. The owner adds one under the id
   `ws43-sandbox-flip` (§12).
+- **H-218.** The loader writes the GitHub token into each clone's remote URL
+  (`loader.py:78`). The mutation container mounts the clone and has a network,
+  so code in it can read the token (§15.3).
+- **H-211's root half** closes with WS-43m. Its external half and H-212 close
+  with the change in the sales-assistant repo (WS43-G11).
+
+## 15. D84 — the GitHub Copilot SDK leaves the platform
+
+### 15.1 The decision
+
+On 2026-10-03, in chat, the owner said:
+
+> "go ahead and let's start the migration to MAF, and we can remove GitHub
+> Copilot SDK completely."
+
+`work_plan.md` §3 records it as **D84**. It extends D82 from `code_task` to
+every use of the Copilot SDK. At the end, the packages `github-copilot-sdk`
+and `agent-framework-github-copilot` leave `pyproject.toml` and `uv.lock`.
+
+- **It supersedes** `chat_agent_framework_review_2026-07.md` §1 item 1 and
+  §2.3 item 2. They kept the Copilot engine for the mutation sandbox and the
+  `metorite` agent. That doc is a historical record, so it gets a pointer
+  only.
+- **D83 does not change.** The mutation container of §15.3 exists today, as
+  a P5-b.1 container. A new engine inside it un-parks nothing. WS-3b and
+  P5-b.3 still own its hardening.
+- **`GITHUB_TOKEN` stays,** for repo clones only.
+- **The word "copilot" stays where it names a product feature,** such as
+  the Notes copilot and the Workflows copilot. Those features call no Copilot
+  SDK. The route `/copilot/chat` serves a native MAF agent, so only its name
+  is left, and its name is out of scope.
+
+### 15.2 Every Copilot use, and the slice that owns it
+
+Measured on 2026-10-03 at `main` `2e6c22fc`.
+
+| # | Use | Where | New path | Removal |
+|---|---|---|---|---|
+| 1 | `code_task` and the Copilot sandbox | `code_session.py`, `copilot_sandbox.py`, `Dockerfile.copilot-sandbox` | WS-43e | WS-43j |
+| 2 | app-builder | `agent-app-builder/agents.py`, registry label `gateway/routes/agent.py:484` | WS-43h | WS-43j |
+| 3 | Self-mutation | `spawn_copilot_agent` (`orchestrator/agents.py:162-240`), `attempt_self_mutation` (`mutation.py:311`, called at `executor.py:2763` and `:2809`), `_run_mutation_sandbox` (`mutation.py:802-985`), `mutation_runner.py:65-194`, `Dockerfile.mutation` | WS-43l | WS-43p |
+| 4 | The root `metorite` agent | root `agents.py:102-122`, root `config.json` (`"runtime": "github-copilot"`) | WS-43m | WS-43q |
+| 5 | Agents from a repo | `gateway/routes/agent.py:1279-1284` and `:1589`, `gateway/agents.json`, `agent-sales-assistant` | WS-43n | WS-43q |
+| 6 | The model list | `gateway/main.py:113-140`, `:1650`, `:1791`, `gateway/routes/settings.py:892` and `:1536-1562`, `workbench/control_plane/src/app/api/models/all/route.ts` | WS-43o | WS-43q |
+| 7 | The executor runtime | Tier 1.5 and the 10 `_is_copilot_sdk` sites, the Tier 2 raw `CopilotClient` path (`executor.py:4734-4790`), the BYOK block (`:1009-1044`) | none | WS-43q |
+| 7a | The Copilot session store and resume | `executor.py:5754-5900`, `chat_session.service_session_id` | WS-43t | WS-43q |
+| 8 | Copilot glue | `copilot_agent.py`, `_copilot_session.py`, `carry_run_context`, the Copilot branch of `_tool_injection.py` (`:26`, `:920-930`, `:1072`), the SDK result types of `permission_policy.py:279-300` | none | WS-43q |
+| 9 | Settings and env | `copilot_byok_default`, `copilot_sandbox_*`, `copilot_chat_model`, the `COPILOT_*` env | none | WS-43q, WS-43r |
+| 10 | The packages and the CLI | `apps/services/orchestrator/pyproject.toml`, `uv.lock`, `scripts/vps_apply.sh:743-755` | none | WS-43r |
+| 11 | The session column | `chat_session.service_session_id` (`infra/postgres/10_service_session_id.sql`) | none | WS-43q stops the writes, WS-43s drops it |
+
+Two items stay, on purpose:
+
+- `merge_mcp_servers` (`_tool_injection.py:1086`) writes a field that only
+  the Copilot runtime reads. After WS-43q, nothing reads it. It stays as the
+  seam that WS-8c will read (D7).
+- `decide()` in `permission_policy.py` stays. The MAF tool gate calls it.
+
+### 15.3 Self-mutation
+
+**The target.** A MAF harness agent runs inside the mutation container, in
+place of the raw `CopilotClient` of `mutation_runner.py`.
+
+- The runner calls `create_harness_agent` with an
+  `OpenAIChatCompletionClient` on the gateway `/v1`, the router headers of
+  `MUTATION_ROUTER_HEADERS`, and `GATEWAY_API_KEY`, as the Copilot runner
+  does today.
+- Its file tools use a `FileSystemAgentFileStore` rooted at
+  `/workspace/repo`. It sets `disable_file_memory=True` and
+  `disable_todo=True`.
+- Its shell is a plain subprocess tool. That is safe here, because the
+  container is the boundary, and nothing else runs in it.
+- It sets no permission handler, so the `approve_all` of
+  `mutation_runner.py:85` goes.
+- The output lines that `mutation.py` parses after the container exits stay
+  the same.
+- `Dockerfile.mutation` installs `agent-framework-core` and
+  `agent-framework-openai` at the versions of `uv.lock`, in place of the SDK
+  and the CLI download.
+
+**Two text fixes.**
+
+- The mutation prompt at `mutation.py:640` tells a repo to build a
+  `GitHubCopilotAgent` in `build_agents()`. It now asks for a MAF `Agent`
+  with an `OpenAIChatCompletionClient` and `attributed_openai`, the shape of
+  `agent-projects/agents.py`.
+- `spawn_copilot_agent` (`orchestrator/agents.py:162`) says the agent will
+  "commit and push" (`:177`, `:218`, `:232`). The push guard blocks a push,
+  and a person approves it. The tool becomes `spawn_coding_agent`, with that
+  text. The old name stays as an alias for one release, because agent
+  instructions name it (`agents.py:66`, `:90`).
+
+**A defect this work must not carry over (H-218).** The loader puts the
+GitHub token in the clone's remote URL (`loader.py:78`). The mutation
+container mounts the clone at `/workspace/repo` and has a network. So code in
+the container can read and send the token. WS-43l's token probe fails until
+H-218 is fixed.
+
+### 15.4 The root `metorite` agent
+
+Today it is a `GitHubCopilotAgent` with `approve_all` (root
+`agents.py:102-122`), and its working dir is the platform checkout. So the
+model can run any shell command and write any file there, in every
+permission mode (H-211).
+
+**The target.** A MAF harness agent with these tools only:
+
+- read-only file tools over its checkout, with the safe opener of §7.5,
+- `spawn_coding_agent`, so every code change runs in the mutation container
+  and lands as a local commit that a person approves.
+
+It has no shell and no write tool. The target `metorite:*` turns it on.
+
+### 15.5 Agents from a repo
+
+**The decision: a hard requirement, and no adapter.** An agent that a repo
+registers must build a MAF `Agent`.
+
+**Why no adapter.** After WS-43r, the package is not in the environment. So a
+repo's `from agent_framework_github_copilot import GitHubCopilotAgent` fails
+at import, before any adapter could run. An adapter would need a shim module
+with that name. The shim would carry the name that WS43-F15 forbids, and it
+would hide the loss of the Copilot CLI's own shell and file tools.
+
+**The transition.**
+
+1. WS-43n makes `maf` the default runtime of a repo-registered agent, at
+   registration (`gateway/routes/agent.py:1589`) and in the back-fill
+   (`:1279-1284`).
+2. Until WS-43r, a loaded Copilot agent still runs, and the loader logs one
+   deprecation line that names it.
+3. After WS-43r, the loader raises `AgentRuntimeUnsupported`, with the
+   migration text.
+4. The rows of `dynamic_agents` keep their old label. The executor decides by
+   the object (WS-43h), so the label has no effect. Nothing writes those
+   rows.
+
+**`agent-sales-assistant`.** It lives in `FracktalWorks/agent-sales-assistant`,
+outside this repo. Its factory imports `copilot.types` (H-212) and sets
+`approve_all` (H-211). It needs a PR in its own repo that builds a MAF
+`Agent`. That change is WS43-G11. WS-43q does not merge while it is open,
+unless the owner accepts that the agent stops loading.
+
+### 15.6 The full-removal fence
+
+`tests/unit/test_no_copilot_sdk.py` (WS43-F15) reads every `.py` file under
+`apps/` and `packages/`, and the root `agents.py`. It fails when a file off
+its allowlist does any of these:
+
+- imports `copilot`, a module under `copilot.`, or
+  `agent_framework_github_copilot` (the test reads the import statements),
+- holds the text `github_copilot` or `GitHubCopilotAgent`.
+
+After WS-43r, it also fails when `pyproject.toml` or `uv.lock` names
+`github-copilot-sdk` or `agent-framework-github-copilot`.
+
+**The allowlist shrinks to zero.** WS-43k writes it from the tree at build
+time. Measured at `2e6c22fc`, it holds these files, each with the slice that
+removes it:
+
+| File | Removed by |
+|---|---|
+| `apps/agents/agent-app-builder/agents.py` | WS-43j |
+| `apps/services/orchestrator/mutation_runner.py` | WS-43p |
+| `apps/services/orchestrator/orchestrator/mutation.py` | WS-43l (the prompt) |
+| `agents.py` (root) | WS-43q |
+| `apps/agents/agent-task-manager/agents.py`, `apps/agents/agent-apis-config/agents.py` | PR #585 |
+| `apps/services/gateway/gateway/main.py`, `apps/services/gateway/gateway/routes/agent.py` | WS-43q |
+| `apps/services/orchestrator/orchestrator/executor.py`, `_copilot_session.py`, `copilot_agent.py`, `_tool_injection.py` | WS-43q |
+| `packages/acb_common/acb_common/settings.py`, `packages/acb_skills/acb_skills/permission_policy.py`, `packages/acb_skills/acb_skills/github_tools.py` | WS-43q |
+
+At WS-43r, the allowlist is empty.
+
+### 15.7 The session column (R6)
+
+`chat_session.service_session_id` holds a Copilot session id for resume. The
+deploy applies a migration before the services restart. So the column goes in
+two releases:
+
+1. **WS-43q (contract the code).** Nothing reads or writes the column.
+2. **WS-43s (drop the column).** One release later, a guarded migration drops
+   it, with the next free number at build time.
+
+We cannot roll back, so WS-43s is an owner merge, and it needs a complete
+backup before the production apply.
+
+### 15.8 What D84 does not do
+
+- It builds nothing. Every slice is 🔲.
+- It does not edit the `.env` of the box. A `COPILOT_*` variable that no code
+  reads does no harm. To delete one is owner housekeeping under the
+  `env-write` gate.
+- It does not rename `/copilot/chat`.
+- It does not change D83, P5-c or the pooled cutover.
+- It does not edit PR #585 or the WS-8 row. The dependency of the
+  `agent-task-manager` move on WS-43t is stated here and in the WS-43 row.
+
+### 15.9 Native session persistence (WS-43t)
+
+**The gap.** A native MAF agent gets only TEXT history across turns.
+
+- The Control Plane sends each earlier message as `role` and `content` only
+  (`workbench/control_plane/src/app/api/agent/chat/route.ts:679`).
+- The executor renders that history into one text block
+  (`_build_event_message`).
+- The structured branch of `_compose_maf_run_input` (`executor.py:5398`)
+  never runs. It builds `Message(role=..., content=...)`, MAF 1.19 refuses
+  the keyword, and the `except` falls back to the text (H-216, PR #585).
+
+So a confirm turn loses the tool output of the turn before. The PR #585
+verifier proved it on `agent-task-manager` (H-215). The Copilot path kept tool
+results through SDK session resume (`chat_session.service_session_id`).
+
+**The target.** Persist a MAF `AgentSession` for each (organization, thread,
+agent), with `AgentSession.to_dict()` and `AgentSession.from_dict()`
+(`agent_framework/_sessions.py:1797` and `:1814`). Each turn then resumes the
+earlier turns with their tool calls and their results.
+
+**The store: a Postgres table with forced row-level security.**
+
+- One row per (`organization_id`, thread id, agent name). The next free
+  migration number at build time (R1). The table is new, so the migration is
+  an expand step (R6).
+- The generated tenant migration covers it, so
+  `tests/unit/test_tenant_coverage.py` passes (R5a).
+- The run binding gives the tenant, never the request (R5e).
+- Rejected: `RedisHistoryProvider` (`agent_framework_redis`) on
+  tenant-prefixed keys. An eviction or a Redis restart would drop the tool
+  results between a proposal and its confirm turn, and nothing would say so.
+
+**The bounds.** The stored history stays within the history budget of
+`assemble_run_context`. MAF compaction shortens the older turns. A row that
+grows past the budget is trimmed before the save.
+
+**Memory and persona.** The structured path carries `memory_context` and the
+persona to the model. H-216 warns that a naive repair drops
+`memory_context`, because today it reaches the model only through the text
+fallback.
+
+**The flag.** `MAF_NATIVE_SESSIONS`, default OFF. It covers every native MAF
+agent. With it off, nothing changes.
+
+**Where it sits.** In WS-43, and not in the WS-8 track, for two reasons. It
+replaces the Copilot session store that D84 removes (§15.2 row 7a). And PR
+#585 already holds the WS-8 row, so a second edit there would collide.
