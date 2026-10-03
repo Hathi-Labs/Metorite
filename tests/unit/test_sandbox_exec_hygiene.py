@@ -10,9 +10,11 @@ fails to refuse.
 
 Two halves. The first half drives the broker with a fake Docker, and runs in
 the default unit job. The second half carries the ``sandbox_docker`` marker
-and runs a real container. The default run deselects it, and pr-check runs it
-in its own step, which fails on any skip, so a Docker test that skips proves
-nothing (§10).
+and runs a real container of the coding image (WS-43b). The default run
+deselects it. ``.github/workflows/sandbox-docker.yml`` builds the image, gives
+its ID in ``CODING_SANDBOX_IMAGE``, runs this half, and fails on any skip, so a
+Docker test that skips proves nothing (§10). With no such variable, the
+fixture of ``test_coding_sandbox_image.py`` builds the image here.
 
 ⚠️ Docker Desktop on a Windows dev box refuses host bind mounts (spec §5.2).
 There, the Docker half swaps each bind mount for a named volume, and the one
@@ -35,17 +37,11 @@ import pytest
 from orchestrator import sandbox_broker as sb
 
 from tests.unit._sandbox_broker_fakes import FakeDocker, bound_run, configure_env
+from tests.unit.test_coding_sandbox_image import coding_sandbox_image  # noqa: F401
 
 ORG = "dddddddd-0000-0000-0000-00000000000d"
 _REAL_PROCESS_IDS = sb._process_ids
 
-#: The image of the Docker half until WS-43b ships the coding-sandbox image.
-#: It is pinned by digest, as the broker demands. It has bash and coreutils,
-#: and no procps, so the broker's scripts must work without ``ps`` or ``pkill``.
-TEST_IMAGE = os.environ.get(
-    "SANDBOX_TEST_IMAGE",
-    "python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f",
-)
 
 
 @pytest.fixture
@@ -360,6 +356,60 @@ async def test_the_quota_refuses_the_next_exec_until_space_is_free(
     assert again.exit_code == 0 and not broker.quota_exceeded(handle)
 
 
+async def test_the_quota_bounds_the_count_of_files(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flood of small files must not use up the inodes of the host."""
+    monkeypatch.setattr(env["settings"], "sandbox_workspace_max_files", 5)
+    with bound_run(ORG, thread="t-files") as ws:
+        handle = await broker.acquire()
+    flood = ws / "outputs" / "flood"
+
+    async def write_many(_argv: list[str]) -> None:
+        flood.mkdir(parents=True, exist_ok=True)
+        for i in range(10):
+            (flood / f"f{i}").write_bytes(b"")
+
+    docker.on_stream = write_many
+    await broker.exec(handle, "make many", 5)
+    assert broker.quota_exceeded(handle) and handle.workspace_files > 5
+    docker.on_stream = None
+    with pytest.raises(sb.SandboxRefused, match="files"):
+        await broker.exec(handle, "true", 5)
+    shutil.rmtree(flood)
+    assert (await broker.exec(handle, "true", 5)).exit_code == 0
+
+
+async def test_the_cli_kills_and_reaps_its_process_on_a_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled run or stream leaves no docker CLI process (review P1-b)."""
+    cli = sb.DockerCLI()
+    monkeypatch.setattr(cli, "_binary", lambda: sys.executable)
+    spawned: list[asyncio.subprocess.Process] = []
+    original = cli._spawn
+
+    async def spy(args: Any) -> asyncio.subprocess.Process:
+        proc = await original(args)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(cli, "_spawn", spy)
+    sleeper = ["-c", "import time; time.sleep(60)"]
+    calls = [
+        lambda: cli.run(sleeper, timeout=120),
+        lambda: cli.stream(sleeper, timeout=120, head=10, tail=10),
+    ]
+    for call in calls:
+        task = asyncio.create_task(call())
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert spawned[-1].returncode is not None, "a cancel left the docker CLI running"
+
+
 def test_the_quota_measure_follows_no_link(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_bytes(b"x" * 100)
     (tmp_path / "d").mkdir()
@@ -378,15 +428,9 @@ def _docker(*args: str, timeout: float = 180) -> subprocess.CompletedProcess[str
 
 
 @pytest.fixture(scope="module")
-def docker_image() -> str:
-    if shutil.which("docker") is None:
-        pytest.skip("Docker is not installed")
-    if _docker("info", timeout=60).returncode != 0:
-        pytest.skip("the Docker daemon does not answer")
-    if _docker("image", "inspect", TEST_IMAGE).returncode != 0:
-        pulled = _docker("pull", TEST_IMAGE, timeout=900)
-        assert pulled.returncode == 0, pulled.stderr[-500:]
-    return TEST_IMAGE
+def docker_image(coding_sandbox_image: str) -> str:  # noqa: F811
+    """The coding image of WS-43b, by its immutable ID. No registry pull."""
+    return coding_sandbox_image
 
 
 @pytest.fixture(scope="module")
@@ -408,7 +452,8 @@ def _use_named_volumes(monkeypatch: pytest.MonkeyPatch, image: str, made: list[s
             name = f"mtr-test-{uuid.uuid4().hex[:10]}"
             assert _docker("volume", "create", name).returncode == 0
             fix = _docker(
-                "run", "--rm", "--mount", f"type=volume,source={name},target=/v",
+                "run", "--rm", "--user", "0:0",
+                "--mount", f"type=volume,source={name},target=/v",
                 image, "chown", "1000:1000", "/v",
             )
             assert fix.returncode == 0, fix.stderr
@@ -497,6 +542,42 @@ async def test_docker_many_orphans_die_with_their_exec(real: dict[str, Any]) -> 
     assert _strays(handle) == []
 
 
+#: A leader that leaves by ``syscall(SYS_exit)`` while a worker thread runs
+#: shows State Z, and the worker keeps writing (review P1-a, zombie_probe.py).
+ZOMBIE_LEADER = """cat > /tmp/zl.py <<'PY'
+import ctypes, platform, threading, time
+def work():
+    while True:
+        with open("/tmp/alive", "a") as fh:
+            fh.write("x")
+        time.sleep(0.1)
+threading.Thread(target=work).start()
+time.sleep(0.3)
+ctypes.CDLL(None).syscall(60 if platform.machine() == "x86_64" else 93, 0)
+PY
+setsid python3 /tmp/zl.py >/dev/null 2>&1 </dev/null &
+leader=$!
+sleep 1.5
+grep -q '^State:.Z' /proc/$leader/status && echo leader-is-zombie
+echo started"""
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_zombie_leader_with_a_live_thread_dies(real: dict[str, Any]) -> None:
+    handle = await _real_handle(real)
+    broker = real["broker"]
+    result = await broker.exec(handle, ZOMBIE_LEADER, 20)
+    assert "leader-is-zombie" in result.output, f"the probe did not make the case: {result.output}"
+    assert not result.restarted, result.message
+    first = await broker.exec(handle, "wc -c < /tmp/alive", 20)
+    await asyncio.sleep(1.5)
+    second = await broker.exec(handle, "wc -c < /tmp/alive", 20)
+    assert first.output.strip() == second.output.strip(), (
+        "the worker thread kept writing after the sweep said clean"
+    )
+    assert _strays(handle) == []
+
+
 @pytest.mark.sandbox_docker
 async def test_docker_a_background_child_that_holds_stdout_cannot_hang_the_exec(
     real: dict[str, Any],
@@ -516,7 +597,11 @@ async def test_docker_a_timeout_kills(real: dict[str, Any]) -> None:
     result = await real["broker"].exec(handle, "sleep 30", 2)
     elapsed = time.monotonic() - started
     assert result.exit_code == 137 and result.timed_out
-    assert elapsed < 10, f"the timeout did not kill in time ({elapsed:.1f} s)"
+    # The container's timeout fires at 2 s. The host grace would fire at 17 s,
+    # so 14 s leaves room for a slow runner and still tells the two apart.
+    assert elapsed < 2 + sb._HOST_GRACE_SECONDS - 3, (
+        f"the timeout did not kill in time ({elapsed:.1f} s)"
+    )
     assert _strays(handle) == []
 
 

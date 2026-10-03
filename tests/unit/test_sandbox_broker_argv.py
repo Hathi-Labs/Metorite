@@ -12,6 +12,7 @@ mounts, because one function builds the mounts for every start.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,35 @@ async def test_a_bad_limit_setting_is_refused(
     with bound_run(ORG), pytest.raises(sb.SandboxRefused):
         await broker.acquire()
     assert not docker.runs()
+
+
+async def test_read_only_always_comes_with_the_tmp_tmpfs(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image sets HOME=/tmp, so a read-only root needs the /tmp tmpfs.
+
+    WS-43b's verifier: matplotlib fails with no writable home. The pair must
+    hold on a first start and on a restart, and a size of 0 is refused.
+    """
+    with bound_run(ORG, thread="t-tmpfs"):
+        handle = await broker.acquire()
+        docker.stream_results.append(
+            sb.StreamResult(1, "", 0, False, "Error response from daemon: is not running", False)
+        )
+        assert (await broker.exec(handle, "true", 5)).restarted
+    runs = docker.runs()
+    assert len(runs) == 2
+    for argv in runs:
+        assert "--read-only" in argv
+        tmpfs = flag_values(argv, "--tmpfs")
+        assert len(tmpfs) == 1, tmpfs
+        assert re.fullmatch(r"/tmp:rw,nosuid,nodev,size=[1-9][0-9]*m", tmpfs[0]), tmpfs
+    for size in (0, -1):
+        monkeypatch.setattr(env["settings"], "sandbox_tmpfs_mb", size)
+        with bound_run(ORG, thread=f"t-tmpfs-{size}"), pytest.raises(sb.SandboxRefused):
+            await broker.acquire()
+    assert len(docker.runs()) == 2
 
 
 # ── rule 6: the uid, the environment and PATH ───────────────────────────────
