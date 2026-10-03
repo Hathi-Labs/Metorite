@@ -41,6 +41,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import stat as _stat_mod
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
@@ -980,6 +981,9 @@ def _walk_tree(root: Path) -> list[FileEntry]:
                     if fpath.is_symlink():
                         continue
                     stat = fpath.lstat()
+                    # A FIFO, a socket or a device is never a workspace file.
+                    if not _stat_mod.S_ISREG(stat.st_mode):
+                        continue
                     rel_path = str((rel_dir / fname)).replace("\\", "/")
                     mime, _ = mimetypes.guess_type(fname)
                     entries.append(FileEntry(

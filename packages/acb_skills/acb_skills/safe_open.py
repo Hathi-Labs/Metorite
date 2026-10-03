@@ -68,6 +68,13 @@ _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_BINARY = getattr(os, "O_BINARY", 0)
+#: Every open passes ``O_NONBLOCK``. A container can make a FIFO in a dir it
+#: writes, and a plain open of a FIFO waits for a peer with no limit. Under the
+#: dir lock that stalls the organization, and in a route it holds a pool thread
+#: that every tenant shares. The opener then checks the type with ``fstat``,
+#: refuses anything but a regular file, and clears the flag for the read.
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_DIR_FLAGS = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC | _O_NONBLOCK
 
 #: True where the walk can hold directory descriptors. Linux and macOS.
 _FD_WALK = os.name == "posix" and os.open in os.supports_dir_fd
@@ -107,7 +114,7 @@ def _open_root(root: Path) -> int:
     if not root.is_absolute():
         raise UnsafePath("The root must be an absolute path.")
     try:
-        return os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+        return os.open(root, _DIR_FLAGS)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise UnsafePath("The root is not a real directory.") from exc
@@ -183,10 +190,7 @@ def _walk_open(dir_fd: int, parts: list[str], flags: int, mode: int) -> int:
     try:
         for part in parts[:-1]:
             try:
-                nxt = os.open(
-                    part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
-                    dir_fd=fd,
-                )
+                nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
             except OSError as exc:
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise UnsafePath("The path has a symbolic link in it.") from exc
@@ -222,7 +226,13 @@ def _windows_open(root: Path, parts: list[str], flags: int, mode: int) -> int:
 
 
 def _open_beneath(root: Path, rel: str | os.PathLike[str], flags: int, mode: int = 0o600) -> int:
-    """A descriptor for ``root/rel``, refusing a symlink at any depth."""
+    """A descriptor for ``root/rel``, refusing a symlink at any depth.
+
+    ``O_NONBLOCK`` is always added, so the open of a FIFO never waits. The
+    caller must pass the descriptor to :func:`_require_regular` before any
+    read or write.
+    """
+    flags |= _O_NONBLOCK
     parts = split_rel(rel)
     if not _FD_WALK:
         if not parts:
@@ -250,9 +260,7 @@ def _dir_fd(root: Path, parts: list[str], *, create: bool = False) -> Iterator[i
                 with contextlib.suppress(FileExistsError):
                     os.mkdir(part, 0o755, dir_fd=fd)
             try:
-                nxt = os.open(
-                    part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC, dir_fd=fd,
-                )
+                nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
             except OSError as exc:
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise UnsafePath("The path has a symbolic link in it.") from exc
@@ -279,6 +287,16 @@ def _windows_dir(root: Path, parts: list[str], *, create: bool) -> Path:
     return cur
 
 
+def _require_regular(fd: int) -> None:
+    """Refuse *fd* unless it is a regular file, then clear ``O_NONBLOCK``."""
+    if not _stat.S_ISREG(os.fstat(fd).st_mode):
+        raise UnsafePath("The path is not a regular file.")
+    if _O_NONBLOCK:
+        import fcntl
+
+        fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~_O_NONBLOCK)
+
+
 # ── The public API ───────────────────────────────────────────────────────────
 
 
@@ -295,10 +313,11 @@ def open_read(root: Path, rel: str) -> BinaryIO | None:
     except OSError as exc:
         if exc.errno == errno.ENOTDIR:
             return None
+        if exc.errno == errno.ENXIO:  # a socket file
+            raise UnsafePath("The path is not a regular file.") from exc
         raise
     try:
-        if not _stat.S_ISREG(os.fstat(fd).st_mode):
-            raise UnsafePath("The path is not a regular file.")
+        _require_regular(fd)
         return os.fdopen(fd, "rb")
     except BaseException:
         os.close(fd)
@@ -348,7 +367,7 @@ def write_bytes(
     parts = split_rel(rel)
     if not parts:
         raise UnsafePath("A write needs a file name.")
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC)
+    flags = os.O_WRONLY | os.O_CREAT | _O_NONBLOCK | (os.O_EXCL if exclusive else os.O_TRUNC)
     if not _FD_WALK:
         parent = _windows_dir(root, parts[:-1], create=make_parents)
         target = parent / parts[-1]
@@ -364,10 +383,12 @@ def write_bytes(
             except OSError as exc:
                 if exc.errno == errno.ELOOP:
                     raise UnsafePath("The path has a symbolic link in it.") from exc
+                if exc.errno == errno.ENXIO:
+                    # A FIFO with no reader: the non-blocking open refuses it.
+                    raise UnsafePath("The path is not a regular file.") from exc
                 raise
     try:
-        if not _stat.S_ISREG(os.fstat(fd).st_mode):
-            raise UnsafePath("The path is not a regular file.")
+        _require_regular(fd)
         view = memoryview(data)
         while view:
             written = os.write(fd, view)

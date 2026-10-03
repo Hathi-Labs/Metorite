@@ -26,7 +26,9 @@ Mutations this suite catches (R7), each run red once by hand on 2026-10-03:
   test goes red. Either layer alone still refuses the link, so a mutation of
   one of them stays green, by design;
 * ``acb_memory.rehydrate_workspace`` writes with ``Path.write_bytes``: the
-  rehydrate test goes red.
+  rehydrate test goes red;
+* ``O_NONBLOCK`` taken out of the opener (Linux): the FIFO tests go red, and
+  they release the blocked thread, so a red run never hangs.
 """
 from __future__ import annotations
 
@@ -192,6 +194,70 @@ def test_remove_tree_follows_no_link_inside_the_tree(tmp_path: Path, opener_path
     assert not run.exists()
     assert (outside / "secret.txt").read_text(encoding="utf-8") == "HOST SECRET"
     assert so.remove_tree(root, "run-data") is False
+
+
+# ── a FIFO never blocks a host thread (review P1, fix round 1) ───────────────
+
+
+def _bounded(call: Any, release: Path, timeout: float = 5.0) -> tuple[bool, Any]:
+    """Run *call* in a thread. ``(False, None)`` when it blocked past *timeout*.
+
+    A blocked call is released by opening the FIFO from the other side, so a
+    failing run of this test never hangs the suite.
+    """
+    out: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            out["value"] = call()
+        except BaseException as exc:  # recorded and checked by the caller
+            out["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if not t.is_alive():
+        return True, out
+    for mode in (os.O_WRONLY | os.O_NONBLOCK, os.O_RDONLY | os.O_NONBLOCK):
+        with contextlib.suppress(OSError):
+            os.close(os.open(release, mode))
+    t.join(timeout)
+    return False, None
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFO on Windows; CI runs it")
+def test_a_fifo_is_refused_and_never_blocks(tmp_path: Path, opener_path: str) -> None:
+    root, _ = _tree(tmp_path)
+    (root / "outputs").mkdir()
+    pipe = root / "outputs" / "pipe"
+    os.mkfifo(pipe)
+    calls = {
+        "read": lambda: so.read_bytes(root, "outputs/pipe"),
+        "stat": lambda: so.stat_file(root, "outputs/pipe"),
+        "write": lambda: so.write_bytes(root, "outputs/pipe", b"x"),
+        "open": lambda: so.open_read(root, "outputs/pipe"),
+    }
+    for name, call in calls.items():
+        finished, out = _bounded(call, pipe)
+        assert finished, f"{name} blocked on a FIFO"
+        assert isinstance(out.get("error"), so.UnsafePath), (name, out)
+    finished, out = _bounded(lambda: so.is_file(root, "outputs/pipe"), pipe)
+    assert finished and out.get("value") is False
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFO on Windows; CI runs it")
+def test_a_link_to_a_fifo_is_refused_and_never_blocks(tmp_path: Path, opener_path: str) -> None:
+    root, outside = _tree(tmp_path)
+    pipe = outside / "pipe"
+    os.mkfifo(pipe)
+    os.symlink(pipe, root / "agent-data" / "pipe-link")
+    for call in (
+        lambda: so.read_bytes(root, "agent-data/pipe-link"),
+        lambda: so.write_bytes(root, "agent-data/pipe-link", b"x"),
+    ):
+        finished, out = _bounded(call, pipe)
+        assert finished, "a link to a FIFO blocked"
+        assert isinstance(out.get("error"), so.UnsafePath), out
 
 
 # ── a racing swap (POSIX only: the race needs the descriptor walk) ───────────
