@@ -1935,12 +1935,17 @@ the setting is `maf_native_sessions`. It is off by default.
 3. With the flag off, the assembler still runs, and the executor ignores its
    result, as before. The "Long conversation" notice reads its
    `last_fit_stats`, so a removal would change a run with the flag off.
+4. With the flag on, the structured branch needs a current turn, as
+   `_run_with_maf_agent` does. A payload with history and no current turn is
+   an event, and the string serialises it.
+5. With the flag on, the assembler runs once. So the route's
+   `_history_loader`, a database read, runs once.
 
-**Fence.** `tests/unit/test_native_session_persistence.py` has 18 cases, and
+**Fence.** `tests/unit/test_native_session_persistence.py` has 20 cases, and
 `evals/trajectories/test_native_structured_history_trajectory.py` has two.
-Four mutations each turned the fence red: `content=` again, no
+Five mutations each turned the fence red: `content=` again, no
 `memory_context` in the structured branch, the provider on the shared agent,
-and no cap.
+no cap, and a second assembler run.
 
 **Baseline.** On `main`, `ruff check` finds 67 problems in `executor.py`, and
 `mypy` finds 46 errors. This slice adds none. It removes the one mypy error
