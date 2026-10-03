@@ -28,6 +28,7 @@ from tests.unit._native_maf_harness import (
     drive_native,
     load_agent_module,
     text_turn,
+    tool_turn,
 )
 
 pytest.importorskip("agent_framework", reason="agent_framework not installed")
@@ -97,3 +98,46 @@ def test_the_schema_the_model_sees_is_the_factorys(name: str, monkeypatch) -> No
     assert set(expected) <= set(sent)
     for tool_name, spec in expected.items():
         assert sent[tool_name] == spec, f"{tool_name} schema changed on the wire"
+
+
+# ── 2. Steer ─────────────────────────────────────────────────────────────────
+
+_STEER_TEXT = "Also add a task to call the supplier."
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_steer_during_an_own_tool_only_turn_reaches_the_model(monkeypatch) -> None:
+    """A second person steers while the model works. The turn then calls ONE
+    own tool (``my_tasks_accounts``, which calls nothing). The steer must
+    ride that tool's result into the next model request."""
+    from orchestrator import steer
+
+    thread_id = "thread-steer-own-tool"
+    steer.clear_guidance(thread_id)
+
+    def _steer_while_working(index: int, _body: dict) -> None:
+        if index == 0:
+            steer.buffer_guidance(thread_id, "bob@x.io", _STEER_TEXT)
+
+    model = ScriptedModel(
+        [tool_turn("my_tasks_accounts"), text_turn("noted")],
+        on_request=_steer_while_working,
+    )
+    events, built = drive_native(
+        "task-manager", _NATIVE["task-manager"], monkeypatch, model,
+        thread_id=thread_id,
+    )
+
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    assert [e.get("type") for e in events][-1] == "RUN_FINISHED"
+    assert len(model.bodies) == 2, "the tool result never went back to the model"
+    tool_messages = [m for m in model.bodies[1]["messages"] if m.get("role") == "tool"]
+    assert tool_messages, model.bodies[1]["messages"]
+    assert any(_STEER_TEXT in str(m.get("content")) for m in tool_messages), (
+        "the steer was buffered but never reached the model"
+    )
+    assert not steer.has_guidance(thread_id)
+
+    # The own tool the model called is the gated copy, not the bare function.
+    tools = {t.name: t for t in built[0].default_options["tools"] if hasattr(t, "name")}
+    assert getattr(tools["my_tasks_accounts"].func, "__cc_gated__", False)

@@ -28,17 +28,18 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import contextlib
-import importlib.util
 import json
-import sys
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.unit._native_maf_harness import (
+    REPO_ROOT,
+    _a_tenant,  # noqa: F401 — a fixture, used by name
+    load_agent_module,
+    parse_frames,
+)
 
 #: The tool names each Copilot factory built on origin/main ``f0264ce8``
 #: (``build_agents()[0]._tools``). Frozen, never derived — see the docstring.
@@ -72,17 +73,7 @@ pytest.importorskip("agent_framework", reason="agent_framework not installed")
 
 def _load(name: str) -> ModuleType:
     """Import ``<agent dir>/agents.py`` under a unique module name."""
-    mod_name = "_native_maf_probe_" + name.replace("-", "_")
-    cached = sys.modules.get(mod_name)
-    if cached is not None:
-        return cached
-    path = REPO_ROOT / _AGENT_DIRS[name] / "agents.py"
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return load_agent_module(_AGENT_DIRS[name])
 
 
 def _tool_names(agent: Any) -> set[str]:
@@ -198,41 +189,6 @@ def _update(contents: list[Any]) -> SimpleNamespace:
     return SimpleNamespace(role="assistant", contents=contents, message_id="m1")
 
 
-def _parse_frames(frames: list[str]) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for line in frames:
-        for part in line.split("\n"):
-            part = part.strip()
-            if part.startswith("data:"):
-                body = part[len("data:"):].strip()
-                if body and body != "[DONE]":
-                    with contextlib.suppress(json.JSONDecodeError):
-                        events.append(json.loads(body))
-    return events
-
-
-@pytest.fixture
-def _a_tenant(tmp_path, monkeypatch):
-    """Both agents are SHARED, and a shared run needs a tenant for its working
-    dir (H-201 part 3). Bind one, the way a request does."""
-    from acb_common import get_settings
-    from acb_common.db import bind_tenant, release_tenant
-
-    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
-    token = bind_tenant("org-native-maf-probe")
-    try:
-        yield
-    finally:
-        release_tenant(token)
-        from acb_skills.write_artifact import bind_artifact_context
-
-        bind_artifact_context()
-        executor = sys.modules.get("orchestrator.executor")
-        if executor is not None:
-            executor._RUN_QUEUES.clear()
-            executor._pending_user_input.clear()
-
-
 def _drive_tier1(name: str, monkeypatch) -> dict[str, Any]:
     """Run the REAL factory output through the REAL ``run_agent_stream``.
 
@@ -313,7 +269,7 @@ def _drive_tier1(name: str, monkeypatch) -> dict[str, Any]:
             )
         ]
 
-    seen["events"] = _parse_frames(asyncio.run(_collect()))
+    seen["events"] = parse_frames(asyncio.run(_collect()))
     return seen
 
 

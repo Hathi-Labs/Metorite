@@ -374,6 +374,49 @@ def _gate_injected_tool(fn: Any) -> Any:
     return _sgated
 
 
+def _gate_own_maf_tools(tools: list[Any]) -> int:
+    """Wrap a NATIVE MAF agent's own tools in :func:`_gate_injected_tool`.
+
+    The Copilot branch below has always gated an agent's repo-baked tools. The
+    native branch gated only the injected ones, so on Tier 1 an own tool got
+    neither the ``permission.decision`` audit line nor the mid-run steer
+    drain. A steer that arrived during a turn that called only own tools was
+    buffered, never drained, and erased at the next run (PR #585 review). The
+    steer drain lives in this wrapper and nowhere else on Tier 1.
+
+    The agent built each entry as a ``FunctionTool`` at construction. Its
+    name, description and JSON schema were fixed THEN, from the original
+    function, so swapping ``func`` changes none of them. Each entry is
+    replaced by a shallow copy, so a module-level ``FunctionTool`` that other
+    agents share is never mutated. Plain callables and tools whose ``func`` is
+    not a plain function are left alone. Returns the number wrapped.
+    """
+    if os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() == (
+        "approve_all"
+    ):
+        return 0
+    import copy  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
+
+    wrapped = 0
+    for i, tool in enumerate(tools):
+        orig = getattr(tool, "func", None)
+        if not (inspect.isfunction(orig) or inspect.ismethod(orig)):
+            continue
+        if getattr(orig, "__cc_gated__", False):
+            continue
+        try:
+            gated = _gate_injected_tool(orig)
+            gated.__cc_gated__ = True  # type: ignore[attr-defined]
+            clone = copy.copy(tool)
+            clone.func = gated
+            tools[i] = clone
+            wrapped += 1
+        except Exception:  # noqa: BLE001 — a frozen tool keeps its old func
+            continue
+    return wrapped
+
+
 @functools.lru_cache(maxsize=32)
 def _build_injected_tools_addendum(
     *,
@@ -946,6 +989,10 @@ def _inject_agent_tools(
                     getattr(getattr(t, "func", t), "__name__", None)
                     for t in _do["tools"]
                 }
+                # Gate the agent's OWN tools too, BEFORE the injected ones
+                # join the list (they are gated above already). Same B6 gate
+                # and steer drain the Copilot branch gives its own tools.
+                _gate_own_maf_tools(_do["tools"])
                 for fn in _extra_tools:
                     if fn.__name__ not in existing_names:
                         _do["tools"].append(fn)
