@@ -22,8 +22,14 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
-from gateway.routes.email.mailbox_identity import NEXT_SLOT_SQL, display_labels, valid_slot
-from pydantic import BaseModel
+from gateway.routes.email.mailbox_identity import (
+    NEXT_SLOT_SQL,
+    default_labels,
+    display_labels,
+    reserved_label,
+    valid_slot,
+)
+from pydantic import BaseModel, StrictInt
 from sqlalchemy import text
 
 #: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
@@ -78,6 +84,9 @@ class EmailAccountModel(BaseModel):
     #: else one made from the address. Unique among the mailboxes of the
     #: member unless the member chose two equal labels (EM-T8b, D-EM-21).
     display_label: str = ""
+    #: The label the mailbox shows when the member clears its name. The
+    #: rename dialog draws it for a blank name (EM-T8b).
+    default_label: str = ""
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -90,8 +99,9 @@ class AccountUpdateModel(BaseModel):
     sync_enabled: bool | None = None
     #: True closes the guided setup, and false opens it again (EM-T6a).
     onboarding_done: bool | None = None
-    #: The slot of the mailbox chip, 1 to 12 (EM-T8b).
-    color_slot: int | None = None
+    #: The slot of the mailbox chip, 1 to 12 (EM-T8b). Strict, so JSON
+    #: ``true`` or ``"3"`` answers 422 instead of turning into a slot.
+    color_slot: StrictInt | None = None
 
 
 def _iso(value: Any) -> str | None:
@@ -164,7 +174,7 @@ async def _unread_counts(
     return {str(r.account_id): int(r.unread) for r in rows}
 
 
-async def _display_labels(db: Any, owner: str) -> dict[str, str]:
+async def _display_labels(db: Any, owner: str) -> tuple[dict[str, str], dict[str, str]]:
     """The display label of each mailbox of ``owner``, in one read.
 
     A default label depends on the other mailboxes of the member, so a route
@@ -174,7 +184,8 @@ async def _display_labels(db: Any, owner: str) -> dict[str, str]:
         "SELECT id, email_address, label FROM email_accounts "
         "WHERE user_id = :uid"
     ), {"uid": owner})).fetchall()
-    return display_labels((str(r.id), r.email_address, r.label) for r in rows)
+    triples = [(str(r.id), r.email_address, r.label) for r in rows]
+    return display_labels(triples), default_labels(triples)
 
 
 @router.get("/accounts", response_model=list[EmailAccountModel])
@@ -202,8 +213,8 @@ async def list_accounts(
         )
         rows = result.fetchall()
         unread_by_account = await _unread_counts(db, owner) if rows else {}
-        labels = display_labels(
-            (str(r.id), r.email_address, r.label) for r in rows)
+        triples = [(str(r.id), r.email_address, r.label) for r in rows]
+        labels, defaults = display_labels(triples), default_labels(triples)
         accounts: list[EmailAccountModel] = []
         for row in rows:
             unread = unread_by_account.get(str(row.id), 0)
@@ -226,6 +237,7 @@ async def list_accounts(
                 onboarding_done=row.onboarding_done_at is not None,
                 color_slot=row.color_slot,
                 display_label=labels.get(str(row.id), row.email_address),
+                default_label=defaults.get(str(row.id), row.email_address),
             ))
         return accounts
 
@@ -369,7 +381,7 @@ async def create_account(
         )
         created = is_default_row.one()
         created_default = bool(created.is_default)
-        labels = await _display_labels(db, user.email)
+        labels, defaults = await _display_labels(db, user.email)
 
     # Start background sync for this account. It runs AFTER the tenant block,
     # so the row is committed and the interval read of the scheduler sees it.
@@ -394,6 +406,7 @@ async def create_account(
         is_default=created_default,
         color_slot=created.color_slot,
         display_label=labels.get(account_id, req.email_address),
+        default_label=defaults.get(account_id, req.email_address),
     )
 
 
@@ -442,7 +455,7 @@ async def set_default_account(
 
         unread = (await _unread_counts(db, owner, account_id)).get(
             str(row.id), 0)
-        labels = await _display_labels(db, owner)
+        labels, defaults = await _display_labels(db, owner)
         return EmailAccountModel(
             id=str(row.id),
             provider=row.provider,
@@ -461,6 +474,7 @@ async def set_default_account(
             onboarding_done=row.onboarding_done_at is not None,
             color_slot=row.color_slot,
             display_label=labels.get(str(row.id), row.email_address),
+            default_label=defaults.get(str(row.id), row.email_address),
         )
 
 
@@ -707,6 +721,14 @@ async def update_account(
             status_code=400,
             detail=f"A mailbox name has at most {MAX_LABEL_LEN} characters.",
         )
+    if updates.label is not None and reserved_label(updates.label):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Outlook, Gmail and Email are kept for the default name. "
+                "Choose another name, or leave it blank."
+            ),
+        )
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
         set_clauses = []
@@ -746,7 +768,7 @@ async def update_account(
         row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
-        labels = await _display_labels(db, owner)
+        labels, defaults = await _display_labels(db, owner)
 
     model = EmailAccountModel(
         id=str(row.id),
@@ -763,6 +785,7 @@ async def update_account(
         onboarding_done=row.onboarding_done_at is not None,
         color_slot=row.color_slot,
         display_label=labels.get(str(row.id), row.email_address),
+        default_label=defaults.get(str(row.id), row.email_address),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels
     # a sync in flight, so a rename, a colour or the guided setup does not

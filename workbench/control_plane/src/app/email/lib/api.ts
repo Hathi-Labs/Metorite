@@ -66,6 +66,8 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     // EM-T8b. The chip draws these, never `avatar_color` (a hex value).
     displayLabel: typeof raw.display_label === "string" && raw.display_label
       ? raw.display_label : undefined,
+    defaultLabel: typeof raw.default_label === "string" && raw.default_label
+      ? raw.default_label : undefined,
     colorSlot: optionalSlot(raw.color_slot),
     unreadCount: Number(raw.unread_count ?? 0),
     syncEnabled: Boolean(raw.sync_enabled ?? true),

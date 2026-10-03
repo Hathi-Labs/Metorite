@@ -62,6 +62,8 @@ export interface EmailAccount {
    * and the UI then draws the address.
    */
   displayLabel?: string;
+  /** The label the mailbox shows when the member clears its name (EM-T8b). */
+  defaultLabel?: string;
   /**
    * The slot of the categorical ramp of the mailbox chip, 1 to 12 (EM-T8b,
    * D-EM-21). Null or absent: the chip hashes the mailbox id.

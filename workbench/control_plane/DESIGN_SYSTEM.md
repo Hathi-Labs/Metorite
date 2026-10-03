@@ -106,6 +106,12 @@ modulus at 8 (`HASH_SLOTS`), so slots 9–12 exist for an explicit pick — a
 space's marker in Space Settings — and nothing already auto-coloured repaints.
 Widening that modulus silently recolours every @context and tag in the product.
 
+A **stored** slot is the other way to reach slots 9–12. The colour of a mailbox
+(WS-17 EM-T8b, migration 227) is a column that the gateway writes once, at the
+connect, so the ninth mailbox of a member can take slot 9. A stored slot never
+repaints, because no modulus computes it again. Pick a slot with
+`src/components/ui/SlotPicker.tsx`, the one colour picker of the product.
+
 The class strings live in **`src/lib/categorical.ts`**, next to
 `statusAccent.ts` and deliberately separate from it: a *status* resolves to a
 semantic tone because its hue is information; a *category* resolves to a ramp

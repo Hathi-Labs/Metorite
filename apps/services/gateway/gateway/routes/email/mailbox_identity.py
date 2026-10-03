@@ -36,12 +36,28 @@ CONSUMER_DOMAINS = frozenset({
 PROVIDER_LABELS = frozenset({"outlook", "gmail", "email"})
 
 
-def chosen_label(label: str | None) -> str | None:
-    """The label the member chose, or ``None`` when the member chose none."""
+def chosen_label(label: str | None, address: str | None = None) -> str | None:
+    """The label the member chose, or ``None`` when the member chose none.
+
+    A stored label equal to the address of the mailbox is no choice either:
+    the IMAP form on Integrations writes the address when the name is blank
+    (EM-T8b review).
+    """
     text = (label or "").strip()
     if not text or text.lower() in PROVIDER_LABELS:
         return None
+    if address and text.lower() == address.strip().lower():
+        return None
     return text
+
+
+def reserved_label(label: str) -> bool:
+    """True for a name that the gateway keeps for the default label.
+
+    A member who names a mailbox "Outlook" would see the default label
+    instead, so the PATCH refuses the name with a reason (EM-T8b review).
+    """
+    return label.strip().lower() in PROVIDER_LABELS
 
 
 def _title(word: str) -> str:
@@ -80,7 +96,7 @@ def display_labels(mailboxes: Iterable[tuple[str, str, str | None]]) -> dict[str
     Two labels that the member chose can be the same. That is a choice of
     the member, and the address still shows beside each chip.
     """
-    rows = [(str(i), a or "", chosen_label(lbl)) for i, a, lbl in mailboxes]
+    rows = [(str(i), a or "", chosen_label(lbl, a)) for i, a, lbl in mailboxes]
     out = {i: chosen for i, _, chosen in rows if chosen is not None}
     chosen_keys = {v.lower() for v in out.values()}
     first = {i: _domain_label(a) for i, a, chosen in rows if chosen is None}
@@ -101,6 +117,21 @@ def display_labels(mailboxes: Iterable[tuple[str, str, str | None]]) -> dict[str
         key = v.lower()
         out[i] = addresses[i] if clash2[key] > 1 or taken[key] else v
     return {i: out[i] for i, _, _ in rows}
+
+
+def default_labels(mailboxes: Iterable[tuple[str, str, str | None]]) -> dict[str, str]:
+    """The label each mailbox shows when the member clears its name.
+
+    For each mailbox, :func:`display_labels` runs with the chosen label of
+    THAT mailbox removed and the others kept. The rename dialog shows it as
+    the placeholder and the preview of a blank name, so the UI never derives
+    a label of its own (EM-T8b review).
+    """
+    rows = [(str(i), a or "", lbl) for i, a, lbl in mailboxes]
+    return {
+        i: display_labels((j, a, None if j == i else lbl) for j, a, lbl in rows)[i]
+        for i, _, _ in rows
+    }
 
 
 def lowest_free_slot(used: Iterable[int | None]) -> int:

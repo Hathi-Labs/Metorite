@@ -46,6 +46,7 @@ from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.routes.email.mailbox_identity import (
     chosen_label,
+    default_labels,
     display_labels,
     lowest_free_slot,
     valid_slot,
@@ -142,6 +143,17 @@ def test_a_local_part_that_repeats_a_label_falls_back_to_the_address() -> None:
 def test_two_chosen_labels_can_be_the_same() -> None:
     got = display_labels([("a", "a@x.org", "Work"), ("b", "b@y.org", "Work")])
     assert got == {"a": "Work", "b": "Work"}
+
+
+def test_the_default_label_is_the_label_with_no_choice_of_its_own() -> None:
+    rows = [
+        ("a", "vj@fracktal.in", "Fracktal"),
+        ("b", "sales@fracktal.in", None),
+        ("c", "vj@outlook.com", "Home"),
+    ]
+    # Cleared, A would clash with the default of B, so both take local parts.
+    # C keeps "Personal". The chosen labels of the OTHER mailboxes stay.
+    assert default_labels(rows) == {"a": "Vj", "b": "Sales", "c": "Personal"}
 
 
 def test_one_mailbox_gets_its_domain_label() -> None:
@@ -263,9 +275,16 @@ def upgraded():
         with eng.begin() as conn:
             _exec_file(conn, str(mig))
         second = (_shape(eng), _slots(eng))
+        # The member picks colour 7 for one mailbox. A third run must keep it.
+        with eng.begin() as conn:
+            conn.execute(text(
+                "UPDATE email_accounts SET color_slot = 7 "
+                "WHERE email_address = 'a-second@t8b.test'"))
+            _exec_file(conn, str(mig))
+        third = _slots(eng)
 
         yield SimpleNamespace(engine=eng, before=before, first=first,
-                              second=second)
+                              second=second, third=third)
     finally:
         eng.dispose()
         maint = create_engine(admin_url, isolation_level="AUTOCOMMIT")
@@ -309,6 +328,9 @@ class TestTheMigrationOnARealDatabase:
     def test_a_second_run_changes_nothing(self, upgraded) -> None:
         assert upgraded.second == upgraded.first
 
+    def test_a_rerun_keeps_a_slot_that_the_member_chose(self, upgraded) -> None:
+        assert upgraded.third == {**upgraded.first[1], "a-second@t8b.test": 7}
+
     def test_the_check_refuses_a_slot_outside_the_ramp(self, upgraded) -> None:
         from sqlalchemy.exc import IntegrityError
 
@@ -317,6 +339,16 @@ class TestTheMigrationOnARealDatabase:
                 c.execute(text(
                     "UPDATE email_accounts SET color_slot = :s "
                     "WHERE email_address = 'lee@t8b.test'"), {"s": bad})
+
+
+@pytest.mark.parametrize(("stored", "address", "want"), [
+    ("box@x.test", "box@x.test", None),
+    ("BOX@x.test ", "box@x.test", None),
+    ("Work", "box@x.test", "Work"),
+])
+def test_a_label_equal_to_the_address_is_no_choice(stored, address, want) -> None:
+    assert chosen_label(stored, address) == want
+    assert display_labels([("a", address, stored)])["a"] == (want or "X")
 
 
 # ── R8: the account routes on a real database ──────────────────────────────
@@ -361,10 +393,10 @@ def restarts(monkeypatch) -> list[str]:
     seen: list[str] = []
 
     async def _refresh(account_id, organization_id=None):
-        seen.append(account_id)
+        seen.append(("refresh", account_id))
 
     async def _remove(account_id):
-        seen.append(account_id)
+        seen.append(("remove", account_id))
 
     monkeypatch.setattr(sched, "refresh_account_sync", _refresh)
     monkeypatch.setattr(sched, "remove_account_sync", _remove)
@@ -431,6 +463,7 @@ class TestTheIdentityOnARealDatabase:
                     user=me)
                 assert (done.display_label, done.color_slot, done.label) == (
                     "Fracktal", 7, "Fracktal")
+                assert done.default_label == "Vj"
                 assert _slot_of(p.admin_engine, work) == (7, "Fracktal")
                 # The default of the other Fracktal mailbox steps aside.
                 listed = {a.id: a.display_label for a in await accounts.list_accounts(user=me)}
@@ -450,6 +483,11 @@ class TestTheIdentityOnARealDatabase:
                     await accounts.update_account(
                         work, accounts.AccountUpdateModel(label="x" * 41), user=me)
                 assert exc.value.status_code == 400
+                for reserved in ("Outlook", " gmail ", "EMAIL"):
+                    with pytest.raises(HTTPException) as exc:
+                        await accounts.update_account(
+                            work, accounts.AccountUpdateModel(label=reserved), user=me)
+                    assert exc.value.status_code == 400
 
                 with pytest.raises(HTTPException) as exc:
                     await accounts.update_account(
@@ -460,6 +498,24 @@ class TestTheIdentityOnARealDatabase:
                 made = await accounts.set_default_account(home, user=me)
                 assert (made.display_label, made.color_slot) == ("Personal", None)
             assert restarts == [], "a rename or a colour restarted the sync loop"
+
+            # The sync toggle still stops and starts the loop.
+            async with tenant_engine_scope(app_dsn):
+                await accounts.update_account(
+                    work, accounts.AccountUpdateModel(sync_enabled=False), user=me)
+                assert restarts == [("remove", work)]
+                await accounts.update_account(
+                    work, accounts.AccountUpdateModel(sync_enabled=True), user=me)
+                assert restarts == [("remove", work), ("refresh", work)]
         finally:
             release_tenant(token)
             _purge(p.admin_engine, owner)
+
+
+def test_a_slot_must_be_a_real_number() -> None:
+    from pydantic import ValidationError
+
+    for bad in (True, "3"):
+        with pytest.raises(ValidationError):
+            accounts.AccountUpdateModel(color_slot=bad)
+    assert accounts.AccountUpdateModel(color_slot=3).color_slot == 3

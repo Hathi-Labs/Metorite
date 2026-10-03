@@ -18,6 +18,7 @@ import { useState } from "react";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import SlotPicker from "@/components/ui/SlotPicker";
 import { CATEGORICAL_SLOTS, accentForSlot } from "@/lib/categorical";
 import type { EmailAccount } from "../lib/types";
 import { MailboxChip, mailboxAccent } from "./MailboxChip";
@@ -33,10 +34,20 @@ export function slotToStored(index: number): number {
 }
 
 export interface MailboxEdit {
-  /** The name the member typed. Blank means "use the default label". */
-  label: string;
+  /** The name the member typed. Blank means "use the default label".
+   *  Absent when the member did not touch the field, so a save of the
+   *  colour alone never rewrites the name. */
+  label?: string;
   /** The stored slot, 1 to 12. */
   colorSlot: number;
+}
+
+/** The text the name field starts with: the label the member chose, and
+ *  blank for a mailbox with no chosen label. The gateway trims a chosen label
+ *  for display, so the comparison trims too. */
+export function seedLabel(account: Pick<EmailAccount, "label" | "displayLabel">): string {
+  const stored = (account.label || "").trim();
+  return stored && stored === (account.displayLabel || "").trim() ? stored : "";
 }
 
 interface MailboxEditProps {
@@ -61,9 +72,8 @@ function MailboxEditForm({
 }: MailboxEditProps & { account: EmailAccount }) {
   // The field holds the label the member chose. A stored provider name
   // ("Outlook") is not a choice, so the field starts blank for it.
-  const [label, setLabel] = useState(() =>
-    account.label && account.label === account.displayLabel ? account.label : "",
-  );
+  const [label, setLabel] = useState(() => seedLabel(account));
+  const [labelTouched, setLabelTouched] = useState(false);
   const [slot, setSlot] = useState(() => {
     const stored = storedToSlot(account.colorSlot);
     return stored >= 0 ? stored : drawnSlotIndex(account);
@@ -71,9 +81,11 @@ function MailboxEditForm({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
+  // A blank name previews the default label of the gateway (EM-T8b review).
+  const fallback = account.defaultLabel || account.emailAddress;
   const preview = {
     ...account,
-    displayLabel: label.trim() || account.displayLabel,
+    displayLabel: label.trim() || fallback,
     colorSlot: slotToStored(slot),
   };
 
@@ -83,7 +95,7 @@ function MailboxEditForm({
     setBusy(true);
     setFailure(null);
     const refused = await onSave(account.id, {
-      label: label.trim(),
+      ...(labelTouched ? { label: label.trim() } : {}),
       colorSlot: slotToStored(slot),
     });
     setBusy(false);
@@ -110,8 +122,11 @@ function MailboxEditForm({
             autoFocus
             value={label}
             maxLength={40}
-            placeholder={account.displayLabel || account.emailAddress}
-            onChange={(e) => setLabel(e.target.value)}
+            placeholder={fallback}
+            onChange={(e) => {
+              setLabel(e.target.value);
+              setLabelTouched(true);
+            }}
             aria-label="Mailbox name"
           />
           <p className="text-[11px] text-muted-foreground">
@@ -121,23 +136,7 @@ function MailboxEditForm({
 
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">Colour</p>
-          <div role="radiogroup" aria-label="Mailbox colour" className="flex flex-wrap gap-1.5">
-            {Array.from({ length: CATEGORICAL_SLOTS }, (_, index) => (
-              <button
-                key={index}
-                type="button"
-                role="radio"
-                aria-checked={index === slot}
-                aria-label={`Colour ${index + 1}`}
-                onClick={() => setSlot(index)}
-                className={`flex h-8 w-8 items-center justify-center rounded-md tech-transition ${
-                  index === slot ? "ring-2 ring-primary" : "hover:bg-muted"
-                }`}
-              >
-                <span className={`h-4 w-4 rounded-full ${accentForSlot(index).dot}`} />
-              </button>
-            ))}
-          </div>
+          <SlotPicker value={slot} onChange={setSlot} label="Mailbox colour" />
         </div>
 
         <div className="space-y-1.5">

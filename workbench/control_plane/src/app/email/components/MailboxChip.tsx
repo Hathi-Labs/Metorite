@@ -34,24 +34,13 @@ export function mailboxInitial(account: Pick<EmailAccount, "emailAddress" | "dis
   return (mailboxLabel(account).match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
 }
 
-const AVATAR_SIZE = {
-  sm: "h-5 w-5 text-[9px]",
-  md: "h-7 w-7 text-[10px]",
-} as const;
-
 /** A round avatar: a tinted fill and the initial in the hue of the mailbox.
  *  The caller draws the label next to it, or the title names it. */
-export function MailboxAvatar({
-  account,
-  size = "md",
-}: {
-  account: MailboxIdentity;
-  size?: keyof typeof AVATAR_SIZE;
-}) {
+export function MailboxAvatar({ account }: { account: MailboxIdentity }) {
   const accent = mailboxAccent(account);
   return (
     <span
-      className={`inline-flex flex-shrink-0 items-center justify-center rounded-full border font-semibold ${AVATAR_SIZE[size]} ${accent.chip}`}
+      className={`inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold ${accent.chip}`}
       title={`${mailboxLabel(account)} · ${account.emailAddress}`}
       aria-hidden="true"
     >

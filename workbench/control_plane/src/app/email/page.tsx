@@ -357,7 +357,10 @@ export default function EmailPage() {
   const saveMailboxEdit = useCallback(
     async (id: string, edit: MailboxEdit): Promise<string | null> => {
       try {
-        await updateEmailAccount(id, { label: edit.label, colorSlot: edit.colorSlot });
+        await updateEmailAccount(id, {
+          ...(edit.label !== undefined ? { label: edit.label } : {}),
+          colorSlot: edit.colorSlot,
+        });
       } catch (e) {
         return e instanceof Error && e.message ? e.message : "The mailbox could not be saved.";
       }

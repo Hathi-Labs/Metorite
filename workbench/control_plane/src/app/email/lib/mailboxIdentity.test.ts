@@ -8,11 +8,17 @@
 //   * `email-mailbox-chip-label`: the hue never stands alone. The chip draws
 //     the label and names the address.
 //   * `email-mailbox-no-hex`: the account sidebar and the mobile top bar draw
-//     `MailboxAvatar`, and no email file reads `account.color` or `avatar_color`.
+//     `MailboxAvatar`, and no file under `app/email` reads `account.color`,
+//     `avatar_color` or `#6366f1`. The test walks the whole directory.
 //   * `email-mailbox-slot-convert`: the stored slot is 1-based and the ramp is
 //     0-based, and the dialog converts in one place.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+//   * `email-mailbox-colour-save`: a save of the colour alone sends no label,
+//     so it never rewrites a chosen name. The name field seeds from the trimmed
+//     chosen label.
+//   * `email-slot-picker-shared`: Space settings and the mailbox dialog draw
+//     the one `SlotPicker`.
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -25,7 +31,7 @@ import {
   mailboxInitial,
   mailboxLabel,
 } from "../components/MailboxChip";
-import { slotToStored, storedToSlot } from "../components/MailboxEditDialog";
+import { seedLabel, slotToStored, storedToSlot } from "../components/MailboxEditDialog";
 
 const ROOT = join(__dirname, "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf-8");
@@ -95,17 +101,50 @@ describe("no email surface draws the old hex colour", () => {
   });
 
   it("reads no hex colour of an account anywhere in Email", () => {
-    for (const file of [
-      "components/AccountSidebar.tsx",
-      "page.tsx",
-      "lib/api.ts",
-      "lib/types.ts",
-      "lib/mockData.ts",
-    ]) {
-      const src = codeOnly(read(file));
-      expect(src, file).not.toMatch(/account\.color\b|selectedAccount\.color\b|avatar_color/);
-      expect(src, file).not.toContain("#6366f1");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) return walk(path);
+        return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [path] : [];
+      });
+    const files = walk(ROOT);
+    expect(files.length).toBeGreaterThan(20);
+    for (const path of files) {
+      const rel = relative(ROOT, path);
+      const src = codeOnly(readFileSync(path, "utf-8"));
+      expect(src, rel).not.toMatch(/account\.color\b|selectedAccount\.color\b|avatar_color/);
+      expect(src, rel).not.toContain("#6366f1");
     }
+  });
+});
+
+describe("a save of the colour alone keeps the name (EM-T8b review)", () => {
+  it("seeds the field from the trimmed chosen label, and blank for none", () => {
+    expect(seedLabel({ label: "Work ", displayLabel: "Work" })).toBe("Work");
+    expect(seedLabel({ label: "Outlook", displayLabel: "Fracktal" })).toBe("");
+    expect(seedLabel({ label: "", displayLabel: "Fracktal" })).toBe("");
+  });
+
+  it("sends the label only when the member changed the field", () => {
+    const dialog = codeOnly(read("components/MailboxEditDialog.tsx"));
+    expect(dialog).toContain("...(labelTouched ? { label: label.trim() } : {}),");
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("...(edit.label !== undefined ? { label: edit.label } : {}),");
+  });
+
+  it("previews a blank name with the default label of the gateway", () => {
+    const dialog = codeOnly(read("components/MailboxEditDialog.tsx"));
+    expect(dialog).toContain("const fallback = account.defaultLabel || account.emailAddress;");
+  });
+});
+
+describe("one colour picker for the product", () => {
+  it("is drawn by Space settings and by the mailbox dialog", () => {
+    const space = readFileSync(
+      join(ROOT, "..", "projects", "components", "SpaceSettings.tsx"), "utf-8");
+    expect(space).toContain('<SlotPicker value={slot} onChange={setSlot} label="Icon colour" />');
+    expect(read("components/MailboxEditDialog.tsx")).toContain(
+      '<SlotPicker value={slot} onChange={setSlot} label="Mailbox colour" />');
   });
 });
 
