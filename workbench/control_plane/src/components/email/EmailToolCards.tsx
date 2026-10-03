@@ -268,6 +268,14 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     let alive = true;
     (async () => {
       try {
+        // A read that refused (a thread id in two mailboxes, say) has no
+        // "Thread:" head. Show its text, and fetch nothing: a fetch with no
+        // mailbox would merge the two mailboxes it refused to merge.
+        if (!emailId && !isThreadRead(event.result)) {
+          // The text view of the error state draws the result as it is.
+          if (alive) setState("error");
+          return;
+        }
         let tid = threadId;
         let box = acct;
         let single: Email | null = null;
@@ -392,6 +400,17 @@ export default function EmailToolCards({
     // shown — both subsume the raw list the lookup produced.
     if ((hasThread || hasGroups) && LIST_TOOLS.has(e.name)) continue;
     flushReads();
+    // A result that did not act is never drawn as a done act, whatever card
+    // its tool has: the info, rule and settings cards too (EM-T8e-2 review).
+    const none = noActionOf(e.result);
+    if (none) {
+      items.push(
+        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
+          <NoActionCard event={e} kind={none} />
+        </DismissableCard>,
+      );
+      continue;
+    }
     // Merge ALL list-tool results into ONE interactive card at the position of
     // the first list event; the rest are folded in (not rendered separately).
     if (LIST_TOOLS.has(e.name)) {
@@ -2041,12 +2060,13 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "cancelled";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
   if (/^Not sent\./.test(t)) return "not-sent";
+  if (/^Nothing changed\./.test(t)) return "unchanged";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
   return null;
 }
@@ -2054,6 +2074,7 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
 const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   question: { icon: "CircleHelp", label: "Needs your answer" },
   "not-sent": { icon: "MailX", label: "Not sent" },
+  unchanged: { icon: "CircleSlash", label: "Nothing changed" },
   cancelled: { icon: "X", label: "Cancelled" },
 };
 
@@ -2078,6 +2099,11 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
       </div>
     </div>
   );
+}
+
+/** True when a `read_thread` result read a thread: it starts "Thread:". */
+export function isThreadRead(raw: string | null | undefined): boolean {
+  return /^Thread:/.test((raw || "").trimStart());
 }
 
 /** The first line of a `draft_reply` result: the From mailbox and its id.

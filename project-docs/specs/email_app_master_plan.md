@@ -3758,12 +3758,35 @@ The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
   - The thread card reads the thread in the mailbox of the mail, as `read_thread` now does.
     Fence: `email-chat-thread-card-mailbox`.
 
+**Review round 1 (2026-10-03).** The verifier and the reviewer found no P0, and the binding held.
+They found live answers that still drew a done card. This round fixes them.
+
+- **One lead for each answer that did not act.** The send, bulk and item 3 tools start such an
+  answer with "Not sent.", "Nothing changed.", a question, or "Cancelled". Before, "No connected
+  mailbox has the id …" drew "Email sent". Fence: `email-chat-no-action-lead`. It reads every
+  `return` of those tools, and it checks that `noActionOf` knows each lead.
+- **The card loop checks first.** `noActionOf` runs before the list, thread, info and rule cards,
+  not only in `renderCard`.
+- **A thread read that refused fetches nothing.** With no `email_id` and no "Thread:" head, the
+  thread card shows the text. A fetch with no mailbox would merge the two mailboxes.
+- **The send card shows each bcc address and each attachment.** A mail body can ask the model
+  to add a hidden recipient or a file, so the member must see both before the send.
+- **No mailbox connected.** A send and each item 3 tool change nothing and say so. Fence:
+  `email-chat-no-mailbox`.
+- **`instructions.md`** no longer says that unsubscribe takes the mailbox from the mail.
+
 **Found, and not fixed in this slice.**
 
 - `own_tool_scope` in the `config.json` of the agent holds none of the eight tools of item 3. The
   executor keeps only the tools that it names, so the live chat cannot call them yet.
 - `RuleResultCard` and `SettingsUpdatedCard` read `args.account_id`. The live chat cannot call
   their tools yet (the item above), so this has no live effect.
+- `unsubscribe_sender`, `learn_rule_pattern` and `mark_thread_done` act in the mailbox that the
+  model names. None is live. EM-T8e-1 makes the server refuse a thread or rule of another
+  mailbox.
+- `ManageInboxCard` counts the ids that the model sent, not the `affected` count of the answer.
+- Three sentences of the EM-T8e narrowing are too long for STE. All three EM-T8e branches share
+  that text, so the last of them to merge fixes it.
 
 **Scope.** `apps/agents/agent-email-assistant/agents.py`, `instructions.md` and tests. No gateway
 file. No UI file.

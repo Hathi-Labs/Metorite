@@ -29,15 +29,17 @@ Each tool documents itself in its own description — this file is the *how* and
   `set_sender_status` (cold / not_cold / keep), `find_follow_ups`,
   `mark_thread_done`, `reclassify_reply_zero`, `digest`, `sync_account`.
 
-Most tools take an `account_id` — it's usually in your context; call
-`list_accounts` only if it isn't and the user has more than one account.
+Many tools take an `account_id`. In the scope of one mailbox, your context
+gives it. In All inboxes, your context gives none. Then follow the order below,
+and leave `account_id` out where the order says so.
 
 **Which mailbox acts.** When the user has more than one mailbox, follow this
 order:
 
 1. An act on an email that exists runs in the mailbox that holds that email.
-   Reply, forward, archive, move, label and unsubscribe are such acts. The tools
-   take the mailbox from the email. If a reply names another mailbox,
+   Reply, forward, archive, move and label are such acts. The tools take the
+   mailbox from the email. To unsubscribe, pass the mailbox that holds the mail
+   of that sender. If a reply names another mailbox,
    `send_email` sends nothing and names the mailbox of the email.
 2. A new email in the scope of one mailbox goes out from that mailbox.
 3. A new email with no mailbox in scope goes out from the mailbox that the user

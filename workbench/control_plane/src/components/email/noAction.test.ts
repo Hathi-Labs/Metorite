@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { noActionOf } from "./EmailToolCards";
+import { isThreadRead, noActionOf } from "./EmailToolCards";
 
 const AGENT = join(
   __dirname, "..", "..", "..", "..", "..", "apps", "agents", "agent-email-assistant", "agents.py",
@@ -23,6 +23,10 @@ describe("a result that did not act", () => {
 
   it("is not-sent when the tool refuses a send", () => {
     expect(noActionOf("Not sent. The email m1 is in the mailbox Fracktal · dana@fracktal.in")).toBe("not-sent");
+  });
+
+  it("is unchanged when a tool changed nothing", () => {
+    expect(noActionOf("Nothing changed. No email accounts are connected.")).toBe("unchanged");
   });
 
   it("is cancelled when the member declines", () => {
@@ -42,16 +46,23 @@ describe("the agent speaks the words the card reads", () => {
   const agent = readFileSync(AGENT, "utf-8");
 
   it("starts a refusal, a question and a cancel with a word the card knows", () => {
-    for (const lead of ['"Not sent. ', '"Send from which mailbox? ', '"Which mailbox? ', '"Send cancelled — ', '"Cancelled — ']) {
+    for (const lead of ['"Not sent. ', '"Send from which mailbox? ', '"Which mailbox? ', '"Nothing changed. ', '"Send cancelled — ', '"Cancelled — ']) {
       expect(agent, lead).toContain(lead);
     }
   });
 
   it("draws the no-action card before any other card", () => {
     const cards = readFileSync(join(__dirname, "EmailToolCards.tsx"), "utf-8");
-    const body = cards.slice(cards.indexOf("function renderCard("));
-    expect(body.indexOf("noActionOf(e.result)")).toBeGreaterThan(0);
-    expect(body.indexOf("noActionOf(e.result)")).toBeLessThan(body.indexOf("DRAFT_TOOLS.has(e.name)"));
+    // In the card loop: before the list, thread, info and rule branches.
+    const loop = cards.slice(cards.indexOf("for (const e of all) {"));
+    const at = loop.indexOf("noActionOf(e.result)");
+    expect(at).toBeGreaterThan(0);
+    for (const branch of ["if (LIST_TOOLS.has(e.name)) {", "if (e.name === READ_THREAD_TOOL) {", "if (INFO_TOOLS.has(e.name)) {"]) {
+      expect(at, branch).toBeLessThan(loop.indexOf(branch));
+    }
+    // And in renderCard, for the callers that reach it alone.
+    const render = cards.slice(cards.indexOf("function renderCard("));
+    expect(render.indexOf("noActionOf(e.result)")).toBeLessThan(render.indexOf("DRAFT_TOOLS.has(e.name)"));
   });
 });
 
@@ -63,5 +74,12 @@ describe("the thread card", () => {
     expect(cards).toContain("box = single.accountId || box;");
     expect(cards).toContain("await listThread(box, tid)");
     expect(cards).not.toContain("await listThread(acct, tid)");
+  });
+
+  it("fetches nothing for a read that refused", () => {
+    const cards = readFileSync(join(__dirname, "EmailToolCards.tsx"), "utf-8");
+    expect(cards).toContain("if (!emailId && !isThreadRead(event.result)) {");
+    expect(isThreadRead("Thread: Quote — 2 message(s), oldest first:")).toBe(true);
+    expect(isThreadRead("This thread_id is in 2 mailboxes.")).toBe(false);
   });
 });

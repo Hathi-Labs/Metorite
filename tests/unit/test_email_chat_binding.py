@@ -34,6 +34,12 @@ R7 fences named here:
 * ``email-chat-ui-shapes``: the row is ``id=<id> [<tag>] | …`` and the
   first line of a draft is ``Draft from <from> (mailbox <id>)``, as
   ``EmailToolCards.tsx`` parses them. A question never holds ``id=``.
+* ``email-chat-no-action-lead`` (review round 1): each answer of a send, bulk
+  or item 3 tool that did not act starts with a lead that ``noActionOf`` in
+  ``EmailToolCards.tsx`` knows, so no card says "Email sent" over a refusal.
+  The test reads every ``return`` of those tools, not a fixed list.
+* ``email-chat-no-mailbox`` (review round 1): with no mailbox connected, a
+  send and each tool of item 3 change nothing and say so.
 
 Run::
 
@@ -518,3 +524,97 @@ async def test_a_question_never_holds_an_id_a_card_could_read(gw: Gateway) -> No
     for out in (rule_q, send_q, thread_q):
         assert RULE_ID.search(out) is None, out
         assert ROW_ID.search(out) is None, out
+
+
+# ── email-chat-no-action-lead (review round 1) ───────────────────────────────
+
+import ast as _ast  # noqa: E402
+
+NO_ACTION_LEADS = (
+    "Not sent.", "Send from which mailbox?", "Which mailbox?", "Nothing changed.",
+    "Send cancelled", "Cancelled",
+)
+# Each lead as the TypeScript regexes of ``noActionOf`` spell it.
+TS_LEADS = (
+    r"Not sent\.", r"Send from which mailbox\?", r"Which mailbox\?",
+    r"Nothing changed\.", "Send cancelled", "Cancelled",
+)
+# The leads of an answer that DID act. "{" is an f-string that starts with a
+# value, such as f"{lead} {to} from {sender}".
+ACTING = {
+    "send_email": ("{",),
+    "send_draft": ("Draft sent.",),
+    "manage_inbox": ("{", "Moved ", "Updated labels "),
+}
+HELPERS = ("_new_mail_mailbox", "_one_mailbox", "_refuse_reply_mailbox")
+_CARDS = (
+    Path(__file__).resolve().parents[2] / "workbench" / "control_plane" / "src"
+    / "components" / "email" / "EmailToolCards.tsx"
+)
+
+
+def _lead(node: _ast.AST) -> str | None:
+    if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, _ast.JoinedStr):
+        first = node.values[0]
+        return str(first.value) if isinstance(first, _ast.Constant) else "{"
+    if isinstance(node, _ast.Call) and node.args:
+        return _lead(node.args[0])
+    return None
+
+
+def _returns(name: str) -> list[_ast.AST]:
+    tree = _ast.parse(_AGENT.read_text(encoding="utf-8"))
+    fn = next(
+        n for n in _ast.walk(tree)
+        if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and n.name == name
+    )
+    return [n.value for n in _ast.walk(fn) if isinstance(n, _ast.Return) and n.value is not None]
+
+
+@pytest.mark.parametrize("tool", sorted(ACTING))
+def test_each_answer_that_did_not_act_has_a_known_lead(tool: str) -> None:
+    leads = [lead for v in _returns(tool) if (lead := _lead(v)) is not None]
+    assert leads, f"{tool} has no literal answer"
+    for lead in leads:
+        assert lead.startswith(ACTING[tool]) or lead.startswith(NO_ACTION_LEADS), (
+            f"{tool} answers {lead[:60]!r}, and the card would draw it as done"
+        )
+
+
+@pytest.mark.parametrize("helper", HELPERS)
+def test_each_helper_answer_has_a_known_lead(helper: str) -> None:
+    for v in _returns(helper):
+        text = v.elts[1] if isinstance(v, _ast.Tuple) else v
+        if isinstance(text, _ast.Constant) and text.value == "":
+            continue  # it bound a mailbox, and the tool goes on
+        lead = _lead(text)
+        assert lead and lead.startswith(NO_ACTION_LEADS), (helper, lead)
+
+
+def test_the_card_knows_each_lead() -> None:
+    cards = _CARDS.read_text(encoding="utf-8")
+    body = cards[cards.index("export function noActionOf("):]
+    body = body[: body.index("\n}\n")]
+    for ts in TS_LEADS:
+        assert ts in body, f"noActionOf does not know {ts!r}"
+
+
+# ── email-chat-no-mailbox (review round 1) ───────────────────────────────────
+
+async def test_new_mail_with_no_mailbox_connected_sends_nothing(gw: Gateway) -> None:
+    gw.accounts = []
+    out = await agents.send_email(body="Hi", to=["kim@contoso.test"], subject="S")
+    assert out == "Not sent. No email accounts are connected."
+    assert gw.writes == [] and gw.cards == []
+
+
+@pytest.mark.parametrize(("tool", "kwargs"), RULE_TOOLS, ids=[t for t, _ in RULE_TOOLS])
+async def test_no_mailbox_connected_changes_nothing(
+    gw: Gateway, tool: str, kwargs: dict[str, Any],
+) -> None:
+    gw.accounts = []
+    out = await getattr(agents, tool)(**kwargs)
+    assert out == "Nothing changed. No email accounts are connected."
+    assert gw.writes == [] and gw.cards == []

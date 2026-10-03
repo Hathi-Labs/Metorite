@@ -809,7 +809,7 @@ async def manage_inbox(
     """
     if action == "move":
         if not folder:
-            return "Provide a `folder` to move messages to."
+            return "Nothing changed. Provide a `folder` to move messages to."
         results = await asyncio.gather(
             *(_patch(f"/email/messages/{mid}", {"folder": folder})
               for mid in message_ids),
@@ -821,7 +821,7 @@ async def manage_inbox(
         return f"Moved {n} message(s) to '{folder}'{note}."
     if action == "label":
         if not add_labels and not remove_labels:
-            return "Provide add_labels and/or remove_labels for action='label'."
+            return "Nothing changed. Provide add_labels and/or remove_labels for action='label'."
         patch: dict[str, Any] = {}
         if add_labels:
             patch["add_labels"] = add_labels
@@ -1606,7 +1606,7 @@ async def send_email(
         account_id = own or account_id
         to, subject = _reply_fill(orig, to, subject)
     if not to:
-        return "No recipient — pass `to`, or `reply_to_email_id` to reply."
+        return "Not sent. No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
     if not account_id:
         # New mail that names no mailbox (§11.3 rule 3).
@@ -1616,8 +1616,8 @@ async def send_email(
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
-            f"No connected mailbox has the id {account_id}. Call list_accounts "
-            "and ask the user which mailbox to send from."
+            f"Not sent. No connected mailbox has the id {account_id}. Call "
+            "list_accounts and ask the user which mailbox to send from."
         )
 
     payload: dict[str, Any] = {
@@ -1641,12 +1641,18 @@ async def send_email(
     # "Send cancelled" instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     _cc_note = f", cc {', '.join(cc)}" if cc else ""
+    # A mail body can ask the model to add a hidden recipient or a file, so the
+    # card shows each bcc address and each attachment (EM-T8e-2 review).
+    _bcc_note = f", bcc {', '.join(bcc)}" if bcc else ""
+    _files_note = (
+        " · Attachments: " + ", ".join(r.get("path", "") for r in refs) if refs else ""
+    )
     verb = "reply" if reply_to_email_id else "email"
     if not await request_confirmation(
         title=f"Send this {verb}?",
         detail=(
-            f"From {sender} · To {', '.join(to)}{_cc_note} · "
-            f"Subject: {subject or '(none)'}"
+            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note} · "
+            f"Subject: {subject or '(none)'}{_files_note}"
         ),
         context=body,
     ):
@@ -1688,8 +1694,8 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
-            f"No connected mailbox has the id {account_id}. Call list_accounts "
-            "and use the mailbox that holds the draft."
+            f"Not sent. No connected mailbox has the id {account_id}. Call "
+            "list_accounts and use the mailbox that holds the draft."
         )
     if not await request_confirmation(
         title="Send this draft?",
