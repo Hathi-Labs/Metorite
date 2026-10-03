@@ -4075,8 +4075,8 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 npx tsc --noEmit && npx vitest run src/app/email src/app/notes src/components src/lib/theme
 ```
 
-Then look at the header, the dialog, the sidebar and the chat picker in light mode, at compact
-density and under a changed accent (CLAUDE.md §4).
+Then look at the header, the dialog, the sidebar and the chat picker. Look in light mode, at
+compact density and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
