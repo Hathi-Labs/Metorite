@@ -3,9 +3,10 @@
 <!-- ste-tier: strict -->
 
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
-(the no-Copilot fence) are built (2026-10-03). WS-43t1 (the structured
-history path) is built and dark (2026-10-03, PR #595). Every other slice is
-spec only.** Owner decisions, 2026-10-03.
+(the no-Copilot fence) are built (2026-10-03). WS-43c (the sandbox broker,
+PR #591) and WS-43t1 (the structured history path, PR #595) are built and
+dark (2026-10-03). Every other slice is spec only.** Owner decisions,
+2026-10-03.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84** and **D86**.
 
@@ -1369,7 +1370,7 @@ WS-43c adds that test to the same file.
 - A Python package dir that a uid cannot read still imports, as an empty
   namespace package. So the Docker test checks `__file__` for each module.
 
-### WS-43c — The sandbox broker and the scope setting 🔲
+### WS-43c — The sandbox broker and the scope setting ✅ BUILT 2026-10-03
 
 **Scope.** `orchestrator/sandbox_broker.py`, the `sandbox_*` settings and
 `maf_coding_scope` in `acb_common/settings.py`, the startup sweep and the
@@ -1399,6 +1400,52 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-10-03 (PR #591). It ships dark.** The broker is
+`orchestrator/sandbox_broker.py`, and the gateway lifespan starts its sweep.
+These facts change or add to the text above:
+
+- WS-43b registers the `sandbox_docker` marker. Its `sandbox-docker.yml` runs
+  the Docker half of WS43-F4 on the coding image, and it fails on any skip.
+  That run proves the bind mount of done-when 3.
+- The broker scripts read `/proc`, so they need no `procps`.
+- The kill sweep kills every PID in any state. A PID counts as gone only when
+  each of its tasks is a zombie or dead. A leader that left by `SYS_exit`
+  cannot hide a live worker thread.
+- The broker covers `/workspace/.git` only when a root `.git` exists. A dir
+  gets an empty dir, and a gitfile gets an empty file. A cover on a missing
+  `.git` would make an empty `.git` on the host, and host git would then find
+  it.
+- The mount source is the run's own state dir, `state/<agent>/<slug of key>`.
+  A tenant key must be the run's own `o:<org>`. The broker accepts a personal
+  or team key too. app-builder may mount its app dir under the Custom Apps
+  root.
+- The broker refuses a source that nests with a live or a listed sandbox dir.
+  A container could otherwise swap a part of the path of another source.
+- The exec lock belongs to the mount source. Two threads of one organization
+  share the `o:<org>` dir, so they share one lock.
+- Each start gets a fresh id in the label `metorite.start`. The broker removes
+  a container by its id or by that label, and never by its name.
+- A cancel at any step of `acquire()` frees the slot and the lease. A
+  cancelled `docker run` kills the CLI, and the broker removes that start.
+- A cancel or an error once a command started kills only the CLI. So a
+  background task runs the kill sweep, and it holds the dir lock until the
+  sweep ends. A survivor restarts the container.
+- The reaper sleeps at least 1 s, so a setting of 0 cannot spin.
+- A dropped container never takes the dir lock from a live one on the same
+  dir. So a new thread on that dir shares the live lock.
+- Outside the `sandbox_docker` marker, `tests/conftest.py` refuses the real
+  Docker binary. So a unit test that runs the gateway lifespan cannot sweep
+  the containers of a dev box.
+- The quota also bounds the count of entries, with
+  `sandbox_workspace_max_files` (default 100000).
+- The broker refuses uid 0, and it refuses gid 0 too.
+- The WS43-F10 clause for a mutable tag is in `test_coding_sandbox_image.py`.
+- `grant_egress()` and `revoke_egress()` are not built. WS-43g builds them on
+  `mount_list()`, the one function that builds the mounts.
+- On the dev box, Docker Desktop refuses a bind mount of a host dir. There,
+  the Docker tests use a named volume in place of each bind mount, and the
+  bind-mount test skips.
 
 ### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Active: Projects track step 1 (D86)**
 
