@@ -19,7 +19,7 @@ import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway import decide_features
-from gateway.routes.email.automation.identity import sender_scope
+from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     CONVERSATION_LABELS_LOWER,
@@ -1397,13 +1397,19 @@ async def _maybe_block_cold(
     """Cold-email gate: for a first-time, non-whitelisted sender, LLM-classify
     and (if cold) label/archive + record. Runs only when no rule matched.
 
-    Mail from any mailbox of the member is never cold (D-EM-27, EM-T8e-1).
-    The payload's ``sender_scope`` says ``self`` for it, because the runner
-    builds the payload with each mailbox of the member."""
+    Mail that the member sent from another of their mailboxes is never cold
+    (D-EM-27, EM-T8e-1). The payload's ``sender_scope`` says ``self`` for it,
+    because the runner builds the payload with each mailbox of the member.
+    That alone is not enough, because an outside sender can forge the From.
+    So the check skips the mail only when a Sent copy in another mailbox of
+    the member proves the send (``identity.proven_own_send``, review round
+    1). A forged From, or a Sent copy that has not synced yet, gets the check
+    as before."""
     sender = (email.get("from") or "").lower()
     if not sender:
         return
-    if (email.get("sender_scope") or "") == "self":
+    if (email.get("sender_scope") or "") == "self" and await proven_own_send(
+            db, account_id, str(message_id)):
         return
     # Already known to the cold-sender table (flagged or whitelisted) → skip.
     seen = (await db.execute(text(

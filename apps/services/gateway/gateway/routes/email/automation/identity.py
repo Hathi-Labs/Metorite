@@ -88,6 +88,26 @@ _MEMBER_MAILBOXES_FROM = (
 #: ``email_address`` is NOT NULL, so ``NOT IN`` never meets a NULL here.
 SELF_ADDRESSES_SQL = f"SELECT LOWER(o.email_address) AS addr {_MEMBER_MAILBOXES_FROM}"
 
+#: The id of each mailbox of the member who owns ``:aid``, ``:aid`` included.
+SELF_MAILBOX_IDS_SQL = f"SELECT o.id {_MEMBER_MAILBOXES_FROM}"
+
+#: A Sent copy proves that the member sent the mail ``:mid`` of the mailbox
+#: ``:aid`` from ANOTHER of their mailboxes (EM-T8e-1 review round 1). The copy
+#: has the same ``internet_message_id`` and sits in the ``sent`` folder of a
+#: mailbox of the member that is not ``:aid``. A forged From has no such copy.
+#: ``idx_email_messages_internet_message_id`` (migration 89) serves the join.
+_PROVEN_OWN_SEND_SQL = f"""
+    SELECT 1
+      FROM email_messages m
+      JOIN email_messages s
+        ON s.internet_message_id = m.internet_message_id
+     WHERE m.id = :mid AND m.account_id = :aid
+       AND COALESCE(m.internet_message_id, '') <> ''
+       AND s.account_id <> m.account_id
+       AND LOWER(COALESCE(s.folder, '')) = 'sent'
+       AND s.account_id IN ({SELF_MAILBOX_IDS_SQL})
+     LIMIT 1"""
+
 #: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, so
 #: the set in SQL and the set in Python cannot disagree.
 _MEMBER_MAILBOXES_SQL = (
@@ -140,6 +160,21 @@ async def resolve_self_addresses(db: Any, account_id: str) -> frozenset[str]:
     """The lower-case address of each mailbox of the member who owns
     ``account_id`` (D-EM-27). Empty when the mailbox row is not visible."""
     return (await resolve_self(db, account_id)).self_addresses
+
+
+async def proven_own_send(db: Any, account_id: str, message_id: str) -> bool:
+    """True when a Sent copy in another mailbox of the member proves that the
+    member sent the mail ``message_id`` of ``account_id``.
+
+    The From header alone is not proof, because an outside sender can forge
+    it. The cold check skips a mail only with this proof (EM-T8e-1 review
+    round 1). Without a Sent copy, for example before the other mailbox
+    syncs, the answer is False and the cold check runs as it did before."""
+    if not account_id or not message_id:
+        return False
+    row = (await db.execute(text(_PROVEN_OWN_SEND_SQL),
+                            {"aid": account_id, "mid": message_id})).fetchone()
+    return row is not None
 
 
 def own_addresses(

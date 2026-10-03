@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import BackgroundTasks, Depends, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
@@ -24,6 +24,7 @@ from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
     _assert_account_owner,
+    _assert_thread_in_mailbox,
     _attachment_summaries,
     _fmt_addr_list,
     _tenant_session,
@@ -218,6 +219,47 @@ def _match_conversation_key(match: dict[str, Any] | None) -> str:
     return key if key in _CONVERSATION_RULE_STATUS else ""
 
 
+#: D-EM-27 (EM-T8e-1 review round 1): does the thread of ``:aid`` have a
+#: participant OUTSIDE the mailboxes of the member? A participant is the sender
+#: of a mail that is not in Sent, and each To and Cc address of each mail. An
+#: empty address counts as outside, so a row we cannot read keeps the status
+#: it had before. ``has_external`` of :class:`ThreadContext` cannot answer
+#: this: it reads senders only, and a colleague is ``internal``, not external.
+_THREAD_OUTSIDE_SQL = f"""
+    SELECT COUNT(*) AS n,
+           COALESCE(BOOL_OR(
+             (LOWER(COALESCE(m.folder, '')) <> 'sent'
+              AND LOWER(COALESCE(m.from_address->>'email', ''))
+                  NOT IN ({SELF_ADDRESSES_SQL}))
+             OR EXISTS (
+               SELECT 1 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(m.to_addresses) = 'array'
+                        THEN m.to_addresses ELSE '[]'::jsonb END
+                   || CASE WHEN jsonb_typeof(m.cc_addresses) = 'array'
+                           THEN m.cc_addresses ELSE '[]'::jsonb END) AS p(addr)
+                WHERE LOWER(COALESCE(p.addr->>'email', ''))
+                      NOT IN ({SELF_ADDRESSES_SQL}))
+           ), false) AS outside
+      FROM email_messages m
+     WHERE m.account_id = :aid AND m.thread_id = :tid"""
+
+#: The reason on the row of a thread that has only the member's mailboxes.
+SELF_ONLY_REASON = "Only your own mailboxes"
+
+
+async def _thread_is_self_only(db: Any, account_id: str, thread_id: str) -> bool:
+    """True when each participant of the thread is a mailbox of the member.
+
+    Mail between two mailboxes of the member is not "awaiting reply"
+    (D-EM-27, edge case 14). Such a thread gets no open Reply Zero status: it
+    is never NEEDS_REPLY and never AWAITING. It is FYI, so the backfill does
+    not ask about it again. A thread with no rows is not self-only."""
+    row = (await db.execute(text(_THREAD_OUTSIDE_SQL),
+                            {"aid": account_id, "tid": thread_id})).fetchone()
+    n = getattr(row, "n", 0) if row is not None else 0
+    return isinstance(n, int) and n > 0 and getattr(row, "outside", True) is False
+
+
 async def project_reply_status_from_matches(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]] | None,
@@ -244,6 +286,12 @@ async def project_reply_status_from_matches(
                           < _CONVERSATION_PRIORITY.index(chosen)):
             chosen, reason = key, (m.get("reason") or "")
     status = _CONVERSATION_RULE_STATUS.get(chosen, "FYI")
+    # D-EM-27: an open status needs a participant outside the member's own
+    # mailboxes. Without one, the thread is FYI, and the FYI label replaces
+    # the open label that the matched rule put on (review round 1).
+    if status in ("NEEDS_REPLY", "AWAITING") and await _thread_is_self_only(
+            db, account_id, thread_id):
+        chosen, status, reason = "FYI", "FYI", SELF_ONLY_REASON
     # preserve_done: this is an AUTOMATED inbound re-projection — never let a
     # trailing FYI/notification silently re-open a thread the user marked DONE
     # (only a genuine NEEDS_REPLY re-opens it). A non-empty reason keeps the row
@@ -994,10 +1042,15 @@ async def _determine_status_of(
     :func:`_llm_determine_thread_status` does, or None when the thread has
     no rows. In ``on`` it raises ``engine.DecisionUnavailable`` with no
     decision. ``move_keys`` reaches ``on`` only (fix round 3).
+
+    A thread whose participants are all mailboxes of the member is FYI, with
+    no model call (D-EM-27, :func:`_thread_is_self_only`).
     """
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import _decide_member
 
+    if await _thread_is_self_only(db, account_id, message_row.thread_id):
+        return "FYI", True
     # Thread-status classification only decides whether a thread needs a
     # reply — the knowledge base is drafting facts, pure noise + token cost
     # in this prompt. Drop it (3.5).
@@ -1472,6 +1525,14 @@ async def recompute_thread_status(
         self_addresses=self_addresses)
     if ctx is None:
         return None
+    if await _thread_is_self_only(db, account_id, thread_id):
+        # D-EM-27: mail between the member's own mailboxes is never open. It
+        # is FYI, with no model call (review round 1).
+        await _upsert_thread_status(
+            db, account_id, thread_id, "FYI", ctx.last_message_id,
+            ctx.last_message_at, SELF_ONLY_REASON,
+            preserve_done=(trigger in ("inbound", "backfill")))
+        return _THREAD_STATUS_MAP["FYI"]
     last_id = ctx.last_message_id
     try:
         status, confident = await _llm_determine_thread_status(
@@ -2095,12 +2156,7 @@ async def resolve_thread(
     mailbox from the model fail closed."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
-        in_mailbox = (await db.execute(text(
-            "SELECT 1 FROM email_messages "
-            "WHERE account_id = :aid AND thread_id = :tid LIMIT 1"
-        ), {"aid": req.account_id, "tid": req.thread_id})).fetchone()
-        if not in_mailbox:
-            raise HTTPException(status_code=404, detail="Thread not found")
+        await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
         keep_label = "Done"
         if req.dismiss:
             # A dead loop the user will never answer: file it as FYI. DONE

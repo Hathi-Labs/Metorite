@@ -9,10 +9,12 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
-from gateway.routes.email.automation.identity import resolve_self_addresses
+from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
 from gateway.routes.email.core import (
     _assert_account_owner,
+    _assert_mail_in_mailbox,
+    _assert_thread_in_mailbox,
     _tenant_session,
     _llm_json,
     _log,
@@ -876,13 +878,20 @@ async def _upsert_rule_pattern(
                    "TO_REPLY", "ACTIONED"}:
             return False
     # (2) Never pin an address of the member's own mailboxes (FROM patterns
-    #     only). "Own" is EACH mailbox of the member (D-EM-27, EM-T8e-1), so
-    #     the address of a second mailbox is never pinned in the first.
+    #     only). Two halves (EM-T8e-1 review round 1):
+    #     - THIS mailbox keeps the old substring rule, so its address and its
+    #       domain ("fracktal.in" is in "vj@fracktal.in") are both refused.
+    #     - ANOTHER mailbox of the member (D-EM-27) is refused on an exact
+    #       address only. A substring test there refused "gmail.com" in a work
+    #       mailbox because a second mailbox was vj@gmail.com.
     if ptype == "FROM":
         val_l = value.strip().lower()
-        for own in await resolve_self_addresses(db, account_id):
-            if own and (own in val_l or val_l in own):
-                return False
+        me = await resolve_self(db, account_id)
+        own = me.address.strip().lower()
+        if own and (own in val_l or val_l in own):
+            return False
+        if val_l in me.self_addresses:
+            return False
     # (3) A pattern the user REJECTED must not come straight back. The auto-
     #     learner fires on any sender with three consistent AI matches, which is
     #     exactly the sender the user just rejected a pattern for — so without
@@ -994,12 +1003,19 @@ async def add_rule_guidance(
     req: RuleGuidanceRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Write a correction by hand, without going through a specific email."""
+    """Write a correction by hand, without going through a specific email.
+
+    A ``rule_id`` must be a rule of ``account_id``, or the answer is 404 and
+    nothing is stored (D-EM-19, EM-T8e-1 review round 1)."""
     text_ = (req.guidance or "").strip()
     if not text_:
         raise HTTPException(status_code=400, detail="Guidance cannot be empty")
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        if req.rule_id:
+            _refuse_foreign_rules(
+                {r["id"]: r for r in await _load_rules(db, req.account_id)},
+                "none", [req.rule_id])
         await _upsert_rule_guidance(
             db, req.account_id, req.rule_id, text_, "USER")
         return {"ok": True}
@@ -1062,6 +1078,24 @@ def _refuse_foreign_rules(
         raise HTTPException(status_code=404, detail="Rule not found")
 
 
+async def _refuse_foreign_pair(
+    db: Any, req: RuleFeedbackRequest, rules_of_mailbox: dict[str, Any],
+) -> None:
+    """404 for a Fix that names anything outside ``req.account_id``.
+
+    Each rule the request names is a rule of the mailbox. ``_upsert_rule_pattern``
+    reads a rule by its id alone, so a rule of another mailbox would otherwise
+    reach its guards. The mail and the thread are of the mailbox too (review
+    round 1): a mail of another mailbox got this mailbox's label, and a thread
+    of another mailbox got a status row of this one."""
+    _refuse_foreign_rules(rules_of_mailbox, req.expected, req.matched_rule_ids)
+    if req.message_id:
+        await _assert_mail_in_mailbox(db, req.account_id, req.message_id)
+    thread_id = (req.thread_id or "").strip()
+    if thread_id:
+        await _assert_thread_in_mailbox(db, req.account_id, thread_id)
+
+
 @router.post("/rules/feedback")
 async def rule_feedback(
     req: RuleFeedbackRequest,
@@ -1089,11 +1123,9 @@ async def rule_feedback(
         # sticks is to set the thread status directly. Cleanup categories
         # (Newsletter/Receipt/…) are sender-stable → learn FROM/SUBJECT patterns.
         meta = {r["id"]: r for r in await _load_rules(db, req.account_id)}
-        # The pair must match (D-EM-19, EM-T8e-1): each rule the request names
-        # is a rule of THIS mailbox, or the answer is 404 and nothing is
-        # written. `_upsert_rule_pattern` reads a rule by its id alone, so a
-        # rule of another mailbox would otherwise reach its guards.
-        _refuse_foreign_rules(meta, req.expected, req.matched_rule_ids)
+        # The pair must match (D-EM-19, EM-T8e-1), or the answer is 404 and
+        # nothing is written.
+        await _refuse_foreign_pair(db, req, meta)
 
         # The Fix dialog passes the message id; derive its thread for a status fix.
         thread_id = (req.thread_id or "").strip()
