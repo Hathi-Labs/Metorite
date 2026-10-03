@@ -1074,7 +1074,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
 | WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true |
-| WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep |
+| WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
@@ -1461,7 +1461,12 @@ Everything below stays. These items are added:
    `install_dependency`.
 4. The run-data dir of §16.3 is mounted at `/workspace/.run/` in that
    thread's container only. The host deletes it at the end of the run.
-5. WS43-F21 and WS43-F22 pass.
+5. The thread's output folder `outputs/<thread hash>/` is mounted at
+   `/workspace/outputs/`. The file tools map `outputs/` to it, and the
+   artifact cards link to it.
+6. For a session of a shared agent, the workspace routes serve only the
+   output folder of that session's thread. The room check of today stays.
+7. WS43-F21 and WS43-F22 pass.
 
 **Scope.**
 
@@ -2177,8 +2182,11 @@ It closes H-226.
 2. A run that holds no `run_command` reads the ban of today, and never the
    new rules.
 3. The rules name the run-data dir `/workspace/.run/` for data files, and
-   `outputs/` for the result.
-4. The pin in `test_projects_agent.py` changes in the same PR, and a test
+   `/workspace/outputs/` (the thread's own folder) for the result.
+4. A result of a run shows as an artifact card. The card links to
+   `outputs/<thread hash>/<name>`, and it opens for the member of that
+   thread.
+5. The pin in `test_projects_agent.py` changes in the same PR, and a test
    checks both cases.
 
 **Verification.**
@@ -2307,7 +2315,7 @@ An agent refuses each of these by name:
 | WS43-Q3 | Do egress logs need a tenant-scoped table and a UI? | No. Log lines only |
 | WS43-Q4 | Which tier does `code_task` use? | `tier-balanced`, unless WS-43a shows another tier is better |
 | WS43-Q5 | Does self-mutation later move its loop to the host, with its commands in the broker? Then the mutation container needs no key and no network | No. The loop stays in the container (owner direction, §15.3) |
-| WS43-Q6 | Should `outputs/` of a shared agent be per member? Today a file there is visible inside the organization, as an S8 document is | No. The rule of today stays, and a script writes only the result that the member asked for (§16.3) |
+| WS43-Q6 | Should `outputs/` of a shared agent be per member? | **Resolved 2026-10-03 by the supervisor, on D12 grounds.** A sandbox run's outputs are thread-scoped (§16.3). H-227 does the same for the S8 documents of today |
 
 ## 14. Side findings
 
@@ -2842,9 +2850,9 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
    rest. They return only what the asking member can see.
 2. It writes the data to a file in the run-data dir, with the file tools.
 3. It writes a script, and runs it with `run_command`.
-4. The script writes its result to `outputs/`. The mirror keeps it, and the
-   chat shows it as an artifact card, as S8 does
-   (`projects_ai_chat.md` §14).
+4. The script writes its result to `/workspace/outputs/`, which is the
+   thread's own output folder (below). The mirror keeps it, and the chat shows
+   it as an artifact card, as S8 does (`projects_ai_chat.md` §14).
 
 **Data hygiene.**
 
@@ -2862,15 +2870,41 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
 - **Retention: none past the run.** At the end of each run, the host deletes
   the dir, inside `broker.host_files()` and with the safe opener. The startup
   sweep of §7.1 rule 13 deletes any run-data dir that a crash left.
-- **What may go to `outputs/`.** Only the result that the member asked for,
-  such as a chart or a file. A file in `outputs/` follows the visibility of
-  the tenant dir today, as a document of S8 does (WS43-Q6).
+- **What may go to the output folder.** Only the result that the member
+  asked for, such as a chart or a file.
 - **The HR-only fields stay gated.** A script reads only the files that the
   agent wrote from tool results. So it cannot see more than the tools give.
 - **Nothing leaves the platform.** The container has `--network none`.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
-mount, at `/workspace/.run/`. No other target gets it.
+mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
+at `/workspace/outputs/`. No other target gets them.
+
+**Outputs are thread-scoped (the supervisor's decision on WS43-Q6, D12).**
+
+- **The gap it closes.** Every session of projects-assistant in one
+  organization mounts the same tenant dir, `state/<agent>/<slug of o:<org>>/`.
+  The session workspace routes serve that whole dir. Take a chart of one
+  member's visible tasks, or of a private project. In the shared `outputs/`,
+  any other member of the organization could read it from a session.
+- **The folder.** A sandbox run writes its outputs to the thread's own
+  folder, `outputs/<thread hash>/` in the tenant dir. The thread hash is the
+  `instance_slug` form of the thread id. The mirror keeps the folder under the
+  same path.
+- **The container.** The broker mounts `outputs/<thread hash>/` at
+  `/workspace/outputs/`, over the shared `outputs/`. So a container sees only
+  its own thread's outputs, and never the parent folder. Every container on a
+  projects-assistant tenant dir gets that cover, so no container can reach
+  the folder of another thread. This is the one nested mount that the broker
+  allows within its own workspace. It creates the folder on the host with the
+  safe opener just before the start.
+- **The host file tools.** For this target, `TenantFileStore` maps
+  `outputs/` to `outputs/<thread hash>/`, and it refuses the folder of
+  another thread.
+- **The session routes.** For a session of a shared agent, the workspace
+  routes list and serve only `outputs/<thread hash>/` of that session's
+  thread, under `outputs/`. They keep the room check of today.
+- **The artifact cards** link to `outputs/<thread hash>/<name>`.
 
 **The instructions (WS-43u).** The rule goes into an addendum section keyed
 on `run_command` (`acb_skills/addendum.py`). So a run without the tools never
@@ -2882,7 +2916,8 @@ reads it. It says:
    `/workspace/.run/`, and run the script on it.
 3. Keep the HR-only fields gated, as today.
 4. Never send data off the platform. The sandbox has no network.
-5. Put the result in `outputs/`, so it shows as an artifact card.
+5. Put the result in `/workspace/outputs/`, the thread's own folder, so it
+   shows as an artifact card.
 
 `instructions.md` keeps its ban for a run that holds no `run_command`, and
 the pin in `tests/unit/test_projects_agent.py` (~1873) changes in the same PR.
@@ -2903,7 +2938,9 @@ acceptance after WS-43w is done.
   broker mounts that dir, and the container key stays (organization, agent,
   thread).
 - **Its data is the member's own.** So the cross-member risk of §16.3 is
-  smaller. Run data still goes to the run-data dir.
+  smaller. Run data still goes to the run-data dir. Its outputs already sit in
+  the member's own dir, so the thread-scoped folder of §16.3 is for a shared
+  agent.
 - **It keeps host shell tools today.** D85 left personal agents out (H-225).
   The Email track must take `code_task`, `run_script` and
   `install_dependency` from it when the broker covers it.
