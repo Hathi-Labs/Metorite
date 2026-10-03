@@ -526,7 +526,12 @@ def mount_list(
     (WS-43g). So no recreate can miss the cover on ``/workspace/.git``, or
     the cover of a thread's output folder.
 
-    - The run's working dir at ``/workspace``, read-write.
+    - The run's working dir at ``/workspace``, read-write. For the
+      ``projects`` target it is READ-ONLY (review P1, fix round 1): every
+      thread of one organization mounts the same dir, so a thread that could
+      write it could plant code that another member's thread runs beside that
+      member's run data. Its only writable paths are its own output folder
+      and its run data, the two nested mounts below.
     - A ``.git`` at the root of the working dir is covered by an empty
       read-only bind mount, so the container can neither read nor write it.
     - A ``.git`` deeper in the working dir is refused, and so is a root
@@ -544,7 +549,8 @@ def mount_list(
         raise SandboxRefused(
             "The working dir holds a .git below its root. Only a root .git is allowed."
         )
-    mounts = [Mount(ws, WORKSPACE_TARGET, readonly=False)]
+    shared = binding.target == PROJECTS_TARGET
+    mounts = [Mount(ws, WORKSPACE_TARGET, readonly=shared)]
     git_cover = _git_cover_mount(ws, cover)
     if git_cover is not None:
         mounts.append(git_cover)
@@ -652,6 +658,11 @@ def build_run_argv(
         # user site, and a script here would import it beside this run's own
         # data. This track has no network and so no install: no user site.
         env["PYTHONNOUSERSITE"] = "1"
+        # No implicit import from the cwd (`/workspace`) or a script's dir:
+        # `python3 -c` and `python3 x.py` put only the system paths on
+        # sys.path, so a module that another member's run wrote in a shared
+        # folder is never imported by name (review P1, fix round 1).
+        env["PYTHONSAFEPATH"] = "1"
     for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
     return [*argv, image, *KEEPALIVE]

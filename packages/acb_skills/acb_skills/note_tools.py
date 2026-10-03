@@ -79,6 +79,18 @@ async def save_note(path: str, fact: str) -> str:
     target = resolve_in_workspace(root, clean)
     if target is None:
         return f"Refused: path '{path}' escapes the workspace."
+    # WS-43d (review P1, fix round 1): never another chat's output folder,
+    # another member's skill folder, or the skill author marker.
+    from acb_skills.agent_paths import refused_write  # noqa: PLC0415
+    from acb_skills.write_artifact import artifact_context  # noqa: PLC0415
+
+    _ctx = artifact_context()
+    _why = refused_write(
+        Path(root).resolve(), target.relative_to(Path(root).resolve()).as_posix(),
+        member=_ctx.get("member"), thread_id=_ctx.get("session_id"),
+    )
+    if _why:
+        return f"Refused: path '{path}': {_why}."
     target.parent.mkdir(parents=True, exist_ok=True)
 
     # Build the dated bullet.

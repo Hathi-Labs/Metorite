@@ -31,6 +31,14 @@ Mutations this suite catches (R7), each run red once by hand:
 * the route rule reads the ``.cc-instance`` marker again: the route test;
 * the ``PYTHONNOUSERSITE`` line or the read-only marker mount is dropped: the
   mount test.
+
+Fix round 1 of PR #603 (each run red once by hand on 2026-10-03):
+
+* the ``projects`` workspace mount is writable again, or ``PYTHONSAFEPATH``
+  is dropped: the mount test and the Docker shared-code test;
+* ``refused_write`` ignores another thread or another member's skill: the
+  host-tools test and the route skill test;
+* the PUT route skips ``_apply_write_rules``: the route skill test.
 """
 from __future__ import annotations
 
@@ -82,7 +90,9 @@ async def test_a_projects_start_mounts_the_thread_folder_and_the_run_data(sandbo
         await sandbox.broker.acquire()
         b = sb.read_run_binding()
     mounts = mounts_of(sandbox.docker.runs()[0])
-    assert f"type=bind,source={b.workspace},target=/workspace" in mounts
+    # Review P1 (fix round 1): every thread of one org mounts this dir, so
+    # it is read-only. Only the two nested mounts below are writable.
+    assert f"type=bind,source={b.workspace},target=/workspace,readonly" in mounts
     assert f"type=bind,source={b.workspace / b.outputs_rel},target=/workspace/outputs" in mounts
     assert f"type=bind,source={b.run_data},target=/workspace/.run" in mounts
     marker = b.workspace / ".cc-instance"
@@ -90,6 +100,7 @@ async def test_a_projects_start_mounts_the_thread_folder_and_the_run_data(sandbo
     assert marker.read_text(encoding="utf-8") == b.instance
     argv = sandbox.docker.runs()[0]
     assert "PYTHONNOUSERSITE=1" in argv, "another thread could plant a package in the user site"
+    assert "PYTHONSAFEPATH=1" in argv, "python3 -c would import a module from /workspace"
     assert (b.workspace / b.outputs_rel).is_dir() and b.run_data.is_dir()
     assert (b.workspace / ".run").is_dir(), "the host made no mountpoint, so Docker would, as root"
     assert not any(f"source={b.workspace / 'outputs'}," in m for m in mounts), (
@@ -104,6 +115,9 @@ async def test_another_target_gets_neither_nested_mount(sandbox, monkeypatch) ->
     mounts = mounts_of(sandbox.docker.runs()[0])
     assert not any("/workspace/outputs" in m or "/workspace/.run" in m for m in mounts)
     assert "PYTHONNOUSERSITE=1" not in sandbox.docker.runs()[0]
+    assert "PYTHONSAFEPATH=1" not in sandbox.docker.runs()[0]
+    ws_mount = next(m for m in mounts if m.endswith("target=/workspace") or "target=/workspace," in m)
+    assert not ws_mount.endswith(",readonly"), "the code_task target keeps a writable workspace"
 
 
 async def test_two_threads_mount_only_their_own_folders(sandbox) -> None:  # noqa: F811
@@ -216,7 +230,11 @@ async def test_end_run_with_no_sandbox_is_free(sandbox) -> None:  # noqa: F811
 
 
 async def test_the_run_data_never_reaches_the_blob_store(sandbox, host_trap) -> None:  # noqa: F811
-    """The command writes three files. Only the kept ones are mirrored."""
+    """The command writes two files. Only its output folder is mirrored.
+
+    ``agent-data/`` is read-only in the container now (review P1, fix round
+    1), so the output folder is the one place a command can change.
+    """
     from acb_skills import sandbox_tools as st
 
     thread = new_thread()
@@ -225,18 +243,15 @@ async def test_the_run_data_never_reaches_the_blob_store(sandbox, host_trap) -> 
     async def container_writes(argv: list[str]) -> None:
         (b.run_data / "rows.csv").write_text("member rows", encoding="utf-8")
         (b.workspace / b.outputs_rel / "chart.svg").write_text("<svg/>", encoding="utf-8")
-        skills = b.workspace / "agent-data" / "skills" / "chart"
-        skills.mkdir(parents=True, exist_ok=True)
-        (skills / "SKILL.md").write_text("---\n", encoding="utf-8")
 
     sandbox.docker.on_stream = container_writes
     with bound_run(ORG_A, agent=PA, thread=thread):
         out = await st.run_command("python3 /workspace/.run/chart.py")
     kept = sorted(rel for rel, _ in sandbox.mirrored)
-    assert kept == ["agent-data/skills/chart/SKILL.md", f"{b.outputs_rel}/chart.svg"]
+    assert kept == [f"{b.outputs_rel}/chart.svg"]
     assert all("rows.csv" not in rel for rel in kept)
     assert sandbox.cards == [f"{b.outputs_rel}/chart.svg"]
-    assert "2 file(s) saved" in out
+    assert "1 file(s) saved" in out
 
 
 async def test_the_startup_sweep_deletes_run_data_a_crash_left(sandbox) -> None:  # noqa: F811
@@ -256,6 +271,42 @@ def test_a_thread_id_that_names_no_folder_gets_no_sandbox(sandbox) -> None:  # n
     ):
         asyncio.run(sandbox.broker.acquire())
     assert sandbox.docker.runs() == []
+
+
+async def test_the_host_tools_never_write_another_threads_folder_or_skill(sandbox) -> None:  # noqa: F811
+    """Review P1 (fix round 1): ``write_artifact``, ``save_note`` and
+    ``share_artifact`` refuse another chat's output folder, another member's
+    skill folder and the author marker, in a run that is not covered too."""
+    import importlib
+
+    from acb_skills.agent_paths import thread_slug
+    from acb_skills.note_tools import save_note
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    mine, other = new_thread(), new_thread()
+    with bound_run(ORG_A, agent=PA, thread=other, member="x@example.com") as ws:
+        (ws / "outputs" / thread_slug(other)).mkdir(parents=True)
+        (ws / "outputs" / thread_slug(other) / "private.txt").write_text("T2 DATA")
+        skill = ws / "agent-data" / "skills" / "chart"
+        skill.mkdir(parents=True)
+        (skill / ".metorite-author").write_text("x@example.com")
+    with bound_run(ORG_A, agent=PA, thread=mine, member="y@example.com") as ws:
+        for path in (
+            f"outputs/{thread_slug(other)}/planted.txt",
+            "agent-data/skills/chart/scripts/evil.py",
+            "agent-data/skills/new/.metorite-author",
+        ):
+            got = await wa.write_artifact(path, "x", overwrite=True)
+            assert "refused" in got.get("error", ""), (path, got)
+            assert "Refused" in await save_note(path, "x"), path
+        shared = await wa.share_artifact(f"outputs/{thread_slug(other)}/private.txt")
+        assert "another chat" in shared.get("error", ""), shared
+        listed = await wa.share_artifact("outputs")
+        assert all(thread_slug(other) not in a["path"] for a in listed.get("artifacts", []))
+        own = await wa.write_artifact(f"outputs/{thread_slug(mine)}/mine.txt", "ok", overwrite=True)
+        assert "error" not in own, own
+    assert not (ws / "outputs" / thread_slug(other) / "planted.txt").exists()
+    assert not (ws / "agent-data" / "skills" / "chart" / "scripts" / "evil.py").exists()
 
 
 # ═════════════════════════ the route half (R8) ══════════════════════════════
@@ -343,6 +394,35 @@ def test_another_member_cannot_list_or_read_a_threads_output_folder(graph_as_app
 
 
 @_DB_GATE
+def test_a_member_cannot_change_another_members_skill_through_the_routes(graph_as_app, disk) -> None:  # noqa: F811
+    """Review P1 (fix round 1). The first member who writes into a skill
+    folder becomes its author. Another member of the org gets 403 for a PUT,
+    a DELETE or a promote into it, and the author marker is reserved."""
+    a = graph_as_app.org_a
+    s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    s2 = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    alice, bob = _client(_user(_ALICE, a)), _client(_user(_BOB, a))
+    script = f"agent-data/skills/s{uuid.uuid4().hex[:6]}/scripts/plot.py"
+    made = alice.put(f"/agent/workspace/{s1}/file", params={"path": script},
+                     json={"content": "print(1)"})
+    assert made.status_code == 200, made.text
+    top = script.rsplit("/scripts/", 1)[0]
+    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == _ALICE.lower()
+    assert bob.put(f"/agent/workspace/{s2}/file", params={"path": script},
+                   json={"content": "import exfil"}).status_code == 403
+    assert bob.delete(f"/agent/workspace/{s2}/file", params={"path": script}).status_code == 403
+    up = bob.post(f"/agent/workspace/{s2}/upload", files={"files": ("e.py", b"import exfil")})
+    assert up.status_code == 200, up.text
+    assert bob.post(f"/agent/workspace/{s2}/promote", json={
+        "path": up.json()[0]["path"], "dest": f"{top}/scripts/e.py",
+    }).status_code == 403
+    assert bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{top}/.metorite-author"},
+                   json={"content": _BOB}).status_code == 400
+    assert (_tenant_dir(a) / script).read_text() == "print(1)"
+    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == _ALICE.lower()
+
+
+@_DB_GATE
 def test_a_link_in_a_workspace_is_never_served_or_written_through(graph_as_app, disk) -> None:  # noqa: F811
     """WS43-F14, §7.5 rule B, at the routes: the safe opener refuses a link."""
     a = graph_as_app.org_a
@@ -366,12 +446,49 @@ def test_a_link_in_a_workspace_is_never_served_or_written_through(graph_as_app, 
 from tests.unit.test_coding_sandbox_image import coding_sandbox_image  # noqa: E402,F401
 from tests.unit.test_sandbox_exec_hygiene import (  # noqa: E402,F401
     _REAL_PROCESS_IDS,
-    _use_named_volumes,
     bind_mounts_work,
     docker_image,
 )
 
 DOCKER_ORG = f"eeeeeeee-0000-0000-0000-{uuid.uuid4().hex[:12]}"
+
+
+def _use_seeded_volumes(monkeypatch: pytest.MonkeyPatch, image: str, made: list[str]) -> None:
+    """Docker Desktop only: a named volume per mount source, seeded from the host.
+
+    Docker Desktop refuses a host bind mount (spec §5.2). The ``projects``
+    workspace is read-only, so its stand-in volume must already hold the
+    mountpoints of the nested mounts, as the host dir does in production. So
+    each volume starts as a copy of its host dir (``docker cp``), owned by
+    the test uid. A file source (the read-only marker cover) is left out,
+    because the read-only workspace volume already holds that file. CI runs
+    every test on real bind mounts.
+    """
+    names: dict[str, str] = {}
+
+    def args(self: sb.Mount) -> list[str]:
+        if self.source.is_file():
+            return []
+        key = str(self.source)
+        if key not in names:
+            name = f"mtr-test-{uuid.uuid4().hex[:10]}"
+            assert _docker("volume", "create", name).returncode == 0
+            helper = _docker(
+                "create", "--user", "0:0", "--mount", f"type=volume,source={name},target=/v",
+                image, "chown", "-R", "1000:1000", "/v",
+            ).stdout.strip()
+            assert helper, "the helper container did not start"
+            copied = _docker("cp", f"{self.source}{os.sep}.", f"{helper}:/v")
+            assert copied.returncode == 0, copied.stderr
+            started = _docker("start", "-a", helper)
+            assert started.returncode == 0, started.stderr
+            _docker("rm", "-f", helper)
+            names[key] = name
+            made.append(name)
+        spec = f"type=volume,source={names[key]},target={self.target}"
+        return ["--mount", spec + (",readonly" if self.readonly else "")]
+
+    monkeypatch.setattr(sb.Mount, "args", args)
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -392,7 +509,7 @@ async def real_projects(
     monkeypatch.setattr(sb, "_process_ids", _REAL_PROCESS_IDS)
     volumes: list[str] = []
     if not bind_mounts_work:
-        _use_named_volumes(monkeypatch, docker_image, volumes)
+        _use_seeded_volumes(monkeypatch, docker_image, volumes)
     broker = sb.SandboxBroker()
     monkeypatch.setattr(sb, "_BROKER", broker)
     env.update(broker=broker, bind=bind_mounts_work)
@@ -486,3 +603,39 @@ async def test_docker_run_command_runs_in_the_container(real_projects, monkeypat
     if real_projects["bind"]:
         assert (b.workspace / b.outputs_rel / "chart.txt").read_text().strip() == "chart"
         assert str(os.getuid()) in out
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_thread_never_imports_or_writes_shared_code(real_projects) -> None:
+    """Review P1 (fix round 1): every thread of one org mounts the same dir.
+
+    Member X's run left a module at the root, in ``agent-data/`` and in
+    ``inputs/``, and a script. Member Y's thread imports none of them by name,
+    and can write only its own output folder and its run data.
+    """
+    broker = real_projects["broker"]
+    ty = new_thread()
+    payload = "print('PLANTED-RAN')\n"
+    with bound_run(DOCKER_ORG, agent=PA, thread=ty, member="y@example.com") as ws:
+        # What member X's run left in the shared dir, before Y's thread starts.
+        for rel in ("evil.py", "agent-data/evil.py", "inputs/evil.py", "agent-data/scripts/run.py"):
+            target = ws / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(payload, encoding="utf-8")
+        hy = await broker.acquire()
+    seen = await broker.exec(hy, "ls /workspace/agent-data/evil.py /workspace/evil.py", 30)
+    assert seen.exit_code == 0, f"the planted files are not in the workspace: {seen.output}"
+    for cwd in ("/workspace", "/workspace/agent-data", "/workspace/inputs"):
+        got = await broker.exec(hy, f"cd {cwd} && python3 -c 'import evil'", 30)
+        assert "PLANTED-RAN" not in got.output and got.exit_code != 0, (cwd, got.output)
+    script = await broker.exec(
+        hy, "printf 'import evil\\n' > /workspace/.run/y.py && cd /workspace && python3 /workspace/.run/y.py", 30,
+    )
+    assert "PLANTED-RAN" not in script.output and script.exit_code != 0, script.output
+    for path in ("/workspace/new.py", "/workspace/agent-data/x", "/workspace/inputs/x",
+                 "/workspace/agent-data/scripts/run.py"):
+        wrote = await broker.exec(hy, f"echo x > {path}", 30)
+        assert wrote.exit_code != 0, f"the thread wrote {path}"
+    for path in ("/workspace/outputs/ok", "/workspace/.run/ok"):
+        assert (await broker.exec(hy, f"echo x > {path}", 30)).exit_code == 0, path
+

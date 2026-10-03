@@ -370,6 +370,15 @@ async def write_artifact(
     if target is None:
         return {"error": f"Path '{path}' escapes the workspace and was refused."}
     clean_path = target.relative_to(root_r).as_posix()
+    # WS-43d (review P1, fix round 1): never another chat's output folder,
+    # another member's skill folder, or the skill author marker.
+    from acb_skills.agent_paths import refused_write
+
+    reason = refused_write(
+        root_r, clean_path, member=ctx.get("member"), thread_id=session_id,
+    )
+    if reason:
+        return {"error": f"Path '{path}' was refused: {reason}."}
 
     # Ensure parent directory exists
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -516,12 +525,19 @@ async def share_artifact(path: str) -> dict:
         return {"error": f"Path '{path}' is outside the workspace.", "artifacts": []}
     if not target.exists():
         return {"error": f"File not found: {path}", "artifacts": []}
+    # WS-43d (review P1, fix round 1): another chat's output folder is not
+    # this run's to show.
+    from acb_skills.agent_paths import instance_slug, is_other_thread_rel
+
+    own = instance_slug(str(session_id)) if session_id else None
+    if is_other_thread_rel(target.relative_to(root).as_posix(), own):
+        return {"error": f"Path '{path}' belongs to another chat.", "artifacts": []}
 
     # Collect the file(s) to share (a directory shares everything within it).
     files: list[Path] = []
     if target.is_dir():
         for p in sorted(target.rglob("*")):
-            if p.is_file():
+            if p.is_file() and not is_other_thread_rel(p.relative_to(root).as_posix(), own):
                 files.append(p)
                 if len(files) >= 50:
                     break

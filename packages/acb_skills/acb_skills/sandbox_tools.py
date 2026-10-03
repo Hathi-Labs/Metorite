@@ -27,6 +27,15 @@ the boundaries are these:
 4. The provider adds nothing when the run holds a host shell tool
    (``code_task``, ``run_script``, ``install_dependency``). So a sandbox
    tool never sits beside a host shell (§16.3 condition 3).
+5. A covered run does not hold the host floor tools that open the working
+   dir with plain path calls and no dir lock (:data:`WITHHELD_HOST_TOOLS`).
+   A per-run chat middleware takes them out of each model request, and a
+   per-run function middleware refuses a call to one. The file tools do
+   their work, with the safe opener and the lock (review P1, fix round 1).
+6. The container sees ``/workspace`` READ-ONLY, except its own output folder
+   and its run data. A skill loads, and its script runs, only for the member
+   who made it. So no member's code or skill text reaches another member's
+   run (review P1, fix round 1).
 
 **What the provider adds to ONE run**, at the start of each turn:
 
@@ -45,6 +54,9 @@ Fences: ``tests/unit/test_run_command_tool.py`` (WS43-F6),
 """
 from __future__ import annotations
 
+import copy
+import functools
+import inspect
 import os
 import shlex
 import time
@@ -54,9 +66,11 @@ from typing import Any
 from acb_common import get_logger
 from agent_framework import (
     DEFAULT_FILE_ACCESS_INSTRUCTIONS,
+    ChatMiddleware,
     ContextProvider,
     FileAccessProvider,
     FileSkillsSource,
+    FunctionMiddleware,
     SkillsProvider,
     SkillsSource,
     tool,
@@ -68,6 +82,7 @@ _log = get_logger("acb_skills.sandbox_tools")
 
 __all__ = [
     "PROJECTS_AGENT",
+    "WITHHELD_HOST_TOOLS",
     "LockedSkillsSource",
     "ProjectsSandboxProvider",
     "SandboxScriptRunner",
@@ -83,6 +98,19 @@ _DEFAULT_TIMEOUT_SECONDS = 60
 _HOST_SHELL_TOOLS = frozenset({"code_task", "run_script", "install_dependency"})
 #: Scripts of a skill live here, and only here (§7.4).
 _SKILLS_REL = "agent-data/skills"
+#: The host floor tools that a covered run does not hold (review P1, fix
+#: round 1). Each opens the working dir with plain path calls and no dir lock,
+#: so it could follow a link that a container made, or race an exec. The file
+#: tools do the same work with the safe opener and the lock.
+WITHHELD_HOST_TOOLS = frozenset({
+    "write_artifact", "share_artifact", "save_note", "recall_notes",
+    "get_errors", "run_diagnostics",
+})
+WITHHELD_ANSWER = (
+    "{name} is off in this chat, because its commands run in a sandbox. Use the "
+    "file_access_* tools for files: outputs/ is this chat's own output folder, "
+    "and a file written there shows as a card."
+)
 
 NETWORK_OFF = "Network access is off on this platform."
 
@@ -197,16 +225,17 @@ async def _run_in_sandbox(command: str, timeout_s: Any, *, tool_name: str, label
 
 
 async def _sweep(binding: Any, *, since: float) -> list[str]:
-    """Mirror what the command changed under ``agent-data/`` and the thread's outputs.
+    """Mirror what the command changed in the thread's own output folder.
 
     The caller holds ``broker.host_files()``. The reads use the safe opener.
-    ``.run/`` lies outside the working dir, so it is never swept. Each file
-    under the thread's outputs also shows as an artifact card.
+    The container sees the rest of ``/workspace`` read-only, and ``.run/``
+    lies outside the working dir, so the output folder is the one place a
+    command can change. Each file there also shows as an artifact card.
     """
     from acb_skills.code_tools import sweep_changed_files
 
     mirrored = await sweep_changed_files(
-        binding.workspace, since=since, subdirs=("agent-data", binding.outputs_rel),
+        binding.workspace, since=since, subdirs=(binding.outputs_rel,),
     )
     prefix = binding.outputs_rel + "/"
     for rel, data in mirrored:
@@ -226,7 +255,8 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
       here. It is deleted when the run ends.
     * ``/workspace/outputs/`` is this chat's own output folder. A file a
       command writes here is kept, and shows in the chat as a card.
-    * ``/workspace/agent-data/`` holds kept notes, scripts and skills.
+    * The rest of ``/workspace`` (``agent-data/``, ``inputs/``) is read-only.
+      Write those with the file tools.
 
     Args:
         command: The bash command, for example
@@ -264,12 +294,22 @@ class SandboxScriptRunner:
     """Runs a skill script in the sandbox, through its ``/workspace`` path (§7.4).
 
     It refuses a script outside ``agent-data/skills/`` of the run's working
-    dir. A list of arguments passes as positional arguments, and a mapping as
+    dir, and a script of a skill that another member made. A list of
+    arguments passes as positional arguments, and a mapping as
     ``--key value`` pairs, each one shell-quoted.
     """
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, member: str = "") -> None:
         self._workspace = Path(workspace)
+        self._member = str(member or "").strip().lower()
+
+    def _own_skill(self, posix: str) -> bool:
+        from acb_skills.agent_paths import skill_author, skill_top_rel
+
+        top = skill_top_rel(posix)
+        return top is not None and bool(self._member) and (
+            skill_author(self._workspace, top) == self._member
+        )
 
     def container_path(self, full_path: str) -> str:
         try:
@@ -287,6 +327,8 @@ class SandboxScriptRunner:
             path = self.container_path(str(script.full_path))
         except ValueError as exc:
             return f"run_skill_script refused: {exc}"
+        if not self._own_skill(path[len("/workspace/"):]):
+            return "run_skill_script refused: only the member who made a skill may run it."
         argv: list[str] = []
         if isinstance(args, dict):
             for key, value in args.items():
@@ -294,11 +336,11 @@ class SandboxScriptRunner:
         elif isinstance(args, (list, tuple)):
             argv = [str(a) for a in args]
         command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
-        text = await _run_in_sandbox(
+        # The steer drain runs at the tool, which _steered() wraps.
+        return await _run_in_sandbox(
             command, _DEFAULT_TIMEOUT_SECONDS,
             tool_name="run_skill_script", label=f"skill script {script.name}",
         )
-        return _with_steer(text)
 
 
 # ── the per-run provider ─────────────────────────────────────────────────────
@@ -347,7 +389,8 @@ def _file_instructions() -> str:
         "\n- These are the files that `run_command` sees under `/workspace`: "
         "`agent-data/`, `inputs/`, `outputs/` and `.run/`. `outputs/` is this "
         "chat's own output folder. `.run/` holds the data files of this run, "
-        "and it is deleted when the run ends."
+        "and it is deleted when the run ends. A command can write only "
+        "`outputs/` and `.run/`."
     )
 
 
@@ -362,30 +405,52 @@ class LockedSkillsSource(SkillsSource):
     the lock. Scripts run in the sandbox (:class:`SandboxScriptRunner`).
     """
 
-    def __init__(self, workspace: Path, guard: Any) -> None:
+    def __init__(self, workspace: Path, guard: Any, member: str = "") -> None:
         self._workspace = Path(workspace)
         self._guard = guard
+        self._member = str(member or "").strip().lower()
         self._inner = FileSkillsSource(
             str(self._workspace / _SKILLS_REL),
-            script_runner=SandboxScriptRunner(self._workspace),
+            script_runner=SandboxScriptRunner(self._workspace, self._member),
             resource_extensions=(),
         )
+
+    def _scan(self, context: Any) -> list[Any]:
+        """MAF's scan and the author filter, in a worker thread.
+
+        ``FileSkillsSource.get_skills`` does its disk work synchronously, so
+        it runs here, off the event loop, on a loop of its own. Only the
+        skills that this run's member made come back (review P1, fix round 1).
+        """
+        import asyncio
+
+        from acb_skills import safe_open
+        from acb_skills.agent_paths import skill_author
+
+        try:
+            if safe_open.list_dir(self._workspace, _SKILLS_REL) is None:
+                return []
+        except (safe_open.UnsafePath, OSError):
+            return []
+        if not self._member:
+            return []
+        skills = asyncio.run(self._inner.get_skills(context))
+        root = (self._workspace / _SKILLS_REL).resolve()
+        mine: list[Any] = []
+        for skill in skills:
+            try:
+                top = Path(skill.path).resolve().relative_to(root).parts[0]
+            except (AttributeError, IndexError, OSError, ValueError):
+                continue
+            if skill_author(self._workspace, f"{_SKILLS_REL}/{top}") == self._member:
+                mine.append(skill)
+        return mine
 
     async def get_skills(self, context: Any) -> list[Any]:
         import asyncio
 
-        from acb_skills import safe_open
-
         async with self._guard.hold():
-            try:
-                listed = await asyncio.to_thread(
-                    safe_open.list_dir, self._workspace, _SKILLS_REL,
-                )
-            except (safe_open.UnsafePath, OSError):
-                return []
-            if listed is None:
-                return []
-            return await self._inner.get_skills(context)
+            return await asyncio.to_thread(self._scan, context)
 
 
 class ProjectsSandboxProvider(ContextProvider):
@@ -409,6 +474,67 @@ class ProjectsSandboxProvider(ContextProvider):
             return
         broker, binding = prepared
         await _add_tools(broker, binding, agent, session, context, state)
+
+
+class WithholdHostTools(ChatMiddleware):
+    """Takes :data:`WITHHELD_HOST_TOOLS` out of each model request of ONE run.
+
+    It changes a copy of the request's options, never an agent object.
+    """
+
+    async def process(self, context: Any, call_next: Any) -> None:
+        options = context.options
+        tools = options.get("tools") if isinstance(options, dict) else None
+        if tools:
+            kept = [t for t in tools if _one_tool_name(t) not in WITHHELD_HOST_TOOLS]
+            if len(kept) != len(tools):
+                context.options = {**options, "tools": kept}
+        await call_next()
+
+
+class RefuseHostTools(FunctionMiddleware):
+    """Refuses a call to a withheld host tool, in case the model names one."""
+
+    async def process(self, context: Any, call_next: Any) -> None:
+        name = getattr(getattr(context, "function", None), "name", "") or ""
+        if name in WITHHELD_HOST_TOOLS:
+            context.result = WITHHELD_ANSWER.format(name=name)
+            return
+        await call_next()
+
+
+def _one_tool_name(item: Any) -> str:
+    if isinstance(item, dict):
+        fn = item.get("function")
+        return str((fn or {}).get("name") or item.get("name") or "")
+    return str(getattr(item, "name", None) or getattr(
+        getattr(item, "func", item), "__name__", "",
+    ) or "")
+
+
+def _steered(item: Any) -> Any:
+    """A copy of a provider tool whose result drains a pending steer (review P2).
+
+    The B6 gate does this for an agent's own tools (``_gate_own_maf_tools``).
+    The file tools and the skill tools join the run through a context
+    provider, so the gate never sees them. The copy keeps the tool's name,
+    description and schema, and the original object is never changed.
+    """
+    func = getattr(item, "func", None)
+    if not callable(func) or getattr(func, "__cc_steered__", False):
+        return item
+
+    @functools.wraps(func)
+    async def call(*args: Any, **kwargs: Any) -> Any:
+        result = func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return _with_steer(result)
+
+    call.__cc_steered__ = True  # type: ignore[attr-defined]
+    clone = copy.copy(item)
+    clone.func = call
+    return clone
 
 
 def _layout(agent_name: str, agent: Any) -> tuple[Any, Any] | None:
@@ -442,10 +568,11 @@ async def _add_tools(
 ) -> None:
     from acb_skills.tenant_file_store import TenantFileStore
 
+    member = str(artifact_context().get("member") or "")
     guard = _BrokerGuard(broker, binding)
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
-        run_data=binding.run_data, guard=guard,
+        run_data=binding.run_data, guard=guard, member=member,
     )
     files = FileAccessProvider(
         store,
@@ -456,16 +583,20 @@ async def _add_tools(
         disable_readonly_tool_approval=True,
         disable_write_tool_approval=True,
     )
+    before = len(context.tools)
     await files.before_run(agent=agent, session=session, context=context, state=state)
     skills = SkillsProvider(
-        LockedSkillsSource(binding.workspace, guard),
+        LockedSkillsSource(binding.workspace, guard, member),
         source_id=f"{SOURCE_ID}-skills",
         disable_load_skill_approval=True,
         disable_read_skill_resource_approval=True,
         disable_run_skill_script_approval=True,
     )
     await skills.before_run(agent=agent, session=session, context=context, state=state)
+    # The steer drain at every tool these two providers added (review P2).
+    context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
+    context.extend_middleware(SOURCE_ID, [WithholdHostTools(), RefuseHostTools()])
 
 
 def attach_for_run(agent: Any, agent_name: str) -> Any:

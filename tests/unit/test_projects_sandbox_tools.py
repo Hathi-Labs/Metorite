@@ -34,6 +34,17 @@ Mutations this suite catches (R7), each run red once by hand:
 * ``TenantFileStore._place`` maps ``outputs/`` to the shared folder: the map
   test and the other-thread test;
 * ``TenantFileStore._decide`` passes the tool path: the decide test.
+
+Fix round 1 of PR #603 (each run red once by hand on 2026-10-03):
+
+* ``_place`` takes any head, or a part that starts with a dot: the four-heads
+  test;
+* the store ignores the skill author: the skill-belongs test;
+* the skills source lists every author: the own-skills test;
+* the script runner runs any skill: the skill-script test;
+* the withhold middleware is not added: the covered-run test, which reads
+  the REAL request bodies through the executor;
+* the steer wrap of the provider tools is removed: the steer test.
 """
 from __future__ import annotations
 
@@ -363,7 +374,9 @@ class _Guard:
         return self.refuse_writes
 
 
-def _store(box: Any, thread: str | None = None) -> tuple[TenantFileStore, Path, Path]:
+def _store(
+    box: Any, thread: str | None = None, member: str = "member@example.com",
+) -> tuple[TenantFileStore, Path, Path]:
     from acb_skills.agent_paths import ensure_state_dir, tenant_instance, thread_slug
 
     thread = thread or new_thread()
@@ -374,7 +387,7 @@ def _store(box: Any, thread: str | None = None) -> tuple[TenantFileStore, Path, 
     run_data.mkdir(parents=True, exist_ok=True)
     store = TenantFileStore(
         workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}",
-        run_data=run_data, guard=_Guard(),
+        run_data=run_data, guard=_Guard(), member=member,
     )
     return store, ws, run_data
 
@@ -498,7 +511,7 @@ async def test_a_skill_written_now_lists_on_the_next_turn(sandbox) -> None:  # n
     store, ws, _ = _store(sandbox, thread)
     with bound_run(ORG_A, agent=PA, thread=thread):
         guard = st._BrokerGuard(sandbox.broker, sb.read_run_binding())
-        source = st.LockedSkillsSource(ws, guard)
+        source = st.LockedSkillsSource(ws, guard, "member@example.com")
         ctx = SkillsSourceContext(agent=None, session=AgentSession())
         assert await source.get_skills(ctx) == []
         await store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
@@ -521,7 +534,9 @@ async def test_a_linked_skills_dir_lists_nothing(sandbox, short_tmp) -> None:  #
     (elsewhere / "SKILL.md").write_text(_SKILL.format(name="evil"))
     os.symlink(short_tmp / "host-skills", ws / "agent-data" / "skills", target_is_directory=True)
     with bound_run(ORG_A, agent=PA, thread=thread):
-        source = st.LockedSkillsSource(ws, st._BrokerGuard(sandbox.broker, sb.read_run_binding()))
+        source = st.LockedSkillsSource(
+            ws, st._BrokerGuard(sandbox.broker, sb.read_run_binding()), "member@example.com",
+        )
         assert await source.get_skills(SkillsSourceContext(agent=None, session=AgentSession())) == []
 
 
@@ -535,7 +550,8 @@ async def test_a_skill_script_runs_in_the_sandbox_through_its_workspace_path(
         script_path = ws.resolve() / "agent-data" / "skills" / "chart" / "scripts" / "plot.py"
         script_path.parent.mkdir(parents=True)
         script_path.write_text("print(1)")
-        runner = st.SandboxScriptRunner(ws)
+        (script_path.parents[1] / ".metorite-author").write_text("member@example.com")
+        runner = st.SandboxScriptRunner(ws, "member@example.com")
         script = types.SimpleNamespace(full_path=str(script_path), name="scripts/plot.py")
         out = await runner(None, script, {"csv": "/workspace/.run/rows.csv"})
         outside = types.SimpleNamespace(full_path=str(ws / "agent-data" / "x.py"), name="x.py")
@@ -547,3 +563,237 @@ async def test_a_skill_script_runs_in_the_sandbox_through_its_workspace_path(
     )
     assert "refused" in refused and len(sandbox.docker.command_execs()) == 1
     assert host_trap == []
+
+
+# ══════════════ fix round 1: shared code, host tools and the steer ══════════
+
+_X, _Y = "x-member@example.com", "y-member@example.com"
+
+
+@pytest.mark.parametrize("bad", [
+    "pandas.py", "sitecustomize.py", "scripts/run.py", ".git/config", ".cc-instance",
+    "agent-data/.metorite-author", "agent-data/skills/s/.metorite-author",
+    "agent-data/x/.hidden", "inputs/.bashrc", "outputs/.pth",
+])
+async def test_the_store_refuses_every_path_outside_the_four_heads(sandbox, bad) -> None:  # noqa: F811
+    store, ws, _ = _store(sandbox)
+    before = (ws / bad).read_bytes() if (ws / bad).is_file() else None
+    with pytest.raises(ValueError):
+        await store.write(bad, "import os")
+    after = (ws / bad).read_bytes() if (ws / bad).is_file() else None
+    assert after == before, "a refused path was written"
+
+
+async def test_the_root_listing_is_the_four_heads_and_nothing_else(sandbox) -> None:  # noqa: F811
+    store, ws, _ = _store(sandbox)
+    (ws / "inputs").mkdir(exist_ok=True)
+    (ws / "planted.py").write_text("x")
+    (ws / "elsewhere").mkdir()
+    names = {e.name for e in await store.list_children("")}
+    assert names == {".run", "agent-data", "inputs", "outputs"}
+
+
+async def test_a_skill_belongs_to_the_member_who_made_it(sandbox) -> None:  # noqa: F811
+    """X makes a skill. Y's run cannot read, list, change or delete it."""
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    y_store, _ws, _ = _store(sandbox, thread, member=_Y)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    await x_store.write("agent-data/skills/chart/scripts/plot.py", "print(1)")
+    marker = ws / "agent-data" / "skills" / "chart" / ".metorite-author"
+    assert marker.read_text() == _X
+    assert ("agent-data/skills/chart/.metorite-author", _X.encode()) in sandbox.mirrored
+    for call in (
+        y_store.read("agent-data/skills/chart/SKILL.md"),
+        y_store.list_children("agent-data/skills/chart"),
+        y_store.write("agent-data/skills/chart/scripts/plot.py", "import exfil"),
+        y_store.delete("agent-data/skills/chart/scripts/plot.py"),
+    ):
+        with pytest.raises(ValueError, match="another member"):
+            await call
+    assert await y_store.file_exists("agent-data/skills/chart/SKILL.md") is False
+    assert [e.name for e in await y_store.list_children("agent-data/skills")] == []
+    assert [e.name for e in await x_store.list_children("agent-data/skills")] == ["chart"]
+    assert (ws / "agent-data/skills/chart/scripts/plot.py").read_text() == "print(1)"
+
+
+async def test_only_the_members_own_skills_reach_the_prompt(sandbox) -> None:  # noqa: F811
+    from agent_framework import AgentSession, SkillsSourceContext
+
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    await x_store.write("agent-data/skills/xs/SKILL.md", _SKILL.format(name="xs"))
+    y_store, _ws, _ = _store(sandbox, thread, member=_Y)
+    await y_store.write("agent-data/skills/ys/SKILL.md", _SKILL.format(name="ys"))
+    ctx = SkillsSourceContext(agent=None, session=AgentSession())
+    with bound_run(ORG_A, agent=PA, thread=thread):
+        guard = st._BrokerGuard(sandbox.broker, sb.read_run_binding())
+        for member, expect in ((_X, ["xs"]), (_Y, ["ys"]), ("", [])):
+            got = await st.LockedSkillsSource(ws, guard, member).get_skills(ctx)
+            assert [s.frontmatter.name for s in got] == expect, member
+
+
+async def test_a_member_never_runs_another_members_skill_script(sandbox, host_trap) -> None:  # noqa: F811
+    import types
+
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    await x_store.write("agent-data/skills/chart/scripts/plot.py", "print(1)")
+    script = types.SimpleNamespace(
+        full_path=str(ws / "agent-data/skills/chart/scripts/plot.py"), name="scripts/plot.py",
+    )
+    with bound_run(ORG_A, agent=PA, thread=thread, member=_Y) as bws:
+        refused = await st.SandboxScriptRunner(bws, _Y)(None, script, None)
+    with bound_run(ORG_A, agent=PA, thread=thread, member=_X) as bws:
+        ran = await st.SandboxScriptRunner(bws, _X)(None, script, None)
+    assert "only the member who made a skill" in refused
+    assert "exit 0" in ran
+    assert len(sandbox.docker.command_execs()) == 1 and host_trap == []
+
+
+def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
+    assert {
+        "write_artifact", "share_artifact", "save_note", "recall_notes",
+        "get_errors", "run_diagnostics",
+    } == st.WITHHELD_HOST_TOOLS
+
+
+async def test_the_middleware_hides_and_refuses_the_withheld_tools() -> None:
+    import types
+
+    tools = [types.SimpleNamespace(name=n) for n in ("write_artifact", "file_access_write", "save_note")]
+    ctx = types.SimpleNamespace(options={"tools": tools, "model": "m"})
+    seen: list[Any] = []
+
+    async def nxt() -> None:
+        seen.append([t.name for t in ctx.options["tools"]])
+
+    await st.WithholdHostTools().process(ctx, nxt)
+    assert seen == [["file_access_write"]]
+    assert [t.name for t in tools] == ["write_artifact", "file_access_write", "save_note"]
+    call = types.SimpleNamespace(function=types.SimpleNamespace(name="get_errors"), result=None)
+    ran: list[str] = []
+
+    async def go() -> None:
+        ran.append("ran")
+
+    await st.RefuseHostTools().process(call, go)
+    assert ran == [] and "off in this chat" in call.result
+
+
+def _covered_run(monkeypatch, sandbox, turns, *, on_request=None) -> Any:  # noqa: F811
+    """projects-assistant through the REAL executor, covered for ORG_A.
+
+    The D85 seam is not on this branch, so the injection here leaves out
+    the three host shell tools, as D85 does.
+    """
+    import json
+    import shutil
+
+    import httpx
+    from acb_common.db import bind_tenant, release_tenant
+    from orchestrator import _tool_injection as ti
+    from orchestrator import executor
+
+    from tests.unit._native_maf_harness import ScriptedModel, parse_frames
+
+    real = ti._collect_injectable_platform_tools
+    monkeypatch.setattr(ti, "_collect_injectable_platform_tools", lambda: [
+        fn for fn in real() if fn.__name__ not in _HOST_SHELL
+    ])
+    # The loader clones an agent as its NAME (``clone_as=agent_name``), so
+    # the dir of this run is named ``projects-assistant``, as in production.
+    source = Path(_M.__file__).parent
+    agent_dir = sandbox.env["clone"] / "repos" / PA
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(source / "config.json", agent_dir / "config.json")
+    config = json.loads((agent_dir / "config.json").read_text(encoding="utf-8"))
+    model = ScriptedModel(turns, on_request=on_request)
+
+    def build() -> list[Any]:
+        agents = _M.build_agents()
+        oc = agents[0].client.client
+        oc._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(model), event_hooks=oc._client.event_hooks,
+        )
+        return agents
+
+    class _Loaded:
+        def __init__(self) -> None:
+            self.agent_dir, self.agent_name, self.config = agent_dir, PA, config
+
+        def build_agents(self) -> list[Any]:
+            return build()
+
+    class _Ctx:
+        def __enter__(self) -> _Loaded:
+            return _Loaded()
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    import gateway.routes.agent as routes_agent
+
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+
+    async def collect() -> list[str]:
+        return [line async for line in executor.run_agent_stream(
+            PA, {"message": "hi", "user_email": "member@example.com"},
+            run_id="run-covered", thread_id=new_thread(),
+        )]
+
+    token = bind_tenant(ORG_A)
+    try:
+        events = parse_frames(asyncio.run(collect()))
+    finally:
+        release_tenant(token)
+    return model, events, None
+
+
+def _request_tools(body: dict[str, Any]) -> set[str]:
+    return {t["function"]["name"] for t in body.get("tools") or []}
+
+
+def _tool_results(body: dict[str, Any]) -> list[str]:
+    return [str(m.get("content")) for m in body.get("messages") or [] if m.get("role") == "tool"]
+
+
+def test_a_covered_run_never_offers_or_runs_a_withheld_host_tool(sandbox, monkeypatch) -> None:  # noqa: F811
+    """The real request bodies: the six host tools are not offered, and a call
+    that names one anyway is refused before it touches the dir."""
+    from tests.unit._native_maf_harness import text_turn, tool_turn
+
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [
+        tool_turn("write_artifact", '{"path": "outputs/x.md", "content": "x"}'),
+        text_turn("done"),
+    ])
+    offered = _request_tools(model.bodies[0])
+    assert {"run_command", "file_access_write", "file_access_read"} <= offered
+    assert not offered & st.WITHHELD_HOST_TOOLS, offered & st.WITHHELD_HOST_TOOLS
+    assert not offered & _HOST_SHELL
+    assert any("off in this chat" in r for r in _tool_results(model.bodies[1]))
+    assert sandbox.mirrored == [] and sandbox.cards == []
+
+
+def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Review P2: the steer drain runs at the file tools too, as PR #585 did
+    for an agent's own tools. The note rides the result of the file tool
+    into the next request."""
+    from orchestrator import steer
+
+    from tests.unit._native_maf_harness import text_turn, tool_turn
+
+    def on_request(index: int, body: dict[str, Any]) -> None:
+        if index == 0:
+            from orchestrator.executor import _stream_relay_thread_id
+
+            steer.buffer_guidance(_stream_relay_thread_id.get(), "m@example.com", "USE BAR CHARTS")
+
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [
+        tool_turn("file_access_write", '{"file_name": "outputs/c.txt", "content": "c"}'),
+        text_turn("done"),
+    ], on_request=on_request)
+    results = _tool_results(model.bodies[1])
+    assert results and "USE BAR CHARTS" in results[0], results

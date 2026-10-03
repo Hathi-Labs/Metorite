@@ -883,16 +883,51 @@ def _own_thread_slug(
 
 
 def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
-    """True when *rel* lies in the output folder of a thread that is not *own_slug*."""
+    """True when *rel* lies in the output folder of a thread that is not *own_slug*.
+
+    ``None`` (no tenant dir) never matches. The rule is
+    ``agent_paths.is_other_thread_rel``, the one rule of every writer.
+    """
     if own_slug is None:
         return False
-    from acb_skills.agent_paths import is_thread_slug
+    from acb_skills.agent_paths import is_other_thread_rel
 
-    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".")]
-    return (
-        len(parts) >= 2 and parts[0] == "outputs"
-        and is_thread_slug(parts[1]) and parts[1] != own_slug
+    return is_other_thread_rel(rel, own_slug)
+
+
+async def _apply_write_rules(
+    workspace: Path, rel: str, user: UserContext, session_id: str, *, claim: bool,
+) -> None:
+    """The write rules of ``agent_paths.refused_write``, and the skill author.
+
+    WS-43d (review P1, fix round 1). The skill author marker is reserved
+    (400), and a skill folder that another member made is theirs (403). In a
+    shared agent's tenant dir, the first member who writes into a skill folder
+    becomes its author, and the marker goes to the blob store too. A sandboxed
+    run loads, and runs the scripts of, only its own member's skills.
+    """
+    from acb_skills.agent_paths import SKILL_AUTHOR_MARKER, claim_skill, refused_write
+
+    if rel.rsplit("/", 1)[-1] == SKILL_AUTHOR_MARKER:
+        raise HTTPException(status_code=400, detail="That file name is reserved.")
+    reason = await asyncio.to_thread(
+        refused_write, workspace.resolve(), rel, member=user.email, thread_id=session_id,
     )
+    if reason and "member" in reason:
+        raise HTTPException(status_code=403, detail="That skill belongs to another member.")
+    if reason:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not claim or _own_thread_slug(workspace, session_id, user.organization_id) is None:
+        return
+    try:
+        claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+    except ValueError:
+        return
+    if claimed is not None:
+        await _mirror_gateway_write(
+            workspace, claimed[0], claimed[1], action="create", session_id=session_id,
+            organization_id=user.organization_id,
+        )
 
 
 # The three "special" workspace directories.  Agents are encouraged to write
@@ -1606,6 +1641,7 @@ async def delete_workspace_file(
             status_code=400,
             detail="Deletion is restricted to inputs/, outputs/, and agent-data/.",
         )
+    await _apply_write_rules(workspace, rel, _user, session_id, claim=False)
     try:
         # WS-43d (§7.5 rule B): no part of the path is followed as a link.
         deleted = await asyncio.to_thread(safe_open.unlink, workspace, rel)
@@ -1678,6 +1714,7 @@ async def promote_input_to_agent_data(
     if not dest_rel.startswith("agent-data/"):
         raise HTTPException(status_code=400, detail="destination must be under agent-data/")
     dest_rel = _open_rel(workspace, dest_rel)
+    await _apply_write_rules(workspace, dest_rel, _user, session_id, claim=True)
     await asyncio.to_thread(_safe_write, workspace, dest_rel, data)
     await asyncio.to_thread(safe_open.unlink, workspace, src_rel)
     dest_name = dest_rel.rsplit("/", 1)[-1]
@@ -1803,6 +1840,7 @@ async def write_workspace_file(
     # WS-43d (§16.3): another thread's output folder answers as absent.
     if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
         raise HTTPException(status_code=404, detail="File not found")
+    await _apply_write_rules(workspace, rel, _user, session_id, claim=True)
 
     _existed = await asyncio.to_thread(_safe_stat, workspace, rel) is not None
     data = (

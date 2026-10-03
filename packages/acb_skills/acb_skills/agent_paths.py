@@ -65,18 +65,25 @@ from pathlib import Path
 __all__ = [
     "AGENT_NAME_RE",
     "RUN_DATA_DIR",
+    "SKILLS_REL",
+    "SKILL_AUTHOR_MARKER",
     "TENANT_INSTANCE_PREFIX",
     "InvalidAgentName",
     "agent_code_dir",
     "agent_state_dir",
+    "claim_skill",
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_other_thread_rel",
     "is_tenant_instance",
     "is_thread_slug",
     "is_valid_agent_name",
+    "refused_write",
     "require_agent_name",
     "run_data_rel",
+    "skill_author",
+    "skill_top_rel",
     "state_root",
     "tenant_instance",
     "thread_outputs_rel",
@@ -253,6 +260,102 @@ def run_data_rel(organization_id: object, thread_id: object) -> str:
     if not org:
         raise ValueError("run data needs an organization id")
     return f"{RUN_DATA_DIR}/{instance_slug(org)}/{thread_slug(thread_id)}"
+
+
+def is_other_thread_rel(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* lies in the output folder of a thread that is not *own_slug*.
+
+    The ONE rule for "another chat's output folder" (§16.3). The session
+    routes, ``write_artifact`` and ``save_note`` all ask it.
+    """
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    return (
+        len(parts) >= 2 and parts[0] == "outputs"
+        and is_thread_slug(parts[1]) and parts[1] != own_slug
+    )
+
+
+# ── The author of a skill (review P1, fix round 1) ───────────────────────────
+
+#: The skills of a working dir, relative to it.
+SKILLS_REL = "agent-data/skills"
+#: A skill folder records the member who made it, in this file. A sandboxed
+#: run loads, and runs the scripts of, only the skills of its OWN member, so
+#: no member's skill text or code reaches another member's run. Every writer
+#: of a working dir refuses to write this name, so only a host writer can make
+#: it, and only for the member who first writes into the folder.
+SKILL_AUTHOR_MARKER = ".metorite-author"
+
+
+def skill_top_rel(rel: str) -> str | None:
+    """``agent-data/skills/<top>`` for a path inside a skill folder, else ``None``."""
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if len(parts) >= 4 and parts[0] == "agent-data" and parts[1] == "skills":
+        return f"{SKILLS_REL}/{parts[2]}"
+    return None
+
+
+def skill_author(workspace: Path, top_rel: str) -> str | None:
+    """The member recorded for a skill folder, read with the safe opener, or ``None``."""
+    from acb_skills import safe_open
+
+    try:
+        raw = safe_open.read_bytes(Path(workspace), f"{top_rel}/{SKILL_AUTHOR_MARKER}", limit=1024)
+    except (safe_open.UnsafePath, OSError):
+        return None
+    if raw is None:
+        return None
+    return raw.decode("utf-8", errors="replace").strip().lower() or None
+
+
+def refused_write(
+    workspace: Path, rel: str, *, member: str | None, thread_id: str | None = None,
+    own_slug: str | None = None,
+) -> str | None:
+    """Why a host writer may not write *rel* in a working dir, or ``None``.
+
+    1. The author marker itself is reserved.
+    2. The output folder of another thread is not this run's (§16.3). The own
+       folder is *own_slug*, else the slug of *thread_id*.
+    3. A skill folder that another member made is theirs alone.
+    """
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if parts and parts[-1] == SKILL_AUTHOR_MARKER:
+        return "that file name is reserved"
+    own = own_slug or (instance_slug(str(thread_id)) if thread_id else None)
+    if is_other_thread_rel(rel, own):
+        return "that folder belongs to another chat"
+    top = skill_top_rel(rel)
+    if top is not None:
+        author = skill_author(workspace, top)
+        who = str(member or "").strip().lower()
+        if author is not None and author != who:
+            return "that skill belongs to another member"
+    return None
+
+
+def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, bytes] | None:
+    """Record *member* as the author of the skill folder of *rel*, when none is.
+
+    Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
+    mirror it to the blob store, else ``None``. Raises ``ValueError`` when
+    there is no member, because a skill with no author never loads.
+    """
+    top = skill_top_rel(rel)
+    if top is None or skill_author(workspace, top) is not None:
+        return None
+    who = str(member or "").strip().lower()
+    if not who:
+        raise ValueError("a skill needs a member who makes it")
+    from acb_skills import safe_open
+
+    marker = f"{top}/{SKILL_AUTHOR_MARKER}"
+    data = who.encode("utf-8")
+    try:
+        safe_open.write_bytes(Path(workspace), marker, data, exclusive=True)
+    except FileExistsError:
+        return None
+    return marker, data
 
 
 def agent_code_dir(agent_name: str) -> Path:

@@ -23,8 +23,14 @@ Tool path              Host path                                    Kept
   maps below ``outputs/<thread slug>/``.
 * **``.run/`` is the run data.** It lies outside every kept folder, so the
   blob store never holds it, and the broker deletes it when the run ends.
-* **Every other dot name at the root is refused**: ``.git``, ``.cc-instance``,
-  ``.local`` and the rest.
+* **Only four heads exist**: ``agent-data/``, ``inputs/``, ``outputs/`` and
+  ``.run/``. A file at the root (a planted ``pandas.py``), any other folder,
+  and any part that starts with a dot (``.git``, ``.cc-instance``, the skill
+  author marker) are refused (review P1, fix round 1).
+* **A skill folder belongs to the member who made it**
+  (``agent_paths.claim_skill``). The store refuses to read, list, write or
+  delete a skill folder that another member made, so no member's skill text
+  or code reaches another member's run.
 * **Every open goes through** :mod:`acb_skills.safe_open`, so a link at any
   depth fails the call, also one that appears during it.
 * **Every call holds the dir lock** (``guard.hold()``, the broker's
@@ -62,12 +68,14 @@ from acb_skills import safe_open
 
 _log = get_logger("acb_skills.tenant_file_store")
 
-__all__ = ["OUTPUTS", "RUN_DATA", "HostFileGuard", "TenantFileStore"]
+__all__ = ["KEPT_HEADS", "OUTPUTS", "RUN_DATA", "HostFileGuard", "TenantFileStore"]
 
 #: The tool path of the thread's own output folder.
 OUTPUTS = "outputs"
 #: The tool path of the run data (``/workspace/.run`` in the container).
 RUN_DATA = ".run"
+#: The kept folders a tool path may start with, besides ``outputs`` and ``.run``.
+KEPT_HEADS = ("agent-data", "inputs")
 
 
 class HostFileGuard(Protocol):
@@ -107,12 +115,18 @@ class TenantFileStore(FileSystemAgentFileStore):
         outputs_rel: str,
         run_data: Path,
         guard: HostFileGuard,
+        member: str = "",
     ) -> None:
         super().__init__(workspace)
         self._workspace = Path(workspace)
         self._outputs_rel = outputs_rel.strip("/")
         self._run_data = Path(run_data)
         self._guard = guard
+        #: The run's own member, from the run binding: the author of the
+        #: skills this run may touch.
+        self._member = str(member or "").strip().lower()
+        #: This thread's own output folder name: the one ``outputs/`` maps to.
+        self._own_slug = self._outputs_rel.rsplit("/", 1)[-1]
 
     # ── the map ─────────────────────────────────────────────────────────────
 
@@ -121,15 +135,64 @@ class TenantFileStore(FileSystemAgentFileStore):
         if not parts:
             return _Place(self._workspace, "", None)
         head, rest = parts[0], parts[1:]
+        if any(part.startswith(".") for part in rest):
+            raise safe_open.UnsafePath("A name that starts with a dot is not a workspace file.")
         if head == OUTPUTS:
             rel = "/".join([self._outputs_rel, *rest])
             return _Place(self._workspace, rel, rel, outputs=True)
         if head == RUN_DATA:
             return _Place(self._run_data, "/".join(rest), None, run_data=True)
-        if head.startswith("."):
-            raise safe_open.UnsafePath(f"{head!r} is not a file of this workspace.")
+        if head not in KEPT_HEADS:
+            raise safe_open.UnsafePath(
+                f"{head!r} is not a workspace folder. Use agent-data/, inputs/, "
+                "outputs/ or .run/."
+            )
         rel = "/".join(parts)
         return _Place(self._workspace, rel, rel)
+
+    def _foreign_skill(self, place: _Place) -> bool:
+        """True when *place* lies in a skill folder that another member made."""
+        from acb_skills.agent_paths import skill_author, skill_top_rel
+
+        if place.store_rel is None or place.root != self._workspace:
+            return False
+        # A path inside a skill folder, or the skill folder itself.
+        top = skill_top_rel(place.store_rel) or skill_top_rel(f"{place.store_rel}/x")
+        if top is None:
+            return False
+        author = skill_author(self._workspace, top)
+        return author is not None and author != self._member
+
+    def _refuse_foreign_skill(self, place: _Place) -> None:
+        if self._foreign_skill(place):
+            raise ValueError("That skill belongs to another member.")
+
+    async def _claim(self, place: _Place, *, create: bool = True) -> None:
+        """Check the write rules, and record this member on a new skill folder.
+
+        A delete checks the rules with *create* off, so it never makes an author.
+        """
+        from acb_skills.agent_paths import claim_skill, refused_write
+
+        if place.store_rel is None:
+            return
+        reason = await asyncio.to_thread(
+            refused_write, self._workspace, place.store_rel,
+            member=self._member, own_slug=self._own_slug,
+        )
+        if reason:
+            raise ValueError(f"Refused: {reason}.")
+        if not create:
+            return
+        claimed = await asyncio.to_thread(
+            claim_skill, self._workspace, place.store_rel, self._member,
+        )
+        if claimed is not None:
+            from acb_skills.write_artifact import mirror_to_blob_store
+
+            await mirror_to_blob_store(
+                claimed[0], claimed[1], mime_type="text/plain", action="create",
+            )
 
     async def _prepare(self, place: _Place) -> None:
         if place.outputs or place.run_data:
@@ -188,6 +251,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         self._decide("file_access_write", place, data=data)
         async with self._guard.hold():
             await self._prepare(place)
+            await self._claim(place)
             existed = await asyncio.to_thread(safe_open.is_file, place.root, place.rel)
             await asyncio.to_thread(
                 safe_open.write_bytes, place.root, place.rel, data, exclusive=not overwrite,
@@ -212,6 +276,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         if not place.rel:
             return None
         async with self._guard.hold():
+            await asyncio.to_thread(self._refuse_foreign_skill, place)
             raw = await asyncio.to_thread(safe_open.read_bytes, place.root, place.rel)
         if raw is None:
             return None
@@ -226,6 +291,7 @@ class TenantFileStore(FileSystemAgentFileStore):
             raise safe_open.UnsafePath("A delete needs a file name.")
         self._decide("file_access_delete", place, data=None)
         async with self._guard.hold():
+            await self._claim(place, create=False)
             deleted = await asyncio.to_thread(safe_open.unlink, place.root, place.rel)
         if deleted and place.store_rel is not None:
             from acb_skills.write_artifact import mirror_delete_from_blob_store
@@ -236,12 +302,19 @@ class TenantFileStore(FileSystemAgentFileStore):
     async def list_children(self, directory: str = "") -> list[FileStoreEntry]:
         place = self._place(directory)
         async with self._guard.hold():
+            await asyncio.to_thread(self._refuse_foreign_skill, place)
             listed = await asyncio.to_thread(safe_open.list_dir, place.root, place.rel)
-        entries = list(listed or [])
-        if place.root == self._workspace and not place.rel:
-            # The root shows the tool paths, never a hidden host entry.
-            entries = [(n, k) for n, k in entries if not n.startswith(".")]
-            entries.insert(0, (RUN_DATA, "dir"))
+            entries = [(n, k) for n, k in (listed or []) if not n.startswith(".")]
+            if place.root == self._workspace and not place.rel:
+                # The root shows the four tool heads, and nothing else.
+                heads = (*KEPT_HEADS, OUTPUTS)
+                entries = [(n, k) for n, k in entries if k == "dir" and n in heads]
+                entries.insert(0, (RUN_DATA, "dir"))
+            elif place.store_rel == "agent-data/skills":
+                entries = [
+                    (n, k) for n, k in entries
+                    if not self._foreign_skill(self._place(f"agent-data/skills/{n}/SKILL.md"))
+                ]
         return [
             FileStoreEntry(
                 name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
@@ -254,6 +327,8 @@ class TenantFileStore(FileSystemAgentFileStore):
         if not place.rel:
             return False
         async with self._guard.hold():
+            if await asyncio.to_thread(self._foreign_skill, place):
+                return False
             return await asyncio.to_thread(safe_open.is_file, place.root, place.rel)
 
     async def create_directory(self, path: str) -> None:
@@ -261,6 +336,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         async with self._guard.hold():
             await self._prepare(place)
             if place.rel:
+                await asyncio.to_thread(self._refuse_foreign_skill, place)
                 await asyncio.to_thread(safe_open.ensure_dir, place.root, place.rel)
 
     async def search(
