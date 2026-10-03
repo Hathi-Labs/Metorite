@@ -574,6 +574,15 @@ export async function updateEmailAccount(
   return mapAccount(raw);
 }
 
+/**
+ * "Keep separate" (false) or "Show in All inboxes" (true), through
+ * `PATCH /email/accounts/{id}` (EM-T8g-2, D-EM-28). The store calls this, so
+ * no file outside `api.ts`, `mailbox.ts` and `types.ts` names the flag.
+ */
+export function setMailboxPooled(id: string, pooled: boolean): Promise<EmailAccount> {
+  return updateEmailAccount(id, { inAllInboxes: pooled });
+}
+
 // ── Folders ──────────────────────────────────────────────────────────────
 
 export interface EmailFolderRaw {

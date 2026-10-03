@@ -36,7 +36,7 @@ const api = vi.hoisted(() => ({
   triggerSync: vi.fn(),
   setLabelColor: vi.fn(),
   snoozeEmail: vi.fn(),
-  updateEmailAccount: vi.fn(),
+  setMailboxPooled: vi.fn(),
   getEmail: vi.fn(),
 }));
 
@@ -616,7 +616,9 @@ describe("email-all-folder-sums, the review round", () => {
 // ── WS-17 EM-T8g-2 — "Keep separate", the store half ───────────────────────
 
 describe("email-separate-leaves-at-once", () => {
-  const row = (id: string) => ({ id, accountId: id.split("-")[0], threadId: id, categories: [] });
+  const row = (id: string) => ({
+    id, accountId: id.split("-")[0], threadId: id, categories: [], folder: "inbox", isRead: true,
+  });
   const raw = (name: string, count: number) => ({
     provider_folder_id: name, name, type: "system", message_count: count, unread_count: 0,
   });
@@ -628,8 +630,8 @@ describe("email-separate-leaves-at-once", () => {
     api.listEmailFolders.mockReset();
     api.listEmailFolders.mockResolvedValue([raw("Inbox", 3)]);
     // The PATCH answer holds no default flag and no unread count.
-    api.updateEmailAccount.mockImplementation(async (id: string, u: { inAllInboxes?: boolean }) =>
-      ({ ...box(id), inAllInboxes: u.inAllInboxes }));
+    api.setMailboxPooled.mockImplementation(async (id: string, pooled: boolean) =>
+      ({ ...box(id), inAllInboxes: pooled }));
     useEmailStore.setState({
       accounts: [box("a", true), box("b"), box("c")],
       selectedEmailId: null,
@@ -671,7 +673,7 @@ describe("email-separate-leaves-at-once", () => {
     const ok = await useEmailStore.getState().setInAllInboxes("c", false);
     const s = useEmailStore.getState();
     expect(ok).toBe(true);
-    expect(api.updateEmailAccount).toHaveBeenCalledWith("c", { inAllInboxes: false });
+    expect(api.setMailboxPooled).toHaveBeenCalledWith("c", false);
     expect(s.emails.map((e) => e.id)).toEqual(["a-1", "b-1"]);
     expect([...s.selectedIds]).toEqual(["b-1"]);
     expect([s.selectedEmailId, s.viewAll]).toEqual([null, true]);
@@ -719,8 +721,8 @@ describe("email-separate-leaves-at-once", () => {
     expect([a.isDefault, a.unreadCount, a.inAllInboxes]).toEqual([true, 4, false]);
   });
 
-  it("changes nothing on a refusal, and says so", async () => {
-    api.updateEmailAccount.mockRejectedValue(Object.assign(new Error("No fields to update"), { status: 400 }));
+  it("changes nothing on a refusal, says so, and reads the accounts again", async () => {
+    api.setMailboxPooled.mockRejectedValue(Object.assign(new Error("No fields to update"), { status: 400 }));
     api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), box("c")]);
     useEmailStore.setState({ emails: [row("a-1"), row("c-1")] as never, selectedEmailId: "c-1" });
     const ok = await useEmailStore.getState().setInAllInboxes("c", false);
@@ -729,6 +731,19 @@ describe("email-separate-leaves-at-once", () => {
     expect(s.error).toBe("No fields to update");
     expect([s.emails.map((e) => e.id), s.selectedEmailId, s.viewAll]).toEqual([["a-1", "c-1"], "c-1", true]);
     expect(s.accounts.every((m) => m.inAllInboxes !== false)).toBe(true);
+    expect(api.listEmails).not.toHaveBeenCalled();
+    // The list on screen becomes the server's again (review F6).
+    expect(api.listEmailAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the answer of the server over the request", async () => {
+    // The server kept the mailbox in All inboxes (review F6).
+    api.setMailboxPooled.mockResolvedValue({ ...box("c"), inAllInboxes: true });
+    useEmailStore.setState({ emails: [row("a-1"), row("c-1")] as never });
+    expect(await useEmailStore.getState().setInAllInboxes("c", false)).toBe(true);
+    const s = useEmailStore.getState();
+    expect(s.accounts.every((m) => m.inAllInboxes !== false)).toBe(true);
+    expect([s.emails.map((e) => e.id), s.viewAll]).toEqual([["a-1", "c-1"], true]);
     expect(api.listEmails).not.toHaveBeenCalled();
   });
 
@@ -755,12 +770,13 @@ describe("email-separate-leaves-at-once", () => {
     expect([s.viewAll, s.selectedAccountId, s.selectedEmailOverride?.id]).toEqual([true, "a", "b-9"]);
   });
 
-  it("drops the rows of a mailbox that another tab kept separate", async () => {
+  it("drops the rows, the checks and the open mail of a mailbox that another tab kept separate", async () => {
     const release = held();
     api.listEmails.mockReturnValue(new Promise(() => {}));
     useEmailStore.setState({
-      emails: [row("a-1"), row("c-1")] as never,
+      emails: [row("a-1"), row("c-1"), row("c-2")] as never,
       selectedEmailId: "c-1",
+      selectedIds: new Set(["a-1", "c-2"]),
       allFolderCounts: SUMS,
     });
     api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), sep("c")]);
@@ -768,6 +784,8 @@ describe("email-separate-leaves-at-once", () => {
     const s = useEmailStore.getState();
     expect([s.emails.map((e) => e.id), s.selectedEmailId, s.viewAll, s.allFolderCounts])
       .toEqual([["a-1"], null, true, null]);
+    // A check that stayed would let a bulk act reach a hidden mail (review F3).
+    expect([...s.selectedIds]).toEqual(["a-1"]);
     await release();
     expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
   });
@@ -781,6 +799,195 @@ describe("email-separate-leaves-at-once", () => {
     expect(api.listEmails).toHaveBeenCalledTimes(1);
     await release();
     expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("reads the list and the sums again when another tab connects a mailbox", async () => {
+    const release = held();
+    useEmailStore.setState({ accounts: [box("a", true), box("b")], allFolderCounts: SUMS });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), box("d")]);
+    await useEmailStore.getState().fetchAccounts();
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    expect(api.listEmails).toHaveBeenCalledTimes(1);
+    await release();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b", "d"]);
+  });
+});
+
+// ── WS-17 EM-T8g-2 review round 1 ──────────────────────────────────────────
+//   * F1: a disconnect reads the pool, not the count of mailboxes.
+//   * F4: only the newest list read lands, and a background read or a page
+//     that started under another pool drops its answer.
+//   * F5: the hidden selected mailbox of All inboxes stays pooled.
+//   * F7: a quiet re-read reconciles the pool, as a full re-read does.
+describe("email-separate-leaves-at-once, review round 1", () => {
+  const row = (id: string) => ({
+    id, accountId: id.split("-")[0], threadId: id, categories: [], folder: "inbox", isRead: true,
+  });
+  const sep = (id: string, isDefault = false): EmailAccount => ({ ...box(id, isDefault), inAllInboxes: false });
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([]);
+    api.setMailboxPooled.mockImplementation(async (id: string, pooled: boolean) =>
+      ({ ...box(id), inAllInboxes: pooled }));
+    useEmailStore.setState({
+      accounts: [box("a", true), box("b"), box("c")],
+      selectedEmailId: null,
+      selectedEmailOverride: null,
+      selectedIds: new Set(),
+      allFolderCounts: null,
+      emailsPage: 1,
+      emailsTotal: 0,
+      loadingMore: false,
+      searchQuery: "",
+      searchFilters: [],
+      error: null,
+    });
+  });
+  afterEach(async () => {
+    await flush();
+    await flush();
+  });
+
+  it("F1: a disconnect that leaves one pooled mailbox ends All inboxes", async () => {
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")] });
+    await useEmailStore.getState().deleteAccount("b");
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([false, "a"]);
+    expect(api.listEmails.mock.calls.at(-1)?.[0].accountId).toBe("a");
+  });
+
+  it("F1: a disconnect of the hidden mailbox moves it to a pooled mailbox", async () => {
+    // The default, c, is separate. All inboxes keeps a, and a goes.
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      accounts: [sep("c", true), box("a"), box("b"), box("d")],
+      selectedAccountId: "a",
+      emails: [row("a-1"), row("b-1")] as never,
+    });
+    await useEmailStore.getState().deleteAccount("a");
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([true, "b"]);
+    expect(s.emails.map((e) => e.id)).toEqual(["b-1"]);
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0])).toContain("b");
+    expect(api.listLabels.mock.calls.map((c) => c[0])).toEqual(["b"]);
+  });
+
+  it("F4: a list read that started before the toggle never lands after it", async () => {
+    const old = deferred<ReturnType<typeof page>>();
+    api.listEmails.mockReturnValueOnce(old.promise).mockResolvedValue(page(["a-1", "b-1"]));
+    const stale = useEmailStore.getState().fetchEmails();
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    await flush();
+    old.resolve(page(["a-1", "b-1", "c-1"]));
+    await stale;
+    await flush();
+    expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(["a-1", "b-1"]);
+  });
+
+  it("F4: a stale read that fails leaves the error and the list to the newer read", async () => {
+    let fail: (e: unknown) => void = () => {};
+    api.listEmails
+      .mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }))
+      .mockResolvedValue(page(["a-1"]));
+    const stale = useEmailStore.getState().fetchEmails();
+    await useEmailStore.getState().fetchEmails();
+    fail(new Error("Gateway error 502"));
+    await stale;
+    const s = useEmailStore.getState();
+    expect([s.error, s.emailsLoading, s.emails.map((e) => e.id)]).toEqual([null, false, ["a-1"]]);
+  });
+
+  it("F4: a background read that started under another pool drops its answer", async () => {
+    useEmailStore.setState({ emails: [row("a-1")] as never, emailsLoading: false });
+    const late = deferred<ReturnType<typeof page>>();
+    api.listEmails.mockReturnValueOnce(late.promise);
+    const refresh = useEmailStore.getState().softRefresh();
+    // Another tab keeps c separate. No list read starts here.
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")] });
+    late.resolve(page(["a-1", "c-1"]));
+    await refresh;
+    expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(["a-1"]);
+  });
+
+  it("F4: a background read drops its answer when a newer read started", async () => {
+    useEmailStore.setState({ emails: [row("a-1")] as never, emailsLoading: false });
+    const late = deferred<ReturnType<typeof page>>();
+    api.listEmails.mockReturnValueOnce(late.promise).mockResolvedValueOnce(page(["a-2"]));
+    const refresh = useEmailStore.getState().softRefresh();
+    await useEmailStore.getState().fetchEmails();
+    late.resolve(page(["a-1"]));
+    await refresh;
+    expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(["a-2"]);
+  });
+
+  it("F4: a page of older mail drops when the toggle read the list again", async () => {
+    useEmailStore.setState({
+      emails: [row("a-1"), row("c-1")] as never, emailsTotal: 10, emailsPage: 1,
+    });
+    const more = deferred<ReturnType<typeof page>>();
+    api.listEmails.mockReturnValueOnce(more.promise).mockResolvedValue(page(["a-1", "b-1"]));
+    const loading = useEmailStore.getState().loadMoreEmails();
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    await flush();
+    more.resolve(page(["c-2"]));
+    await loading;
+    const s = useEmailStore.getState();
+    expect([s.emails.map((e) => e.id), s.loadingMore]).toEqual([["a-1", "b-1"], false]);
+  });
+
+  it("F5: a toggle of the hidden mailbox moves it to the default pooled mailbox", async () => {
+    useEmailStore.setState({ selectedAccountId: "a" });
+    await useEmailStore.getState().setInAllInboxes("a", false);
+    const s = useEmailStore.getState();
+    // a was the default. The first pooled mailbox takes its place.
+    expect([s.viewAll, s.selectedAccountId]).toEqual([true, "b"]);
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0])).toContain("b");
+    expect(api.listLabels.mock.calls.map((c) => c[0])).toEqual(["b"]);
+  });
+
+  it("F5: All inboxes, opened from a separate mailbox, keeps a pooled one", () => {
+    useEmailStore.setState({
+      accounts: [box("a", true), box("b"), sep("c")], viewAll: false, selectedAccountId: "c",
+    });
+    useEmailStore.getState().selectAll();
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([true, "a"]);
+    expect(api.listLabels.mock.calls.map((c) => c[0])).toEqual(["a"]);
+    // From a pooled mailbox, nothing moves.
+    api.listLabels.mockClear();
+    useEmailStore.setState({ viewAll: false, selectedAccountId: "b" });
+    useEmailStore.getState().selectAll();
+    expect(useEmailStore.getState().selectedAccountId).toBe("b");
+    expect(api.listLabels).not.toHaveBeenCalled();
+  });
+
+  it("F7: a quiet re-read drops the rows, the checks and the open mail of a mailbox that left", async () => {
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      emails: [row("a-1"), row("c-1")] as never,
+      selectedEmailId: "c-1",
+      selectedIds: new Set(["a-1", "c-1"]),
+    });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), sep("c")]);
+    await useEmailStore.getState().refreshAccounts();
+    const s = useEmailStore.getState();
+    expect([s.emails.map((e) => e.id), [...s.selectedIds], s.selectedEmailId, s.viewAll])
+      .toEqual([["a-1"], ["a-1"], null, true]);
+    expect(api.listEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("F7: a quiet re-read with one pooled mailbox ends All inboxes", async () => {
+    api.listEmailAccounts.mockResolvedValue([box("a", true), sep("b"), sep("c")]);
+    await useEmailStore.getState().refreshAccounts();
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([false, "a"]);
   });
 });
 

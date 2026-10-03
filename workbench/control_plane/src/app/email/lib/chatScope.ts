@@ -19,7 +19,7 @@
  */
 import { ALL_INBOXES, pickInitialView } from "./emailStore";
 import { chatMailboxName, type PersonaAccount } from "./emailAssistantPersona";
-import { hasAllInboxes, mailboxAccent } from "./mailbox";
+import { hasAllInboxes, mailboxAccent, type PoolFlag } from "./mailbox";
 import type { EmailAccount } from "./types";
 
 /** A pick in the chat, held against the page scope it was made on. When the
@@ -46,7 +46,7 @@ export interface ChatScope {
  * that mailbox is still its own scope (EM-T8g-2 item 5).
  */
 export function chatScope(
-  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault" | "inAllInboxes">>,
+  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault"> & PoolFlag>,
   pageScope: string | null,
   pick: ChatScopePick | null,
 ): ChatScope {

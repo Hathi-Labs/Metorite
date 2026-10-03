@@ -4548,7 +4548,7 @@ compact density and under a changed accent (CLAUDE.md §4).
 
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
-✅ T8g-1 MERGED #608 (2026-10-04, migration 229).
+✅ T8g-1 MERGED #608 (2026-10-04, migration 229). 🔨 T8g-2 is BUILT, not merged (2026-10-04), with review fix round 1.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -4788,8 +4788,8 @@ shows the error and moves nothing.
 **As-built notes.**
 
 - **One rule.** `isSeparate` and `pooledMailboxes` in `lib/mailbox.ts` decide the pool.
-  `hasAllInboxes` is true for two or more pooled mailboxes. A source scan fails when a file other
-  than `lib/api.ts` or `lib/mailbox.ts` reads the flag.
+  `hasAllInboxes` is true for two or more pooled mailboxes. A source scan of `src/` fails when a
+  file other than `lib/api.ts`, `lib/mailbox.ts` or `lib/types.ts` names the flag (review F2).
 - **The field.** `mapAccount` reads `in_all_inboxes`. Only an explicit `false` makes a mailbox
   separate, so a gateway before EM-T8g-1 keeps each mailbox in All inboxes.
 - **The menu (item 1).** `separateToggle` gives "Keep separate" or "Show in All inboxes".
@@ -4801,23 +4801,25 @@ shows the error and moves nothing.
   the flag, because the answer holds no default flag. In All inboxes, the rows, the checks and the
   open mail of a mailbox kept separate leave at once. Then the store reads the list and the sums
   again. Fewer than two pooled mailboxes end All inboxes for the default mailbox.
-- **Another tab.** `fetchAccounts` treats a mailbox that left the pool as a removed mailbox. A
-  mailbox that joined the pool makes the store read the list and the sums again.
+- **Another tab.** `fetchAccounts` and `refreshAccounts` call `applyPoolChange`, the one
+  reconciliation of the pool (review F7). A mailbox that left the pool leaves as a removed
+  mailbox does. A mailbox that joined the pool makes the store read the list and the sums again.
 - **Open in inbox (item 4).** `mailboxToOpen` in `lib/mailbox.ts` holds the rule of MB-3 and of
   item 4. In All inboxes, a mail of a separate mailbox opens in that mailbox.
 - **The chat (item 5).** `chatMailboxOptions` offers All inboxes for two or more pooled
   mailboxes, and a separate mailbox stays an option. The All inboxes persona lists only the pooled
   mailboxes. `chatScope` falls back through `pickInitialView`.
 - **No change (item 6).** The chips, the From row, "In <chip>", the import panels and the
-  reconnect banner still count each mailbox. New mail in All inboxes starts on the default
+  reconnect banner still count each mailbox. `attentionMailbox` in `lib/mailbox.ts` names the
+  mailbox of the reconnect banner (review F6). New mail in All inboxes starts on the default
   mailbox, also when the default is separate.
 
 **Narrowed.**
 
 - With one mailbox, the menu offers neither label and the row shows no word (§11.0).
 - A Refresh in All inboxes does not sync a separate mailbox. Its own view and its own loop sync it.
-- A re-read after a change in another tab ends All inboxes on the selected mailbox, as before. Only
-  a toggle in this tab moves to the default mailbox.
+- Each end of All inboxes goes to the default mailbox: a toggle, a disconnect and a re-read. Before
+  review round 1, a re-read stayed on the selected mailbox.
 - Nobody did the look check of CLAUDE.md §4: light mode, compact density and a changed accent. The
   agent had no browser, so a reviewer must do it.
 
@@ -4849,6 +4851,84 @@ shows the error and moves nothing.
 `npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat` gave 49
 files and 961 tests passed. The suites of Integrations and Organization gave 8 files and 92 tests
 passed.
+
+**Review fix round 1 (2026-10-04).** An independent verifier failed `9c02baed2` on one P1. This
+round fixes the P1 and the P2 findings. The contract with EM-T8g-1 did not change.
+
+| Finding | Fix | The test that goes red |
+|---|---|---|
+| F1 (P1): a disconnect counted the mailboxes, so All inboxes stayed open with one pooled mailbox. | `applyPoolChange` in the store is the one reconciliation of the pool. It reads `hasAllInboxes`, and the hidden mailbox takes `poolHome`. | `F1: a disconnect that leaves one pooled mailbox ends All inboxes`, `F1: a disconnect of the hidden mailbox moves it to a pooled mailbox` |
+| F2: the scan missed a destructure, a bracket read and the other apps. | The scan reads each source file of `src/` for the bare token. The store calls `setMailboxPooled` and `withPoolFlag`. | `is the one rule: no other file names the flag, in any app` |
+| F3: a re-read from another tab kept the checks of a mailbox that left. | `applyPoolChange` drops the checks with the rows and the open mail. | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| F4: a list read that started before a toggle could land after it. | `fetchEmails` takes a number, and only the newest read lands. `softRefresh` and `loadMoreEmails` drop an answer after a newer read or a change of the pool. | the five `F4:` cases |
+| F5: the hidden mailbox of All inboxes could be separate. | `poolHome` gives the pooled default, else the first pooled mailbox. `pickInitialView`, `selectAll` and the reconciliation use it. | the two `F5:` cases, `keeps a pooled mailbox selected out of view in All inboxes` |
+| F6: four rules had no fence. | `attentionMailbox` names the mailbox of the reconnect banner. New cases cover the menu of a pair, the server answer and the re-read after a refusal. | `names a separate mailbox in the reconnect banner`, `offers the way back with one pooled and one separate mailbox`, `takes the answer of the server over the request`, `changes nothing on a refusal, says so, and reads the accounts again` |
+| F7: a quiet re-read did not reconcile the pool. | `refreshAccounts` calls `applyPoolChange`. | the two `F7:` cases |
+
+- **Who calls the reconciliation.** A toggle, a disconnect, a re-read and a quiet re-read call
+  `applyPoolChange`. Fewer than two pooled mailboxes end All inboxes for the default mailbox.
+- **F8, a note.** A toggle that ends All inboxes moves the page scope. A chat pick of the
+  separated mailbox was made against All inboxes, so it drops with the page, and no note shows.
+  That is the pick rule of EM-T8e-3. The mailbox is still connected, so §11.6 case 17 does not
+  apply.
+- **A new mailbox joins the pool.** The verifier's M4 made a mailbox that another tab connects
+  count as joined. This round makes that the rule, so its rows and its sums show in All inboxes.
+  The opposite mutant is now killed.
+- **The F1 sweep.** Each other count of `accounts` in `src/app/email/` and
+  `src/components/email/` serves the chips, the From row, the settings picker or an empty list
+  (§11.0, item 6). None of them decides All inboxes.
+- **Also changed.** `loadMoreEmails` drops its page after a newer read, because F4 applies to it
+  too. A disconnect of a separate mailbox in All inboxes reads nothing again, because the pool
+  does not change.
+- **Known limit.** A quiet re-read that started before a toggle can land after it. It then shows
+  the old flag until the next re-read. The list stays correct, because the server leaves the
+  separate rows out.
+- **The EM-T8f-2 fence stays.** `deleteAccount` keeps `nextDefaultAfter(get().accounts, id)`
+  word for word, so the source scan of `email-disconnect-names-default` holds.
+
+**Round 1 mutation run.** The run killed 33 of 33 mutants. The script restored each file and
+checked its hash. V-M1 to V-M9 are the mutants of the verifier, moved to the new anchors. M6 of
+the verifier, the import panels, is not in the list. The EM-T8f-3 case `draws each panel on the
+page, keyed and named by its mailbox` holds its line.
+
+| Mutant | What it breaks | The case that goes red first |
+|---|---|---|
+| V-M1 | a destructured read of the flag in `page.tsx` | `is the one rule: no other file names the flag, in any app` |
+| V-M2 | a bracket read of the flag in `AccountSidebar.tsx` | the same scan |
+| V-M3 | the request wins over the answer of the server | `takes the answer of the server over the request` |
+| V-M4 | a new mailbox does not join the pool (the opposite of M4) | `reads the list and the sums again when another tab connects a mailbox` |
+| V-M5a, V-M5b | the reconnect banner skips a separate mailbox, in the rule and on the page | `names a separate mailbox in the reconnect banner (item 6)` |
+| V-M7, V-M8 | the menu and the word ask for two pooled mailboxes | `offers the way back with one pooled and one separate mailbox (review F6)` |
+| V-M9 | a refusal does not read the accounts again | `changes nothing on a refusal, says so, and reads the accounts again` |
+| F1-a | the end of All inboxes counts the mailboxes | `F1: a disconnect that leaves one pooled mailbox ends All inboxes` |
+| F1-b | a disconnect skips the reconciliation | `re-reads All inboxes when another mailbox goes` (EM-T8d) |
+| F1-c | the hidden mailbox takes the default, pooled or not | `F1: a disconnect of the hidden mailbox moves it to a pooled mailbox` |
+| F3-a, F3-b, F3-c | the checks, the rows or the open mail of a mailbox that left stay | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| F4-a | `fetchEmails` lands out of order | `F4: a list read that started before the toggle never lands after it` |
+| F4-b | `softRefresh` misses a change of the pool | `F4: a background read that started under another pool drops its answer` |
+| F4-c | `softRefresh` misses a newer read | `F4: a background read drops its answer when a newer read started` |
+| F4-d | `loadMoreEmails` adds to a list that was read again | `F4: a page of older mail drops when the toggle read the list again` |
+| F4-e | a stale read that fails sets the error | `F4: a stale read that fails leaves the error and the list to the newer read` |
+| F5-a | `pickInitialView` keeps a separate default | `keeps a pooled mailbox selected out of view in All inboxes (review F5)` |
+| F5-b, F5-e | `selectAll` keeps a separate hidden mailbox, or reads no labels | `F5: All inboxes, opened from a separate mailbox, keeps a pooled one` |
+| F5-c, F5-d | the reconciliation keeps a separate hidden mailbox, or reads no labels | `F5: a toggle of the hidden mailbox moves it to the default pooled mailbox` |
+| F5-f | `poolHome` skips the pooled default | `opens All inboxes for two or more mailboxes and no stored choice` (EM-T8d) |
+| F7-a | a quiet re-read skips the reconciliation | `F7: a quiet re-read with one pooled mailbox ends All inboxes` |
+| F7-b | a full re-read skips the reconciliation | `ends All inboxes when a re-read finds one mailbox` (EM-T8d) |
+| R-a | the toggle skips the reconciliation | `ends All inboxes for the default mailbox when fewer than two are pooled` |
+| R-b | the end of All inboxes stays on the hidden mailbox | the same case |
+| R-c | a change of the pool reads no list | `puts a mailbox back: the list and the sums are read again with it` |
+| R-d | a change of the pool keeps the old sums | `F4: a disconnect clears the sums before the new round lands` (EM-T8f-3) |
+| F2-c | a read of the flag in `src/components/email/` | `is the one rule: no other file names the flag, in any app` |
+
+The 46 mutants of the build ran again on the code of this round. 31 found their anchor, and the
+run killed 31 of 31. The other 15 edited code that this round moved into `applyPoolChange`,
+`poolHome` and `setMailboxPooled`, and the round mutants above cover it.
+
+**Round 1 verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat
+src/app/integrations src/app/settings/organization` gave 57 files and 1069 tests passed, with no
+unhandled error.
 
 **Gate.** 🟢 AGENT-SAFE.
 

@@ -229,14 +229,21 @@ export function swapSignature(body: string, oldSig: string, newSig: string): str
 // ── Keep separate (EM-T8g-2, D-EM-28 and D-EM-30) ──────────────────────────
 
 /** A mailbox with the flag of "Keep separate". Absent means "in All inboxes",
- *  so a gateway before EM-T8g-1 keeps each mailbox in All inboxes. */
-interface PoolFlag {
+ *  so a gateway before EM-T8g-1 keeps each mailbox in All inboxes. Only this
+ *  file, `api.ts` and `types.ts` name the flag. Each other file takes this
+ *  type and the functions below (review F2). */
+export interface PoolFlag {
   inAllInboxes?: boolean | null;
 }
 
 /** True when the member keeps this mailbox out of All inboxes (D-EM-28). */
 export function isSeparate(account: PoolFlag): boolean {
   return account.inAllInboxes === false;
+}
+
+/** A copy of `account` with the flag set: in All inboxes, or separate. */
+export function withPoolFlag<T extends PoolFlag>(account: T, pooled: boolean): T {
+  return { ...account, inAllInboxes: pooled };
 }
 
 /**
@@ -254,6 +261,36 @@ export function pooledMailboxes<T extends PoolFlag>(accounts: ReadonlyArray<T>):
 /** True when All inboxes shows: two or more pooled mailboxes (D-EM-30). */
 export function hasAllInboxes(accounts: ReadonlyArray<PoolFlag>): boolean {
   return pooledMailboxes(accounts).length > 1;
+}
+
+/**
+ * The mailbox that All inboxes keeps selected out of view: the default when
+ * it is pooled, else the first pooled mailbox, else null. The folder tree,
+ * the label colours and the labels of All inboxes come from it, so it is
+ * never a separate mailbox (EM-T8g-2 review F1 and F5).
+ */
+export function poolHome<T extends { id: string; isDefault?: boolean } & PoolFlag>(
+  accounts: ReadonlyArray<T>,
+): T | null {
+  const pooled = pooledMailboxes(accounts);
+  return pooled.find((a) => a.isDefault) ?? pooled[0] ?? null;
+}
+
+/**
+ * The mailbox that the reconnect banner names: the selected one, or in All
+ * inboxes the first mailbox that needs it. A separate mailbox counts too,
+ * because a failure must never hide (EM-T8d review, EM-T8g-2 item 6).
+ */
+export function attentionMailbox<T extends { id: string; syncStatus?: string }>(state: {
+  viewAll: boolean;
+  selectedAccountId: string | null;
+  accounts: ReadonlyArray<T>;
+  authErrors: Readonly<Record<string, string>>;
+}): T | null {
+  const scope = state.viewAll
+    ? state.accounts
+    : state.accounts.filter((a) => a.id === state.selectedAccountId);
+  return scope.find((a) => a.syncStatus === "error" || !!state.authErrors[a.id]) ?? null;
 }
 
 /** The item of the mailbox menu that moves a mailbox in or out of All

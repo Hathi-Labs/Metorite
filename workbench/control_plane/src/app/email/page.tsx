@@ -46,7 +46,7 @@ import {
 import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
 import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
-import { ownAddresses, pooledMailboxes, replyRecipients } from "./lib/mailbox";
+import { attentionMailbox, ownAddresses, pooledMailboxes, replyRecipients } from "./lib/mailbox";
 import { isSearchActive } from "./lib/searchFilters";
 
 export default function EmailPage() {
@@ -228,10 +228,8 @@ export default function EmailPage() {
   const pooledCount = pooledMailboxes(accounts).length;
   // The mailbox that the reconnect banner names: the selected one, or in All
   // inboxes the first mailbox that needs it, so a second mailbox cannot fail
-  // out of sight (EM-T8d review).
-  const attentionAccount =
-    (viewAll ? accounts : selectedAccount ? [selectedAccount] : [])
-      .find((a) => a.syncStatus === "error" || authErrors[a.id]) ?? null;
+  // out of sight (EM-T8d review). A separate mailbox counts too (EM-T8g-2).
+  const attentionAccount = attentionMailbox({ viewAll, selectedAccountId, accounts, authErrors });
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =

@@ -18,9 +18,11 @@
  * passes no scope and stays on one mailbox. Fence: `chatScope.test.ts`.
  */
 
-import { mailboxLabel, pooledMailboxes } from "./mailbox";
+import { mailboxLabel, pooledMailboxes, type PoolFlag } from "./mailbox";
 
-export interface PersonaAccount {
+/** `PoolFlag` carries "Keep separate" in the store shape (EM-T8g-2, D-EM-28).
+ *  The All inboxes persona lists only the pooled mailboxes. */
+export interface PersonaAccount extends PoolFlag {
   id: string;
   /** The raw stored label. Never drawn: two Outlook mailboxes share "Outlook"
    *  (MB-15). The display label wins. */
@@ -33,9 +35,6 @@ export interface PersonaAccount {
   displayLabel?: string | null;
   /** The label to draw (EM-T8b), gateway shape. */
   display_label?: string | null;
-  /** False for a separate mailbox, store shape (EM-T8g-2, D-EM-28). The All
-   *  inboxes persona lists only the pooled mailboxes. */
-  inAllInboxes?: boolean | null;
 }
 
 export interface PersonaOpenEmail {
