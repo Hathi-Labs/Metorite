@@ -522,6 +522,47 @@ class Settings(BaseSettings):
     copilot_sandbox_idle_ttl_seconds: int = 600          # app-builder sticky-container reap window
     copilot_sandbox_state_dir: str = ""         # "" resolves to {agents_clone_dir}/.copilot-sandbox-state
 
+    # WS-43c — the sandbox broker (orchestrator/sandbox_broker.py, spec
+    # project-docs/specs/maf_coding_engine.md §7.1, D83). It ships DARK.
+    #
+    # MAF_CODING_SCOPE is a comma list of `<target>:<org>` entries. A target is
+    # `code_task` or `app_builder`. An org is one organization id, or `*` for
+    # every organization. Empty (the default) turns every target off, and the
+    # broker then starts no container. To set it on production is the owner
+    # gate WS43-G3. The parser is sandbox_broker.parse_maf_coding_scope, and an
+    # unknown target makes the whole value fail closed.
+    maf_coding_scope: str = ""
+    # The sandbox image, by an immutable reference only: `name@sha256:<digest>`
+    # or a local image id `sha256:<id>`. The broker refuses a tag. Empty (the
+    # default) means no image, so the broker starts nothing. WS-43b builds the
+    # image, and to load it on the box is the owner gate WS43-G2.
+    sandbox_image: str = ""
+    # The container limits of §7.1 rule 6. `sandbox_memory` sets both
+    # `--memory` and `--memory-swap`, so the container gets no swap.
+    sandbox_cpus: str = "1"
+    sandbox_memory: str = "1g"
+    sandbox_pids_limit: int = 256
+    sandbox_tmpfs_mb: int = 256                 # the /tmp tmpfs size
+    # Exec limits of §7.1 rule 9: the longest timeout one exec may ask for, and
+    # the output cap (the first half and the last half are kept).
+    sandbox_exec_max_timeout_seconds: int = 300
+    sandbox_output_cap_bytes: int = 12288
+    # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
+    sandbox_max_per_org: int = 2
+    sandbox_max_total: int = 4
+    # Disk checks of §7.1 rule 10. The floor is the free space of the file
+    # system that holds state_root(). The owner sizes it at WS43-G3.
+    sandbox_min_free_disk_mb: int = 5120
+    sandbox_workspace_quota_mb: int = 2048
+    # The reaper of §7.1 rule 12.
+    sandbox_idle_ttl_seconds: int = 600
+    sandbox_max_lifetime_seconds: int = 7200
+    sandbox_reaper_interval_seconds: int = 60
+    # Where the broker keeps its sandbox-dir list and the empty `.git` cover.
+    # It must lie outside every mount root. "" resolves to
+    # {agents_clone_dir}/sandbox-broker, a sibling of state/ and repos/.
+    sandbox_state_dir: str = ""
+
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'
     # requirements.txt/pyproject.toml install straight into the SHARED
