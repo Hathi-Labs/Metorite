@@ -4047,6 +4047,65 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 
 ##### EM-T8f-3 — the views of each mailbox and the chat picker
 
+**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-views`. No migration
+and no backend change.
+
+**As built (2026-10-03).**
+
+- **Summed counts (item 1).** In All inboxes the store reads the folders of each mailbox. It sums
+  the provider `message_count` of the six well-known folders. `sumFolderCounts` and
+  `allInboxesFolders` in `lib/emailStore.ts` hold the rule. A failed read adds 0. A custom folder
+  shows no count. Before the sums land, no folder shows a count, so the count of one mailbox never
+  reads as the sum.
+- **The store bounds the reads.** At most 4 reads run at one time (`FOLDER_SUM_CONCURRENCY`),
+  because Q-MB-1 sets no limit on the mailboxes. The store runs one round of reads at a time. A
+  request while a round is out asks for one more round. So a sync of each mailbox never starts a
+  round for each mailbox. Nothing awaits the reads, and the list never waits on them.
+- **When the store reads the sums.** It reads them when All inboxes opens, after a sync in All
+  inboxes, and when a mailbox leaves. `folders` stays the tree of one mailbox.
+- **Import panels (item 2).** `firstSyncPanels` in `lib/onboarding.ts` gives one panel for each
+  mailbox whose first sync runs. The mailbox in view comes first. With two or more mailboxes, each
+  panel draws the chip of its mailbox beside the address. With one mailbox the panel does not
+  change (§11.0).
+- **The chat picker (item 3).** `chatMailboxOptions` gives each mailbox option the dot of
+  `mailboxAccent()`, as a `bg-cat-*` class. All inboxes has none. `AgentChat` takes the dot as an
+  optional `accent` on each option, and draws it beside the label. The trigger shows the dot of
+  the mailbox in force. `/chat` sends no `accent`, so its picker does not change. The mark of the
+  option in force is `text-primary`, not `text-emerald-400`.
+- **The removed-mailbox note (item 4).** `rememberChatScope` holds the scope of the render before.
+  When the mailbox of that scope leaves, it gives one note. The note names that mailbox and the
+  new scope. `AgentChat` takes the note as an optional `notice` prop, and draws it above the
+  composer with a dismiss button. A pick clears the note. All inboxes that ends because one
+  mailbox is left gives no note.
+
+**Narrowed.**
+
+- One mailbox gets no dot in the chat picker, because the chips show only for two or more
+  mailboxes (§11.0).
+- All, Starred and Snoozed show no count in All inboxes. Item 1 names six folders. The All count
+  of one mailbox also counts its custom folders, so a sum of it would be wrong.
+- A failed read of the sums does not show the reconnect banner. `fetchFolders` marks a 401 for the
+  mailbox in view, and the read of the sums does not.
+
+**Outside the stated scope.**
+
+- `lib/onboarding.ts` holds `firstSyncPanels`, beside `firstSyncSurface`.
+- `src/lib/theme/conformance.test.ts` lowers the `PALETTE_DEBT` of `AgentChat.tsx` from 14 to 13.
+  The ratchet fails a file that got better until its number goes down.
+- Three older fences changed shape. `connect.test.ts`, `onboarding.test.ts` and
+  `onboardingRules.test.ts` read `firstSyncPanels` now, not one `pendingAccount`.
+- `chatScope.ts` imports `mailboxAccent` from `components/MailboxChip.tsx`. That is an import
+  from `lib/` into `components/`.
+
+**Fences.** `allInboxes.test.ts` names `email-all-folder-sums` and `email-import-panel-each`.
+`allInboxesStore.test.ts` holds the store half of `email-all-folder-sums`. `chatScope.test.ts`
+names `email-chat-picker-dot` and `email-chat-removed-note`. The first mutation run killed 34 of
+35 mutants. A new case kills the one that survived, a move away from a mailbox that stays
+connected. The second run killed 3 of 3.
+
+**Not checked.** This session had no browser. Nobody looked at the sidebar, the panels or the chat
+picker in light mode, at compact density or under a changed accent.
+
 **Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `page.tsx`,
 `OnboardingPanel.tsx`, `FirstSyncBanner.tsx`, `src/components/AgentChat.tsx`,
 `EmailAssistantChat.tsx` and `lib/chatScope.ts`. It needs no backend change.

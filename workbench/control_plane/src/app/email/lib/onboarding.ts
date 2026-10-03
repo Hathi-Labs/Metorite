@@ -20,6 +20,7 @@
  */
 
 import { autoDraftRepliesOn } from "./assistantSettings";
+import { isFirstSyncPending } from "./connect";
 import type { AssistantSettings, AutomationRule, EmailAccount } from "./types";
 
 // ── The stage ───────────────────────────────────────────────────────────────
@@ -76,6 +77,36 @@ export function firstSyncSurface(
   account: StageFields & Pick<EmailAccount, "importPhase">,
 ): "progress" | "banner" {
   return onboardingStage(account) === "importing" && !!account.importPhase ? "progress" : "banner";
+}
+
+/** What the mail pane draws for one mailbox whose first sync runs. */
+export interface FirstSyncPanel<A> {
+  account: A;
+  surface: "progress" | "banner";
+  /** True for two or more mailboxes: the panel draws the chip of its mailbox
+   *  beside the address. One mailbox sees no change (§11.0). */
+  named: boolean;
+}
+
+/**
+ * One panel for each mailbox whose first sync runs (EM-T8f-3 item 2, §11.6
+ * case 19). The mailbox in view comes first, then the others in the order of
+ * the list. `isFirstSyncPending` decides which mailboxes run, the same rule as
+ * the poll, so an errored or paused mailbox gets no panel.
+ * `firstSyncSurface` decides what each panel draws.
+ *
+ * `inView` is the mailbox of the page, or null in All inboxes.
+ */
+export function firstSyncPanels<
+  A extends Pick<EmailAccount, "id"> & StageFields & Pick<EmailAccount, "importPhase">,
+>(accounts: ReadonlyArray<A>, inView: string | null): FirstSyncPanel<A>[] {
+  const pending = accounts.filter((a) => isFirstSyncPending(a));
+  const ordered = [
+    ...pending.filter((a) => a.id === inView),
+    ...pending.filter((a) => a.id !== inView),
+  ];
+  const named = accounts.length > 1;
+  return ordered.map((account) => ({ account, surface: firstSyncSurface(account), named }));
 }
 
 // ── The progress of the import (D-EM-16) ────────────────────────────────────

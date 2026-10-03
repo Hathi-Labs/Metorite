@@ -38,13 +38,12 @@ import {
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
-  isFirstSyncPending,
   reconnectProvider,
   rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { firstSyncSurface, importProgress, onboardingStage } from "./lib/onboarding";
+import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
 import { folderLabel } from "./lib/utils";
 import { ownAddresses, replyRecipients } from "./lib/mailbox";
 import { isSearchActive } from "./lib/searchFilters";
@@ -127,6 +126,7 @@ export default function EmailPage() {
     replaceAccount,
     viewAll,
     selectAll,
+    allFolderCounts,
   } = useEmailStore();
   // The mailbox that the composer sends from: the mailbox of the mail a
   // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
@@ -290,10 +290,10 @@ export default function EmailPage() {
   // request, and the poll ticks once when the tab comes back. The interval
   // stops when the page unmounts.
   const firstSyncPending = shouldPollFirstSync(accounts);
-  const pendingAccount =
-    (selectedAccount && isFirstSyncPending(selectedAccount) ? selectedAccount : null) ??
-    accounts.find(isFirstSyncPending) ??
-    null;
+  // One panel for each mailbox whose first sync runs, the mailbox in view
+  // first. With two or more mailboxes each panel names its mailbox
+  // (EM-T8f-3, §11.6 case 19).
+  const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);
   useEffect(() => {
     if (!firstSyncPending) return;
     let cancelled = false;
@@ -459,6 +459,7 @@ export default function EmailPage() {
       onDisconnect={handleDisconnectRequest}
       onEditMailbox={handleEditMailbox}
       viewAll={viewAll}
+      folderSums={allFolderCounts}
       onSelectAll={handleSelectAll}
       showAutomation={false}
     />
@@ -777,6 +778,7 @@ export default function EmailPage() {
               onDisconnect={handleDisconnectRequest}
               onEditMailbox={handleEditMailbox}
               viewAll={viewAll}
+              folderSums={allFolderCounts}
               onSelectAll={handleSelectAll}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
@@ -1031,19 +1033,26 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── First sync of a new mailbox ──
+        {/* ── First sync of a new mailbox, one panel for each ──
             The import panel draws only when the gateway reports progress
             (`import_phase`, EM-T6b). Every other pending mailbox keeps the
             banner: one from before EM-T6, or a gateway before EM-T6b. */}
-        {pendingAccount &&
-          (firstSyncSurface(pendingAccount) === "progress" ? (
+        {importPanels.map(({ account, surface, named }) =>
+          surface === "progress" ? (
             <OnboardingPanel
-              address={pendingAccount.emailAddress}
-              progress={importProgress(pendingAccount, { now: new Date() })}
+              key={account.id}
+              address={account.emailAddress}
+              mailbox={named ? account : undefined}
+              progress={importProgress(account, { now: new Date() })}
             />
           ) : (
-            <FirstSyncBanner address={pendingAccount.emailAddress} />
-          ))}
+            <FirstSyncBanner
+              key={account.id}
+              address={account.emailAddress}
+              mailbox={named ? account : undefined}
+            />
+          ),
+        )}
 
         {/* ── The rules step of the guided setup (EM-T6d items 8 to 11) ──
             For the mailbox in view, once its import ended. Not a modal. */}

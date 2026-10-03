@@ -34,7 +34,7 @@ vi.mock("./api", async (importOriginal) => {
   return { ...real, ...api };
 });
 
-import { useEmailStore } from "./emailStore";
+import { FOLDER_SUM_CONCURRENCY, useEmailStore } from "./emailStore";
 import type { EmailAccount, EmailFolder } from "./types";
 
 const box = (id: string, isDefault = false): EmailAccount => ({
@@ -249,5 +249,166 @@ describe("the second review round", () => {
     useEmailStore.setState({ availableLabels: [] });
     await useEmailStore.getState().fetchEmails();
     expect(useEmailStore.getState().availableLabels).toEqual([]);
+  });
+});
+
+// WS-17 EM-T8f-3 — the store half of `email-all-folder-sums`
+// (`allInboxes.test.ts` holds the pure half). All inboxes reads the folders
+// of each mailbox, at most FOLDER_SUM_CONCURRENCY at one time, and sums the
+// provider counts of the six well-known folders. A failed read adds 0, and
+// the list never waits on the reads.
+describe("email-all-folder-sums, the store half", () => {
+  /** A read that the test settles by hand. */
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    let reject: (e: unknown) => void = () => {};
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+  const raw = (name: string, count: number, type = "system") => ({
+    provider_folder_id: name, name, type, message_count: count, unread_count: 0,
+  });
+  // A round that an earlier test started lands before this test begins, and
+  // its calls do not count here.
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([]);
+    useEmailStore.setState({ allFolderCounts: null });
+  });
+
+  it("reads each mailbox and sums the provider counts, by the canonical name", async () => {
+    api.listEmailFolders.mockImplementation(async (id: string) =>
+      id === "a"
+        ? [raw("Inbox", 7), raw("Sent Items", 2), raw("Deleted Items", 1), raw("Projects", 9, "user")]
+        : [raw("Inbox", 5), raw("Junk Email", 3), raw("Archive", 4), raw("Drafts", 1)],
+    );
+    useEmailStore.setState({ viewAll: false, allFolderCounts: null });
+    useEmailStore.getState().selectAll();
+    await flush();
+    await flush();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+    expect(useEmailStore.getState().allFolderCounts).toEqual({
+      inbox: 12, drafts: 1, sent: 2, archive: 4, junk: 3, trash: 1,
+    });
+    // The tree of the selected mailbox is not the sum.
+    expect(useEmailStore.getState().folders).toBe(folders);
+  });
+
+  it("adds 0 for a mailbox whose read fails", async () => {
+    api.listEmailFolders.mockImplementation(async (id: string) => {
+      if (id === "b") throw Object.assign(new Error("401"), { status: 401 });
+      return [raw("Inbox", 7)];
+    });
+    // The tree on screen holds 50. A failed read must not add it.
+    useEmailStore.setState({
+      viewAll: false,
+      allFolderCounts: null,
+      folders: [{ key: "inbox", label: "Inbox", count: 50, type: "system" } as EmailFolder],
+    });
+    useEmailStore.getState().selectAll();
+    await flush();
+    await flush();
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(7);
+  });
+
+  it("adds 0 for a read that does not merge, and the round still lands", async () => {
+    api.listEmailFolders.mockImplementation(async (id: string) => (id === "b" ? null : [raw("Inbox", 7)]));
+    useEmailStore.setState({ viewAll: true, allFolderCounts: null });
+    await expect(useEmailStore.getState().fetchAllFolderCounts()).resolves.toBeUndefined();
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(7);
+  });
+
+  it("never makes the list wait on the reads", async () => {
+    const pending = deferred<never[]>();
+    api.listEmailFolders.mockReturnValue(pending.promise);
+    api.listEmails.mockResolvedValue(page(["a-1", "b-1"]));
+    useEmailStore.setState({ viewAll: false, allFolderCounts: null });
+    useEmailStore.getState().selectAll();
+    await flush();
+    expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(["a-1", "b-1"]);
+    expect(useEmailStore.getState().emailsLoading).toBe(false);
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    pending.resolve([]);
+    await flush();
+    await flush();
+  });
+
+  it("keeps at most FOLDER_SUM_CONCURRENCY reads out at one time", async () => {
+    const reads = new Map<string, ReturnType<typeof deferred<ReturnType<typeof raw>[]>>>();
+    api.listEmailFolders.mockImplementation((id: string) => {
+      const d = deferred<ReturnType<typeof raw>[]>();
+      reads.set(id, d);
+      return d.promise;
+    });
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    useEmailStore.setState({ accounts: ids.map((id) => box(id, id === "a")), viewAll: false, allFolderCounts: null });
+    useEmailStore.getState().selectAll();
+    await flush();
+    expect(FOLDER_SUM_CONCURRENCY).toBe(4);
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(4);
+    reads.get("a")!.resolve([raw("Inbox", 1)]);
+    await flush();
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(5);
+    for (const id of ids) reads.get(id)?.resolve([raw("Inbox", 1)]);
+    await flush();
+    for (const id of ids) reads.get(id)?.resolve([raw("Inbox", 1)]);
+    await flush();
+    await flush();
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(6);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(6);
+  });
+
+  it("runs one round at a time: a request while one is out asks for one more", async () => {
+    const first = deferred<ReturnType<typeof raw>[]>();
+    const second = deferred<ReturnType<typeof raw>[]>();
+    api.listEmailFolders
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce([raw("Inbox", 2)])
+      .mockReturnValue(second.promise);
+    useEmailStore.setState({ viewAll: true, allFolderCounts: null });
+    void useEmailStore.getState().fetchAllFolderCounts();
+    void useEmailStore.getState().fetchAllFolderCounts();
+    void useEmailStore.getState().fetchAllFolderCounts();
+    await flush();
+    // One round of two reads is out. The two later requests start nothing.
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(2);
+    first.resolve([raw("Inbox", 100)]);
+    await flush();
+    await flush();
+    // One more round, not two, and the stale first round never lands.
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(4);
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    second.resolve([raw("Inbox", 3)]);
+    await flush();
+    await flush();
+    expect(api.listEmailFolders).toHaveBeenCalledTimes(4);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(6);
+  });
+
+  it("reads nothing outside All inboxes, and a view that left takes nothing", async () => {
+    useEmailStore.setState({ viewAll: false, allFolderCounts: null });
+    await useEmailStore.getState().fetchAllFolderCounts();
+    expect(api.listEmailFolders).not.toHaveBeenCalled();
+    const out = deferred<ReturnType<typeof raw>[]>();
+    api.listEmailFolders.mockReturnValue(out.promise);
+    useEmailStore.setState({ viewAll: true });
+    const run = useEmailStore.getState().fetchAllFolderCounts();
+    await flush();
+    useEmailStore.getState().selectAccount("b");
+    out.resolve([raw("Inbox", 9)]);
+    await run;
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+  });
+
+  it("reads the sums again when a mailbox leaves All inboxes", async () => {
+    api.listEmailFolders.mockResolvedValue([raw("Inbox", 3)]);
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), box("c")], allFolderCounts: null });
+    await useEmailStore.getState().deleteAccount("c");
+    await flush();
+    await flush();
+    expect(api.listEmailFolders.mock.calls.map((call) => call[0]).sort()).toEqual(["a", "b"]);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(6);
   });
 });

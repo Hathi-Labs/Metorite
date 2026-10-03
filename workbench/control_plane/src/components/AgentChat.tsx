@@ -193,12 +193,23 @@ interface AgentChatProps {
    * — rather than something inherited silently from whatever the inbox happened
    * to be showing — is what stops "which inbox is it talking about?" from being
    * unanswerable, and the switch is marked in the transcript when it happens.
+   *
+   * `accent` is optional: the class of a colour dot beside the label, from the
+   * categorical ramp (`mailboxAccent(a).dot` in the email app, EM-T8f-3).
+   * Never a hex value or a raw palette class. `/chat` sends none, and then
+   * the picker draws as before.
    */
-  mailboxes?: { id: string; label: string }[];
+  mailboxes?: { id: string; label: string; accent?: string }[];
   /** The mailbox currently in force. Controlled by the parent. */
   activeMailboxId?: string | null;
   /** Raised when the user picks a different mailbox in the composer. */
   onMailboxChange?: (id: string) => void;
+  /**
+   * One note above the composer, with an optional dismiss. The email chat
+   * sends one when the mailbox of its scope leaves (EM-T8f-3, §11.6 case 17).
+   * Optional: every other caller omits it, and nothing draws.
+   */
+  notice?: { text: string; onDismiss?: () => void } | null;
   /**
    * Force the model this chat runs on (e.g. the email app's assistant
    * `chat_model` setting). When set it overrides the per-agent localStorage
@@ -243,6 +254,7 @@ export default function AgentChat({
   mailboxes,
   activeMailboxId,
   onMailboxChange,
+  notice,
   model: forcedModel,
   lockModel,
   compact,
@@ -1783,6 +1795,30 @@ export default function AgentChat({
         )}
 
         <div className="max-w-3xl mx-auto">
+          {/* One note from the parent, for example the email chat after the
+              mailbox of its scope left (EM-T8f-3). A status, so a screen
+              reader hears it once. */}
+          {notice && (
+            <div
+              role="status"
+              className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <Icon name="Info" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1">{notice.text}</span>
+              {notice.onDismiss && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  onClick={notice.onDismiss}
+                  aria-label="Dismiss note"
+                  title="Dismiss note"
+                  className="shrink-0"
+                />
+              )}
+            </div>
+          )}
           {/* A watcher reads the room and cannot drive its agents. Saying so
               here is the difference between a boundary and a bug: the
               alternative is a 403 after they have typed a paragraph. */}
@@ -1971,7 +2007,16 @@ export default function AgentChat({
                       aria-expanded={showMailboxMenu}
                       className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[120px] sm:max-w-[170px]"
                     >
-                      <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      {/* The dot of the mailbox in force, when the parent
+                          sends one (EM-T8f-3). Else the mail glyph. */}
+                      {activeMailbox?.accent ? (
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeMailbox.accent}`}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      )}
                       <span className="truncate">
                         {activeMailbox?.label ?? "Pick mailbox"}
                       </span>
@@ -2013,9 +2058,19 @@ export default function AgentChat({
                                   : "text-muted-foreground hover:bg-secondary"
                               }`}
                             >
-                              <span className="truncate">{mb.label}</span>
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                {/* The dot always sits beside the label, so
+                                    the hue is never the only signal. */}
+                                {mb.accent && (
+                                  <span
+                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${mb.accent}`}
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                <span className="truncate">{mb.label}</span>
+                              </span>
                               {mb.id === activeMailboxId && (
-                                <span className="text-emerald-400 text-[10px] shrink-0">✓</span>
+                                <span className="text-primary text-[10px] shrink-0">✓</span>
                               )}
                             </button>
                           ))}

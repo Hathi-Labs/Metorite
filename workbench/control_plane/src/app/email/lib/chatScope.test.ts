@@ -16,6 +16,13 @@
 //     `emailContext.accountId` is null and no `getAssistantSettings` call
 //     runs. An open mail names its mailbox in the persona.
 //
+// WS-17 EM-T8f-3 (§11.7.6) adds two fences here:
+//   * `email-chat-picker-dot`: with two or more mailboxes, each mailbox option
+//     carries the dot of `mailboxAccent()`, and All inboxes none. The picker
+//     in `AgentChat.tsx` uses no raw palette class, and `/chat` sends no dot.
+//   * `email-chat-removed-note`: when the mailbox of the scope leaves, the
+//     chat shows one note that names it and the new scope.
+//
 // Vitest here runs in node and cannot render `EmailAssistantChat`. So the
 // decisions are pure functions in `chatScope.ts`, tested by behaviour, and a
 // source scan proves that the component wires them.
@@ -23,7 +30,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { chatMailboxOptions, chatScope, chatSettingsRead } from "./chatScope";
+import { isKnownIcon } from "@/lib/icons";
+
+import { mailboxAccent } from "../components/MailboxChip";
+import {
+  chatMailboxOptions,
+  chatScope,
+  chatSettingsRead,
+  rememberChatScope,
+  type ChatScopeMemory,
+  type ChatScopePick,
+} from "./chatScope";
 import { buildEmailAssistantPersona, chatMailboxName } from "./emailAssistantPersona";
 import { ALL_INBOXES } from "./emailStore";
 
@@ -49,7 +66,8 @@ describe("email-chat-scope-picker", () => {
     expect(chatMailboxOptions([work])).toEqual([
       { id: "acc-work", label: "Fracktal · vj@fracktal.in" },
     ]);
-    expect(chatMailboxOptions(both)).toEqual([
+    // EM-T8f-3 adds a dot to each mailbox option (`email-chat-picker-dot`).
+    expect(chatMailboxOptions(both).map(({ id, label }) => ({ id, label }))).toEqual([
       { id: ALL_INBOXES, label: "All inboxes" },
       { id: "acc-work", label: "Fracktal · vj@fracktal.in" },
       { id: "acc-home", label: "Personal · vj@outlook.com" },
@@ -229,5 +247,162 @@ describe("email-chat-scope-no-hidden-mailbox", () => {
     expect(all).toContain(line);
     expect(one).toContain(line);
     expect(all).toContain("msg-1");
+  });
+});
+
+/** Tailwind's own palette, named: the shape of rule 5 of `conformance.test.ts`. */
+const RAW_PALETTE =
+  /\b(?:bg|text|border|ring|fill|stroke|from|via|to|shadow|outline|decoration|accent|caret)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950)\b/;
+
+describe("email-chat-picker-dot", () => {
+  const slotted = [{ ...work, colorSlot: 3 }, { ...home, colorSlot: 11 }];
+
+  it("gives each mailbox option the dot of mailboxAccent(), and All inboxes none", () => {
+    const options = chatMailboxOptions(slotted);
+    expect(options[0]).toEqual({ id: ALL_INBOXES, label: "All inboxes" });
+    expect(options[1].accent).toBe(mailboxAccent(slotted[0]).dot);
+    expect(options[2].accent).toBe(mailboxAccent(slotted[1]).dot);
+    expect(options.slice(1).map((o) => o.accent)).toEqual(["bg-cat-3", "bg-cat-11"]);
+  });
+
+  it("takes the hash of the id for a mailbox with no slot, still on the ramp", () => {
+    const options = chatMailboxOptions(both);
+    expect(options[1].accent).toBe(mailboxAccent({ id: "acc-work" }).dot);
+    expect(options[2].accent).toBe(mailboxAccent({ id: "acc-home" }).dot);
+    for (const o of options.slice(1)) expect(o.accent).toMatch(/^bg-cat-\d{1,2}$/);
+  });
+
+  it("gives one mailbox no dot, because the chips show for two or more (§11.0)", () => {
+    expect(chatMailboxOptions([slotted[0]])).toEqual([{ id: "acc-work", label: "Fracktal · vj@fracktal.in" }]);
+  });
+
+  it("draws the dot beside the label in AgentChat, with no raw palette class", () => {
+    const agent = codeOnly(read("../../components/AgentChat.tsx"));
+    const start = agent.indexOf("{(mailboxes?.length ?? 0) > 0 && (");
+    const end = agent.indexOf("{!lockModel && (", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const picker = agent.slice(start, end);
+    expect(picker).not.toMatch(RAW_PALETTE);
+    expect(picker).not.toMatch(/#[0-9a-fA-F]{3,6}\b|\bstyle=\{/);
+    expect(picker).toContain("{mb.accent && (");
+    expect(picker).toContain("className={`h-1.5 w-1.5 shrink-0 rounded-full ${mb.accent}`}");
+    expect(picker).toContain("{activeMailbox?.accent ? (");
+    // The mark of the option in force is the house token for "on".
+    expect(picker).toContain('<span className="text-primary text-[10px] shrink-0">✓</span>');
+    // The prop stays optional, so another caller draws the picker as before.
+    expect(agent).toContain("mailboxes?: { id: string; label: string; accent?: string }[];");
+  });
+
+  it("leaves /chat with no dot, so its picker looks the same", () => {
+    const chatPage = codeOnly(read("../chat/page.tsx"));
+    const start = chatPage.indexOf("const emailMailboxOptions = useMemo(");
+    const options = chatPage.slice(start, chatPage.indexOf("[emailAccounts],", start));
+    expect(start).toBeGreaterThan(-1);
+    expect(options).not.toMatch(/\baccent\b/);
+    expect(chatPage).not.toMatch(/\bnotice=/);
+  });
+
+  it("passes the options with their dots to the picker", () => {
+    const chat = codeOnly(read("components/EmailAssistantChat.tsx"));
+    expect(chat).toContain("const mailboxOptions = useMemo(() => chatMailboxOptions(accounts), [accounts]);");
+    expect(chat).toContain("mailboxes={mailboxOptions}");
+  });
+});
+
+describe("email-chat-removed-note", () => {
+  const sales = { id: "acc-sales", emailAddress: "sales@fracktal.in", displayLabel: "Sales", isDefault: false };
+  const three = [work, home, sales];
+  /** One render: the scope from `chatScope`, then the memory step. */
+  const step = (
+    prev: ChatScopeMemory | null,
+    accounts: typeof three,
+    page: string | null,
+    pick: ChatScopePick | null,
+  ) => rememberChatScope(prev, accounts, chatScope(accounts, page, pick).pickerId);
+  const onHome = { against: ALL_INBOXES, scope: "acc-home" };
+
+  it("names the removed mailbox and All inboxes, in one note", () => {
+    const before = step(null, three, ALL_INBOXES, onHome);
+    expect(before).toEqual({ pickerId: "acc-home", name: "Personal · vj@outlook.com", note: null });
+    const left = [work, sales];
+    const after = step(before, left, ALL_INBOXES, onHome);
+    expect(after.pickerId).toBe(ALL_INBOXES);
+    expect(after.note).toBe("Personal · vj@outlook.com is no longer connected. The chat now uses All inboxes.");
+    // The next render gives back the same memory, so the note shows once and
+    // the update in the component stops.
+    expect(step(after, left, ALL_INBOXES, onHome)).toBe(after);
+  });
+
+  it("names the mailbox that the page moved to", () => {
+    const before = step(null, both, "acc-home", null);
+    // A disconnect of the mailbox in view moves the page to the default.
+    const after = step(before, [work], "acc-work", null);
+    expect(after.note).toBe(
+      "Personal · vj@outlook.com is no longer connected. The chat now uses Fracktal · vj@fracktal.in.",
+    );
+  });
+
+  it("says so when no mailbox is left", () => {
+    const before = step(null, [home], "acc-home", null);
+    expect(step(before, [], null, null).note).toBe(
+      "Personal · vj@outlook.com is no longer connected. No mailbox is connected.",
+    );
+  });
+
+  it("gives no note for a pick, and a pick clears the note", () => {
+    const start = step(null, three, ALL_INBOXES, null);
+    const picked = step(start, three, ALL_INBOXES, onHome);
+    expect(picked.note).toBeNull();
+    const noted = step(picked, [work, sales], ALL_INBOXES, onHome);
+    expect(noted.note).not.toBeNull();
+    const again = step(noted, [work, sales], ALL_INBOXES, { against: ALL_INBOXES, scope: "acc-work" });
+    expect(again.note).toBeNull();
+    // A move away from a mailbox that is still connected is not a removal:
+    // a pick, or the page that moves to another mailbox.
+    const onWork = step(start, three, "acc-work", null);
+    expect(onWork.pickerId).toBe("acc-work");
+    expect(step(onWork, three, "acc-work", { against: "acc-work", scope: "acc-home" }).note).toBeNull();
+    expect(step(onWork, three, "acc-sales", null).note).toBeNull();
+  });
+
+  it("gives no note when All inboxes ends because one mailbox is left", () => {
+    const before = step(null, both, ALL_INBOXES, null);
+    const after = step(before, [work], ALL_INBOXES, null);
+    expect(after.pickerId).toBe("acc-work");
+    expect(after.note).toBeNull();
+  });
+
+  it("names the removed mailbox by its last name, and a rename keeps the note", () => {
+    const before = step(null, both, "acc-home", null);
+    const renamed = step(before, [work, { ...home, displayLabel: "Home" }], "acc-home", null);
+    expect(renamed.name).toBe("Home · vj@outlook.com");
+    expect(renamed.note).toBeNull();
+    const after = step(renamed, [work], "acc-work", null);
+    expect(after.note).toBe("Home · vj@outlook.com is no longer connected. The chat now uses Fracktal · vj@fracktal.in.");
+    const workRenamed = step(after, [{ ...work, displayLabel: "Works" }], "acc-work", null);
+    expect(workRenamed.name).toBe("Works · vj@fracktal.in");
+    expect(workRenamed.note).toBe(after.note);
+  });
+
+  it("holds the memory in the chat, and draws one note through AgentChat", () => {
+    const chat = codeOnly(read("components/EmailAssistantChat.tsx"));
+    expect(chat).toContain("const nextScopeMemory = rememberChatScope(scopeMemory, accounts, pickerId);");
+    expect(chat).toContain("if (nextScopeMemory !== scopeMemory) setScopeMemory(nextScopeMemory);");
+    expect(chat).toContain("onDismiss: () => setScopeMemory((m) => (m ? { ...m, note: null } : m)),");
+    expect(chat).toContain("notice={scopeNotice}");
+    const agent = codeOnly(read("../../components/AgentChat.tsx"));
+    expect(agent).toContain("notice?: { text: string; onDismiss?: () => void } | null;");
+    const at = agent.indexOf("{notice && (");
+    expect(at).toBeGreaterThan(-1);
+    const block = agent.slice(at, agent.indexOf("{!canSend && (", at));
+    expect(block).toContain('role="status"');
+    expect(block).toContain("{notice.text}");
+    expect(block).toContain('type="button"');
+    expect(block).not.toMatch(RAW_PALETTE);
+    for (const name of [...block.matchAll(/name="([A-Za-z0-9]+)"/g)].map((m) => m[1])) {
+      expect(isKnownIcon(name), name).toBe(true);
+    }
+    expect(isKnownIcon("X")).toBe(true);
   });
 });
