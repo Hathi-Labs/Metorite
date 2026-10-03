@@ -14,6 +14,7 @@
 > 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** EM-T6b is next.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
+> ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
@@ -2135,6 +2136,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
+**EM-T6d, part 2 (rules step, drafting step and Done).** ✅ MERGED (#581, 2026-10-03). The notes are under EM-T6d below.
+
 **Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
 **Order.**
@@ -2368,7 +2371,14 @@ The R8 tests must show PASSED, not SKIPPED.
 **Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
 
 - **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
-- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is not dispatched.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is BUILT, not merged (2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
+- **Part 2 offers "Process past emails" (owner decision (d), #576).** The automatic rule run touches only mail that arrived after the first enabled rule. So, once a rule exists, the step offers "Sort my imported mail". It opens AI Settings with "Process past emails" from the date of `import_since`, and the dialog counts the mail before it spends a model call.
+- **Part 2, the ways out.** "Done", "Skip for now" and the "Skip setup" button send `onboarding_done: true`. The page writes the returned account into the store, so a failed re-read cannot bring the step back (fix round 1).
+- **Part 2, the drafting switch (fix round 1).** It shows the stored `draft_replies`, read on each mount, and stays disabled until the read returns or when it fails. It shows only with an enabled reply rule, the rule of `_is_reply_rule` in `rules.py`. Without one, a line names the "Needs Reply" rule. The client match mirrors the two tuples of `rules.py`, and a test parses them.
+- **Part 2, the Process past date (fix round 1).** The Rules tab reports when it opened the dialog, and the page clears the date. A return to the Rules tab no longer opens it again.
+- **Part 2, "Only new mail" (recorded).** With EM-T6b, a finished import with no imported row offers no "Sort my imported mail". Before EM-T6b, the account API gives no field that tells it after the first day, so the action can show for such a mailbox then.
+- **Part 2, a paused mailbox (EM-T6b review).** `onboardingStage` and `isFirstSyncPending` return nothing while sync is off, so no panel freezes. The bar stops at 100% when `import_count` passes `import_estimate`.
+- **Part 2, the switch (visual review).** In light mode the OFF track of the email `Toggle` vanished on a white card. Its OFF track is now `bg-muted-foreground/30`, for each of its callers.
 - **Part 1 degrades with no new field.** The progress panel draws only when the gateway sends `import_phase` (EM-T6b). Until then, the page keeps `FirstSyncBanner`, because its text is true and a bar held at 0% is not. That covers a mailbox with no `import_since` and a gateway with EM-T6a only (orchestrator, fix round 1).
 - **Merge part 1 after EM-T6a.** This branch merges after EM-T6a. Before it, the gateway drops import_months, and the step text is false.
 - **A retry is a first connect (fix round 1).** "Try again" and "Approved? Connect again" on the callback page open the range step again, through `/email?connect=1&provider=…`. The step shows the range that the member chose last in the tab, from `sessionStorage`, or 1.

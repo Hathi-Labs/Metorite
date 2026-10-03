@@ -512,12 +512,15 @@ export async function setDefaultEmailAccount(id: string): Promise<EmailAccount> 
 
 export async function updateEmailAccount(
   id: string,
-  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled">>
+  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone">>
 ): Promise<EmailAccount> {
   // Map camelCase → snake_case for the backend PATCH
   const body: Record<string, unknown> = {};
   if (updates.label !== undefined) body.label = updates.label;
   if (updates.syncEnabled !== undefined) body.sync_enabled = updates.syncEnabled;
+  // EM-T6d item 11: true closes the guided setup for good (EM-T6a stores
+  // `onboarding_done_at`). The handler keeps its owner predicate.
+  if (updates.onboardingDone !== undefined) body.onboarding_done = updates.onboardingDone;
   const raw = await gatewayFetch<Record<string, unknown>>(
     `/email/accounts/${id}`,
     { method: "PATCH", body: JSON.stringify(body) }
