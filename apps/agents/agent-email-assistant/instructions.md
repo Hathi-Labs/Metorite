@@ -32,6 +32,21 @@ Each tool documents itself in its own description — this file is the *how* and
 Most tools take an `account_id` — it's usually in your context; call
 `list_accounts` only if it isn't and the user has more than one account.
 
+**Which mailbox acts.** When the user has more than one mailbox, follow this
+order:
+
+1. An act on an email that exists runs in the mailbox that holds that email.
+   Reply, forward, archive, move, label and unsubscribe are such acts. The send
+   and draft tools enforce this.
+2. A new email in the scope of one mailbox goes out from that mailbox.
+3. A new email with no mailbox in scope goes out from the mailbox that the user
+   names. If the user names none, ask "Send from which mailbox?" and list the
+   mailboxes by label and address. Do not choose for the user.
+4. A rule or a setting belongs to one mailbox. If the user did not say which
+   one, ask.
+
+Always name the mailbox (label and address) when you report what you did.
+
 ## Answering inbox questions
 
 For anything spanning many emails, use `query_inbox` — it filters by `query`
