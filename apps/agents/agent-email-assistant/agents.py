@@ -16,6 +16,7 @@ import json
 import os
 import re
 from datetime import date, timedelta
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
@@ -194,23 +195,127 @@ async def _delete(path: str) -> Any:
     return resp.json()
 
 
+# ── Which mailbox acts (§11.3, EM-T8e-2) ─────────────────────────────────────
+
+async def _accounts() -> list[dict[str, Any]]:
+    """The mailboxes of the member, as ``GET /email/accounts`` lists them.
+
+    A failed read raises. A tool that writes then stops, and never guesses a
+    mailbox (``email_app_master_plan.md`` §11.3, EM-T8e-2).
+    """
+    accounts = await _get("/email/accounts")
+    if not isinstance(accounts, list):
+        return []
+    return [a for a in accounts if isinstance(a, dict) and a.get("id")]
+
+
+def _mailbox_text(account: dict[str, Any]) -> str:
+    """"label · address" of one mailbox (MB-15, §11.4).
+
+    The label is ``display_label``, which the accounts API derives (EM-T8b).
+    Two Outlook mailboxes share the raw label "Outlook", so the raw label is
+    only the fallback for an answer that has no ``display_label``.
+    """
+    addr = str(account.get("email_address") or "").strip()
+    label = str(account.get("display_label") or account.get("label") or "").strip()
+    if label and addr and label.lower() != addr.lower():
+        return f"{label} · {addr}"
+    return addr or label or str(account.get("id") or "")
+
+
+def _mailbox_choices(question: str, accounts: list[dict[str, Any]], then: str) -> str:
+    """A question to the member that lists each mailbox as "label · address".
+
+    Each line gives the id as ``(account_id <id>)``, so the model can call the
+    tool again. The text never holds ``id=``, because the chat cards read
+    ``id=`` as the id of a mail or of a rule (``EmailToolCards.tsx``).
+    """
+    rows = [f"• {_mailbox_text(a)} (account_id {a['id']})" for a in accounts]
+    return "\n".join([question, then, *rows])
+
+
+async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
+    """The mailbox of a rule or a setting, as ``(account_id, question)``.
+
+    §11.3 rule 4. A named mailbox wins. With no name, the only mailbox of the
+    member acts. With two or more, the id is empty and the question asks
+    "Which mailbox?". The tool then returns the question and changes nothing.
+    """
+    if account_id:
+        return str(account_id), ""
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return "", (
+            "Nothing changed. I could not read your mailboxes. Ask the user "
+            f"which mailbox this is for, then call {tool} with its account_id."
+        )
+    if not accounts:
+        return "", "Nothing changed. No email accounts are connected."
+    if len(accounts) == 1:
+        return str(accounts[0]["id"]), ""
+    return "", _mailbox_choices(
+        "Which mailbox? A rule or a setting belongs to one mailbox, so nothing "
+        "changed yet.",
+        accounts,
+        f"Ask the user, then call {tool} again with the account_id of that "
+        "mailbox. If the user says all of them, call it once for each mailbox "
+        "and name each one.",
+    )
+
+
+async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
+    """The mailbox of new mail that names none, as ``(account_id, question)``.
+
+    §11.3 rule 3. The only mailbox of the member sends. With two or more,
+    ``GET /email/contacts/sent-from`` names the mailbox that last wrote to the
+    first recipient, in lower case. An empty answer, or a failed read, gives
+    the question "Send from which mailbox?". The tool never guesses.
+    """
+    try:
+        accounts = await _accounts()
+    except Exception:
+        return "", (
+            "Not sent. I could not read your mailboxes. Ask the user which "
+            "mailbox to send from, then call send_email with its account_id."
+        )
+    if not accounts:
+        return "", "Not sent. No email accounts are connected."
+    if len(accounts) == 1:
+        return str(accounts[0]["id"]), ""
+    addr = parseaddr(recipient or "")[1].strip().lower()
+    hit: Any = {}
+    if addr:
+        try:
+            hit = await _get("/email/contacts/sent-from", {"emails": addr})
+        except Exception:
+            hit = {}
+    aid = str(hit.get(addr) or "") if isinstance(hit, dict) else ""
+    if aid in {str(a["id"]) for a in accounts}:
+        return aid, ""
+    return "", _mailbox_choices(
+        "Send from which mailbox? Nothing was sent.",
+        accounts,
+        f"No mailbox of the user wrote to {addr or 'this recipient'} before. "
+        "Ask the user, then call send_email again with the account_id of that "
+        "mailbox.",
+    )
+
+
 # ── Read / triage tools ──────────────────────────────────────────────────────
 
 async def _account_labels() -> dict[str, str]:
-    """Map ``account_id`` → human label, for tagging cross-account results.
+    """Map ``account_id`` → "label · address", for tagging cross-account results.
 
     Used by the tools whose ``account_id`` is optional: when none is given the
     gateway spans ALL of the user's accounts, so results from different inboxes
     get mixed together with no way to tell them apart. Tagging each line with
     its account fixes that for multi-account users (a no-op for single-account).
+    The tag is "label · address", because two Outlook mailboxes share the raw
+    label "Outlook" (MB-15).
     """
     try:
-        accounts = await _get("/email/accounts")
-        return {
-            str(a.get("id")): (a.get("label") or a.get("email_address") or "")
-            for a in (accounts or [])
-            if a.get("id")
-        }
+        return {str(a["id"]): _mailbox_text(a) for a in await _accounts()}
     except Exception:
         return {}
 
@@ -223,33 +328,29 @@ async def _mailbox_name(account_id: str) -> str | None:
     itself, and the gateway still checks the mailbox (EM-T8a, D-EM-20).
     """
     try:
-        accounts = await _get("/email/accounts")
+        accounts = await _accounts()
     except Exception:
         return str(account_id)
     if not accounts:
         return str(account_id)
     for a in accounts:
         if str(a.get("id")) == str(account_id):
-            addr = a.get("email_address") or ""
-            label = a.get("label") or ""
-            if label and addr and label.lower() != addr.lower():
-                return f"{label} · {addr}"
-            return addr or label or str(account_id)
+            return _mailbox_text(a)
     return None
 
 
 async def list_accounts() -> str:
-    """List the user's connected email accounts (id, address, unread count) —
-    also answers "how many unread do I have?" via the per-account + total."""
-    accounts = await _get("/email/accounts")
+    """List the user's connected email accounts as "label · address", with
+    the id and the unread count — also answers "how many unread do I have?"
+    via the per-account + total."""
+    accounts = await _accounts()
     if not accounts:
         return "No email accounts are connected."
     total = sum(a.get("unread_count", 0) for a in accounts)
     lines = [f"Connected accounts ({total} unread total):"]
     for a in accounts:
         lines.append(
-            f"• {a.get('label') or a.get('email_address')} "
-            f"({a.get('email_address')}) — id={a.get('id')}, "
+            f"• {_mailbox_text(a)} — id={a.get('id')}, "
             f"{a.get('unread_count', 0)} unread"
         )
     return "\n".join(lines)
@@ -333,32 +434,45 @@ async def read_email(email_id: str, full: bool = False) -> str:
     return "\n".join(lines) + "\n---\n" + (e.get("body_text") or "")[:4000]
 
 
-async def read_thread(
-    email_id: str = "", thread_id: str = "", account_id: str | None = None,
-) -> str:
+async def read_thread(email_id: str = "", thread_id: str = "") -> str:
     """Read an ENTIRE email conversation in ONE call — every message's sender,
     date and body, oldest first.
 
     PREFER THIS over calling read_email repeatedly to gather a thread's context:
     one call returns the whole chain. Pass the open email's id (its thread is
-    resolved automatically) or a thread_id directly."""
+    resolved automatically) or a thread_id directly.
+
+    The conversation is read in the mailbox of the email, and you name no
+    mailbox (§11.3 rule 1). When two mailboxes hold one thread_id, the tool
+    merges nothing and asks for the email_id of one email in the thread."""
     tid = (thread_id or "").strip()
-    acct = account_id
-    if not tid:
-        if not email_id:
-            return "Provide an email_id or a thread_id to read a thread."
+    acct = ""
+    if email_id:
+        # The email decides the thread and the mailbox (EM-T8e-2).
         head = await _get(f"/email/messages/{email_id}")
+        acct = str(head.get("account_id") or "")
         tid = (head.get("thread_id") or "").strip()
-        acct = acct or head.get("account_id")
         if not tid:
             return await read_email(email_id)  # standalone message, no thread
+    elif not tid:
+        return "Provide an email_id or a thread_id to read a thread."
     params: dict[str, Any] = {"thread_id": tid, "page_size": "50"}
     if acct:
-        params["account_id"] = str(acct)
+        params["account_id"] = acct
     data = await _get("/email/messages", params)
     msgs = data.get("emails", [])
     if not msgs:
         return "No messages found in that thread."
+    boxes = sorted({str(m.get("account_id")) for m in msgs if m.get("account_id")})
+    if len(boxes) > 1:
+        # A conversation never spans two mailboxes (D-EM-22, MB-12).
+        labels = await _account_labels()
+        names = "; ".join(labels.get(b, b) for b in boxes)
+        return (
+            f"This thread_id is in {len(boxes)} mailboxes ({names}), so it is "
+            "not one conversation. Call read_thread with the email_id of one "
+            "email in the thread, and I read the conversation of its mailbox."
+        )
     subject = next(
         (m.get("subject") for m in msgs if m.get("subject")), "(no subject)")
     out = [f"Thread: {subject} — {len(msgs)} message(s), oldest first:"]
@@ -675,7 +789,6 @@ async def present_email_groups(groups_json: str) -> str:
 async def manage_inbox(
     action: str,
     message_ids: list[str],
-    account_id: str | None = None,
     folder: str | None = None,
     add_labels: list[str] | None = None,
     remove_labels: list[str] | None = None,
@@ -683,10 +796,12 @@ async def manage_inbox(
     """Apply an action to one or more messages — the single "act on messages"
     tool (state, folder, and labels).
 
+    Each message acts in its own mailbox, so you name no mailbox. The ids can
+    come from two mailboxes (§11.3 rule 1, EM-T8e-2).
+
     Args:
         action: archive | trash | read | unread | star | unstar | move | label
         message_ids: ids of the messages to act on
-        account_id: optional account scope
         folder: destination for ``action="move"`` (an existing folder/label —
             e.g. "Archive" or a custom folder; create it with create_label).
         add_labels / remove_labels: label NAMES to add/remove for
@@ -735,9 +850,9 @@ async def manage_inbox(
             detail="They leave the inbox and go to the Trash folder.",
         ):
             return "Cancelled — nothing was moved to Trash."
+    # No account_id: the bulk route scopes the ids by owner, and reconciles
+    # each mailbox apart. An id from the model would change 0 rows silently.
     body: dict[str, Any] = {"action": action, "message_ids": message_ids}
-    if account_id:
-        body["account_id"] = account_id
     res = await _post("/email/messages/bulk", body)
     return f"{action}: affected {res.get('affected', 0)} message(s)."
 
@@ -869,7 +984,8 @@ async def get_rules_and_settings(account_id: str) -> str:
 
 
 async def create_rule(
-    account_id: str,
+    account_id: str | None = None,
+    *,
     name: str,
     instructions: str = "",
     action_type: str = "LABEL",
@@ -906,7 +1022,15 @@ async def create_rule(
         second_action_type / second_action_label: optional 2nd action (e.g.
             LABEL + ARCHIVE). For 3+ actions, call update_rule afterwards.
         automated: true = apply automatically; false = propose for approval.
+
+    Mailbox: leave ``account_id`` out when the user named no mailbox. One
+    mailbox then acts. With two or more, the tool asks which one and creates
+    nothing (§11.3 rule 4).
     """
+    account_id, ask = await _one_mailbox(account_id, "create_rule")
+    if ask:
+        return ask
+
     def _mk_action(a_type: str, a_label: str | None = None) -> dict[str, Any]:
         a: dict[str, Any] = {"type": a_type}
         if a_label:
@@ -952,7 +1076,7 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
 
 
 async def run_rules(
-    account_id: str,
+    account_id: str | None = None,
     scope: str = "new",
     dry_run: bool = True,
     days: int = 7,
@@ -968,7 +1092,14 @@ async def run_rules(
         past emails"): applies matched rules + drafts. ``include_read=false``
         limits it to unread mail.
 
-    Either way results stream into the History tab."""
+    Either way results stream into the History tab.
+
+    Mailbox: leave ``account_id`` out when the user named no mailbox. One
+    mailbox then runs. With two or more, the tool asks which one and runs
+    nothing (§11.3 rule 4)."""
+    account_id, ask = await _one_mailbox(account_id, "run_rules")
+    if ask:
+        return ask
     if (scope or "new").strip().lower() == "past":
         start = (date.today() - timedelta(days=max(1, days))).isoformat()
         res = await _post("/email/rules/process-past", {
@@ -1045,8 +1176,8 @@ async def update_rule(
 
 
 async def learn_rule_pattern(
-    account_id: str, rule_id: str, sender: str = "", exclude: bool = False,
-    subject_keyword: str = "",
+    account_id: str | None = None, *, rule_id: str, sender: str = "",
+    exclude: bool = False, subject_keyword: str = "",
 ) -> str:
     """Teach the matcher a deterministic learned pattern for a rule.
 
@@ -1057,10 +1188,17 @@ async def learn_rule_pattern(
     Use when the user says "emails from X (or about Y) should / shouldn't be
     labelled Z". This persists and short-circuits future classification (no
     LLM needed).
+
+    Mailbox: pass the ``account_id`` of the mailbox of the rule. Leave it out
+    when the user named no mailbox. One mailbox then acts. With two or more,
+    the tool asks which one and learns nothing (§11.3 rule 4).
     """
     if not sender and not subject_keyword:
         return ("Provide at least a sender (email/domain) or a subject_keyword "
                 "(phrase in the subject) to learn from.")
+    account_id, ask = await _one_mailbox(account_id, "learn_rule_pattern")
+    if ask:
+        return ask
     body = {
         "account_id": account_id,
         "sender": sender,
@@ -1078,7 +1216,7 @@ async def learn_rule_pattern(
 
 
 async def update_assistant_settings(
-    account_id: str,
+    account_id: str | None = None,
     about: str | None = None,
     signature: str | None = None,
     auto_run: bool | None = None,
@@ -1130,7 +1268,14 @@ async def update_assistant_settings(
             the chat panel (e.g. "tier-fast", "tier-balanced", "tier-powerful").
             There is no rules model: the rules run on `decide`, and no member
             can change it (D-EM-7).
+
+    Mailbox: the settings belong to one mailbox. Leave ``account_id`` out when
+    the user named no mailbox. One mailbox then acts. With two or more, the
+    tool asks which one and changes nothing (§11.3 rule 4).
     """
+    account_id, ask = await _one_mailbox(account_id, "update_assistant_settings")
+    if ask:
+        return ask
     # Start from the current settings so a PUT preserves EVERY field this tool
     # doesn't explicitly change.
     cur = await _get("/email/assistant/settings", {"account_id": account_id})
@@ -1179,7 +1324,8 @@ async def list_knowledge(account_id: str) -> str:
 
 
 async def save_knowledge(
-    account_id: str,
+    account_id: str | None = None,
+    *,
     title: str,
     content: str,
     knowledge_id: str | None = None,
@@ -1188,7 +1334,14 @@ async def save_knowledge(
     drafting replies — e.g. pricing, FAQs, policies, boilerplate, product facts.
 
     Omit ``knowledge_id`` to add a new entry (overwrites any with the same
-    title); pass an id from list_knowledge to edit that entry in place."""
+    title); pass an id from list_knowledge to edit that entry in place.
+
+    Mailbox: the knowledge belongs to one mailbox. Leave ``account_id`` out
+    when the user named no mailbox. One mailbox then acts. With two or more,
+    the tool asks which one and saves nothing (§11.3 rule 4)."""
+    account_id, ask = await _one_mailbox(account_id, "save_knowledge")
+    if ask:
+        return ask
     if knowledge_id:
         entries = (await _get(
             "/email/knowledge", {"account_id": account_id}
@@ -1208,10 +1361,17 @@ async def save_knowledge(
     return f"Saved knowledge entry '{title}'."
 
 
-async def generate_writing_style(account_id: str) -> str:
+async def generate_writing_style(account_id: str | None = None) -> str:
     """Analyze the user's recent sent emails and save a writing-style guide the
     assistant follows when drafting. Use when the user asks you to learn or match
-    their writing style."""
+    their writing style.
+
+    Mailbox: the style belongs to one mailbox. Leave ``account_id`` out when
+    the user named no mailbox. One mailbox then acts. With two or more, the
+    tool asks which one and saves nothing (§11.3 rule 4)."""
+    account_id, ask = await _one_mailbox(account_id, "generate_writing_style")
+    if ask:
+        return ask
     res = await _post(
         f"/email/assistant/writing-style/generate?account_id={account_id}", {}
     )
@@ -1222,13 +1382,22 @@ async def generate_writing_style(account_id: str) -> str:
 
 
 @_annotate_risk(destructive=True)
-async def install_default_rules(account_id: str, reset: bool = False) -> str:
+async def install_default_rules(
+    account_id: str | None = None, reset: bool = False,
+) -> str:
     """Install the recommended default rule set: To Reply, FYI, Newsletter,
     Marketing, Calendar, Receipt, Notification, Cold Email.
 
     ``reset=false`` (default) adds the defaults, skipping any the user already
     has. ``reset=true`` first DELETES all existing rules and reinstalls the
-    defaults fresh — destructive, so always confirm with the user first."""
+    defaults fresh — destructive, so always confirm with the user first.
+
+    Mailbox: the rules belong to one mailbox. Leave ``account_id`` out when
+    the user named no mailbox. One mailbox then acts. With two or more, the
+    tool asks which one, before any card, and installs nothing (§11.3 rule 4)."""
+    account_id, ask = await _one_mailbox(account_id, "install_default_rules")
+    if ask:
+        return ask
     if reset:
         if not await _confirm_destructive(
             title="Delete all rules and reinstall the defaults?",
@@ -1346,9 +1515,41 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
+def _reply_fill(
+    orig: dict[str, Any], to: list[str], subject: str | None,
+) -> tuple[list[str], str | None]:
+    """Fill the missing recipient and subject of a reply from the original."""
+    if not to:
+        addr = (orig.get("from_address", {}) or {}).get("email", "")
+        if addr:
+            to = [addr]
+    if not subject:
+        s = orig.get("subject", "") or ""
+        subject = s if s.lower().startswith("re:") else f"Re: {s}"
+    return to, subject
+
+
+async def _refuse_reply_mailbox(email_id: str, own: str, named: str) -> str:
+    """The answer to a reply that names another mailbox (§11.3 rule 1).
+
+    A send cannot be undone, so the tool does not re-bind the reply as
+    EM-T8a did. It sends nothing and names the mailbox of the email as
+    "label · address" (EM-T8e-2).
+    """
+    labels = await _account_labels()
+    return (
+        f"Not sent. The email {email_id} is in the mailbox "
+        f"{labels.get(own, own)} (account_id {own}), not in "
+        f"{labels.get(named, named)}. A reply goes out from the mailbox of "
+        f"the email. Call send_email again with account_id {own}, or leave "
+        "account_id out."
+    )
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def send_email(
-    account_id: str,
+    account_id: str | None = None,
+    *,
     body: str,
     to: list[str] | None = None,
     subject: str | None = None,
@@ -1366,11 +1567,19 @@ async def send_email(
     pass ``to`` and ``subject``. (To leave a reply in Drafts instead of sending,
     use draft_reply.)
 
-    A reply ALWAYS goes out from the mailbox that received the original. If
-    ``account_id`` names another mailbox, the tool uses the right one and says
-    so. A new message goes out from ``account_id``: when the user has several
-    mailboxes and did not say which one, ask before you call this. The
-    confirmation card names the From address (EM-T8a, D-EM-20, D-EM-23).
+    Which mailbox sends (§11.3, EM-T8e-2, D-EM-20, D-EM-23):
+
+    * A reply goes out from the mailbox that received the original. Leave
+      ``account_id`` out, or pass that mailbox. If ``account_id`` names
+      another mailbox, the tool sends nothing and names the right one.
+    * A new message goes out from ``account_id`` when you pass it. Pass it
+      when the user named a mailbox, or when one mailbox is in scope.
+    * A new message with no ``account_id``: the only mailbox sends. With two
+      or more, the mailbox that last wrote to the first recipient sends. If
+      no mailbox wrote to that recipient, the tool asks "Send from which
+      mailbox?" and sends nothing. Do not guess a mailbox.
+
+    The confirmation card names the From mailbox as "label · address".
 
     Args:
         body: plain-text body.
@@ -1386,27 +1595,24 @@ async def send_email(
             to see what's available; write_artifact to create one first.
     """
     to = list(to or [])
-    moved = ""
-    # Reply mode: the mailbox of the original sends, always (MB-4). Then fill
-    # the missing recipient and subject from the original message.
+    # Reply mode: the mailbox of the original sends (MB-4). A named mailbox
+    # that differs is refused before any card (EM-T8e-2). Then fill the
+    # missing recipient and subject from the original message.
     if reply_to_email_id:
         orig = await _get(f"/email/messages/{reply_to_email_id}") or {}
         own = str(orig.get("account_id") or "")
-        if own and own != str(account_id):
-            moved = own
-            account_id = own
-    if reply_to_email_id and (not to or not subject):
-        frm = orig.get("from_address", {}) or {}
-        if not to:
-            addr = frm.get("email", "")
-            if addr:
-                to = [addr]
-        if not subject:
-            s = orig.get("subject", "") or ""
-            subject = s if s.lower().startswith("re:") else f"Re: {s}"
+        if own and account_id and own != str(account_id):
+            return await _refuse_reply_mailbox(reply_to_email_id, own, str(account_id))
+        account_id = own or account_id
+        to, subject = _reply_fill(orig, to, subject)
     if not to:
         return "No recipient — pass `to`, or `reply_to_email_id` to reply."
     subject = subject or ""
+    if not account_id:
+        # New mail that names no mailbox (§11.3 rule 3).
+        account_id, ask = await _new_mail_mailbox(to[0])
+        if ask:
+            return ask
     sender = await _mailbox_name(account_id)
     if sender is None:
         return (
@@ -1448,13 +1654,7 @@ async def send_email(
     res = await _post("/email/send", payload)
     note = f" with {len(refs)} attachment(s)" if refs else ""
     lead = "Replied to" if reply_to_email_id else "Sent email to"
-    out = f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
-    if moved:
-        out += (
-            " The reply went from the mailbox that received the original, "
-            "not from the mailbox you named."
-        )
-    return out
+    return f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
 
 
 # ── Attachments / artifacts ──────────────────────────────────────────────────
@@ -1861,13 +2061,22 @@ async def list_senders(
     return "\n".join(lines)
 
 
-async def create_rules_from_prompt(account_id: str, prompt: str) -> str:
+async def create_rules_from_prompt(
+    account_id: str | None = None, *, prompt: str,
+) -> str:
     """Create automation rule(s) from a PLAIN-ENGLISH description (inbox-zero's
     natural-language rule flow) — e.g. "Label anything from my bank as Finance
     and archive it", or describe several rules at once. The AI turns the
     description into structured rules and creates them. Confirm the description
     with the user first; afterwards summarize what was created. For precise
-    single-rule control (specific conditions/actions), prefer create_rule."""
+    single-rule control (specific conditions/actions), prefer create_rule.
+
+    Mailbox: leave ``account_id`` out when the user named no mailbox. One
+    mailbox then acts. With two or more, the tool asks which one and creates
+    nothing (§11.3 rule 4)."""
+    account_id, ask = await _one_mailbox(account_id, "create_rules_from_prompt")
+    if ask:
+        return ask
     res = await _post(
         "/email/rules/generate", {"account_id": account_id, "prompt": prompt}
     )

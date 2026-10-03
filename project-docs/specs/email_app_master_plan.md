@@ -3731,6 +3731,33 @@ The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
 
 ##### EM-T8e-2 — the chat tools bind to one mailbox (agent)
 
+**Status.** 🔨 BUILT, not merged (2026-10-03). Branch `email-chat-binding`. No migration.
+
+**As built (2026-10-03).**
+
+- **A reply that names another mailbox stops.** `send_email` reads the mail first and sends
+  nothing. The answer names the mailbox of the mail as "label · address (account_id <id>)". The
+  EM-T8a fence is now `test_a_chat_reply_that_names_another_mailbox_is_refused`. A reply that
+  names no mailbox goes out from the mailbox of the mail.
+- **`read_thread` and `manage_inbox` take no `account_id`.** MAF drops an argument that a tool
+  does not declare, so an id from the model cannot reach the request. When two mailboxes hold
+  one `thread_id`, `read_thread` merges nothing and asks for an `email_id` (edge case 13).
+- **New mail.** `send_email` asks `sent-from` for the bare address of the first recipient, in
+  lower case. An answer that names no mailbox of the member counts as no answer.
+- **Item 3.** `account_id` is the first argument, and it is optional. A required argument after
+  it is keyword-only, so the tool schema still marks that argument as required.
+- **A question never holds `id=`.** It lists each mailbox as "label · address (account_id <id>)",
+  because `RULE_ID_RE` in `EmailToolCards.tsx` reads `id=` as the id of a rule.
+- **One more fence.** `email-chat-thread-mailbox` fences the `read_thread` rule of item 1.
+
+**Found, and not fixed in this slice.**
+
+- `own_tool_scope` in the `config.json` of the agent holds none of the eight tools of item 3. The
+  executor keeps only the tools that it names, so the live chat cannot call them yet.
+- The chat cards show a question as a done act. `RuleResultCard` says "Created rule",
+  `SettingsUpdatedCard` says "Settings updated", and `ActionResultCard` says "Email sent".
+  `ThreadBody` still reads `args.account_id`. These are UI files.
+
 **Scope.** `apps/agents/agent-email-assistant/agents.py`, `instructions.md` and tests. No gateway
 file. No UI file.
 

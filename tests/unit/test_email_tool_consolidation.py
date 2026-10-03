@@ -142,7 +142,8 @@ async def test_install_default_rules_reset(calls) -> None:
 
 
 async def test_manage_inbox_move_uses_patch(calls) -> None:
-    await agents.manage_inbox("archive", ["m1"], account_id="acc")
+    # No account_id: each message acts in its own mailbox (EM-T8e-2).
+    await agents.manage_inbox("archive", ["m1"])
     assert calls["post"][-1][0] == "/email/messages/bulk"
     out = await agents.manage_inbox("move", ["m1", "m2"], folder="Archive")
     # move goes through per-message PATCH, not the bulk endpoint.
@@ -308,9 +309,12 @@ async def test_sync_purge_is_gated_and_fails_closed(calls, monkeypatch) -> None:
 # ── save_knowledge ───────────────────────────────────────────────────────────
 
 async def test_save_knowledge_add_vs_update(calls) -> None:
-    await agents.save_knowledge("acc", "T", "C")  # add → POST
+    # title and content are keyword-only since EM-T8e-2 made account_id
+    # optional, so the tool schema still marks both as required.
+    await agents.save_knowledge("acc", title="T", content="C")  # add → POST
     assert calls["post"][-1][0] == "/email/knowledge"
-    await agents.save_knowledge("acc", "T2", "C2", knowledge_id="k1")  # edit → PATCH
+    await agents.save_knowledge(
+        "acc", title="T2", content="C2", knowledge_id="k1")  # edit → PATCH
     assert calls["patch"][-1][0] == "/email/knowledge/k1"
 
 
