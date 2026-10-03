@@ -1549,6 +1549,17 @@ These facts change or add to the text above:
   broker marks it stale and removes it. The next run starts a fresh one.
 - **The host makes the `.run` mountpoint** in the working dir, so Docker
   never makes it as root.
+- **No Python user site in a `projects` container** (`PYTHONNOUSERSITE=1`).
+  Every thread of one organization mounts the same working dir, so another
+  thread could plant a package in this thread's `.local`. This track has no
+  network, so no install needs the user site.
+- **A residual risk to decide before WS-43w.** The threads of one
+  organization share the working dir, and its `agent-data/` and `inputs/` are
+  writable from each container. So a script or a skill that one member's
+  thread wrote can run in another member's thread, beside that member's run
+  data, and copy it to a shared folder. The run data is safe from another
+  thread's container and from the routes, and not from code that a member
+  chooses to run.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads

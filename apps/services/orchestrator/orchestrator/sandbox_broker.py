@@ -645,7 +645,14 @@ def build_run_argv(
     ]
     for mount in mounts:
         argv += mount.args()
-    for key, value in sandbox_env(binding.thread_hash).items():
+    env = sandbox_env(binding.thread_hash)
+    if binding.target == PROJECTS_TARGET:
+        # Every thread of one organization mounts the same working dir, so
+        # another thread could plant a package in this thread's `.local`
+        # user site, and a script here would import it beside this run's own
+        # data. This track has no network and so no install: no user site.
+        env["PYTHONNOUSERSITE"] = "1"
+    for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
     return [*argv, image, *KEEPALIVE]
 

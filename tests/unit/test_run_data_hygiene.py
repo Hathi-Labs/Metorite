@@ -85,6 +85,8 @@ async def test_a_projects_start_mounts_the_thread_folder_and_the_run_data(sandbo
     marker = b.workspace / ".cc-instance"
     assert f"type=bind,source={marker},target=/workspace/.cc-instance,readonly" in mounts
     assert marker.read_text(encoding="utf-8") == b.instance
+    argv = sandbox.docker.runs()[0]
+    assert "PYTHONNOUSERSITE=1" in argv, "another thread could plant a package in the user site"
     assert (b.workspace / b.outputs_rel).is_dir() and b.run_data.is_dir()
     assert (b.workspace / ".run").is_dir(), "the host made no mountpoint, so Docker would, as root"
     assert not any(f"source={b.workspace / 'outputs'}," in m for m in mounts), (
@@ -98,6 +100,7 @@ async def test_another_target_gets_neither_nested_mount(sandbox, monkeypatch) ->
         await sandbox.broker.acquire()
     mounts = mounts_of(sandbox.docker.runs()[0])
     assert not any("/workspace/outputs" in m or "/workspace/.run" in m for m in mounts)
+    assert "PYTHONNOUSERSITE=1" not in sandbox.docker.runs()[0]
 
 
 async def test_two_threads_mount_only_their_own_folders(sandbox) -> None:  # noqa: F811
@@ -425,6 +428,9 @@ async def test_docker_a_thread_sees_only_its_own_outputs_and_run_data(real_proje
     # The partition marker that the gateway reads is read-only in the container.
     marked = await broker.exec(h2, "echo u:evil > /workspace/.cc-instance", 30)
     assert marked.exit_code != 0
+    # No user site, so a package planted in another thread's `.local` never imports.
+    site = await broker.exec(h2, "python3 -c 'import site; print(site.ENABLE_USER_SITE)'", 30)
+    assert site.output.strip() == "False", site.output
     if real_projects["bind"]:
         assert (b1.workspace / b1.outputs_rel / "t1.txt").read_text().strip() == "T1"
         assert (b1.run_data / "rows.csv").read_text().strip() == "rows"
