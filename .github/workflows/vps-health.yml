@@ -66,9 +66,20 @@ jobs:
               # -m 40, not 25 (H-60): Caddy holds a request to a down
               # upstream for 30 s (lb_try_duration) before its 502. A shorter
               # bound reads that as 000, UNREACHABLE, and points at the network.
-              code="$(curl -s -o /dev/null -m 40 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
-              # 2xx/3xx/4xx are all "alive" — a redirect to sign-in and a 401
-              # both prove the stack compiled and is serving.
+              #
+              # 🔴 ONE CODE, NEVER TWO (2026-10-03). This line used to end in
+              # `|| echo 000` INSIDE the `$(...)`. When the connect fails, curl
+              # prints `000` through -w AND exits non-zero. So the `echo` added
+              # a second `000`, and the code read `000000`. That matched no
+              # alarm arm and fell through to "OK (HTTP 000000)". Production
+              # HTTPS was down for hours that morning, and every hourly run
+              # said HEALTHY. Fence: tests/unit/test_vps_health_probe.py.
+              code="$(curl -s -o /dev/null -m 40 -w '%{http_code}' "$url" 2>/dev/null)" || true
+              [ -n "$code" ] || code=000
+              # An ALLOWLIST. Only 2xx/3xx/4xx are "alive" — a redirect to
+              # sign-in and a 401 both prove the stack compiled and is serving.
+              # Anything else retries: 000, a 5xx, or a value that is not one
+              # real status.
               #
               # 🔴 **A 5xx is NOT alive, and this line used to say it was.**
               # Measured 2026-09-01: the workbench answered HTTP 500 on EVERY
@@ -78,8 +89,7 @@ jobs:
               # response means the stack is serving", and a Next.js server with
               # no `.next` directory serves 500s perfectly.
               case "$code" in
-                000|5[0-9][0-9]) ;;
-                *) break ;;
+                [234][0-9][0-9]) break ;;
               esac
               echo "  $name attempt $attempt got HTTP ${code} — retrying in 20s"
               sleep 20
@@ -89,11 +99,14 @@ jobs:
             # deploy routinely served 500s for minutes, this would have paged
             # on every release. The two changes ship together and the fence
             # `test_deploy_next_build_swap.py` holds both ends.
+            #
+            # The same ALLOWLIST as the retry loop. OK is the one arm that a
+            # code must EARN. The catch-all is the outage arm, so a code that
+            # nobody foresaw reads as down and never as up (2026-10-03).
             case "$code" in
-              000)
-                HEALTHY=0
-                REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
-                echo "::error::${name} unreachable at ${url}"
+              [234][0-9][0-9])
+                REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
+                echo "${name} OK (HTTP ${code})"
                 ;;
               5[0-9][0-9])
                 HEALTHY=0
@@ -101,8 +114,9 @@ jobs:
                 echo "::error::${name} answers HTTP ${code} at ${url} — up, but broken for every user"
                 ;;
               *)
-                REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
-                echo "${name} OK (HTTP ${code})"
+                HEALTHY=0
+                REPORT="${REPORT}- **${name}**: UNREACHABLE (no real status after 3 attempts, curl gave ${code}) — \`${url}\`"$'\n'
+                echo "::error::${name} unreachable at ${url} (curl gave ${code})"
                 ;;
             esac
           done
@@ -114,8 +128,8 @@ jobs:
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
 
-  # ⚠️ THE INVERSE OF THE PROBE ABOVE. There, any HTTP answer means alive.
-  # Here, an answer is the failure.
+  # ⚠️ THE INVERSE OF THE PROBE ABOVE. There, a 2xx, 3xx or 4xx answer means
+  # alive. Here, an answer is the failure.
   #
   # Deliberately its own job, and it does NOT touch the outage issue. A public
   # schema and an unreachable box are different failures with different fixes,
@@ -143,19 +157,23 @@ jobs:
           # watcher.
           FAILED=0
           for path in /openapi.json /docs /redoc; do
-            code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "${BASE}${path}" 2>/dev/null || echo 000)"
-            # A failed probe yields an empty or repeated code — "000000" is
-            # observed, and health-watchdog.sh carries the same note. So match
-            # a real 3-digit status rather than testing `!= 000`, and never
-            # print OK for a request that got no answer at all.
+            # One code, never two. `|| echo 000` inside the `$(...)` made a
+            # failed connect read `000000`. The same idiom made the `probe` job
+            # report a dead box as HEALTHY on 2026-10-03. See the note there.
+            code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "${BASE}${path}" 2>/dev/null)" || true
+            [ -n "$code" ] || code=000
+            # An ALLOWLIST again. Only a real 2xx/3xx/4xx proves the route
+            # answered. A 000, a 5xx or a value that is not one real status
+            # proves nothing, so it never prints OK. It is also not a failure
+            # HERE, because the `probe` job owns reachability.
             case "$code" in
               200)
                 echo "::error::${BASE}${path} answers 200 — production is running as ACB_ENV=dev"
                 FAILED=1 ;;
-              [1-5][0-9][0-9])
+              [234][0-9][0-9])
                 echo "OK      ${path} -> HTTP ${code}" ;;
               *)
-                echo "        ${path} -> no answer, see the probe job" ;;
+                echo "        ${path} -> HTTP ${code}, not confirmed closed, see the probe job" ;;
             esac
           done
 

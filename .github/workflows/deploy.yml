@@ -474,7 +474,10 @@ jobs:
               elif curl -fsS --max-time 10 "http://$SSH_HOST:8080/health" >/dev/null 2>&1; then
                 gw_ok=1
               fi
-              wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null || echo 000)
+              # One code, never two. `|| echo 000` inside the `$(...)` read a
+              # failed connect as `000000` (vps-health.yml, 2026-10-03).
+              wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null) || true
+              [ -n "$wb_code" ] || wb_code=000
               got_sha=$(deployed_sha)
               sha_note=""
               sha_ok=0
@@ -490,7 +493,7 @@ jobs:
                 fi
               fi
 
-              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23]'                  && [ "$sha_ok" = 1 ]; then
+              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23][0-9][0-9]$'                  && [ "$sha_ok" = 1 ]; then
                 echo "  ✅ gateway healthy; workbench / -> HTTP $wb_code; serving $got_sha$sha_note (poll $i)"
                 return 0
               fi
