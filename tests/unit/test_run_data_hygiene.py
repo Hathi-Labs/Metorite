@@ -457,3 +457,29 @@ async def test_docker_the_run_data_is_gone_after_the_run(real_projects) -> None:
         # for, so only the real bind mount of CI and production can show this.
         after = await broker.exec(fresh, "ls -A /workspace/.run | wc -l", 30)
         assert after.output.strip() == "0", "the run data of the last run is still there"
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_run_command_runs_in_the_container(real_projects, monkeypatch) -> None:
+    """``run_command`` itself, on the real broker: the command runs in the
+    container (its host name is the container id), and its output file lands
+    in the thread's own folder."""
+    from acb_skills import sandbox_tools as st
+
+    broker = real_projects["broker"]
+    assert await broker.probe_docker() is True
+    # The D85 seam (PR #598) is not on this branch yet. See _sandbox_tools_fakes.
+    monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
+    thread = new_thread()
+    with bound_run(DOCKER_ORG, agent=PA, thread=thread):
+        assert sb.covers(PA, DOCKER_ORG) is True
+        out = await st.run_command(
+            "echo host=$(hostname) && id -u && echo chart > /workspace/outputs/chart.txt", 30,
+        )
+        b = sb.read_run_binding()
+    handle = broker._live[b.name]
+    # Docker names the container's host after its id, so the command ran there.
+    assert "exit 0" in out and f"host={handle.container_id[:12]}" in out, out
+    if real_projects["bind"]:
+        assert (b.workspace / b.outputs_rel / "chart.txt").read_text().strip() == "chart"
+        assert str(os.getuid()) in out
