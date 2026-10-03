@@ -37,7 +37,7 @@ import logging
 import os
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_common.db import (
     TenantUnbound,
@@ -94,14 +94,22 @@ _sync_lock_users: dict[str, int] = {}
 # one more shallow cycle for them (fix round 2). The set empties with the lock.
 _sync_rerun: set[str] = set()
 
-#: Consecutive cycles whose catch-up stopped short, for each mailbox (fix
-#: round 3). It lives in this process, as the mailbox lock does, and a
-#: restart starts it again at 0. The later full fix is a watermark for each
-#: folder.
+#: Consecutive LOOP cycles whose catch-up stopped short, for each mailbox
+#: (fix rounds 3 and 4). Only a cycle of the background loop adds to it
+#: (``from_loop``, see ``_watermark_outcome``). It lives in this process, as
+#: the mailbox lock does, and a restart starts it again at 0. The later full
+#: fix is a watermark for each folder.
 _catch_up_misses: dict[str, int] = {}
 
-#: After this many short catch-ups in a row, the watermark moves on, so one
-#: folder that always fails cannot stall the mailbox (fix round 3).
+#: The mailboxes whose catch-up the loop abandoned (fix round 4). The
+#: abandon is sticky: a short cycle of any caller then adds no count, keeps
+#: no watermark and does not back the loop off. Only a complete cycle clears
+#: it, and a restart does too.
+_catch_up_abandoned: set[str] = set()
+
+#: After this many short LOOP cycles in a row, the catch-up is abandoned and
+#: the watermark moves on, so one folder that always fails cannot stall the
+#: mailbox (fix rounds 3 and 4).
 CATCH_UP_MAX_MISSES = 6
 
 #: How long a caller that waits (the deep downloads of cleanup and Process
@@ -441,50 +449,95 @@ def _catch_up_watermark(row: Any) -> datetime | None:
     return getattr(row, "created_at", None)
 
 
+class _CatchUp(NamedTuple):
+    """What phase (d) and the loop do after the recurring sweep (fix rounds
+    3 and 4)."""
+
+    #: Phase (d) keeps ``last_synced_at``, so the next cycle reads the
+    #: pause again.
+    keep_watermark: bool
+    #: The ``sync_error`` note. It names folders, never a provider message.
+    note: str | None
+    #: The loop counts the cycle as a soft failure and backs off.
+    back_off: bool
+
+
+def _abandon_note(folders: str) -> str:
+    """The ``sync_error`` note of an abandoned catch-up."""
+    return (f"The catch-up of {folders} stopped after {CATCH_UP_MAX_MISSES} "
+            "tries. Older mail of the pause can be missing.")
+
+
 def _watermark_outcome(
     account_id: str, sync_result: Any, row: Any, import_error: str | None,
-) -> tuple[bool, str | None]:
-    """Whether phase (d) keeps ``last_synced_at``, and the ``sync_error``
-    note of a short catch-up (fix round 3).
+    *, from_loop: bool = False,
+) -> _CatchUp:
+    """What phase (d) does with the watermark, and the ``sync_error`` note of
+    a short catch-up (fix rounds 3 and 4).
 
     * A failed import on a mailbox that never finished a sync keeps
       ``last_synced_at`` NULL. The next sweep then reads back to
       ``created_at``, so the mail since the connect still lands.
-    * A sweep folder that stopped short of the watermark keeps it too, and
-      the note names the folder, never a provider message. The loop counts
-      the cycle as a soft failure and backs off.
-    * After ``CATCH_UP_MAX_MISSES`` short cycles in a row, the watermark
+    * A complete cycle reads every folder back to the watermark. It clears
+      the count and the abandon, whoever called it.
+    * A short cycle keeps the watermark and writes a note with the folder
+      name. The loop counts it as a soft failure and backs off.
+    * Only a LOOP cycle (``from_loop``) adds to the count (fix round 4). The
+      loop backs off, so 6 of its cycles span about 3 hours (600 + 1200 +
+      2400 + 3600 + 3600 seconds). The webhook, the manual sync, the rerun
+      and the deep downloads run when mail arrives or a member acts. If they
+      counted, a busy mailbox could abandon a gap within minutes. A minimum
+      age was the other choice: it needs a clock and a second state, and the
+      loop already gives the time.
+    * At ``CATCH_UP_MAX_MISSES`` the catch-up is abandoned. The watermark
       moves on, and the log says ``sync.catch_up_abandoned`` with the folder
-      and the gap.
+      and the gap. The abandon is sticky (fix round 4): each later short
+      cycle keeps no watermark, adds no count, writes the note of the
+      abandon again and does not back the loop off. Only a complete cycle
+      clears it. Before fix round 4 the count started again, and the loop
+      backed off in rounds of 6 for as long as the folder failed.
+
+    The note reaches the API only. ``sync_status`` stays ``idle``, and the
+    UI shows ``sync_error`` only for ``error`` (spec §10.4.7 EM-T6b).
     """
     keep_null = import_error is not None and getattr(row, "last_synced_at", None) is None
     key = _lock_key(account_id)
     if not getattr(sync_result, "catch_up_incomplete", False):
         _catch_up_misses.pop(key, None)
-        return keep_null, None
+        _catch_up_abandoned.discard(key)
+        return _CatchUp(keep_null, None, False)
     folders = ", ".join(getattr(sync_result, "catch_up_folders", None) or []) or "a folder"
-    misses = _catch_up_misses.get(key, 0) + 1
+    if key in _catch_up_abandoned:
+        return _CatchUp(keep_null, _abandon_note(folders), False)
+    misses = _catch_up_misses.get(key, 0) + (1 if from_loop else 0)
     if misses < CATCH_UP_MAX_MISSES:
-        _catch_up_misses[key] = misses
-        return True, f"The catch-up of {folders} is incomplete. The next sync tries again."
+        if misses:
+            _catch_up_misses[key] = misses
+        return _CatchUp(
+            True, f"The catch-up of {folders} is incomplete. The next sync tries again.",
+            True)
     _catch_up_misses.pop(key, None)
+    _catch_up_abandoned.add(key)
     watermark = _catch_up_watermark(row)
     gap = (datetime.now(UTC) - watermark).total_seconds() if watermark else 0.0
     logger.warning("sync.catch_up_abandoned account=%s folder=%s gap_secs=%d misses=%d",
                    account_id, folders, int(gap), misses)
-    return keep_null, (f"The catch-up of {folders} stopped after {misses} tries. "
-                       "Older mail of the pause can be missing.")
+    return _CatchUp(keep_null, _abandon_note(folders), False)
 
 
 def _cycle_result(
-    synced: int, history_id: Any, import_error: str | None, note: str | None,
+    synced: int, history_id: Any, import_error: str | None, catch_up: _CatchUp,
 ) -> dict[str, Any]:
     """The result of a sync cycle. A failed import is an error for each
     caller, after the new mail landed. A short catch-up is a soft failure:
-    the loop backs off, and no caller sees an error (fix round 3)."""
+    the loop backs off, and no caller sees an error (fix round 3). An
+    abandoned catch-up is no failure, so the loop polls at its interval
+    (fix round 4)."""
     result: dict[str, Any] = {"synced": synced, "history_id": history_id}
-    if note:
+    if catch_up.back_off:
         result["catch_up_incomplete"] = True
+    elif catch_up.note:
+        result["catch_up_abandoned"] = True
     if import_error:
         result["error"] = import_error
     return result
@@ -738,6 +791,7 @@ async def _sync_account(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
     if_busy: str = "wait", purge: bool = False, reset_cursor: bool = False,
+    from_loop: bool = False,
 ) -> dict[str, Any]:
     """Run one sync cycle of a mailbox, and never two at once (EM-T4f part 2).
 
@@ -764,6 +818,10 @@ async def _sync_account(
 
     ``purge`` and ``reset_cursor`` (the resync) run in phase (a) of the
     cycle, under the lock, so a running tick cannot write the cursor back.
+
+    ``from_loop`` is true for the background loop only. Only a loop cycle
+    adds to the count of short catch-ups (fix round 4,
+    ``_watermark_outcome``). The rerun never passes it.
 
     No session is open while a caller waits, because the cycle opens its own
     sessions after the lock. The lock is released on every exit of the cycle,
@@ -793,7 +851,8 @@ async def _sync_account(
             _sync_rerun.discard(key)
             result = await _sync_cycle(
                 account_id, organization_id=organization_id,
-                deep=deep, since=since, purge=purge, reset_cursor=reset_cursor)
+                deep=deep, since=since, purge=purge, reset_cursor=reset_cursor,
+                from_loop=from_loop)
             return await _rerun_once(key, account_id, organization_id, result)
         finally:
             lock.release()
@@ -812,6 +871,9 @@ async def _rerun_once(
     cycle failed. A failed rerun is logged and keeps the result of the
     holder. A merged result adds the two ``synced`` counts, so the new-mail
     pipeline of the caller also sees the mail of the rerun.
+
+    The rerun passes no ``from_loop``, so it never adds to the count of
+    short catch-ups, also after a loop cycle (fix round 4).
     """
     if key not in _sync_rerun or _sync_lock_users.get(key, 0) > 1:
         return result
@@ -866,7 +928,7 @@ async def _apply_resync(
 async def _sync_cycle(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
-    purge: bool = False, reset_cursor: bool = False,
+    purge: bool = False, reset_cursor: bool = False, from_loop: bool = False,
 ) -> dict[str, Any]:
     """Run a full sync cycle for a single account.  Returns sync summary.
 
@@ -1040,10 +1102,11 @@ async def _sync_cycle(
             since=floor,
             catch_up=_catch_up_watermark(row),
         )
-        # Fix round 3: whether phase (d) keeps the watermark, and the note
-        # of a short catch-up (``_watermark_outcome``).
-        keep_watermark, sync_note = _watermark_outcome(
-            account_id, sync_result, row, import_error)
+        # Fix rounds 3 and 4: whether phase (d) keeps the watermark, the note
+        # of a short catch-up, and whether the loop backs off. Only a loop
+        # cycle counts toward the abandon (``_watermark_outcome``).
+        catch_up = _watermark_outcome(
+            account_id, sync_result, row, import_error, from_loop=from_loop)
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
@@ -1117,7 +1180,8 @@ async def _sync_cycle(
                        WHERE id = :id"""
                 ),
                 {"id": account_id, "history_id": sync_result.new_history_id,
-                 "keep_watermark": keep_watermark, "sync_note": sync_note},
+                 "keep_watermark": catch_up.keep_watermark,
+                 "sync_note": catch_up.note},
             )
 
             # Mark sync log success
@@ -1168,7 +1232,7 @@ async def _sync_cycle(
             account_id, provider_name, persisted_count,
         )
         return _cycle_result(persisted_count, sync_result.new_history_id,
-                             import_error, sync_note)
+                             import_error, catch_up)
 
     except Exception as exc:
         logger.warning(
@@ -1257,7 +1321,7 @@ async def _account_sync_loop(
             try:
                 result = await _sync_account(
                     account_id, organization_id=organization_id,
-                    if_busy="skip")
+                    if_busy="skip", from_loop=True)
                 if isinstance(result, dict) and result.get("gone"):
                     _forget_this_loop(account_id)
                     logger.info("sync.loop_row_gone account_id=%s", account_id)
@@ -1268,7 +1332,10 @@ async def _account_sync_loop(
                 # for backoff.
                 # A short catch-up is a soft failure: it backs off too (fix
                 # round 3), and its new mail still goes through the pipeline.
-                sync_failed = (not isinstance(result, dict)) or ("error" in result)                     or bool(result.get("catch_up_incomplete"))
+                # An abandoned catch-up is not, so it polls at the interval
+                # (fix round 4).
+                sync_failed = (not isinstance(result, dict) or "error" in result
+                               or bool(result.get("catch_up_incomplete")))
                 new_mail = isinstance(result, dict) and result.get("synced", 0)
                 # Process new mail through the shared pipeline — auto-run
                 # rules, categorize senders, classify threads (Reply Zero),

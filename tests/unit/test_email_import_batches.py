@@ -22,6 +22,13 @@ R7 fences named here:
   ``last_synced_at - 1 hour``. The floor still binds each page.
 * ``email-import-no-reconcile``: no import batch reaches the reconcile or the
   label learner.
+* ``email-catch-up-abandon`` (fix rounds 3 and 4): only a LOOP cycle adds to
+  the count of short catch-ups. After ``CATCH_UP_MAX_MISSES`` of them, the
+  abandon is sticky until a complete cycle, and the account API still
+  returns its note on an idle mailbox (R8).
+* ``email-absent-folder`` (fix round 4): a 403 or a 404 skips only Archive
+  or a user folder, in the import and in the recurring sweep. On a folder
+  that each mailbox has, it fails.
 
 The R8 tests run the REAL core as the non-privileged role ``acb_app_h3rls``
 (NOSUPERUSER, NOBYPASSRLS) on the phase-4-promoted two-org catalog of
@@ -34,6 +41,7 @@ Run (real Postgres)::
 """
 from __future__ import annotations
 
+import ast
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -69,6 +77,12 @@ from tests.unit.test_email_scheduler_tenancy import (
     _seed_account,
     _Store,
 )
+from tests.unit.test_email_sync_one_at_a_time import (
+    _ROOT,
+    _calls,
+    _code_files,
+    _innermost_function,
+)
 
 # ``promoted`` and ``app_engine`` are used by name for fixture injection, so
 # the import is load-bearing even though it reads as unused.
@@ -84,10 +98,13 @@ _ORG = "11111111-2222-3333-4444-555555555555"
 
 @pytest.fixture(autouse=True)
 def _no_catch_up_misses():
-    """Each test starts with no short catch-up counted (fix round 3)."""
+    """Each test starts with no short catch-up counted and none abandoned
+    (fix rounds 3 and 4)."""
     sched._catch_up_misses.clear()
+    sched._catch_up_abandoned.clear()
     yield
     sched._catch_up_misses.clear()
+    sched._catch_up_abandoned.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -613,6 +630,32 @@ async def test_a_404_on_a_folder_that_each_mailbox_has_raises(folder) -> None:
         await _collect(p.import_batches(since=FLOOR))
 
 
+async def test_a_forbidden_archive_and_user_folder_are_skipped_in_the_import(caplog) -> None:
+    """Fix round 4, item 4: a 403 skips Archive or a user folder too, and
+    the log names the status."""
+    graph = _FakeGraph({**_interleaved(T0, 3, ("inbox",)), "archive": [T0],
+                        "F-shut": [T0]},
+                       fail={("archive", 1): 403, ("F-shut", 1): 403})
+    p = _outlook(graph, ("F-shut",))
+    with caplog.at_level("INFO"):
+        batches = await _collect(p.import_batches(since=FLOOR))
+    assert sum(len(b) for b in batches) == 3
+    skipped = sorted(r.getMessage() for r in caplog.records
+                     if "sync.import_folder_skipped" in r.getMessage())
+    assert skipped == ["sync.import_folder_skipped folder=F-shut status=403",
+                       "sync.import_folder_skipped folder=archive status=403"]
+
+
+@pytest.mark.parametrize("path", ["inbox", "sentitems", "drafts", "junkemail",
+                                  "deleteditems"])
+async def test_a_403_on_a_folder_that_each_mailbox_has_fails_the_import(path) -> None:
+    """Fix round 4, item 4: a forbidden system folder is a failure."""
+    graph = _FakeGraph(_interleaved(T0, 3, ("inbox",)), fail={(path, 1): 403})
+    p = _outlook(graph)
+    with pytest.raises(httpx.HTTPStatusError, match="403"):
+        await _collect(p.import_batches(since=FLOOR))
+
+
 async def test_a_folder_reads_no_more_than_the_import_page_cap(monkeypatch, caplog) -> None:
     graph = _FakeGraph({"inbox": [T0 - timedelta(minutes=m) for m in range(9)]},
                        page_size=2)
@@ -1125,11 +1168,9 @@ async def test_a_sweep_page_that_answers_503_once_is_read_again(core, slept) -> 
     assert slept == [1.0]
 
 
-@pytest.mark.parametrize(("status", "short"),
-                         [(500, True), (429, True), (403, False), (404, False)])
-async def test_a_first_page_that_fails_leaves_its_folder_short(slept, status, short) -> None:
-    """Fix round 3, item 1(a). A folder whose first page fails is unread. Only
-    a missing (404) or forbidden (403) folder is skipped with no harm."""
+@pytest.mark.parametrize("status", [500, 429])
+async def test_a_first_page_that_fails_leaves_its_folder_short(slept, status) -> None:
+    """Fix round 3, item 1(a). A folder whose first page fails is unread."""
     now = _now()
     graph = _FakeGraph({"inbox": [now - timedelta(hours=k + 1) for k in range(5)],
                         "sentitems": [now - timedelta(hours=k + 2) for k in range(5)]},
@@ -1139,48 +1180,195 @@ async def test_a_first_page_that_fails_leaves_its_folder_short(slept, status, sh
     res = await p.sync_messages(deep=False, since=now - timedelta(days=30),
                                 catch_up=now - timedelta(hours=2))
 
-    assert res.catch_up_incomplete is short
-    assert res.catch_up_folders == (["inbox"] if short else [])
+    assert res.catch_up_incomplete is True
+    assert res.catch_up_folders == ["inbox"]
     assert set(graph.ids("sentitems")) <= {m.provider_message_id for m in res.messages}
 
 
-async def test_a_catch_up_that_always_fails_moves_on_after_six_cycles(
+@pytest.mark.parametrize("status", [403, 404])
+@pytest.mark.parametrize("path", ["archive", "F-user"])
+async def test_a_403_or_404_skips_archive_or_a_user_folder_in_the_sweep(
+    slept, path, status,
+) -> None:
+    """Fix round 4, item 4. The sweep skips Archive or a user folder that
+    answers 403 or 404, as the import does, and the cycle is complete."""
+    now = _now()
+    hours = [now - timedelta(hours=k + 1) for k in range(5)]
+    graph = _FakeGraph({"inbox": hours, "archive": hours, "F-user": hours},
+                       fail={(path, 1): status})
+    p = _outlook(graph, ("F-user",))
+
+    res = await p.sync_messages(deep=False, since=now - timedelta(days=30),
+                                catch_up=now - timedelta(hours=2))
+
+    assert res.catch_up_incomplete is False and res.catch_up_folders == []
+    read = {m.provider_message_id for m in res.messages}
+    assert set(graph.ids("inbox")) <= read
+    assert not read & set(graph.ids(path)), "the skipped folder was read"
+
+
+@pytest.mark.parametrize("status", [403, 404])
+@pytest.mark.parametrize("path", ["inbox", "sentitems", "drafts", "junkemail",
+                                  "deleteditems"])
+async def test_a_403_or_404_on_a_folder_that_each_mailbox_has_fails_the_sweep(
+    slept, path, status,
+) -> None:
+    """Fix round 4, item 4. A forbidden or missing Inbox, Sent, Drafts, Junk
+    or Deleted Items is no quiet skip: the sweep raises, so the cycle fails.
+    Before fix round 4 the sweep skipped it, and the watermark moved on."""
+    now = _now()
+    graph = _FakeGraph({"inbox": [now - timedelta(hours=k + 1) for k in range(5)]},
+                       fail={(path, 1): status})
+    p = _outlook(graph)
+
+    with pytest.raises(httpx.HTTPStatusError, match=str(status)):
+        await p.sync_messages(deep=False, since=now - timedelta(days=30),
+                              catch_up=now - timedelta(hours=2))
+
+
+async def test_a_forbidden_inbox_fails_the_cycle_and_keeps_the_watermark(core, slept) -> None:
+    """Fix round 4, item 4, through the core. The error path writes
+    ``sync_status = 'error'``. Phase (d) does not run, so ``last_synced_at``
+    stays, and no catch-up is counted."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail = {("inbox", 1): 403}
+    p = _outlook(graph, ("F-user",))
+
+    res = await core.run(p, _row(initial_sync_done=True, import_since=None,
+                                 last_synced_at=now - timedelta(minutes=5)),
+                         from_loop=True)
+
+    assert "403" in res["error"], res
+    [(_, e_params)] = _stmts(core.log, "SET sync_status = 'error', sync_error = :error")
+    assert "403" in e_params["error"]
+    assert _stmts(core.log, _PHASE_D) == [], "phase (d) moved the watermark"
+    assert sched._catch_up_misses == {}
+
+
+_INCOMPLETE = "The catch-up of inbox is incomplete. The next sync tries again."
+_ABANDONED = ("The catch-up of inbox stopped after 6 tries. "
+              "Older mail of the pause can be missing.")
+
+
+async def _cycles(core, p, row, loops: list[bool]) -> list[tuple[bool, str | None, dict]]:
+    """Run one cycle for each entry of *loops*, with ``from_loop`` set to it.
+    Returns ``(keep_watermark, note, result)`` of each cycle."""
+    out = []
+    for from_loop in loops:
+        core.log.clear()
+        res = await core.run(p, row, from_loop=from_loop)
+        [(_, d_params)] = _stmts(core.log, _PHASE_D)
+        out.append((d_params["keep_watermark"], d_params["sync_note"], res))
+    return out
+
+
+def _abandon_logs(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if "sync.catch_up_abandoned" in r.getMessage()]
+
+
+async def test_a_catch_up_that_always_fails_moves_on_after_six_loop_cycles(
     core, slept, caplog,
 ) -> None:
-    """Fix round 3, item 2. Page 4 of the inbox fails in every cycle. Each
-    short cycle keeps the watermark, writes a note with the folder only, and
-    is a soft failure. The sixth one moves the watermark on and logs
-    ``sync.catch_up_abandoned``, and the count starts again."""
+    """Fix rounds 3 and 4, item 1. Page 4 of the inbox fails in every cycle.
+    Each short loop cycle keeps the watermark, writes a note with the folder
+    only, and is a soft failure. The sixth one moves the watermark on, logs
+    ``sync.catch_up_abandoned``, and does not back the loop off."""
     now = _now()
     graph = _catch_up_graph(now)
     graph.fail_offset = {"inbox": (300, 500)}
     p = _outlook(graph, ("F-user",))
     row = _row(initial_sync_done=True, import_since=None,
                last_synced_at=now - timedelta(days=21))
-    keeps, notes, results = [], [], []
 
     with caplog.at_level("WARNING"):
-        for _ in range(7):
-            core.log.clear()
-            results.append(await core.run(p, row))
-            [(_, d_params)] = _stmts(core.log, _PHASE_D)
-            keeps.append(d_params["keep_watermark"])
-            notes.append(d_params["sync_note"])
+        runs = await _cycles(core, p, row, [True] * 6)
 
-    assert keeps == [True] * 5 + [False, True]
-    assert notes[0] == "The catch-up of inbox is incomplete. The next sync tries again."
-    assert notes[5] == ("The catch-up of inbox stopped after 6 tries. "
-                        "Older mail of the pause can be missing.")
+    assert [keep for keep, _, _ in runs] == [True] * 5 + [False]
+    assert [note for _, note, _ in runs] == [_INCOMPLETE] * 5 + [_ABANDONED]
     assert all(r.get("catch_up_incomplete") is True and "error" not in r
-               for r in results)
-    [abandoned] = [r.getMessage() for r in caplog.records
-                   if "sync.catch_up_abandoned" in r.getMessage()]
+               for _, _, r in runs[:5])
+    last = runs[5][2]
+    assert "catch_up_incomplete" not in last and last.get("catch_up_abandoned") is True
+    [abandoned] = _abandon_logs(caplog)
     assert "folder=inbox" in abandoned and "misses=6" in abandoned
     gap = int(abandoned.split("gap_secs=")[1].split()[0])
     assert abs(gap - (21 * 86400 + 3600)) < 120
 
 
-async def test_a_complete_cycle_starts_the_count_again(core, slept) -> None:
+async def test_an_abandoned_catch_up_stays_abandoned_until_a_complete_cycle(
+    core, slept, caplog,
+) -> None:
+    """Fix round 4, item 1. After the abandon, a short cycle of any caller
+    adds no count, keeps no watermark, writes the note of the abandon again
+    and does not back off. Before fix round 4 the count started again, and
+    the loop backed off in rounds of 6. A complete cycle clears the abandon,
+    and the next short cycle counts from 1."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail_offset = {"inbox": (300, 500)}
+    p = _outlook(graph, ("F-user",))
+    row = _row(initial_sync_done=True, import_since=None,
+               last_synced_at=now - timedelta(days=21))
+    key = sched._lock_key("acc-1")
+
+    with caplog.at_level("WARNING"):
+        await _cycles(core, p, row, [True] * 6)
+        stuck = await _cycles(core, p, row, [True] * 6 + [False] * 2)
+
+    assert [keep for keep, _, _ in stuck] == [False] * 8, "the abandon retried"
+    assert [note for _, note, _ in stuck] == [_ABANDONED] * 8
+    for _, _, res in stuck:
+        assert "catch_up_incomplete" not in res, "an abandoned catch-up backed off"
+        assert res.get("catch_up_abandoned") is True
+    assert key not in sched._catch_up_misses, "the abandon started a new count"
+    assert len(_abandon_logs(caplog)) == 1
+
+    graph.fail_offset = {}
+    [(keep, note, res)] = await _cycles(core, p, row, [False])
+    assert (keep, note) == (False, None)
+    assert "catch_up_abandoned" not in res
+    assert key not in sched._catch_up_abandoned
+
+    graph.fail_offset = {"inbox": (300, 500)}
+    [(keep, note, _)] = await _cycles(core, p, row, [True])
+    assert (keep, note) == (True, _INCOMPLETE)
+    assert sched._catch_up_misses[key] == 1
+
+
+async def test_only_a_loop_cycle_counts_toward_the_abandon(core, slept, caplog) -> None:
+    """Fix round 4, item 2. The webhook, the manual sync, the rerun and the
+    deep downloads keep the watermark and add no count. The sixth LOOP
+    cycle abandons, whatever ran between the loop cycles."""
+    now = _now()
+    graph = _catch_up_graph(now)
+    graph.fail_offset = {"inbox": (300, 500)}
+    p = _outlook(graph, ("F-user",))
+    row = _row(initial_sync_done=True, import_since=None,
+               last_synced_at=now - timedelta(days=21))
+    key = sched._lock_key("acc-1")
+
+    with caplog.at_level("WARNING"):
+        others = await _cycles(core, p, row, [False] * 8)
+        assert [keep for keep, _, _ in others] == [True] * 8
+        assert key not in sched._catch_up_misses
+        assert _abandon_logs(caplog) == []
+
+        mixed = await _cycles(core, p, row, [True] * 5 + [False] * 3 + [True])
+
+    assert [keep for keep, _, _ in mixed] == [True] * 8 + [False]
+    assert [note for _, note, _ in mixed] == [_INCOMPLETE] * 8 + [_ABANDONED]
+    [abandoned] = _abandon_logs(caplog)
+    assert "misses=6" in abandoned
+
+
+@pytest.mark.parametrize("complete_from_loop", [True, False])
+async def test_a_complete_cycle_starts_the_count_again(
+    core, slept, complete_from_loop,
+) -> None:
+    """Fix rounds 3 and 4, item 1. A complete cycle of any caller clears the
+    count before the limit."""
     now = _now()
     graph = _catch_up_graph(now)
     p = _outlook(graph, ("F-user",))
@@ -1189,11 +1377,66 @@ async def test_a_complete_cycle_starts_the_count_again(core, slept) -> None:
     keeps = []
     for fail in [True] * 5 + [False] + [True] * 5:
         graph.fail_offset = {"inbox": (300, 500)} if fail else {}
-        core.log.clear()
-        await core.run(p, row)
-        [(_, d_params)] = _stmts(core.log, _PHASE_D)
-        keeps.append(d_params["keep_watermark"])
+        [(keep, _, _)] = await _cycles(
+            core, p, row, [True if fail else complete_from_loop])
+        keeps.append(keep)
     assert keeps == [True] * 5 + [False] + [True] * 5
+
+
+async def test_the_rerun_of_a_loop_cycle_does_not_count(monkeypatch) -> None:
+    """Fix round 4, item 2. A skip during a loop cycle starts the rerun. The
+    rerun is a cycle with no ``from_loop``."""
+    seen: list[bool] = []
+
+    async def _cycle(account_id, **kw):
+        seen.append(kw.get("from_loop", False))
+        if len(seen) == 1:
+            sched._sync_rerun.add(sched._lock_key(account_id))
+        return {"synced": 1, "history_id": None}
+
+    monkeypatch.setattr(sched, "_sync_cycle", _cycle)
+    res = await sched._sync_account("acc-1", organization_id=_ORG,
+                                    if_busy="skip", from_loop=True)
+    assert seen == [True, False]
+    assert res.get("reran") is True
+
+
+def _from_loop_calls() -> list[tuple[str, str, str, object]]:
+    """Each call of ``_sync_account`` or ``_sync_cycle`` in the code that
+    passes ``from_loop``: (file, caller, callee, value). A value that is not
+    a constant is its source text."""
+    found: list[tuple[str, str, str, object]] = []
+    for path in _code_files():
+        source = path.read_text(encoding="utf-8")
+        if "from_loop" not in source:
+            continue
+        tree = ast.parse(source)
+        owner = _innermost_function(tree)
+        label = path.relative_to(_ROOT).as_posix()
+        for callee in ("_sync_account", "_sync_cycle"):
+            for call in _calls(tree, callee):
+                for kw in call.keywords:
+                    if kw.arg is None:
+                        found.append((label, owner.get(id(call), "<module>"),
+                                      callee, "**"))
+                    elif kw.arg == "from_loop":
+                        value = (kw.value.value if isinstance(kw.value, ast.Constant)
+                                 else ast.unparse(kw.value))
+                        found.append((label, owner.get(id(call), "<module>"),
+                                      callee, value))
+    return sorted(found, key=repr)
+
+
+def test_only_the_loop_counts_toward_the_abandon() -> None:
+    """Fix round 4, item 2. The loop is the one caller that passes
+    ``from_loop=True``. ``_sync_account`` hands it to the cycle, and the
+    rerun passes none. A new caller that counts fails this test until
+    somebody decides it."""
+    scheduler = "apps/services/email_ingestion/email_ingestion/scheduler.py"
+    assert _from_loop_calls() == sorted([
+        (scheduler, "_account_sync_loop", "_sync_account", True),
+        (scheduler, "_sync_account", "_sync_cycle", "from_loop"),
+    ], key=repr)
 
 
 async def test_a_short_catch_up_backs_the_loop_off(monkeypatch) -> None:
@@ -1831,4 +2074,93 @@ class TestTheImportOnARealDatabase:
                 assert datetime.fromisoformat(model.import_reached_at) == reached
         finally:
             release_tenant(token)
+            _drop(p.admin_engine, account_id)
+
+    async def test_an_abandoned_catch_up_moves_on_and_the_api_returns_its_note(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 4, items 1 to 3, as the non-owner role in org B.
+
+        Page 2 of the inbox fails in every cycle. Five loop cycles keep
+        ``last_synced_at``. The sixth moves it on and writes the note of the
+        abandon. ``sync_status`` stays ``idle``, and the account API still
+        returns the note (item 3, the API half). A seventh short cycle moves
+        the watermark on again and counts nothing. A complete cycle clears
+        the note."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        owner = f"owner-{uuid.uuid4().hex[:8]}@em-t6b.test"
+        account_id = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        paused = now - timedelta(days=21)
+        _set(p.admin_engine, account_id, initial_sync_done=True,
+             last_synced_at=paused)
+        graph = _FakeGraph({"inbox": [now - timedelta(hours=2 * k + 1)
+                                      for k in range(250)]},
+                           fail_offset={"inbox": (100, 500)})
+        provider = _outlook(graph)
+        key = sched._lock_key(account_id)
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+
+        from acb_llm import key_store
+
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+
+        def _state():
+            with p.admin_engine.connect() as c:
+                return c.execute(text(
+                    "SELECT last_synced_at, sync_status, sync_error "
+                    "FROM email_accounts WHERE id = CAST(:a AS uuid)"),
+                    {"a": account_id}).one()
+
+        async def _loop_cycle():
+            token = clear_tenant()
+            try:
+                async with tenant_engine_scope(app_dsn):
+                    return await sched._sync_account(
+                        account_id, organization_id=p.org_b, from_loop=True)
+            finally:
+                release_tenant(token)
+
+        try:
+            for _ in range(5):
+                res = await _loop_cycle()
+                assert res.get("catch_up_incomplete") is True, res
+            synced, status, note = _state()
+            assert synced == paused, "a short loop cycle moved last_synced_at"
+            assert (status, note) == ("idle", _INCOMPLETE)
+
+            abandon = await _loop_cycle()
+            assert abandon.get("catch_up_abandoned") is True, abandon
+            moved, status, note = _state()
+            assert moved > paused + timedelta(days=20), "the abandon kept the pause"
+            assert (status, note) == ("idle", _ABANDONED)
+
+            token = bind_tenant(p.org_b)
+            try:
+                async with tenant_engine_scope(app_dsn):
+                    [listed] = await accounts.list_accounts(user=me)
+            finally:
+                release_tenant(token)
+            assert listed.sync_status == "idle"
+            assert listed.sync_error == _ABANDONED, (
+                "the account API dropped the note of an idle mailbox")
+
+            sticky = await _loop_cycle()
+            assert "catch_up_incomplete" not in sticky, sticky
+            again, status, note = _state()
+            assert again > moved, "the abandoned catch-up kept the watermark"
+            assert (status, note) == ("idle", _ABANDONED)
+            assert key not in sched._catch_up_misses
+
+            graph.fail_offset = {}
+            done = await _loop_cycle()
+            assert "catch_up_abandoned" not in done, done
+            _, status, note = _state()
+            assert (status, note) == ("idle", None)
+            assert key not in sched._catch_up_abandoned
+        finally:
             _drop(p.admin_engine, account_id)

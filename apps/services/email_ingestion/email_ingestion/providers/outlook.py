@@ -137,10 +137,14 @@ def _newer_than(messages: list[EmailMessage], watermark: datetime | None) -> boo
     return min(dated) > watermark
 
 
-#: The statuses of a sweep folder that the sweep skips with no harm: the folder
-#: is missing or forbidden. Any other failure leaves the folder short of the
-#: catch-up watermark (fix round 3).
-_SKIPPED_SWEEP_STATUSES = frozenset({403, 404})
+#: The statuses of a folder read that say the folder is missing (404) or
+#: forbidden (403). ``_skips_folder`` decides what they do.
+_ABSENT_STATUSES = frozenset({403, 404})
+
+#: The system folders that a mailbox can lack: a mailbox can have no
+#: Archive. A user folder can go away too. Every other system folder exists
+#: in each mailbox (fix rounds 2 and 4).
+_OPTIONAL_SYSTEM_FOLDERS = frozenset({"archive"})
 
 #: The page statuses that a sync tries once more, after ``Retry-After``
 #: (EM-T6b fix round 1). Graph sends them for throttling and for a short
@@ -151,6 +155,19 @@ _RETRY_STATUSES = frozenset({429, 503, 504})
 def _status(exc: BaseException) -> int | None:
     """The HTTP status of a failed Graph request, or None."""
     return getattr(getattr(exc, "response", None), "status_code", None)
+
+
+def _skips_folder(folder: str, canon: str | None, exc: BaseException) -> bool:
+    """True when a failed read of *folder* skips the folder with no harm.
+
+    ONE rule for the import and the recurring sweep (fix round 4). A 403 or
+    a 404 skips Archive or a user folder (``canon`` is set for a user
+    folder). On Inbox, Sent, Drafts, Junk or Deleted Items, a 403 or a 404
+    is a failure, because each mailbox has them. A revoked grant or a
+    missing mailbox must reach the member as an error, not as a quiet skip
+    that moves the watermark on."""
+    optional = canon is not None or folder in _OPTIONAL_SYSTEM_FOLDERS
+    return optional and _status(exc) in _ABSENT_STATUSES
 
 
 def _retry_after(exc: BaseException) -> float:
@@ -175,11 +192,6 @@ class CatchUpIncomplete(RuntimeError):
         super().__init__(message)
         self.messages = messages
 
-
-#: The folders whose 404 on a first page skips them in an import (fix round
-#: 2): a mailbox can have no Archive, and a user folder can go away. Every
-#: other system folder exists in each mailbox, so its 404 is a failure.
-_IMPORT_OPTIONAL_FOLDERS = frozenset({"archive"})
 
 #: The page size of the one query that reads a whole second (fix round 2).
 _WHOLE_SECOND_TOP = 1000
@@ -1212,8 +1224,8 @@ class OutlookProvider(BaseEmailProvider):
         Each page tries once more on 429, 503 and 504. A page that fails
         after the sweep read a page newer than the watermark raises
         ``CatchUpIncomplete`` with the pages already read. The cycle writes
-        them and keeps its watermark. A first page that fails raises as
-        before, and the sweep skips the folder.
+        them and keeps its watermark. A first page that fails raises, and
+        ``sync_messages`` decides by ``_skips_folder`` (fix round 4).
         """
         out: list[EmailMessage] = []
         token: str | None = None
@@ -1352,13 +1364,19 @@ class OutlookProvider(BaseEmailProvider):
                     logger.warning("sync.catch_up_incomplete folder=%s error=%s",
                                    folder_key, str(exc.__cause__)[:160])
                 except Exception as exc:
-                    # A missing (404) or forbidden (403) folder is skipped, as
-                    # before. Any other failure leaves the folder unread, so the
-                    # cycle keeps its watermark (fix round 3).
-                    if _status(exc) not in _SKIPPED_SWEEP_STATUSES:
-                        incomplete.append(canon or folder_key)
-                        logger.warning("sync.sweep_folder_failed folder=%s status=%s",
-                                       folder_key, _status(exc))
+                    # One rule with the import (fix round 4): a 403 or a 404
+                    # skips only Archive or a user folder. On a folder that
+                    # each mailbox has, it fails the cycle, and the error
+                    # path writes ``sync_status = 'error'``. Any other failure
+                    # leaves the folder unread, so the cycle keeps its
+                    # watermark (fix round 3).
+                    if _skips_folder(folder_key, canon, exc):
+                        return
+                    if _status(exc) in _ABSENT_STATUSES:
+                        raise
+                    incomplete.append(canon or folder_key)
+                    logger.warning("sync.sweep_folder_failed folder=%s status=%s",
+                                   folder_key, _status(exc))
 
             for folder_key in SWEEP_SYSTEM_FOLDERS:
                 await _sweep(folder_key, None)
@@ -1403,9 +1421,10 @@ class OutlookProvider(BaseEmailProvider):
         left. So a stop part way keeps the newest mail of every folder. Each
         stream pages by time, not by offset (``_FolderStream``).
 
-        A 404 on the first page skips only Archive or a user folder, and the
-        log names the folder and the status. A 404 on any other system folder
-        raises, because each mailbox has it. Any other failure raises, after
+        A 403 or a 404 on the first page skips only Archive or a user folder
+        (``_skips_folder``, fix round 4), and the log names the folder and the
+        status. A 403 or a 404 on any other system folder raises, because
+        each mailbox has it. Any other failure raises, after
         one more try on 429, 503 and 504. The import then resumes from the
         point that it reached. With no folder left, it raises, so the import
         is never ``done`` without a folder. Before the first list, it awaits
@@ -1420,11 +1439,10 @@ class OutlookProvider(BaseEmailProvider):
             try:
                 await self._read_page(stream, size, since=since, until=until)
             except Exception as exc:
-                optional = canon is not None or folder in _IMPORT_OPTIONAL_FOLDERS
-                if _status(exc) != 404 or not optional:
+                if not _skips_folder(folder, canon, exc):
                     raise
                 logger.info("sync.import_folder_skipped folder=%s status=%s",
-                            folder, 404)
+                            folder, _status(exc))
                 continue
             streams.append(stream)
         if not streams:

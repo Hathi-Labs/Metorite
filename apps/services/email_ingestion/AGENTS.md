@@ -162,23 +162,39 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   'error'` with the error, and the next cycle resumes the import. A failed
   import on a mailbox that never synced keeps `last_synced_at` NULL, so the
   next sweep reads back to `created_at`.
-- ⚠️ **A sweep folder that stops short keeps the watermark, for at most 6
-  cycles (EM-T6b fix round 3).** A first page that fails with a status other
-  than 403 or 404 leaves its folder short, and so does a later page before
-  the watermark. The sweep keeps the pages that it read and sets
-  `catch_up_incomplete`. Phase (d) writes that mail, keeps `last_synced_at`
-  and writes a `sync_error` note with the folder name only. The loop counts
-  the cycle as a soft failure and backs off. After `CATCH_UP_MAX_MISSES` (6)
-  short cycles in a row, the watermark moves on, and the log says
-  `sync.catch_up_abandoned` with the folder and the gap. The count lives in
-  the process. The later full fix is a watermark for each folder.
+- ⚠️ **A sweep folder that stops short keeps the watermark (EM-T6b fix
+  rounds 3 and 4).** A first page that fails with a status other than 403 or
+  404 leaves its folder short. A later page before the watermark does too.
+  The sweep keeps the pages that it read and sets `catch_up_incomplete`.
+  Phase (d) writes that mail, keeps `last_synced_at` and writes a
+  `sync_error` note with the folder name only. The loop counts the cycle as
+  a soft failure and backs off.
+  - **Only the loop counts.** A cycle of the loop passes `from_loop=True`,
+    and only that cycle adds to the count. The webhook, the manual sync, the
+    rerun and the deep downloads run when mail arrives or a member acts. If
+    they counted, a busy mailbox could abandon a gap in minutes.
+  - **The abandon is sticky.** After `CATCH_UP_MAX_MISSES` (6) short cycles
+    of the loop in a row, the watermark moves on, and the log says
+    `sync.catch_up_abandoned` with the folder and the gap. A later short
+    cycle adds no count, keeps no watermark and does not back off. It writes
+    the note of the abandon again. Only a complete cycle clears the count
+    and the abandon.
+  - The count and the abandon live in the process, so a restart clears
+    them. The note reaches the API only, because the UI shows `sync_error`
+    only when `sync_status` is `error`. The later full fix is a watermark for
+    each folder. R7: `tests/unit/test_email_import_batches.py`.
+- ⚠️ **A 403 or a 404 skips only Archive or a user folder (EM-T6b fix round
+  4).** The import and the recurring sweep use one rule, `_skips_folder` in
+  `providers/outlook.py`. On Inbox, Sent, Drafts, Junk or Deleted Items, a
+  403 or a 404 fails the cycle, so the member sees the error. R7:
+  `tests/unit/test_email_import_batches.py`.
 - ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix rounds
   1 and 2).** Each next page is a new query with `lt` the second after the
   oldest message of the last page. Exchange keeps a fraction of a second, and
   `le` that second dropped the rest of a split second. The stream drops the
   ids that it read again. When one second fills a page, one query with
-  `$top=1000` reads that second. A 404 on a first page skips only Archive or
-  a user folder. A 429, 503 or 504 page tries once more after `Retry-After`.
+  `$top=1000` reads that second. A 429, 503 or 504 page tries once more
+  after `Retry-After`.
 - ⚠️ **Three guards protect the reconcile of a member-act import (EM-T6b
   fix rounds 2 and 3).** `reconcile.import_reconcile_candidates` takes
   `(id, folder, received_at)` tuples. It keeps a row written after phase
