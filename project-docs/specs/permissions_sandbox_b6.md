@@ -353,6 +353,11 @@ not part of WS-3a; it stays as an unowned residual.
 
 ### P5-a.2 — **WS-3a · Record the derived tier, and refuse a run we cannot isolate** — 🔲 **AGENT-SAFE, dispatchable**
 
+> ⚠️ **Amended 2026-10-03 (`maf_coding_engine.md` §9 R-3).** Done-when 3
+> below reads `copilot_sandbox_scope` as the coverage test. When WS-3a is
+> built, it reads `sandbox_broker.covers(agent)` in its place. WS-43 owns that
+> predicate. Measured 2026-10-03: WS-3a is not built (H-213).
+
 The tier is already derived and immediately discarded (see §"What actually
 shipped"). This slice makes it a **record** and a **gate**. It builds no
 container and changes no isolation mechanism — it makes the ladder observable
@@ -510,6 +515,12 @@ also touches credential issuance, which is in `work_plan.md` §6's gate list.
 An agent asked to "finish P5-b" builds **P5-b.2 only** and refuses this by name.
 
 ### P5-c — Generalize the container to a live, streaming run sandbox — 🔲 **PARKED SUB-PROJECT** (owner decision 2026-08-03) · **OWNER-GATE to un-park**
+
+> ⚠️ **Amended 2026-10-03 by D83 (owner decision).** The owner un-parked T2
+> for one container only: the WS-43 sandbox terminal, which runs the shell
+> commands of the coding engine (`maf_coding_engine.md`). P5-c itself stays
+> parked. It lifts a whole agent run into a container, and D83 does not cover
+> that. An agent still refuses P5-c and P5-d by name.
 
 > ⚠️ **Read the D16 update at the end of this box first (2026-08-09):** the parking
 > survives but the premise below is dated and the un-park trigger changed — it is the

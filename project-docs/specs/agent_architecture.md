@@ -566,6 +566,14 @@ playbook, not as a vector row nobody can see.
 
 ## 11. One runtime: MAF. Copilot becomes a tool, not a runtime
 
+> ⚠️ **Amended 2026-10-03 by D82 (owner decision).** The coding engine behind
+> `code_task` moves from the Copilot SDK to a MAF harness session. Its shell
+> commands run in a sandbox container per organization, agent and thread (D83).
+> The decision of this section stands: one runtime, and coding is a tool. The
+> text below is the record of 2026-07-26, so its "Copilot writes code" wording
+> is history. WS-43g also moves app-builder (§11.3) onto the MAF harness. The
+> owning spec is [`maf_coding_engine.md`](maf_coding_engine.md), board row WS-43.
+
 **Decision: there is exactly one agent runtime, and `runtime` stops being a variable.**
 
 The dual-runtime model was the VS Code era. Keeping it costs two of everything — two

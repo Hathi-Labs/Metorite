@@ -95,6 +95,71 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-211 · Remove `approve_all` from the root `metorite` agent and from `agent-sales-assistant` · [AGENT]
+- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
+  `on_permission_request` line means this is open. For the other agent, run
+  `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n approve_all`.
+  A hit means it is open there too.
+- **What happens.** Both factories pass
+  `on_permission_request: PermissionHandler.approve_all`. The root one is
+  `agents.py:102-122`. The external one is `agents.py:676` at `03de684e`.
+  `GitHubCopilotAgent` stores that handler in `_permission_handler`. The
+  executor installs the B6 handler only when `_permission_handler is None`
+  (`executor.py:919`, `:3346`, `:3878`, `:4787` and `:5307`). So these two
+  agents approve every shell command, file write and fetch, in every
+  `AGENT_PERMISSION_MODE`.
+- **Do.**
+  1. Delete `on_permission_request` from the root factory. The executor then
+     installs `_copilot_permission_handler()`.
+  2. Open a PR in `FracktalWorks/agent-sales-assistant` that does the same.
+     Do it together with H-212.
+  3. Add a fence that fails when a first-party factory sets `approve_all`.
+  4. `mutation_runner.py:85` also sets it, inside the mutation container.
+     Allow-list that one site with its reason, or fix it too.
+- **Authority:** `permissions_sandbox_b6.md` §"The gap" ·
+  `agent_architecture.md` §3.2 · `specs/maf_coding_engine.md` §14
+- **Added:** 2026-10-03 · the WS-43 spec session
+
+### H-212 · Fix the `copilot.types` import in `agent-sales-assistant` · [AGENT]
+- **Check:** `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n "copilot.types"`.
+  A hit means this is open.
+- **What happens.** The agent's `build_agent` runs
+  `from copilot.types import PermissionHandler` (`agents.py:664` at
+  `03de684e`). H-181 moved this repo to `github-copilot-sdk` 1.0.11, and that
+  version has no `copilot.types` module. Measured 2026-10-03: on 1.0.11,
+  `import copilot.types` raises `ModuleNotFoundError`. So the factory raises
+  `ImportError` when the loader builds the agent. Then `@sales` and the email
+  drafting consult of `agent-sales-assistant` fail.
+- **Not measured.** Nobody read the box log. The failure on production comes
+  from the code and the lock, not from a log line.
+- **Do.** In that repo, delete the `copilot.types` import together with the
+  `approve_all` line (H-211). Then load the agent on a dev gateway and run one
+  `@sales` chat.
+- **Authority:** H-181 · `uv.lock` (`github-copilot-sdk` 1.0.11) ·
+  `specs/maf_coding_engine.md` §14
+- **Added:** 2026-10-03 · the WS-43 spec session
+
+### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
+- **Check:** `rg -n "IsolationTierUnavailable|ISOLATION_TIER_ENFORCE" apps packages`.
+  No hit means WS-3a is still unbuilt. Then run
+  `rg -n -e '--read-only' -e '"--network"' apps/services/orchestrator/orchestrator/copilot_sandbox.py apps/services/orchestrator/orchestrator/mutation.py`.
+  No hit means WS-3b is still unbuilt.
+- **What happens.** `work_plan.md` §2 WS-3 reads "WS-3a (record+refuse),
+  WS-3b (rootfs+network) shipped". Measured 2026-10-03 at `f0264ce8`, the code
+  has no `isolation_tier` column and no `IsolationTierUnavailable`. It has no
+  `ISOLATION_TIER_ENFORCE`, and neither `docker run` passes `--read-only` or
+  `--network`. The board is the only current-state authority. So a false
+  "shipped" hides two dispatchable slices.
+- **Do.** Rewrite the WS-3 state cell to say that WS-3a and WS-3b are unbuilt.
+  Or build them from `permissions_sandbox_b6.md` §P5-a.2 and §P5-b.2. WS-3a's
+  refusal must read `sandbox_broker.covers(agent)` and not
+  `copilot_sandbox_scope` (`specs/maf_coding_engine.md` §9 R-3).
+- **This PR flagged the row** with a pointer to this entry. It did not
+  rewrite the state cell.
+- **Authority:** `work_plan.md` §2 WS-3 · `permissions_sandbox_b6.md` §P5-a.2
+  and §P5-b.2
+- **Added:** 2026-10-03 · the WS-43 spec session
+
 ### H-198 · 🟡 DEFERRED — agent webhooks need an owner before they can use AI · [OWNER+AGENT]
 - **Check:** `rg -n "^AGENT_WEBHOOK_SECRET" /opt/acb/app/.env` on the box. No
   hit means the door is still closed, and this stays deferred.
