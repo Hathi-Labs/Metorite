@@ -3385,8 +3385,8 @@ wrong-sender defects first.
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | ✅ **MERGED #592 (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
-| **EM-T8d** | 🟢 AGENT-SAFE · R8 | 🔨 **BUILT, not merged (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
-| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
+| **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
+| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
 | **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
 
@@ -3632,6 +3632,84 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
 4. **The drafter identity (MB-14).** The prompt names the address and the display name of the
    sending mailbox. "Self" in `automation/identity.py` covers each mailbox of the member.
 5. **Removed mailbox** (edge case 17): the chat scope falls back to All inboxes.
+
+**What the code does today (measured 2026-10-03, origin/main 3ee0396b).**
+
+- **No background act reads across mailboxes.** Each loader of the rule match, the thread status,
+  the cold check, the sender pin, the automatic drafts, learning, the voice profile, Process past
+  emails, the digest, the embeddings and the drafting memory has `account_id = :aid` in its
+  `WHERE`, or `account_id` in its Mem0 key. No R8 test proves it with two mailboxes of one member.
+- **"Self" is one address.** `automation/identity.py:64-91` matches the address of the current
+  mailbox only. So mail from another mailbox of the member is external when the domains differ.
+  The cold check, the thread status, the digest and the sender pin then act on it.
+- **The drafter names the sign-in address.** `drafting.py:816` and `drafting.py:1005` say "You
+  are drafting as: <sign-in address>". The local draft copies store the sign-in address as the
+  From (`drafting.py:1765`, `actions.py:499`, `actions.py:538`).
+- **A reply from mailbox B to a mail in A loses the thread.** Compose-assist reads the mail with
+  `em.account_id = :aid` of B (`drafting.py:1634`), finds nothing, and drafts with no thread.
+- **The live chat is the `email-assistant` agent** (`apps/agents/agent-email-assistant/agents.py`),
+  not `automation/chat.py`. The scope reaches the agent only as persona text. Each tool takes
+  `account_id` as an argument from the model.
+- **Three tools do not refuse a wrong mailbox.** `send_email` re-binds a reply to the mailbox of
+  the mail and does not refuse. `manage_inbox` archive, trash, read and star with a wrong
+  `account_id` change 0 rows and report no error. `read_thread` lets the id from the model win
+  over the id of the mail.
+- **Three server writes trust the pair.** `mark_thread_done` writes a status row for a thread
+  that has no mail in the mailbox (`replyzero.py:2076-2091`). `test_rules` tests a mail of B
+  against the rules of A (`engine.py:1460`). `_upsert_rule_pattern` takes a `rule_id` of
+  another mailbox (`rules.py:866-868`).
+- **The chat tags a result with the raw label** (`agents.py:209-213`), often "Outlook", and the
+  picker shows the address only.
+
+**The narrowed slices.** EM-T8e ships as three pull requests.
+
+##### EM-T8e-1 — self, the drafter and the server checks (gateway)
+
+1. **Self covers each mailbox of the member (D-EM-27).** One SQL helper returns the lower-case
+   addresses of each mailbox of the member who owns `:aid`. Row level security binds the
+   organization. `identity.py` takes that set, and an address in the set is `self`. The internal
+   domain stays the domain of the current mailbox. Each caller that today compares with one
+   address uses the set: the rule match payload, the thread status, the conversation check, the
+   cold check, the digest, the sender pin guard, the cleanup scope and the sender categories.
+2. **The drafter speaks as the sending mailbox (MB-14).** The prompt names the address of the
+   sending mailbox and its label. The local draft copies store that address as the From.
+3. **A reply from another mailbox keeps the thread.** When the mail is not in the sending mailbox,
+   compose-assist reads the mail and its thread from the mailbox of the mail, under the owner
+   predicate. The voice and the signature still come from the sending mailbox.
+4. **The server refuses a pair that does not match.** `mark_thread_done`, `test_rules` and the
+   rule pattern write return 404 when the thread, the mail or the rule is not in the mailbox.
+5. **The fences of D-EM-18 (item 1).** One R8 suite seeds two mailboxes of one member, each with
+   its own marker. For each background loader, the read for A holds no marker of B.
+
+**Not built in EM-T8e-1.** The display name of the mailbox. `email_accounts` has no column for
+it, so the prompt names the address and the label. A later slice can store the name that the
+provider returns at connect.
+
+##### EM-T8e-2 — the chat tools bind to one mailbox (agent)
+
+1. **An act on a mail takes the mailbox of the mail (§11.3 rule 1).** `send_email` in reply mode,
+   `draft_reply`, `read_thread` and `mark_thread_done` read the mail first. When the model names
+   another mailbox, the tool refuses and names the mailbox of the mail as "label · address".
+   `manage_inbox` sends the mail ids with no `account_id`, so each mail acts in its own mailbox.
+2. **New mail with no mailbox named (rule 3).** `send_email` with no `account_id` uses the only
+   mailbox when there is one. With two or more, it uses the mailbox that last wrote to the first
+   recipient (`GET /email/contacts/sent-from`). With no such mailbox, it returns the question
+   "Send from which mailbox?" and lists each mailbox as "label · address".
+3. **A rule or a setting (rule 4).** A rule or setting tool with no `account_id` and two or more
+   mailboxes returns the question "Which mailbox?" and lists them. It never picks one.
+4. **"label · address" everywhere (MB-15).** `list_accounts`, the result tags and the From line of
+   each card use `display_label` and the address. `instructions.md` says the same.
+
+##### EM-T8e-3 — the chat scope (UI)
+
+1. **The picker** in `EmailAssistantChat` offers "All inboxes" when the member has two or more
+   mailboxes, and each mailbox as its chip. It follows the scope of the page.
+2. **The persona** names the scope. In one mailbox, it gives that `account_id`. In All inboxes,
+   it gives no default and lists each mailbox as "label · address (account_id)".
+3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
+   inboxes, or to the only mailbox.
+
+EM-T8e-3 starts after EM-T8d merges, because it reads the `viewAll` scope of the store.
 
 #### 11.7.6 EM-T8f — settings for each mailbox
 
