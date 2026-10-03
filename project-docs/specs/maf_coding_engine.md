@@ -964,7 +964,11 @@ entry also covers each other agent of that organization that §7.7 allows.
   not describe the coding skill.
 - The skills catalog (`GET /integrations/skills`) resolves a scope with no
   withheld names, so it still shows the coding family for apis-config.
-- Personal agents (H-225).
+- Personal agents (H-225). A shared agent can still delegate to one with
+  `call_agent`, and the personal agent keeps its shell tools. That run works
+  in the dir of the acting member, and H-225 closes it.
+- A tool that an agent ships itself under one of these names. The seam
+  controls injected tools only, and no in-repo agent ships one.
 
 **Fence.** WS43-F21, `tests/unit/test_shared_agent_shell_tools.py`.
 

@@ -3893,7 +3893,8 @@ line — never reclaim a number by deleting the other entry.
   shared agents only, because the owner left personal agents out of scope.
   email-assistant and whatsapp-assistant still run code on the host. There,
   `run_script` has the network and the credentials of the integrations.
-  When WS-43f makes `covers()` live, apply the same rule to a personal
+  A shared agent can also reach that code through `call_agent`. When WS-43f
+  makes `covers()` live, apply the same rule to a personal
   agent: no shell tool without a cover. Ask the owner first, because the
   change takes a tool from a live agent.
 - **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
