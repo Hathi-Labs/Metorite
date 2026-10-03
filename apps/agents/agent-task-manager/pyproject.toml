@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Task management MAF agent (My Tasks over the one task store)"
 requires-python = ">=3.12"
 dependencies = [
-    "agent-framework-github-copilot>=2.0.0",
+    "acb-common",
+    "acb-llm",
+    # Native MAF chat client → gateway /v1 (agent_framework Agent +
+    # OpenAIChatCompletionClient). Not the GitHub Copilot SDK since 2026-10-03.
+    "agent-framework-core>=1.19.0",
+    "agent-framework-openai>=1.14.4",
     "httpx>=0.27",
 ]
 

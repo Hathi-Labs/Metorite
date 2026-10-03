@@ -1,6 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
+**Updated:** 2026-10-03. `task-manager` and `apis-config` run on native MAF now (§11.3).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -132,6 +133,9 @@ Every first-party agent declares `"runtime": "maf"` in `config.json`. Three of t
 | `agent-email-assistant` | `maf` | `agent_framework` | MAF ✅ |
 | `agent-whatsapp-assistant` | `maf` | `agent_framework` | MAF ✅ |
 | `agent-orchestrator` | `maf` | (delegates) | MAF ✅ |
+
+> **Update 2026-10-03:** `agent-apis-config` and `agent-task-manager` now build a native MAF
+> `Agent` (§11.3). `agent-app-builder` is the one first-party Copilot agent that is left.
 
 The loader imports `agents.py` and uses whatever the factory returns, so `runtime` is never
 checked against reality. This contradicts AGENTS.md Global Constraints #6 and #9 (*"MAF is the
@@ -672,8 +676,8 @@ not-yet-migrated agents.
 
 | Agent | Now | Target | Why |
 |---|---|---|---|
-| `agent-task-manager` | Copilot, 136 ln | **Declarative** | Instructions + 25 GTD tools. No control flow. |
-| `agent-apis-config` | Copilot, 63 ln | **Declarative** | Same shape. |
+| `agent-task-manager` | MAF since 2026-10-03 (was Copilot) | **Declarative** | Instructions + 29 GTD tools. No control flow. |
+| `agent-apis-config` | MAF since 2026-10-03 (was Copilot) | **Declarative** | Same shape. |
 | `agent-orchestrator` | MAF, 24 ln | **Declarative** (delegation-heavy) | Its routing becomes `capabilities.agents` edges (§8). |
 | `agent-app-builder` | Copilot, 48 ln | **Declarative MAF that calls `code_task`** | It *is* a coding agent — but under §11 that means it holds the coding *tool*, not that it runs on a different runtime. |
 | `agent-whatsapp-assistant` | MAF, 480 ln | **Code** | Real bespoke logic. |
@@ -685,6 +689,41 @@ shouldn't wait for anything here.
 
 > **Update 2026-08-01 (doc-truth pass):** already fixed 2026-07-26 (§3.2). A0's remaining
 > scope is the startup runtime check only.
+
+### 11.3.1 Moved to native MAF (2026-10-03)
+
+The owner approved this step on 2026-10-03. `agent-task-manager` and `agent-apis-config`
+now build an `agent_framework.Agent` with an `OpenAIChatCompletionClient` and
+`attributed_openai`. That is the same shape as `agent-email-assistant` and `agent-crm`.
+
+- **Same surface.** Each agent keeps its instructions file and its tools: 29 for
+  task-manager and `web_search` for apis-config. The build-time model stays `tier-balanced`.
+- **The registry agrees.** `_AGENT_REGISTRY` in `gateway/routes/agent.py` says `maf` for both.
+  The executor reads that label and the agent shape. A `github-copilot` label sends
+  a MAF agent down the Copilot path, and that run fails on `_default_options`.
+- **Not declarative yet.** Both factories are hand-written. WS-8i and WS-8j still own the
+  move onto `build_declarative_agent`.
+- **The fence.** `tests/unit/test_task_apis_native_maf.py` pins the agent type, the tool
+  names against origin/main, the registry label and the Tier 1 route.
+
+The native path keeps what these agents used. `ask_questions` blocks on Tier 1. History comes
+from `assemble_run_context`. The executor gates every injected tool with `_gate_injected_tool`.
+`write_artifact` and the run's artifact context work without `carry_run_context`.
+
+Five things worked only on the Copilot path. None of them is a blocker:
+
+1. **The agent's own tools lose the B6 wrapper on Tier 1.** The Copilot path wrapped them in
+   `_gate_injected_tool`. Tier 1 wraps injected tools only. `decide()` approves these tools by
+   name anyway. So the loss is the `permission.decision` log line and the mid-run steer drain
+   at an own-tool call. This is true today for every native MAF agent.
+2. **The Copilot CLI tools are gone.** The shell, the file tools, the `sql` todo table and the
+   native `ask_user` do not exist on Tier 1. Neither instructions file names them.
+   `write_artifact` and `manage_todo_list` cover the same jobs.
+3. **No SDK session resume.** Tier 1 rebuilds the history on each turn.
+4. **A delegated run is a batch run.** When another agent calls one of these two, it returns
+   one result. It does not stream its text to the parent.
+5. **The "Metorite Platform Tools" addendum is Copilot-only.** A native agent gets the
+   registry block, the UI directive and the output-discipline block in its place.
 
 ---
 
@@ -780,7 +819,7 @@ The six `sharing` blocks as they actually ship: `apis-config`, `app-builder`, `o
 | `AgentManifest.resolve_tool_surface()` | `manifest.py:263` | **zero** — deliberately identical to `_tool_injection._resolve_injected_scope` (`_tool_injection.py:183`), which still owns the computation |
 | `AgentManifest.isolation_tier()` | `manifest.py:277` | one, and only for a log field (`declarative.py:210`) |
 | `SharingSpec.shareable` / `is_shareable()` | `manifest.py:103, :293` | **zero anywhere in the repo** — no code, TS, or SQL reads `shareable` outside `manifest.py` itself. Room eligibility is not manifest-derived; it is not derived at all. |
-| `build_declarative_agent` + `resolve_skill_tools` + `load_instructions` | `apps/services/orchestrator/orchestrator/declarative.py` | **zero.** Complete, documented, tested. `task-manager` and `apis-config` still ship Copilot factories. |
+| `build_declarative_agent` + `resolve_skill_tools` + `load_instructions` | `apps/services/orchestrator/orchestrator/declarative.py` | **zero.** Complete, documented, tested. `task-manager` and `apis-config` still ship hand-written factories. They build a native MAF `Agent` since 2026-10-03 (§11.3.1). |
 
 > `manifest.py`'s own module docstring said *"Nothing here is wired into the run path yet"*
 > until 2026-08-03. That was false — `from_config` + `instance_key` are on the run path. The
@@ -823,6 +862,11 @@ load. **Refuse to build this without an explicit owner decision**: three of six 
 gate is the owner choosing between (i) fail-closed after WS-8i/WS-8j migrate the drifted
 agents, or (ii) fail-closed now with the three configs corrected to `"runtime": "copilot"`,
 which contradicts AGENTS.md Global Constraint #6.
+
+> **Update 2026-10-03:** one first-party agent still declares `maf` and builds a
+> `GitHubCopilotAgent`. That agent is `agent-app-builder`. `apis-config` and `task-manager`
+> build a native MAF `Agent` now (§11.3.1). So the WS-8a test finds one real mismatch, not
+> three. A fail-closed WS-8b refuses one agent at startup, not half the roster.
 
 #### A — make the manifest authoritative
 
@@ -898,6 +942,12 @@ agents' dependence on Copilot-native file tools (`code_tools.py:17`).
 
 **WS-8j — migrate `apis-config` onto `build_declarative_agent`. AGENT-SAFE.** Same done-when,
 same blocker. Sequence after WS-8i so the first migration carries the risk alone.
+
+> **Update 2026-10-03:** the first clause of each done-when is met. Neither `agents.py`
+> imports `agent_framework_github_copilot` now, and both build a hand-written MAF `Agent`
+> (§11.3.1). The `build_declarative_agent` clause stays open for both tickets. The move also
+> answers the file-tool blocker for these two agents. They lost the Copilot CLI file tools,
+> and their writes now go through `write_artifact`, which mirrors to the store.
 
 #### A1 — one runtime
 

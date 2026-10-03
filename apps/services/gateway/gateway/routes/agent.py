@@ -428,8 +428,12 @@ _AGENT_REGISTRY: list[dict] = [
         # it: their receiver (`/webhooks/clickup`) was deleted in S1.
         "tags": ["tasks", "project-management"],
         "status": "live",
-        # Runs through MAF (MetoriteCopilotAgent wrapper) with BYOK model support.
-        "agent_runtime": "github-copilot",
+        # A native MAF agent since 2026-10-03 (agent_architecture.md §11.3):
+        # build_agents() returns an agent_framework.Agent. The executor reads
+        # THIS label as well as the agent's shape, so "github-copilot" here
+        # would send a MAF agent down the Copilot path, and that path assumes
+        # _default_options. Keep it "maf".
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": [],
         "optional_integrations": [],
@@ -444,7 +448,9 @@ _AGENT_REGISTRY: list[dict] = [
         ),
         "tags": ["configuration", "apis", "setup", "admin"],
         "status": "live",
-        "agent_runtime": "github-copilot",
+        # A native MAF agent since 2026-10-03, like task-manager above. Keep
+        # it "maf" for the same reason.
+        "agent_runtime": "maf",
         "local_path": "apps/agents/agent-apis-config",
         "integrations": [],
         "optional_integrations": ["serpapi"],

@@ -247,9 +247,12 @@ line — never reclaim a number by deleting the other entry.
   with a test that sends the SDK's real write request shape.
 
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
-- **Check:** run one `task-manager` chat on the box. Then read its
+- **Check:** run one `app-builder` chat on the box. Then read its
   `usage_event` rows. → A row with an empty member, app or run means this is
   still open.
+- ⚠️ **`task-manager` left the Copilot path on 2026-10-03.** It runs on
+  native MAF now, so a chat with it does not test this path. `app-builder` is
+  the one first-party Copilot agent that is left.
 - **Built 2026-09-26, on the `worktree-agent-a48231615ce91464f` branch.** The
   lock now holds `agent-framework-core` 1.19.0, `agent-framework-openai`
   1.14.4 and `agent-framework-github-copilot` 2.0.0. The wrapper pins

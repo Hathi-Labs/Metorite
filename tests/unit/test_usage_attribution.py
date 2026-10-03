@@ -448,8 +448,8 @@ def _wire_client():
 
 
 def _copilot_agent(client):
-    """A task-manager-shaped agent: the provider dict is built ONCE, with no
-    headers, exactly as ``agent-task-manager/agents.py`` builds it."""
+    """An app-builder-shaped agent: the provider dict is built ONCE, with no
+    headers, exactly as ``agent-app-builder/agents.py`` builds it."""
     from agent_framework_github_copilot import GitHubCopilotAgent
     from orchestrator.copilot_agent import MetoriteCopilotAgent
 
@@ -475,9 +475,11 @@ def _run_as(who: str, run_id: str, app: str = "tasks") -> None:
 
 
 class TestTheCopilotPathCarriesTheRun:
-    """🔴 H-181. Three agents run on the Copilot SDK: task-manager,
-    app-builder and apis-config. Once the box serves AI with the deployment
-    key (H-152), the Router refuses a model call that names no member.
+    """🔴 H-181. One first-party agent runs on the Copilot SDK: app-builder.
+    task-manager and apis-config moved to native MAF on 2026-10-03, and
+    ``TestEveryClientUsesTheSeam`` fences their clients. Once the box serves
+    AI with the deployment key (H-152), the Router refuses a model call that
+    names no member.
 
     The CLI, not our code, makes the model call. Two things reach it:
 
