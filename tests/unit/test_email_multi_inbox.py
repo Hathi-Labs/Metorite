@@ -22,7 +22,10 @@ R7 fences named here:
   fails, the authorize leg shows the account picker rather than answer 500.
 * ``email-chat-reply-mailbox`` (MB-4): the chat reply sends from the mailbox
   of the original mail, and each send card names the From mailbox. A send
-  from a mailbox the member does not have stops before its card.
+  from a mailbox the member does not have stops before its card. Since
+  EM-T8e-2, a reply that names another mailbox sends nothing and names the
+  mailbox of the mail. ``tests/unit/test_email_chat_binding.py`` holds the
+  rest of that slice.
 
 The UI half is fenced in
 ``workbench/control_plane/src/app/email/lib/mailbox.test.ts``.
@@ -399,8 +402,17 @@ def chat(monkeypatch):
     return rec
 
 
-async def test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail(chat) -> None:
+async def test_a_chat_reply_that_names_another_mailbox_is_refused(chat) -> None:
+    # EM-T8e-2 replaced the re-bind of EM-T8a: a send cannot be undone, so
+    # a reply that names another mailbox sends nothing and names the right one.
     out = await agents.send_email("box-b", body="Thanks!", reply_to_email_id="m1")
+    assert chat.posts == [] and chat.cards == []
+    assert out.startswith("Not sent.")
+    assert "Fracktal · dana@fracktal.in (account_id box-a)" in out
+
+
+async def test_a_chat_reply_that_names_no_mailbox_goes_out_from_the_mail(chat) -> None:
+    out = await agents.send_email(body="Thanks!", reply_to_email_id="m1")
     [(path, payload)] = chat.posts
     assert path == "/email/send"
     assert payload["account_id"] == "box-a"
@@ -408,7 +420,6 @@ async def test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail(chat) -> None:
     [card] = chat.cards
     assert card["detail"].startswith("From Fracktal · dana@fracktal.in · To ravi@contoso.test")
     assert "from Fracktal · dana@fracktal.in" in out
-    assert "not from the mailbox you named" in out
 
 
 async def test_a_chat_reply_from_the_right_mailbox_says_nothing_more(chat) -> None:

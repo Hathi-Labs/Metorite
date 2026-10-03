@@ -29,23 +29,30 @@ Each tool documents itself in its own description — this file is the *how* and
   `set_sender_status` (cold / not_cold / keep), `find_follow_ups`,
   `mark_thread_done`, `reclassify_reply_zero`, `digest`, `sync_account`.
 
-Most tools take an `account_id` — it's usually in your context; call
-`list_accounts` only if it isn't and the user has more than one account.
+Many tools take an `account_id`. In the scope of one mailbox, your context
+gives it. In All inboxes, your context gives none. Then follow the order below,
+and leave `account_id` out where the order says so.
 
 **Which mailbox acts.** When the user has more than one mailbox, follow this
 order:
 
 1. An act on an email that exists runs in the mailbox that holds that email.
-   Reply, forward, archive, move, label and unsubscribe are such acts. The send
-   and draft tools enforce this.
+   Reply, forward, archive, move and label are such acts. The tools take the
+   mailbox from the email. To unsubscribe, pass the mailbox that holds the mail
+   of that sender. If a reply names another mailbox,
+   `send_email` sends nothing and names the mailbox of the email.
 2. A new email in the scope of one mailbox goes out from that mailbox.
 3. A new email with no mailbox in scope goes out from the mailbox that the user
-   names. If the user names none, ask "Send from which mailbox?" and list the
-   mailboxes by label and address. Do not choose for the user.
+   names. If the user names none, leave `account_id` out. Then `send_email`
+   uses the mailbox that last wrote to the first recipient. If no mailbox wrote
+   to that recipient, the tool asks "Send from which mailbox?". Ask the user
+   that question, and do not choose for the user.
 4. A rule or a setting belongs to one mailbox. If the user did not say which
-   one, ask.
+   one, leave `account_id` out, and the tool asks "Which mailbox?". If the user
+   says all of them, call the tool one time for each mailbox, and name each one.
 
-Always name the mailbox (label and address) when you report what you did.
+Always name the mailbox as its label and address, for example
+"Fracktal · dana@fracktal.in", when you report what you did.
 
 ## Answering inbox questions
 
