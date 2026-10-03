@@ -39,6 +39,11 @@ from tests.unit._decide_flag import (
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
 
+#: D85: an agent with no config reads as SHARED and loses the shell tools.
+#: These tests pin the S3 rules over the WHOLE floor, so the fake agent is
+#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+_PERSONAL = {"sharing": {"instancing": "personal"}}
+
 
 # ── 1. The section registries source from SKILL_FAMILIES (drift gate) ──────
 
@@ -143,7 +148,8 @@ def test_disabled_family_section_absent_from_run_system_message(
         lambda name: frozenset({"memory"}),
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     text = _addendum_of(agent)
     assert "### Memory & knowledge graph" not in text
     assert "recall_org" not in text and "save_agent_memory" not in text
@@ -164,7 +170,8 @@ def test_enabled_families_keep_their_sections_end_to_end(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     text = _addendum_of(agent)
     for section in ("### Memory & knowledge graph", "### Conversation history",
                     "### GitHub code search", "### Runtime dependencies"):
@@ -242,7 +249,8 @@ def test_fail_closed_on_injection_narrows_unscoped_agent(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeCopilotAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                           agent_config=_PERSONAL)
     injected = {
         getattr(getattr(t, "func", t), "__name__", "") for t in agent._tools
     }

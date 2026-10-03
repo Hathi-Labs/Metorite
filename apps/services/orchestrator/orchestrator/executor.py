@@ -907,6 +907,9 @@ async def _run_sub_agent_streaming(
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
+                # D85: a shared sub-agent gets no shell tool until the
+                # sandbox broker covers it.
+                agent_config=getattr(loaded, "config", None),
             )
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
@@ -980,6 +983,7 @@ async def _run_sub_agent_streaming(
             # is read. No-op while SKILLS_INDEX_ONLY is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _sub_agent_dir, tool_scope=_sub_tool_scope,
+                agent_config=getattr(loaded, "config", None),
             )
 
             text_parts: list[str] = []
@@ -2570,6 +2574,7 @@ async def _run_agent_inner(
                 agents,
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
             )  # inject call_agent / call_agent_background
 
             # Set write_artifact context + ensure visible workspace dirs exist.
@@ -2636,6 +2641,7 @@ async def _run_agent_inner(
             materialize_skill_bodies_for_agent(
                 agent_name, _effective_agent_dir,
                 tool_scope=loaded.config.get("tool_scope") or None,
+                agent_config=loaded.config,
             )
 
             # ── Set working directory for Copilot SDK agents ────────────
@@ -3190,6 +3196,7 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
             )  # inject call_agent / call_agent_background
             # Inject MCP servers from the registry into every agent at runtime
             for _a in agents:
@@ -3302,6 +3309,7 @@ async def run_agent_stream(
                 tool_scope=_merged_tool_scope(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
+                agent_config=loaded.config,
             )
 
             if not agents:
@@ -5094,7 +5102,10 @@ async def _self_anneal(
                         _apply_agent_md_overrides(
                             agents, loaded.agent_dir, agent_name,
                         )
-                        _inject_agent_tools(agents, agent_name=agent_name)
+                        _inject_agent_tools(
+                            agents, agent_name=agent_name,
+                            agent_config=loaded.config,  # D85
+                        )
                         result = await _run_with_maf_agent(
                             agents,
                             agent_name=agent_name,
@@ -5137,7 +5148,10 @@ async def _self_anneal(
                     _apply_agent_md_overrides(
                         agents, loaded.agent_dir, agent_name,
                     )
-                    _inject_agent_tools(agents, agent_name=agent_name)
+                    _inject_agent_tools(
+                        agents, agent_name=agent_name,
+                        agent_config=loaded.config,  # D85
+                    )
                     result = await _run_with_maf_agent(
                         agents,
                         agent_name=agent_name,

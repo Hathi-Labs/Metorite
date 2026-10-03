@@ -4,9 +4,12 @@
 
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
 (the no-Copilot fence) are built (2026-10-03). WS-43t1 (the structured
-history path) is built and dark (2026-10-03, PR #595). Every other slice is
-spec only.** Owner decisions, 2026-10-03.
-Board row **WS-43**. This spec records **D82**, **D83** and **D84**.
+history path) is built and dark (2026-10-03, PR #595). The D85 interim block
+is built and LIVE (2026-10-03, §7.9): a shared agent gets no shell tool until
+`covers()` is true for it. Every other slice is spec only.** Owner decisions,
+2026-10-03.
+Board row **WS-43**. This spec records **D82**, **D83**, **D84** and
+**D85**.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
 PR #584 applied three reviews on the same day. **Amended 2026-10-03 by D84**
@@ -903,6 +906,68 @@ agent, and never an unsandboxed MAF agent.
 - One defect is inherited and not fixed here. §21.15 records that a
   session-override run writes blob rows with `instance=''`.
 
+### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
+
+**The rule.** Until `covers(agent, org)` is true, a shared agent gets no
+`SHELL_TOOLS` member. The owner decided this on 2026-10-03 (D85). It is in
+force on production from the merge, with no flag.
+
+**The seam.** `orchestrator/_tool_injection.py` holds it, in one function.
+
+- `_withheld_shell_tools(agent_name, agent_config)` reads
+  `sharing.instancing` through `AgentManifest.from_config`.
+- A `personal` agent withholds nothing. Every other agent withholds all three
+  tools. That includes `shared`, the default when a config has no `sharing`
+  block. It also includes `team`, a config that does not parse, and
+  `agent_config=None`.
+- `_sandbox_covers(agent, org)` gives the tools back. The org comes from
+  `executor._current_run_org()`, never from input (R11). No org means no
+  cover.
+- `_resolve_injected_scope(withheld=)` takes the names out of the scope. The
+  injected list, the addendum and the skill bodies read that one scope. So
+  the coding section of the addendum does not render for a shared agent.
+- A last filter runs after the no-match fallback, so no branch puts a shell
+  tool back.
+- Each call site in the executor passes `agent_config`. That is five
+  injection sites and three skill-body sites.
+
+**Today's effect.** projects-assistant, crm-assistant, apis-config,
+orchestrator, task-manager and app-builder lose `code_task` and `run_script`.
+apis-config also loses the `install_dependency` that its scope names.
+email-assistant and whatsapp-assistant are personal, and they keep their
+tools.
+
+**`_sandbox_covers` is a local predicate.** It returns `False` for every
+agent, as `covers()` does until WS-43f. WS-43c (PR #591) adds
+`sandbox_broker.covers`, and WS-43f points `_sandbox_covers` at it (WS-43f
+done-when 6).
+
+**The first `code_task:<org>` target is projects-assistant.** D85 lets its
+code work on the project and task data that the asking member can see, in the
+sandbox only. That reverses O1 of `projects_ai_chat.md` §13.7. When the
+broker covers projects-assistant for an organization, its instructions change
+(H-226). The HR-only fields stay gated, and member data never leaves the
+platform. A scope entry names an organization and not an agent. So the same
+entry also covers each other agent of that organization that §7.7 allows.
+
+**What the block does not reach.**
+
+- The Copilot CLI has its own shell and file tools on task-manager and
+  app-builder. The permission policy approves a shell command unless it
+  matches the denylist. WS-8i moves task-manager to MAF, and WS-43h moves
+  app-builder.
+- The executor's dependency self-heal calls `install_dependency` directly
+  when a tool import fails (`executor.py`, `executor.tool_dep_selfheal`). The
+  model does not choose that package.
+- The risk block of the addendum names every annotated tool, so it still
+  names `code_task` and `run_script`. That list classifies risk, and it does
+  not describe the coding skill.
+- The skills catalog (`GET /integrations/skills`) resolves a scope with no
+  withheld names, so it still shows the coding family for apis-config.
+- Personal agents (H-225).
+
+**Fence.** WS43-F21, `tests/unit/test_shared_agent_shell_tools.py`.
+
 ## 8. Rollout
 
 1. **Eval first (WS-43a).** Build the eval harness, and measure both engines
@@ -920,7 +985,8 @@ agent, and never an unsandboxed MAF agent.
 4. **Switch, one organization at a time.** Each step is a flag on the
    production box, so each is an owner act (WS43-G3, WS43-G4):
    - `MAF_CODING_SCOPE=code_task:<org-id>`, for one organization first.
-     Fracktal, customer zero, is the first candidate.
+     Fracktal, customer zero, is the first candidate. D85 names
+     projects-assistant as the first agent of that target (§7.9).
    - Add `app_builder:<org-id>` for the same organization.
    - Add the other organizations one at a time, then `*` when all are done.
    - `SANDBOX_EGRESS_ENABLED=1`, with the host firewall rule on the box and
@@ -1048,6 +1114,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a repo whose `config.json` declares `github-copilot` is accepted at registration or loads, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
+| WS43-F21 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config` |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
@@ -1473,6 +1540,9 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
 4. `covers()` returns `True` only when the four conditions of §7.7 hold, and
    a test names each condition.
 5. WS43-E9 passes for a covered agent on the local stack.
+6. `_tool_injection._sandbox_covers` returns `sandbox_broker.covers(agent,
+   org)`, so the D85 block lifts for a covered agent only (§7.9). WS43-F21
+   passes with the real function in place.
 
 **Verification.**
 

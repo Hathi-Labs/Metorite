@@ -20,7 +20,10 @@ saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
 artifact routes, §21.14), part 3 (a tenant dir for a shared agent,
 §21.15) and part 4 (a per-run artifact context, §21.16) were built
 2026-09-30. The owner answered the three
-questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).
+D85 reverses O1 of S7e on 2026-10-03: code over member data runs only in
+the sandbox, and until then projects-assistant holds no `run_script` and no
+`code_task` (§13.7).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -1612,6 +1615,14 @@ three product decisions were open. The owner answered all three on
   `write_artifact`, `run_script` and `code_task` over the dataset rows. **This
   fence is ADVISORY** (R7). Those three are floor tools, and a tool scope
   cannot remove them. No test can stop the model from calling them.
+  **⚠️ D85 reverses O1 (owner, 2026-10-03).** Code that the Projects agent
+  writes may work on the project and task data that the asking member can
+  already see. That code runs only in the sandbox container of the
+  organization, with no network (`maf_coding_engine.md` §7.9). The HR-only
+  fields stay gated, as O3 says. Until the sandbox covers projects-assistant,
+  the agent holds no `run_script` and no `code_task`. So WS43-F21 now
+  ENFORCES that half of the fence. The `write_artifact` half stays ADVISORY.
+  The instructions keep the ban until the cover, and H-226 changes them then.
 - **O2 · The server groups the data.** The route takes an optional `group_by`
   from an allowlist and a `measure` from an allowlist. The server returns
   exact figures. The model picks figures and explains them. It never adds
@@ -1636,7 +1647,8 @@ owner's answers. They follow the S7c and S7d precedent.
    `task_dataset` in `reads.py`, with the manifest row
    `Route("GET", "/projects/analytics/dataset", "task_dataset", "A")`. The
    tool writes nothing. The instructions forbid `write_artifact`,
-   `run_script` and `code_task` over its rows (ADVISORY, O1).
+   `run_script` and `code_task` over its rows (ADVISORY, O1). Since D85 the
+   injection seam enforces the `run_script` and `code_task` half (O1).
 2. **The scope is Load's or Throughput's, never a third.** `state=open` is
    exactly `load_open_where` plus `load_params`. That carries the D-PM-32(b)
    stopped-project exclusion. `closed` and `all` use Throughput's scope

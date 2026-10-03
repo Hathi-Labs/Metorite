@@ -48,10 +48,13 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     "ask_questions",                     # HITL clarification
     "run_diagnostics", "get_errors",     # code / file error checking
     "save_note", "recall_notes",         # cross-session working memory
-    # Coding skill (agent_coding_skill.md): every MAF agent can author scripts
+    # Coding skill (agent_coding_skill.md): an agent can author scripts
     # via a bounded Copilot session (code_task) and cheaply re-run the durable
     # scripts it accumulated (run_script). Workspace-jailed + env-scrubbed;
     # list_integrations shows what a script may reach (names, never values).
+    # ⚠️ D85: the floor NAMES the two shell tools, and a SHARED agent still
+    # does not get them. `_withheld_shell_tools` takes every SHELL_TOOLS
+    # member away from a shared agent until the sandbox broker covers it.
     "run_script", "code_task", "list_integrations",
     # Inter-agent delegation (multi_agent_orchestration.md Phase 0.1): the
     # floor previously guaranteed every tool an agent needs to work ALONE and
@@ -69,6 +72,74 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # pays nothing for it (`decide_tools.decide_tool_enabled`).
     "decide",
 })
+
+
+def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
+    """True when the sandbox broker runs this agent's shell tools (D85).
+
+    TODO(WS-43f): return ``orchestrator.sandbox_broker.covers(agent_name,
+    organization_id)`` here. PR #591 (WS-43c) adds that function. It answers
+    ``False`` for every agent until WS-43f routes ``run_script`` and
+    ``install_dependency`` through the broker (``maf_coding_engine.md`` §7.7).
+    Until then this local predicate gives the same answer, so nothing that
+    the broker does not run can reach a shared agent.
+    """
+    del agent_name, organization_id
+    return False
+
+
+def _withheld_shell_tools(
+    agent_name: str | None, agent_config: dict[str, Any] | None,
+) -> frozenset[str]:
+    """The shell tools this run must NOT inject (D85, the interim block).
+
+    ``acb_skills.manifest.SHELL_TOOLS`` (``code_task``, ``run_script`` and
+    ``install_dependency``) run code on the HOST today. ``run_script`` has the
+    network and the agent's integration credentials. A SHARED agent serves
+    every member of an organization from one process, so the owner blocked
+    these tools for it on 2026-10-03 until the sandbox covers it.
+
+    * ``sharing.instancing == "personal"`` withholds nothing. Personal agents
+      keep today's behaviour, which the owner left out of scope (HANDOFF
+      H-225 asks for the same rule there).
+    * Every other agent withholds all three. That is ``shared`` (the default
+      when the config has no ``sharing`` block), ``team`` and a config that
+      does not parse. ``agent_config=None`` reads as shared, so a caller that
+      forgets the config fails closed.
+    * :func:`_sandbox_covers` gives the tools back for one agent in one org.
+      The org comes from the run binding (``_current_run_org``), never from
+      the request or a tool argument (R11). No org means no cover.
+    """
+    try:
+        from acb_skills.manifest import SHELL_TOOLS, AgentManifest
+    except ImportError:
+        # acb_skills is absent, so _collect_injectable_platform_tools() returns
+        # [] and this run injects no tool at all.
+        return frozenset()
+    try:
+        instancing = AgentManifest.from_config(
+            agent_config, name=agent_name,
+        ).sharing.instancing
+    except Exception:  # a config that does not parse is shared
+        instancing = "shared"
+    if instancing == "personal":
+        return frozenset()
+    org: str | None = None
+    try:
+        from orchestrator.executor import _current_run_org
+        org = _current_run_org()
+    except Exception:  # no run binding means no cover
+        org = None
+    if agent_name and org and _sandbox_covers(agent_name, org):
+        return frozenset()
+    return frozenset(SHELL_TOOLS)
+
+
+def _drop_withheld(tools: list[Any], withheld: frozenset[str]) -> list[Any]:
+    """*tools* without the D85 withheld names. A no-op when none is withheld."""
+    if not withheld:
+        return tools
+    return [fn for fn in tools if getattr(fn, "__name__", "") not in withheld]
 
 
 def _load_disabled_skill_families(agent_name: str | None) -> frozenset[str]:
@@ -161,14 +232,16 @@ def materialize_skill_bodies_for_agent(
     workspace_root: str | None,
     *,
     tool_scope: list[str] | None = None,
+    agent_config: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Lay down this agent's on-demand skill bodies (QM-2) — no-op when OFF.
 
     Called by the executor once per run, AFTER the workspace has been
     rehydrated from the blob store, so a fresh body is never overwritten by a
     stale restore. Resolves the SAME effective scope injection used (declared
-    ``tool_scope`` ∪ core floor, ∩ enabled families) so a body describes
-    exactly the tools the agent actually received.
+    ``tool_scope`` ∪ core floor, ∩ enabled families, minus the D85 withheld
+    shell tools of ``agent_config``) so a body describes exactly the tools
+    the agent actually received.
 
     Returns ``{family: "written"|"unchanged"}``; ``{}`` when the switch is off
     (the default) or on any failure — a missing body file degrades to "the
@@ -183,6 +256,7 @@ def materialize_skill_bodies_for_agent(
         scope = _resolve_injected_scope(
             tool_scope,
             disabled_families=_load_disabled_skill_families(agent_name),
+            withheld=_withheld_shell_tools(agent_name, agent_config),
         )
         return materialize_skill_bodies(
             workspace_root,
@@ -198,12 +272,53 @@ def materialize_skill_bodies_for_agent(
         return {}
 
 
+def _registered_platform_surface() -> set[str]:
+    """Every registered platform tool name, plus the core floor.
+
+    The declared side of an unscoped agent's scope, once something must
+    narrow it (a disabled family, or the D85 withheld shell tools).
+    """
+    try:
+        from acb_skills.skill_families import SKILL_FAMILIES
+    except ImportError:
+        return set(_CORE_STANDARD_TOOL_NAMES)
+    return set(_CORE_STANDARD_TOOL_NAMES) | {
+        name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
+    }
+
+
 def _resolve_injected_scope(
     tool_scope: list[str] | None,
     *,
     disabled_families: frozenset[str] | None = None,
+    withheld: frozenset[str] | None = None,
 ) -> set[str] | None:
     """Resolve which injected tool names an agent should receive.
+
+    The declared scope and the skill toggles resolve first
+    (:func:`_resolve_declared_scope`). ``withheld`` then takes names away,
+    the core floor included. It is the D85 interim block: the shell tools
+    that :func:`_withheld_shell_tools` keeps from a shared agent. An unscoped
+    agent with a withheld tool gets an explicit set, so the addendum, the
+    skill bodies and the injection read ONE scope that lacks the tool. With
+    no withheld names the result is byte-identical to the declared scope.
+    """
+    resolved = _resolve_declared_scope(
+        tool_scope, disabled_families=disabled_families,
+    )
+    if not withheld:
+        return resolved
+    if resolved is None:
+        resolved = _registered_platform_surface()
+    return resolved - set(withheld)
+
+
+def _resolve_declared_scope(
+    tool_scope: list[str] | None,
+    *,
+    disabled_families: frozenset[str] | None = None,
+) -> set[str] | None:
+    """Resolve the declared scope and the skill toggles.
 
     Returns ``None`` when there is no ``tool_scope`` (inject everything), or the
     set of allowed names = the agent's ``tool_scope`` UNIONed with the
@@ -267,9 +382,7 @@ def _resolve_injected_scope(
     if base is None:
         # Unscoped agent: the declared side of the intersection is the whole
         # registered platform surface (∪ CORE) — fail-open, then narrowed.
-        base = set(_CORE_STANDARD_TOOL_NAMES) | {
-            name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
-        }
+        base = _registered_platform_surface()
     return base & enabled_tools
 
 
@@ -712,8 +825,16 @@ def _collect_injectable_platform_tools() -> list[Any]:
 def _inject_agent_tools(
     agents: list[Any], *, is_sub_agent: bool = False,
     tool_scope: list[str] | None = None, agent_name: str | None = None,
+    agent_config: dict[str, Any] | None = None,
 ) -> None:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    ``agent_config`` is the agent's parsed ``config.json``. Its ``sharing``
+    block decides the D85 interim block (:func:`_withheld_shell_tools`): a
+    shared agent gets no ``SHELL_TOOLS`` member until the sandbox broker
+    covers it. ``None`` reads as shared, so a caller that forgets it fails
+    closed. Every executor call site passes it, and
+    ``tests/unit/test_shared_agent_shell_tools.py`` says so.
 
     Adds ``call_agent`` and ``call_agent_background`` from ``acb_skills.agent_tools``
     so that any agent — MAF or GitHub Copilot SDK — can delegate sub-tasks to
@@ -769,8 +890,17 @@ def _inject_agent_tools(
             "executor.skill_families_disabled",
             agent=agent_name, families=sorted(_disabled_families),
         )
+    # D85 (the interim block): a shared agent gets no shell tool until the
+    # sandbox broker covers it. The withheld names leave the SCOPE, so the
+    # addendum below never describes a tool this agent does not hold.
+    _withheld = _withheld_shell_tools(agent_name, agent_config)
+    if _withheld:
+        _log.info(
+            "executor.shell_tools_withheld",
+            agent=agent_name, tools=sorted(_withheld),
+        )
     _scope_names = _resolve_injected_scope(
-        tool_scope, disabled_families=_disabled_families,
+        tool_scope, disabled_families=_disabled_families, withheld=_withheld,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -830,6 +960,11 @@ def _inject_agent_tools(
             _extra_tools = _extra_tools + load_workflow_tools(agent_name)
         except Exception:  # noqa: BLE001
             _log.warning("executor.workflow_tools_injection_failed", agent=agent_name)
+
+    # D85, the last word: the no-match fallback above restores the WHOLE
+    # chain, shell tools included. So the withheld names leave the final
+    # list too, whatever branch built it.
+    _extra_tools = _drop_withheld(_extra_tools, _withheld)
 
     # Gate every injected tool with the risk-aware permission policy (B6). This
     # closes the live gap where injected function-tools (web_search, …) executed

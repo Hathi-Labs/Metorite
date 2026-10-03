@@ -3886,6 +3886,37 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
+### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
+- **Check:** `grep -n 'if instancing == "personal":' apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means a personal agent still keeps its host shell tools.
+- **Why:** D85 blocks `code_task`, `run_script` and `install_dependency` for
+  shared agents only, because the owner left personal agents out of scope.
+  email-assistant and whatsapp-assistant still run code on the host. There,
+  `run_script` has the network and the credentials of the integrations.
+  When WS-43f makes `covers()` live, apply the same rule to a personal
+  agent: no shell tool without a cover. Ask the owner first, because the
+  change takes a tool from a live agent.
+- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
+- **Added:** 2026-10-03 · the D85 interim block
+
+### H-226 · Let the Projects agent write code over the rows, once the sandbox covers it · [AGENT]
+- **Check:** `grep -n 'Never run `run_script` or `code_task` over them' apps/agents/agent-projects/instructions.md`
+  → a hit means the instructions still forbid code over the rows.
+- **Why:** D85 reverses O1 of S7e. Code over project and task data is
+  permitted, in the sandbox only. Until `covers("projects-assistant", org)`
+  is true, the agent holds no shell tool, so the old ban stays. Do not start
+  before that. Then write the rule "No file and no code over the rows" again:
+  1. Write code when a request needs it, for example a figure that no
+     server group gives.
+  2. Keep the HR-only fields gated. Do not compute the speed or the lead time
+     of a person from the rows.
+  3. Never send member data off the platform. The sandbox has no network.
+  Change the pin in `tests/unit/test_projects_agent.py` (~1873) in the same
+  pull request.
+- **Authority:** `work_plan.md` D85 · `specs/projects_ai_chat.md` §13.7 ·
+  `specs/maf_coding_engine.md` §7.9
+- **Added:** 2026-10-03 · the D85 interim block
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
