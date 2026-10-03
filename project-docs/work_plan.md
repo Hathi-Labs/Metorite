@@ -498,7 +498,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-11 | **Workflows Slice 3** (gallery, fan-in/join, loops) | 🟢 | `workflows_app.md` §8.3 · board record 2026-08-09 | Slice 3 = **8.3a** gallery · **8.3b** fan-in/join · **8.3c** loops (owner-approved, D10.2; R1 governs the node *catalog*, not control flow). 8.3b/8.3c each must **invert a pinned test** (`test_fan_in_rejected_v1`, `test_cycle_rejected`) — leave either standing and the ticket closes green having built nothing. Template *content* is an owner input; the report-digest template belongs to WS-15. Slice 4 after BO-20b2 → c → (d, e) + 🔴 `INGESTION_CONSUMER` flip; its sandbox-dependent parts follow MT-0c-2's trigger (D16) — the old bare "BO-7" dependency is restated. (2026-08-03) |
 | WS-12 | **Framework uplift** | 🟡 Ph4 | `multi_agent_orchestration.md` **Phase 4 only** (D6) · board record 2026-08-09 | Ph0 shipped; Ph1 struck; Ph2–3 superseded (D6); Ph5 struck. One SDK major remains: `github-copilot-sdk 0.1.32 → 1.0.2` (`openai 2.38.0` already in-tree). ~~🔴 Phase 4.0 target choice~~ **ANSWERED 2026-08-10 (D25.6): minimal bump** — 4.1 evidence then the 4.x slices are dispatchable; 🔴 Phase 4.6 recorded human soak stands (§6). Phase 4.1 throwaway-venv resolution evidence is AGENT-SAFE and must never mutate `.venv`/`uv.lock`. (2026-08-10) |
 | WS-23 | **Skills registry + per-agent toggles** *(added 2026-08-01)* | 🟡 built | `specs/skills_registry.md` · board record 2026-08-09 | S1–S4 shipped pending review: registry + measured catalog, per-agent toggles (intersection-only, core floor non-toggleable), scope-out proposal, index diet (full surface 19,259 → 12,644 tokens). The ≤2k target is **unreachable by trimming** — §7.5 progressive disclosure is designed, costed, and deliberately unbuilt. 🔴 `SKILLS_FAIL_CLOSED`, `SKILLS_INDEX_ONLY` flips (§6). (2026-08-01) |
-| WS-43 | **MAF coding engine, sandbox terminal, and the removal of the Copilot SDK** — `code_task` on a MAF harness session, its shell commands in a container per organization, agent and thread, then every other Copilot use on MAF and the SDK out of the lock *(minted 2026-10-03 by **D82** and **D83**, widened the same day by **D84**)* | 🟢 **WS-43k built** (2026-10-03, the no-Copilot fence `tests/unit/test_no_copilot_sdk.py`, 9 files on its allowlist) · 🟢 **WS-43b built** (the image and the Docker test workflow, 2026-10-03, dark. Nothing runs the image, and the box build is WS43-G2) · 🟢 **WS-43t1 built, dark** (PR #595, 2026-10-03, `MAF_NATIVE_SESSIONS` off) · 🟢 **D85 interim block built** (2026-10-03, LIVE: a shared agent gets no shell tool until `covers()` is true for it, fence WS43-F21, spec §7.9) · every other slice is spec only · WS-43t2 next, then WS-43a (eval) and WS-43c (broker) | **`specs/maf_coding_engine.md`** | WS-43a to WS-43i, WS-43k to WS-43o, WS-43t1 and WS-43t2 are AGENT-SAFE and ship dark (`MAF_CODING_SCOPE` empty, `sandbox_egress_enabled` and `MAF_NATIVE_SESSIONS` off). **D84 (2026-10-03): the Copilot SDK leaves the platform** (spec §15). **WS-43t1 and WS-43t2 (native session persistence) come EARLY.** ⚠️ WS-8i (the `agent-task-manager` move), the confirm-turn scopes and WS-43q wait until `MAF_NATIVE_SESSIONS` has soaked ON in production for one week (WS43-G13). A merge alone is not enough. The scope names each organization, so the rollout goes one organization at a time. 🔴 OWNER-GATE, gate id `ws43-sandbox-flip`: Docker access and the host firewall on the box (WS43-G1), the image on the box (WS43-G2), `MAF_CODING_SCOPE` on production (WS43-G3), egress on production and its allowlist (WS43-G4), gVisor or rootless Docker (WS43-G5), the eval on the production Router (WS43-G6), and the merge of WS-43j (WS43-G7). The Copilot removal slices WS-43p to WS-43s are owner merges (WS43-G9), and so are the external repo change (WS43-G11), the `scripts/vps_apply.sh` edit (WS43-G12) and the `MAF_NATIVE_SESSIONS` flip (WS43-G13). ⚠️ The dev-phase window does NOT open these gates, and no grant line names the id. They bind by prose until H-214 adds a plan-guard rule. ⚠️ D83 un-parks T2 for this sandbox only. P5-c, P5-d and the pooled-cutover T2 stay parked (WS43-G8). WS-8 owns `agent-task-manager` and `agent-apis-config` (PR #585, WS-8i and WS-8j). |
+| WS-43 | **MAF coding engine, sandbox terminal, and the removal of the Copilot SDK** — `code_task` on a MAF harness session, its shell commands in a container per organization, agent and thread, then every other Copilot use on MAF and the SDK out of the lock *(minted 2026-10-03 by **D82** and **D83**, widened the same day by **D84**)* | 🟢 **WS-43k built** (2026-10-03, the no-Copilot fence `tests/unit/test_no_copilot_sdk.py`, 9 files on its allowlist) · 🟢 **WS-43b built** (the image and the Docker test workflow, 2026-10-03, dark. Nothing runs the image, and the box build is WS43-G2) · 🟢 **WS-43t1 built, dark** (PR #595, 2026-10-03, `MAF_NATIVE_SESSIONS` off) · 🟢 **D85 interim block built** (2026-10-03, LIVE: until `covers()` is true for it, a shared agent gets no shell tool, and a guard refuses its Copilot CLI shell in every mode, fence WS43-F21, spec §7.9) · every other slice is spec only · WS-43t2 next, then WS-43a (eval) and WS-43c (broker) | **`specs/maf_coding_engine.md`** | WS-43a to WS-43i, WS-43k to WS-43o, WS-43t1 and WS-43t2 are AGENT-SAFE and ship dark (`MAF_CODING_SCOPE` empty, `sandbox_egress_enabled` and `MAF_NATIVE_SESSIONS` off). **D84 (2026-10-03): the Copilot SDK leaves the platform** (spec §15). **WS-43t1 and WS-43t2 (native session persistence) come EARLY.** ⚠️ WS-8i (the `agent-task-manager` move), the confirm-turn scopes and WS-43q wait until `MAF_NATIVE_SESSIONS` has soaked ON in production for one week (WS43-G13). A merge alone is not enough. The scope names each organization, so the rollout goes one organization at a time. 🔴 OWNER-GATE, gate id `ws43-sandbox-flip`: Docker access and the host firewall on the box (WS43-G1), the image on the box (WS43-G2), `MAF_CODING_SCOPE` on production (WS43-G3), egress on production and its allowlist (WS43-G4), gVisor or rootless Docker (WS43-G5), the eval on the production Router (WS43-G6), and the merge of WS-43j (WS43-G7). The Copilot removal slices WS-43p to WS-43s are owner merges (WS43-G9), and so are the external repo change (WS43-G11), the `scripts/vps_apply.sh` edit (WS43-G12) and the `MAF_NATIVE_SESSIONS` flip (WS43-G13). ⚠️ The dev-phase window does NOT open these gates, and no grant line names the id. They bind by prose until H-214 adds a plan-guard rule. ⚠️ D83 un-parks T2 for this sandbox only. P5-c, P5-d and the pooled-cutover T2 stay parked (WS43-G8). WS-8 owns `agent-task-manager` and `agent-apis-config` (PR #585, WS-8i and WS-8j). |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -4502,20 +4502,32 @@ code over member data.
 
 **Decision 2 — the interim block.** The owner asked "Until the sandbox is
 live, block code execution on the shared server for the Projects agent and the
-other shared agents?" The answer was "Block until sandbox". So a shared agent
-gets no `SHELL_TOOLS` member until `covers(agent, org)` is true for it. The
-members are `code_task`, `run_script` and `install_dependency`.
+other shared agents?" The answer was "Block until sandbox". So until
+`covers(agent, org)` is true for it, a shared agent runs no shell on the host.
+It gets no `SHELL_TOOLS` member, which are `code_task`, `run_script` and
+`install_dependency`. And the Copilot CLI refuses each of its own shell
+commands.
 
 **What is built.** One seam, `_tool_injection._withheld_shell_tools`, reads
-the `sharing.instancing` of the agent. Only a `personal` agent keeps its shell
-tools. A `shared`, `team` or unreadable config loses all three, unless the
-sandbox broker covers that agent in the organization of the run. The withheld
-names leave the scope, so the addendum and the skill bodies do not name them.
+the `sharing.instancing` of the agent. Only a `personal` agent keeps its shell.
+A `shared`, `team` or unreadable config loses it, unless the sandbox broker
+covers that agent in the organization of the run. Two halves read that one
+answer:
+
+- The withheld tool names leave the scope, so the addendum and the skill
+  bodies do not name them.
+- The executor binds the answer into the run as `shell_withheld`.
+  `permission_policy.guard_shared_agent_shell` then refuses each Copilot CLI
+  shell request. `_copilot_permission_handler()` wraps every handler in that
+  guard, in every `AGENT_PERMISSION_MODE`, because production runs `audit`.
 
 **What it removes today.** `code_task` and `run_script` leave
 projects-assistant, crm-assistant, apis-config, orchestrator, task-manager and
 app-builder. They also leave every Workshop agent with a shared config.
-apis-config loses `install_dependency` too. No live flow calls them.
+apis-config loses `install_dependency` too. task-manager and app-builder also
+lose the Copilot CLI shell. No live flow uses either. app-builder loses its
+build shell (`node build/build_t2.mjs`) in the `preview` App Workshop, and
+WS-43h gives it back in the sandbox.
 
 **What stays.**
 
@@ -4524,8 +4536,8 @@ apis-config loses `install_dependency` too. No live flow calls them.
   rule there, once the sandbox covers them.
 - The Projects instructions still forbid code over the rows. They change when
   the sandbox covers projects-assistant (H-226).
-- The Copilot CLI has its own shell on task-manager and app-builder. This seam
-  does not reach it. WS-8i and WS-43h remove it.
+- An agent that sets its own permission handler keeps it. The root `metorite`
+  agent and the external `agent-sales-assistant` set `approve_all` (H-211).
 
 **Fence:** `tests/unit/test_shared_agent_shell_tools.py` (WS43-F21), new.
 

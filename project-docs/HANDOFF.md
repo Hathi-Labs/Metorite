@@ -3889,8 +3889,9 @@ line — never reclaim a number by deleting the other entry.
 ### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
 - **Check:** `grep -n 'if instancing == "personal":' apps/services/orchestrator/orchestrator/_tool_injection.py`
   → a hit means a personal agent still keeps its host shell tools.
-- **Why:** D85 blocks `code_task`, `run_script` and `install_dependency` for
-  shared agents only, because the owner left personal agents out of scope.
+- **Why:** D85 blocks `code_task`, `run_script`, `install_dependency` and the
+  Copilot CLI shell for shared agents only, because the owner left personal
+  agents out of scope.
   email-assistant and whatsapp-assistant still run code on the host. There,
   `run_script` has the network and the credentials of the integrations.
   A shared agent can also reach that code through `call_agent`. When WS-43f

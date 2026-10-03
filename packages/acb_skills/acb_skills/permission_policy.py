@@ -17,6 +17,9 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
                                                  NOT double-gate or it deadlocks
   * shell commands                             → APPROVE unless they match the
                                                  dangerous-command denylist
+  * shell commands of a SHARED agent (D85)     → DENY in every mode, until the
+                                                 sandbox covers it
+                                                 (:func:`guard_shared_agent_shell`)
   * file writes outside the agent workspace    → DENY (out of bounds)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
@@ -35,6 +38,7 @@ across SDK versions.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 from typing import Any
@@ -294,6 +298,103 @@ def _denied_result(reason: str) -> Any:
             ". If you need this, ask the user to approve it explicitly."
         ),
     )
+
+
+# ── D85: no shell for a shared agent until the sandbox covers it ─────────────
+# Owner decision, 2026-10-03 (work_plan.md D85, maf_coding_engine.md §7.9).
+# The injection seam already withholds the shell TOOLS from a shared agent.
+# This half refuses the Copilot CLI's OWN shell, which task-manager and
+# app-builder hold. The run decides it once, at its boundary: the executor
+# binds ``shell_withheld`` into the artifact context from
+# ``orchestrator._tool_injection._withheld_shell_tools``, so both halves read
+# one answer. Fence: tests/unit/test_shared_agent_shell_tools.py (WS43-F21).
+
+#: The text the model reads when D85 refuses its shell.
+SHELL_WITHHELD_REASON = (
+    "Shell is disabled for shared agents until the sandbox covers them, D85"
+)
+
+#: Request kinds that run a shell command. The SDK sends every shell, bash and
+#: PowerShell command as ``shell``; the other names cover a future SDK.
+_SHELL_KINDS = frozenset({"shell", "bash", "powershell", "pwsh"})
+
+
+def is_shell_request(request: Any) -> bool:
+    """True when *request* asks to run a shell command (D85).
+
+    A ``shell`` kind is one. So is any request that carries command text, so a
+    shell request with an unknown kind does not slip through.
+    """
+    kind = str(_field(request, "kind") or "").strip().lower()
+    if kind in _SHELL_KINDS:
+        return True
+    return bool(
+        _field(request, "full_command_text")
+        or _field(request, "commands")
+        or _field(request, "command_segments")
+    )
+
+
+def shell_withheld_for_this_run() -> bool:
+    """True unless the run on this frame says its shell may run (D85).
+
+    Only an explicit ``shell_withheld=False`` in the artifact context allows
+    the shell. A frame with no run context, or a context with no such key,
+    reads as withheld. That fails closed, as every H-201 reader does.
+    """
+    try:
+        from acb_skills.write_artifact import artifact_context
+        return artifact_context().get("shell_withheld", True) is not False
+    except Exception:
+        return True
+
+
+def _shell_withheld_result() -> Any:
+    """The SDK refusal for a D85 shell request.
+
+    It does not tell the model to ask the user, because no person can approve
+    this one. Only the sandbox cover lifts it.
+    """
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: " + SHELL_WITHHELD_REASON + ". Do not try "
+            "the shell again in this chat. Use your own tools."
+        ),
+    )
+
+
+def guard_shared_agent_shell(handler: Any) -> Any:
+    """*handler*, with the D85 shell refusal in front of it.
+
+    It refuses every shell request of a run whose shell is withheld, and it
+    passes every other request to *handler* unchanged. It holds in EVERY
+    ``AGENT_PERMISSION_MODE``. Production runs ``audit``
+    (``permissions_sandbox_b6.md``), and a block that obeys ``audit`` would
+    block nothing there. ``approve_all`` is the old behaviour of B6, and it
+    does not waive an owner decision either. Wrapping twice is a no-op.
+    """
+    if getattr(handler, "__cc_d85_guard__", False):
+        return handler
+
+    @functools.wraps(handler)
+    def _guarded(request: Any, invocation: Any) -> Any:
+        if is_shell_request(request) and shell_withheld_for_this_run():
+            command = str(_field(request, "full_command_text") or "")
+            _log.info(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="shell_withheld",
+                detail=command[:200],
+                surface="copilot_shell",
+            )
+            return _shell_withheld_result()
+        return handler(request, invocation)
+
+    _guarded.__cc_d85_guard__ = True  # type: ignore[attr-defined]
+    return _guarded
 
 
 def risk_aware_permission_handler(request: Any, invocation: dict[str, str]) -> Any:

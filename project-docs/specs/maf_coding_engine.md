@@ -5,8 +5,9 @@
 **Status: ACTIVE. WS-43b (the image and the Docker test workflow) and WS-43k
 (the no-Copilot fence) are built (2026-10-03). WS-43t1 (the structured
 history path) is built and dark (2026-10-03, PR #595). The D85 interim block
-is built and LIVE (2026-10-03, §7.9): a shared agent gets no shell tool until
-`covers()` is true for it. Every other slice is spec only.** Owner decisions,
+is built and LIVE (2026-10-03, §7.9): until `covers()` is true for it, a
+shared agent gets no shell tool, and a guard refuses its Copilot CLI shell. Every
+other slice is spec only.** Owner decisions,
 2026-10-03.
 Board row **WS-43**. This spec records **D82**, **D83**, **D84** and
 **D85**.
@@ -908,11 +909,14 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** Until `covers(agent, org)` is true, a shared agent gets no
-`SHELL_TOOLS` member. The owner decided this on 2026-10-03 (D85). It is in
-force on production from the merge, with no flag.
+**The rule.** Until `covers(agent, org)` is true, a shared agent runs no shell
+on the host. It gets no `SHELL_TOOLS` member, and the Copilot CLI's own shell
+refuses each of its commands. The owner decided this on 2026-10-03 (D85). It
+is in force on production from the merge, with no flag, in every
+`AGENT_PERMISSION_MODE`.
 
-**The seam.** `orchestrator/_tool_injection.py` holds it, in one function.
+**The seam.** `orchestrator/_tool_injection.py` holds the decision, in one
+function. Two halves read it.
 
 - `_withheld_shell_tools(agent_name, agent_config)` reads
   `sharing.instancing` through `AgentManifest.from_config`.
@@ -931,11 +935,37 @@ force on production from the merge, with no flag.
 - Each call site in the executor passes `agent_config`. That is five
   injection sites and three skill-body sites.
 
-**Today's effect.** projects-assistant, crm-assistant, apis-config,
-orchestrator, task-manager and app-builder lose `code_task` and `run_script`.
-apis-config also loses the `install_dependency` that its scope names.
-email-assistant and whatsapp-assistant are personal, and they keep their
-tools.
+**The second half: the Copilot CLI shell.**
+
+- The executor binds `shell_withheld` into the artifact context of each run
+  from `_withheld_shell_tools`. It does so at the run, at the batch run and
+  for each sub-agent, which gets its own answer.
+- `permission_policy.guard_shared_agent_shell` refuses a shell request when
+  that flag is not `False`. A shell request is the `shell` kind, or any
+  request with command text. A frame with no flag refuses, which fails
+  closed.
+- `_copilot_session._copilot_permission_handler()` returns each handler
+  inside that guard, in `enforce`, `audit` and `approve_all`. Every Copilot
+  path takes its handler from there: the run, the sub-agent, the Tier 2
+  client, the batch helper and `code_session`.
+- ⚠️ The guard ignores `AGENT_PERMISSION_MODE` on purpose. Production runs
+  `audit` (`permissions_sandbox_b6.md`), and in `audit` the B6 handler
+  approves everything. A block that obeyed `audit` would block nothing.
+- The Tier 2 client also passes `--deny-tool shell` when the flag is set,
+  whatever the runtime label says.
+
+**Today's effect.**
+
+- projects-assistant, crm-assistant, apis-config, orchestrator, task-manager
+  and app-builder lose `code_task` and `run_script`. apis-config also loses
+  the `install_dependency` that its scope names.
+- task-manager and app-builder also lose the Copilot CLI shell. The My Tasks
+  flows use only the 29 `my_tasks_*` tools, so they do not change.
+- ⚠️ app-builder loses its build shell, `node build/build_t2.mjs`, so a
+  Custom App build stops in the App Workshop. That pane is `preview`. WS-43h
+  gives the shell back, in the sandbox.
+- email-assistant and whatsapp-assistant are personal, and they keep their
+  tools.
 
 **`_sandbox_covers` is a local predicate.** It returns `False` for every
 agent, as `covers()` does until WS-43f. WS-43c (PR #591) adds
@@ -952,10 +982,13 @@ entry also covers each other agent of that organization that §7.7 allows.
 
 **What the block does not reach.**
 
-- The Copilot CLI has its own shell and file tools on task-manager and
-  app-builder. The permission policy approves a shell command unless it
-  matches the denylist. WS-8i moves task-manager to MAF, and WS-43h moves
-  app-builder.
+- An agent that sets its own `on_permission_request`. The executor installs
+  its handler only into an empty slot. The root `metorite` agent
+  (`agents.py`) and the external `agent-sales-assistant` set `approve_all`
+  (H-211). `mutation_runner.py` sets it inside the mutation container. D85
+  does not change them.
+- The Copilot CLI's file tools on task-manager and app-builder. They write
+  inside the workspace, and they run no command.
 - The executor's dependency self-heal calls `install_dependency` directly
   when a tool import fails (`executor.py`, `executor.tool_dep_selfheal`). The
   model does not choose that package.
@@ -1118,7 +1151,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a repo whose `config.json` declares `github-copilot` is accepted at registration or loads, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
-| WS43-F21 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config` |
+| WS43-F21 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, or refuses one of a personal or covered agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_withheld`. The task-manager probe refuses a `my_tasks_*` tool |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new

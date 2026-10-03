@@ -31,20 +31,27 @@ def _copilot_permission_handler() -> Any:
     blocks dangerous shell + out-of-workspace writes, defers destructive tools to
     their own request_confirmation gate, and logs every privileged op. Falls back
     to ``approve_all`` if the policy module can't be imported (never break runs).
+
+    D85: whichever handler it picks, it returns it inside
+    ``permission_policy.guard_shared_agent_shell``. So a shared agent's
+    Copilot CLI shell is refused in every mode, until the sandbox covers it.
+    Every Copilot path takes its handler from here: the run, the sub-agent,
+    the Tier 2 client, the batch helper and ``code_session``.
     """
     from copilot import PermissionHandler as _PH  # noqa: PLC0415
 
+    try:
+        from acb_skills.permission_policy import (  # noqa: PLC0415
+            guard_shared_agent_shell,
+            risk_aware_permission_handler,
+        )
+    except Exception:  # noqa: BLE001
+        return _PH.approve_all
     if os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() == (
         "approve_all"
     ):
-        return _PH.approve_all
-    try:
-        from acb_skills.permission_policy import (  # noqa: PLC0415
-            risk_aware_permission_handler,
-        )
-        return risk_aware_permission_handler
-    except Exception:  # noqa: BLE001
-        return _PH.approve_all
+        return guard_shared_agent_shell(_PH.approve_all)
+    return guard_shared_agent_shell(risk_aware_permission_handler)
 
 
 def _copilot_infinite_session_config() -> dict[str, Any] | None:

@@ -86,6 +86,7 @@ from orchestrator._tool_injection import (
     _inject_agent_tools,
     _inject_mcp_servers,
     _tool_name,
+    _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
 def _missing_module_name(exc: BaseException) -> str | None:
@@ -976,6 +977,11 @@ async def _run_sub_agent_streaming(
                 integration_warnings=dict(_sub_warnings),
                 # A sub-agent never inherits the parent's sandbox root.
                 permission_check_root=None,
+                # D85: the SUB-agent's own answer, never its parent's. The
+                # Copilot permission guard reads it for the CLI shell.
+                shell_withheld=bool(_withheld_shell_tools(
+                    agent_name, getattr(loaded, "config", None),
+                )),
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2604,6 +2610,12 @@ async def _run_agent_inner(
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ),
+                # D85: True when this agent may run no shell. The same seam
+                # withholds its shell tools, and the Copilot permission
+                # guard reads this flag for the CLI's own shell.
+                shell_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -3270,6 +3282,12 @@ async def run_agent_stream(
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ),
+                # D85: True when this agent may run no shell. The same seam
+                # withholds its shell tools, and the Copilot permission
+                # guard reads this flag for the CLI's own shell.
+                shell_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -4764,9 +4782,20 @@ async def run_agent_stream(
                             # SDK 1.0 (H-181): cli_path + cli_args became one
                             # stdio RuntimeConnection, and the client takes
                             # keywords instead of an options dict.
+                            # D85: a shared agent's shell is denied here
+                            # too, whatever its runtime label. This call
+                            # reads the run's own flag. The permission guard
+                            # refuses the shell as well, and a callback that
+                            # starts with no run context reads it as withheld.
+                            from acb_skills.permission_policy import (
+                                shell_withheld_for_this_run,
+                            )
                             _cli_args = (
                                 ["--deny-tool", "shell"]
-                                if _agent_runtime != "github-copilot" else []
+                                if (
+                                    _agent_runtime != "github-copilot"
+                                    or shell_withheld_for_this_run()
+                                ) else []
                             )
                             _cli_path = _agent_settings.get("cli_path")
                             if _cli_path or _cli_args:

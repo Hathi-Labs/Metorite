@@ -27,6 +27,26 @@ What each test pins, and the mutation that turned it red (2026-10-03):
   goes.
 * Every executor call site passes ``agent_config``. Red when one site drops it.
 
+Section 7 is the second half of D85: the Copilot CLI's OWN shell, which
+task-manager and app-builder hold. ``permission_policy.guard_shared_agent_shell``
+refuses a shell request when the run's artifact context says
+``shell_withheld``, and ``_copilot_permission_handler()`` wraps every handler
+it returns in it, in every mode. The executor binds the flag from
+``_withheld_shell_tools``, so both halves read one answer.
+
+* A shell request of a shared agent is refused in ``enforce``, ``audit`` (the
+  production mode) and ``approve_all``. Red when the guard passes the request
+  on, and red when the factory wraps only the ``enforce`` handler.
+* A frame with no run context refuses the shell. Red when the missing key
+  reads as allowed.
+* A personal agent's shell and a covered agent's shell are unchanged. Red
+  when the executor binds ``shell_withheld=True`` whatever the seam says.
+* The probe drives the real ``run_agent_stream`` for task-manager with its
+  real config. Its 29 ``my_tasks_*`` tool requests pass, and a shell request
+  is refused.
+* Each artifact-context site of the executor binds ``shell_withheld``. Red
+  when one site drops it.
+
 No database, no network. The settings loader, the run org and the per-agent
 tool modules are monkeypatched on the module that reads them.
 """
@@ -47,6 +67,9 @@ from acb_skills.manifest import SHELL_TOOLS
 
 REPO = Path(__file__).resolve().parents[2]
 EXECUTOR_PY = REPO / "apps" / "services" / "orchestrator" / "orchestrator" / "executor.py"
+
+#: The real resolver, kept before the autouse fixture stubs it, for the probe.
+_REAL_CURRENT_RUN_ORG = executor._current_run_org
 
 ORG_A = "11111111-1111-1111-1111-111111111111"
 ORG_B = "22222222-2222-2222-2222-222222222222"
@@ -346,3 +369,286 @@ def test_every_executor_call_site_passes_the_agent_config() -> None:
     assert len(calls["_inject_agent_tools"]) >= 5, calls
     assert len(calls["materialize_skill_bodies_for_agent"]) >= 3, calls
     assert not missing, f"these call sites pass no agent_config: {missing}"
+
+
+# ── 7. The Copilot CLI's own shell (D85, second half) ──────────────────────
+
+def _shell_request(command: str = "ls -la") -> Any:
+    from copilot.generated.session_events import (
+        PermissionRequestShell,
+        PermissionRequestShellCommand,
+    )
+    return PermissionRequestShell(
+        can_offer_session_approval=False,
+        commands=[PermissionRequestShellCommand(identifier="ls", read_only=True)],
+        full_command_text=command,
+        has_write_file_redirection=False,
+        intention="list the files",
+        possible_paths=[],
+        possible_urls=[],
+    )
+
+
+def _tool_request(name: str) -> Any:
+    from copilot.generated.session_events import PermissionRequestCustomTool
+    return PermissionRequestCustomTool(tool_description="a My Tasks tool", tool_name=name)
+
+
+_INVOCATION = {"session_id": "s-d85", "managed_settings_enabled": False}
+
+
+def _refused(result: Any) -> bool:
+    from copilot.generated.rpc import PermissionDecisionReject
+    return isinstance(result, PermissionDecisionReject)
+
+
+def _approved(result: Any) -> bool:
+    """An explicit approval. ``None`` (no handler ran) is neither."""
+    from copilot.generated.rpc import PermissionDecisionApproveOnce
+    return isinstance(result, PermissionDecisionApproveOnce)
+
+
+def _with_run_flag(withheld: bool | None):
+    """A run's artifact context with ``shell_withheld`` set, or with no key."""
+    import contextlib
+
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    @contextlib.contextmanager
+    def _scope():
+        with artifact_context_scope():
+            values: dict[str, Any] = {"agent_name": "probe", "workspace_root": str(REPO)}
+            if withheld is not None:
+                values["shell_withheld"] = withheld
+            bind_artifact_context(**values)
+            yield
+    return _scope()
+
+
+@pytest.mark.parametrize("request_factory", [
+    _shell_request,
+    lambda: {"kind": "shell", "full_command_text": "pwd"},
+    lambda: {"kind": "powershell", "full_command_text": "Get-ChildItem"},
+    lambda: {"kind": "bash"},
+    lambda: {"full_command_text": "node build/build_t2.mjs"},
+])
+def test_the_guard_refuses_a_shell_request_of_a_withheld_run(request_factory) -> None:
+    from acb_skills import permission_policy as pp
+
+    calls: list[Any] = []
+    guarded = pp.guard_shared_agent_shell(lambda r, i: calls.append(r) or "approved")
+    with _with_run_flag(True):
+        result = guarded(request_factory(), _INVOCATION)
+    assert _refused(result), result
+    assert pp.SHELL_WITHHELD_REASON in result.feedback
+    assert not calls, "a refused shell request must not reach the inner handler"
+
+
+def test_the_guard_passes_every_other_request_on() -> None:
+    from acb_skills import permission_policy as pp
+
+    guarded = pp.guard_shared_agent_shell(lambda r, i: "approved")
+    with _with_run_flag(True):
+        assert guarded(_tool_request("my_tasks_capture"), _INVOCATION) == "approved"
+        assert guarded({"kind": "read", "path": "x"}, _INVOCATION) == "approved"
+
+
+def test_a_run_that_allows_the_shell_reaches_the_inner_handler() -> None:
+    from acb_skills import permission_policy as pp
+
+    guarded = pp.guard_shared_agent_shell(lambda r, i: "approved")
+    with _with_run_flag(False):
+        assert guarded(_shell_request(), _INVOCATION) == "approved"
+
+
+def test_a_frame_with_no_run_flag_refuses_the_shell() -> None:
+    """Fail closed, as every H-201 reader does: no flag reads as withheld."""
+    from acb_skills import permission_policy as pp
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    guarded = pp.guard_shared_agent_shell(lambda r, i: "approved")
+    with _with_run_flag(None):
+        assert _refused(guarded(_shell_request(), _INVOCATION))
+    with artifact_context_scope():
+        bind_artifact_context()
+        assert _refused(guarded(_shell_request(), _INVOCATION))
+
+
+@pytest.mark.parametrize("mode", ["enforce", "audit", "approve_all"])
+def test_the_factory_guards_the_shell_in_every_mode(monkeypatch, mode: str) -> None:
+    """Production runs ``audit``. A block that obeyed it would block nothing."""
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", mode)
+    handler = executor._copilot_permission_handler()
+    with _with_run_flag(True):
+        assert _refused(handler(_shell_request(), _INVOCATION)), mode
+        assert _approved(handler(_tool_request("my_tasks_list"), _INVOCATION)), mode
+    with _with_run_flag(False):
+        assert _approved(handler(_shell_request(), _INVOCATION)), mode
+
+
+def test_every_artifact_context_site_binds_the_shell_flag() -> None:
+    """The run, the batch run and the sub-agent each set their OWN flag."""
+    tree = ast.parse(EXECUTOR_PY.read_text(encoding="utf-8"))
+    sites: list[tuple[str, int, bool]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        keys = {kw.arg for kw in node.keywords}
+        is_bind = name == "bind_artifact_context"
+        is_sub_agent = name == "derive_artifact_context" and "agent_name" in keys
+        if is_bind or is_sub_agent:
+            sites.append((name, node.lineno, "shell_withheld" in keys))
+    assert len(sites) >= 3, sites
+    missing = [f"{n} at executor.py:{line}" for n, line, ok in sites if not ok]
+    assert not missing, f"these sites bind no shell_withheld: {missing}"
+
+
+# ── 7b. The probe: one My Tasks turn through the real Copilot path ─────────
+
+def _my_tasks_tool_names() -> list[str]:
+    """The tools task-manager's own factory imports from skill_my_tasks."""
+    src = (REPO / "apps" / "agents" / "agent-task-manager" / "agents.py").read_text(
+        encoding="utf-8",
+    )
+    names: list[str] = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.ImportFrom) and node.module == "skill_my_tasks":
+            names += [a.name for a in node.names]
+    return names
+
+
+class _CopilotProbeAgent:
+    """Copilot-SDK shaped: ``_tools``, ``_default_options``, a handler slot and
+    ``_prepare_tools``, so injection, the handler install and
+    ``carry_run_context`` all treat it as a Copilot agent. During its turn it
+    asks its handler, from a thread with no context, as the SDK does."""
+
+    def __init__(self, tool_names: list[str]) -> None:
+        self.name = "probe"
+        self._tools: list[Any] = []
+        self.tools: list[Any] = []
+        self._default_options: dict[str, Any] = {"model": "tier-balanced"}
+        self._permission_handler: Any = None
+        self._tool_names = tool_names
+        self.decisions: dict[str, Any] = {}
+
+    def _prepare_tools(self, tools: Any) -> list[Any]:
+        return list(tools or [])
+
+    def _ask(self, key: str, request: Any) -> None:
+        import threading
+
+        box: dict[str, Any] = {}
+        thread = threading.Thread(
+            target=lambda: box.update(r=self._permission_handler(request, _INVOCATION)),
+        )
+        thread.start()
+        thread.join()
+        self.decisions[key] = box.get("r")
+
+    def run(self, *_a: Any, **_k: Any) -> Any:
+        return self._turn()
+
+    async def _turn(self) -> Any:
+        from types import SimpleNamespace
+
+        for name in self._tool_names:
+            self._ask(name, _tool_request(name))
+        self._ask("shell", _shell_request("cat /etc/hostname"))
+        yield SimpleNamespace(
+            role="assistant", message_id="m1",
+            contents=[SimpleNamespace(type="text", text="Captured it.")],
+        )
+
+    async def __aenter__(self) -> _CopilotProbeAgent:
+        return self
+
+    async def __aexit__(self, *_a: Any) -> bool:
+        return False
+
+
+def _probe(monkeypatch, tmp_path, *, slug: str, config: dict[str, Any]) -> _CopilotProbeAgent:
+    import asyncio
+
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    names = _my_tasks_tool_names()
+    agent = _CopilotProbeAgent(names)
+
+    class _Loaded:
+        agent_dir = tmp_path / "clone"
+        agent_name = slug
+
+        def __init__(self) -> None:
+            self.config = config
+
+        def build_agents(self) -> list[Any]:
+            return [agent]
+
+    class _Ctx:
+        def __enter__(self) -> _Loaded:
+            return _Loaded()
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    (tmp_path / "clone").mkdir(exist_ok=True)
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(executor, "_current_run_org", _REAL_CURRENT_RUN_ORG)
+
+    async def _collect() -> list[str]:
+        return [line async for line in executor.run_agent_stream(
+            slug, {"message": "capture: call the plumber"}, thread_id=f"t-d85-{slug}",
+        )]
+
+    token = bind_tenant(ORG_A)
+    try:
+        frames = asyncio.run(_collect())
+    finally:
+        release_tenant(token)
+        from acb_skills.write_artifact import bind_artifact_context
+        bind_artifact_context()
+    assert any("RUN_FINISHED" in f for f in frames), frames[-3:]
+    assert len(agent.decisions) == len(names) + 1, sorted(agent.decisions)
+    return agent
+
+
+@pytest.mark.parametrize("mode", ["audit", "enforce"])
+def test_probe_task_manager_turn_passes_its_tools_and_refuses_the_shell(
+    monkeypatch, tmp_path, mode: str,
+) -> None:
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", mode)
+    names = _my_tasks_tool_names()
+    assert len(names) == 29 and all(n.startswith("my_tasks_") for n in names), names
+    agent = _probe(monkeypatch, tmp_path, slug="task-manager", config=_config("task-manager"))
+    for name in names:
+        assert _approved(agent.decisions[name]), f"{mode}: {name} was not approved"
+    assert _refused(agent.decisions["shell"]), f"{mode}: the shell was not refused"
+    assert not ({ti._tool_name(t) for t in agent._tools} & SHELL_TOOLS)
+
+
+def test_probe_app_builder_loses_its_build_shell(monkeypatch, tmp_path) -> None:
+    """WS-43h gives it back, in the sandbox."""
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "audit")
+    agent = _probe(monkeypatch, tmp_path, slug="app-builder", config=_config("app-builder"))
+    assert _refused(agent.decisions["shell"])
+
+
+def test_probe_a_personal_copilot_agent_keeps_its_shell(monkeypatch, tmp_path) -> None:
+    """No in-repo personal agent runs on the Copilot path today. This one
+    proves that the guard leaves such an agent as it was."""
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
+    cfg = {"name": "coach", "sharing": {"instancing": "personal"}}
+    agent = _probe(monkeypatch, tmp_path, slug="coach", config=cfg)
+    assert _approved(agent.decisions["shell"]), agent.decisions["shell"]
+
+
+def test_probe_a_covered_shared_agent_gets_its_shell_back(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "enforce")
+    monkeypatch.setattr(ti, "_sandbox_covers", _cover_only("task-manager", ORG_A))
+    agent = _probe(monkeypatch, tmp_path, slug="task-manager", config=_config("task-manager"))
+    assert _approved(agent.decisions["shell"]), agent.decisions["shell"]
