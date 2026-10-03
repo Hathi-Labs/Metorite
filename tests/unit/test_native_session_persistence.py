@@ -198,6 +198,34 @@ def test_flag_on_with_no_history_keeps_the_string(case: str) -> None:
     assert _compose(payload) == (golden, None)
 
 
+@pytest.mark.usefixtures("_flag_on")
+def test_flag_on_with_history_and_no_current_turn_keeps_the_string() -> None:
+    """No current turn means an event. The string serialises the payload, and
+    a message list would drop it."""
+    payload = {"messages": list(_HISTORY), "event": "deal.updated"}
+    run_input, provider = _compose(payload)
+    assert provider is None
+    assert isinstance(run_input, str)
+    assert run_input == executor._compose_maf_run_input("probe", "run-1", payload, _INTEGRATIONS)
+    assert '"event": "deal.updated"' in run_input
+
+
+@pytest.mark.usefixtures("_flag_on")
+def test_the_structured_branch_reads_the_history_loader_once() -> None:
+    """The route's loader is a database read. The structured branch runs the
+    assembler once, so the loader runs once."""
+    calls: list[int] = []
+
+    def _loader() -> list[dict[str, str]]:
+        calls.append(1)
+        return list(_HISTORY)
+
+    run_input, _provider = _compose({"message": "Sheets", "_history_loader": _loader})
+    assert calls == [1]
+    assert [m.role for m in run_input] == ["user", "assistant", "user"]
+    assert run_input[-1].text == "Sheets"
+
+
 # ── 3. The context never enters the message list ─────────────────────────────
 
 

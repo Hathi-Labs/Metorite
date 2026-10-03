@@ -5491,31 +5491,44 @@ def _compose_maf_run(
     * ``native`` False (a Copilot SDK agent), or ``MAF_NATIVE_SESSIONS`` OFF
       (the default): ``(_compose_maf_run_input(...), None)``. Today's string,
       byte for byte, and the agent itself.
-    * ON, with history (the browser's ``messages`` or the route's loader): the
-      earlier turns and the current turn as a ``list[Message]``, each built
-      with ``Message(role=..., contents=[...])`` (H-216). The per-turn context
-      (integrations, ``memory_context``, ``system_context`` and so the
-      persona) goes to a per-run :class:`RunContextProvider`, NEVER into the
-      message list. WS-43t2 stores the input messages, and the member's memory
-      must never be stored (§15.9.5).
-    * ON, with no history, or on any failure: the string and no provider. The
-      string already carries the memory.
+    * ON, with history (the browser's ``messages`` or the route's loader) and
+      a current turn: the earlier turns and the current turn as a
+      ``list[Message]``, each built with ``Message(role=..., contents=[...])``
+      (H-216). The per-turn context (integrations, ``memory_context``,
+      ``system_context`` and so the persona) goes to a per-run
+      :class:`RunContextProvider`, NEVER into the message list. WS-43t2 stores
+      the input messages, and the member's memory must never be stored
+      (§15.9.5).
+    * ON, with no history or no current turn: the flag-off string. A payload
+      with no current turn is an event, and the string serialises it.
+    * ON, on any failure: the composed string and no provider. The string
+      already carries the memory.
 
     The bound (§15.9.6): ``assemble_run_context`` fits the model's window, with
     the context block counted, and :func:`_cap_structured_history` then holds
     the earlier turns to ``_HISTORY_MAX_TOKENS``. So the history is capped at
     the smaller of the two, the same minimum the string path takes.
+
+    The structured branch runs the assembler ONCE. It does not call
+    :func:`_compose_maf_run_input` first, because that would run the assembler
+    and the route's ``_history_loader`` (a database read) a second time.
     """
-    message = _compose_maf_run_input(agent_name, run_id, event_payload, integrations)
     if not native or not _native_sessions_enabled():
-        return message, None
+        return (
+            _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
+            None,
+        )
     history_msgs = event_payload.get("messages") or []
     _loader = event_payload.get("_history_loader")
-    if not (history_msgs or _loader):
-        return message, None
     current_msg_text = (
         event_payload.get("message") or event_payload.get("user_query") or ""
     )
+    if not (history_msgs or _loader) or not current_msg_text.strip():
+        return (
+            _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
+            None,
+        )
+    message = _build_event_message(agent_name, run_id, event_payload, integrations)
     try:
         from acb_llm import assemble_run_context
         from acb_llm.prompt_cache import CACHE_BREAK
@@ -5539,9 +5552,7 @@ def _compose_maf_run(
         turns = list(assembled)
         if context_text and turns and turns[0].get("role") == "system":
             fitted_context = str(turns.pop(0).get("content") or "")
-        turns = _cap_structured_history(
-            turns, _model, has_current=bool(current_msg_text.strip()),
-        )
+        turns = _cap_structured_history(turns, _model, has_current=True)
         if not turns:
             return message, None
         maf_messages = [
