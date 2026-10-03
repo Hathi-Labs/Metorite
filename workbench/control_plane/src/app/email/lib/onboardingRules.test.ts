@@ -22,19 +22,25 @@ import { OnboardingPanel } from "../components/OnboardingPanel";
 import { RulesStepView, type RulesStepViewProps } from "../components/OnboardingRulesStep";
 import { Toggle } from "../components/automation/ui";
 import { isFirstSyncPending, shouldPollFirstSync } from "./connect";
+import { useEmailStore } from "./emailStore";
 import {
+  REPLY_RULE_NAMES,
+  REPLY_SYSTEM_TYPES,
   RULES_STEP_COPY,
   firstSyncSurface,
+  hasEnabledReplyRule,
   importProgress,
   installRecommendedRules,
   installedLine,
+  isReplyRule,
   onboardingStage,
   processPastFrom,
+  readDraftSwitch,
   rulesStepPhase,
   setDraftReplies,
   type RulesStepApi,
 } from "./onboarding";
-import type { AssistantSettings } from "./types";
+import type { AssistantSettings, EmailAccount } from "./types";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -169,7 +175,7 @@ function fakeApi(settings: AssistantSettings) {
     },
     finishOnboarding: async (id) => {
       calls.push(["finishOnboarding", id]);
-      return null;
+      return { id, onboardingDone: true } as EmailAccount;
     },
   };
   return { api, calls };
@@ -193,7 +199,7 @@ const SETTINGS = {
 describe("the rules actions (item 9)", () => {
   it("Use the recommended rules calls installPresetRules once, with the account id", async () => {
     const { api, calls } = fakeApi(SETTINGS);
-    expect(await installRecommendedRules(api, "acc-1")).toBe(2);
+    expect(await installRecommendedRules(api, "acc-1")).toEqual(["Needs Reply", "Newsletter"]);
     expect(calls).toEqual([["installPresetRules", "acc-1"]]);
   });
 });
@@ -216,13 +222,41 @@ describe("the drafting switch (item 10, D-EM-6)", () => {
     expect((calls[1][1] as AssistantSettings).draft_replies).toBe(false);
   });
 
-  it("opens OFF, and the step writes nothing until it moves", () => {
+  it("seeds the switch from the stored setting: true reads ON, false reads OFF (fix round 1, P1)", async () => {
+    for (const stored of [true, false]) {
+      const { api, calls } = fakeApi({ ...SETTINGS, draft_replies: stored });
+      expect(await readDraftSwitch(api, "acc-1")).toEqual({ state: "ready", on: stored });
+      // A read only: nothing is saved by showing the switch.
+      expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+    }
+  });
+
+  it("a new mailbox reads OFF (D-EM-6): no field, or not exactly true", async () => {
+    const { draft_replies: _omit, ...noField } = SETTINGS as unknown as Record<string, unknown>;
+    void _omit;
+    const { api } = fakeApi(noField as unknown as AssistantSettings);
+    expect(await readDraftSwitch(api, "acc-1")).toEqual({ state: "ready", on: false });
+  });
+
+  it("a failed read is 'failed', never a guess", async () => {
+    const { api } = fakeApi(SETTINGS);
+    api.getAssistantSettings = async () => {
+      throw new Error("503");
+    };
+    expect(await readDraftSwitch(api, "acc-1")).toEqual({ state: "failed" });
+  });
+
+  it("the step reads the setting on every mount once ready, and writes only when the switch moves", () => {
     const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
-    expect(src).toContain("const [draftOn, setDraftOn] = useState(false);");
+    expect(src).toContain('const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });');
+    expect(src).toMatch(
+      /useEffect\(\(\) => \{\s*if \(phase !== "ready"\) return;[\s\S]*?readDraftSwitch\(RULES_API, account\.id\)\.then\(\(d\) => live && setDraft\(d\)\);[\s\S]*?\}, \[phase, account\.id\]\);/,
+    );
     // The only write path is the switch's own handler.
     expect(src.match(/setDraftReplies\(/g)).toHaveLength(1);
-    expect(src).toMatch(/const draft = async \(on: boolean\) => \{[\s\S]*?await setDraftReplies\(RULES_API, account\.id, on\);/);
-    expect(src).toContain("onDraftChange={(on) => void draft(on)}");
+    expect(src).toMatch(/const changeDraft = async \(on: boolean\) => \{[\s\S]*?await setDraftReplies\(RULES_API, account\.id, on\);/);
+    expect(src).toContain("onDraftChange={(on) => void changeDraft(on)}");
+    expect(src).not.toMatch(/useState\(false\);\s*\/\/|draftOn, setDraftOn/);
   });
 });
 
@@ -251,7 +285,9 @@ describe("Done (item 11)", () => {
     expect(src).toContain("finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),");
     expect(src).toContain("onSkip={() => void finish()}");
     expect(src).toContain("onDone={() => void finish()}");
-    expect(src).toMatch(/await RULES_API\.finishOnboarding\(account\.id\);\s*setFinished\(true\);\s*onFinished\(\);/);
+    expect(src).toMatch(
+      /const updated = await RULES_API\.finishOnboarding\(account\.id\);\s*setFinished\(true\);\s*onFinished\(updated\);/,
+    );
     expect(src).toContain("if (finished) return null;");
   });
 });
@@ -264,9 +300,11 @@ function view(over: Partial<RulesStepViewProps>): string {
   const props: RulesStepViewProps = {
     phase: "choose",
     installed: 0,
+    installedNone: false,
     busy: null,
     error: null,
-    draftOn: false,
+    replyRule: true,
+    draft: { state: "ready", on: false },
     draftBusy: false,
     pastFrom: "2026-07-05",
     onRecommended: noop,
@@ -334,7 +372,7 @@ describe("the rules step draws (items 8 to 11)", () => {
   it("names no model, in any phase or state", () => {
     for (const phase of ["checking", "choose", "ready"] as const) {
       for (const pastFrom of ["2026-07-05", null]) {
-        const out = view({ phase, pastFrom, installed: 3, error: RULES_STEP_COPY.failed, draftOn: true });
+        const out = view({ phase, pastFrom, installed: 3, error: RULES_STEP_COPY.failed, draft: { state: "ready", on: true } });
         expect(out, phase).not.toMatch(/model/i);
       }
     }
@@ -405,7 +443,7 @@ describe("the page wiring", () => {
 
   it("draws the rules step for the mailbox in view, where the import panel drew", () => {
     expect(page).toMatch(
-      /\{selectedAccount && onboardingStage\(selectedAccount\) === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(\) => void refreshAccounts\(\)\}/,
+      /\{selectedAccount && onboardingStage\(selectedAccount\) === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
     );
     expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<FirstSyncBanner address"));
     expect(page.indexOf("<OnboardingRulesStep")).toBeLessThan(page.indexOf("<EmailToolbar />"));
@@ -429,5 +467,150 @@ describe("the page wiring", () => {
     expect(rules).toContain("const [showPast, setShowPast] = useState(() => !!processPastFrom);");
     expect(rules).toMatch(/<ProcessPastEmailsDialog[\s\S]*?initialStart=\{processPastFrom\}/);
     expect(rules).toContain("const [start, setStart] = useState(initialStart ?? isoDaysAgo(7));");
+  });
+});
+
+// ── EM-T6d part 2, fix round 1 ─────────────────────────────────────────────
+
+/** The `disabled` ATTRIBUTE. The class string also holds `disabled:opacity-50`. */
+const DISABLED = /(?:^|\s)disabled=""/;
+
+describe("the switch draws what is stored (fix round 1, P1)", () => {
+  const sw = (out: string) => buttons(out).filter((b) => b.attrs.includes('role="switch"'));
+
+  it("ON when the stored value is ON, after a remount", () => {
+    const s1 = sw(view({ phase: "ready", draft: { state: "ready", on: true } }));
+    expect(s1).toHaveLength(1);
+    expect(s1[0].attrs).toContain('aria-checked="true"');
+    expect(s1[0].attrs).not.toMatch(DISABLED);
+  });
+
+  it("disabled while the read runs", () => {
+    const out = view({ phase: "ready", draft: { state: "loading" } });
+    expect(sw(out)[0].attrs).toMatch(DISABLED);
+    expect(sw(out)[0].attrs).toContain('aria-checked="false"');
+  });
+
+  it("disabled with a short error when the read fails", () => {
+    const out = view({ phase: "ready", draft: { state: "failed" } });
+    expect(sw(out)[0].attrs).toMatch(DISABLED);
+    expect(out).toContain(RULES_STEP_COPY.draftReadFailed);
+    expect(out).not.toContain(RULES_STEP_COPY.draftNote);
+  });
+});
+
+describe("the switch needs an enabled reply rule (fix round 1, P2)", () => {
+  it("matches the gateway's reply rule: the system type or the name", () => {
+    expect(isReplyRule({ name: "Needs Reply", system_type: null })).toBe(true);
+    expect(isReplyRule({ name: "  To Reply ", system_type: null })).toBe(true);
+    expect(isReplyRule({ name: "Reply", system_type: null })).toBe(true);
+    expect(isReplyRule({ name: "Anything", system_type: "to_reply" })).toBe(true);
+    expect(isReplyRule({ name: "Anything", system_type: "REPLY" })).toBe(true);
+    expect(isReplyRule({ name: "Newsletter", system_type: "NEWSLETTER" })).toBe(false);
+    expect(isReplyRule({ name: "Needs Reply soon", system_type: null })).toBe(false);
+  });
+
+  it("needs the reply rule enabled", () => {
+    expect(hasEnabledReplyRule([{ enabled: true, name: "Newsletter", system_type: null }])).toBe(false);
+    expect(hasEnabledReplyRule([{ enabled: false, name: "Needs Reply", system_type: null }])).toBe(false);
+    expect(hasEnabledReplyRule([{ enabled: true, name: "Needs Reply", system_type: null }])).toBe(true);
+    expect(hasEnabledReplyRule(null)).toBe(false);
+  });
+
+  it("mirrors _REPLY_SYSTEM_TYPES and _REPLY_RULE_NAMES of rules.py exactly", () => {
+    const py = readFileSync(
+      join(__dirname, "../../../../../../apps/services/gateway/gateway/routes/email/automation/rules.py"),
+      { encoding: "utf-8" },
+    );
+    const tuple = (name: string) => {
+      const m = py.match(new RegExp(`^${name} = \\(([^)]*)\\)`, "m"));
+      expect(m, name).not.toBeNull();
+      return [...m![1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+    };
+    expect([...REPLY_SYSTEM_TYPES]).toEqual(tuple("_REPLY_SYSTEM_TYPES"));
+    expect([...REPLY_RULE_NAMES]).toEqual(tuple("_REPLY_RULE_NAMES"));
+  });
+
+  it("with no reply rule: no switch, and one line that names the Needs Reply rule", () => {
+    const out = view({ phase: "ready", replyRule: false });
+    expect(buttons(out).filter((b) => b.attrs.includes('role="switch"'))).toEqual([]);
+    expect(out).toContain(RULES_STEP_COPY.draftNeedsReplyRule.replace(/"/g, "&quot;"));
+    expect(RULES_STEP_COPY.draftNeedsReplyRule).toContain('"Needs Reply"');
+  });
+
+  it("the container decides it from the rules it read, in one helper", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("replyRule={hasEnabledReplyRule(rules)}");
+    expect(src).not.toMatch(/needs reply|to_reply|system_type\s*===/i);
+  });
+});
+
+describe("the Process past date is cleared after first use (fix round 1, P2)", () => {
+  it("the page clears it when the Rules tab reports the dialog open", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("onProcessPastOpened={() => setProcessPastFrom(null)}");
+    expect(codeOnly(read("components/automation/AutomationView.tsx"))).toMatch(
+      /<AISettingsView[\s\S]*?onProcessPastOpened=\{onProcessPastOpened\}/,
+    );
+    expect(codeOnly(read("components/automation/AISettingsView.tsx"))).toMatch(
+      /<RulesTab[\s\S]*?onProcessPastOpened=\{onProcessPastOpened\}/,
+    );
+  });
+
+  it("the Rules tab reports it once, after it opened the dialog from the date", () => {
+    const rules = codeOnly(read("components/automation/ai-settings/RulesTab.tsx"));
+    expect(rules).toMatch(
+      /const pastReported = useRef\(false\);\s*useEffect\(\(\) => \{\s*if \(!processPastFrom \|\| pastReported\.current\) return;\s*pastReported\.current = true;\s*onProcessPastOpened\?\.\(\);\s*\}, \[processPastFrom, onProcessPastOpened\]\);/,
+    );
+  });
+});
+
+describe("Done writes the server's account into the store (fix round 1, P3)", () => {
+  it("replaceAccount swaps that one account by id", () => {
+    const a = { id: "a", emailAddress: "a@x.test", onboardingDone: false } as EmailAccount;
+    const b = { id: "b", emailAddress: "b@x.test", onboardingDone: false } as EmailAccount;
+    useEmailStore.setState({ accounts: [a, b] });
+    useEmailStore.getState().replaceAccount({ ...a, onboardingDone: true });
+    const after = useEmailStore.getState().accounts;
+    expect(after.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(after[0].onboardingDone).toBe(true);
+    expect(after[1]).toBe(b);
+    expect(onboardingStage({ ...IMPORTED, ...after[0] })).toBeNull();
+  });
+
+  it("the store write comes before the re-read, so a failed re-read cannot bring the step back", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toMatch(/onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);/);
+  });
+});
+
+describe("the recommended rules (fix round 1, P3)", () => {
+  it("is disabled while it installs", () => {
+    const b = buttons(view({ phase: "choose", busy: "install" })).find((x) => x.text === "Use the recommended rules");
+    expect(b).toBeDefined();
+    expect(b!.attrs).toMatch(DISABLED);
+    expect(buttons(view({ phase: "choose" })).find((x) => x.text === "Use the recommended rules")!.attrs).not.toMatch(DISABLED);
+  });
+
+  it("when it added none and no rule is on, a line says to turn one on in AI Settings", () => {
+    expect(view({ phase: "choose", installedNone: true })).toContain(RULES_STEP_COPY.noneAdded);
+    expect(view({ phase: "choose", installedNone: false })).not.toContain(RULES_STEP_COPY.noneAdded);
+    expect(RULES_STEP_COPY.noneAdded).toMatch(/Turn on a rule in AI Settings/);
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("installedNone={installTried && installed === 0}");
+  });
+});
+
+describe("no sort action when nothing was imported (fix round 1, item 7)", () => {
+  const since = "2026-07-05T12:00:00Z";
+
+  it("with EM-T6b: a finished import with no imported row offers nothing", () => {
+    expect(processPastFrom({ importSince: since, importPhase: "done", importCount: null }, NOW)).toBeNull();
+    expect(processPastFrom({ importSince: since, importPhase: "done", importCount: 0 }, NOW)).toBeNull();
+    expect(processPastFrom({ importSince: since, importPhase: "done", importCount: 120 }, NOW)).toBe("2026-07-05");
+  });
+
+  it("before EM-T6b (no phase): only the one-day rule applies", () => {
+    expect(processPastFrom({ importSince: since }, NOW)).toBe("2026-07-05");
   });
 });

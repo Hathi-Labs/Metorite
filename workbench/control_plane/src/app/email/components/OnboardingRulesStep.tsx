@@ -13,17 +13,21 @@
  *   decisions it calls live in `lib/onboarding.ts`.
  *
  * What it does:
- * - "Use the recommended rules" calls `installPresetRules` once.
+ * - "Use the recommended rules" calls `installPresetRules` once. When it adds
+ *   none and no rule is on, a line says to turn one on in AI Settings.
  * - "Choose my own" opens AI Settings, which opens on its Rules tab.
  * - Once an enabled rule exists, it offers "Sort my imported mail". The
  *   automatic run touches only mail that arrived after the first enabled rule
  *   (owner decision (d), #576), so the imported mail needs one run of
  *   "Process past emails". The action opens that dialog on the import range.
  *   The dialog counts the mail before it spends a model call.
- * - "Draft replies for me" opens OFF (D-EM-6). Moving it reads the assistant
- *   settings and saves them with `draft_replies` changed and nothing else.
+ * - "Draft replies for me" shows only with an enabled reply rule, because a
+ *   draft is an action on that rule. It shows the STORED value, read when the
+ *   step is ready, and stays disabled until the read returns or when it fails
+ *   (fix round 1, P1). Moving it saves `draft_replies` and nothing else.
  * - "Done", "Skip for now" and the "Skip setup" button send
- *   `onboarding_done: true`. The setup then never shows again.
+ *   `onboarding_done: true`. The page writes the returned account into the
+ *   store, so the setup never shows again.
  * - It names no model and offers no model choice (EM-T5b).
  */
 
@@ -39,11 +43,14 @@ import {
 } from "../lib/api";
 import {
   RULES_STEP_COPY as COPY,
+  hasEnabledReplyRule,
   installRecommendedRules,
   installedLine,
   processPastFrom,
+  readDraftSwitch,
   rulesStepPhase,
   setDraftReplies,
+  type DraftSwitch,
   type RulesStepApi,
   type RulesStepPhase,
 } from "../lib/onboarding";
@@ -63,9 +70,13 @@ export interface RulesStepViewProps {
   phase: RulesStepPhase;
   /** How many presets "Use the recommended rules" added. */
   installed: number;
+  /** True after "Use the recommended rules" added none. */
+  installedNone: boolean;
   busy: "install" | "finish" | null;
   error: string | null;
-  draftOn: boolean;
+  /** True when an enabled reply rule exists, so drafting can act. */
+  replyRule: boolean;
+  draft: DraftSwitch;
   draftBusy: boolean;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
@@ -84,6 +95,7 @@ export function RulesStepView(p: RulesStepViewProps) {
   const readyBody = [installedLine(p.installed), p.pastFrom ? COPY.readyBody : COPY.readyBodyNoImport]
     .filter(Boolean)
     .join(" ");
+  const draftOn = p.draft.state === "ready" && p.draft.on;
   return (
     <section
       aria-label="Mailbox setup"
@@ -98,24 +110,27 @@ export function RulesStepView(p: RulesStepViewProps) {
         <p className="mt-0.5 text-[11px] text-muted-foreground">{ready ? readyBody : COPY.body}</p>
 
         {p.phase === "choose" && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              icon="Sparkles"
-              loading={p.busy === "install"}
-              disabled={locked}
-              onClick={p.onRecommended}
-            >
-              {COPY.recommended}
-            </Button>
-            <Button variant="secondary" size="sm" disabled={locked} onClick={p.onChooseOwn}>
-              {COPY.chooseOwn}
-            </Button>
-            <Button variant="ghost" size="sm" disabled={locked} onClick={p.onSkip}>
-              {COPY.skipForNow}
-            </Button>
-          </div>
+          <>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                icon="Sparkles"
+                loading={p.busy === "install"}
+                disabled={locked}
+                onClick={p.onRecommended}
+              >
+                {COPY.recommended}
+              </Button>
+              <Button variant="secondary" size="sm" disabled={locked} onClick={p.onChooseOwn}>
+                {COPY.chooseOwn}
+              </Button>
+              <Button variant="ghost" size="sm" disabled={locked} onClick={p.onSkip}>
+                {COPY.skipForNow}
+              </Button>
+            </div>
+            {p.installedNone && <p className="mt-1.5 text-[11px] text-muted-foreground">{COPY.noneAdded}</p>}
+          </>
         )}
 
         {ready && (
@@ -126,10 +141,16 @@ export function RulesStepView(p: RulesStepViewProps) {
                   {COPY.processPast}
                 </Button>
               )}
-              <label className="flex items-center gap-2 text-xs text-foreground">
-                <Toggle enabled={p.draftOn} disabled={p.draftBusy || locked} onChange={p.onDraftChange} />
-                {COPY.draftLabel}
-              </label>
+              {p.replyRule && (
+                <label className="flex items-center gap-2 text-xs text-foreground">
+                  <Toggle
+                    enabled={draftOn}
+                    disabled={p.draft.state !== "ready" || p.draftBusy || locked}
+                    onChange={p.onDraftChange}
+                  />
+                  {COPY.draftLabel}
+                </label>
+              )}
               <Button variant="text" size="sm" disabled={locked} onClick={p.onInsights}>
                 {COPY.insights}
               </Button>
@@ -143,7 +164,13 @@ export function RulesStepView(p: RulesStepViewProps) {
                 {COPY.done}
               </Button>
             </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">{COPY.draftNote}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {!p.replyRule
+                ? COPY.draftNeedsReplyRule
+                : p.draft.state === "failed"
+                  ? COPY.draftReadFailed
+                  : COPY.draftNote}
+            </p>
           </>
         )}
 
@@ -171,21 +198,25 @@ export function OnboardingRulesStep({
   onOpenAutomation,
   onFinished,
 }: {
-  account: Pick<EmailAccount, "id" | "importSince">;
+  account: Pick<EmailAccount, "id" | "importSince" | "importPhase" | "importCount">;
   /** Opens an automation view. `pastFrom` opens Process past emails on that date. */
   onOpenAutomation: (feature: AutomationFeature, pastFrom?: string | null) => void;
-  /** Called after the PATCH, so the page re-reads the accounts. */
-  onFinished: () => void;
+  /** Called with the account the PATCH returned. The page writes it to the store. */
+  onFinished: (updated: EmailAccount) => void;
 }) {
   // null: the read of the rules is in flight.
-  const [rules, setRules] = useState<ReadonlyArray<Pick<AutomationRule, "enabled">> | null>(null);
+  const [rules, setRules] = useState<ReadonlyArray<Pick<AutomationRule, "enabled" | "name" | "system_type">> | null>(
+    null,
+  );
   const [installed, setInstalled] = useState(0);
+  const [installTried, setInstallTried] = useState(false);
   const [busy, setBusy] = useState<"install" | "finish" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // OFF when the step opens (D-EM-6). Nothing is written until it moves.
-  const [draftOn, setDraftOn] = useState(false);
+  // The stored value, read once the step is ready. Disabled until then.
+  const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
   const [draftBusy, setDraftBusy] = useState(false);
   const [finished, setFinished] = useState(false);
+  const phase = rulesStepPhase(rules);
 
   // A rule may exist already: the member can make one during the import, or
   // come back from "Choose my own". A failed read shows the choices.
@@ -199,13 +230,31 @@ export function OnboardingRulesStep({
     };
   }, [account.id]);
 
+  // The switch shows what is stored, on every mount: drafting can be ON from
+  // AI Settings, or from an earlier visit to this step.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let live = true;
+    void readDraftSwitch(RULES_API, account.id).then((d) => live && setDraft(d));
+    return () => {
+      live = false;
+    };
+  }, [phase, account.id]);
+
   const recommended = async () => {
     setBusy("install");
     setError(null);
     try {
-      setInstalled(await installRecommendedRules(RULES_API, account.id));
-      // Re-read, so the step moves on only when an enabled rule exists.
-      setRules(await RULES_API.listRules(account.id).catch(() => [{ enabled: true }]));
+      const added = await installRecommendedRules(RULES_API, account.id);
+      setInstalled(added.length);
+      setInstallTried(true);
+      // Re-read, so the step moves on only when an enabled rule exists. If
+      // the re-read fails, the rules the install added stand in for it.
+      setRules(
+        await RULES_API.listRules(account.id).catch(() =>
+          added.map((name) => ({ enabled: true, name, system_type: null })),
+        ),
+      );
     } catch {
       setError(COPY.failed);
     } finally {
@@ -217,21 +266,21 @@ export function OnboardingRulesStep({
     setBusy("finish");
     setError(null);
     try {
-      await RULES_API.finishOnboarding(account.id);
+      const updated = await RULES_API.finishOnboarding(account.id);
       setFinished(true);
-      onFinished();
+      onFinished(updated);
     } catch {
       setError(COPY.failed);
       setBusy(null);
     }
   };
 
-  const draft = async (on: boolean) => {
+  const changeDraft = async (on: boolean) => {
     setDraftBusy(true);
     setError(null);
     try {
       await setDraftReplies(RULES_API, account.id, on);
-      setDraftOn(on);
+      setDraft({ state: "ready", on });
     } catch {
       setError(COPY.failed);
     } finally {
@@ -244,18 +293,20 @@ export function OnboardingRulesStep({
   const pastFrom = processPastFrom(account, new Date());
   return (
     <RulesStepView
-      phase={rulesStepPhase(rules)}
+      phase={phase}
       installed={installed}
+      installedNone={installTried && installed === 0}
       busy={busy}
       error={error}
-      draftOn={draftOn}
+      replyRule={hasEnabledReplyRule(rules)}
+      draft={draft}
       draftBusy={draftBusy}
       pastFrom={pastFrom}
       onRecommended={() => void recommended()}
       onChooseOwn={() => onOpenAutomation("ai-settings")}
       onSkip={() => void finish()}
       onProcessPast={() => onOpenAutomation("ai-settings", pastFrom)}
-      onDraftChange={(on) => void draft(on)}
+      onDraftChange={(on) => void changeDraft(on)}
       onInsights={() => onOpenAutomation("analytics")}
       onDone={() => void finish()}
     />

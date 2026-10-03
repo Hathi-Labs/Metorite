@@ -19,6 +19,7 @@
  * Fence: `onboarding.test.ts`.
  */
 
+import { autoDraftRepliesOn } from "./assistantSettings";
 import type { AssistantSettings, AutomationRule, EmailAccount } from "./types";
 
 // ── The stage ───────────────────────────────────────────────────────────────
@@ -219,6 +220,9 @@ export const RULES_STEP_COPY = {
   processPast: "Sort my imported mail",
   draftLabel: "Draft replies for me",
   draftNote: "Metorite writes a draft for mail that needs a reply. It sends nothing.",
+  draftNeedsReplyRule: 'Reply drafts need the "Needs Reply" rule. Turn it on in AI Settings.',
+  draftReadFailed: "Metorite could not read the drafting setting.",
+  noneAdded: "Your recommended rules are there already, and they are off. Turn on a rule in AI Settings.",
   insights: "See insights",
   done: "Done",
   failed: "Metorite could not save that. Try again.",
@@ -245,38 +249,101 @@ export function rulesStepPhase(rules: ReadonlyArray<Pick<AutomationRule, "enable
 
 /**
  * The start date for "Process past emails" over the imported mail: the UTC
- * date of `importSince`, as YYYY-MM-DD. Null when the range was "Only new
- * mail" (under one day back), because then there is nothing to sort.
+ * date of `importSince`, as YYYY-MM-DD. Null when nothing was imported.
+ *
+ * Two rules tell that, and the first needs EM-T6b:
+ * - A gateway with EM-T6b sends `importPhase`. A finished import with no
+ *   imported row (`importCount` null or 0) has nothing to sort. "Only new
+ *   mail" is that case: EM-T6a writes `import_phase = 'done'` and never
+ *   writes `import_count` for it.
+ * - With no `importPhase` (before EM-T6b), only a range under one day back
+ *   tells it. After that day an "Only new mail" mailbox looks like a range,
+ *   and the action shows. Recorded, not solved, in §10.4.7.
  */
 export function processPastFrom(
-  account: Pick<EmailAccount, "importSince">,
+  account: Pick<EmailAccount, "importSince" | "importPhase" | "importCount">,
   now: Date,
 ): string | null {
   const since = parseDate(account.importSince);
   if (!since) return null;
+  if (account.importPhase && !(typeof account.importCount === "number" && account.importCount > 0)) {
+    return null;
+  }
   if (now.getTime() - since.getTime() < 86_400_000) return null;
   return since.toISOString().slice(0, 10);
 }
 
+// ── The reply rule that drafting acts through (D-EM-6) ──────────────────────
+
+/**
+ * The reply rule as the gateway names it. These MIRROR `_REPLY_SYSTEM_TYPES`
+ * and `_REPLY_RULE_NAMES` in `routes/email/automation/rules.py`, which
+ * `sync_draft_reply_action` and `reply_rule_drafts` read. A mirror goes
+ * stale, so `onboardingRules.test.ts` parses both tuples out of rules.py and
+ * fails when they differ.
+ */
+export const REPLY_SYSTEM_TYPES: readonly string[] = ["REPLY", "TO_REPLY"];
+export const REPLY_RULE_NAMES: readonly string[] = ["needs reply", "reply", "to reply"];
+
+type RuleShape = Pick<AutomationRule, "enabled" | "name" | "system_type">;
+
+/** `_is_reply_rule` of rules.py: the system type, or the trimmed lower-case name. */
+export function isReplyRule(rule: Pick<AutomationRule, "name" | "system_type">): boolean {
+  return (
+    REPLY_SYSTEM_TYPES.includes((rule.system_type ?? "").toUpperCase()) ||
+    REPLY_RULE_NAMES.includes((rule.name ?? "").trim().toLowerCase())
+  );
+}
+
+/**
+ * True when an enabled reply rule exists. The drafting switch shows only
+ * then, because a draft is an action on that rule (item 10, `rules.py`).
+ */
+export function hasEnabledReplyRule(rules: ReadonlyArray<RuleShape> | null): boolean {
+  return (rules ?? []).some((r) => r.enabled && isReplyRule(r));
+}
+
 /** The calls of the rules step, so a test can pass fakes. */
 export interface RulesStepApi {
-  listRules(accountId: string): Promise<ReadonlyArray<Pick<AutomationRule, "enabled">>>;
+  listRules(accountId: string): Promise<ReadonlyArray<RuleShape>>;
   installPresetRules(accountId: string): Promise<{ installed: string[] }>;
   getAssistantSettings(accountId: string): Promise<AssistantSettings>;
   saveAssistantSettings(settings: AssistantSettings): Promise<AssistantSettings>;
-  finishOnboarding(accountId: string): Promise<unknown>;
+  /** The PATCH of item 11. It returns the server's copy of the account. */
+  finishOnboarding(accountId: string): Promise<EmailAccount>;
 }
 
-/** "Use the recommended rules": one install call. Returns how many it added. */
-export async function installRecommendedRules(api: RulesStepApi, accountId: string): Promise<number> {
+/**
+ * What the drafting switch draws. `loading` and `failed` keep it disabled:
+ * a switch that guesses OFF while drafting is ON lets the member click Done
+ * believing drafting is off (fix round 1, P1).
+ */
+export type DraftSwitch = { state: "loading" } | { state: "ready"; on: boolean } | { state: "failed" };
+
+/**
+ * Reads the stored drafting setting for the switch. ON only for a stored
+ * `draft_replies: true` (`autoDraftRepliesOn`, EM-T7), so a new mailbox reads
+ * OFF (D-EM-6). A failed read is `failed`, never a guess.
+ */
+export async function readDraftSwitch(api: RulesStepApi, accountId: string): Promise<DraftSwitch> {
+  try {
+    return { state: "ready", on: autoDraftRepliesOn(await api.getAssistantSettings(accountId)) };
+  } catch {
+    return { state: "failed" };
+  }
+}
+
+/** "Use the recommended rules": one install call. Returns the names it added. */
+export async function installRecommendedRules(api: RulesStepApi, accountId: string): Promise<string[]> {
   const res = await api.installPresetRules(accountId);
-  return res.installed?.length ?? 0;
+  return res.installed ?? [];
 }
 
 /**
  * The drafting switch (item 10, D-EM-6). It reads the settings and saves them
  * back with `draft_replies` changed and every other field as it was. The
- * switch opens OFF and calls this only when the member moves it.
+ * switch shows the stored value (`readDraftSwitch`) and calls this only when
+ * the member moves it.
  */
 export async function setDraftReplies(api: RulesStepApi, accountId: string, on: boolean): Promise<void> {
   const current = await api.getAssistantSettings(accountId);

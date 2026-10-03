@@ -60,8 +60,10 @@ export default function EmailPage() {
   const [automationFeature, setAutomationFeature] =
     useState<AutomationFeature | null>(null);
   // YYYY-MM-DD. The guided setup's "Sort my imported mail" opens AI Settings
-  // with "Process past emails" on this date (EM-T6d). Every other way into an
-  // automation view clears it, so the dialog opens once.
+  // with "Process past emails" on this date (EM-T6d). The Rules tab reports
+  // when it opened the dialog, and the page clears the date then. So a return
+  // to the Rules tab does not open the dialog again (fix round 1, P2). Every
+  // other way into an automation view clears it too.
   const [processPastFrom, setProcessPastFrom] = useState<string | null>(null);
 
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
@@ -113,6 +115,7 @@ export default function EmailPage() {
     syncStatus,
     sendEmail,
     softRefresh,
+    replaceAccount,
   } = useEmailStore();
 
   // Fetch on mount
@@ -349,7 +352,8 @@ export default function EmailPage() {
   );
 
   // The guided setup opens an automation view (EM-T6d). Only its "Sort my
-  // imported mail" passes `pastFrom`, which opens Process past emails once.
+  // imported mail" passes `pastFrom`, which opens Process past emails. The
+  // Rules tab clears it through `onProcessPastOpened`.
   const openFromSetup = useCallback(
     (feature: AutomationFeature, pastFrom: string | null = null) => {
       setProcessPastFrom(pastFrom);
@@ -697,6 +701,7 @@ export default function EmailPage() {
               setAutomationFeature(feature);
             }}
             processPastFrom={processPastFrom}
+            onProcessPastOpened={() => setProcessPastFrom(null)}
             onOpenEmail={(id) => {
               // A dashboard row navigates to its conversation: fetch/select the
               // message (it may live outside the loaded folder) and drop back
@@ -923,7 +928,12 @@ export default function EmailPage() {
             key={selectedAccount.id}
             account={selectedAccount}
             onOpenAutomation={openFromSetup}
-            onFinished={() => void refreshAccounts()}
+            onFinished={(updated) => {
+              // The server's copy first, so a failed re-read cannot bring
+              // the setup back (fix round 1, P3).
+              replaceAccount(updated);
+              void refreshAccounts();
+            }}
           />
         )}
 

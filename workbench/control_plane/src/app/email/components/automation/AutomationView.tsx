@@ -32,6 +32,8 @@ interface AutomationViewProps {
    *  guided setup sends it, so the member sorts the mail they imported
    *  (EM-T6d). */
   processPastFrom?: string | null;
+  /** Called once the Rules tab opened that dialog, so the page clears the date. */
+  onProcessPastOpened?: () => void;
 }
 
 const META: Record<
@@ -82,6 +84,7 @@ export function AutomationView({
   onDraftReply,
   onNudge,
   processPastFrom = null,
+  onProcessPastOpened,
 }: AutomationViewProps) {
   const meta = META[feature];
   const Icon = meta.icon;
@@ -113,6 +116,7 @@ export function AutomationView({
             accountId={accountId}
             selectedEmailId={selectedEmailId}
             processPastFrom={processPastFrom}
+            onProcessPastOpened={onProcessPastOpened}
           />
         )}
         {feature === "digest" && (
