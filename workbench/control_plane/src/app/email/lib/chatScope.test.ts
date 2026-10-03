@@ -72,8 +72,11 @@ describe("email-chat-scope-picker", () => {
   });
 
   it("holds a pick while the page scope it was made on stands", () => {
-    expect(chatScope(both, ALL_INBOXES, { against: ALL_INBOXES, scope: "acc-home" }).accountId).toBe("acc-home");
-    expect(chatScope(both, "acc-work", { against: "acc-work", scope: ALL_INBOXES }).allInboxes).toBe(true);
+    expect(chatScope(both, ALL_INBOXES, { against: ALL_INBOXES, scope: "acc-home" }))
+      .toEqual({ allInboxes: false, accountId: "acc-home", pickerId: "acc-home" });
+    // The picker marks All inboxes, never the mailbox of the page (review F2).
+    expect(chatScope(both, "acc-work", { against: "acc-work", scope: ALL_INBOXES }))
+      .toEqual({ allInboxes: true, accountId: null, pickerId: ALL_INBOXES });
     // The page moved: the chat follows the page again.
     expect(chatScope(both, "acc-work", { against: ALL_INBOXES, scope: "acc-home" }).accountId).toBe("acc-work");
   });
@@ -83,6 +86,9 @@ describe("email-chat-scope-picker", () => {
     expect(chat).not.toMatch(/\bselectAccount\b/);
     expect(chat).not.toMatch(/\bselectAll\b/);
     expect(chat).toContain("(scope: string) => setScopePick({ against: pageScope ?? null, scope })");
+    // The pick records the page scope of now, not of the first render (F3).
+    expect(chat).toContain(
+      "(scope: string) => setScopePick({ against: pageScope ?? null, scope }),\n    [pageScope],");
     expect(chat).toContain("onMailboxChange={pickChatScope}");
     expect(chat).toContain("const mailboxOptions = useMemo(() => chatMailboxOptions(accounts), [accounts]);");
     expect(chat).toContain("activeMailboxId={pickerId}");
@@ -102,6 +108,8 @@ describe("email-chat-scope-persona", () => {
     expect(p).toContain("• Personal · vj@outlook.com (account_id acc-home)");
     expect(p).toContain("Scope: All inboxes.");
     expect(p).toMatch(/Leave account_id out of a write act/);
+    // A read tool that needs one mailbox runs for each mailbox (review F4).
+    expect(p).toMatch(/call it once for each mailbox, and never answer for all from one/);
     expect(p).not.toContain("Active account");
     expect(p).not.toMatch(/Use (this )?account_id/i);
     // Each id shows once, in its list line, so no id is a default.
@@ -141,7 +149,8 @@ describe("email-chat-scope-persona", () => {
 
 describe("email-chat-scope-fallback", () => {
   it("falls back to All inboxes, or to the only mailbox", () => {
-    expect(chatScope(both, "acc-gone", null).allInboxes).toBe(true);
+    expect(chatScope(both, "acc-gone", null))
+      .toEqual({ allInboxes: true, accountId: null, pickerId: ALL_INBOXES });
     expect(chatScope([work], "acc-gone", null)).toEqual({ allInboxes: false, accountId: "acc-work", pickerId: "acc-work" });
     // A pick on a mailbox that the member then removes.
     expect(chatScope(both, ALL_INBOXES, { against: ALL_INBOXES, scope: "acc-gone" }).allInboxes).toBe(true);
@@ -194,6 +203,12 @@ describe("email-chat-scope-no-hidden-mailbox", () => {
     expect(chat).toContain(
       "chatSettingsRead(\n      { allInboxes: chatAllInboxes, accountId: chatAccountId },\n      getAssistantSettings,");
     expect(chat).not.toMatch(/getAssistantSettings\(/);
+    // Review F1: the settings clear before the read, and a late read drops.
+    const effect = chat.slice(chat.indexOf("const read = chatSettingsRead("));
+    // The clear sits just before the read, after the All inboxes return.
+    expect(effect).toContain(
+      'setChatModel("tier-powerful");\n    setAcctSettings(null);\n    let cancelled = false;\n    read\n      .then(');
+    expect(effect).toContain("if (cancelled) return;");
     // The page's selectedAccountId never reaches the chat. The one name left is
     // the option of the persona builder, and it takes the chat mailbox.
     expect(chat.match(/\bselectedAccountId\b/g)).toEqual(["selectedAccountId"]);

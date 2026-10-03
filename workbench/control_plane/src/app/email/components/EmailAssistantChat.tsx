@@ -116,6 +116,11 @@ export function EmailAssistantChat({
       setAcctSettings(null);
       return;
     }
+    // Clear the settings of the mailbox before, so that its standing orders
+    // never stand under the name of the new one while the read is out, or
+    // after the read fails (D-EM-18, D-EM-24; EM-T8e-3 review F1).
+    setChatModel("tier-powerful");
+    setAcctSettings(null);
     let cancelled = false;
     read
       .then((s) => {
@@ -129,8 +134,8 @@ export function EmailAssistantChat({
         });
       })
       .catch(() => {
-        // Keep the tier-powerful default if the lookup fails; the persona
-        // degrades to account-awareness without the standing orders.
+        // The default stays: tier-powerful, and no standing orders. The
+        // persona still names the mailbox.
       });
     return () => {
       cancelled = true;

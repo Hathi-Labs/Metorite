@@ -124,7 +124,9 @@ export function buildEmailAssistantPersona(opts: {
       "Scope: All inboxes. The user works across every mailbox in the list " +
         "above, and no mailbox is the default. Leave account_id out of a " +
         "search or a list to read every mailbox, and name the mailbox of each " +
-        "result. Leave account_id out of a write act (send, draft, rule, " +
+        "result. A read tool that needs an account_id reads one mailbox: call " +
+        "it once for each mailbox, and never answer for all from one. Leave " +
+        "account_id out of a write act (send, draft, rule, " +
         "setting): the tool takes the mailbox from the email, or asks the user " +
         "which mailbox. Give an account_id only when the user names a mailbox.",
     );

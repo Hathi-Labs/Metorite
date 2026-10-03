@@ -3364,7 +3364,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27) | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
-| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
+| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e (the note: EM-T8f) |
 | 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
 | 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8f |
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
@@ -3878,6 +3878,20 @@ EM-T8e-2, because the All inboxes persona tells the model to leave `account_id` 
 13 of 13 mutants. `allInboxes.test.ts` keeps the automation half of
 `email-all-automation-names-mailbox`.
 
+**Review round 1 (2026-10-03).** The verifier found no P0 and no P1. This round fixes its P2
+findings.
+
+- **The settings of the last mailbox clear first (F1).** A switch from A to B clears the
+  settings and the chat model before it reads B. Before, the standing orders of A stood under
+  the name of B while the read was out, and after a failed read.
+- **A read tool that needs one mailbox runs for each mailbox (F4).** The All inboxes persona
+  says so. Without it, the model could answer "what needs a reply?" for one mailbox as if for
+  all.
+- **Three fences got tighter (F2, F3, F1).** The picker mark in All inboxes, the page scope that
+  a pick holds, and the clear before the read. A mutation run killed 5 of 5.
+- **The deferred items have an owner (F5).** The colour dot in the picker and the note "the chat
+  says so" moved to EM-T8f.
+
 **Not checked.** This session had no browser. Nobody looked at the chat in light mode, at compact
 density or under a changed accent.
 
@@ -3940,6 +3954,9 @@ chat in light mode, at compact density, and under a changed accent (CLAUDE.md §
 5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
    folder. The page shows one import panel for each importing mailbox, each one named (edge case
    19).
+6. **From EM-T8e-3 (moved 2026-10-03).** The chat picker shows the colour dot of each mailbox. A
+   chat whose mailbox the member removes says so (edge case 17). Both need
+   `src/components/AgentChat.tsx`.
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
