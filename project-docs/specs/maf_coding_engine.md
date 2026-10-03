@@ -2189,11 +2189,12 @@ when `pyproject.toml` or `uv.lock` names `github-copilot-sdk` or
 `agent-framework-github-copilot`.
 
 **The allowlist shrinks to zero.** WS-43k writes it from the tree at build
-time. Measured with this parse at `2e6c22fc`, 10 files hold a Copilot use:
+time. Measured with this parse at `2e6c22fc`, 10 files held a Copilot use.
+PR #585 (merged as `59c59585`) cleaned `apps/agents/agent-apis-config/agents.py`,
+so 9 remain:
 
 | File | Removed by |
 |---|---|
-| `apps/agents/agent-apis-config/agents.py` | PR #585. If it lands first, the file is not on the list |
 | `apps/agents/agent-app-builder/agents.py` | WS-43j |
 | `apps/agents/agent-task-manager/agents.py` | WS-8i, after the soak of WS-43t2 |
 | `apps/services/orchestrator/mutation_runner.py` | WS-43p |

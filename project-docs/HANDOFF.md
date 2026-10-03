@@ -3798,16 +3798,20 @@ line — never reclaim a number by deleting the other entry.
   On the Copilot path (Tier 1.5) the resumed session holds the tool results.
   So the supervisor split the PR: task-manager STAYS on the Copilot path, and
   apis-config moved.
-- **The fix is a new slice:** a MAF `AgentSession` or history provider that is
-  kept for each thread, in place of the text-only history. The supervisor adds
-  it to `specs/agent_architecture.md`. After it ships, move task-manager: the
-  factory, the `pyproject.toml` dependency and the registry label, together.
+- **The fix is WS-43t1 and WS-43t2** (`specs/maf_coding_engine.md` §15.9,
+  D84). They keep a MAF `AgentSession` for each organization, thread and
+  agent, in place of the text-only history.
+- ⚠️ **Move task-manager only after the soak.** `MAF_NATIVE_SESSIONS` must
+  stay ON in production for one week first (WS43-G13). A merge of WS-43t2 is
+  not enough. Then move the factory, the `pyproject.toml` dependency and the
+  registry label together (WS-8i), and run the live probe of §15.9.7.
   `TestTaskManagerIsHeldOnTheCopilotPath` must then flip to a MAF check.
 - ⚠️ **The same gap affects the agents that are native already.** The confirm
   turns of projects-assistant, email-assistant and crm-assistant cannot see
   earlier tool output either. Their write tools ask on a card in the same
   turn, which limits the damage. The same fix helps them. See also H-216.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
+- **Authority:** `specs/maf_coding_engine.md` §15.9 (the owner, `work_plan.md` §4) ·
+  `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-216 · Tier 1's structured history branch never runs · [AGENT]
@@ -3826,7 +3830,10 @@ line — never reclaim a number by deleting the other entry.
   `system_context` and no `memory_context`. So carry `memory_context` into
   the structured branch in the same change. A test must show that it
   reaches the model after the repair.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
+- **Claimed by WS-43t1** (`specs/maf_coding_engine.md` §15.9.1). The repair
+  sits behind `MAF_NATIVE_SESSIONS`, and it carries `memory_context` through
+  a MAF context provider, never into stored history (§15.9.5).
+- **Authority:** `specs/maf_coding_engine.md` §15.9 · `specs/agent_architecture.md` §11.3.1 · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
