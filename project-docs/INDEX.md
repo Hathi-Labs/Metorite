@@ -65,7 +65,7 @@ limitations). Do not add product specs to `docs/`.
 | `specs/workflows_app.md` | WS-11 |
 | `specs/multi_agent_orchestration.md` | WS-12 — **Phase 4 ONLY** (D6); rest superseded |
 | `specs/agent_architecture.md` | WS-8 |
-| `specs/maf_coding_engine.md` | **WS-43** — **the MAF coding engine and the sandbox terminal** (owner decision, 2026-10-03). Records **D82** (`code_task` runs on a MAF harness session, not on the Copilot SDK, which amends `agent_architecture.md` §11) and **D83** (T2 is un-parked for the sandbox terminal only, which amends D16 and D10.1). One sandbox broker owns the Docker socket. One container serves one organization, agent and thread. It has no network by default, and only an approved request opens an allowlist proxy. Spec only: WS-43a (the eval) comes first, and every slice ships dark. ⚠️ D83 does not un-park P5-c, P5-d or the pooled-cutover T2. |
+| `specs/maf_coding_engine.md` | **WS-43** — **the MAF coding engine and the sandbox terminal** (owner decision, 2026-10-03). Records **D82** (`code_task` runs on a MAF harness session, not on the Copilot SDK, which amends `agent_architecture.md` §11) and **D83** (T2 is un-parked for the sandbox terminal only, which amends D16 and D10.1). One sandbox broker owns the Docker socket. One container serves one organization, agent and thread. It has no network by default, and only an approved request opens an allowlist proxy. WS-43c, the sandbox broker, is built and dark (PR #591). Every slice ships dark. ⚠️ D83 does not un-park P5-c, P5-d or the pooled-cutover T2. |
 | `specs/memory_architecture.md` | WS-9 |
 | `specs/observability_e2.md` | WS-6 |
 | `specs/permissions_sandbox_b6.md` | WS-3 |
