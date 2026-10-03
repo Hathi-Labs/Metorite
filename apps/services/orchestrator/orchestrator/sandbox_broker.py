@@ -10,8 +10,9 @@ pids limits, and ONE read-write mount, the run's own working dir.
 
 **Dark by construction.** ``acquire()`` refuses unless ``MAF_CODING_SCOPE``
 names the bound agent's target for the bound organization, and the scope is
-empty by default. Nothing on a live path calls the broker yet (WS-43d and
-WS-43e wire the tools). The startup sweep is the one part that always runs.
+empty by default. The one live caller is ``acb_skills.sandbox_tools`` (WS-43d),
+for projects-assistant under ``projects:<org>`` (§16.3), and only when
+:func:`covers` is true. The startup sweep is the one part that always runs.
 
 **The tenant comes from the run binding, never from input (R5).** The
 organization is ``executor._current_run_org()``. The agent, the thread, the
