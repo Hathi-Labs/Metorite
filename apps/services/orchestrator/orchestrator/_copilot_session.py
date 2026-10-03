@@ -90,7 +90,8 @@ def _install_copilot_permission_handler(agent: Any) -> None:
     ``on_permission_request``, ``approve_all`` included) keeps that handler,
     inside the guard. An agent with no ``_permission_handler`` slot is not a
     Copilot agent, and it is left alone. Calling it twice is a no-op, because
-    the guard does not wrap itself.
+    the guard does not wrap itself. If the factory raises, the slot gets
+    :func:`_refuse_every_request`, never the old unguarded handler.
     """
     if not hasattr(agent, "_permission_handler"):
         return
@@ -98,12 +99,15 @@ def _install_copilot_permission_handler(agent: Any) -> None:
         agent._permission_handler = _copilot_permission_handler(
             agent._permission_handler,
         )
-    except Exception as exc:  # a frozen agent is logged, not hidden
+    except Exception as exc:  # fail closed: never leave the old handler
         _log.error(
             "copilot.permission_handler_install_failed",
             agent=getattr(agent, "name", type(agent).__name__),
             error=str(exc)[:200],
         )
+        # The factory's own handler must not stay unguarded. A slot that
+        # cannot take even this raises here, and the run fails closed.
+        agent._permission_handler = _refuse_every_request
 
 
 def _copilot_infinite_session_config() -> dict[str, Any] | None:

@@ -600,6 +600,27 @@ def test_every_copilot_site_installs_through_the_one_function() -> None:
     assert installs >= 6, installs
 
 
+def test_a_failed_install_refuses_instead_of_keeping_the_factory_handler(monkeypatch) -> None:
+    """Fix round 2, item (e): the install used to log and leave a factory's
+    own ``approve_all`` in place, with no guard at all."""
+    import orchestrator._copilot_session as cs
+    from copilot import PermissionHandler
+
+    def _boom(existing: Any = None) -> Any:
+        raise RuntimeError("the factory broke")
+
+    monkeypatch.setattr(cs, "_copilot_permission_handler", _boom)
+
+    class _Agent:
+        _permission_handler = PermissionHandler.approve_all
+
+    agent = _Agent()
+    cs._install_copilot_permission_handler(agent)
+    with _with_run_flag(False):
+        assert _refused(agent._permission_handler(_shell_request(), _INVOCATION))
+        assert _refused(agent._permission_handler(_tool_request("my_tasks_list"), _INVOCATION))
+
+
 # ── 7d. decide() reads the SDK 1.0 write and read shapes ───────────────────
 
 def test_a_cli_write_is_contained_in_the_workspace(tmp_path) -> None:

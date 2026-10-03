@@ -1018,6 +1018,10 @@ reason codes.
   the `install_dependency` that its scope names.
 - task-manager and app-builder also lose the Copilot CLI shell. The My Tasks
   flows use only the 29 `my_tasks_*` tools, so they do not change.
+- ⚠️ **One live Projects flow stops.** On 2026-10-02 and 2026-10-03, the
+  projects-assistant of a customer org used `code_task` to read an uploaded
+  `.docx` (production logs, PR #598 review). H-229 gives chat attachments
+  platform-side text extraction, so no code needs to run.
 - ⚠️ app-builder loses its build shell, `node build/build_t2.mjs`, so a
   Custom App build stops in the App Workshop. That pane is `preview`. WS-43h
   gives the shell back in the sandbox, and D86 parks WS-43h (§16.2).

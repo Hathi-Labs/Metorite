@@ -4529,9 +4529,15 @@ is true for it. And the Copilot CLI refuses each of its own shell commands.
 projects-assistant, crm-assistant, apis-config, orchestrator, task-manager and
 app-builder. They also leave every Workshop agent with a shared config.
 apis-config loses `install_dependency` too. task-manager and app-builder also
-lose the Copilot CLI shell. No live flow uses either. app-builder loses its
-build shell (`node build/build_t2.mjs`) in the `preview` App Workshop.
-WS-43h gives it back in the sandbox, and D86 parks WS-43h.
+lose the Copilot CLI shell. app-builder loses its build shell
+(`node build/build_t2.mjs`) in the `preview` App Workshop. WS-43h gives it
+back in the sandbox, and D86 parks WS-43h.
+
+⚠️ **One live flow stops (found in review, 2026-10-04).** On 2026-10-02 and
+2026-10-03, the projects-assistant of a customer org used `code_task` to read
+an uploaded `.docx`. D85 takes that tool, so the agent can no longer read a
+Word file. H-229 gives chat attachments platform-side text extraction, and
+the supervisor starts it next.
 
 **What stays.**
 
