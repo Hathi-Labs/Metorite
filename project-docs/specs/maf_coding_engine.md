@@ -1549,6 +1549,10 @@ These facts change or add to the text above:
   broker marks it stale and removes it. The next run starts a fresh one.
 - **The host makes the `.run` mountpoint** in the working dir, so Docker
   never makes it as root.
+- **The partition marker is read-only in the container.** The `projects`
+  target covers `.cc-instance` with a read-only mount of itself, because the
+  gateway's write-through and fault-in read it. The route rule never reads
+  the marker. It tells a tenant dir from its path and the caller's tenant.
 - **A thread id must name a folder that the routes can recognise.** A UUID
   does. Any other id gets no sandbox (`agent_paths.is_thread_slug`).
 - **The route rule, as built.** Under `outputs/`, the session routes hide
