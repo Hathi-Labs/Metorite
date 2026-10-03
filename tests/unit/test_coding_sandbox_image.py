@@ -30,7 +30,8 @@ builds the image once, gives its ID in ``CODING_SANDBOX_IMAGE``, and fails on
 any skip. With no such variable, the fixture builds the image itself.
 
 WS43-F10's last clause, "the broker accepts a mutable tag", is a broker test.
-WS-43c adds it to this file, because the broker does not exist yet.
+WS-43c added it at the end of this file: ``sandbox_broker.pinned_image()``
+refuses a tag and accepts an image ID or a digest, the CI image included.
 """
 
 from __future__ import annotations
@@ -820,3 +821,46 @@ def test_the_image_config_holds_no_secret_and_no_root(coding_sandbox_image: str)
     secret_like = [n for n in names if _SECRET_NAME_RE.search(n) and n not in _PUBLIC_BASE_ENV]
     assert not secret_like, f"the image sets a secret-like variable: {secret_like}"
     assert config.get("User", "").split(":", 1)[0] not in ("", "root", "0"), config.get("User")
+
+
+# --------------------------------------------------------------------------
+# WS43-F10's last clause (WS-43c): the broker runs an immutable reference only.
+# --------------------------------------------------------------------------
+
+
+class _ImageSetting:
+    def __init__(self, image: str) -> None:
+        self.sandbox_image = image
+
+
+@pytest.mark.parametrize("ref", [
+    "metorite/coding-sandbox:latest",
+    "metorite/coding-sandbox",
+    "python:3.12-slim-bookworm",
+    "registry.example/coding-sandbox:2026-10-03",
+    "coding-sandbox@sha256:abc123",
+    "sha256:" + "a" * 63,
+])
+def test_the_broker_refuses_a_mutable_image_reference(ref: str) -> None:
+    """§7.2 Pinning: a tag can move under the box, so the broker refuses it."""
+    from orchestrator import sandbox_broker
+
+    with pytest.raises(sandbox_broker.SandboxRefused, match="pinned"):
+        sandbox_broker.pinned_image(_ImageSetting(ref))
+
+
+def test_the_broker_accepts_an_image_id_and_a_digest() -> None:
+    """The ID that the CI build gives, and a registry digest, both pass."""
+    from orchestrator import sandbox_broker
+
+    refs = [
+        "sha256:" + "0" * 64,
+        "python:3.12-slim-bookworm@sha256:" + "1" * 64,
+        "registry.example/coding-sandbox@sha256:" + "2" * 64,
+    ]
+    given = os.environ.get("CODING_SANDBOX_IMAGE", "").strip()
+    if given:
+        refs.append(given)
+    for ref in refs:
+        assert _IMMUTABLE_REF_RE.match(ref), ref
+        assert sandbox_broker.pinned_image(_ImageSetting(ref)) == ref

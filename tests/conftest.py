@@ -72,6 +72,38 @@ def _isolate_write_artifact_context():
         reset_artifact_context(token)
 
 
+@pytest.fixture(autouse=True)
+def _no_docker_daemon_outside_the_sandbox_docker_marker(request, monkeypatch):
+    """A unit test never reaches the Docker daemon through the sandbox broker.
+
+    WS-43c, PR #591 review round 3. Every test that runs the real gateway
+    lifespan (``TestClient(app)`` in ``test_smoke.py`` and others) starts the
+    broker's startup sweep. On a dev box that sweep removed EVERY container
+    labelled ``metorite.sandbox=1`` on the daemon, other sessions' included.
+    So outside the ``sandbox_docker`` marker, ``DockerCLI._binary`` raises
+    ``SandboxUnavailable``. The sweep then logs one line and removes nothing.
+    A test that patches ``_binary`` on an instance (to run python) still works.
+    Fence: ``tests/unit/test_sandbox_broker_seam.py``
+    (``test_the_unit_suite_never_reaches_the_docker_daemon``).
+    """
+    if request.node.get_closest_marker("sandbox_docker") is not None:
+        yield
+        return
+    try:
+        from orchestrator import sandbox_broker
+    except ImportError:  # the orchestrator is not on the path
+        yield
+        return
+
+    def _refuse(_self):
+        raise sandbox_broker.SandboxUnavailable(
+            "Unit tests never reach the Docker daemon. Mark the test sandbox_docker."
+        )
+
+    monkeypatch.setattr(sandbox_broker.DockerCLI, "_binary", _refuse)
+    yield
+
+
 # ── R8: say out loud when the database-gated suites did not run ─────────────
 #
 # 🔴 **The hole this closes.** Measured 2026-08-30: a local `pytest` over the 26

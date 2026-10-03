@@ -20,7 +20,7 @@
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3364,7 +3364,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27) | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
-| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
+| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e (the note: EM-T8f) |
 | 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
 | 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8f |
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
@@ -3385,8 +3385,8 @@ wrong-sender defects first.
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | ✅ **MERGED #592 (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
-| **EM-T8d** | 🟢 AGENT-SAFE · R8 | 🔨 **BUILT, not merged (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
-| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
+| **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
+| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
 | **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
 
@@ -3545,7 +3545,7 @@ The theme suite holds the design-system fences, so leave it in.
 
 #### 11.7.4 EM-T8d — All inboxes
 
-**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-all-inboxes`, no migration).
+**Status.** ✅ MERGED #596 (2026-10-03, no migration).
 
 1. **The store scope** is `"all"` or a mailbox id. The URL holds it (§11.4).
 2. **The list and search** call the backend with no `account_id` in All inboxes. Each row draws
@@ -3633,6 +3633,315 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
    sending mailbox. "Self" in `automation/identity.py` covers each mailbox of the member.
 5. **Removed mailbox** (edge case 17): the chat scope falls back to All inboxes.
 
+**What the code does today (measured 2026-10-03, origin/main 3ee0396b).**
+
+- **No background act reads across mailboxes.** Each loader of the rule match, the thread status,
+  the cold check, the sender pin, the automatic drafts, learning, the voice profile, Process past
+  emails, the digest, the embeddings and the drafting memory has `account_id = :aid` in its
+  `WHERE`, or `account_id` in its Mem0 key. No R8 test proves it with two mailboxes of one member.
+- **"Self" is one address.** `automation/identity.py:64-91` matches the address of the current
+  mailbox only. So mail from another mailbox of the member is external when the domains differ.
+  The cold check, the thread status, the digest and the sender pin then act on it.
+- **The drafter names the sign-in address.** `drafting.py:816` and `drafting.py:1005` say "You
+  are drafting as: <sign-in address>". The local draft copies store the sign-in address as the
+  From (`drafting.py:1765`, `actions.py:499`, `actions.py:538`).
+- **A reply from mailbox B to a mail in A loses the thread.** Compose-assist reads the mail with
+  `em.account_id = :aid` of B (`drafting.py:1634`), finds nothing, and drafts with no thread.
+- **The live chat is the `email-assistant` agent** (`apps/agents/agent-email-assistant/agents.py`),
+  not `automation/chat.py`. The scope reaches the agent only as persona text. Each tool takes
+  `account_id` as an argument from the model.
+- **Three tools do not refuse a wrong mailbox.** `send_email` re-binds a reply to the mailbox of
+  the mail and does not refuse. `manage_inbox` archive, trash, read and star with a wrong
+  `account_id` change 0 rows and report no error. `read_thread` lets the id from the model win
+  over the id of the mail.
+- **Three server writes trust the pair.** `mark_thread_done` writes a status row for a thread
+  that has no mail in the mailbox (`replyzero.py:2076-2091`). `test_rules` tests a mail of B
+  against the rules of A (`engine.py:1460`). `_upsert_rule_pattern` takes a `rule_id` of
+  another mailbox (`rules.py:866-868`).
+- **The chat tags a result with the raw label** (`agents.py:209-213`), often "Outlook", and the
+  picker shows the address only.
+
+**The narrowed slices.** EM-T8e ships as three pull requests.
+
+##### EM-T8e-1 — self, the drafter and the server checks (gateway)
+
+**Scope.** `apps/services/gateway/gateway/routes/email/**` and new tests. Not in scope: the
+agent, the UI, `routes/crm/**`, and the three files that EM-T8d edits (`transport/messages.py`,
+`transport/accounts.py`, `mailbox_identity.py`).
+
+1. **Self covers each mailbox of the member (D-EM-27).** One SQL helper in
+   `automation/identity.py` returns the lower-case addresses of each mailbox of the member who
+   owns `:aid`. Row level security binds the organization. `identity.py` takes that set, and an
+   address in the set is `self`. The internal domain stays the domain of the current mailbox.
+   Each caller that compares with one address today uses the set. The callers are the rule match
+   payload, the thread status, the conversation check, the cold check and the digest. The sender
+   pin guard, the cleanup scope and the sender categories are callers too.
+   `sender_scope(from_email, self_email)` keeps working with one address, because
+   `routes/crm/auto_lead.py` calls it that way.
+2. **The drafter speaks as the sending mailbox (MB-14).** The prompt names the address of the
+   sending mailbox and its label. The local draft copies store that address as the From.
+3. **A reply from another mailbox keeps the thread.** When the mail is not in the sending mailbox,
+   compose-assist reads the mail and its thread from the mailbox of the mail, under the owner
+   predicate. Each item that is the voice of the writer comes from the sending mailbox:
+   - the voice profile and the signature
+   - the sent examples to that sender
+   - the reply memories and the few-shot examples
+4. **The server refuses a pair that does not match.**
+   - `POST /email/reply-zero/resolve` (`resolve_thread`, which the chat tool `mark_thread_done`
+     calls) returns 404 when no mail has that `(account_id, thread_id)`. This covers the done, the
+     reopen and the dismiss branches.
+   - `POST /email/rules/test` returns 404 when `email_id` is not a mail of `account_id`.
+   - `POST /email/rules/feedback` returns 404 when `expected`, or a value of
+     `matched_rule_ids`, is not a rule of `account_id`.
+5. **The fences of D-EM-18 (item 1).** One R8 suite seeds two mailboxes of one member, each with
+   its own marker. For each background loader, the read for A holds no marker of B. These are the
+   loaders:
+   - the rules, the rule patterns, the rule guidance and the sender history
+   - the thread context, the prior contact of the cold check and the sender pin evidence
+   - the voice samples, the sent few-shot and the assistant context
+   - the Process past emails range, the digest window and the pending embeddings
+
+**Not built in EM-T8e-1.** The display name of the mailbox. `email_accounts` has no column for
+it, so the prompt names the address and the label. A later slice can store the name that the
+provider returns at connect.
+
+**Fences (R7).** A new file, `tests/unit/test_email_ai_context.py`, names its fence ids.
+
+- `email-self-each-mailbox` (R8): a mail from another mailbox of the member is `self`. The same
+  address in a mailbox of a second organization is not. The second case runs as the app role,
+  because the owner role bypasses row level security.
+- `email-drafter-sending-mailbox`: the prompt and the local draft copy name the sending mailbox,
+  never the sign-in address.
+- `email-reply-other-mailbox-thread` (R8): a reply from B to a mail of A reads the thread of A,
+  and the voice items of B.
+- `email-pair-refused` (R8): each of the three routes in item 4 returns 404.
+- `email-ai-context-one-mailbox` (R8): item 5, one case for each loader.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_ai_context.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_draft_direction.py tests/unit/test_email_sender_direction.py tests/unit/test_email_draft_context.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_resolve.py tests/unit/test_email_digest.py tests/unit/test_email_cold_gate_case.py tests/unit/test_email_fix_feedback.py tests/unit/test_email_rule_pattern_guards.py tests/unit/test_email_recipient_and_pattern_guard.py tests/unit/test_email_rules_engine.py tests/unit/test_email_cleaner_category_scope.py tests/unit/test_email_sender_category_projection.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_sent_fewshot.py tests/unit/test_crm_auto_lead.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_ai_context.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
+`TENANT_LADDER_DATABASE_URL` at a private base database.
+
+##### EM-T8e-2 — the chat tools bind to one mailbox (agent)
+
+**Status.** ✅ MERGED #597 (2026-10-03). No migration.
+
+**As built (2026-10-03).**
+
+- **A reply that names another mailbox stops.** `send_email` reads the mail first and sends
+  nothing. The answer names the mailbox of the mail as "label · address (account_id <id>)". The
+  EM-T8a fence is now `test_a_chat_reply_that_names_another_mailbox_is_refused`. A reply that
+  names no mailbox goes out from the mailbox of the mail.
+- **`read_thread` and `manage_inbox` take no `account_id`.** MAF drops an argument that a tool
+  does not declare, so an id from the model cannot reach the request. When two mailboxes hold
+  one `thread_id`, `read_thread` merges nothing and asks for an `email_id` (edge case 13).
+- **New mail.** `send_email` asks `sent-from` for the bare address of the first recipient, in
+  lower case. An answer that names no mailbox of the member counts as no answer.
+- **Item 3.** `account_id` is the first argument, and it is optional. A required argument after
+  it is keyword-only, so the tool schema still marks that argument as required.
+- **A question never holds `id=`.** It lists each mailbox as "label · address (account_id <id>)",
+  because `RULE_ID_RE` in `EmailToolCards.tsx` reads `id=` as the id of a rule.
+- **One more fence.** `email-chat-thread-mailbox` fences the `read_thread` rule of item 1.
+- **Two UI readers changed, outside the stated scope (2026-10-03).** The new answers of the agent
+  made two cards wrong, so this slice fixes them.
+  - A refused send, a question and a cancel get the no-action card ("Not sent", "Needs your
+    answer", "Cancelled"). Before, the generic card said "Email sent" over "Not sent.", which
+    told the member that mail went out. Fence: `email-chat-no-action-card` in
+    `src/components/email/noAction.test.ts`. It reads the lead words from `agents.py`.
+  - The thread card reads the thread in the mailbox of the mail, as `read_thread` now does.
+    Fence: `email-chat-thread-card-mailbox`.
+
+**Review round 1 (2026-10-03).** The verifier and the reviewer found no P0, and the binding held.
+They found live answers that still drew a done card. This round fixes them.
+
+- **One lead for each answer that did not act.** The send, bulk and item 3 tools start such an
+  answer with "Not sent.", "Nothing changed.", a question, or "Cancelled". Before, "No connected
+  mailbox has the id …" drew "Email sent". Fence: `email-chat-no-action-lead`. It reads every
+  `return` of those tools, and it checks that `noActionOf` knows each lead.
+- **The card loop checks first.** `noActionOf` runs before the list, thread, info and rule cards,
+  not only in `renderCard`.
+- **A thread read that refused fetches nothing.** With no `email_id` and no "Thread:" head, the
+  thread card shows the text. A fetch with no mailbox would merge the two mailboxes.
+- **The send card shows each bcc address and each attachment.** A mail body can ask the model
+  to add a hidden recipient or a file, so the member must see both before the send. The card
+  keeps 500 characters, and the sender of a mail sets the subject of a reply. So both come
+  before the subject, and the subject is clipped. Fence: `email-chat-send-card-shows-hidden`.
+- **No mailbox connected.** A send and each item 3 tool change nothing and say so. Fence:
+  `email-chat-no-mailbox`.
+- **`instructions.md`** no longer says that unsubscribe takes the mailbox from the mail.
+
+**Found, and not fixed in this slice.**
+
+- `own_tool_scope` in the `config.json` of the agent holds none of the eight tools of item 3. The
+  executor keeps only the tools that it names, so the live chat cannot call them yet.
+- `RuleResultCard` and `SettingsUpdatedCard` read `args.account_id`. The live chat cannot call
+  their tools yet (the item above), so this has no live effect.
+- `unsubscribe_sender`, `learn_rule_pattern` and `mark_thread_done` act in the mailbox that the
+  model names. None is live. EM-T8e-1 makes the server refuse a thread or rule of another
+  mailbox.
+- `ManageInboxCard` counts the ids that the model sent, not the `affected` count of the answer.
+- Three sentences of the EM-T8e narrowing are too long for STE. All three EM-T8e branches share
+  that text, so the last of them to merge fixes it.
+
+**Scope.** `apps/agents/agent-email-assistant/agents.py`, `instructions.md` and tests. No gateway
+file. No UI file.
+
+1. **An act on a mail takes the mailbox of the mail (§11.3 rule 1).**
+   - `send_email` in reply mode reads the mail first. When the model names another mailbox, the
+     tool refuses, sends nothing, and names the mailbox of the mail as "label · address". This
+     replaces the re-bind of EM-T8a (§11.7.1 item 4) for a send, because a send cannot be undone.
+     It rewrites the EM-T8a fence `test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail`.
+   - `draft_reply` keeps the re-bind of EM-T8a. A draft can be changed and is not sent, its first
+     line names the mailbox, and the server refuses a wrong pair. The EM-T8a fence
+     `test_a_chat_draft_is_made_in_the_mailbox_of_the_mail` stays as it is.
+   - `read_thread` reads with the mailbox of the mail, never the id from the model.
+   - `manage_inbox` sends the mail ids with no `account_id`, so each mail acts in its own mailbox.
+   - `mark_thread_done` has no mail id. It stays as it is and fails closed on the 404 of
+     EM-T8e-1.
+2. **New mail with no mailbox named (rule 3).** `send_email` with no `account_id` uses the only
+   mailbox when there is one. With two or more, it asks `GET /email/contacts/sent-from` for the
+   first recipient, in lower case. It uses the mailbox that the answer names. An empty answer
+   gives the question "Send from which mailbox?" and lists each mailbox as "label · address". It
+   never guesses.
+3. **A rule or a setting (rule 4).** These tools take `account_id` as optional: `create_rule`,
+   `create_rules_from_prompt`, `install_default_rules`, `update_assistant_settings`,
+   `save_knowledge`, `generate_writing_style`, `learn_rule_pattern` and `run_rules`. With no
+   `account_id` and two or more mailboxes, each one asks "Which mailbox?" and lists them. With
+   one mailbox, each uses it. `update_rule`, `delete_rule` and `delete_knowledge` take an object
+   id, and bind through that object.
+4. **"label · address" everywhere (MB-15).** `list_accounts`, the result tags and the From line of
+   each card use `display_label` and the address. `instructions.md` says the same, and its rule
+   3 takes the `sent-from` step.
+
+**The shapes that the UI reads stay.** The row is `id=<id> [<tag>] | …`. The first line of a
+draft is `Draft from <from> (mailbox <id>)`. The fence `email-chat-draft-card-mailbox` depends on
+that line.
+
+**Fences (R7).** A new file, `tests/unit/test_email_chat_binding.py`, names its fence ids. It
+uses fakes of the gateway, so it needs no database.
+
+- `email-chat-reply-refuses-other-mailbox`: a reply with a wrong `account_id` sends nothing and
+  names the right mailbox.
+- `email-chat-new-mail-binding`: one mailbox, a `sent-from` match, and an empty answer that gives
+  the question.
+- `email-chat-rule-asks`: each tool of item 3 asks with two mailboxes and no `account_id`.
+- `email-chat-bulk-no-account`: `manage_inbox` sends no `account_id`.
+- `email-chat-label-address`: each tag and each From line carries "label · address".
+- `email-chat-ui-shapes`: the two shapes above.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_chat_binding.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_tool_consolidation.py tests/unit/test_email_present_groups.py tests/unit/test_email_assistant_settings.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_agent_gateway_identity.py tests/unit/test_agent_manifest.py tests/unit/test_email_from_row.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant tests/unit/test_email_chat_binding.py --select F821,F601,F602,F502,F7,B006
+```
+
+Do not smoke-test `send_email` on production. It sends real mail (CLAUDE.md §3a rule 3).
+
+**Build order.** EM-T8e-1 and EM-T8e-2 touch disjoint source files, and each can merge first.
+Each slice writes its status under its own heading. The slice that merges second rebases and
+merges the shared status lines in place. EM-T8e-3 merges after EM-T8e-2. Its All inboxes persona
+tells the model to leave `account_id` out, and only EM-T8e-2 makes that argument optional.
+
+##### EM-T8e-3 — the chat scope (UI)
+
+**Status.** ✅ MERGED #599 (2026-10-03), after EM-T8e-2 #597. No migration.
+
+**As built (2026-10-03).**
+
+- **The decisions are pure functions.** `lib/chatScope.ts` holds the scope of the chat, the
+  options of the picker and the settings read. Vitest runs in node and cannot render
+  `EmailAssistantChat`, so a source scan checks the wiring.
+- **The picker (item 1).** "All inboxes" comes first, for two or more mailboxes. Each mailbox
+  shows as "label · address". When the label is the address, the address shows once. A pick
+  stays while the page scope stays. When the page scope changes, the chat follows the page.
+- **The persona (item 2).** `chatMailboxName()` makes "label · address" from `mailboxLabel()`.
+  It reads the store shape and the gateway shape, so `chat/page.tsx` gets the MB-15 fix with no
+  change. The list writes each mailbox as "label · address (account_id <id>)" in both scopes.
+  All inboxes ignores `selectedAccountId` and `settings`. An open mail names its mailbox.
+- **The fallback (item 3)** calls `pickInitialView`. The note "the chat says so" is not built.
+- **The page (item 4)** passes the prop `pageScope`, which is `ALL_INBOXES` or a mailbox id. The
+  prop `selectedAccountId` is gone.
+- **Item 5** is a test only. No card file changed.
+
+**Fences.** `src/app/email/lib/chatScope.test.ts` names the five fence ids. A mutation run killed
+13 of 13 mutants. `allInboxes.test.ts` keeps the automation half of
+`email-all-automation-names-mailbox`.
+
+**Review round 1 (2026-10-03).** The verifier found no P0 and no P1. This round fixes its P2
+findings.
+
+- **The settings of the last mailbox clear first (F1).** A switch from A to B clears the
+  settings and the chat model before it reads B. Before, the standing orders of A stood under
+  the name of B while the read was out, and after a failed read.
+- **A read tool that needs one mailbox runs for each mailbox (F4).** The All inboxes persona
+  says so. Without it, the model could answer "what needs a reply?" for one mailbox as if for
+  all.
+- **Three fences got tighter (F2, F3, F1).** The picker mark in All inboxes, the page scope that
+  a pick holds, and the clear before the read. A mutation run killed 5 of 5.
+- **The deferred items have an owner (F5).** The colour dot in the picker and the note "the chat
+  says so" moved to EM-T8f.
+
+**Not checked.** This session had no browser. Nobody looked at the chat in light mode, at compact
+density or under a changed accent.
+
+**Scope.** `workbench/control_plane/src/app/email/` (`EmailAssistantChat.tsx`,
+`lib/emailAssistantPersona.ts` and `page.tsx`) and tests. No agent file and no gateway file. Not
+in scope: `src/components/AgentChat.tsx`, which draws the picker, `src/components/email/
+EmailToolCards.tsx`, and `src/app/chat/page.tsx`, which stays on one mailbox.
+
+1. **The picker.** `EmailAssistantChat` gives the picker an "All inboxes" option when the member
+   has two or more mailboxes. It names each mailbox as "label · address", from `mailboxLabel()`.
+   It starts on the scope of the page. The member can change it, and the change holds only for
+   that chat. A pick calls neither `selectAccount` nor `selectAll`. A colour dot in the picker needs
+   `AgentChat.tsx`, so it is deferred.
+   The chat model in All inboxes is "tier-powerful", the current default with no mailbox.
+2. **The persona** names the scope.
+   - In one mailbox, it gives that `account_id` and the settings of that mailbox: the standing
+     instructions and the writing style.
+   - In All inboxes, it gives no default `account_id`, and it lists each mailbox as
+     "label · address (account_id <id>)". It holds the settings of no mailbox, because each
+     mailbox has its own (D-EM-24). It tells the model to leave `account_id` out of a write act,
+     so the tool binds it or asks (§11.3).
+   - An open mail names its mailbox in the persona, in both scopes.
+3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
+   inboxes, or to the only mailbox, by the rule of `pickInitialView`. The note "the chat says so"
+   of edge case 17 is deferred.
+4. **The chat keeps All inboxes.** EM-T8d moved the page out of All inboxes when automation or
+   the chat opened. At that time the chat had no All inboxes scope. The chat now has one, so that
+   move skips the chat. Automation still moves. The page passes the scope of the chat to
+   `EmailAssistantChat`, never the hidden `selectedAccountId`. This rewrites the chat half of the
+   EM-T8d fence `email-all-automation-names-mailbox` (`allInboxes.test.ts`), and keeps its
+   automation half.
+5. **No hidden mailbox.** In All inboxes, `emailContext.accountId` is null, and no settings read
+   runs. Each card already reads the mailbox from the tool result or the mail, or fails closed.
+   EM-T8e-2 owns the one card fix, the thread card.
+
+**Fences (R7).** The vitest files name their fence ids.
+
+- `email-chat-scope-picker`: the picker offers All inboxes only with two or more mailboxes, and
+  it starts on the scope of the page. A pick changes the chat, not the page.
+- `email-chat-scope-persona`: a pure test of `buildEmailAssistantPersona` for both scopes. In All
+  inboxes, the text holds no "Active account", no default `account_id` and no settings of a
+  mailbox. It lists each mailbox as "label · address".
+- `email-chat-scope-fallback`: a removed mailbox gives All inboxes, or the only mailbox.
+- `email-chat-keeps-all-inboxes`: the move of EM-T8d skips the chat.
+- `email-chat-scope-no-hidden-mailbox`: in All inboxes, `emailContext.accountId` is null, and no
+  `getAssistantSettings` call runs. An open mail names its mailbox in the persona.
+
+**Verification.** In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme`. Look at the
+chat in light mode, at compact density, and under a changed accent (CLAUDE.md §4).
+
 #### 11.7.6 EM-T8f — settings for each mailbox
 
 1. **The AI settings header** names the mailbox, with a picker, on desktop and mobile (MB-11).
@@ -3644,6 +3953,9 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
 5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
    folder. The page shows one import panel for each importing mailbox, each one named (edge case
    19).
+6. **From EM-T8e-3 (moved 2026-10-03).** The chat picker shows the colour dot of each mailbox. A
+   chat whose mailbox the member removes says so (edge case 17). Both need
+   `src/components/AgentChat.tsx`.
 
 #### 11.7.7 EM-T8g — duplicates and separation
 

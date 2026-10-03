@@ -185,6 +185,9 @@ function hasEmailCard(e: ToolEvent): boolean {
 function renderCard(
   e: ToolEvent, accountId?: string | null, emailId?: string | null,
 ): React.ReactNode {
+  // A result that did not act is never drawn as a done act (EM-T8e-2).
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
   if (DRAFT_TOOLS.has(e.name)) {
     return <DraftResultCard event={e} accountId={accountId} emailId={emailId} />;
   }
@@ -265,14 +268,26 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     let alive = true;
     (async () => {
       try {
+        // A read that refused (a thread id in two mailboxes, say) has no
+        // "Thread:" head. Show its text, and fetch nothing: a fetch with no
+        // mailbox would merge the two mailboxes it refused to merge.
+        if (!emailId && !isThreadRead(event.result)) {
+          // The text view of the error state draws the result as it is.
+          if (alive) setState("error");
+          return;
+        }
         let tid = threadId;
+        let box = acct;
         let single: Email | null = null;
-        if (!tid && emailId) {
+        // The mail wins, as it does in the agent: the thread is read in the
+        // mailbox of the mail, never the mailbox of the chat (EM-T8e-2).
+        if (emailId) {
           single = await getEmail(emailId);
-          tid = single.threadId || "";
+          tid = single.threadId || tid;
+          box = single.accountId || box;
         }
         const list = tid
-          ? await listThread(acct, tid)
+          ? await listThread(box, tid)
           : single
             ? [single]
             : [];
@@ -385,6 +400,17 @@ export default function EmailToolCards({
     // shown — both subsume the raw list the lookup produced.
     if ((hasThread || hasGroups) && LIST_TOOLS.has(e.name)) continue;
     flushReads();
+    // A result that did not act is never drawn as a done act, whatever card
+    // its tool has: the info, rule and settings cards too (EM-T8e-2 review).
+    const none = noActionOf(e.result);
+    if (none) {
+      items.push(
+        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
+          <NoActionCard event={e} kind={none} />
+        </DismissableCard>,
+      );
+      continue;
+    }
     // Merge ALL list-tool results into ONE interactive card at the position of
     // the first list event; the rest are folded in (not rendered separately).
     if (LIST_TOOLS.has(e.name)) {
@@ -2026,6 +2052,58 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       </div>
     </div>
   );
+}
+
+// ── A result that did not act ────────────────────────────────────────────────
+
+/** What a tool result that did NOT act is. It can be a question back to the
+ *  member, a send that the tool refused, or a cancel. The card for it never
+ *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
+ *  answer, which told the member that mail went out. */
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled";
+
+export function noActionOf(raw: string | null | undefined): NoAction | null {
+  const t = (raw || "").trimStart();
+  if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  if (/^Not sent\./.test(t)) return "not-sent";
+  if (/^Nothing changed\./.test(t)) return "unchanged";
+  if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
+  return null;
+}
+
+const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
+  question: { icon: "CircleHelp", label: "Needs your answer" },
+  "not-sent": { icon: "MailX", label: "Not sent" },
+  unchanged: { icon: "CircleSlash", label: "Nothing changed" },
+  cancelled: { icon: "X", label: "Cancelled" },
+};
+
+function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
+  const meta = NO_ACTION_META[kind];
+  const result = (e.result || "").trim();
+  return (
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex-shrink-0 text-muted-foreground">
+          <AppIcon name={meta.icon} size={13} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+          {/* No clamp: a question lists each mailbox, and each one matters. */}
+          {result && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+              {result}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** True when a `read_thread` result read a thread: it starts "Thread:". */
+export function isThreadRead(raw: string | null | undefined): boolean {
+  return /^Thread:/.test((raw || "").trimStart());
 }
 
 /** The first line of a `draft_reply` result: the From mailbox and its id.
