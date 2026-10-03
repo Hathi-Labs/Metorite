@@ -475,9 +475,11 @@ def _run_as(who: str, run_id: str, app: str = "tasks") -> None:
 
 
 class TestTheCopilotPathCarriesTheRun:
-    """🔴 H-181. Three agents run on the Copilot SDK: task-manager,
-    app-builder and apis-config. Once the box serves AI with the deployment
-    key (H-152), the Router refuses a model call that names no member.
+    """🔴 H-181. Two first-party agents run on the Copilot SDK: task-manager
+    and app-builder. apis-config moved to native MAF on 2026-10-03, and
+    ``TestEveryClientUsesTheSeam`` fences its client. Once the box serves AI
+    with the deployment key (H-152), the Router refuses a model call that
+    names no member.
 
     The CLI, not our code, makes the model call. Two things reach it:
 
