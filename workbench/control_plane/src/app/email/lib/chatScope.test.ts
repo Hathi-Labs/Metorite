@@ -23,16 +23,23 @@
 //   * `email-chat-removed-note`: when the mailbox of the scope leaves, the
 //     chat shows one note that names it and the new scope.
 //
+// The EM-T8f-3 review (F3, F8) adds three cases. `AgentChat` is rendered to
+// markup, so the trigger dot and the note are proved by what it draws. The
+// dismiss handler cannot show in markup, so a source scan holds it. And no
+// file in `lib/` imports from `components/`.
+//
 // Vitest here runs in node and cannot render `EmailAssistantChat`. So the
 // decisions are pure functions in `chatScope.ts`, tested by behaviour, and a
 // source scan proves that the component wires them.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import AgentChat from "@/components/AgentChat";
 import { isKnownIcon } from "@/lib/icons";
 
-import { mailboxAccent } from "../components/MailboxChip";
 import {
   chatMailboxOptions,
   chatScope,
@@ -43,6 +50,7 @@ import {
 } from "./chatScope";
 import { buildEmailAssistantPersona, chatMailboxName } from "./emailAssistantPersona";
 import { ALL_INBOXES } from "./emailStore";
+import { mailboxAccent } from "./mailbox";
 
 const ROOT = join(__dirname, "..");
 const read = (rel: string) =>
@@ -404,5 +412,89 @@ describe("email-chat-removed-note", () => {
       expect(isKnownIcon(name), name).toBe(true);
     }
     expect(isKnownIcon("X")).toBe(true);
+  });
+});
+
+// ── The EM-T8f-3 review (F3, F8) ────────────────────────────────────────────
+
+/** AgentChat drawn to markup, with the email picker and an optional note. */
+function drawAgentChat(props: {
+  mailboxes?: { id: string; label: string; accent?: string }[];
+  activeMailboxId?: string | null;
+  notice?: { text: string; onDismiss?: () => void } | null;
+}): string {
+  return renderToStaticMarkup(createElement(AgentChat, {
+    agentName: "email-assistant",
+    sessionId: "session-t8f3",
+    model: "tier-powerful",
+    lockModel: true,
+    ...props,
+  }));
+}
+
+/** The markup of the picker trigger: from its button to the end of it. */
+function trigger(html: string): string {
+  const at = html.indexOf('aria-haspopup="listbox"');
+  expect(at).toBeGreaterThan(-1);
+  return html.slice(html.lastIndexOf("<button", at), html.indexOf("</button>", at));
+}
+
+describe("email-chat-picker-dot, the trigger (review F3)", () => {
+  const options = [
+    { id: ALL_INBOXES, label: "All inboxes" },
+    { id: "acc-work", label: "Fracktal · vj@fracktal.in", accent: "bg-cat-3" },
+  ];
+
+  it("draws the dot of the mailbox in force in the trigger", () => {
+    const html = trigger(drawAgentChat({ mailboxes: options, activeMailboxId: "acc-work" }));
+    expect(html).toContain("rounded-full bg-cat-3");
+    expect(html).toContain("Fracktal · vj@fracktal.in");
+  });
+
+  it("draws no dot for All inboxes, or for a caller that sends none", () => {
+    const all = trigger(drawAgentChat({ mailboxes: options, activeMailboxId: ALL_INBOXES }));
+    expect(all).not.toContain("bg-cat-");
+    expect(all).toContain("All inboxes");
+    // The shape of /chat: no accent, so the trigger draws the mail glyph only.
+    const plain = trigger(drawAgentChat({ mailboxes: [{ id: "a", label: "a@x.test" }], activeMailboxId: "a" }));
+    expect(plain).not.toContain("bg-cat-");
+    expect(plain).toContain("<svg");
+  });
+});
+
+describe("email-chat-removed-note, the note in AgentChat (review F3)", () => {
+  it("draws the note as a status, with a dismiss button only when it can dismiss", () => {
+    const html = drawAgentChat({ notice: { text: "Personal is no longer connected.", onDismiss: () => {} } });
+    expect(html).toMatch(/role="status"[^>]*>[\s\S]*Personal is no longer connected\./);
+    expect(html).toContain('aria-label="Dismiss note"');
+    const fixed = drawAgentChat({ notice: { text: "Personal is no longer connected." } });
+    expect(fixed).toContain("Personal is no longer connected.");
+    expect(fixed).not.toContain('aria-label="Dismiss note"');
+    expect(drawAgentChat({ notice: null })).not.toContain("Dismiss note");
+  });
+
+  it("wires the dismiss button to the handler of the note", () => {
+    // Markup carries no handler, so the source holds this half.
+    const agent = codeOnly(read("../../components/AgentChat.tsx"));
+    const at = agent.indexOf("{notice && (");
+    const block = agent.slice(at, agent.indexOf("{!canSend && (", at));
+    expect(block).toContain("{notice.onDismiss && (");
+    expect(block).toMatch(/<Button\b[^>]*\bonClick=\{notice\.onDismiss\}/);
+  });
+});
+
+describe("lib imports no component (review F8)", () => {
+  it("keeps every decision file of lib/ free of components/", () => {
+    const files = readdirSync(join(ROOT, "lib")).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    expect(files.length).toBeGreaterThan(10);
+    const offenders = files.filter((f) => /from\s+["']\.\.\/components\//.test(read(`lib/${f}`)));
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps one mailboxAccent, in lib/mailbox.ts, and re-exports it", () => {
+    expect(read("lib/mailbox.ts")).toContain("export function mailboxAccent(");
+    const chip = codeOnly(read("components/MailboxChip.tsx"));
+    expect(chip).not.toContain("function mailboxAccent(");
+    expect(chip).toContain("export { mailboxAccent, mailboxLabel };");
   });
 });

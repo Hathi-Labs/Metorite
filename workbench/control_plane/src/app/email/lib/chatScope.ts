@@ -17,9 +17,9 @@
  * leaves, the chat shows one note that names it and the new scope
  * (`rememberChatScope`, §11.6 case 17).
  */
-import { mailboxAccent } from "../components/MailboxChip";
 import { ALL_INBOXES, pickInitialView } from "./emailStore";
 import { chatMailboxName, type PersonaAccount } from "./emailAssistantPersona";
+import { mailboxAccent } from "./mailbox";
 import type { EmailAccount } from "./types";
 
 /** A pick in the chat, held against the page scope it was made on. When the

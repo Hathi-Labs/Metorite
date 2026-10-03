@@ -4047,8 +4047,8 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 
 ##### EM-T8f-3 — the views of each mailbox and the chat picker
 
-**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-views`. No migration
-and no backend change.
+**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-views`, with review
+fix round 1. No migration and no backend change.
 
 **As built (2026-10-03).**
 
@@ -4056,13 +4056,16 @@ and no backend change.
   the provider `message_count` of the six well-known folders. `sumFolderCounts` and
   `allInboxesFolders` in `lib/emailStore.ts` hold the rule. A failed read adds 0. A custom folder
   shows no count. Before the sums land, no folder shows a count, so the count of one mailbox never
-  reads as the sum.
+  reads as the sum. The sums go when the member leaves All inboxes and when a mailbox leaves.
 - **The store bounds the reads.** At most 4 reads run at one time (`FOLDER_SUM_CONCURRENCY`),
   because Q-MB-1 sets no limit on the mailboxes. The store runs one round of reads at a time. A
-  request while a round is out asks for one more round. So a sync of each mailbox never starts a
-  round for each mailbox. Nothing awaits the reads, and the list never waits on them.
-- **When the store reads the sums.** It reads them when All inboxes opens, after a sync in All
-  inboxes, and when a mailbox leaves. `folders` stays the tree of one mailbox.
+  request while a round is out asks for one more round. Each read gives up after 15 s
+  (`FOLDER_SUM_TIMEOUT_MS`) and adds 0. Nothing awaits the reads, and the list never waits on
+  them.
+- **When the store reads the sums.** It reads them when All inboxes opens, and when a mailbox
+  leaves. A Refresh in All inboxes reads them once, 6 s after its last sync ends
+  (`FOLDER_SUMS_AFTER_SYNC_MS`). A second Refresh moves that read. A sync alone reads no sums.
+  `folders` stays the tree of one mailbox.
 - **Import panels (item 2).** `firstSyncPanels` in `lib/onboarding.ts` gives one panel for each
   mailbox whose first sync runs. The mailbox in view comes first. With two or more mailboxes, each
   panel draws the chip of its mailbox beside the address. With one mailbox the panel does not
@@ -4070,8 +4073,10 @@ and no backend change.
 - **The chat picker (item 3).** `chatMailboxOptions` gives each mailbox option the dot of
   `mailboxAccent()`, as a `bg-cat-*` class. All inboxes has none. `AgentChat` takes the dot as an
   optional `accent` on each option, and draws it beside the label. The trigger shows the dot of
-  the mailbox in force. `/chat` sends no `accent`, so its picker does not change. The mark of the
-  option in force is `text-primary`, not `text-emerald-400`.
+  the mailbox in force. `/chat` sends no `accent`, so its picker draws no dot.
+- **Two changes reach `/chat` on purpose.** The mark of the option in force is `text-primary`, not
+  `text-emerald-400`, because one look has one token for "on". The label of each option sits in a
+  flex span, beside the place of the dot.
 - **The removed-mailbox note (item 4).** `rememberChatScope` holds the scope of the render before.
   When the mailbox of that scope leaves, it gives one note. The note names that mailbox and the
   new scope. `AgentChat` takes the note as an optional `notice` prop, and draws it above the
@@ -4094,14 +4099,48 @@ and no backend change.
   The ratchet fails a file that got better until its number goes down.
 - Three older fences changed shape. `connect.test.ts`, `onboarding.test.ts` and
   `onboardingRules.test.ts` read `firstSyncPanels` now, not one `pendingAccount`.
-- `chatScope.ts` imports `mailboxAccent` from `components/MailboxChip.tsx`. That is an import
-  from `lib/` into `components/`.
+- `mailboxAccent` moved from `components/MailboxChip.tsx` into `lib/mailbox.ts` (review F8).
+  `MailboxChip.tsx` re-exports it, so its callers did not change.
 
-**Fences.** `allInboxes.test.ts` names `email-all-folder-sums` and `email-import-panel-each`.
-`allInboxesStore.test.ts` holds the store half of `email-all-folder-sums`. `chatScope.test.ts`
-names `email-chat-picker-dot` and `email-chat-removed-note`. The first mutation run killed 34 of
-35 mutants. A new case kills the one that survived, a move away from a mailbox that stays
-connected. The second run killed 3 of 3.
+**Fences.**
+
+- `allInboxes.test.ts` names `email-all-folder-sums` and `email-import-panel-each`.
+- `allInboxesStore.test.ts` holds the store half of `email-all-folder-sums`.
+- `chatScope.test.ts` names `email-chat-picker-dot` and `email-chat-removed-note`. It also holds
+  the scan that keeps `lib/` free of imports from `components/`.
+
+**Mutation runs.**
+
+- The build: the first run killed 34 of 35 mutants. A new case kills the one that survived, a move
+  away from a mailbox that stays connected. The second run killed 3 of 3.
+- Review round 1: the run killed 17 of 17.
+
+**Review round 1 (2026-10-03).** The verifier passed the build with no P0 and no P1. This round
+fixes its eight P2 findings.
+
+- **F1.** Three reads of the sums had no fence: the first load into All inboxes, a removal in
+  another tab, and the read after a sync. Each one now has a store test. The fallback when the
+  selected mailbox is gone has one too.
+- **F2.** A Refresh read O(N²) folders, because each catch-up of each sync asked for a round. A
+  probe gave 216 live folder reads for one Refresh with 12 mailboxes. Now the catch-up asks for
+  none, and `syncScope` asks once. A Refresh of 8 mailboxes whose syncs end 3 s apart reads 1
+  round. The fence allows at most 2.
+- **F3.** The dot in the trigger and the note of `AgentChat` had no fence. `AgentChat` renders to
+  markup in node, so the tests read what it draws. The dismiss handler does not show in markup,
+  so a source scan holds it.
+- **F4.** The sums were never cleared, so an old sum could show for up to 120 seconds after a return.
+  They now go when the member leaves All inboxes and when a mailbox leaves.
+- **F5.** One hung read held every later request of the sums for 120 seconds. Each read now gives up
+  after 15 s, and a fake-timer test proves it.
+- **F6.** The paragraph on the fences had too many sentences, so it is now a list.
+- **F7.** The note on `/chat` said that its picker does not change. Two changes reach it on
+  purpose, and the list above names them.
+- **F8.** `lib/chatScope.ts` imported from a component. `mailboxAccent` now lives in
+  `lib/mailbox.ts`.
+
+**Found, and not fixed in this round.** In All inboxes each catch-up still reads the tree of the
+hidden selected mailbox, so a Refresh of N mailboxes reads that tree 2N times. A sync of one
+mailbox from the reading pane does not read the sums.
 
 **Not checked.** This session had no browser. Nobody looked at the sidebar, the panels or the chat
 picker in light mode, at compact density or under a changed accent.

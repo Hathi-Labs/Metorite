@@ -15,7 +15,7 @@
 //     inboxes, and only the selected one otherwise.
 //   * `email-all-store-label`: no label filter in All inboxes, and the colour
 //     of a label of another mailbox goes to that mailbox only.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   listEmails: vi.fn(),
@@ -34,7 +34,12 @@ vi.mock("./api", async (importOriginal) => {
   return { ...real, ...api };
 });
 
-import { FOLDER_SUM_CONCURRENCY, useEmailStore } from "./emailStore";
+import {
+  FOLDER_SUM_CONCURRENCY,
+  FOLDER_SUM_TIMEOUT_MS,
+  FOLDER_SUMS_AFTER_SYNC_MS,
+  useEmailStore,
+} from "./emailStore";
 import type { EmailAccount, EmailFolder } from "./types";
 
 const box = (id: string, isDefault = false): EmailAccount => ({
@@ -144,6 +149,15 @@ describe("a background refresh", () => {
 });
 
 describe("sync", () => {
+  // A Refresh in All inboxes sets a timer for the read of the sums
+  // (EM-T8f-3 review F2). Fake timers keep it out of the later tests.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reaches each mailbox in All inboxes", () => {
     useEmailStore.getState().syncScope();
     expect(api.triggerSync.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
@@ -410,5 +424,180 @@ describe("email-all-folder-sums, the store half", () => {
     await flush();
     expect(api.listEmailFolders.mock.calls.map((call) => call[0]).sort()).toEqual(["a", "b"]);
     expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(6);
+  });
+});
+
+// WS-17 EM-T8f-3 review round 1. More of the store half of
+// `email-all-folder-sums`:
+//   * F1: each path into All inboxes reads the sums. They are the first load,
+//     a fallback when the selected mailbox is gone, and a removal in another
+//     tab.
+//   * F2: a Refresh of N mailboxes whose syncs end apart reads at most 2
+//     rounds. A second Refresh moves the read, and a sync alone reads none.
+//   * F4: the sums go when the member leaves All inboxes, and when a mailbox
+//     leaves, so an old sum never shows while a new round is out.
+//   * F5: a hung read adds 0 after FOLDER_SUM_TIMEOUT_MS, and the next
+//     request runs.
+describe("email-all-folder-sums, the review round", () => {
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((res) => { resolve = res; });
+    return { promise, resolve };
+  }
+  const raw = (name: string, count: number) => ({
+    provider_folder_id: name, name, type: "system", message_count: count, unread_count: 0,
+  });
+  const SUMS = { inbox: 99, drafts: 0, sent: 0, archive: 0, junk: 0, trash: 0 };
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([raw("Inbox", 4)]);
+    useEmailStore.setState({ allFolderCounts: null });
+  });
+
+  it("F1: reads the sums on the first load into All inboxes", async () => {
+    useEmailStore.setState({ accounts: [], selectedAccountId: null, viewAll: false });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b")]);
+    await useEmailStore.getState().fetchAccounts();
+    await flush();
+    await flush();
+    expect(useEmailStore.getState().viewAll).toBe(true);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(8);
+  });
+
+  it("F1: reads the sums again when the selected mailbox is gone", async () => {
+    useEmailStore.setState({ allFolderCounts: SUMS });
+    api.listEmailAccounts.mockResolvedValue([box("b", true), box("c")]);
+    await useEmailStore.getState().fetchAccounts();
+    await flush();
+    await flush();
+    expect(useEmailStore.getState().viewAll).toBe(true);
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0])).toContain("c");
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(8);
+  });
+
+  it("F1 and F4: a removal in another tab clears the sums, then reads them again", async () => {
+    const out = deferred<ReturnType<typeof raw>[]>();
+    api.listEmailFolders.mockReturnValue(out.promise);
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), box("c")], allFolderCounts: SUMS });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b")]);
+    await useEmailStore.getState().fetchAccounts();
+    await flush();
+    // The old sum, with c in it, never shows while the new round is out.
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+    out.resolve([raw("Inbox", 5)]);
+    await flush();
+    await flush();
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(10);
+  });
+
+  it("F4: leaving All inboxes clears the sums", () => {
+    useEmailStore.setState({ allFolderCounts: SUMS });
+    useEmailStore.getState().selectAccount("a");
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+  });
+
+  it("F4: a disconnect clears the sums before the new round lands", async () => {
+    const out = deferred<ReturnType<typeof raw>[]>();
+    api.listEmailFolders.mockReturnValue(out.promise);
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), box("c")], allFolderCounts: SUMS });
+    await useEmailStore.getState().deleteAccount("c");
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    out.resolve([raw("Inbox", 1)]);
+    await flush();
+    await flush();
+  });
+
+  it("F4: open A, disconnect C, return to All inboxes: no old sum shows", async () => {
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), box("c")], allFolderCounts: SUMS });
+    useEmailStore.getState().selectAccount("a");
+    await flush();
+    await useEmailStore.getState().deleteAccount("c");
+    const out = deferred<ReturnType<typeof raw>[]>();
+    api.listEmailFolders.mockReturnValue(out.promise);
+    useEmailStore.getState().selectAll();
+    await flush();
+    expect(useEmailStore.getState().viewAll).toBe(true);
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    out.resolve([raw("Inbox", 2)]);
+    await flush();
+    await flush();
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(4);
+  });
+
+  describe("with fake timers", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const ids = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    function eightMailboxes() {
+      const accounts = ids.map((id) => box(id, id === "a"));
+      useEmailStore.setState({ accounts, selectedAccountId: "a", viewAll: true, allFolderCounts: null });
+      api.listEmailAccounts.mockResolvedValue(accounts);
+      // Each folder read takes 800 ms, as in the probe of the review.
+      api.listEmailFolders.mockImplementation(
+        () => new Promise((r) => setTimeout(() => r([raw("Inbox", 1)]), 800)),
+      );
+    }
+    // `catchUp` reads the tree of the selected mailbox "a" only, so the reads
+    // of "h" count the rounds of the sums.
+    const rounds = () => api.listEmailFolders.mock.calls.filter((c) => c[0] === "h").length;
+
+    it("F2: a Refresh whose N syncs end 3 s apart reads at most 2 rounds", async () => {
+      eightMailboxes();
+      api.triggerSync.mockImplementation(
+        (id: string) => new Promise((r) => setTimeout(() => r({}), 3000 * (ids.indexOf(id) + 1))),
+      );
+      useEmailStore.getState().syncScope();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(rounds()).toBeGreaterThanOrEqual(1);
+      expect(rounds()).toBeLessThanOrEqual(2);
+      expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(8);
+    });
+
+    it("F2: the read comes after the last sync, and a second Refresh moves it", async () => {
+      eightMailboxes();
+      api.triggerSync.mockResolvedValue({});
+      useEmailStore.getState().syncScope();
+      await vi.advanceTimersByTimeAsync(FOLDER_SUMS_AFTER_SYNC_MS - 1000);
+      expect(rounds()).toBe(0);
+      useEmailStore.getState().syncScope();
+      await vi.advanceTimersByTimeAsync(FOLDER_SUMS_AFTER_SYNC_MS - 1000);
+      expect(rounds()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(rounds()).toBe(1);
+    });
+
+    it("F2: a sync of one mailbox alone reads no sums", async () => {
+      eightMailboxes();
+      api.triggerSync.mockResolvedValue({});
+      await useEmailStore.getState().triggerSync("h");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(rounds()).toBe(0);
+    });
+
+    it("F5: a hung read adds 0 after the timeout, and the next request runs", async () => {
+      useEmailStore.setState({ accounts: [box("a", true), box("b")], viewAll: true });
+      api.listEmailFolders.mockImplementation((id: string) =>
+        id === "b" ? new Promise(() => {}) : Promise.resolve([raw("Inbox", 7)]),
+      );
+      void useEmailStore.getState().fetchAllFolderCounts();
+      await vi.advanceTimersByTimeAsync(FOLDER_SUM_TIMEOUT_MS - 1);
+      expect(useEmailStore.getState().allFolderCounts).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(7);
+      api.listEmailFolders.mockImplementation(() => Promise.resolve([raw("Inbox", 2)]));
+      const next = useEmailStore.getState().fetchAllFolderCounts();
+      await vi.advanceTimersByTimeAsync(0);
+      await next;
+      expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(4);
+      expect(FOLDER_SUM_TIMEOUT_MS).toBe(15_000);
+    });
   });
 });

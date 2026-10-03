@@ -8,6 +8,8 @@
  * a mail of mailbox B opened while A was selected went out from A (MB-2, MB-3).
  */
 
+import { accentForSlot, categoricalAccent, type CategoricalAccent } from "@/lib/categorical";
+
 /** The mailbox of a mail. The selection is only the fallback for a mail that
  *  carries no account id (an optimistic row, an old cache). */
 export function mailboxOf(
@@ -101,6 +103,23 @@ interface MailboxLike {
  *  address. The one copy of this rule; the chip and the From row use it. */
 export function mailboxLabel(account: Pick<MailboxLike, "emailAddress" | "displayLabel">): string {
   return (account.displayLabel || "").trim() || account.emailAddress;
+}
+
+/**
+ * The accent of a mailbox (EM-T8b, D-EM-21): its stored slot, else a stable
+ * hash of its id. A row that old code wrote after migration 227 has no slot
+ * yet. The hue comes from the categorical ramp, never from a hex value.
+ *
+ * It lives here, in `lib/`, so a decision in `lib/` can read it with no
+ * import from `components/` (EM-T8f-3 review F8). `components/MailboxChip.tsx`
+ * re-exports it for its callers.
+ */
+export function mailboxAccent(
+  account: { id: string; colorSlot?: number | null },
+): CategoricalAccent {
+  return account.colorSlot && account.colorSlot >= 1 && account.colorSlot <= 12
+    ? accentForSlot(account.colorSlot - 1)
+    : categoricalAccent(account.id);
 }
 
 /**

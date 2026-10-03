@@ -262,8 +262,9 @@ interface EmailState {
   viewAll: boolean;
   /**
    * All inboxes: the provider count of each well-known folder, summed over
-   * each mailbox (EM-T8f-3 item 1). Null until the first round of reads
-   * lands. `folders` stays the tree of ONE mailbox.
+   * each mailbox (EM-T8f-3 item 1). Null until a round of reads lands. It
+   * goes back to null when the member leaves All inboxes and when a mailbox
+   * leaves (review F4). `folders` stays the tree of ONE mailbox.
    */
   allFolderCounts: Record<string, number> | null;
 
@@ -355,8 +356,9 @@ interface EmailState {
    * All inboxes: read the folders of each mailbox and sum the well-known
    * counts into `allFolderCounts` (EM-T8f-3 item 1). The reads run in
    * parallel, at most `FOLDER_SUM_CONCURRENCY` at one time. Nothing awaits
-   * them, so the list never waits on them. A mailbox whose read fails adds
-   * nothing. Outside All inboxes it does nothing.
+   * them, so the list never waits on them. A mailbox whose read fails, or
+   * takes longer than `FOLDER_SUM_TIMEOUT_MS`, adds nothing. Outside All
+   * inboxes it does nothing.
    */
   fetchAllFolderCounts: () => Promise<void>;
   fetchEmails: () => Promise<void>;
@@ -528,10 +530,12 @@ let _stopTestRun = false;
  *  so they survive component unmounts / account switches. */
 const _postSyncTimers: Record<string, ReturnType<typeof setTimeout>[]> = {};
 /** The summed folder counts of All inboxes (EM-T8f-3): one round of reads at
- *  a time. A request while a round is out asks for ONE more round after it,
- *  so a sync of each mailbox never starts a round for each mailbox. */
+ *  a time. A request while a round is out asks for ONE more round after it. */
 let _folderSumsInFlight = false;
 let _folderSumsAgain = false;
+/** The one pending read of the sums after a Refresh in All inboxes. A second
+ *  Refresh moves it, so one Refresh is one round (EM-T8f-3 review F2). */
+let _folderSumsAfterSync: ReturnType<typeof setTimeout> | undefined;
 /** How long the user has to undo a send. */
 const UNDO_SEND_MS = 5000;
 
@@ -667,6 +671,31 @@ const SUMMED_FOLDER_KEYS = new Set(SUMMED_FOLDERS);
  * this number bounds the reads, not the count of mailboxes.
  */
 export const FOLDER_SUM_CONCURRENCY = 4;
+
+/**
+ * How long one folder read of the sums may take. A read that takes longer
+ * adds 0, the same as a failed read, and the round goes on. The GET itself
+ * aborts only at 120 s, so without this one hung mailbox held every later
+ * request of the sums (EM-T8f-3 review F5).
+ */
+export const FOLDER_SUM_TIMEOUT_MS = 15_000;
+
+/**
+ * How long after the last sync of a Refresh the store reads the sums once.
+ * It is the end of the catch-up window of `triggerSync`, so the sums see the
+ * mail that the rules moved (EM-T8f-3 review F2).
+ */
+export const FOLDER_SUMS_AFTER_SYNC_MS = 6_000;
+
+/** `promise`, or a rejection after `ms`. The timer clears when the promise
+ *  settles first. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
 
 /**
  * The count of each well-known folder, summed over each mailbox. Each read is
@@ -813,6 +842,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (accounts.length === 0 && DEMO) accounts = MOCK_ACCOUNTS;
       set({ accounts, accountsLoading: false, accountsLoaded: true });
       const gone = before.filter((id) => !accounts.some((a) => a.id === id));
+      // A mailbox that another tab removed leaves the sums at once. They show
+      // no count until a new round lands (EM-T8f-3 review F4).
+      if (gone.length > 0) set({ allFolderCounts: null });
       // Pick the initial mailbox when none is selected yet: a persisted/URL
       // choice wins, else the user's default account, else the first one — so a
       // refresh or shared ?account= link reopens the right inbox.
@@ -939,9 +971,12 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         if (!viewAll || accounts.length < 2) break;
         // One live provider call for each mailbox. The counts are the
         // provider `message_count` only, so the merge gets no list counts.
-        // A failed read, or a read that does not merge, is null and adds 0.
+        // A failed read, a read that does not merge, or a read past
+        // FOLDER_SUM_TIMEOUT_MS is null and adds 0.
         const reads = await mapBounded(accounts.map((a) => a.id), FOLDER_SUM_CONCURRENCY, (id) =>
-          api.listEmailFolders(id).then((raw) => mergeFolders(raw, {})).catch(() => null),
+          withTimeout(api.listEmailFolders(id), FOLDER_SUM_TIMEOUT_MS)
+            .then((raw) => mergeFolders(raw, {}))
+            .catch(() => null),
         );
         // A newer request reads again, and a view that left All inboxes
         // takes nothing.
@@ -1198,6 +1233,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     set({
       selectedAccountId: id, viewAll: false, selectedEmailId: null,
       selectedEmailOverride: null, selectedIds: new Set(),
+      // The sums belong to All inboxes. They go when the member leaves it, so
+      // a return never shows sums of a set of mailboxes that has changed
+      // (EM-T8f-3 review F4).
+      allFolderCounts: null,
       // Seed this account's cached label colours so switching accounts doesn't
       // flash the previous account's / hash colours before fetchLabels lands.
       labelColors: readCachedLabelColors(id),
@@ -1233,7 +1272,18 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   syncScope: () => {
     const { viewAll, accounts, selectedAccountId } = get();
     if (viewAll) {
-      for (const a of accounts) get().triggerSync(a.id);
+      const runs = accounts.map((a) => get().triggerSync(a.id));
+      // One read of the sums for the whole Refresh: after the last sync, at
+      // the end of its catch-up window. A sync never asks for the sums
+      // itself, so N syncs that end apart cost one round, not one round for
+      // each catch-up. A second Refresh moves the read (EM-T8f-3 review F2).
+      void Promise.allSettled(runs).then(() => {
+        clearTimeout(_folderSumsAfterSync);
+        _folderSumsAfterSync = setTimeout(() => {
+          _folderSumsAfterSync = undefined;
+          void get().fetchAllFolderCounts();
+        }, FOLDER_SUMS_AFTER_SYNC_MS);
+      });
     } else if (selectedAccountId) {
       get().triggerSync(selectedAccountId);
     }
@@ -1758,9 +1808,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         if (!stillProcessing()) return;
         void get().softRefresh();
         void get().fetchFolders();
-        // All inboxes draws the sums. A sync of each mailbox asks for them
-        // each time, and the store runs one round at a time (EM-T8f-3).
-        if (get().viewAll) void get().fetchAllFolderCounts();
+        // No read of the sums here: `syncScope` reads them once for the whole
+        // Refresh (EM-T8f-3 review F2).
       };
       const t1 = setTimeout(catchUp, 2500);
       const t2 = setTimeout(() => {
@@ -1793,7 +1842,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (removed?.isDefault && accounts.length > 0 && !accounts.some((a) => a.isDefault)) {
         accounts = accounts.map((a, i) => (i === 0 ? { ...a, isDefault: true } : a));
       }
-      set({ accounts });
+      // The sums lose the mailbox that went at once. They show no count until
+      // a new round lands (EM-T8f-3 review F4).
+      set({ accounts, allFolderCounts: null });
       // All inboxes needs two mailboxes (EM-T8d review).
       const wasAll = get().viewAll;
       if (wasAll && accounts.length < 2) set({ viewAll: false });
@@ -1824,7 +1875,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         persistAccountId(get().viewAll ? ALL_INBOXES : get().selectedAccountId);
         get().fetchEmails();
       }
-      // The sums lose the mailbox that went (EM-T8f-3).
+      // A new round of the sums, with the mailboxes that are left (EM-T8f-3).
       if (get().viewAll) void get().fetchAllFolderCounts();
       return { ok: true };
     } catch (err: unknown) {
