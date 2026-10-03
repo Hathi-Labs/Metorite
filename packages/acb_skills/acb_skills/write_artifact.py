@@ -193,6 +193,75 @@ async def mirror_to_blob_store(
     )
 
 
+async def mirror_delete_from_blob_store(rel_path: str, *, actor: str = "agent") -> None:
+    """Write-through a workspace delete into the blob store.
+
+    The delete seam is ``acb_memory.blob_store.delete_file``. A tenant dir
+    (``o:<org>``) also deletes the tenant's older row at the same path
+    (``instance=''``), as the gateway's delete route does, or the next
+    rehydrate would bring the file back from that row. A no-op for a path
+    outside the three kept folders, with no run bound, or on any error.
+    """
+    try:
+        from acb_memory import delete_file, is_stored_path
+
+        from acb_skills.agent_paths import is_tenant_instance
+    except ImportError:
+        return
+    rel = rel_path.replace("\\", "/")
+    if not is_stored_path(rel):
+        return
+    agent_name = _current_agent_name()
+    if not agent_name:
+        return
+    ctx = artifact_context()
+    instance = str(ctx.get("instance") or "")
+    keys = [instance, ""] if is_tenant_instance(instance) else [instance]
+    for key in keys:
+        await delete_file(
+            agent_name, rel,
+            run_id=ctx.get("run_id"), session_id=ctx.get("session_id"),
+            actor=actor, instance=key,
+        )
+
+
+def announce_artifact(rel_path: str, data: bytes) -> str | None:
+    """Show a file the run wrote as an artifact card in the chat.
+
+    The same ``artifact_created`` event that :func:`write_artifact` emits,
+    through the same :func:`_notify`. The sandbox tools call it for a file
+    that a command or a file tool wrote under the thread's output folder.
+    Returns the download link, or ``None`` when no run is bound.
+    """
+    import asyncio
+
+    ctx = artifact_context()
+    workspace_root = ctx.get("workspace_root")
+    session_id = ctx.get("session_id")
+    if not workspace_root or not session_id:
+        return None
+    rel = rel_path.replace("\\", "/")
+    name = rel.rsplit("/", 1)[-1]
+    mime, _ = mimetypes.guess_type(name)
+    artifact = {
+        "path": rel,
+        "name": name,
+        "size": len(data),
+        "sha256": _sha256(data),
+        "mime_type": mime or "application/octet-stream",
+        "modified_at": datetime.now(tz=UTC).isoformat(),
+        "is_dir": False,
+    }
+    asyncio.ensure_future(_notify(
+        session_id=session_id,
+        workspace_root=workspace_root,
+        artifact=artifact,
+        gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
+        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+    ))
+    return f"/api/agent/workspace/{session_id}/file?path={rel}"
+
+
 def _normalise_path(path: str) -> str:
     """Strip leading slashes/dots and ensure the path lives in a visible dir.
 

@@ -1,0 +1,496 @@
+"""The sandbox tools: ``run_command``, the file tools and skills (WS-43d).
+
+Spec ``project-docs/specs/maf_coding_engine.md`` §7.4 (the tools), §7.5 (host
+safety), §7.7 (coverage) and §16.3 (the Projects track, D86).
+
+**Who gets them.** Only a run that the sandbox broker covers. Today that is
+projects-assistant, for an organization that ``MAF_CODING_SCOPE`` names as
+``projects:<org>``. :func:`attach_for_run` is the one way in: the
+projects-assistant factory calls it, and it returns a per-run VIEW of the
+agent that carries :class:`ProjectsSandboxProvider`. The agent object itself
+never changes (``_native_run_context.agent_with_providers``). With an empty
+scope it returns the agent unchanged, so nothing about any run changes.
+
+**The boundaries are structural, and no permission mode moves them.**
+Production runs ``AGENT_PERMISSION_MODE=audit``, where ``decide()`` logs and
+approves everything. So ``decide()`` is called for the audit line only, and
+the boundaries are these:
+
+1. The tools exist only when ``covers(agent, org)`` is true for the run's
+   own tenant (``executor._current_run_org``, never input, R5). The provider
+   checks it again at the start of each turn, so a flip off ends them.
+2. A command runs ONLY through ``broker.exec()``, in the container, with no
+   network and no key. A broker that refuses or fails is an error, and
+   nothing runs on the host (§7.1 rule 14).
+3. The file tools refuse ``..``, an absolute path, a hidden root name and a
+   link at any depth, through ``acb_skills.safe_open``.
+4. The provider adds nothing when the run holds a host shell tool
+   (``code_task``, ``run_script``, ``install_dependency``). So a sandbox
+   tool never sits beside a host shell (§16.3 condition 3).
+
+**What the provider adds to ONE run**, at the start of each turn:
+
+* ``run_command(command, timeout_s)``, :func:`run_command`.
+* MAF's eight file tools over :class:`~acb_skills.tenant_file_store.TenantFileStore`.
+* MAF's ``SkillsProvider`` over ``agent-data/skills/`` (blob-store durable),
+  with no cache, so a skill written in one turn lists on the next. A skill
+  script runs in the sandbox, through its ``/workspace`` path.
+
+``request_network_access`` is a stub that answers "network access is off on
+this platform" (§7.3, WS-43g). The Projects track never attaches it.
+
+Fences: ``tests/unit/test_run_command_tool.py`` (WS43-F6),
+``tests/unit/test_projects_sandbox_tools.py`` (WS43-F21) and
+``tests/unit/test_run_data_hygiene.py`` (WS43-F22).
+"""
+from __future__ import annotations
+
+import os
+import shlex
+import time
+from pathlib import Path
+from typing import Any
+
+from acb_common import get_logger
+from agent_framework import (
+    DEFAULT_FILE_ACCESS_INSTRUCTIONS,
+    ContextProvider,
+    FileAccessProvider,
+    FileSkillsSource,
+    FunctionTool,
+    SkillsProvider,
+    SkillsSource,
+)
+
+from acb_skills.write_artifact import announce_artifact, artifact_context
+
+_log = get_logger("acb_skills.sandbox_tools")
+
+__all__ = [
+    "PROJECTS_AGENT",
+    "LockedSkillsSource",
+    "ProjectsSandboxProvider",
+    "SandboxScriptRunner",
+    "attach_for_run",
+    "request_network_access",
+    "run_command",
+]
+
+PROJECTS_AGENT = "projects-assistant"
+SOURCE_ID = "metorite-sandbox"
+_DEFAULT_TIMEOUT_SECONDS = 60
+#: The host shell tools that a sandboxed run may never hold (§16.3 condition 3).
+_HOST_SHELL_TOOLS = frozenset({"code_task", "run_script", "install_dependency"})
+#: Scripts of a skill live here, and only here (§7.4).
+_SKILLS_REL = "agent-data/skills"
+
+NETWORK_OFF = "Network access is off on this platform."
+
+
+def _broker_module() -> Any:
+    from orchestrator import sandbox_broker
+
+    return sandbox_broker
+
+
+def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
+    """``decide()`` with the whole command, for the audit line (§7.4 step 2).
+
+    It refuses a denylisted command in ``enforce`` mode only. In ``audit``
+    mode it approves everything, so no boundary of this module depends on it.
+    """
+    try:
+        from acb_skills.permission_policy import build_tool_call_context, decide
+
+        approved, code, _detail = decide(build_tool_call_context(tool_name, {"command": command}))
+    except Exception:  # a policy bug must not open or brick the tool
+        return True, "decide_error"
+    mode = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower()
+    enforced = (not approved) and mode == "enforce"
+    _log.info(
+        "permission.decision", mode=mode, tool=tool_name, approved=not enforced,
+        would_deny=not approved, reason=code, surface="sandbox_tool",
+    )
+    return not enforced, code
+
+
+def _with_steer(text: str) -> Any:
+    """Drain a pending mid-run steer at this tool boundary, as the B6 gate does."""
+    try:
+        from orchestrator.steer import decorate_tool_result
+    except ImportError:
+        return text
+    try:
+        return decorate_tool_result(text)
+    except Exception:
+        return text
+
+
+def _format(label: str, result: Any, saved: list[str]) -> str:
+    if result.exit_code is None:
+        head = f"{label} — no exit code"
+    elif result.timed_out:
+        head = f"{label} — timed out (exit {result.exit_code}) after {result.duration_s:.1f} s"
+    else:
+        head = f"{label} — exit {result.exit_code} in {result.duration_s:.1f} s"
+    parts = [head]
+    if result.message:
+        parts.append(f"[{result.message}]")
+    parts.append(result.output.rstrip() or "(no output)")
+    if saved:
+        shown = ", ".join(saved[:20]) + (" …" if len(saved) > 20 else "")
+        parts.append(f"[{len(saved)} file(s) saved: {shown}]")
+    return "\n".join(parts)
+
+
+async def _run_in_sandbox(command: str, timeout_s: Any, *, tool_name: str, label: str) -> str:
+    """Run *command* in the bound run's container, then sweep its outputs.
+
+    The one code path of ``run_command`` and of a skill script. It never runs
+    anything on the host.
+    """
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{tool_name} failed: no run is bound, so nothing ran."
+    if not isinstance(command, str) or not command.strip():
+        return f"{tool_name} failed: the command is empty."
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return f"{tool_name} is unavailable: the sandbox broker is not installed. Nothing ran."
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError as exc:
+        return f"{tool_name} refused: {exc} Nothing ran."
+    if not sb.covers(binding.agent, binding.org):
+        return (
+            f"{tool_name} refused: the sandbox does not cover this agent for this "
+            "organization. Nothing ran."
+        )
+    allowed, code = _audit_decision(tool_name, command)
+    if not allowed:
+        return f"[blocked by permission policy: {code}]"
+    try:
+        timeout = int(timeout_s)
+    except (TypeError, ValueError):
+        timeout = _DEFAULT_TIMEOUT_SECONDS
+    broker = sb.get_broker()
+    started = time.time()
+    try:
+        handle = await broker.acquire()
+    except sb.SandboxError as exc:
+        return f"{tool_name} failed: {exc} Nothing ran on the host."
+    saved: list[str] = []
+    try:
+        try:
+            result = await broker.exec(handle, command, timeout)
+        except sb.SandboxError as exc:
+            return f"{tool_name} failed: {exc} Nothing ran on the host."
+        try:
+            async with broker.host_files(handle):
+                saved = await _sweep(binding, since=started)
+        except sb.SandboxError:
+            saved = []
+    finally:
+        await broker.release(handle)
+    return _format(label, result, saved)
+
+
+async def _sweep(binding: Any, *, since: float) -> list[str]:
+    """Mirror what the command changed under ``agent-data/`` and the thread's outputs.
+
+    The caller holds ``broker.host_files()``. The reads use the safe opener.
+    ``.run/`` lies outside the working dir, so it is never swept. Each file
+    under the thread's outputs also shows as an artifact card.
+    """
+    from acb_skills.code_tools import sweep_changed_files
+
+    mirrored = await sweep_changed_files(
+        binding.workspace, since=since, subdirs=("agent-data", binding.outputs_rel),
+    )
+    prefix = binding.outputs_rel + "/"
+    for rel, data in mirrored:
+        if rel.startswith(prefix):
+            announce_artifact(rel, data)
+    return [rel for rel, _data in mirrored]
+
+
+async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Run a shell command in this chat's sandbox and return its output.
+
+    The sandbox is a Linux container with Python 3.12, pandas, numpy,
+    matplotlib, openpyxl and the other packages of the coding image. It has
+    NO network. It sees this workspace at ``/workspace``:
+
+    * ``/workspace/.run/`` holds the data files of this run. Put member data
+      here. It is deleted when the run ends.
+    * ``/workspace/outputs/`` is this chat's own output folder. A file a
+      command writes here is kept, and shows in the chat as a card.
+    * ``/workspace/agent-data/`` holds kept notes, scripts and skills.
+
+    Args:
+        command: The bash command, for example
+            ``"python3 /workspace/.run/chart.py"``.
+        timeout_s: Seconds before the command is killed. The most is 300.
+
+    Returns:
+        The exit code, the time, the output (cut to its first and last 6 KB
+        when it is long), and the files the command saved.
+    """
+    text = await _run_in_sandbox(
+        command, timeout_s, tool_name="run_command", label="run_command",
+    )
+    return _with_steer(text)
+
+
+async def request_network_access(reason: str, hosts: list[str]) -> str:
+    """Ask for network access for the sandbox. It is off on this platform.
+
+    Args:
+        reason: Why the sandbox needs the network.
+        hosts: The exact hosts it needs.
+
+    Returns:
+        Always that network access is off on this platform (WS-43g builds it).
+    """
+    del reason, hosts
+    return NETWORK_OFF
+
+
+# ── skills ───────────────────────────────────────────────────────────────────
+
+
+class SandboxScriptRunner:
+    """Runs a skill script in the sandbox, through its ``/workspace`` path (§7.4).
+
+    It refuses a script outside ``agent-data/skills/`` of the run's working
+    dir. A list of arguments passes as positional arguments, and a mapping as
+    ``--key value`` pairs, each one shell-quoted.
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        self._workspace = Path(workspace)
+
+    def container_path(self, full_path: str) -> str:
+        try:
+            rel = Path(full_path).resolve().relative_to(self._workspace.resolve())
+        except (OSError, ValueError) as exc:
+            raise ValueError("The script is not in this workspace.") from exc
+        posix = rel.as_posix()
+        if not posix.startswith(_SKILLS_REL + "/"):
+            raise ValueError("A skill script must lie under agent-data/skills/.")
+        return f"/workspace/{posix}"
+
+    async def __call__(self, skill: Any, script: Any, args: Any = None) -> str:
+        del skill
+        try:
+            path = self.container_path(str(script.full_path))
+        except ValueError as exc:
+            return f"run_skill_script refused: {exc}"
+        argv: list[str] = []
+        if isinstance(args, dict):
+            for key, value in args.items():
+                argv += [f"--{key}", str(value)]
+        elif isinstance(args, (list, tuple)):
+            argv = [str(a) for a in args]
+        command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
+        text = await _run_in_sandbox(
+            command, _DEFAULT_TIMEOUT_SECONDS,
+            tool_name="run_skill_script", label=f"skill script {script.name}",
+        )
+        return _with_steer(text)
+
+
+# ── the per-run provider ─────────────────────────────────────────────────────
+
+
+class _BrokerGuard:
+    """The broker's lock, dirs and quota, for :class:`TenantFileStore`."""
+
+    def __init__(self, broker: Any, binding: Any) -> None:
+        self._broker = broker
+        self._binding = binding
+
+    def hold(self) -> Any:
+        return self._broker.host_dir()
+
+    async def prepare(self) -> None:
+        await self._broker.ensure_thread_dirs(self._binding)
+
+    def writes_refused(self) -> bool:
+        return bool(self._broker.writes_refused(self._binding.workspace))
+
+
+def _tool_names(agent: Any) -> set[str]:
+    """Every tool name the agent object holds, in each shape MAF uses."""
+    names: set[str] = set()
+    pools: list[Any] = []
+    options = getattr(agent, "default_options", None)
+    if isinstance(options, dict):
+        pools.append(options.get("tools") or [])
+    for attr in ("tools", "_tools"):
+        pools.append(getattr(agent, attr, None) or [])
+    for pool in pools:
+        if not isinstance(pool, (list, tuple)):
+            continue
+        for item in pool:
+            name = getattr(item, "name", None) or getattr(
+                getattr(item, "func", item), "__name__", None,
+            )
+            if isinstance(name, str):
+                names.add(name)
+    return names
+
+
+def _file_instructions() -> str:
+    return DEFAULT_FILE_ACCESS_INSTRUCTIONS + (
+        "\n- These are the files that `run_command` sees under `/workspace`: "
+        "`agent-data/`, `inputs/`, `outputs/` and `.run/`. `outputs/` is this "
+        "chat's own output folder. `.run/` holds the data files of this run, "
+        "and it is deleted when the run ends."
+    )
+
+
+class LockedSkillsSource(SkillsSource):
+    """A skills source that lists ``agent-data/skills/`` under the dir lock.
+
+    A caller-supplied source, so ``SkillsProvider`` caches nothing: the list
+    is read on each turn, and a skill written in one turn lists on the next.
+    It reads nothing when ``agent-data`` or ``agent-data/skills`` is a link
+    (the safe opener). A skill's extra files are not offered as resources:
+    the model reads them with the file tools, which use the safe opener and
+    the lock. Scripts run in the sandbox (:class:`SandboxScriptRunner`).
+    """
+
+    def __init__(self, workspace: Path, guard: Any) -> None:
+        self._workspace = Path(workspace)
+        self._guard = guard
+        self._inner = FileSkillsSource(
+            str(self._workspace / _SKILLS_REL),
+            script_runner=SandboxScriptRunner(self._workspace),
+            resource_extensions=(),
+        )
+
+    async def get_skills(self, context: Any) -> list[Any]:
+        import asyncio
+
+        from acb_skills import safe_open
+
+        async with self._guard.hold():
+            try:
+                listed = await asyncio.to_thread(
+                    safe_open.list_dir, self._workspace, _SKILLS_REL,
+                )
+            except (safe_open.UnsafePath, OSError):
+                return []
+            if listed is None:
+                return []
+            return await self._inner.get_skills(context)
+
+
+class ProjectsSandboxProvider(ContextProvider):
+    """Adds the sandbox tools to ONE run of a covered agent (§16.3).
+
+    Built per run by :func:`attach_for_run`, and read at the start of each
+    turn (``before_run``). It reads the run binding then, never input. It adds
+    nothing when the run is not covered, when the run holds a host shell
+    tool, or when the thread id cannot name a folder.
+    """
+
+    def __init__(self, agent_name: str) -> None:
+        super().__init__(SOURCE_ID)
+        self.agent_name = agent_name
+
+    async def before_run(
+        self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
+    ) -> None:
+        prepared = _layout(self.agent_name, agent)
+        if prepared is None:
+            return
+        broker, binding = prepared
+        await _add_tools(broker, binding, agent, session, context, state)
+
+
+def _layout(agent_name: str, agent: Any) -> tuple[Any, Any] | None:
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return None
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError as exc:
+        _log.info("sandbox_tools.not_bound", agent=agent_name, reason=str(exc)[:200])
+        return None
+    if binding.agent != agent_name or not sb.covers(agent_name, binding.org):
+        return None
+    held = _tool_names(agent) & _HOST_SHELL_TOOLS
+    if held:
+        _log.warning(
+            "sandbox_tools.host_shell_present", agent=agent_name, tools=sorted(held),
+        )
+        return None
+    try:
+        binding.thread_slug  # noqa: B018 — raises on an id that names no folder
+    except ValueError:
+        _log.info("sandbox_tools.thread_id_refused", agent=agent_name)
+        return None
+    return sb.get_broker(), binding
+
+
+async def _add_tools(
+    broker: Any, binding: Any, agent: Any, session: Any, context: Any, state: dict[str, Any],
+) -> None:
+    from acb_skills.tenant_file_store import TenantFileStore
+
+    guard = _BrokerGuard(broker, binding)
+    store = TenantFileStore(
+        workspace=binding.workspace, outputs_rel=binding.outputs_rel,
+        run_data=binding.run_data, guard=guard,
+    )
+    files = FileAccessProvider(
+        store,
+        source_id=f"{SOURCE_ID}-files",
+        instructions=_file_instructions(),
+        # A chat member is present, but the store is the boundary: it reaches
+        # only this run's own files, and refuses links and escapes.
+        disable_readonly_tool_approval=True,
+        disable_write_tool_approval=True,
+    )
+    await files.before_run(agent=agent, session=session, context=context, state=state)
+    skills = SkillsProvider(
+        LockedSkillsSource(binding.workspace, guard),
+        source_id=f"{SOURCE_ID}-skills",
+        disable_load_skill_approval=True,
+        disable_read_skill_resource_approval=True,
+        disable_run_skill_script_approval=True,
+    )
+    await skills.before_run(agent=agent, session=session, context=context, state=state)
+    context.extend_tools(SOURCE_ID, [FunctionTool(func=run_command, approval_mode="never_require")])
+
+
+def attach_for_run(agent: Any, agent_name: str) -> Any:
+    """The object a factory hands to this run: *agent*, or a view with the tools.
+
+    *agent* itself, unchanged, unless the broker covers *agent_name* for the
+    run's own tenant. Then a per-run view (``agent_with_providers``) that
+    carries :class:`ProjectsSandboxProvider`. The agent object is never
+    changed, so a concurrent run of another organization can never see the
+    tools (§16.3).
+    """
+    try:
+        sb = _broker_module()
+        from orchestrator.executor import _current_run_org
+    except ImportError:
+        return agent
+    try:
+        org = _current_run_org()
+        covered = bool(org) and sb.covers(agent_name, str(org))
+    except Exception as exc:
+        _log.warning("sandbox_tools.cover_check_failed", agent=agent_name, error=str(exc)[:200])
+        return agent
+    if not covered:
+        return agent
+    from orchestrator._native_run_context import agent_with_providers
+
+    _log.info("sandbox_tools.attached", agent=agent_name)
+    return agent_with_providers(agent, [ProjectsSandboxProvider(agent_name)])

@@ -64,6 +64,7 @@ from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "RUN_DATA_DIR",
     "TENANT_INSTANCE_PREFIX",
     "InvalidAgentName",
     "agent_code_dir",
@@ -72,10 +73,14 @@ __all__ = [
     "ensure_state_dir",
     "instance_slug",
     "is_tenant_instance",
+    "is_thread_slug",
     "is_valid_agent_name",
     "require_agent_name",
+    "run_data_rel",
     "state_root",
     "tenant_instance",
+    "thread_outputs_rel",
+    "thread_slug",
     "workspace_blob_key",
 ]
 
@@ -191,6 +196,63 @@ def is_tenant_instance(instance: object) -> bool:
         and instance.startswith(TENANT_INSTANCE_PREFIX)
         and len(instance) > len(TENANT_INSTANCE_PREFIX)
     )
+
+
+# ── The thread's own output folder and run data (D86, maf_coding_engine §16.3) ──
+
+#: A thread slug: the readable part and the 8 hex digits of :func:`instance_slug`.
+_THREAD_SLUG_RE = re.compile(
+    r"(?P<readable>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)-(?P<digest>[0-9a-f]{8})"
+)
+
+#: The dir under :func:`state_root` that holds the run data of every thread.
+#: Its name starts with a dot, so it can never be an agent name
+#: (:data:`AGENT_NAME_RE`), and no workspace route can ever serve it.
+RUN_DATA_DIR = ".run-data"
+
+
+def is_thread_slug(name: object) -> bool:
+    """True when *name* is the :func:`instance_slug` of a plain thread id.
+
+    A plain id (a UUID, as the chat sends) is its own readable part, so the
+    digest of that part must match. A folder name that only looks like a
+    slug fails the digest, so a member's own ``outputs/q3-20240101`` folder
+    is never taken for a thread's.
+    """
+    if not isinstance(name, str):
+        return False
+    m = _THREAD_SLUG_RE.fullmatch(name)
+    if m is None:
+        return False
+    digest = hashlib.sha256(m["readable"].encode("utf-8")).hexdigest()[:8]
+    return digest == m["digest"]
+
+
+def thread_slug(thread_id: object) -> str:
+    """The folder name of a thread's own outputs: :func:`instance_slug` of its id.
+
+    Raises ``ValueError`` for an id that :func:`is_thread_slug` cannot
+    recognise again. That id gets no sandbox, so every thread folder on disk
+    is one that the session routes can tell apart from any other folder.
+    """
+    raw = str(thread_id or "").strip()
+    slug = instance_slug(raw) if raw else ""
+    if not slug or not is_thread_slug(slug):
+        raise ValueError(f"not a plain thread id: {raw[:80]!r}")
+    return slug
+
+
+def thread_outputs_rel(thread_id: object) -> str:
+    """``outputs/<thread slug>``, relative to the working dir."""
+    return f"outputs/{thread_slug(thread_id)}"
+
+
+def run_data_rel(organization_id: object, thread_id: object) -> str:
+    """``.run-data/<org slug>/<thread slug>``, relative to :func:`state_root`."""
+    org = str(organization_id or "").strip()
+    if not org:
+        raise ValueError("run data needs an organization id")
+    return f"{RUN_DATA_DIR}/{instance_slug(org)}/{thread_slug(thread_id)}"
 
 
 def agent_code_dir(agent_name: str) -> Path:

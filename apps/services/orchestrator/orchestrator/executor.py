@@ -1144,6 +1144,8 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # WS-43d (§16.3): a delegated run's run data ends with it too.
+        await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
         reset_artifact_context(_artifact_token)
 
@@ -2311,12 +2313,17 @@ async def run_agent(
         # H-201 (§21.16): the run's artifact context ends with the run, and a
         # nested run gives its parent back the parent's exact context.
         with run_context_scope(), artifact_context_scope():
-            return await _run_agent_inner(
-                agent_name, event_payload,
-                run_id=run_id, thread_id=thread_id, model=model,
-                organization_id=organization_id,
-                session_user=session_user,
-            )
+            try:
+                return await _run_agent_inner(
+                    agent_name, event_payload,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    organization_id=organization_id,
+                    session_user=session_user,
+                )
+            finally:
+                # WS-43d (§16.3): inside the scope, so the run's own context
+                # still names its run data. A no-op when no sandbox ran.
+                await _end_sandbox_run()
     finally:
         _unbind_run_identity(_identity)
 
@@ -4942,6 +4949,10 @@ async def run_agent_stream(
                 await _pending_push
             except Exception:
                 pass
+        # WS-43d (§16.3): the run data of a sandboxed run ends with the run,
+        # whatever way it ends. Read from the run's own context, so before
+        # that context is reset. A no-op when no sandbox ran.
+        await _end_sandbox_run()
         _stream_relay_thread_id.reset(_relay_token)
         _active_run_model.reset(_model_token)
         # H-201: the run's workspace, tenant key and session end with it.
@@ -5571,6 +5582,21 @@ def _compose_maf_run(
             error=str(exc)[:300],
         )
         return message, None
+
+
+async def _end_sandbox_run() -> None:
+    """Delete the run-data dir of the run on this frame (WS-43d, §16.3).
+
+    ``sandbox_broker.end_sandbox_run`` reads the run's own artifact context,
+    and it never raises. It touches no file when no sandbox ran in this
+    process, so a run of any agent with an empty ``MAF_CODING_SCOPE`` pays
+    one dict check. Fence: ``tests/unit/test_run_data_hygiene.py`` (WS43-F22).
+    """
+    try:
+        from orchestrator.sandbox_broker import end_sandbox_run
+    except ImportError:
+        return
+    await end_sandbox_run()
 
 
 def _agent_for_run(agent: Any, provider: Any) -> Any:

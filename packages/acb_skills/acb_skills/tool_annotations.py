@@ -74,7 +74,20 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-31 CP-13d: a typed decision from a third-party model through the
     # Console Router. It changes nothing, and it reaches outside Metorite.
     "decide":                {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
+    # WS-43d (maf_coding_engine.md §7.4): the sandbox tools. run_command runs
+    # code, so it is a shell tool (manifest.SHELL_TOOLS), and it runs only in
+    # the container, which has no network: open_world is False until a grant
+    # (WS-43g). request_network_access is the stub of that grant. Neither is
+    # ever injected, so the risk block below never names them.
+    "run_command":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "request_network_access": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
 }
+
+#: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
+#: adds them, and only a factory that the broker covers attaches them, to ONE
+#: run. :func:`risk_summary_block` leaves them out, so the addendum of every
+#: other agent stays byte-identical (``tests/unit/test_run_command_tool.py``).
+SANDBOX_TOOL_NAMES: frozenset[str] = frozenset({"run_command", "request_network_access"})
 
 
 def annotate(
@@ -130,13 +143,14 @@ def risk_summary_block() -> str:
     reason about which calls are safe to make freely vs. which reach outside
     the platform or mutate state.
     """
-    read_only = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["read_only"])
+    listed = {n: h for n, h in TOOL_ANNOTATIONS.items() if n not in SANDBOX_TOOL_NAMES}
+    read_only = sorted(n for n, h in listed.items() if h["read_only"])
     writes = sorted(
-        n for n, h in TOOL_ANNOTATIONS.items()
+        n for n, h in listed.items()
         if not h["read_only"] and not h["destructive"]
     )
-    destructive = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["destructive"])
-    open_world = sorted(n for n, h in TOOL_ANNOTATIONS.items() if h["open_world"])
+    destructive = sorted(n for n, h in listed.items() if h["destructive"])
+    open_world = sorted(n for n, h in listed.items() if h["open_world"])
 
     lines = [
         "### Tool risk annotations",

@@ -1,8 +1,9 @@
 """The per-run context of a native MAF run (WS-43t1).
 
 Spec: ``project-docs/specs/maf_coding_engine.md`` §15.9.5. Behind
-``MAF_NATIVE_SESSIONS`` (default OFF), so nothing imports this module while the
-flag is off.
+``MAF_NATIVE_SESSIONS`` (default OFF). With that flag off, only a run that the
+sandbox broker covers imports this module, for :func:`agent_with_providers`
+(WS-43d, §16.3).
 
 Two rules live here:
 
@@ -72,9 +73,22 @@ def agent_for_run(agent: Any, provider: ContextProvider | None) -> Any:
     """
     if provider is None:
         return agent
+    return agent_with_providers(agent, [provider])
+
+
+def agent_with_providers(agent: Any, providers: list[ContextProvider]) -> Any:
+    """A per-run view of *agent* that carries *providers* as well. The one copy.
+
+    :func:`agent_for_run` and the sandbox tools of projects-assistant (WS-43d,
+    ``maf_coding_engine.md`` §16.3) both use it. No providers: *agent* itself.
+    Otherwise a shallow copy with a NEW provider list, so the agent object
+    that another run may hold never changes.
+    """
+    if not providers:
+        return agent
     view = copy.copy(agent)
     view.context_providers = [
         *list(getattr(agent, "context_providers", None) or []),
-        provider,
+        *providers,
     ]
     return view
