@@ -385,6 +385,11 @@ async def bulk_action(
     What IS refused is an *unfiltered* bulk action — no ids, no sender, no
     folder, no age. That request means "trash my entire mailbox", which is
     never what a click in the cleaner meant, and uncapping made it reachable.
+
+    EM-T8g-1 (D-EM-30): an act BY IDS keeps the owner scope only, because
+    ``manage_inbox`` sends mail ids with no ``account_id``. An act BY FILTER
+    with no ``account_id`` is an act on All inboxes, so it leaves out a
+    separate mailbox. Its own ``account_id`` still reaches it.
     """
     if req.action not in _BULK_DB_UPDATE:
         raise HTTPException(
@@ -402,7 +407,8 @@ async def bulk_action(
 
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = _account_scope(req.account_id, params)
+        scope = _account_scope(
+            req.account_id, params, pooled_only=not req.message_ids)
         clauses = [scope]
         if req.message_ids:
             clauses.append("em.id::text = ANY(:ids)")

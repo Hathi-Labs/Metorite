@@ -12,17 +12,24 @@ R7 fences named here:
 * ``email-keep-separate-api`` (R8): the list, the create, the default and the
   update each return ``in_all_inboxes``. A ``PATCH`` writes it and does not
   restart the sync loop. A ``PATCH`` by another member answers 404 and writes
-  nothing. ``"yes"`` answers 422 and opens no session.
+  nothing. ``"yes"`` answers 422 and opens no session. The unread count stays
+  per mailbox, so a separate mailbox reports its own (review round 1, F1).
 * ``email-keep-separate-reads`` (R8): with no ``account_id``, the list, the
   facets, search and ``/senders`` hold no row of a separate mailbox. That
-  includes the dispositions of ``email_newsletters``. With the ``account_id``
-  of the separate mailbox, each read holds its rows.
+  includes the dispositions of ``email_newsletters`` (also for
+  ``folder=inbox`` with ``include_archived``, F3) and the label chips of a
+  sender that writes to both mailboxes (F4). With the ``account_id`` of the
+  separate mailbox, each read holds its rows.
 * ``email-keep-separate-owner-scope`` (R8): a thread load, a read by id and a
   bulk act by ids reach a separate mailbox, because ``manage_inbox`` sends mail
-  ids with no ``account_id``.
+  ids with no ``account_id``. A thread load WITH an ``account_id`` stays in
+  that mailbox (F5, D-EM-22). A bulk act BY FILTER with no ``account_id``
+  leaves out a separate mailbox, and its own ``account_id`` reaches it (F7).
 * ``email-keep-separate-self`` (R8): a mail from a separate mailbox is still
   ``self`` in another mailbox (D-EM-27). The Sent-copy proof still reads the
-  separate mailbox, and ``/senders`` never lists its address.
+  separate mailbox, and ``/senders`` never lists its address. Compose-assist
+  still finds a mail of a separate mailbox for a reply from another From
+  (``drafting._reply_target``, F2).
 
 The agent half, ``email-chat-binding-skips-separate``, is in
 ``test_email_chat_binding.py``.
@@ -62,6 +69,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.routes import email as email_pkg
 from gateway.routes.email import core
+from gateway.routes.email.automation import drafting as drafting_mod
 from gateway.routes.email.automation import identity
 from gateway.routes.email.automation import senders as senders_mod
 from gateway.routes.email.transport import accounts
@@ -349,6 +357,11 @@ class TestTheApi:
         owner = f"member-{uuid.uuid4().hex[:8]}@t8g1.test"
         home = _account(p.admin_engine, org=p.org_b, owner=owner, default=True)
         nda = _account(p.admin_engine, org=p.org_b, owner=owner, pooled=False)
+        # Unread Inbox mail: two in home, one in the separate mailbox (F1).
+        for box, n in ((home, 2), (nda, 1)):
+            for _ in range(n):
+                _mail(p.admin_engine, org=p.org_b, account_id=box,
+                      sender="u@sender.test")
         restarts: list[tuple[str, str]] = []
 
         async def _refresh(account_id: str, **_k: Any) -> None:
@@ -364,8 +377,9 @@ class TestTheApi:
         me = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
         try:
             async with _as_member(p, p.org_b):
-                listed = {a.id: a.in_all_inboxes
-                          for a in await accounts.list_accounts(user=me)}
+                rows = await accounts.list_accounts(user=me)
+                listed = {a.id: a.in_all_inboxes for a in rows}
+                unread = {a.id: a.unread_count for a in rows}
                 made = await accounts.set_default_account(nda, user=me)
                 kept = await accounts.update_account(
                     home, accounts.AccountUpdateModel(in_all_inboxes=False), user=me)
@@ -386,6 +400,10 @@ class TestTheApi:
                             "smtp_host": "h", "smtp_port": 465}),
                     user=me)
             assert listed == {home: True, nda: False}
+            # F1: the count stays per mailbox. A separate mailbox reports its
+            # own count, and the default route counts it too.
+            assert unread == {home: 2, nda: 1}
+            assert made.unread_count == 1
             assert made.in_all_inboxes is False
             assert kept.in_all_inboxes is False
             assert back.in_all_inboxes is True
@@ -465,6 +483,12 @@ class TestTheReadsOfMoreThanOneMailbox:
                        thread=f"nda-thread-{tag}")
         s.m_nda2 = mail(p.admin_engine, org=org, account_id=sep, sender=s.nda,
                         thread=f"nda-thread-{tag}", minutes_ago=5)
+        # F4: one sender writes to both mailboxes, with a label in each.
+        s.both = f"both-{tag}@sender.test"
+        s.m_both_a = mail(p.admin_engine, org=org, account_id=a, sender=s.both,
+                          categories=["Newsletter"])
+        s.m_both_s = mail(p.admin_engine, org=org, account_id=sep, sender=s.both,
+                          categories=["Receipt"])
         mail(p.admin_engine, org=org, account_id=x, sender=f"x-{tag}@sender.test",
              subject="Other zebra plan", categories=["XTag"])
         # The dispositions of the separate mailbox stay with it.
@@ -480,7 +504,8 @@ class TestTheReadsOfMoreThanOneMailbox:
         _assert_non_priv(app_engine)
         p = promoted
         s = self._seed(p)
-        mine = {s.m_pool, s.m_status, s.m_self}
+        mine = {s.m_pool, s.m_status, s.m_self, s.m_both_a}
+        senders_in_a = {s.pool, s.status, s.both}
         try:
             async with _as_member(p, p.org_b):
                 listed = await messages_mod.list_messages(user=s.me, **_LIST_OFF)
@@ -495,18 +520,32 @@ class TestTheReadsOfMoreThanOneMailbox:
                 senders = await senders_mod.list_senders(user=s.me, **_SENDERS_OFF)
                 in_inbox = await senders_mod.list_senders(
                     user=s.me, **{**_SENDERS_OFF, "folder": "inbox"})
-            assert _ids(listed) == mine and listed["total"] == 3
-            assert _ids(collapsed) == mine and collapsed["total"] == 3
-            assert facets["total"] == 3
+                # F3: with include_archived, only the folder clause can bring
+                # in the archived mail of a sender with a disposition.
+                in_inbox_all = await senders_mod.list_senders(
+                    user=s.me, **{**_SENDERS_OFF, "folder": "inbox",
+                                  "include_archived": True})
+            assert _ids(listed) == mine and listed["total"] == 4
+            assert _ids(collapsed) == mine and collapsed["total"] == 4
+            assert facets["total"] == 4
             assert "pooltag" in facets["labels"] and "ndatag" not in facets["labels"]
+            assert "newsletter" in facets["labels"] and "receipt" not in facets["labels"]
             assert _ids(found) == {s.m_pool} and found["total"] == 1
             assert _ids(filters_only) == mine | {s.m_shared}
             by_email = {r["email"]: r for r in senders["senders"]}
             # No sender of the separate mailbox, and no disposition of it.
-            assert set(by_email) == {s.pool, s.status}, sorted(by_email)
+            assert set(by_email) == senders_in_a, sorted(by_email)
             assert by_email[s.status]["status"] == "UNHANDLED"
-            assert senders["total"] == 2
-            assert {r["email"] for r in in_inbox["senders"]} == {s.pool, s.status}
+            assert senders["total"] == 3
+            # F4: the chips of a sender in both mailboxes hold no label of the
+            # separate mailbox.
+            both = by_email[s.both]
+            assert both["count"] == 1
+            assert both["categories"] == ["Newsletter"]
+            assert both["category_counts"] == {"Newsletter": 1}
+            assert both["labelled"] == 1
+            assert {r["email"] for r in in_inbox["senders"]} == senders_in_a
+            assert {r["email"] for r in in_inbox_all["senders"]} == senders_in_a
         finally:
             _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
 
@@ -528,12 +567,14 @@ class TestTheReadsOfMoreThanOneMailbox:
                     user=s.me, **{**_SENDERS_OFF, "account_id": s.box_s})
                 pooled_box = await messages_mod.list_messages(
                     user=s.me, **{**_LIST_OFF, "account_id": s.box_a})
-            assert _ids(listed) == {s.m_nda, s.m_nda2}
-            assert "ndatag" in facets["labels"] and facets["total"] == 2
+            assert _ids(listed) == {s.m_nda, s.m_nda2, s.m_both_s}
+            assert "ndatag" in facets["labels"] and facets["total"] == 3
+            assert "receipt" in facets["labels"]
             assert _ids(found) == {s.m_nda}
             by_email = {r["email"]: r for r in senders["senders"]}
-            assert set(by_email) == {s.nda}
-            assert _ids(pooled_box) == {s.m_pool, s.m_status, s.m_self}
+            assert set(by_email) == {s.nda, s.both}
+            assert by_email[s.both]["categories"] == ["Receipt"]
+            assert _ids(pooled_box) == {s.m_pool, s.m_status, s.m_self, s.m_both_a}
         finally:
             _purge(p.admin_engine, f"%-{s.tag}@t8g1.test")
 
@@ -558,7 +599,12 @@ class TestTheReadsOfMoreThanOneMailbox:
                     sql_set = {r.addr for r in (await db.execute(
                         text(identity.SELF_ADDRESSES_SQL),
                         {"aid": s.box_a})).fetchall()}
+                    # F2: compose-assist answers a mail of the separate
+                    # mailbox from mailbox A, and still finds that mail.
+                    target = await drafting_mod._reply_target(
+                        db, s.box_a, s.m_nda, s.owner, from_any_owned_mailbox=True)
                 senders = await senders_mod.list_senders(user=s.me, **_SENDERS_OFF)
+            assert target is not None and str(target.account_id) == s.box_s
             assert s.addr_s.lower() in me.self_addresses
             assert sql_set == {s.addr_a.lower(), s.addr_s.lower()}
             assert identity.sender_scope(
@@ -580,25 +626,36 @@ class TestTheReadsThatKeepTheOwnerScopeOnly:
         p = promoted
         tag = uuid.uuid4().hex[:8]
         owner = f"member-{tag}@t8g1.test"
-        _account(p.admin_engine, org=p.org_b, owner=owner, default=True)
+        home = _account(p.admin_engine, org=p.org_b, owner=owner, default=True)
         nda = _account(p.admin_engine, org=p.org_b, owner=owner, pooled=False)
         thread = f"nda-{tag}"
         first = _mail(p.admin_engine, org=p.org_b, account_id=nda,
                       sender=f"n-{tag}@sender.test", thread=thread, minutes_ago=20)
         second = _mail(p.admin_engine, org=p.org_b, account_id=nda,
                        sender=f"n-{tag}@sender.test", thread=thread, minutes_ago=5)
+        # F5: the pooled mailbox holds the same thread id (edge case 13).
+        other = _mail(p.admin_engine, org=p.org_b, account_id=home,
+                      sender=f"h-{tag}@sender.test", thread=thread, minutes_ago=1)
         me = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
         tasks = BackgroundTasks()
         try:
             async with _as_member(p, p.org_b):
                 loaded = await messages_mod.list_messages(
                     user=me, **{**_LIST_OFF, "thread_id": thread})
+                in_nda = await messages_mod.list_messages(
+                    user=me, **{**_LIST_OFF, "thread_id": thread, "account_id": nda})
+                in_home = await messages_mod.list_messages(
+                    user=me, **{**_LIST_OFF, "thread_id": thread, "account_id": home})
                 one = await messages_mod.get_message(first, user=me)
                 bulk = await senders_mod.bulk_action(
                     senders_mod.BulkActionRequest(
                         action="star", message_ids=[first, second]),
                     tasks, user=me)
-            assert [e["id"] for e in loaded["emails"]] == [first, second]
+            # With no account_id, a thread load keeps the owner scope only.
+            assert [e["id"] for e in loaded["emails"]] == [first, second, other]
+            # F5: with an account_id, a thread load stays in that mailbox.
+            assert [e["id"] for e in in_nda["emails"]] == [first, second]
+            assert [e["id"] for e in in_home["emails"]] == [other]
             assert str(one.id) == first
             assert bulk == {"affected": 2}
             with p.admin_engine.connect() as c:
@@ -608,5 +665,46 @@ class TestTheReadsThatKeepTheOwnerScopeOnly:
             assert starred == 2
             # The provider half is a task for the mailbox of the mail.
             assert [t.args[0] for t in tasks.tasks] == [nda]
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t8g1.test")
+
+    async def test_a_bulk_act_by_filter_leaves_out_a_separate_mailbox(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """F7 (D-EM-30): a bulk act BY FILTER with no ``account_id`` acts on
+        All inboxes, so a separate mailbox keeps its mail. Its own
+        ``account_id`` reaches it."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:8]
+        owner = f"member-{tag}@t8g1.test"
+        home = _account(p.admin_engine, org=p.org_b, owner=owner, default=True)
+        nda = _account(p.admin_engine, org=p.org_b, owner=owner, pooled=False)
+        sender = f"bulk-{tag}@sender.test"
+        for box in (home, nda):
+            _mail(p.admin_engine, org=p.org_b, account_id=box, sender=sender)
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE, organization_id=p.org_b)
+
+        def _folders() -> dict[str, str]:
+            with p.admin_engine.connect() as c:
+                return {str(r.account_id): r.folder for r in c.execute(text(
+                    "SELECT account_id, folder FROM email_messages "
+                    "WHERE account_id IN (CAST(:h AS uuid), CAST(:n AS uuid))"),
+                    {"h": home, "n": nda}).fetchall()}
+
+        try:
+            async with _as_member(p, p.org_b):
+                by_filter = await senders_mod.bulk_action(
+                    senders_mod.BulkActionRequest(action="archive", sender_email=sender),
+                    BackgroundTasks(), user=me)
+                after_filter = _folders()
+                by_own_id = await senders_mod.bulk_action(
+                    senders_mod.BulkActionRequest(
+                        action="archive", sender_email=sender, account_id=nda),
+                    BackgroundTasks(), user=me)
+            assert by_filter == {"affected": 1}
+            assert after_filter == {home: "archive", nda: "inbox"}
+            assert by_own_id == {"affected": 1}
+            assert _folders() == {home: "archive", nda: "archive"}
         finally:
             _purge(p.admin_engine, f"%-{tag}@t8g1.test")

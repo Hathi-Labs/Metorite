@@ -4571,7 +4571,8 @@ store and page files.
 
 ##### EM-T8g-1 — "Keep separate", the server half (migration, gateway, agent, R8)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03). Migration 229.
+**Status.** 🔨 BUILT, not merged (2026-10-03). Migration 229. Review fix round 1 (2026-10-04) is
+below the mutation table of the build.
 
 **As-built notes.**
 - **The number (R1).** The build found 229 free. 227 is the last migration on main, and only the
@@ -4593,16 +4594,18 @@ store and page files.
 - **The API.** Each account read returns `in_all_inboxes`, and the create reads it from
   `RETURNING`. `AccountUpdateModel.in_all_inboxes` is `StrictBool`, so `"yes"`, `"true"`, `0` and
   `1` answer 422. The `PATCH` does not restart the sync loop.
-- **The chat binding.** `agents._pooled` gives the mailboxes in All inboxes, or the full list when
-  no mailbox is in All inboxes. A row with no `in_all_inboxes` is in All inboxes.
-  `_one_mailbox` and `_new_mail_mailbox` list and bind from that list. A tool that names a
-  separate mailbox still acts in it.
+- **The chat binding (as review round 1 left it).** `agents._pooled` gives the mailboxes in All
+  inboxes. A row with no `in_all_inboxes` is in All inboxes. Only a member with one mailbox in
+  total binds with no question. `agents._choices` shortens the list of a question to the mailboxes
+  in All inboxes when two or more are there. A tool that names a separate mailbox still acts in
+  it.
 - **Narrowed: the `sent-from` bind is strict.** A `sent-from` answer binds only a mailbox in All
-  inboxes. When each mailbox is separate, the question lists them all, and no answer binds. Item 5
-  does not say which rule wins in that case, so the build uses the rule that asks.
+  inboxes, and only when two or more are there. When each mailbox is separate, the question lists
+  them all, and no answer binds. Item 5 does not say which rule wins in that case, so the build
+  uses the rule that asks.
 - **Not changed.** `_unread_counts` counts each mailbox, because the switcher shows the count of a
-  separate mailbox too. The agent tool `list_accounts` lists each mailbox. `identity.py`,
-  `/contacts/sent-from`, the contacts reads and the CRM timeline do not change.
+  separate mailbox too. `identity.py`, `/contacts/sent-from`, the contacts reads and the CRM
+  timeline do not change.
 - **Found, not fixed.** `read_thread` with a bare `thread_id` is a thread load. When a separate
   mailbox holds the same thread id as a mailbox in All inboxes, the answer names both mailboxes.
   Item 4 keeps the owner scope for a thread load, so this slice does not change it.
@@ -4649,6 +4652,76 @@ store and page files.
 | `a_no_fallback` | no list when each mailbox is separate | `test_with_no_pooled_mailbox_the_full_list_stays` |
 | `a_missing_is_separate` | a row with no field counts as separate | `test_a_row_with_no_field_is_in_all_inboxes` |
 
+Review round 1 replaced the agent code of the five `a_` rows. Its own table below holds the agent
+mutants that apply now.
+
+**Review fix round 1 (2026-10-04).** An adversarial reviewer and an independent verifier checked
+73a21890. They found no P0. The SQL scoping, the `PATCH` and migration 229 were clean. The agent
+rebased the branch on origin/main `0711c8b3` (#606, #607 and #598) with no conflict.
+`work_plan.md` is the same as on main.
+
+- **P1: the binding of the chat failed open.** Take a member with Work in All inboxes and a
+  separate NDA mailbox. That member has no All inboxes (D-EM-30), so the chat is always in the
+  scope of one mailbox. In the
+  scope of NDA, the model sends no `account_id`. `_pooled` then gave Work only, and each item 3
+  tool bound Work with no question. `save_knowledge` wrote an NDA fact into Work. The reset card
+  named no mailbox, and then the reset deleted the rules of Work.
+- **The fix.** A tool that gets no `account_id` binds with no question only when the member has
+  one mailbox in total. `agents._choices` only shortens the list of a question, to the mailboxes
+  in All inboxes when two or more are there. `sent-from` binds a mailbox in All inboxes only when
+  two or more are there. Otherwise new mail asks and reads no `sent-from`.
+- **The mailbox in each answer.** The reset card names the mailbox in its title and its detail.
+  An id of no mailbox of the member stops before the card with "Nothing changed.". Each answer of
+  an item 3 tool names its mailbox as "label · address" (`agents._named`, which reads
+  `_mailbox_name`). A tool that names a mailbox now reads the list for that name, and the list
+  never chooses the mailbox.
+- **P2: `list_accounts`.** It marks a separate mailbox "(separate)". Its unread mail is not in the
+  total, and the answer says so. Its own line keeps its own count.
+- **P2 (F7): a bulk act by filter.** With no `account_id`, a bulk act by `sender_email`,
+  `folder`, `older_than_days` or `only_read` leaves out a separate mailbox. A bulk act by ids
+  keeps the owner scope. Item 4 says so.
+- **P2: five fence gaps.** F1 fences the unread count of each mailbox. F2 fences
+  `drafting._reply_target` for a mail of a separate mailbox. F3 fences the folder clause of
+  `/senders` with `include_archived`. F4 fences the label chips of a sender in both mailboxes. F5
+  fences a thread load with an `account_id`, which stays in that mailbox (D-EM-22).
+- **Changed fences.** `test_one_pooled_mailbox_binds_and_never_the_separate_one` is now
+  `test_one_pooled_mailbox_and_a_separate_one_asks`. The new mail test
+  `test_new_mail_with_one_pooled_mailbox_sends_from_it` is now
+  `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks`.
+  `test_a_named_mailbox_is_used_with_no_question` no longer refuses a read of the list, because
+  the answer names the mailbox.
+- **Verification (2026-10-04).** Only `TENANT_LADDER_DATABASE_URL` was set, on a private
+  database. The block below gave 528 passed and 2 skipped, the same two WS-29 gates. Each of 21
+  R8 cases of `test_email_keep_separate.py` passed, and none skipped. All 129 email suites with
+  `-k "not calendar"` gave 2343 passed. The ruff gate passed, and full ruff on the changed files
+  shows no new finding.
+- **Mutation check.** 41 of 41 mutants went red. 20 are in the table below. The other 21 are the
+  gateway and migration mutants of the build, run against the changed tests. The script restored each source
+  file and checked its hash.
+
+| Mutant | What the mutant breaks | The test that goes red |
+|---|---|---|
+| `r1_one_binds_pooled` | `_one_mailbox` binds the one pooled mailbox (the P1 probe) | `test_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_new_binds_pooled` | new mail binds the one pooled mailbox | `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_sent_from_one_pooled` | `sent-from` binds with one pooled mailbox | `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks[pooled]` |
+| `r1_sent_from_any` | `sent-from` binds a separate mailbox | `test_a_sent_from_answer_that_names_a_separate_mailbox_is_no_answer` |
+| `r1_choices_shorten_to_one` | the question lists one pooled mailbox only | `test_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_results_unnamed` | no answer names its mailbox | `test_each_write_result_names_the_mailbox` |
+| `r1_save_knowledge_unnamed` | `save_knowledge` names no mailbox | `test_each_write_result_names_the_mailbox[save_knowledge]` |
+| `r1_reset_title` | the reset card title names no mailbox | `test_the_reset_card_names_the_mailbox` |
+| `r1_reset_detail` | the reset card detail names no mailbox | `test_the_reset_card_names_the_mailbox` |
+| `r1_reset_unknown_id` | a reset of an id of no mailbox shows its card | `test_a_reset_of_an_id_of_no_mailbox_changes_nothing` |
+| `r1_list_total` | the total counts a separate mailbox | `test_list_accounts_marks_a_separate_mailbox_and_leaves_it_out_of_the_total` |
+| `r1_list_mark` | a separate mailbox has no mark | `test_list_accounts_marks_a_separate_mailbox_and_leaves_it_out_of_the_total` |
+| `r1_missing_is_separate` | a row with no field counts as separate | `test_a_row_with_no_field_is_in_all_inboxes` |
+| `f1_unread_pooled` | the unread count of a separate mailbox is 0 | `test_each_account_read_returns_the_field` |
+| `f2_reply_target_pooled` | compose-assist loses a mail of a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `f3_nl_sub_unpooled` | the folder clause of `/senders` reads every disposition | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `f4_tally_unpooled` | the label chips read the separate mailbox | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `f5_thread_first` | a thread load with an `account_id` reads each mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `f7_bulk_filter_unpooled` | a bulk act by filter reaches a separate mailbox | `test_a_bulk_act_by_filter_leaves_out_a_separate_mailbox` |
+| `f7_bulk_ids_pooled` | a bulk act by ids leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+
 **Gate.** 🟢 AGENT-SAFE · R8 · security review, because it changes `core._account_scope` (D-EM-4).
 
 **Scope.** A new migration, `transport/accounts.py`, `core.py`, `transport/messages.py`,
@@ -4668,11 +4741,15 @@ store and page files.
    `GET /email/senders`. With the `account_id` of a separate mailbox, each read gets its rows.
    `core._account_scope` takes a keyword-only flag. With no flag, its text does not change.
 4. **The reads that keep the owner scope only.** These still reach a separate mailbox: a thread
-   load, each act by a mail id, and `POST /email/messages/bulk`. The reason is that `manage_inbox`
-   sends mail ids with no `account_id`. Compose-assist and `/contacts/sent-from` do not change.
-5. **The chat binding.** `_one_mailbox` and `_new_mail_mailbox` list and bind only the mailboxes
-   in All inboxes. A `sent-from` answer that names a separate mailbox counts as no answer. When no
-   mailbox is in All inboxes, the full list stays.
+   load, each act by a mail id, and `POST /email/messages/bulk` by ids. The reason is that
+   `manage_inbox` sends mail ids with no `account_id`. Compose-assist and `/contacts/sent-from` do
+   not change. A bulk act by filter with no `account_id` leaves out a separate mailbox, as a read
+   of All inboxes does (review round 1).
+5. **The chat binding.** `_one_mailbox` and `_new_mail_mailbox` list only the mailboxes in All
+   inboxes when two or more are there, else each mailbox. A `sent-from` answer that names a
+   separate mailbox counts as no answer. Only a member with one mailbox in total binds with no
+   question. Take one mailbox in All inboxes and one separate mailbox. A tool with no
+   `account_id` then asks (review round 1).
 6. **Self does not change** (D-EM-27, D-EM-30). `identity.py` keeps each mailbox of the member.
 
 **Fences (R7).** `tests/unit/test_email_keep_separate.py` (R8, the app role):
@@ -4683,10 +4760,13 @@ store and page files.
 - `email-keep-separate-reads`: with no `account_id`, the four reads of item 3 hold no row of a
   separate mailbox. With its `account_id`, each one holds its rows.
 - `email-keep-separate-owner-scope`: a thread load, a read by id and a bulk act by ids reach a
-  separate mailbox.
+  separate mailbox. A bulk act by filter does not (review round 1).
 - `email-keep-separate-self`: a mail from a separate mailbox is still `self` in another mailbox.
 - `email-chat-binding-skips-separate` (`test_email_chat_binding.py`, fakes): the question and the
-  `sent-from` bind leave out a separate mailbox.
+  `sent-from` bind leave out a separate mailbox. One pooled mailbox and a separate one ask.
+- `email-chat-write-names-mailbox` and `email-chat-list-accounts-separate` (review round 1): each
+  answer of an item 3 tool and the reset card name the mailbox. `list_accounts` marks a separate
+  mailbox and leaves it out of the total.
 
 **Verification.**
 
