@@ -153,6 +153,50 @@ export function storedImportMonths(store: MonthsStore | null = sessionStore()): 
   }
 }
 
+// ── The return after a connect (EM-T8c, MB-9, §11.6 case 2) ───────────────
+
+/** The session key of the mailbox ids the member had before a connect. */
+export const MAILBOXES_BEFORE_CONNECT_KEY = "cc.email.mailboxesBeforeConnect";
+
+/** Keeps the ids of the mailboxes the member has, before the page leaves for
+ *  the provider. The callback page reads them back. Never throws. */
+export function rememberMailboxesBeforeConnect(
+  ids: ReadonlyArray<string>,
+  store: MonthsStore | null = sessionStore(),
+): void {
+  try {
+    store?.setItem(MAILBOXES_BEFORE_CONNECT_KEY, JSON.stringify(ids.filter(Boolean)));
+  } catch {
+    // A full or refused storage only costs the notice.
+  }
+}
+
+/** True when `accountId` was already connected before this connect, so the
+ *  connect signed it in again instead of adding a mailbox. */
+export function wasConnectedBefore(
+  accountId: string | null,
+  store: MonthsStore | null = sessionStore(),
+): boolean {
+  if (!accountId) return false;
+  try {
+    const raw = store?.getItem(MAILBOXES_BEFORE_CONNECT_KEY) ?? null;
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) && ids.includes(accountId);
+  } catch {
+    return false;
+  }
+}
+
+/** The return target with the mailbox of the connect selected. Before, the
+ *  target kept `?account=<old>`, and the new mailbox and its setup stayed
+ *  hidden (MB-9). A target that is not a path of this site stays as it is. */
+export function withSelectedMailbox(target: string, accountId: string | null): string {
+  if (!accountId || !target.startsWith("/")) return target;
+  const url = new URL(target, "http://local");
+  url.searchParams.set("account", accountId);
+  return url.pathname + url.search + url.hash;
+}
+
 /** Keeps the chosen range for the next time the step opens. Never throws. */
 export function rememberImportMonths(months: number, store: MonthsStore | null = sessionStore()): void {
   if (!isImportMonths(months)) return;

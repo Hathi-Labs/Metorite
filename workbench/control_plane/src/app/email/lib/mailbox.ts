@@ -86,3 +86,111 @@ export function replyRecipients(
   const cc = mode === "reply-all" ? keep((src.cc || []).map((c) => c.email), isOwn) : [];
   return { to, cc };
 }
+
+// ── The From row (EM-T8c, §11.4 and §11.7.3) ───────────────────────────────
+
+interface MailboxLike {
+  id: string;
+  emailAddress: string;
+  displayLabel?: string;
+  workDomain?: string | null;
+  syncStatus?: string;
+}
+
+/** The label to name a mailbox in a sentence. */
+function nameOf(m: MailboxLike): string {
+  return (m.displayLabel || "").trim() || m.emailAddress;
+}
+
+/** True when the mailbox cannot send until the member reconnects it. The same
+ *  rule draws the reconnect banner: a sync error, or a 401 of a live call. */
+export function needsReconnect(
+  m: Pick<MailboxLike, "id" | "syncStatus"> | null | undefined,
+  authErrors: Readonly<Record<string, string>>,
+): boolean {
+  if (!m) return false;
+  return m.syncStatus === "error" || !!authErrors[m.id];
+}
+
+export interface FromWarning {
+  kind: "conversation" | "usual" | "domain";
+  text: string;
+  /** The mailbox that the one-click switch selects. */
+  switchTo: string;
+  switchLabel: string;
+}
+
+/**
+ * The first warning that applies to the chosen From mailbox, or null.
+ * In order:
+ * 1. A reply leaves the mailbox of its conversation.
+ * 2. A recipient last heard from another mailbox of the member.
+ * 3. A recipient is at the work domain of another mailbox, and the From
+ *    mailbox is not at that domain.
+ * Each warning offers the mailbox that fits better. A mailbox that needs a
+ * reconnect is never offered.
+ */
+export function fromWarning(args: {
+  fromId: string | null;
+  accounts: ReadonlyArray<MailboxLike>;
+  conversationAccountId?: string | null;
+  recipients: ReadonlyArray<string>;
+  usualSender?: Readonly<Record<string, string>>;
+  authErrors?: Readonly<Record<string, string>>;
+}): FromWarning | null {
+  const { fromId, accounts, conversationAccountId, recipients } = args;
+  const authErrors = args.authErrors ?? {};
+  if (!fromId || accounts.length < 2) return null;
+  const from = accounts.find((a) => a.id === fromId);
+  if (!from) return null;
+  const usable = (id: string | null | undefined) => {
+    const m = accounts.find((a) => a.id === id);
+    return m && m.id !== fromId && !needsReconnect(m, authErrors) ? m : null;
+  };
+  const conv = usable(conversationAccountId);
+  if (conv) {
+    return {
+      kind: "conversation",
+      text: `This conversation is in ${nameOf(conv)}. The recipients will see a new address, and the reply starts a new conversation.`,
+      switchTo: conv.id,
+      switchLabel: nameOf(conv),
+    };
+  }
+  const addrs = recipients.map((r) => r.trim().toLowerCase()).filter((r) => r.includes("@"));
+  for (const addr of addrs) {
+    const usual = usable(args.usualSender?.[addr]);
+    if (usual) {
+      return {
+        kind: "usual",
+        text: `You usually write to ${addr} from ${nameOf(usual)}.`,
+        switchTo: usual.id,
+        switchLabel: nameOf(usual),
+      };
+    }
+  }
+  for (const addr of addrs) {
+    const domain = addr.split("@")[1];
+    if (!domain || from.workDomain === domain) continue;
+    const owner = accounts.find(
+      (a) => a.id !== fromId && a.workDomain === domain && !needsReconnect(a, authErrors),
+    );
+    if (owner) {
+      return {
+        kind: "domain",
+        text: `You are writing to a ${domain} address from ${nameOf(from)}.`,
+        switchTo: owner.id,
+        switchLabel: nameOf(owner),
+      };
+    }
+  }
+  return null;
+}
+
+/** The body after a change of From: the signature of the old mailbox becomes
+ *  the signature of the new one, only while the old one is still in the body
+ *  unchanged. A body the member edited around it keeps the old text. */
+export function swapSignature(body: string, oldSig: string, newSig: string): string {
+  if (!oldSig || !body.includes(oldSig)) return body;
+  if (!newSig) return body.replace(oldSig, "").replace(/\s+$/, "");
+  return body.replace(oldSig, newSig);
+}

@@ -240,9 +240,10 @@ interface EmailState {
   loadingMore: boolean;
   backfilling: boolean;
   foldersLoading: boolean;
-  /** Per-folder cursor for paging older provider history (client-held). */
+  /** Per mailbox and folder: the cursor for paging older provider history
+   *  (client-held). The key is `backfillKey(account, folder)` (MB-10). */
   backfillToken: Record<string, string | null>;
-  /** Per-folder flag: the provider has no older mail left to fetch. */
+  /** Per mailbox and folder: the provider has no older mail left to fetch. */
   backfillExhausted: Record<string, boolean>;
   /** Per-account sync state. "syncing" = the sync request is in flight;
    *  "processing" = mail is persisted and the server is running the rules /
@@ -587,6 +588,15 @@ function pickInitialAccount(accounts: EmailAccount[]): string | null {
   return accounts.find((a) => a.isDefault)?.id ?? accounts[0].id;
 }
 
+/**
+ * The key of the "load older" state: one mailbox and one folder. Keyed by the
+ * folder alone, a switch of mailbox kept the cursor and the "nothing older"
+ * flag of the old mailbox (EM-T8c, MB-10).
+ */
+export function backfillKey(accountId: string | null | undefined, folder: string): string {
+  return `${accountId ?? ""}:${folder}`;
+}
+
 export const useEmailStore = create<EmailState>((set, get) => ({
   // Data
   accounts: [],
@@ -911,10 +921,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     set({ backfilling: true, error: null });
     try {
       // 1) Pull older mail from the provider into the DB.
+      const key = backfillKey(selectedAccountId, selectedFolder);
       const res = await api.backfillFolder(
         selectedAccountId,
         selectedFolder,
-        backfillToken[selectedFolder] ?? undefined,
+        backfillToken[key] ?? undefined,
       );
       // 2) Surface the freshly-persisted older page from the DB and append it.
       const nextPage = emailsPage + 1;
@@ -933,11 +944,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         backfilling: false,
         backfillToken: {
           ...get().backfillToken,
-          [selectedFolder]: res.next_page_token,
+          [key]: res.next_page_token,
         },
         backfillExhausted: {
           ...get().backfillExhausted,
-          [selectedFolder]: res.exhausted,
+          [key]: res.exhausted,
         },
       });
     } catch {

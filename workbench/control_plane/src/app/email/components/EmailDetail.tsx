@@ -6,8 +6,12 @@ import { useState, useEffect, useRef } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
 import { useEmailStore, isRealFolder } from "../lib/emailStore";
-import { mailboxOf, ownAddresses, replyRecipients } from "../lib/mailbox";
-import { MailboxChip } from "./MailboxChip";
+import {
+  fromWarning, mailboxOf, needsReconnect, ownAddresses, replyRecipients, swapSignature,
+} from "../lib/mailbox";
+import { getSentFrom } from "../lib/api";
+import { FromRow } from "./FromRow";
+import { MailboxChip, mailboxLabel } from "./MailboxChip";
 import {
   fetchFullBody, getEmail, listThread, createRule,
   fileToSendAttachment,
@@ -37,12 +41,23 @@ export function EmailDetail({ email }: EmailDetailProps) {
     updateEmail, deleteEmail, openCompose, hydrateEmail, folders,
     accounts, selectedAccountId, sendEmail, saveDraft, sendDraft,
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
-    captureEmailToTasks,
+    captureEmailToTasks, authErrors,
   } = useEmailStore();
   // The mailbox of the open mail. Every act on it runs there: the signature,
   // the thread, the drafts, the AI draft and the send. The selected view never
   // decides it (EM-T8a, D-EM-19, MB-2).
   const mailboxId = mailboxOf(email, selectedAccountId);
+  // ── The sending mailbox of the inline reply (EM-T8c, D-EM-20) ──
+  // It starts on the mailbox of the mail. The From row can pick another one
+  // for this mail; a new reply (startReply) starts on the mail's mailbox again.
+  const [fromPick, setFromPick] = useState<{ mail: string; id: string } | null>(null);
+  const fromId = fromPick && fromPick.mail === email?.id ? fromPick.id : mailboxId;
+  // From another mailbox the reply goes as new mail: the provider cannot
+  // answer a mail of another mailbox, and the gateway refuses it (MB-6).
+  const sameConversation = fromId === mailboxId;
+  // A draft of the old mailbox, deleted once the new mailbox saved its own.
+  const staleDraftRef = useRef<string | null>(null);
+  const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
   const [read, setRead] = useState(email?.isRead ?? true);
@@ -77,13 +92,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const [sigText, setSigText] = useState("");
   useEffect(() => {
     let alive = true;
-    void getSignatureText(mailboxId).then((s) => {
+    void getSignatureText(fromId).then((s) => {
       if (alive) setSigText(s);
     });
     return () => {
       alive = false;
     };
-  }, [mailboxId]);
+  }, [fromId]);
   const [replyAttachments, setReplyAttachments] = useState<SendAttachment[]>([]);
   const [replyArtifacts, setReplyArtifacts] = useState<ArtifactAttachmentRef[]>([]);
   const [sendErr, setSendErr] = useState<string | null>(null);
@@ -282,7 +297,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // NOTE: must stay ABOVE the `if (!email) return` early-return so the hook is
   // called on every render (moving it below crashes with a hooks-order error).
   useEffect(() => {
-    if (!replyMode || !mailboxId || !email) return;
+    if (!replyMode || !fromId || !email) return;
     if (!replyDirty.current) return; // ignore the prefilled quote — wait for edits
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
     if (!replyBody.trim() && toArr.length === 0) return;
@@ -300,15 +315,21 @@ export function EmailDetail({ email }: EmailDetailProps) {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
-          accountId: mailboxId,
+          accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
-          // Reply/Reply-All thread onto the target message; Forward is standalone.
-          replyToMessageId: isForward ? undefined : target.id,
+          // Reply/Reply-All thread onto the target message; Forward is
+          // standalone, and so is a reply from another mailbox (EM-T8c).
+          replyToMessageId: isForward || !sameConversation ? undefined : target.id,
           to: toArr,
           subject,
           body,
         });
         draftIdRef.current = saved.id;
+        // A provider draft cannot move between mailboxes (§11.6 case 7).
+        if (staleDraftRef.current) {
+          void deleteEmail(staleDraftRef.current);
+          staleDraftRef.current = null;
+        }
         setDraftStatus("saved");
       } catch {
         setDraftStatus("idle");
@@ -316,7 +337,25 @@ export function EmailDetail({ email }: EmailDetailProps) {
     }, 1200);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, mailboxId, email?.id]);
+  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, fromId, email?.id]);
+
+  // Which mailbox last wrote to each recipient, for the From warning. Only
+  // for a member with two or more mailboxes, after a short pause.
+  useEffect(() => {
+    if (!replyMode || accounts.length < 2) return;
+    const list = [...replyTo.split(","), ...replyCc.split(",")]
+      .map((s) => s.trim()).filter(Boolean);
+    let alive = true;
+    const handle = setTimeout(() => {
+      void getSentFrom(list).then((map) => {
+        if (alive) setUsualSender(map);
+      });
+    }, 600);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [replyTo, replyCc, replyMode, accounts.length]);
 
   // Bridge for the desktop unified toolbar: it issues a transient store command
   // (reply/forward/block/download) that this viewer executes via the live
@@ -427,6 +466,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   ) => {
     const src = target ?? view;
     setReplyTargetId(src.id);
+    setFromPick(null);
+    staleDraftRef.current = null;
     setSendErr(null);
     // New reply session: forget any previous draft so we don't update it.
     draftIdRef.current = null;
@@ -527,7 +568,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  panel, draft text lands live, and the panel stays open so the next
    *  instruction refines this draft instead of starting over. */
   const runAiDraft = async () => {
-    if (!mailboxId || ai.busy) return;
+    if (!fromId || ai.busy) return;
     setSendErr(null);
     const target = replyTargetRef.current ?? email;
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
@@ -538,11 +579,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const instruction = seeded || aiInstruction.trim();
     const draft = await ai.run(
       {
-        accountId: mailboxId,
+        accountId: fromId,
         body: replyBody, // NEW text only — the quote is excluded by design
         instruction,
         mode: replyMode === "forward" ? "forward" : "reply",
-        messageId: target.id,
+        // The drafter reads the thread only inside the mailbox of the mail.
+        messageId: sameConversation ? target.id : undefined,
         to: toArr,
         subject: replyTarget.subject,
       },
@@ -556,8 +598,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
   const handleInlineSend = async () => {
     if (!email) return;
-    if (!mailboxId) {
+    if (!fromId) {
       setSendErr("This mail has no mailbox to send from");
+      return;
+    }
+    const fromAccount = accounts.find((a) => a.id === fromId);
+    if (needsReconnect(fromAccount, authErrors)) {
+      setSendErr(`Reconnect ${fromAccount ? mailboxLabel(fromAccount) : "this mailbox"} to send from it.`);
       return;
     }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
@@ -578,9 +625,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
       const hasAtt = replyAttachments.length > 0 || replyArtifacts.length > 0;
       if (draftIdRef.current || hasAtt) {
         const saved = await saveDraft({
-          accountId: mailboxId,
+          accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
-          replyToMessageId: isForward ? undefined : target.id,
+          replyToMessageId: isForward || !sameConversation ? undefined : target.id,
           to: toArr,
           cc: ccArr,
           bcc: bccArr,
@@ -589,26 +636,32 @@ export function EmailDetail({ email }: EmailDetailProps) {
           attachments: replyAttachments.length ? replyAttachments : undefined,
           artifacts: replyArtifacts.length ? replyArtifacts : undefined,
         });
-        await sendDraft(mailboxId, saved.id);
+        await sendDraft(fromId, saved.id);
       } else {
         sendEmail({
-          accountId: mailboxId,
+          accountId: fromId,
           to: toArr,
           cc: ccArr.length ? ccArr : undefined,
           bcc: bccArr.length ? bccArr : undefined,
           subject: replySubject(),
           bodyText: composedReply(replyBody),
-          replyToMessageId: isForward ? undefined : target.providerMessageId,
+          replyToMessageId: isForward || !sameConversation ? undefined : target.providerMessageId,
         });
+      }
+      if (staleDraftRef.current) {
+        void deleteEmail(staleDraftRef.current);
+        staleDraftRef.current = null;
       }
     } catch (e: any) {
       setSendErr(e?.message || "Failed to send");
       return;
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
-    const sent = email.threadId
+    // A reply from another mailbox starts a conversation THERE, so it does not
+    // join this thread.
+    const sent = email.threadId && sameConversation
       ? buildOptimisticSent({
-          accountId: mailboxId,
+          accountId: fromId,
           threadId: email.threadId,
           fromEmail: sendingAddress || "",
           to: toArr,
@@ -633,6 +686,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
     } catch {
       setSendErr("Couldn't read one of the attachments");
     }
+  };
+
+  /** Change the sending mailbox of the inline reply. The signature follows
+   *  it, and a saved draft moves to the new mailbox on the next save. */
+  const changeFrom = async (next: string) => {
+    if (!email || !next || next === fromId) return;
+    const [oldSig, newSig] = await Promise.all([
+      getSignatureText(fromId), getSignatureText(next),
+    ]);
+    if (draftIdRef.current) {
+      staleDraftRef.current = draftIdRef.current;
+      draftIdRef.current = null;
+    }
+    replyDirty.current = true;
+    setReplyBody((prev) => swapSignature(prev, oldSig, newSig));
+    setFromPick({ mail: email.id, id: next });
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
@@ -1083,13 +1152,33 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 <AppIcon name="X" size={14} />
               </button>
             </div>
+            {/* From — two or more mailboxes (EM-T8c, D-EM-20) */}
+            {accounts.length > 1 && fromId && (
+              <div className="px-4 py-1.5 border-b border-border">
+                <FromRow
+                  accounts={accounts}
+                  value={fromId}
+                  onChange={(id) => void changeFrom(id)}
+                  warning={fromWarning({
+                    fromId,
+                    accounts,
+                    conversationAccountId: replyMode === "forward" ? null : mailboxId,
+                    recipients: [...replyTo.split(","), ...replyCc.split(",")],
+                    usualSender,
+                    authErrors,
+                  })}
+                  authErrors={authErrors}
+                  labelClassName="text-[10px] text-muted-foreground w-7 flex-shrink-0"
+                />
+              </div>
+            )}
             {/* Recipients */}
             <div className="px-4 py-1.5 border-b border-border flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground w-7 flex-shrink-0">To</span>
               <RecipientInput
                 value={replyTo}
                 onChange={(v) => { replyDirty.current = true; setReplyTo(v); }}
-                accountId={mailboxId}
+                accountId={fromId}
                 ariaLabel="To recipients"
                 placeholder="Recipients (comma-separated)…"
                 className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1108,7 +1197,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyCc}
                     onChange={(v) => { replyDirty.current = true; setReplyCc(v); }}
-                    accountId={mailboxId}
+                    accountId={fromId}
                     ariaLabel="Cc recipients"
                     placeholder="Cc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"
@@ -1119,7 +1208,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyBcc}
                     onChange={(v) => { replyDirty.current = true; setReplyBcc(v); }}
-                    accountId={mailboxId}
+                    accountId={fromId}
                     ariaLabel="Bcc recipients"
                     placeholder="Bcc…"
                     className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none"

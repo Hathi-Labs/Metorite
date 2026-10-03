@@ -28,6 +28,7 @@ from gateway.routes.email.mailbox_identity import (
     display_labels,
     reserved_label,
     valid_slot,
+    work_domain,
 )
 from pydantic import BaseModel, StrictInt
 from sqlalchemy import text
@@ -96,6 +97,9 @@ class EmailAccountModel(BaseModel):
     #: The label the mailbox shows when the member clears its name. The
     #: rename dialog draws it for a blank name (EM-T8b).
     default_label: str = ""
+    #: The domain of the address when it is an organization domain, else
+    #: ``None``. The From row warns from it (EM-T8c, §11.4).
+    work_domain: str | None = None
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -261,6 +265,7 @@ async def list_accounts(
                 color_slot=row.color_slot,
                 display_label=labels.get(str(row.id), row.email_address),
                 default_label=defaults.get(str(row.id), row.email_address),
+                work_domain=work_domain(row.email_address),
                 **_progress(row),
             ))
         return accounts
@@ -431,6 +436,7 @@ async def create_account(
         color_slot=created.color_slot,
         display_label=labels.get(account_id, req.email_address),
         default_label=defaults.get(account_id, req.email_address),
+        work_domain=work_domain(req.email_address),
     )
 
 
@@ -500,6 +506,7 @@ async def set_default_account(
             color_slot=row.color_slot,
             display_label=labels.get(str(row.id), row.email_address),
             default_label=defaults.get(str(row.id), row.email_address),
+            work_domain=work_domain(row.email_address),
             **_progress(row),
         )
 
@@ -812,6 +819,7 @@ async def update_account(
         color_slot=row.color_slot,
         display_label=labels.get(str(row.id), row.email_address),
         default_label=defaults.get(str(row.id), row.email_address),
+        work_domain=work_domain(row.email_address),
         **_progress(row),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels

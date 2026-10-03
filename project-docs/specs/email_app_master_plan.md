@@ -3328,7 +3328,7 @@ wrong-sender defects first.
 |---|---|---|---|
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | 🔨 **BUILT with review fix round 1, not merged (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
-| **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
+| **EM-T8c** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
@@ -3429,6 +3429,8 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 
 #### 11.7.3 EM-T8c — the From row and the second connect
 
+**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-from-row`, no migration).
+
 1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
    lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
    mark and cannot send.
@@ -3443,6 +3445,33 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 6. **The backfill state (MB-10)** is keyed by mailbox and folder.
 7. **The Integrations connect leg (MB-16)** sends the import range and hides IMAP. As an
    alternative, it links to the connect flow inside Email.
+
+**As built (2026-10-03).**
+
+- **A reply from another mailbox goes as new mail.** A provider cannot answer a mail of another
+  mailbox, and `/send` refuses it (MB-6). So the composer drops the reply target, and the
+  warning says that the reply starts a new conversation. The thread of the mail shows no
+  optimistic copy, because the reply lands in the other mailbox.
+- **The usual sender** comes from `GET /email/contacts/sent-from`, not from `/contacts/suggest`.
+  It maps each address to the mailbox of the member that last wrote to it, with the owner
+  predicate in the SQL. A failure answers `{}`.
+- **The domain warning** reads `work_domain` from the accounts API, so the UI keeps no list of
+  consumer domains.
+- **A mailbox that needs a reconnect** follows the rule of the reconnect banner: a sync error, or
+  a 401 of a live call.
+- **An address already present** is found in the browser. Before the connect, the page keeps the
+  ids of the mailboxes of the member in the session storage of the tab. The callback page shows
+  the notice when the id that returns is one of them. The gateway needs no `reconnected` flag.
+- **The return** sets `?account=<id>` on the target of the callback, so an old selection in
+  `redirect_after` does not win.
+- **Integrations** sends Add to `/email?connect=1`. Its own leg, with Gmail and IMAP, is gone.
+  Reconnect stays on Integrations, with the mailbox as its hint.
+
+**Fences.** `tests/unit/test_email_from_row.py` (R8 for `sent-from`) and
+`src/app/email/lib/fromRow.test.ts` name their fence ids.
+
+**Verification.** `uv run pytest tests/unit/test_email_from_row.py -v -rs` (R8 PASSED, not SKIPPED).
+In `workbench/control_plane`, run `npx tsc --noEmit && npx vitest run src/app/email src/app/integrations`.
 
 #### 11.7.4 EM-T8d — All inboxes
 

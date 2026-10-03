@@ -64,6 +64,9 @@ export interface EmailAccount {
   displayLabel?: string;
   /** The label the mailbox shows when the member clears its name (EM-T8b). */
   defaultLabel?: string;
+  /** The domain of the address when it is an organization domain, else null.
+   *  The From row warns from it (EM-T8c). */
+  workDomain?: string | null;
   /**
    * The slot of the categorical ramp of the mailbox chip, 1 to 12 (EM-T8b,
    * D-EM-21). Null or absent: the chip hashes the mailbox id.
