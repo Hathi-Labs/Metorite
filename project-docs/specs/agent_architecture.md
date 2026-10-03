@@ -566,6 +566,14 @@ playbook, not as a vector row nobody can see.
 
 ## 11. One runtime: MAF. Copilot becomes a tool, not a runtime
 
+> ⚠️ **Amended 2026-10-03 by D82 (owner decision).** The coding engine behind
+> `code_task` moves from the Copilot SDK to a MAF harness session. Its shell
+> commands run in a sandbox container per organization, agent and thread (D83).
+> The decision of this section stands: one runtime, and coding is a tool. The
+> text below is the record of 2026-07-26, so its "Copilot writes code" wording
+> is history. WS-43h also moves app-builder (§11.3) onto the MAF harness. The
+> owning spec is [`maf_coding_engine.md`](maf_coding_engine.md), board row WS-43.
+
 **Decision: there is exactly one agent runtime, and `runtime` stops being a variable.**
 
 The dual-runtime model was the VS Code era. Keeping it costs two of everything — two
@@ -675,7 +683,7 @@ not-yet-migrated agents.
 | `agent-task-manager` | Copilot, 136 ln | **Declarative** | Instructions + 25 GTD tools. No control flow. |
 | `agent-apis-config` | Copilot, 63 ln | **Declarative** | Same shape. |
 | `agent-orchestrator` | MAF, 24 ln | **Declarative** (delegation-heavy) | Its routing becomes `capabilities.agents` edges (§8). |
-| `agent-app-builder` | Copilot, 48 ln | **Declarative MAF that calls `code_task`** | It *is* a coding agent — but under §11 that means it holds the coding *tool*, not that it runs on a different runtime. |
+| `agent-app-builder` | Copilot, 48 ln | **A MAF harness agent with the sandbox terminal** *(target changed 2026-10-03 by D82. It read "Declarative MAF that calls `code_task`")* | It *is* a coding agent. WS-43h gives it `run_command` and the file tools in its own container, and no Copilot runtime. Owning spec: `maf_coding_engine.md` §7.8. |
 | `agent-whatsapp-assistant` | MAF, 480 ln | **Code** | Real bespoke logic. |
 | `agent-email-assistant` | MAF, 1 954 ln | **Code** | Real bespoke logic. |
 
