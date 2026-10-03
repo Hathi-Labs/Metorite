@@ -432,6 +432,9 @@ interface EmailState {
   deleteAccount: (id: string) => Promise<DisconnectOutcome>;
   /** Make an account the user's default mailbox (the inbox the UI opens on). */
   setDefaultAccount: (id: string) => Promise<void>;
+  /** Put the server's copy of one account in the list, by id (EM-T6d: after the
+   *  onboarding PATCH, so a failed re-read cannot bring the setup back). */
+  replaceAccount: (account: EmailAccount) => void;
   clearError: () => void;
 }
 
@@ -1530,6 +1533,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       set({ accounts: prev, error: err.message || "Failed to set default account" });
     }
   },
+
+  replaceAccount: (account) =>
+    set({ accounts: get().accounts.map((a) => (a.id === account.id ? account : a)) }),
 
   setPendingChatPrompt: (prompt) => set({ pendingChatPrompt: prompt }),
 

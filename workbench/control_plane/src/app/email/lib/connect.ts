@@ -233,7 +233,9 @@ export function rangeStepProviderFrom(search: string): ConnectProviderId | null 
 /** How often the page re-reads the accounts while a first sync runs. */
 export const FIRST_SYNC_POLL_MS = 5000;
 
-type SyncFlags = Pick<EmailAccount, "initialSyncDone" | "syncStatus">;
+// `syncEnabled` is optional here: a caller that does not know it is not paused.
+type SyncFlags = Pick<EmailAccount, "initialSyncDone" | "syncStatus"> &
+  Partial<Pick<EmailAccount, "syncEnabled">>;
 
 /**
  * An account whose first sync is still running.
@@ -245,9 +247,17 @@ type SyncFlags = Pick<EmailAccount, "initialSyncDone" | "syncStatus">;
  * failed leaves `initial_sync_done` false for good, so counting it would poll
  * every few seconds for ever and show "bringing in your mail" over a mailbox
  * that brings in nothing. The reconnect banner owns that state.
+ *
+ * ⚠️ A mailbox with sync OFF is not pending either (EM-T6b review). The
+ * scheduler skips it, so a first sync paused part way would freeze the
+ * banner and keep the poll running.
  */
 export function isFirstSyncPending(account: SyncFlags): boolean {
-  return account.initialSyncDone === false && account.syncStatus !== "error";
+  return (
+    account.initialSyncDone === false &&
+    account.syncStatus !== "error" &&
+    account.syncEnabled !== false
+  );
 }
 
 /** True while any account still runs its first sync, so the page polls. */
