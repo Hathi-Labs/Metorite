@@ -4548,7 +4548,7 @@ compact density and under a changed accent (CLAUDE.md §4).
 
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
-✅ T8g-1 MERGED #608 (2026-10-04, migration 229). 🔨 T8g-2 is BUILT, not merged (2026-10-04), with review fix rounds 1 and 2.
+✅ T8g-1 MERGED #608 (2026-10-04, migration 229). ✅ T8g-2 MERGED #610 (2026-10-04), with review fix rounds 1 and 2.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -4781,9 +4781,7 @@ The R8 cases must show PASSED, not SKIPPED. With `DATABASE_URL` set, the two WS-
 
 ##### EM-T8g-2 — "Keep separate", the UI half (after T8g-1 and EM-T8f-2)
 
-**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-separate-ui`. No migration and no backend change.
-A toggle saves only after EM-T8g-1 deploys. Before that, the gateway refuses the field, and the UI
-shows the error and moves nothing.
+**Status.** ✅ MERGED #610 (2026-10-04), after EM-T8g-1 #608. No migration and no backend change.
 
 **As-built notes.**
 
