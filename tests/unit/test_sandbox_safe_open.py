@@ -30,6 +30,7 @@ Mutations this suite catches (R7), each run red once by hand:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
@@ -228,10 +229,8 @@ def test_a_racing_swap_of_a_parent_dir_never_wins(tmp_path: Path, opener_path: s
                 seen.add(so.read_bytes(root, "outputs/secret.txt"))
             except (so.UnsafePath, OSError):
                 seen.add(b"refused")
-            try:
+            with contextlib.suppress(so.UnsafePath, OSError):
                 so.write_bytes(root, f"outputs/w{i % 5}.txt", b"w", make_parents=False)
-            except (so.UnsafePath, OSError):
-                pass
     finally:
         stop.set()
         t.join(timeout=10)
