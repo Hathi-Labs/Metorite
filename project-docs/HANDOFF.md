@@ -3654,6 +3654,27 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R5g
 - **Added:** 2026-10-01 · the WS-27bn R5g session
 
+### H-210 · Drop the old thread index `idx_email_messages_thread` in a migration of its own · [AGENT]
+- **Check:** `grep -rn "DROP INDEX IF EXISTS idx_email_messages_thread;" infra/postgres/`
+  → no hit means the entry is still open.
+- **When:** after migration 226 serves on the box, and
+  `pg_stat_user_indexes.idx_scan` for `idx_email_messages_thread_received` is
+  more than 0. Until then the old index is the fallback (R6).
+- **Why:** Migration 226 adds `idx_email_messages_thread_received` on
+  `(account_id, thread_id, received_at DESC NULLS LAST)`. It covers the two
+  columns of the old index of migration 17. The planner costs the two plans
+  almost the same, so it can pick either one. Each write to `email_messages`
+  also pays for both. The drop removes that choice and that cost.
+- **⚠️ A full replay creates it again.** `17_email_accounts.sql:70` runs
+  `CREATE INDEX IF NOT EXISTS idx_email_messages_thread`. On a fresh database,
+  or after a ledger reset, 17 creates the index again before the drop runs.
+  So put the drop in a NEW migration after 226, with `DROP INDEX IF EXISTS`.
+  Do not edit 17. Prove it on a fresh ladder: after the replay, the old index
+  is absent.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.6 EM-T4e, As built
+  item 6 · the R6 note in `infra/postgres/226_email_thread_index.sql`
+- **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

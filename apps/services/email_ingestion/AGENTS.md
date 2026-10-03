@@ -33,7 +33,15 @@ import_window.py   — the import floor: the ceiling, the range and the floor (E
 All providers implement the `BaseEmailProvider` abstract interface:
 - `authenticate()`, `list_folders()`, `list_messages()`, `get_message()`
 - `send_message()`, `modify_message()`, `trash_message()`
-- `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list
+- `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list.
+  It takes `catch_up`, the watermark after a pause. Outlook reads more pages
+  back to it. Gmail and IMAP ignore it, because their cursors read each change.
+- `import_batches(since, until, size)` — the import in lists, newest first
+  across every folder (WS-17 EM-T6b). The default of the base class calls a
+  deep `sync_messages`, then sorts and cuts. Outlook merges one page stream
+  for each folder, and reads the next page of a folder only when that folder
+  held the newest head. It awaits `on_estimate` once with the sum of the
+  folder counts, or with `None`.
 - `get_attachment()`
 
 ## Key Contracts
@@ -135,6 +143,70 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   The "Load older" backfill of a folder (`gateway/routes/email/transport/folders.py`)
   writes nothing below the ceiling and stops paging there. Every floor is in
   UTC. R7: `tests/unit/test_email_import_floor.py`.
+- ⚠️ **The import runs in batches (WS-17 EM-T6b).** While `initial_sync_done`
+  is false, `_import_in_batches` runs before the recurring sweep. It fetches
+  each batch with no session open. One `tenant_session(org)` then writes the
+  batch and its progress, through `_write_messages`, the one write of phase
+  (c). The progress columns are `import_phase`, `import_count`,
+  `import_estimate` and `import_reached_at`. When an import fails, they stay,
+  and the next sync resumes with `until = import_reached_at`. A deep sync of a
+  member act (`deep=True`) imports in batches too, and writes no progress and
+  no `initial_sync_done`. No import batch runs the reconcile or the label
+  learner. The recurring sweep runs after each import in the same call, so
+  new mail always syncs (owner answer Q2, spec §10.2). It reads back to
+  `last_synced_at - 1 hour`, or `created_at`, after a pause (D-EM-13). R7:
+  `tests/unit/test_email_import_batches.py`.
+- ⚠️ **A failure never stops new mail (EM-T6b fix rounds 2 and 3, owner
+  answer Q2).** A failed import does not raise. The cycle still runs the
+  recurring sweep and phase (c). Phase (d) then writes `sync_status =
+  'error'` with the error, and the next cycle resumes the import. A failed
+  import on a mailbox that never synced keeps `last_synced_at` NULL, so the
+  next sweep reads back to `created_at`.
+- ⚠️ **A sweep folder that stops short keeps the watermark (EM-T6b fix
+  rounds 3 and 4).** A first page that fails with a status other than 403 or
+  404 leaves its folder short. A later page before the watermark does too.
+  The sweep keeps the pages that it read and sets `catch_up_incomplete`.
+  Phase (d) writes that mail, keeps `last_synced_at` and writes a
+  `sync_error` note with the folder name only. The loop counts the cycle as
+  a soft failure and backs off.
+  - **Only the loop counts.** A cycle of the loop passes `from_loop=True`,
+    and only that cycle adds to the count. The webhook, the manual sync, the
+    rerun and the deep downloads run when mail arrives or a member acts. If
+    they counted, a busy mailbox could abandon a gap in minutes.
+  - **The abandon is sticky.** After `CATCH_UP_MAX_MISSES` (6) short cycles
+    of the loop in a row, the watermark moves on, and the log says
+    `sync.catch_up_abandoned` with the folder and the gap. A later short
+    cycle adds no count, keeps no watermark and does not back off. It writes
+    the note of the abandon again. Only a complete cycle clears the count
+    and the abandon.
+  - The count and the abandon live in the process, so a restart clears
+    them. The note reaches the API only, because the UI shows `sync_error`
+    only when `sync_status` is `error`. The later full fix is a watermark for
+    each folder. R7: `tests/unit/test_email_import_batches.py`.
+- ⚠️ **A 403 or a 404 skips only Archive or a user folder (EM-T6b fix round
+  4).** The import and the recurring sweep use one rule, `_skips_folder` in
+  `providers/outlook.py`. On Inbox, Sent, Drafts, Junk or Deleted Items, a
+  403 or a 404 fails the cycle, so the member sees the error. R7:
+  `tests/unit/test_email_import_batches.py`.
+- ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix rounds
+  1 and 2).** Each next page is a new query with `lt` the second after the
+  oldest message of the last page. Exchange keeps a fraction of a second, and
+  `le` that second dropped the rest of a split second. The stream drops the
+  ids that it read again. When one second fills a page, one query with
+  `$top=1000` reads that second. A 429, 503 or 504 page tries once more
+  after `Retry-After`.
+- ⚠️ **Three guards protect the reconcile of a member-act import (EM-T6b
+  fix rounds 2 and 3).** `reconcile.import_reconcile_candidates` takes
+  `(id, folder, received_at)` tuples. It keeps a row written after phase
+  (a), because a move, a rule action or a draft during the import writes it
+  and Graph gives a moved message a new id. When a folder has more
+  candidates than 50, or 2% of its rows, the reconcile leaves that folder
+  and logs `sync.import_reconcile_skipped`. Then, with no session open, the
+  provider looks up each candidate by `internetMessageId`, at most 50 for
+  each folder. A message that Graph still has keeps its row, because the
+  member moved it in the Outlook client. A failed lookup, or a row with no
+  internet message id, keeps its row too. `trash_import_rows` checks
+  `updated_at` again in its own block.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
