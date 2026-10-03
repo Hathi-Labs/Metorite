@@ -460,8 +460,15 @@ for one organization. An empty value turns every target off.
    - The broker appends each mount source to a list file outside every
      mount. A dir stays on the list after its container stops, because the
      container's writes stay in it. `is_sandbox_dir()` reads the list.
+   - At startup, the broker trims the list to the dirs that still exist.
    - WS-43h adds read-only mounts for app-builder only, from a list in code
      (§7.8).
+   - ⚠️ **Every recreate re-applies every mount of this rule.** A grant, a
+     revoke and a restart after a failure each start a new container. If the
+     new container misses the empty mount on `/workspace/.git`, an
+     app-builder container can write `.git/hooks/post-commit`. The next host
+     checkpoint then runs it. One function builds the mount list for every
+     start, and WS43-F9 proves the cover survives a grant and a revoke.
 6. **The container flags.**
    - `--network none` (WS-43g changes this only after an approval).
    - `--read-only`, plus `--tmpfs /tmp:rw,nosuid,nodev,size=256m`.
@@ -503,7 +510,8 @@ for one organization. An empty value turns every target off.
 10. **Disk.**
     - Before each exec, the broker checks the free space of the file system
       that holds `state_root()`. Below `sandbox_min_free_disk_mb` (default
-      5120), it starts no container and runs no exec.
+      5120), it starts no container and runs no exec. The owner sizes this
+      floor for the box at WS43-G3.
     - After each exec, the broker measures the whole working dir. Past
       `sandbox_workspace_quota_mb` (default 2048), it refuses the next exec,
       and the file tools refuse writes. `file_access_delete` still works, so
@@ -594,17 +602,19 @@ card counts as a refusal.
 - The approver is the member bound to the run (`artifact_context()["member"]`),
   because only that member's chat shows the card.
 - The expiry is the end of the run or 30 minutes, whichever comes first.
-- The broker restarts the container on the organization's own `--internal`
-  network, `mtr-egress-` plus a hash of the organization. The workspace stays,
-  because it is a bind mount. `/tmp` is cleared. WS43-E5 measured the restart
-  at 1.27 s.
+- The broker RECREATES the container on the organization's own `--internal`
+  network, `mtr-egress-` plus a hash of the organization. A change of network
+  mode is not a `docker restart`. The new container gets every mount of §7.1
+  rule 5 again, the empty read-only cover on `/workspace/.git` included.
+- The workspace stays, because it is a bind mount. `/tmp` is cleared. WS43-E5
+  measured the recreate at 1.27 s.
 - `HTTP_PROXY` and `HTTPS_PROXY` in the container point at the proxy and carry
   the grant token.
 - Two organizations never share an egress network. So one tenant's container
   cannot reach another tenant's container.
-- At the run's end, `revoke_egress()` removes the grant and restarts the
-  container on `--network none`. An expired grant does the same at the next
-  exec.
+- At the run's end, `revoke_egress()` removes the grant and recreates the
+  container on `--network none`, with every mount of §7.1 rule 5 again. An
+  expired grant does the same at the next exec.
 
 **The host firewall.** An `--internal` network still gives the host an
 address on its bridge, and the gateway listens on every host address (§4.5).
@@ -736,6 +746,11 @@ there. The container never sees that `.git`, because an empty read-only mount
 covers it. So host git there reads only a `.git` that no container touched.
 WS43-F13 proves that a container write to `/workspace/.git` fails, and that
 host git runs no hook that the container planted.
+
+Belt and braces: `_git` in `apps/durability.py` runs each checkpoint with
+`GIT_CONFIG_NOSYSTEM=1`, `-c core.fsmonitor=false` and `-c core.hooksPath=`.
+So host git reads no system config, starts no file monitor and runs no hook,
+whatever the working tree holds.
 
 **Rule B: no host file access that a symlink can redirect.**
 
@@ -991,11 +1006,11 @@ a full disk. The reaper stops idle containers.
 | WS43-F6 | `tests/unit/test_run_command_tool.py` | `run_command` skips `decide()`, shows up in `_collect_injectable_platform_tools()` or in the output of `_inject_agent_tools` for an agent with no `tool_scope`, or leaves `SHELL_TOOLS` |
 | WS43-F7 | `tests/unit/test_maf_code_session.py` | The scope switch fails, a broker failure falls back to Copilot or to the host, the report uses `response.text`, the empty-answer retry goes, or a write or delete skips the blob store |
 | WS43-F8 | `tests/unit/test_maf_harness_contract.py` | An `agent-framework-core` upgrade renames a file tool or a `create_harness_agent` parameter that WS-43 uses, or the session drops `disable_file_memory=True` or `allow_concurrent_invocation=False` |
-| WS43-F9 | `tests/unit/test_sandbox_network_grant.py` | A run with no chat opens the network, a refusal opens it, an approval does not move the container to its own organization's network, the run's end leaves a grant, or a sandbox reaches the bridge gateway address on port 8080 |
+| WS43-F9 | `tests/unit/test_sandbox_network_grant.py` | A run with no chat opens the network, a refusal opens it, an approval does not move the container to its own organization's network, the run's end leaves a grant, or a sandbox reaches the bridge gateway address on port 8080. Or the empty read-only cover on `/workspace/.git` is missing after a grant or after a revoke |
 | WS43-F10 | `tests/unit/test_coding_sandbox_image.py` | The base image loses its digest, a requirement loses its hash, Node loses its version pin or SHA-256, or the broker accepts a mutable tag |
 | WS43-F11 | `tests/unit/test_coding_eval_checkers.py` | An eval checker passes a wrong output or fails a right one |
 | WS43-F12 | `tests/unit/test_app_builder_engine.py` | app-builder ignores the scope, asks for a mount outside the broker's list, mounts a source with `.git`, takes the Copilot path because of the label, or leaves the token or the LLM key findable in its container |
-| WS43-F13 | `tests/unit/test_no_host_git_on_sandbox_dir.py` | A host `git` process starts on a sandbox dir. The test covers `_commit_repo_changes`, the push guard, the HEAD capture, the commit scan, the self-anneal and the self-mutation, and plants a hostile `.git/config` and hook. For a Custom Apps workspace, a container write to `/workspace/.git` succeeds, or a checkpoint runs a planted hook |
+| WS43-F13 | `tests/unit/test_no_host_git_on_sandbox_dir.py` | A host `git` process starts on a sandbox dir. The test covers `_commit_repo_changes`, the push guard, the HEAD capture, the commit scan, the self-anneal and the self-mutation, and plants a hostile `.git/config` and hook. For a Custom Apps workspace, a container write to `/workspace/.git` succeeds, or a checkpoint runs a planted hook. The test also plants, at run time, a `subdir/.git` as a directory, a `subdir/.git` as a gitfile (`gitdir: …`) and a root `.gitattributes`, and a checkpoint runs something from one of them. Or `_git` in `apps/durability.py` drops `GIT_CONFIG_NOSYSTEM=1`, `core.fsmonitor=false` or the empty `core.hooksPath` |
 | WS43-F14 | `tests/unit/test_sandbox_safe_open.py` | The safe opener follows a symlink at any depth, a racing thread swaps a parent dir for a symlink and wins, a host reader or writer of §7.5 rule B skips the opener, or a skill under `agent-data/skills/` does not survive a lost disk copy and a rehydrate |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
@@ -1431,9 +1446,13 @@ the firewall install are WS43-G1 and WS43-G4.
 
 ### WS-43h — app-builder on the MAF harness 🔲
 
-**Scope.** `apps/agents/agent-app-builder/agents.py`, the app-builder mount
-list and the `build/` copy in the broker, the five registry-label sites of
-§4.3 in `executor.py`, and fence WS43-F12.
+**Scope.**
+
+- `apps/agents/agent-app-builder/agents.py`, the app-builder mount list and
+  the `build/` copy in the broker.
+- The five registry-label sites of §4.3 in `executor.py`.
+- The checkpoint flags of §7.5 in `_git` of `apps/durability.py`.
+- Fences WS43-F12 and the Custom Apps half of WS43-F13.
 
 **Done when:**
 
