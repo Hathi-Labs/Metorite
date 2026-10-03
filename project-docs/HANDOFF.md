@@ -95,6 +95,39 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-227 · Scope the Projects chat documents to their thread · [AGENT]
+- **Check:** `rg -n 'outputs/<thread|thread_output' packages/acb_skills/acb_skills/write_artifact.py apps/services/gateway/gateway/routes/workspace.py`.
+  No hit means no thread-scoped folder exists yet, and this is open. To
+  confirm, open a Projects chat document from the session of another member
+  of the same organization. If it opens, this is open.
+- **What happens today.** A shared agent's run works in its tenant dir,
+  `state/<agent>/<slug of o:<org>>/` (H-201 part 3). `write_artifact` puts a
+  document under `outputs/` there (`write_artifact.py:213-214`). Every session
+  of that agent in the organization gets the same tenant dir
+  (`_tenant_agent_workspace`, `gateway/routes/workspace.py:699`). So an S8
+  document of the Projects chat, such as a report on one member's visible
+  tasks or on a private project, is readable from any other member's session
+  of projects-assistant.
+- **Why it matters.** It is a gap in D12, the visibility rule inside a
+  tenant, and it dates from H-201 part 3. The supervisor's decision on
+  WS43-Q6 scopes the sandbox outputs per thread
+  (`specs/maf_coding_engine.md` §16.3). The documents of today need the same
+  rule.
+- **Do.**
+  1. For a shared agent, write a document to `outputs/<thread hash>/`, with
+     the same thread hash as §16.3.
+  2. For a session of a shared agent, list and serve only that thread's
+     folder under `outputs/`. Keep the room check of today.
+  3. Link the artifact card to the new path. Keep the old link working for a
+     member of that thread, through the fault-in of §21.15.
+  4. Check the uploads too. The session upload of §21.15 rule 11 writes to
+     the shared `inputs/`, so it may have the same gap.
+  5. Add an R8 test: a member with another session of the same agent cannot
+     list or read the document.
+- **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
+  §14 and §21.15 · D12
+- **Added:** 2026-10-03 · the D86 Projects-first PR
+
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
   A hit means this is open.
