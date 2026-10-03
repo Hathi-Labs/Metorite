@@ -20,7 +20,7 @@
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3366,7 +3366,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
 | 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
 | 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
-| 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8d |
+| 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8f |
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
 | 21 | A label filter in All inboxes | Not shown. A label belongs to one mailbox. | EM-T8d |
 | 22 | The recipient is known only from another mailbox | The composer shows "You usually write to this person from <label>" with a switch | EM-T8c |
@@ -3384,8 +3384,8 @@ wrong-sender defects first.
 |---|---|---|---|
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
-| **EM-T8c** | 🟢 AGENT-SAFE | **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
-| **EM-T8d** | 🟢 AGENT-SAFE · R8 | **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
+| **EM-T8c** | 🟢 AGENT-SAFE | ✅ **MERGED #592 (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
+| **EM-T8d** | 🟢 AGENT-SAFE · R8 | 🔨 **BUILT, not merged (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
 | **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
@@ -3480,9 +3480,11 @@ label rule of §11.4. The conformance test with the debt entry removed. The fenc
 
 **Verification.** `uv run pytest tests/unit/test_email_mailbox_identity.py tests/unit/test_email_n_plus_one.py -v -rs`.
 The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
-`npx tsc --noEmit && npx vitest run src/app/email src/lib/theme`.
+`npx tsc --noEmit && npx vitest run src/app/email src/lib/theme src/components`.
 
 #### 11.7.3 EM-T8c — the From row and the second connect
+
+**Status.** ✅ MERGED (#592, 2026-10-03, no migration), with review fix round 1.
 
 1. **The From row** in `ComposePanel` and in the inline composer, for two or more mailboxes. It
    lists each mailbox with its chip and its address. A mailbox that needs a reconnect shows the
@@ -3499,7 +3501,51 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
 7. **The Integrations connect leg (MB-16)** sends the import range and hides IMAP. As an
    alternative, it links to the connect flow inside Email.
 
+**As built (2026-10-03).**
+
+- **A reply from another mailbox goes as new mail.** A provider cannot answer a mail of another
+  mailbox, and `/send` refuses it (MB-6). So the composer drops the reply target, and the
+  warning says that the reply starts a new conversation. The thread of the mail shows no
+  optimistic copy, because the reply lands in the other mailbox.
+- **The usual sender** comes from `GET /email/contacts/sent-from`, not from `/contacts/suggest`.
+  It maps each address to the mailbox of the member that last wrote to it, with the owner
+  predicate in the SQL. A failure answers `{}`.
+- **The domain warning** reads `work_domain` from the accounts API, so the UI keeps no list of
+  consumer domains.
+- **A mailbox that cannot send** is one whose sign-in failed: a live call answered 401, or the
+  accounts API returns `needs_reconnect`. The gateway sets that flag only for a sync error of the
+  sign-in. A 429 or a 503 during an import also marks the sync as failed. A send still works
+  then, so that error does not block a send. The reconnect banner still shows for any sync error.
+- **A change of From during a save** makes the draft of that save stale. The composer keeps a
+  list of stale drafts and deletes them only once the new mailbox holds the message. While a
+  stale draft exists, a send takes the draft path, which waits for the real send.
+- **The pop-out keeps the From** of the inline reply. The full composer opens on the mailbox of
+  the mail and starts on the chosen From, so it drops the reply target itself.
+- **The picker** is the house dropdown (`SelectButton`), with the label of each mailbox and its
+  address as the hint. A mailbox that cannot send stays in the list, disabled, with the reason.
+- **A reply that leaves its conversation** always shows the warning. When the mailbox of the
+  conversation cannot send, the warning offers no switch back.
+- **An address already present** is found in the browser. Before an ADD, the page keeps the
+  ids of the mailboxes of the member in the session storage of the tab. A reconnect names its
+  mailbox and stores none. The callback page reads the ids once, removes them, and shows the
+  notice when the id that returns is one of them. The gateway needs no `reconnected` flag.
+- **The return** sets `?account=<id>` on the target of the callback, so an old selection in
+  `redirect_after` does not win. It also removes `connect=1`, or the add dialog opens again.
+- **"Load older"** that ends after a switch of mailbox writes no rows into the new view.
+- **Integrations** sends Add to `/email?connect=1`. Its own leg, with Gmail and IMAP, is gone.
+  Reconnect stays on Integrations, with the mailbox as its hint.
+
+**Fences.** `tests/unit/test_email_from_row.py` (R8 for `sent-from`) and
+`src/app/email/lib/fromRow.test.ts` name their fence ids.
+
+**Verification.** `uv run pytest tests/unit/test_email_from_row.py -v -rs` (R8 PASSED, not SKIPPED).
+In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/app/integrations src/components/email src/lib/theme`.
+The theme suite holds the design-system fences, so leave it in.
+
 #### 11.7.4 EM-T8d — All inboxes
+
+**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-all-inboxes`, no migration).
 
 1. **The store scope** is `"all"` or a mailbox id. The URL holds it (§11.4).
 2. **The list and search** call the backend with no `account_id` in All inboxes. Each row draws
@@ -3511,6 +3557,68 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
    for one mailbox.
 5. **The unread count (MB-13)** is the Inbox only.
 6. **The import panels** show one panel for each importing mailbox, each one named.
+
+**As built (2026-10-03).**
+
+- **The scope is a flag beside the mailbox.** The store keeps `viewAll` and a real
+  `selectedAccountId`. All inboxes reads the list, search, paging, the refresh and the facets
+  with no `account_id`. Settings, automation and new mail keep a real mailbox, and new mail in
+  All inboxes goes from the default mailbox. The URL and the local storage hold `all`.
+- **The first view.** Two or more mailboxes and no stored choice open All inboxes. A stored
+  mailbox that is gone falls back to All inboxes, or to the only mailbox. One mailbox never shows
+  the scope.
+- **The switcher** draws "All inboxes" above the mailboxes, with the sum of the Inbox counts. A
+  mailbox row is never selected while All inboxes is.
+- **Folders (item 4, narrowed).** All inboxes draws only the folders that each mailbox has,
+  with no count, because a count belongs to one mailbox. A custom folder that is open when the
+  member picks All inboxes becomes the Inbox. A summed count for each folder is not built.
+- **"Load older"** pages one mailbox at the provider, so All inboxes does not offer it.
+- **"Open in inbox"** keeps All inboxes: the mail shows there with its chip.
+- **The import panels (item 6) are not built in this slice.** The page still shows one panel,
+  and it names its mailbox.
+
+**The review round (2026-10-03).** The review and the verifier found that some acts still used
+the hidden selected mailbox in All inboxes. Each act now uses the mailbox of the row, or acts on
+each mailbox, or is absent.
+
+- **A row act uses the mailbox of the row.** The rule test, the snooze filter and the label
+  colour take the `accountId` of the mail. A label colour for another mailbox goes to the
+  provider and leaves the chips of the view unchanged.
+- **Acts that belong to one mailbox are absent.** The label filter, the custom folders in a move
+  menu, the search scope and the palette, and the resync are absent in All inboxes. A label chip
+  on the dashboard opens its mailbox first.
+- **Sync and the busy mark cover each mailbox.** `syncScope()` syncs each mailbox, and
+  `scopeBusy()` reads the status of each one.
+- **A failure cannot hide.** The reconnect banner names the first mailbox that needs it, and the
+  switcher marks a mailbox whose sync failed.
+- **The unread count** counts the Inbox only, and a snoozed mail does not count.
+- **The scope survives change.** A refresh for another scope does not land. A disconnect in All
+  inboxes reads the list again, and fewer than two mailboxes end the scope.
+
+**The second review round (2026-10-03).** The verifier passed the first round with no P0 and no
+P1. This round fixes its P2 findings.
+
+- **Automation and the chat name their mailbox (F4, F5).** Both act on one mailbox, and All
+  inboxes names none. So opening one leaves All inboxes for the mailbox of the open mail, else
+  the default mailbox, and the switcher marks it. The open mail stays open. EM-T8e-3 gives the
+  chat its own All inboxes scope.
+- **A removed mailbox leaves at once (F8).** Its rows leave the list, and a mail of it leaves the
+  reading pane. This is true for a disconnect in this tab and for a removal in another tab.
+- **The rows of All inboxes add no label (F6).** A label belongs to one mailbox.
+- **The bulk label menu keeps its colours for one mailbox (F2).** All inboxes shows none.
+
+**Moved to EM-T8f (F7).** This slice does not build two items. They are the summed count of each
+folder in All inboxes (item 4), and one import panel for each mailbox (item 6, edge case 19).
+§11.7.6 now owns them.
+
+**Fences.** `tests/unit/test_email_all_inboxes.py` (R8), `src/app/email/lib/allInboxes.test.ts`
+and `src/app/email/lib/allInboxesStore.test.ts` name their fence ids. The store tests drive the
+real store with a mocked gateway. They killed 7 of 7 store mutants in round 1 and 6 of 6 in
+round 2. Round 2 includes the 3 mutants that survived the verifier.
+
+**Verification.** `uv run pytest tests/unit/test_email_all_inboxes.py tests/unit/test_email_conversation_collapse.py -v -rs`
+(R8 PASSED, not SKIPPED). In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/lib/theme src/components`.
 
 #### 11.7.5 EM-T8e — the AI context
 
@@ -3533,6 +3641,9 @@ The R8 tests must show PASSED, not SKIPPED. In `workbench/control_plane`, run
    the target gets " (copy)". The rules step of a new mailbox offers it.
 3. **The disconnect dialog** names the new default before the removal (edge case 18).
 4. **The Mem0 purge (MB-17).** A disconnect deletes the memories under `#acct:<id>`.
+5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
+   folder. The page shows one import panel for each importing mailbox, each one named (edge case
+   19).
 
 #### 11.7.7 EM-T8g — duplicates and separation
 

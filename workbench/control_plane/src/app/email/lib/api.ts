@@ -69,6 +69,8 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     defaultLabel: typeof raw.default_label === "string" && raw.default_label
       ? raw.default_label : undefined,
     colorSlot: optionalSlot(raw.color_slot),
+    workDomain: optionalString(raw.work_domain),
+    needsReconnect: raw.needs_reconnect === true,
     unreadCount: Number(raw.unread_count ?? 0),
     syncEnabled: Boolean(raw.sync_enabled ?? true),
     lastSyncedAt: raw.last_synced_at ? String(raw.last_synced_at) : undefined,
@@ -518,6 +520,28 @@ export async function setDefaultEmailAccount(id: string): Promise<EmailAccount> 
     { method: "POST" }
   );
   return mapAccount(raw);
+}
+
+/**
+ * For each address, the mailbox of the member that last wrote to it (EM-T8c).
+ * The From row warns "You usually write to this person from <label>". A
+ * failure answers {}, because a warning never stops the composer.
+ */
+export async function getSentFrom(emails: string[]): Promise<Record<string, string>> {
+  const wanted = Array.from(
+    new Set(emails.map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"))),
+  ).slice(0, 20);
+  if (wanted.length === 0) return {};
+  try {
+    const raw = await gatewayFetch<Record<string, unknown>>(
+      `/email/contacts/sent-from?${new URLSearchParams({ emails: wanted.join(",") }).toString()}`,
+    );
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw || {})) if (typeof v === "string") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export async function updateEmailAccount(

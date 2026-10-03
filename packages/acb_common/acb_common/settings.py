@@ -579,6 +579,21 @@ class Settings(BaseSettings):
     # install, not just one.
     agent_deps_allow_source_builds: bool = False
 
+    # ── Native MAF session persistence (WS-43, maf_coding_engine.md §15.9) ──
+    #
+    # `MAF_NATIVE_SESSIONS`, default OFF. It covers every native MAF agent.
+    # ON gives a native run its earlier turns as structured messages, and the
+    # per-run context (system_context, memory_context, the persona) through a
+    # MAF context provider attached to that run only (WS-43t1). WS-43t2 adds
+    # the stored session behind the same flag. OFF means no change: the run
+    # input is the string prompt, byte for byte. The one reader is
+    # `orchestrator.executor._native_sessions_enabled`.
+    #
+    # 🔴 The production flip is OWNER-GATE (WS43-G13), and its one-week soak
+    # gates the confirm-turn moves (§15.9.8). Fence:
+    # tests/unit/test_native_session_persistence.py (WS43-F20).
+    maf_native_sessions: bool = False
+
     # Copilot SDK chat (coworker sessions via /copilot/chat)
     # Auth order: LITELLM_MASTER_KEY → gateway /v1  |  GITHUB_TOKEN → api.githubcopilot.com
     # Model must be available in whichever provider is active.

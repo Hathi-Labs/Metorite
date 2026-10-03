@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useEmailStore, FOLDER_ALL } from "../lib/emailStore";
+import { useEmailStore, FOLDER_ALL, foldersInScope } from "../lib/emailStore";
 import {
   SearchFilter,
   addFilter,
@@ -32,7 +32,10 @@ export function SearchBar() {
   const searchScope = useEmailStore((s) => s.searchScope);
   const searchIsSemantic = useEmailStore((s) => s.searchIsSemantic);
   const selectedFolder = useEmailStore((s) => s.selectedFolder);
-  const folders = useEmailStore((s) => s.folders);
+  // A custom folder belongs to one mailbox, so All inboxes offers none.
+  const allFolders = useEmailStore((s) => s.folders);
+  const viewAll = useEmailStore((s) => s.viewAll);
+  const folders = useMemo(() => foldersInScope(allFolders, viewAll), [allFolders, viewAll]);
   const availableLabels = useEmailStore((s) => s.availableLabels);
   const labelColors = useEmailStore((s) => s.labelColors);
   const setSearchQuery = useEmailStore((s) => s.setSearchQuery);

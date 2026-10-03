@@ -961,7 +961,6 @@ function EmailTab() {
   const [error, setError] = useState<string | null>(null);
   // A refused remove. It shows above the list, and the list stays (EM-T4f).
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
   const hasFetched = useRef(false);
 
   const mapAccount = useCallback((raw: Record<string, unknown>) => ({
@@ -995,7 +994,6 @@ function EmailTab() {
     if (!hasFetched.current) { hasFetched.current = true; void fetchAccounts(); }
   }, [fetchAccounts]);
 
-  const [showIMAP, setShowIMAP] = useState(false);
   const [oauthStatus, setOauthStatus] = useState<{
     gmail: boolean; microsoft: boolean;
   }>({ gmail: false, microsoft: false });
@@ -1016,29 +1014,33 @@ function EmailTab() {
     void check();
   }, [accounts]); // re-check when accounts change
 
-  const handleConnect = useCallback((provider: "gmail" | "microsoft" | "imap", loginHint?: string) => {
-    if (provider === "imap") {
-      setShowAdd(false);
-      setShowIMAP(true);
-    } else {
-      // Navigate to the BFF, never straight at the gateway host. A top-level
-      // navigation carries no Bearer and no X-User-Email (the session cookie is
-      // on this origin, not api.*), so the gated authorize route 401s every
-      // caller. api/email/oauth/[provider]/authorize runs server-side, attaches
-      // the identity, and re-issues the provider redirect. Identity now comes
-      // from the session on the server — never from a `user_email` parameter.
-      //
-      // URLSearchParams already percent-encodes values — don't pre-encode with
-      // encodeURIComponent or redirect_after ends up double-encoded and the
-      // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
-      const params = new URLSearchParams({
-        redirect_after: window.location.href,
-      });
-      // A reconnect names the mailbox, so Microsoft signs THAT one in. With no
-      // hint, a member who has a mailbox gets the account picker (EM-T8a).
-      if (loginHint) params.set("login_hint", loginHint);
-      window.location.href = `/api/email/oauth/${provider}/authorize?${params.toString()}`;
-    }
+  // A NEW mailbox connects inside Email, which has the import range step and
+  // offers Outlook only (D-EM-5). This page used to start its own leg with no
+  // range, and it still offered Gmail and IMAP (EM-T8c, MB-16).
+  const connectInEmail = useCallback(() => {
+    window.location.assign("/email?connect=1");
+  }, []);
+
+  // A RECONNECT stays here: it names the mailbox, so Microsoft signs that
+  // one in, and the mailbox keeps its range (D-EM-13).
+  const handleConnect = useCallback((provider: "gmail" | "microsoft", loginHint?: string) => {
+    // Navigate to the BFF, never straight at the gateway host. A top-level
+    // navigation carries no Bearer and no X-User-Email (the session cookie is
+    // on this origin, not api.*), so the gated authorize route 401s every
+    // caller. api/email/oauth/[provider]/authorize runs server-side, attaches
+    // the identity, and re-issues the provider redirect. Identity now comes
+    // from the session on the server — never from a `user_email` parameter.
+    //
+    // URLSearchParams already percent-encodes values — don't pre-encode with
+    // encodeURIComponent or redirect_after ends up double-encoded and the
+    // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
+    const params = new URLSearchParams({
+      redirect_after: window.location.href,
+    });
+    // A reconnect names the mailbox, so Microsoft signs THAT one in. With no
+    // hint, a member who has a mailbox gets the account picker (EM-T8a).
+    if (loginHint) params.set("login_hint", loginHint);
+    window.location.href = `/api/email/oauth/${provider}/authorize?${params.toString()}`;
   }, []);
 
   const handleDelete = useCallback(async (id: string) => {
@@ -1088,7 +1090,7 @@ function EmailTab() {
             className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-secondary transition-colors">
             <Icon name="RefreshCw" className="w-3.5 h-3.5" />
           </button>
-          <Button layout="flex items-center" onClick={() => setShowAdd(true)}>
+          <Button layout="flex items-center" onClick={connectInEmail}>
             <Icon name="Plus" className="w-3.5 h-3.5" /><span className="hidden sm:inline">Add Account</span>
           </Button>
         </div>
@@ -1126,10 +1128,6 @@ function EmailTab() {
                   </a>
                 )}
               </div>
-              <p className="text-[10px] text-muted-foreground mt-2">
-                You can still use <strong className="text-foreground">IMAP/SMTP</strong> to
-                connect email accounts without OAuth setup.
-              </p>
             </div>
           </div>
         </div>
@@ -1163,7 +1161,7 @@ function EmailTab() {
           <div className="flex flex-col items-center justify-center h-48 gap-3 text-muted-foreground text-sm">
             <Icon name="Mail" className="w-8 h-8 opacity-30" />
             <p>No email accounts connected.</p>
-            <Button layout="flex items-center" onClick={() => setShowAdd(true)}>
+            <Button layout="flex items-center" onClick={connectInEmail}>
               <Icon name="Plus" className="w-3.5 h-3.5" /> Connect your first account
             </Button>
           </div>
@@ -1243,7 +1241,7 @@ function EmailTab() {
                 )}
               </div>
             ))}
-            <button onClick={() => setShowAdd(true)}
+            <button onClick={connectInEmail}
               className="p-4 rounded-xl border-2 border-dashed border-border text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5 transition-all flex flex-col items-center justify-center gap-2 min-h-[140px]">
               <Icon name="Plus" className="w-5 h-5" /><span className="text-xs">Add Account</span>
             </button>
@@ -1251,219 +1249,11 @@ function EmailTab() {
         )}
       </div>
 
-      {/* Add Account modal */}
-      {showAdd && (
-        <AddEmailModal onClose={() => setShowAdd(false)} onConnect={handleConnect} />
-      )}
-
-      {/* IMAP Configuration modal */}
-      {showIMAP && (
-        <AddIMAPModal
-          onClose={() => setShowIMAP(false)}
-          onCreated={() => { setShowIMAP(false); void fetchAccounts(); }}
-        />
-      )}
-
       {/* Link to full email client */}
       <div className="px-4 py-2 border-t border-border shrink-0 flex items-center gap-2">
         <a href="/email" className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
           <Icon name="ExternalLink" className="w-3 h-3" /> Open Email Client
         </a>
-      </div>
-    </div>
-  );
-}
-
-function AddEmailModal({
-  onClose,
-  onConnect,
-}: {
-  onClose: () => void;
-  onConnect: (provider: "gmail" | "microsoft" | "imap") => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4 chat-fade-in">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-foreground">Add Email Account</h3>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-secondary text-muted-foreground transition-colors">
-            <Icon name="X" size={16} />
-          </button>
-        </div>
-        <div className="space-y-2">
-          <button
-            onClick={() => onConnect("gmail")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-red-400/40 hover:bg-red-500/5 transition-colors text-left"
-          >
-            <ServiceLogo service="gmail-oauth" label="Gmail" category="communication" size="md" />
-            <div>
-              <div className="text-sm font-medium text-foreground">Google / Gmail</div>
-              <div className="text-[11px] text-muted-foreground">Sign in with Google OAuth</div>
-            </div>
-          </button>
-          <button
-            onClick={() => onConnect("microsoft")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-blue-400/40 hover:bg-blue-500/5 transition-colors text-left"
-          >
-            <ServiceLogo service="microsoft-oauth" label="Outlook" category="communication" size="md" />
-            <div>
-              <div className="text-sm font-medium text-foreground">Microsoft / Outlook</div>
-              <div className="text-[11px] text-muted-foreground">Sign in with Microsoft OAuth</div>
-            </div>
-          </button>
-          <button
-            onClick={() => onConnect("imap")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border hover:border-cat-12/40 hover:bg-cat-12/5 transition-colors text-left"
-          >
-            <span className="w-8 h-8 rounded-full bg-cat-12/15 text-cat-12 flex items-center justify-center text-xs font-bold">IM</span>
-            <div>
-              <div className="text-sm font-medium text-foreground">IMAP / SMTP</div>
-              <div className="text-[11px] text-muted-foreground">Manual server configuration</div>
-            </div>
-          </button>
-        </div>
-        <p className="mt-4 text-[10px] text-muted-foreground text-center">
-          Credentials are encrypted at rest with AES-256-GCM
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function AddIMAPModal({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [email, setEmail] = useState("");
-  const [label, setLabel] = useState("");
-  const [imapHost, setImapHost] = useState("");
-  const [imapPort, setImapPort] = useState("993");
-  const [smtpHost, setSmtpHost] = useState("");
-  const [smtpPort, setSmtpPort] = useState("587");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    if (!email.trim() || !imapHost.trim() || !smtpHost.trim() || !username.trim() || !password) {
-      setError("All fields are required");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/email/accounts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: "imap",
-          email_address: email.trim(),
-          label: label.trim() || email.trim(),
-          credentials: {
-            imap_host: imapHost.trim(),
-            imap_port: parseInt(imapPort, 10) || 993,
-            imap_username: username.trim(),
-            imap_password: password,
-            imap_use_ssl: true,
-            smtp_host: smtpHost.trim(),
-            smtp_port: parseInt(smtpPort, 10) || 587,
-            smtp_username: username.trim(),
-            smtp_password: password,
-            smtp_use_starttls: true,
-          },
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.detail || `Failed (${res.status})`);
-      }
-      onCreated();
-    } catch (e: any) {
-      setError(e.message ?? "Failed to add account");
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-2xl shadow-2xl p-6 w-full max-w-sm mx-4 chat-fade-in max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-foreground">IMAP / SMTP Setup</h3>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-secondary text-muted-foreground transition-colors">
-            <Icon name="X" size={16} />
-          </button>
-        </div>
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Email Address</label>
-            <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Display Label (optional)</label>
-            <input type="text" value={label} onChange={(e) => setLabel(e.target.value)}
-              placeholder="Work / Personal"
-              className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-          </div>
-          <div className="border-t border-border pt-3">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Incoming (IMAP)</div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2">
-                <input type="text" value={imapHost} onChange={(e) => setImapHost(e.target.value)}
-                  placeholder="imap.example.com"
-                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              </div>
-              <div>
-                <input type="number" value={imapPort} onChange={(e) => setImapPort(e.target.value)}
-                  placeholder="993"
-                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-border pt-3">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Outgoing (SMTP)</div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2">
-                <input type="text" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)}
-                  placeholder="smtp.example.com"
-                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              </div>
-              <div>
-                <input type="number" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)}
-                  placeholder="587"
-                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-border pt-3">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Authentication</div>
-            <div className="space-y-2">
-              <input type="text" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)}
-                placeholder="Username"
-                className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-              <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password or App Password"
-                className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors" />
-            </div>
-          </div>
-
-          {error && <p className="text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">{error}</p>}
-
-          <Button size="none" layout="flex items-center justify-center" onClick={handleSave} disabled={saving} className="w-full py-2.5 text-sm gap-2">
-            {saving ? <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" /> : null}
-            {saving ? "Connecting…" : "Connect Account"}
-          </Button>
-        </div>
-        <p className="mt-4 text-[10px] text-muted-foreground text-center">
-          Credentials are encrypted at rest with AES-256-GCM
-        </p>
       </div>
     </div>
   );

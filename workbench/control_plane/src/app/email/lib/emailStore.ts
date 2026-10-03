@@ -240,9 +240,10 @@ interface EmailState {
   loadingMore: boolean;
   backfilling: boolean;
   foldersLoading: boolean;
-  /** Per-folder cursor for paging older provider history (client-held). */
+  /** Per mailbox and folder: the cursor for paging older provider history
+   *  (client-held). The key is `backfillKey(account, folder)` (MB-10). */
   backfillToken: Record<string, string | null>;
-  /** Per-folder flag: the provider has no older mail left to fetch. */
+  /** Per mailbox and folder: the provider has no older mail left to fetch. */
   backfillExhausted: Record<string, boolean>;
   /** Per-account sync state. "syncing" = the sync request is in flight;
    *  "processing" = mail is persisted and the server is running the rules /
@@ -253,6 +254,12 @@ interface EmailState {
    *  by account id → error message. Drives the in-app reconnect banner
    *  immediately, without waiting for the next sync to set sync_status. */
   authErrors: Record<string, string>;
+  /**
+   * All inboxes (EM-T8d, D-EM-22): the list, search and facets read every
+   * mailbox of the member. `selectedAccountId` stays a real mailbox, the one
+   * that settings, automation and new mail use, so nothing else breaks.
+   */
+  viewAll: boolean;
 
   // Selection
   selectedAccountId: string | null;
@@ -292,6 +299,8 @@ interface EmailState {
     /** The mailbox that sends. A reply carries the mailbox of the mail it
      *  answers. Absent = the selected mailbox (EM-T8a, D-EM-20). */
     accountId?: string;
+    /** The From that an inline reply chose before a pop-out (EM-T8c). */
+    fromAccountId?: string;
     to: string;
     subject: string;
     replyToBody?: string;
@@ -344,6 +353,11 @@ interface EmailState {
   loadMoreEmails: () => Promise<void>;
   backfillOlder: () => Promise<void>;
   selectAccount: (id: string) => void;
+  /** Show the mail of every mailbox of the member (EM-T8d, D-EM-22). */
+  selectAll: () => void;
+  /** Sync the scope of the view: each mailbox in All inboxes, else the
+   *  selected one (EM-T8d review). */
+  syncScope: () => void;
   selectFolder: (folder: string) => void;
   /** Filter the list by a label/category (null clears the filter). */
   selectLabel: (label: string | null) => void;
@@ -372,7 +386,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */
@@ -397,7 +411,9 @@ interface EmailState {
   updateEmail: (id: string, updates: Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder">>) => Promise<void>;
   fetchLabels: (accountId?: string) => Promise<void>;
   /** Set a label/category's colour (preset token); syncs to the provider. */
-  setLabelColor: (name: string, color: string) => Promise<void>;
+  /** Set the colour of a label in ONE mailbox: `accountId`, else the
+   *  selected one. A label belongs to its mailbox (EM-T8d review). */
+  setLabelColor: (name: string, color: string, accountId?: string | null) => Promise<void>;
   applyLabel: (id: string, name: string, add: boolean) => Promise<void>;
   /** Add/remove one category across many messages at once. */
   applyLabelBulk: (ids: string[], name: string, add: boolean) => Promise<void>;
@@ -578,13 +594,72 @@ function writeCachedLabelColors(
   }
 }
 
-/** Choose the initial account from a fetched list: a still-valid persisted/URL
- *  choice wins, else the user's default mailbox, else the first account. */
-function pickInitialAccount(accounts: EmailAccount[]): string | null {
-  if (accounts.length === 0) return null;
-  const preferred = readPreferredAccountId();
-  if (preferred && accounts.some((a) => a.id === preferred)) return preferred;
-  return accounts.find((a) => a.isDefault)?.id ?? accounts[0].id;
+/** The stored scope of All inboxes, in the URL and in local storage. */
+export const ALL_INBOXES = "all";
+
+/**
+ * Choose the initial view from a fetched list (EM-T8d, §11.4).
+ * - A still-valid stored mailbox wins.
+ * - "all" opens All inboxes, for two or more mailboxes.
+ * - With no stored choice, two or more mailboxes open All inboxes.
+ * - Else the default mailbox, else the first one.
+ * `accountId` is always a real mailbox: All inboxes keeps the default one
+ * for settings and new mail.
+ */
+export function pickInitialView(
+  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault">>,
+  preferred: string | null,
+): { accountId: string | null; viewAll: boolean } {
+  if (accounts.length === 0) return { accountId: null, viewAll: false };
+  const fallback = accounts.find((a) => a.isDefault)?.id ?? accounts[0].id;
+  if (preferred && accounts.some((a) => a.id === preferred)) {
+    return { accountId: preferred, viewAll: false };
+  }
+  const several = accounts.length > 1;
+  if (preferred === ALL_INBOXES || !preferred) {
+    return { accountId: fallback, viewAll: several };
+  }
+  // A stored mailbox that is gone falls back to All inboxes, or to the only
+  // mailbox, with no error (§11.6 case 16).
+  return { accountId: fallback, viewAll: several };
+}
+
+/**
+ * The folders that a view offers to open, to search in and to move mail to.
+ * A custom folder belongs to one mailbox, so All inboxes offers only the
+ * folders that each mailbox has (§11.4, EM-T8d review). The sidebar, the move
+ * menus, the command palette and the search scope all read this.
+ */
+export function foldersInScope<F extends { type?: string }>(folders: ReadonlyArray<F>, viewAll: boolean): F[] {
+  return viewAll ? folders.filter((f) => f.type !== "user") : [...folders];
+}
+
+/** "syncing" or "processing" when a mailbox of the scope is busy: any of them
+ *  in All inboxes, else the selected one (EM-T8d review). */
+export function scopeBusy(state: {
+  viewAll: boolean;
+  selectedAccountId: string | null;
+  accounts: ReadonlyArray<{ id: string }>;
+  syncStatus: Record<string, string | undefined>;
+}): boolean {
+  const ids = state.viewAll
+    ? state.accounts.map((a) => a.id)
+    : state.selectedAccountId ? [state.selectedAccountId] : [];
+  return ids.some((id) => state.syncStatus[id] === "syncing" || state.syncStatus[id] === "processing");
+}
+
+/** The `account_id` of a list, search or facet read: none in All inboxes. */
+export function listScope(state: { viewAll: boolean; selectedAccountId: string | null }): string | undefined {
+  return state.viewAll ? undefined : state.selectedAccountId || undefined;
+}
+
+/**
+ * The key of the "load older" state: one mailbox and one folder. Keyed by the
+ * folder alone, a switch of mailbox kept the cursor and the "nothing older"
+ * flag of the old mailbox (EM-T8c, MB-10).
+ */
+export function backfillKey(accountId: string | null | undefined, folder: string): string {
+  return `${accountId ?? ""}:${folder}`;
 }
 
 export const useEmailStore = create<EmailState>((set, get) => ({
@@ -611,6 +686,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   backfillExhausted: {},
   syncStatus: {},
   authErrors: {},
+  viewAll: false,
 
   // Selection
   selectedAccountId: null,
@@ -641,22 +717,52 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   fetchAccounts: async () => {
     set({ accountsLoading: true, error: null });
     try {
+      const before = get().accounts.map((a) => a.id);
       let accounts = await api.listEmailAccounts();
       // Demo fallback: no real accounts connected → show the mock set.
       if (accounts.length === 0 && DEMO) accounts = MOCK_ACCOUNTS;
       set({ accounts, accountsLoading: false, accountsLoaded: true });
+      const gone = before.filter((id) => !accounts.some((a) => a.id === id));
       // Pick the initial mailbox when none is selected yet: a persisted/URL
       // choice wins, else the user's default account, else the first one — so a
       // refresh or shared ?account= link reopens the right inbox.
       const { selectedAccountId } = get();
       if (!selectedAccountId && accounts.length > 0) {
-        const initial = pickInitialAccount(accounts);
-        if (initial) {
-          set({ selectedAccountId: initial });
-          persistAccountId(initial);
-          get().fetchFolders(initial);
-          get().fetchLabels(initial);
+        const initial = pickInitialView(accounts, readPreferredAccountId());
+        if (initial.accountId) {
+          set({ selectedAccountId: initial.accountId, viewAll: initial.viewAll });
+          persistAccountId(initial.viewAll ? ALL_INBOXES : initial.accountId);
+          get().fetchFolders(initial.accountId);
+          get().fetchLabels(initial.accountId);
         }
+      } else if (selectedAccountId && accounts.length > 0 &&
+                 !accounts.some((a) => a.id === selectedAccountId)) {
+        // Another tab removed the selected mailbox: pick the view again, so the
+        // list never reads a mailbox that is gone.
+        const again = pickInitialView(accounts, get().viewAll ? ALL_INBOXES : null);
+        set({ selectedAccountId: again.accountId, viewAll: again.viewAll });
+        persistAccountId(again.viewAll ? ALL_INBOXES : again.accountId);
+        if (again.accountId) {
+          get().fetchFolders(again.accountId);
+          get().fetchLabels(again.accountId);
+        }
+        get().fetchEmails();
+      } else if (get().viewAll && accounts.length < 2) {
+        // The second mailbox went: All inboxes ends on the one that is left.
+        set({ viewAll: false });
+        persistAccountId(get().selectedAccountId);
+        get().fetchEmails();
+      } else if (get().viewAll && gone.length > 0) {
+        // Another tab removed a mailbox that is not selected: its rows leave
+        // All inboxes now, not at the next refresh (EM-T8d review F8).
+        const st = get();
+        const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
+        set({
+          emails: st.emails.filter((e) => !gone.includes(e.accountId ?? "")),
+          ...(open && gone.includes(open.accountId ?? "")
+            ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
+        });
+        get().fetchEmails();
       }
     } catch (err: any) {
       // Demo fallback: backend unreachable → seed mock accounts so the UI works.
@@ -740,7 +846,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         ? await (async () => {
             const r = await api.searchEmails({
               ...searchRequest(get()),
-              accountId: selectedAccountId || undefined,
+              accountId: listScope(get()),
               label: selectedLabel || undefined,
               hybrid: true,
               page: 1,
@@ -750,7 +856,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
             return r;
           })()
         : await api.listEmails({
-            accountId: selectedAccountId || undefined,
+            accountId: listScope(get()),
             folder: selectedFolder,
             label: selectedLabel || undefined,
             page: 1,
@@ -772,7 +878,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // providers like Outlook expose no master categories, so without this the
       // right-click "Label" menu would stay empty even when mail is categorized.
       const labelSet = new Set(get().availableLabels);
-      for (const e of emails) for (const c of e.categories || []) labelSet.add(c);
+      // In All inboxes the rows come from each mailbox, and a label belongs to
+      // one mailbox, so the rows seed nothing (EM-T8d review F6).
+      if (!get().viewAll) for (const e of emails) for (const c of e.categories || []) labelSet.add(c);
       set({
         emails,
         folders,
@@ -818,14 +926,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const result = wasSearch
         ? await api.searchEmails({
             ...searchRequest(before),
-            accountId: selectedAccountId,
+            accountId: listScope(before),
             label: selectedLabel || undefined,
             hybrid: true,
             page: 1,
             pageSize: PAGE_SIZE,
           })
         : await api.listEmails({
-            accountId: selectedAccountId,
+            accountId: listScope(before),
             folder: selectedFolder,
             label: selectedLabel || undefined,
             page: 1,
@@ -835,6 +943,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const now = get();
       if (
         now.selectedAccountId !== selectedAccountId ||
+        // All inboxes keeps the same selected mailbox, so the scope is
+        // compared too (EM-T8d review).
+        listScope(now) !== listScope(before) ||
         now.selectedFolder !== selectedFolder ||
         now.selectedLabel !== selectedLabel ||
         searchViewKey(now) !== viewKey ||
@@ -845,7 +956,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // Demo: don't let an empty background refresh wipe the seeded mock list.
       if (result.emails.length === 0 && DEMO) return;
       const labelSet = new Set(now.availableLabels);
-      for (const e of result.emails) for (const c of e.categories || []) labelSet.add(c);
+      if (!now.viewAll) for (const e of result.emails) for (const c of e.categories || []) labelSet.add(c);
       set({
         emails: result.emails,
         emailsTotal: result.total,
@@ -873,14 +984,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const result = searchActive(state)
         ? await api.searchEmails({
             ...searchRequest(state),
-            accountId: selectedAccountId || undefined,
+            accountId: listScope(state),
             label: state.selectedLabel || undefined,
             hybrid: true,
             page: nextPage,
             pageSize: PAGE_SIZE,
           })
         : await api.listEmails({
-            accountId: selectedAccountId || undefined,
+            accountId: listScope(state),
             folder: selectedFolder,
             label: state.selectedLabel || undefined,
             page: nextPage,
@@ -907,14 +1018,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       selectedAccountId, selectedFolder, backfilling,
       backfillToken, emails, emailsPage,
     } = get();
-    if (backfilling || !selectedAccountId) return;
+    if (backfilling || !selectedAccountId || get().viewAll) return;
     set({ backfilling: true, error: null });
     try {
       // 1) Pull older mail from the provider into the DB.
+      const key = backfillKey(selectedAccountId, selectedFolder);
       const res = await api.backfillFolder(
         selectedAccountId,
         selectedFolder,
-        backfillToken[selectedFolder] ?? undefined,
+        backfillToken[key] ?? undefined,
       );
       // 2) Surface the freshly-persisted older page from the DB and append it.
       const nextPage = emailsPage + 1;
@@ -924,6 +1036,17 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         page: nextPage,
         pageSize: PAGE_SIZE,
       });
+      // The member may have switched mailbox or folder while this ran. Then
+      // the page of the old view must not land in the new one (§11.6 case 20).
+      const now = get();
+      if (backfillKey(now.selectedAccountId, now.selectedFolder) !== key) {
+        set({
+          backfilling: false,
+          backfillToken: { ...now.backfillToken, [key]: res.next_page_token },
+          backfillExhausted: { ...now.backfillExhausted, [key]: res.exhausted },
+        });
+        return;
+      }
       const seen = new Set(emails.map((e) => e.id));
       const merged = [...emails, ...result.emails.filter((e) => !seen.has(e.id))];
       set({
@@ -933,11 +1056,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         backfilling: false,
         backfillToken: {
           ...get().backfillToken,
-          [selectedFolder]: res.next_page_token,
+          [key]: res.next_page_token,
         },
         backfillExhausted: {
           ...get().backfillExhausted,
-          [selectedFolder]: res.exhausted,
+          [key]: res.exhausted,
         },
       });
     } catch {
@@ -953,7 +1076,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   selectAccount: (id: string) => {
     set({
-      selectedAccountId: id, selectedEmailId: null,
+      selectedAccountId: id, viewAll: false, selectedEmailId: null,
       selectedEmailOverride: null, selectedIds: new Set(),
       // Seed this account's cached label colours so switching accounts doesn't
       // flash the previous account's / hash colours before fetchLabels lands.
@@ -965,6 +1088,33 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     get().fetchFolders(id);
     get().fetchLabels(id);
     get().fetchEmails();
+  },
+
+  selectAll: () => {
+    const { selectedFolder, folders } = get();
+    // A custom folder belongs to one mailbox, so All inboxes opens the Inbox
+    // then. A well-known folder, or "all", "starred" and "snoozed", stays.
+    const custom = folders.some((f) => f.key === selectedFolder && f.type === "user");
+    set({
+      viewAll: true,
+      selectedEmailId: null,
+      selectedEmailOverride: null,
+      selectedIds: new Set(),
+      // A label belongs to one mailbox (§11.6 case 21).
+      selectedLabel: null,
+      ...(custom ? { selectedFolder: "inbox" } : {}),
+    });
+    persistAccountId(ALL_INBOXES);
+    get().fetchEmails();
+  },
+
+  syncScope: () => {
+    const { viewAll, accounts, selectedAccountId } = get();
+    if (viewAll) {
+      for (const a of accounts) get().triggerSync(a.id);
+    } else if (selectedAccountId) {
+      get().triggerSync(selectedAccountId);
+    }
   },
 
   selectFolder: (folder: string) => {
@@ -989,6 +1139,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   },
 
   selectLabel: (label: string | null) => {
+    // A label belongs to one mailbox, so All inboxes has no label filter
+    // (§11.6 case 21).
+    if (label && get().viewAll) return;
     set({ selectedLabel: label, selectedEmailId: null, selectedEmailOverride: null });
     get().fetchEmails();
   },
@@ -1025,7 +1178,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // own mailbox. The view switches first, so the sidebar, the folders and
       // every act name the mailbox that holds the mail (EM-T8a, MB-3).
       // `selectAccount` clears the selection, so the mail is set after it.
-      if (email.accountId && email.accountId !== get().selectedAccountId &&
+      if (!get().viewAll && email.accountId && email.accountId !== get().selectedAccountId &&
           get().accounts.some((a) => a.id === email.accountId)) {
         get().selectAccount(email.accountId);
         set({ selectedEmailId: id, viewerCommand: null });
@@ -1228,20 +1381,25 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  setLabelColor: async (name, color) => {
-    const aid = get().selectedAccountId;
+  setLabelColor: async (name, color, accountId) => {
+    const aid = accountId || get().selectedAccountId;
     if (!aid) return;
+    // The chips of the view read the colours of the selected mailbox. A colour
+    // for another mailbox goes to the provider only (EM-T8d review).
+    const mine = aid === get().selectedAccountId;
     const prev = get().labelColors;
-    // Optimistically recolour everywhere chips read from labelColors.
-    const next = { ...prev, [name]: color };
-    set({ labelColors: next });
-    writeCachedLabelColors(aid, next);  // persist so the next paint is correct
+    if (mine) {
+      // Optimistically recolour everywhere chips read from labelColors.
+      const next = { ...prev, [name]: color };
+      set({ labelColors: next });
+      writeCachedLabelColors(aid, next);  // persist so the next paint is correct
+    }
     if (DEMO) return;
     try {
       await api.setLabelColor(aid, name, color);
     } catch (err) {
       set({
-        labelColors: prev,
+        labelColors: mine ? prev : get().labelColors,
         error: (err as Error)?.message || "Failed to set colour",
       });
     }
@@ -1339,7 +1497,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     // leaving the inbox (snooze) or leaving the Snoozed view (un-snooze). The
     // refetch below reconciles thread siblings and folder counts with the server.
     set({
-      emails: prevEmails.filter((e) => (tid ? e.threadId !== tid : e.id !== id)),
+      // A conversation never spans two mailboxes (§11.6 case 13).
+      emails: prevEmails.filter((e) =>
+        tid ? !(e.threadId === tid && e.accountId === target?.accountId) : e.id !== id),
     });
     if (get().selectedEmailId === id) {
       set({ selectedEmailId: get().emails[0]?.id ?? null });
@@ -1509,12 +1669,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         accounts = accounts.map((a, i) => (i === 0 ? { ...a, isDefault: true } : a));
       }
       set({ accounts });
+      // All inboxes needs two mailboxes (EM-T8d review).
+      const wasAll = get().viewAll;
+      if (wasAll && accounts.length < 2) set({ viewAll: false });
       if (get().selectedAccountId === id) {
         const next = accounts.find((a) => a.isDefault)?.id ?? accounts[0]?.id ?? null;
         // A mail of the removed mailbox goes too, and the phone returns to
         // the inbox list (EM-T8a review).
         set({ selectedAccountId: next, selectedEmailId: null, selectedEmailOverride: null });
-        persistAccountId(next);
+        persistAccountId(get().viewAll ? ALL_INBOXES : next);
         if (next) {
           get().fetchFolders(next);
           get().fetchLabels(next);
@@ -1524,6 +1687,17 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           // screen behind the empty state.
           set({ emails: [], emailsTotal: 0, folders: [], selectedEmailId: null });
         }
+      } else if (wasAll) {
+        // Another mailbox went: its rows leave the list of All inboxes now, and
+        // a mail of it leaves the reading pane (EM-T8d review F8).
+        const st = get();
+        const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
+        set({
+          emails: st.emails.filter((e) => e.accountId !== id),
+          ...(open?.accountId === id ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
+        });
+        persistAccountId(get().viewAll ? ALL_INBOXES : get().selectedAccountId);
+        get().fetchEmails();
       }
       return { ok: true };
     } catch (err: unknown) {

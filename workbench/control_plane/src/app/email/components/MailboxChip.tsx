@@ -2,6 +2,9 @@
 
 import { accentForSlot, categoricalAccent, type CategoricalAccent } from "@/lib/categorical";
 import type { EmailAccount } from "../lib/types";
+import { mailboxLabel } from "../lib/mailbox";
+
+export { mailboxLabel };
 
 /**
  * The identity of a mailbox on screen — WS-17 EM-T8b, §11.4 of
@@ -22,11 +25,6 @@ export function mailboxAccent(account: Pick<EmailAccount, "id" | "colorSlot">): 
   return account.colorSlot && account.colorSlot >= 1 && account.colorSlot <= 12
     ? accentForSlot(account.colorSlot - 1)
     : categoricalAccent(account.id);
-}
-
-/** The label to show: the server's display label, else the address. */
-export function mailboxLabel(account: Pick<EmailAccount, "emailAddress" | "displayLabel">): string {
-  return (account.displayLabel || "").trim() || account.emailAddress;
 }
 
 /** The first letter of the label, for a round avatar. */

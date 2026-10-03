@@ -759,7 +759,8 @@ Four things worked only on the Copilot path:
    `_compose_maf_run_input` never runs, because MAF 1.19 refuses `Message(role=, content=)`
    (H-216). So `assemble_run_context` does not supply the history today. The history,
    `memory_context` and the persona reach the model only through the string fallback,
-   `_build_event_message`.
+   `_build_event_message`. WS-43t1 (PR #595) repaired the branch behind
+   `MAF_NATIVE_SESSIONS`, which is off by default (`maf_coding_engine.md` §15.9).
 3. **Registry MCP servers do not reach apis-config now.** `merge_mcp_servers` is a no-op on
    MAF (WS-8c). So an `mcp_servers` row with agent scope `*` reaches only Copilot agents
    (H-217).

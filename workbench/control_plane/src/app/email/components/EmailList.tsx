@@ -5,7 +5,8 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Email } from "../lib/types";
 import { timeLabel } from "../lib/utils";
-import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope, scopeBusy } from "../lib/emailStore";
+import { MailboxChip } from "./MailboxChip";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
@@ -120,14 +121,15 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
+    viewAll, accounts,
   } = useEmailStore();
+  // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
+  const mailboxOfRow = (accountId: string) =>
+    viewAll && accounts.length > 1 ? accounts.find((a) => a.id === accountId) ?? null : null;
   const { isMobile } = useViewMode();
   // Treat the post-sync "processing" window (background rules/labels pipeline)
   // as busy too, so the pull-to-refresh spinner keeps turning until it settles.
-  const syncing = selectedAccountId
-    ? syncStatus[selectedAccountId] === "syncing" ||
-      syncStatus[selectedAccountId] === "processing"
-    : false;
+  const syncing = scopeBusy({ viewAll, selectedAccountId, accounts, syncStatus });
   const [ctx, setCtx] = useState<CtxState | null>(null);
   // "Fix category…" from the row context menu — the same Improve-Rules dialog
   // the AI-Settings Test/History tabs use, reachable from anywhere mail shows.
@@ -140,8 +142,11 @@ export function EmailList({
   // error banner, and offering to "fix the rules" for it would be lying about
   // where the problem is. A transport error (null) likewise stays a banner.
   const recategorize = async (email: Email) => {
-    if (!selectedAccountId || testRunningIds.includes(email.id)) return;
-    const res = await runTestOnMessage(selectedAccountId, email.id, false);
+    // The rules of the mailbox of the ROW, never the selected one: All inboxes
+    // lists mail of each mailbox (EM-T8d review, D-EM-19).
+    const accountId = email.accountId || selectedAccountId;
+    if (!accountId || testRunningIds.includes(email.id)) return;
+    const res = await runTestOnMessage(accountId, email.id, false);
     if (res && !res.matched && !res.unavailable) setFixTarget(email);
   };
 
@@ -243,7 +248,8 @@ export function EmailList({
       selectedAccountId &&
       !syncing
     ) {
-      triggerSync(selectedAccountId);
+      // Each mailbox in All inboxes, else the selected one (EM-T8d review).
+      useEmailStore.getState().syncScope();
     }
     pullStartRef.current = null;
     setPullY(0);
@@ -450,6 +456,10 @@ export function EmailList({
                     >
                       {email.from.name}
                     </span>
+                    {(() => {
+                      const box = mailboxOfRow(email.accountId);
+                      return box ? <MailboxChip account={box} /> : null;
+                    })()}
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {(email.threadCount ?? 1) > 1 && (
@@ -513,8 +523,8 @@ export function EmailList({
                         key={label}
                         name={label}
                         active={selectedLabel === label}
-                        title={`Filter by “${label}”`}
-                        onClick={(e) => {
+                        title={viewAll ? label : `Filter by “${label}”`}
+                        onClick={viewAll ? undefined : (e) => {
                           e.stopPropagation();
                           e.preventDefault();
                           selectLabel(label);
@@ -580,7 +590,14 @@ export function EmailList({
       {ctx && (
         <ContextMenu
           ctx={ctx}
-          folders={folders}
+          folders={foldersInScope(folders, viewAll)}
+          colorAccountId={
+            // Bulk colours the mailbox in view, and All inboxes has none. One
+            // row colours its own mailbox when the view shows its colours.
+            ctx.bulk
+              ? (viewAll ? null : selectedAccountId)
+              : (!viewAll || ctx.email.accountId === selectedAccountId ? ctx.email.accountId : null)
+          }
           availableLabels={availableLabels}
           appliedCategories={ctx.bulk ? new Set() : new Set(ctx.email.categories)}
           onApplyLabel={(name, add) =>
@@ -635,6 +652,7 @@ export function EmailList({
 function ContextMenu({
   ctx,
   folders,
+  colorAccountId,
   availableLabels,
   appliedCategories,
   onApplyLabel,
@@ -652,6 +670,8 @@ function ContextMenu({
 }: {
   ctx: CtxState;
   folders: { key: string; label: string }[];
+  /** The mailbox whose label colours this menu may change, or null for none. */
+  colorAccountId: string | null;
   availableLabels: string[];
   appliedCategories: Set<string>;
   onApplyLabel: (name: string, add: boolean) => void;
@@ -802,6 +822,7 @@ function ContextMenu({
         >
           <div onClick={(e) => e.stopPropagation()}>
             <CtxLabelMenu
+              colorAccountId={colorAccountId}
               availableLabels={availableLabels}
               applied={appliedCategories}
               onApply={onApplyLabel}
@@ -890,10 +911,13 @@ function CtxLabelMenu({
   availableLabels,
   applied,
   onApply,
+  colorAccountId,
 }: {
   availableLabels: string[];
   applied: Set<string>;
   onApply: (name: string, add: boolean) => void;
+  /** The mailbox whose colours the swatches change; null hides them. */
+  colorAccountId: string | null;
 }) {
   const { labelColors, setLabelColor } = useEmailStore();
   const [newLabel, setNewLabel] = useState("");
@@ -926,18 +950,20 @@ function CtxLabelMenu({
                     <CheckboxSquare checked={on} />
                     <span className="truncate">{name}</span>
                   </button>
-                  <ColorSwatch
-                    name={name}
-                    title={open ? "Close colours" : "Set colour"}
-                    onClick={() => setOpenColorFor(open ? null : name)}
-                  />
+                  {colorAccountId && (
+                    <ColorSwatch
+                      name={name}
+                      title={open ? "Close colours" : "Set colour"}
+                      onClick={() => setOpenColorFor(open ? null : name)}
+                    />
+                  )}
                 </div>
-                {open && (
+                {open && colorAccountId && (
                   <div className="px-3 pb-1.5">
                     <LabelColorGrid
                       value={presetForLabel(name, labelColors)}
                       onPick={(c) => {
-                        setLabelColor(name, c);
+                        setLabelColor(name, c, colorAccountId);
                         setOpenColorFor(null);
                       }}
                     />
