@@ -3853,14 +3853,41 @@ merges the shared status lines in place.
 
 ##### EM-T8e-3 — the chat scope (UI)
 
+**Scope.** `workbench/control_plane/src/app/email/` (`EmailAssistantChat.tsx`,
+`lib/emailAssistantPersona.ts` and `page.tsx`) and tests. No agent file and no gateway file.
+
 1. **The picker** in `EmailAssistantChat` offers "All inboxes" when the member has two or more
-   mailboxes, and each mailbox as its chip. It follows the scope of the page.
-2. **The persona** names the scope. In one mailbox, it gives that `account_id`. In All inboxes,
-   it gives no default and lists each mailbox as "label · address (account_id)".
+   mailboxes, and each mailbox as its chip and address. It starts on the scope of the page. The
+   member can change it, and the change holds only for that chat.
+2. **The persona** names the scope.
+   - In one mailbox, it gives that `account_id` and the settings of that mailbox: the standing
+     instructions and the writing style.
+   - In All inboxes, it gives no default `account_id`, and it lists each mailbox as
+     "label · address (account_id <id>)". It holds the settings of no mailbox, because each
+     mailbox has its own (D-EM-24). It tells the model to leave `account_id` out of a write act,
+     so the tool binds it or asks (§11.3).
+   - An open mail names its mailbox in the persona, in both scopes.
 3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
    inboxes, or to the only mailbox.
+4. **The chat keeps All inboxes.** EM-T8d moved the page out of All inboxes when automation or
+   the chat opened. At that time the chat had no All inboxes scope. The chat now has one, so that
+   move skips the chat. Automation still moves.
+5. **The tool cards.** In All inboxes, `emailContext.accountId` is null. A card reads the mailbox
+   from the tool result or the mail, never from a hidden mailbox.
 
-EM-T8e-3 starts after EM-T8d merges, because it reads the `viewAll` scope of the store.
+**Fences (R7).** The vitest files name their fence ids.
+
+- `email-chat-scope-picker`: the picker offers All inboxes only with two or more mailboxes, and
+  it starts on the scope of the page.
+- `email-chat-scope-persona`: a pure test of `buildEmailAssistantPersona` for both scopes. In All
+  inboxes, the text holds no "Active account", no default `account_id` and no settings of a
+  mailbox. It lists each mailbox as "label · address".
+- `email-chat-scope-fallback`: a removed mailbox gives All inboxes, or the only mailbox.
+- `email-chat-keeps-all-inboxes`: the move of EM-T8d skips the chat.
+
+**Verification.** In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme`. Look at the
+chat in light mode, at compact density, and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.6 EM-T8f — settings for each mailbox
 
