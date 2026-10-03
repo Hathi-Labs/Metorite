@@ -99,6 +99,8 @@ def test_gate_drops_only_conversation_rules_when_blocked() -> None:
 async def test_project_status_maps_rule_to_status_with_priority() -> None:
     recorded: list[tuple[str, str]] = []
     db = AsyncMock()
+    # An open status asks whether the thread has an outside participant.
+    db.execute.return_value = _has_outsider()
     row = SimpleNamespace(thread_id="t1", id="m1", received_at=None)
 
     def rec(_db, _aid, tid, status, *_a, **_kw):
@@ -181,6 +183,7 @@ async def test_reconcile_thread_labels_keeps_follow_up_while_awaiting() -> None:
 async def test_project_status_respects_system_type_over_name() -> None:
     recorded: list[tuple[str, str]] = []
     db = AsyncMock()
+    db.execute.return_value = _has_outsider()
     row = SimpleNamespace(thread_id="t9", id="m9", received_at=None)
 
     def rec(_d, _a, tid, st, *_rest, **_kw):
@@ -215,10 +218,23 @@ async def test_resolve_passthrough_for_bulk_threads() -> None:
     llm.assert_not_called()
 
 
+#: ``_thread_is_self_only`` (EM-T8e-1 review round 1): the thread has a
+#: participant outside the member's mailboxes, so the status is asked.
+def _has_outsider():
+    return _result(fetchone=SimpleNamespace(n=2, outside=True))
+
+
+#: ``identity.resolve_self``: the one mailbox of the member.
+def _me(address: str = "me@x.com"):
+    return _result(fetchall=[SimpleNamespace(id="acc", address=address,
+                                             label=None)])
+
+
 async def test_resolve_uses_full_thread_status_over_per_message_pick() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),  # acc email
+        _has_outsider(),                                   # self-only check
+        _me(),                                             # resolve_self
         _result(fetchone=None),                            # org_domains (none)
         _result(fetchall=[SimpleNamespace(
             id="m1", from_address={"email": "a@b.com"}, subject="s",
@@ -247,7 +263,8 @@ async def test_resolve_uses_full_thread_status_over_per_message_pick() -> None:
 async def test_resolve_keeps_original_when_no_rule_for_status() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),
+        _has_outsider(),                                   # self-only check
+        _me(),                                             # resolve_self
         _result(fetchone=None),                            # org_domains (none)
         _result(fetchall=[SimpleNamespace(
             id="m1", from_address={"email": "a@b.com"}, subject="s",
@@ -274,7 +291,7 @@ def _backfill_db(latest, existing):
     db.execute.side_effect = [
         _result(fetchall=latest),
         _result(fetchall=existing),
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),
+        _me(),                   # identity.resolve_self (EM-T8e-1)
         _result(fetchone=None),  # resolve_org_domains (none configured)
         _result(fetchall=[]),    # _attachment_summaries for inbound-gap rows
         # Provider lookup for the label reconcile. None → no provider, so the
@@ -282,6 +299,9 @@ def _backfill_db(latest, existing):
         # STATUS gets recorded; the label collapse has its own coverage in
         # test_email_thread_status_parity.py.
         _result(fetchone=None),
+        # The projection of an open status asks whether the thread has a
+        # participant outside the member's mailboxes (EM-T8e-1 round 1).
+        _has_outsider(),
     ]
     return db
 

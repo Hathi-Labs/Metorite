@@ -121,23 +121,48 @@ def _account(admin, *, org: str, owner: str, address: str) -> str:
 def _mail(admin, *, org: str, account: str, frm: str, to: tuple = (),
           cc: tuple = (), thread: str | None = None, folder: str = "inbox",
           subject: str = "Hello", body: str = "Hello there.",
-          categories: tuple = (), minutes: int = 0) -> str:
+          categories: tuple = (), minutes: int = 0,
+          imid: str | None = None) -> str:
     return _insert(admin, (
         "INSERT INTO email_messages (account_id, provider_message_id, "
         "thread_id, folder, from_address, to_addresses, cc_addresses, subject, "
-        "body_text, snippet, categories, received_at, organization_id) VALUES "
+        "body_text, snippet, categories, received_at, internet_message_id, "
+        "organization_id) VALUES "
         "(CAST(:a AS uuid), :pm, :tid, :f, CAST(:frm AS jsonb), "
         "CAST(:to AS jsonb), CAST(:cc AS jsonb), :s, :b, :b, "
-        "CAST(:cats AS text[]), :at, CAST(:o AS uuid)) RETURNING id"),
+        "CAST(:cats AS text[]), :at, :imid, CAST(:o AS uuid)) RETURNING id"),
         {"a": account, "pm": f"pm-{uuid.uuid4().hex[:12]}", "tid": thread,
          "f": folder, "frm": json.dumps({"email": frm, "name": ""}),
          "to": json.dumps([{"email": t, "name": ""} for t in to]),
          "cc": json.dumps([{"email": t, "name": ""} for t in cc]),
          "s": subject, "b": body, "cats": list(categories),
-         "at": _T0 + timedelta(minutes=minutes), "o": org})
+         "at": _T0 + timedelta(minutes=minutes), "imid": imid, "o": org})
 
 
-def _rule(admin, *, org: str, account: str, name: str) -> str:
+def _sent_by_b(f, *, to: tuple, subject: str = "From B",
+               thread: str | None = None) -> tuple[str, str]:
+    """A mail that the member really sent from mailbox B to mailbox A.
+
+    B's Sent copy and A's inbox copy share one ``internet_message_id``, which
+    is the proof ``identity.proven_own_send`` reads. Returns the id of the
+    copy in A, and the Message-ID."""
+    imid = f"<{uuid.uuid4().hex}@gmail.test>"
+    _mail(f.admin, org=f.org, account=f.b, frm=f.b_addr, to=to, folder="sent",
+          subject=subject, thread=thread, imid=imid)
+    in_a = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=to,
+                 subject=subject, thread=thread, imid=imid)
+    return in_a, imid
+
+
+def _rule(admin, *, org: str, account: str, name: str,
+          created_at: datetime | None = None) -> str:
+    if created_at is not None:
+        return _insert(admin, (
+            "INSERT INTO email_rules (account_id, name, instructions, enabled, "
+            "created_at, organization_id) VALUES (CAST(:a AS uuid), :n, :i, "
+            "true, :at, CAST(:o AS uuid)) RETURNING id"),
+            {"a": account, "n": name, "i": f"when {name}", "at": created_at,
+             "o": org})
     return _insert(admin, (
         "INSERT INTO email_rules (account_id, name, instructions, enabled, "
         "organization_id) VALUES (CAST(:a AS uuid), :n, :i, true, "
@@ -301,6 +326,47 @@ class TestSelfIsEachMailboxOfTheMember:
         assert conv1 is True
         assert conv2 is False
 
+    async def test_the_decide_facts_and_the_cc_note_read_the_set(
+        self, family, monkeypatch,
+    ):
+        """Review round 1: the thread-status facts for ``decide`` and the
+        "only Cc'd" note read each mailbox of the member. ``decide`` is dark,
+        so the test turns its facts on with a ``shadow`` mode."""
+        f = family
+        monkeypatch.setattr(replyzero_mod.decide_features, "mode_for",
+                            lambda feature: "shadow")
+        t = f"tf-{f.tag}"
+        _mail(f.admin, org=f.org, account=f.a, frm="ravi@contoso.test",
+              to=(f.b_addr,), cc=(f.a_addr,), thread=t, subject="to b, cc a")
+        _mail(f.admin, org=f.org, account=f.a, frm="sam@contoso.test",
+              to=("kim@contoso.test",), cc=(f.a_addr,), thread=t,
+              subject="cc a only", minutes=5)
+        _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(RAVI,),
+              thread=t, subject="from b", minutes=10)
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            ctx = await replyzero_mod.build_thread_context(db, f.a, t, f.a_addr)
+        to_b, cc_only, from_b = ctx.messages
+        assert to_b["owner_cc_only"] is False, "in To under B is not Cc-only"
+        assert cc_only["owner_cc_only"] is True, "the control: Cc under A only"
+        assert from_b["side"] == "owner"
+        first, second, _ = ctx.thread_text.split("\n\n---\n\n")
+        assert "only Cc'd" not in first
+        assert "only Cc'd" in second
+
+    async def test_the_digest_categories_leave_another_mailbox_out(self, family):
+        """``_PROJ_SCOPE`` (review round 1): the category breakdown of the
+        digest does not count mail from another mailbox of the member."""
+        f = family
+        _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
+              categories=("Newsletter",))
+        for i in range(2):
+            _mail(f.admin, org=f.org, account=f.a, frm="news@vendor.test",
+                  categories=("Newsletter",), minutes=i)
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            cats = await digest_mod._digest_categories(
+                db, {"aid": f.a, "days": 7, "uid": f.member})
+        assert {c["category"]: c["count"] for c in cats} == {"Newsletter": 2}
+
     async def test_the_digest_leaves_another_mailbox_out(self, family):
         f = family
         _mail(f.admin, org=f.org, account=f.a, frm=RAVI, subject="from ravi")
@@ -333,35 +399,78 @@ class TestSelfIsEachMailboxOfTheMember:
         assert f.b_addr not in senders
         assert {RAVI, f.c_addr} <= senders
 
-    async def test_the_pin_guard_never_pins_another_mailbox(self, family):
+    @pytest.mark.parametrize(("value", "pinned"), [
+        ("news@vendor.test", True),           # a stranger: the control
+        ("SELF-B", False),                    # mailbox B, exactly
+        ("gmail.com", True),                  # B's domain is not refused
+        ("SELF-A", False),                    # this mailbox, exactly
+        ("fracktal-t8e.test", False),         # this mailbox's domain
+        ("SELF-A-LOCAL", False),              # a part of this address
+    ])
+    async def test_the_pin_guard_refuses_own_mailboxes_only(
+        self, family, value, pinned,
+    ):
+        """Review round 1: THIS mailbox keeps the old substring rule, and the
+        other mailboxes of the member are refused on an exact address only."""
         f = family
+        value = {"SELF-B": f.b_addr, "SELF-A": f.a_addr,
+                 "SELF-A-LOCAL": f.a_addr.split("@")[0]}.get(value, value)
         rid = _rule(f.admin, org=f.org, account=f.a, name="Newsletter")
         async with _as_app(f.p, f.org), _tenant_session() as db:
-            pinned_b = await rules_mod._upsert_rule_pattern(
-                db, f.a, rid, f.b_addr, False, "AI", "seed", None, None)
-            pinned_x = await rules_mod._upsert_rule_pattern(
-                db, f.a, rid, "news@vendor.test", False, "AI", "seed", None, None)
-        assert pinned_b is False
-        assert pinned_x is True
+            got = await rules_mod._upsert_rule_pattern(
+                db, f.a, rid, value, False, "AI", "seed", None, None)
+        assert got is pinned
 
-    async def test_the_cold_check_never_flags_another_mailbox(self, family, monkeypatch):
+    @pytest.mark.parametrize(("case", "checked"), [
+        ("proven", False),    # B's Sent copy proves the send: skipped
+        ("forged", True),     # From says B, and there is no Sent copy
+        ("own_copy", True),   # the only copy is in A itself: not another box
+        ("stranger", True),   # the positive control
+    ])
+    async def test_the_cold_check_skips_only_a_proven_own_send(
+        self, family, monkeypatch, case, checked,
+    ):
+        """Review round 1: a forged From of mailbox B gets the cold check. Only
+        a Sent copy in ANOTHER mailbox of the member proves the send."""
         f = family
-        from_b = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,))
-        from_x = _mail(f.admin, org=f.org, account=f.a, frm="pitch@vendor.test",
-                       to=(f.a_addr,))
+        if case == "proven":
+            mail, _ = _sent_by_b(f, to=(f.a_addr,))
+        elif case == "own_copy":
+            imid = f"<{uuid.uuid4().hex}@gmail.test>"
+            _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,),
+                  folder="sent", imid=imid)
+            mail = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
+                         to=(f.a_addr,), imid=imid)
+        else:
+            frm = f.b_addr if case == "forged" else "pitch@vendor.test"
+            mail = _mail(f.admin, org=f.org, account=f.a, frm=frm,
+                         to=(f.a_addr,), imid=f"<{uuid.uuid4().hex}@x.test>")
         llm = AsyncMock(return_value=(False, ""))
         monkeypatch.setattr(senders_mod, "_llm_is_cold", llm)
         async with _as_app(f.p, f.org), _tenant_session() as db:
-            pb = await engine_mod._email_payload_from_id(
-                db, from_b, f.member, account_id=f.a)
+            payload = await engine_mod._email_payload_from_id(
+                db, mail, f.member, account_id=f.a)
             await senders_mod._maybe_block_cold(
-                db, None, f.a, from_b, "pm-b", pb, "LABEL")
-            assert llm.await_count == 0, "mail from mailbox B reached the cold check"
-            px = await engine_mod._email_payload_from_id(
-                db, from_x, f.member, account_id=f.a)
+                db, None, f.a, mail, "pm", payload, "LABEL")
+        assert (llm.await_count == 1) is checked
+
+    async def test_a_sent_copy_of_another_member_proves_nothing(
+        self, family, monkeypatch,
+    ):
+        f = family
+        imid = f"<{uuid.uuid4().hex}@x.test>"
+        _mail(f.admin, org=f.org, account=f.d, frm=f.b_addr, to=(f.a_addr,),
+              folder="sent", imid=imid)
+        mail = _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr,
+                     to=(f.a_addr,), imid=imid)
+        llm = AsyncMock(return_value=(False, ""))
+        monkeypatch.setattr(senders_mod, "_llm_is_cold", llm)
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            payload = await engine_mod._email_payload_from_id(
+                db, mail, f.member, account_id=f.a)
             await senders_mod._maybe_block_cold(
-                db, None, f.a, from_x, "pm-x", px, "LABEL")
-        assert llm.await_count == 1, "the positive control: a stranger is checked"
+                db, None, f.a, mail, "pm", payload, "LABEL")
+        assert llm.await_count == 1
 
     async def test_the_sender_categories_leave_another_mailbox_out(self, family):
         f = family
@@ -378,6 +487,134 @@ class TestSelfIsEachMailboxOfTheMember:
                 {"a": f.a})}
         assert "news@vendor.test" in got
         assert f.b_addr not in got
+
+
+class _Store:
+    """A key store double: the seeded credentials are the text ``x``."""
+
+    def decrypt(self, _blob: str) -> str:
+        return "{}"
+
+    def encrypt(self, blob: str) -> str:
+        return blob
+
+
+class _Provider:
+    """A provider double that authenticates and records nothing it needs."""
+
+    async def authenticate(self) -> bool:
+        return True
+
+    def credentials_dirty(self) -> bool:
+        return False
+
+    async def set_labels(self, *_a, **_kw) -> None:
+        return None
+
+    async def move_to_folder(self, *_a, **_kw) -> None:
+        return None
+
+    async def create_draft(self, **_kw) -> str:
+        return f"pd-{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture()
+def live(family, monkeypatch):
+    """Mailbox A holds a mail that the member sent from B (with B's Sent copy
+    as the proof) and a mail of a stranger. An enabled rule of A predates both,
+    so the automatic paths and the backfill see them. The cold blocker is on.
+
+    The provider and the key store are doubles, and each path's classifier
+    call is replaced by a recorder of the payload it gets."""
+    f = family
+    f.from_b, _ = _sent_by_b(f, to=(f.a_addr,), subject="from b",
+                             thread=f"lb-{f.tag}")
+    f.from_x = _mail(f.admin, org=f.org, account=f.a, frm="pitch@vendor.test",
+                     to=(f.a_addr,), subject="from x", thread=f"lx-{f.tag}",
+                     imid=f"<{uuid.uuid4().hex}@vendor.test>", minutes=1)
+    _rule(f.admin, org=f.org, account=f.a, name="Newsletter",
+          created_at=_T0 - timedelta(days=1))
+    _exec(f.admin, (
+        "INSERT INTO email_assistant_settings (account_id, cold_email_blocker, "
+        "organization_id) VALUES (CAST(:a AS uuid), 'LABEL', CAST(:o AS uuid))"),
+        {"a": f.a, "o": f.org})
+    import acb_llm.key_store as key_store
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(runner_mod, "_instantiate_provider",
+                        lambda *_a, **_kw: _Provider())
+    monkeypatch.setattr(replyzero_mod, "_instantiate_provider",
+                        lambda *_a, **_kw: _Provider())
+    f.payloads = {}
+
+    async def record_match(_db, _aid, email, message_id=None, **_kw):
+        f.payloads[str(message_id)] = email
+
+    async def record_classify(_db, _aid, row, email, **_kw):
+        f.payloads[str(row.id)] = email
+        return []
+
+    monkeypatch.setattr(runner_mod, "_match_email_to_rule",
+                        AsyncMock(side_effect=record_match))
+    monkeypatch.setattr(runner_mod, "classify_matches",
+                        AsyncMock(side_effect=record_classify))
+    monkeypatch.setattr(engine_mod, "classify_matches",
+                        AsyncMock(side_effect=record_classify))
+    f.llm_cold = AsyncMock(return_value=(False, ""))
+    monkeypatch.setattr(senders_mod, "_llm_is_cold", f.llm_cold)
+    return f
+
+
+def _scopes(f) -> tuple[str, str]:
+    return (f.payloads[f.from_b]["sender_scope"],
+            f.payloads[f.from_x]["sender_scope"])
+
+
+@_DB_GATE
+class TestTheLiveRulePathsReadTheSet:
+    """Review round 1: each path that builds a rule payload in production
+    gives it each mailbox of the member. A mutant that drops
+    ``self_addresses`` at one of these sites makes its case fail."""
+
+    async def test_the_automatic_run_and_its_cold_check(self, live):
+        f = live
+        async with _as_app(f.p, f.org):
+            await runner_mod._run_rules_job(f.a, 10, False, f.member)
+        assert _scopes(f) == ("self", "external")
+        assert f.llm_cold.await_count == 1, "only the stranger reaches the check"
+        sender = f.llm_cold.await_args.args[0]["from"]
+        assert sender == "pitch@vendor.test"
+
+    async def test_the_run_of_one_message(self, live):
+        f = live
+        async with _as_app(f.p, f.org):
+            for mid in (f.from_b, f.from_x):
+                await runner_mod.run_rules_on_message(
+                    runner_mod.RuleRunMessageRequest(
+                        account_id=f.a, message_id=mid, is_test=True),
+                    user=f.user)
+        assert _scopes(f) == ("self", "external")
+
+    async def test_process_past_emails(self, live, monkeypatch):
+        f = live
+        monkeypatch.setattr(runner_mod, "_download_past_range",
+                            AsyncMock(return_value=None))
+        async with _as_app(f.p, f.org):
+            await runner_mod._process_past_emails_job(
+                f.a, None, None, 50, True, f.member)
+        assert _scopes(f) == ("self", "external")
+
+    async def test_the_preview_on_recent_mail(self, live):
+        f = live
+        async with _as_app(f.p, f.org):
+            await runner_mod.test_rules_recent(
+                runner_mod.RuleTestRecentRequest(account_id=f.a), user=f.user)
+        assert _scopes(f) == ("self", "external")
+
+    async def test_the_reply_zero_backfill(self, live):
+        f = live
+        async with _as_app(f.p, f.org):
+            await replyzero_mod._maybe_classify_threads(f.a)
+        assert _scopes(f) == ("self", "external")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -633,9 +870,33 @@ def pair(family):
     f.thread_b = f"tb-{f.tag}"
     f.mail_b = _mail(f.admin, org=f.org, account=f.b, frm=RAVI, to=(f.b_addr,),
                      thread=f.thread_b, subject="Quote")
+    f.thread_a = f"ta-{f.tag}"
+    f.mail_a = _mail(f.admin, org=f.org, account=f.a, frm=RAVI, to=(f.a_addr,),
+                     thread=f.thread_a, subject="Quote")
     f.rule_a = _rule(f.admin, org=f.org, account=f.a, name="Newsletter")
     f.rule_b = _rule(f.admin, org=f.org, account=f.b, name="Newsletter")
+    # Review round 1: a LABEL rule and a conversation rule of mailbox A.
+    f.label_rule_a = _rule(f.admin, org=f.org, account=f.a, name="Receipt")
+    _exec(f.admin, (
+        "INSERT INTO email_actions (rule_id, type, label, organization_id) "
+        "VALUES (CAST(:r AS uuid), 'LABEL', 'Receipt', CAST(:o AS uuid))"),
+        {"r": f.label_rule_a, "o": f.org})
+    f.fyi_rule_a = _rule(f.admin, org=f.org, account=f.a, name="FYI")
     return f
+
+
+def _categories_of(f, message_id: str) -> list[str]:
+    with f.admin.connect() as c:
+        return list(c.execute(text(
+            "SELECT categories FROM email_messages WHERE id = CAST(:m AS uuid)"),
+            {"m": message_id}).scalar() or [])
+
+
+def _status_rows(f, account: str, thread: str) -> int:
+    return _count(f.admin, (
+        "SELECT count(*) FROM email_thread_status "
+        "WHERE account_id = CAST(:a AS uuid) AND thread_id = :t"),
+        {"a": account, "t": thread})
 
 
 @_DB_GATE
@@ -694,6 +955,218 @@ class TestThePairIsRefused:
         assert _count(f.admin, (
             "SELECT count(*) FROM email_rule_patterns "
             "WHERE rule_id = CAST(:r AS uuid)"), {"r": f.rule_b}) == 0
+
+    async def test_feedback_refuses_a_mail_of_another_mailbox(self, pair):
+        """Review round 1: a LABEL rule of A with a mail of B put A's label on
+        B's mail, locally and at the provider, and answered 200."""
+        f = pair
+        async with _as_app(f.p, f.org):
+            with pytest.raises(HTTPException) as exc:
+                await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
+                    account_id=f.a, sender=RAVI, expected=f.label_rule_a,
+                    message_id=f.mail_b), user=f.user)
+            ok = await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
+                account_id=f.a, sender=RAVI, expected="none",
+                message_id=f.mail_a), user=f.user)
+        assert exc.value.status_code == 404
+        assert "created" in ok, "the positive control: a mail of A passes"
+        assert _categories_of(f, f.mail_b) == [], "nothing was written on B"
+
+    async def test_feedback_refuses_a_thread_of_another_mailbox(
+        self, pair, monkeypatch,
+    ):
+        """Review round 1: an FYI rule of A with a thread of B wrote a status
+        row (A, thread of B)."""
+        f = pair
+        import acb_llm.key_store as key_store
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(replyzero_mod, "_instantiate_provider",
+                            lambda *_a, **_kw: _Provider())
+        async with _as_app(f.p, f.org):
+            with pytest.raises(HTTPException) as exc:
+                await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
+                    account_id=f.a, sender=RAVI, expected=f.fyi_rule_a,
+                    thread_id=f.thread_b), user=f.user)
+            ok = await rules_mod.rule_feedback(rules_mod.RuleFeedbackRequest(
+                account_id=f.a, sender=RAVI, expected=f.fyi_rule_a,
+                thread_id=f.thread_a), user=f.user)
+        assert exc.value.status_code == 404
+        assert ok["status_correction"]["ok"] is True, "the control writes A's row"
+        assert _status_rows(f, f.a, f.thread_b) == 0
+        assert _status_rows(f, f.a, f.thread_a) == 1
+
+    async def test_guidance_refuses_a_rule_of_another_mailbox(self, pair):
+        f = pair
+        async with _as_app(f.p, f.org):
+            with pytest.raises(HTTPException) as exc:
+                await rules_mod.add_rule_guidance(rules_mod.RuleGuidanceRequest(
+                    account_id=f.a, guidance="teach B", rule_id=f.rule_b),
+                    user=f.user)
+            ok = await rules_mod.add_rule_guidance(rules_mod.RuleGuidanceRequest(
+                account_id=f.a, guidance="teach A", rule_id=f.rule_a),
+                user=f.user)
+        assert exc.value.status_code == 404
+        assert ok == {"ok": True}
+        assert _count(f.admin, (
+            "SELECT count(*) FROM email_rule_guidance "
+            "WHERE account_id = CAST(:a AS uuid)"), {"a": f.a}) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 4b. email-self-each-mailbox, D-EM-27 reading (review round 1): mail between
+#     the member's own mailboxes is never NEEDS_REPLY and never AWAITING
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture()
+def threads(family, monkeypatch):
+    """``own``: B wrote to A, and A wrote back to B. ``mixed``: the same, with
+    Ravi on Cc, so it has a participant outside the member's mailboxes.
+
+    The status model must not run for ``own``. It answers REPLY for ``mixed``."""
+    f = family
+    f.own, f.mixed = f"own-{f.tag}", f"mix-{f.tag}"
+    for t, cc in ((f.own, ()), (f.mixed, (RAVI,))):
+        _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,),
+              cc=cc, thread=t, subject="plan")
+        _mail(f.admin, org=f.org, account=f.a, frm=f.a_addr, to=(f.b_addr,),
+              cc=cc, thread=t, folder="sent", subject="Re: plan", minutes=5)
+        _mail(f.admin, org=f.org, account=f.a, frm=f.b_addr, to=(f.a_addr,),
+              cc=cc, thread=t, subject="Re: plan", minutes=10)
+    f.status_model = AsyncMock(return_value=("REPLY", True))
+    monkeypatch.setattr(replyzero_mod, "_llm_determine_thread_status",
+                        f.status_model)
+    return f
+
+
+def _status(f, thread: str) -> tuple[str, str] | None:
+    with f.admin.connect() as c:
+        row = c.execute(text(
+            "SELECT status, reason FROM email_thread_status "
+            "WHERE account_id = CAST(:a AS uuid) AND thread_id = :t"),
+            {"a": f.a, "t": thread}).first()
+    return (row[0], row[1]) if row else None
+
+
+@_DB_GATE
+class TestMailBetweenOwnMailboxesIsNeverOpen:
+
+    async def test_the_participant_rule(self, threads):
+        f = threads
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            own = await replyzero_mod._thread_is_self_only(db, f.a, f.own)
+            mixed = await replyzero_mod._thread_is_self_only(db, f.a, f.mixed)
+            none = await replyzero_mod._thread_is_self_only(db, f.a, "no-such")
+        assert (own, mixed, none) == (True, False, False)
+
+    async def test_the_status_authority_files_it_as_fyi(self, threads):
+        f = threads
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            own = await replyzero_mod.recompute_thread_status(
+                db, f.a, f.own, trigger="backfill", acc_email=f.a_addr)
+            mixed = await replyzero_mod.recompute_thread_status(
+                db, f.a, f.mixed, trigger="backfill", acc_email=f.a_addr)
+        assert own == ("FYI", "FYI")
+        assert _status(f, f.own) == ("FYI", replyzero_mod.SELF_ONLY_REASON)
+        assert mixed[0] in ("NEEDS_REPLY", "AWAITING"), "the control stays open"
+        assert f.status_model.await_count == 1, "no model call for own mail"
+
+    async def test_the_resolver_asks_no_model_for_it(self, threads):
+        f = threads
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            own = await replyzero_mod._determine_status_of(
+                db, f.a, SimpleNamespace(thread_id=f.own, id=None))
+            mixed = await replyzero_mod._determine_status_of(
+                db, f.a, SimpleNamespace(thread_id=f.mixed, id=None))
+        assert own == ("FYI", True)
+        assert mixed == ("REPLY", True)
+        assert f.status_model.await_count == 1
+
+    async def test_the_projection_never_opens_it(self, threads):
+        """The backstop: a Reply rule that the per-message match picked
+        becomes FYI, and the FYI label replaces the Reply label."""
+        f = threads
+        reply = [{"rule": {"name": "Reply"}, "reason": "asks"}]
+        async with _as_app(f.p, f.org), _tenant_session() as db:
+            own = await replyzero_mod.project_reply_status_from_matches(
+                db, f.a, SimpleNamespace(thread_id=f.own, id=None,
+                                         received_at=None), reply)
+            mixed = await replyzero_mod.project_reply_status_from_matches(
+                db, f.a, SimpleNamespace(thread_id=f.mixed, id=None,
+                                         received_at=None), reply)
+        assert (own, mixed) == ("FYI", "Needs Reply")
+        assert _status(f, f.own) == ("FYI", replyzero_mod.SELF_ONLY_REASON)
+        assert _status(f, f.mixed)[0] == "NEEDS_REPLY"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2b. email-drafter-sending-mailbox (review round 1): the nudge and the
+#     saved draft name the mailbox too
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@_DB_GATE
+class TestTheNudgeSpeaksAsTheMailbox:
+
+    async def test_the_follow_up_nudge_names_the_mailbox(self, family, monkeypatch):
+        f = family
+        sent = _mail(f.admin, org=f.org, account=f.a, frm=f.a_addr, to=(RAVI,),
+                     folder="sent", thread=f"fu-{f.tag}", subject="Quote",
+                     body="Here is the quote.")
+        _exec(f.admin, (
+            "INSERT INTO email_assistant_settings (account_id, "
+            "follow_up_awaiting_days, follow_up_auto_draft, organization_id) "
+            "VALUES (CAST(:a AS uuid), 1, true, CAST(:o AS uuid))"),
+            {"a": f.a, "o": f.org})
+        _exec(f.admin, (
+            "INSERT INTO email_thread_status (account_id, thread_id, status, "
+            "last_message_id, last_message_at, reason, organization_id) VALUES "
+            "(CAST(:a AS uuid), :t, 'AWAITING', CAST(:m AS uuid), "
+            "now() - interval '10 days', 'seed', CAST(:o AS uuid))"),
+            {"a": f.a, "t": f"fu-{f.tag}", "m": sent, "o": f.org})
+        import acb_llm.key_store as key_store
+        from gateway.routes.email.automation import followups as followups_mod
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(followups_mod, "_instantiate_provider",
+                            lambda *_a, **_kw: _Provider())
+        drafter = AsyncMock(return_value="Hi Ravi, any news?")
+        monkeypatch.setattr(followups_mod, "_agent_draft_reply", drafter)
+        async with _as_app(f.p, f.org):
+            out = await followups_mod._maybe_send_follow_up_reminders(f.a)
+        assert out["drafted"] == 1
+        nudge = drafter.await_args.args[0]
+        assert (nudge["self"], nudge["self_label"]) == (f.a_addr, "Fracktal-t8e")
+
+
+async def test_a_saved_draft_copy_stores_the_mailbox_as_from(monkeypatch) -> None:
+    """``/drafts/save`` stored a blank From in the local copy (review round 1)."""
+    upsert = AsyncMock(return_value="local-1")
+    provider = SimpleNamespace(create_draft=AsyncMock(return_value="pd-1"))
+
+    @asynccontextmanager
+    async def _session(db, user_email, **kw):
+        yield SimpleNamespace(authed=True, provider=provider, account_id="acc-b",
+                              provider_message_id="pm-1")
+
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(
+        subject="Quote", thread_id="t1", from_address={"email": RAVI})))
+    for name, value in (
+        ("_tenant_session", bind_db(db)),
+        ("_assert_account_owner", AsyncMock()),
+        ("_account_signature", AsyncMock(return_value="")),
+        ("resolve_self", AsyncMock(return_value=SelfIdentity(address=BOX))),
+        ("provider_session", _session),
+        ("_upsert_local_draft", upsert),
+        ("_fetch_message_dict", AsyncMock(return_value={})),
+    ):
+        monkeypatch.setattr(drafting_mod, name, value, raising=False)
+    out = await drafting_mod.save_draft(
+        drafting_mod.SaveDraftRequest(account_id="acc-b", message_id="m1",
+                                      body="Thanks"),
+        user=SimpleNamespace(email=SIGN_IN))
+    assert out["created"] is True
+    assert upsert.await_args.kwargs["owner_email"] == BOX
 
 
 # ══════════════════════════════════════════════════════════════════════════

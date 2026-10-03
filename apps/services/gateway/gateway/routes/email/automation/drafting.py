@@ -2405,9 +2405,11 @@ async def save_draft(
                 reply_to_message_id=sess.provider_message_id,
                 thread_id=row.thread_id or None,
             )
+            # The From of the copy is the mailbox that saves the draft, never
+            # blank (MB-14, EM-T8e-1 review round 1).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=row.thread_id,
-                owner_email="", to_email=to_email,
-                subject=re_subject, body=body,
+                owner_email=(await resolve_self(db, req.account_id)).address,
+                to_email=to_email, subject=re_subject, body=body,
             )
         return {"created": True, "id": local_id}

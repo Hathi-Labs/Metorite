@@ -928,6 +928,9 @@ async def test_recompute_thread_status_passes_the_messages_and_the_last_id(
     monkeypatch.setattr(rz, "build_thread_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(rz, "_status_corrections_block", AsyncMock(return_value=""))
     monkeypatch.setattr(rz, "_upsert_thread_status", AsyncMock())
+    # The thread has a participant outside the member's mailboxes, so the
+    # status is asked (D-EM-27, EM-T8e-1 review round 1).
+    monkeypatch.setattr(rz, "_thread_is_self_only", AsyncMock(return_value=False))
     with structlog.testing.capture_logs() as caps:
         await rz.recompute_thread_status(AsyncMock(), ACC, "t1", trigger="inbound")
     assert fake.calls[0]["state"]["thread"] == THREAD
