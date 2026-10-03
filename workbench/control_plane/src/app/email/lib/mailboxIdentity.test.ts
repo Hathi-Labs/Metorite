@@ -90,6 +90,16 @@ describe("the label goes with the hue", () => {
   });
 });
 
+describe("the reading pane names the mailbox of the mail (§11.4)", () => {
+  const detail = codeOnly(read("components/EmailDetail.tsx"));
+
+  it("draws the chip and the address for two or more mailboxes", () => {
+    expect(detail).toContain("const mailboxAccount = accounts.find((a) => a.id === mailboxId);");
+    expect(detail).toContain("{mailboxAccount && accounts.length > 1 && (");
+    expect(detail).toContain("<MailboxChip account={mailboxAccount} />");
+  });
+});
+
 describe("no email surface draws the old hex colour", () => {
   it("draws the avatar component in the sidebar and the mobile top bar", () => {
     expect(codeOnly(read("components/AccountSidebar.tsx"))).toContain(
