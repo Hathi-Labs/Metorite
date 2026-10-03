@@ -94,7 +94,8 @@ function extraChips(
 }
 
 export function QuickFilters() {
-  const accountId = useEmailStore((s) => s.selectedAccountId);
+  // The facets of the view: every mailbox in All inboxes (EM-T8d).
+  const accountId = useEmailStore((s) => (s.viewAll ? null : s.selectedAccountId));
   const selectedFolder = useEmailStore((s) => s.selectedFolder);
   const emails = useEmailStore((s) => s.emails);
   const searchFilters = useEmailStore((s) => s.searchFilters);

@@ -4,7 +4,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState } from "react";
 import { Email } from "../lib/types";
-import { useEmailStore } from "../lib/emailStore";
+import { useEmailStore, scopeBusy } from "../lib/emailStore";
 import { resyncAccount } from "../lib/api";
 
 /**
@@ -15,13 +15,16 @@ import { resyncAccount } from "../lib/api";
  * has to pass the currently-selected email (for the "mark as spam" action).
  */
 export function MailboxActions({ selectedEmail }: { selectedEmail: Email | null }) {
-  const { updateEmail, triggerSync, selectedAccountId, syncStatus } = useEmailStore();
-  const status = selectedAccountId ? syncStatus[selectedAccountId] : undefined;
+  const store = useEmailStore();
+  const { updateEmail, selectedAccountId, syncStatus, viewAll, syncScope } = store;
+  // In All inboxes the controls act on each mailbox, never on the hidden
+  // selected one (EM-T8d review).
+  const status = !viewAll && selectedAccountId ? syncStatus[selectedAccountId] : undefined;
   // "processing" = new mail is in and the server is still applying rules/labels
   // and auto-archiving in the background (H1); keep the button busy, but change
   // the hint so the user knows labels are still landing.
   const processing = status === "processing";
-  const syncing = status === "syncing" || processing;
+  const syncing = scopeBusy(store);
 
   // ── Mailbox settings menu (gear) ──
   const [showSettings, setShowSettings] = useState(false);
@@ -49,7 +52,7 @@ export function MailboxActions({ selectedEmail }: { selectedEmail: Email | null 
 
   return (
     <div className="flex items-center gap-1">
-      <Button variant="ghost" size="icon-sm" radius="keep" layout="" onClick={() => selectedAccountId && triggerSync(selectedAccountId)} disabled={!selectedAccountId || syncing} title={
+      <Button variant="ghost" size="icon-sm" radius="keep" layout="" onClick={syncScope} disabled={!selectedAccountId || syncing} title={
           processing
             ? "Processing new mail — applying rules, labels & auto-archive…"
             : "Refresh — sync new mail, drafts & changes from the server"
@@ -86,6 +89,11 @@ export function MailboxActions({ selectedEmail }: { selectedEmail: Email | null 
               <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                 Mailbox
               </div>
+              {viewAll ? (
+                <div className="px-3 py-1.5 text-[11px] text-muted-foreground">
+                  A resync acts on one mailbox. Open that mailbox to resync it.
+                </div>
+              ) : (<>
               <button
                 onClick={() => doResync(false)}
                 disabled={!selectedAccountId || !!resyncing}
@@ -120,16 +128,19 @@ export function MailboxActions({ selectedEmail }: { selectedEmail: Email | null 
                   </span>
                 </span>
               </button>
+              </>)}
               <button
                 onClick={() => {
-                  if (selectedAccountId) triggerSync(selectedAccountId);
+                  syncScope();
                   setShowSettings(false);
                 }}
                 disabled={!selectedAccountId || syncing}
                 className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary transition-colors disabled:opacity-50"
               >
                 <Icon name="RefreshCw" size={13} className={`flex-shrink-0 text-muted-foreground ${syncing ? "animate-spin" : ""}`} />
-                <span className="text-xs text-foreground">Sync new mail now</span>
+                <span className="text-xs text-foreground">
+                  {viewAll ? "Sync new mail of each mailbox now" : "Sync new mail now"}
+                </span>
               </button>
               {resyncMsg && (
                 <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-t border-border">

@@ -5,7 +5,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent, bodyMatchKey } from "../lib/utils";
-import { useEmailStore, isRealFolder } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope } from "../lib/emailStore";
 import {
   fromWarning, mailboxOf, ownAddresses, replyRecipients, sendBlocked, swapSignature,
 } from "../lib/mailbox";
@@ -41,7 +41,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     updateEmail, deleteEmail, openCompose, hydrateEmail, folders,
     accounts, selectedAccountId, sendEmail, saveDraft, sendDraft,
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
-    captureEmailToTasks, authErrors,
+    captureEmailToTasks, authErrors, viewAll,
   } = useEmailStore();
   // The mailbox of the open mail. Every act on it runs there: the signature,
   // the thread, the drafts, the AI draft and the send. The selected view never
@@ -812,7 +812,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                     Move to
                   </div>
-                  {folders
+                  {foldersInScope(folders, viewAll)
                     .filter((f) => isRealFolder(f.key) && f.key !== email?.folder)
                     .map((f) => (
                       <button

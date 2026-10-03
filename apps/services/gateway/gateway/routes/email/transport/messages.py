@@ -279,8 +279,11 @@ async def list_messages(
         # Collapse to one row per conversation for the mailbox browse, but never
         # inside a thread load (that view wants every message). A NULL thread_id
         # is its own conversation — key on the message id so those aren't merged.
+        # The key names the mailbox too: a conversation never spans two
+        # mailboxes, even when two of them report the same thread id (EM-T8d,
+        # MB-12, §11.6 case 13).
         do_collapse = collapse and not thread_id
-        conv_key = "COALESCE(em.thread_id, em.id::text)"
+        conv_key = "(em.account_id::text || ':' || COALESCE(em.thread_id, em.id::text))"
 
         # Ordering: conversation view is chronological; otherwise honour ``sort``.
         # The collapsed path orders the OUTER query over the per-thread picks, so
@@ -360,26 +363,33 @@ async def list_messages(
                     m.attachments = atts_by_msg.get(str(m.id), [])
 
         # Thread sizes — one extra grouped query so the list can flag which rows
-        # are conversations (badge with the message count).
+        # are conversations (badge with the message count). Counted for each
+        # mailbox and thread, under the owner predicate, so a thread id that two
+        # mailboxes share never adds their counts together (EM-T8d, MB-12).
         thread_ids = list({m.thread_id for m in messages if m.thread_id})
-        thread_counts: dict[str, int] = {}
+        thread_counts: dict[tuple[str, str], int] = {}
         if thread_ids:
-            cnt_params: dict[str, Any] = {"tids": thread_ids}
+            cnt_params: dict[str, Any] = {
+                "tids": thread_ids, "user_id": user.email or "anonymous"}
             cnt_sql = (
-                "SELECT thread_id, COUNT(*) AS c FROM email_messages "
-                "WHERE thread_id = ANY(:tids)"
+                "SELECT em.account_id, em.thread_id, COUNT(*) AS c "
+                "FROM email_messages em "
+                "JOIN email_accounts ea ON em.account_id = ea.id "
+                "WHERE ea.user_id = :user_id AND em.thread_id = ANY(:tids)"
             )
             if account_id:
-                cnt_sql += " AND account_id = :account_id"
+                cnt_sql += " AND em.account_id = :account_id"
                 cnt_params["account_id"] = account_id
-            cnt_sql += " GROUP BY thread_id"
+            cnt_sql += " GROUP BY em.account_id, em.thread_id"
             cnt_res = await db.execute(text(cnt_sql), cnt_params)
-            thread_counts = {r.thread_id: r.c for r in cnt_res.fetchall()}
+            thread_counts = {
+                (str(r.account_id), r.thread_id): r.c for r in cnt_res.fetchall()}
 
         emails_out = []
         for m in messages:
             d = m.model_dump()
-            d["thread_count"] = thread_counts.get(m.thread_id, 1)
+            d["thread_count"] = thread_counts.get(
+                (str(m.account_id), m.thread_id), 1)
             emails_out.append(d)
 
         return {

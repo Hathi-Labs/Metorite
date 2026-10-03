@@ -20,14 +20,16 @@ import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
-import { MailboxAvatar } from "./components/MailboxChip";
+import { MailboxAvatar, MailboxChip } from "./components/MailboxChip";
 import { MailboxEditDialog, type MailboxEdit } from "./components/MailboxEditDialog";
 import { updateEmailAccount } from "./lib/api";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import Modal from "@/components/ui/Modal";
-import { useEmailStore, isRealFolder, backfillKey } from "./lib/emailStore";
+import {
+  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy,
+} from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
@@ -123,10 +125,31 @@ export default function EmailPage() {
     sendEmail,
     softRefresh,
     replaceAccount,
+    viewAll,
+    selectAll,
   } = useEmailStore();
   // The mailbox that the composer sends from: the mailbox of the mail a
-  // reply answers, else the selected one (EM-T8a, D-EM-20).
-  const composeAccountId = composeDefaults?.accountId || selectedAccountId;
+  // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
+  // inboxes goes from the default mailbox (D-EM-20, D-EM-25).
+  const defaultAccountId = accounts.find((a) => a.isDefault)?.id ?? null;
+  const composeAccountId =
+    composeDefaults?.accountId ||
+    (viewAll ? defaultAccountId || selectedAccountId : selectedAccountId);
+
+  // Automation and the chat act on one mailbox, and All inboxes names none. So
+  // opening one leaves All inboxes for the mailbox of the open mail, else the
+  // default, and the switcher names it. The open mail stays open (EM-T8d
+  // review F4, F5). EM-T8e-3 gives the chat its own All inboxes scope.
+  useEffect(() => {
+    if (!automationFeature || !viewAll) return;
+    const st = useEmailStore.getState();
+    const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
+    const target = open?.accountId || defaultAccountId || st.selectedAccountId;
+    if (!target) return;
+    const keep = { selectedEmailId: st.selectedEmailId, selectedEmailOverride: st.selectedEmailOverride };
+    st.selectAccount(target);
+    if (open?.accountId === target) useEmailStore.setState(keep);
+  }, [automationFeature, viewAll, defaultAccountId]);
 
   // Fetch on mount
   useEffect(() => {
@@ -197,6 +220,12 @@ export default function EmailPage() {
 
   // Derived data
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  // The mailbox that the reconnect banner names: the selected one, or in All
+  // inboxes the first mailbox that needs it, so a second mailbox cannot fail
+  // out of sight (EM-T8d review).
+  const attentionAccount =
+    (viewAll ? accounts : selectedAccount ? [selectedAccount] : [])
+      .find((a) => a.syncStatus === "error" || authErrors[a.id]) ?? null;
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
@@ -213,15 +242,14 @@ export default function EmailPage() {
   ).length;
   // The provider can't page a pseudo-folder (there's no "all"/"starred" folder
   // to ask for older mail from), so never offer "load older" on those views.
+  // "Load older" pages one mailbox, so All inboxes offers none (EM-T8d).
   const canBackfillFolder =
+    !viewAll &&
     isRealFolder(selectedFolder) &&
     !backfillExhausted[backfillKey(selectedAccountId, selectedFolder)];
   // "processing" (the background rules/labels pipeline after H1) counts as busy
   // too, so the top-bar refresh button keeps spinning until it settles.
-  const syncing = selectedAccountId
-    ? syncStatus[selectedAccountId] === "syncing" ||
-      syncStatus[selectedAccountId] === "processing"
-    : false;
+  const syncing = scopeBusy({ viewAll, selectedAccountId, accounts, syncStatus });
 
   // Reset mobile view when folder/account changes. A mail that "Open in
   // inbox" opened in its OWN mailbox switches the account too, and it keeps
@@ -229,7 +257,7 @@ export default function EmailPage() {
   useEffect(() => {
     if (useEmailStore.getState().selectedEmailOverride) return;
     setMobileView("inbox");
-  }, [selectedFolder, selectedAccountId]);
+  }, [selectedFolder, selectedAccountId, viewAll]);
 
   // ── No mailbox yet ──
   // The empty state replaces the panes. There is no setup step for a member:
@@ -307,6 +335,13 @@ export default function EmailPage() {
     },
     [selectAccount, closeDrawer]
   );
+
+  // All inboxes (EM-T8d, D-EM-22).
+  const handleSelectAll = useCallback(() => {
+    selectAll();
+    setMobileView("inbox");
+    closeDrawer();
+  }, [selectAll, closeDrawer]);
 
   const handleFolderSelect = useCallback(
     (f: string) => {
@@ -422,6 +457,8 @@ export default function EmailPage() {
       onSetDefault={setDefaultAccount}
       onDisconnect={handleDisconnectRequest}
       onEditMailbox={handleEditMailbox}
+      viewAll={viewAll}
+      onSelectAll={handleSelectAll}
       showAutomation={false}
     />
   );
@@ -665,16 +702,20 @@ export default function EmailPage() {
         { id: "flag", label: em.isFlagged ? "Clear flag" : "Flag / mark important", run: () => updateEmail(em.id, { isFlagged: !em.isFlagged }) },
       );
     }
-    for (const f of folders) {
+    for (const f of foldersInScope(folders, viewAll)) {
       cmds.push({ id: `go-${f.key}`, label: `Go to ${f.label}`, run: () => handleFolderSelect(f.key) });
     }
     if (selectedAccountId) {
-      cmds.push({ id: "sync", label: "Sync now", run: () => triggerSync(selectedAccountId) });
+      cmds.push({
+        id: "sync",
+        label: viewAll ? "Sync each mailbox now" : "Sync now",
+        run: () => useEmailStore.getState().syncScope(),
+      });
     }
     return cmds;
   }, [
-    selectedEmail, folders, selectedAccountId, openCompose,
-    handleToolbarAction, updateEmail, deleteEmail, handleFolderSelect, triggerSync,
+    selectedEmail, folders, selectedAccountId, openCompose, viewAll,
+    handleToolbarAction, updateEmail, deleteEmail, handleFolderSelect,
   ]);
 
   // ── Render ──
@@ -734,6 +775,8 @@ export default function EmailPage() {
               onSetDefault={setDefaultAccount}
               onDisconnect={handleDisconnectRequest}
               onEditMailbox={handleEditMailbox}
+              viewAll={viewAll}
+              onSelectAll={handleSelectAll}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
             />
@@ -775,6 +818,10 @@ export default function EmailPage() {
             onFilterLabel={(label) => {
               // Category chip → the inbox filtered to that label (same path a
               // label chip in the list uses), dropping back to the mailbox.
+              // A label belongs to the mailbox of the dashboard, so All inboxes
+              // opens that mailbox first (EM-T8d review).
+              const st = useEmailStore.getState();
+              if (st.viewAll && st.selectedAccountId) st.selectAccount(st.selectedAccountId);
               useEmailStore.getState().selectLabel(label);
               setAutomationFeature(null);
             }}
@@ -841,6 +888,19 @@ export default function EmailPage() {
                 <h1 className="text-sm font-medium text-foreground truncate">
                   {folderLabel(selectedFolder)}
                 </h1>
+                {/* The scope of the list, for two or more mailboxes (§11.4). */}
+                {accounts.length > 1 && (viewAll ? (
+                  <span className="text-[11px] text-muted-foreground truncate flex-shrink-0">
+                    All inboxes · {accounts.length} mailboxes
+                  </span>
+                ) : selectedAccount ? (
+                  <>
+                    <MailboxChip account={selectedAccount} />
+                    <span className="text-[11px] text-muted-foreground truncate">
+                      {selectedAccount.emailAddress}
+                    </span>
+                  </>
+                ) : null)}
                 {unreadCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full flex-shrink-0">
                     {unreadCount} unread
@@ -893,13 +953,19 @@ export default function EmailPage() {
               }}
               className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity"
             >
-              {selectedAccount && <MailboxAvatar account={selectedAccount} />}
+              {viewAll ? (
+                <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                  <AppIcon name="Inbox" size={13} />
+                </span>
+              ) : selectedAccount ? (
+                <MailboxAvatar account={selectedAccount} />
+              ) : null}
               <div className="min-w-0">
                 <div className="text-xs font-medium text-foreground">
                   {folderLabel(selectedFolder)}
                 </div>
                 <div className="text-[10px] text-muted-foreground truncate">
-                  {selectedAccount?.emailAddress ?? ""}
+                  {viewAll ? `All inboxes · ${accounts.length} mailboxes` : selectedAccount?.emailAddress ?? ""}
                 </div>
               </div>
             </button>
@@ -909,7 +975,7 @@ export default function EmailPage() {
                   {unreadCount} unread
                 </span>
               )}
-              <Button variant="ghost" size="icon-sm" layout="" onClick={() => selectedAccountId && triggerSync(selectedAccountId)} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
+              <Button variant="ghost" size="icon-sm" layout="" onClick={() => useEmailStore.getState().syncScope()} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
                 <AppIcon name="RefreshCw" size={16} className={syncing ? "animate-spin" : ""} />
               </Button>
             </div>
@@ -925,22 +991,23 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── Reconnect banner: account auth/sync is failing ── */}
-        {selectedAccount &&
-          (selectedAccount.syncStatus === "error" || authErrors[selectedAccount.id]) && (
+        {/* ── Reconnect banner: account auth/sync is failing ──
+            In All inboxes it names the first mailbox that needs it, so a
+            second mailbox cannot fail out of sight (EM-T8d review). */}
+        {attentionAccount && (
           <div className="flex items-start gap-2 px-3 py-2 border-b border-warning/30 bg-warning/10 flex-shrink-0">
             <AppIcon name="AlertCircle" size={14} className="text-warning mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs text-foreground">
-                <span className="font-medium">{selectedAccount.emailAddress}</span>{" "}can&apos;t
+                <span className="font-medium">{attentionAccount.emailAddress}</span>{" "}can&apos;t
                 reach the provider — message bodies, folders and statuses may be stale.
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                {selectedAccount.syncError || authErrors[selectedAccount.id] || "The connection may have expired. Reconnect to restore full access."}
+                {attentionAccount.syncError || authErrors[attentionAccount.id] || "The connection may have expired. Reconnect to restore full access."}
               </p>
             </div>
             {(() => {
-              const provider = reconnectProvider(selectedAccount);
+              const provider = reconnectProvider(attentionAccount);
               if (!provider) {
                 return (
                   <span className="text-[11px] text-muted-foreground flex-shrink-0 max-w-[40%]">
@@ -954,7 +1021,7 @@ export default function EmailPage() {
                   size="sm"
                   icon="RefreshCw"
                   className="flex-shrink-0"
-                  onClick={() => handleConnect(provider, selectedAccount.emailAddress)}
+                  onClick={() => handleConnect(provider, attentionAccount.emailAddress)}
                 >
                   {provider === "microsoft" ? "Reconnect Outlook" : "Reconnect Gmail"}
                 </Button>
