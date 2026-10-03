@@ -42,10 +42,15 @@ and streams chat responses as AG-UI events.
 15. **A shared agent runs no shell on the host** (D85, `project-docs/specs/maf_coding_engine.md` §7.9). Two halves, two functions, two flags.
    - **The tool half.** `_tool_injection._withheld_shell_tools(agent_name, agent_config)` withholds `code_task`, `run_script` and `install_dependency`. The run binds `shell_tools_withheld`. `_sandbox_covers(agent, org)` may lift it, and it returns `False` until WS-43f points it at `sandbox_broker.covers`.
    - **The host half.** `_tool_injection._host_shell_refused(agent_name, agent_config)` refuses the Copilot CLI's own shell. The run binds `host_shell_refused`. A cover NEVER lifts it, because the CLI runs on the host. Only `_copilot_cli_in_broker_sandbox` could, and it is `False` for every agent.
-   - `_d85_leaves_alone` decides scope for both halves: a `personal` agent, and the root `metorite` agent until the owner decides (`_D85_OWNER_PENDING`, H-228). The org comes from `_current_run_org()`, never from input.
+   - `_d85_leaves_alone` decides scope for both halves: a `personal` agent, and the root `metorite` agent (`_D85_OWNER_PENDING`), which only a first-party admin may run (contract 16). The org comes from `_current_run_org()`, never from input.
    - The withheld tool names leave the scope through `_resolve_injected_scope(withheld=)`. So the injected list, the addendum and the skill bodies agree.
    - Pass `agent_config=loaded.config` at every call of `_inject_agent_tools` and `materialize_skill_bodies_for_agent`. A call with no config reads as shared.
    - Each artifact context (the run, the batch run, each sub-agent) binds both flags. Give a Copilot agent its handler through `_copilot_session._install_copilot_permission_handler` and nowhere else. It ALWAYS wraps the slot in `permission_policy.guard_shared_agent_shell`, also a handler the agent's factory set, in every `AGENT_PERMISSION_MODE`. Production runs `enforce` (read on 2026-10-03). Tier 2 always passes `--deny-tool shell`, and every `MetoriteCopilotAgent` session sets `enable_file_hooks=False`. Fence: `tests/unit/test_shared_agent_shell_tools.py` (WS43-F23).
+
+16. **Only an admin of the first-party organization may run the root `metorite` agent** (owner, 2026-10-03, `project-docs/specs/maf_coding_engine.md` §15.4).
+   - `_assert_may_run_agent(agent_name)` is the one gate, and `_FIRST_PARTY_ADMIN_ONLY_AGENTS` names the agents. `run_agent_stream`, `_run_agent_inner` and `_run_sub_agent_streaming` each call it once, before they load the agent. Add no other load site without it.
+   - The member is the verified `user` of the run binding, the parent's for a delegated run. The org is `_current_run_org()`. `mutation._read_first_party` is the one first-party read, and "admin" is `admin:members:manage`.
+   - A refusal raises `AgentNotFound` (an `AgentLoadError`). The batch path catches it BEFORE the `AgentLoadError` clause, which starts a self-mutation. The sync run API maps it to 404. Fence: `tests/unit/test_root_agent_first_party.py`.
 
 ## Work Guidance
 

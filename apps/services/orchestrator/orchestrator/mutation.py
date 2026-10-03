@@ -249,6 +249,31 @@ SELECT first_party FROM organization
 """
 
 
+async def _read_first_party(organization_id: str | None) -> bool | None:
+    """``organization.first_party`` for *organization_id*. The ONE read of it.
+
+    MT-0b's self-mutation gate and the root-agent gate (D85, §15.4,
+    ``executor._assert_may_run_agent``) both call it, so "is this org ours"
+    has one query. With no *organization_id* it answers only on a box with
+    exactly one organization. Returns ``None`` when no row resolves. It
+    raises on a database failure, and each caller decides that means no.
+    """
+    from acb_common.db import get_db
+    from sqlalchemy import text
+
+    session = await get_db()
+    try:
+        if organization_id:
+            row = (await session.execute(
+                text(_SQL_FIRST_PARTY_BY_ID), {"org_id": organization_id},
+            )).first()
+        else:
+            row = (await session.execute(text(_SQL_SOLE_ORG_FIRST_PARTY))).first()
+    finally:
+        await session.close()
+    return None if row is None else bool(row[0])
+
+
 async def _self_mutation_permitted(
     organization_id: str | None = None,
 ) -> tuple[bool, str]:
@@ -270,19 +295,7 @@ async def _self_mutation_permitted(
         return False, "self-mutation is disabled on this deployment (SELF_MUTATION_DISABLED)"
 
     try:
-        from acb_common.db import get_db
-        from sqlalchemy import text
-
-        session = await get_db()
-        try:
-            if organization_id:
-                row = (await session.execute(
-                    text(_SQL_FIRST_PARTY_BY_ID), {"org_id": organization_id},
-                )).first()
-            else:
-                row = (await session.execute(text(_SQL_SOLE_ORG_FIRST_PARTY))).first()
-        finally:
-            await session.close()
+        first_party = await _read_first_party(organization_id)
     except Exception as exc:
         _log.warning("mutation.first_party_check_failed", error=str(exc)[:200])
         return False, (
@@ -290,12 +303,12 @@ async def _self_mutation_permitted(
             "(the check failed, so self-mutation is refused)"
         )
 
-    if row is None:
+    if first_party is None:
         return False, (
             "no single first-party organization resolved — self-mutation is "
             "refused for tenants (saas_multitenancy.md §6.2 / MT-0b)"
         )
-    if not bool(row[0]):
+    if not first_party:
         return False, (
             "this organization is not flagged first-party; a tenant's agent may "
             "not open a pull request against the Metorite monorepo "

@@ -900,6 +900,9 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
+        # §15.4: a first-party-admin-only agent, delegated to by anyone else,
+        # is refused as absent. The member is the PARENT run's (run binding).
+        await _assert_may_run_agent(agent_name)
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
@@ -1352,6 +1355,89 @@ class RunWorkspaceRefused(RuntimeError):
     with no tenant must not fall back to it for its writes, so the run is
     refused before the agent starts. It fails closed, and it writes nothing.
     """
+
+
+# ── Agents for the platform's own admins only (owner, 2026-10-03, §15.4) ────
+#: Only an admin of the first-party organization (``organization.first_party``,
+#: migration 157) may run these, through ANY path: chat, the gateway run API,
+#: delegation, workflows, webhooks and cron. ``metorite`` is the root dev agent
+#: (repo-root ``agents.py``). It keeps its Copilot CLI shell for those admins
+#: (``_tool_injection._D85_OWNER_PENDING``), and this gate is what makes that
+#: safe. Fence: ``tests/unit/test_root_agent_first_party.py`` (WS43-F17).
+_FIRST_PARTY_ADMIN_ONLY_AGENTS: frozenset[str] = frozenset({"metorite"})
+
+#: The established gate of an admin act: the nine member-admin routes require
+#: it (``require_permission("admin:members:manage")``), and only the ``owner``
+#: (``*``) and ``admin`` roles hold it (migration 130). ``admin:members:read``
+#: is NOT an admin check, because migration 130 gives it to ``manager`` too.
+_FIRST_PARTY_ADMIN_PERMISSION = "admin:members:manage"
+
+
+class AgentNotFound(AgentLoadError):
+    """The agent is refused to this caller, and the refusal reads as absent.
+
+    An ``AgentLoadError``, so every path answers it as it answers an agent it
+    cannot load: no self-anneal, no self-mutation, and no word that the agent
+    exists. The sync run API maps it to 404.
+    """
+
+
+def _agent_slug(agent_name: str) -> str:
+    """The name a gate compares: lower case, with no ``agent-`` prefix."""
+    name = str(agent_name or "").strip().lower()
+    return name[len("agent-"):] if name.startswith("agent-") else name
+
+
+async def _first_party_admin_runs() -> tuple[bool, str]:
+    """Is the run on this frame a first-party admin's? ``(allowed, why)``.
+
+    The member and the org come from the run binding only, never from the
+    payload (R11). A direct run binds its member at its boundary, and a
+    delegated run keeps its parent's member, because a run that binds no user
+    leaves the parent's ``user`` and ``member_verified`` in place. Every
+    failure answers no.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from orchestrator.mutation import _read_first_party
+        if not await _read_first_party(org):
+            return False, "not the first-party organization"
+    except Exception as exc:
+        return False, f"the first-party check failed: {str(exc)[:120]}"
+    try:
+        from acb_auth import resolve_access
+        access = await resolve_access(member)
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
+        return False, "not an admin of the first-party organization"
+    return True, ""
+
+
+async def _assert_may_run_agent(agent_name: str) -> None:
+    """Refuse a first-party-admin-only agent to everyone else (§15.4).
+
+    Each run boundary calls it once, before it loads the agent:
+    ``run_agent_stream``, ``_run_agent_inner`` and
+    ``_run_sub_agent_streaming``. Every other agent passes untouched. A
+    refusal raises :class:`AgentNotFound`, so the agent's existence does not
+    show. The reason goes to the log only.
+    """
+    if _agent_slug(agent_name) not in _FIRST_PARTY_ADMIN_ONLY_AGENTS:
+        return
+    allowed, why = await _first_party_admin_runs()
+    if allowed:
+        return
+    _log.warning("executor.agent_run_refused", agent=agent_name, reason=why)
+    raise AgentNotFound(f"Agent {agent_name!r} not found.")
 
 
 def _resolve_run_workspace(
@@ -2506,6 +2592,9 @@ async def _run_agent_inner(
         except ImportError:
             pass
 
+        # §15.4: refused as absent unless a first-party admin runs it. An
+        # AgentLoadError, so no self-anneal and no self-mutation follow.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -2785,6 +2874,14 @@ async def _run_agent_inner(
             "executor.run_workspace_refused", agent=agent_name, run_id=run_id,
             error=str(exc),
         )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentNotFound as exc:
+        # §15.4: refused as absent. Before the AgentLoadError clause, because
+        # that one starts a self-mutation. The agent is fine, and this caller
+        # may not run it. The gate already logged the reason.
         raise AgentRunError(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
@@ -3201,6 +3298,9 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
 
+        # §15.4: refused as absent unless a first-party admin runs it. The
+        # RUN_ERROR then reads like an agent that cannot load.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,

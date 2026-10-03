@@ -943,9 +943,11 @@ halves:
 
 - A `personal` agent is out of scope. The owner left personal agents out
   (H-225).
-- The root `metorite` dev agent is out of scope until the owner decides
-  (`_D85_OWNER_PENDING`, H-228). It edits platform code and runs the tests
-  through its CLI shell, and D86 says leave the older agents alone.
+- The root `metorite` dev agent is out of scope (`_D85_OWNER_PENDING`). It
+  edits platform code and runs the tests through its CLI shell. The owner
+  decided on 2026-10-03 that only an admin of the first-party organization may
+  run it, through any path. `executor._assert_may_run_agent` enforces that at
+  every run boundary (§15.4), and that is what makes the exemption safe.
 - Every other agent is in scope: `shared` (the default when a config has no
   `sharing` block), `team`, a config that does not parse, and
   `agent_config=None`.
@@ -1044,7 +1046,7 @@ data never leaves the platform.
 
 **What the block does not reach.**
 
-- The root `metorite` agent, until the owner decides (H-228).
+- The root `metorite` agent, which only a first-party admin may run (§15.4).
   `mutation_runner.py` sets `approve_all` inside the mutation container,
   which no tenant run reaches.
 - The Copilot CLI's file tools on task-manager and app-builder. They run no
@@ -1218,7 +1220,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F14 | `tests/unit/test_sandbox_safe_open.py` | The safe opener follows a symlink at any depth, a racing thread swaps a parent dir for a symlink and wins, a host reader or writer of §7.5 rule B skips the opener, or a skill under `agent-data/skills/` does not survive a lost disk copy and a rehydrate |
 | WS43-F15 | `tests/unit/test_no_copilot_sdk.py` | §15.6. A file off the allowlist imports `copilot`, a module under `copilot.` or `agent_framework_github_copilot`, names `GitHubCopilotAgent` in code, or loads one of those modules through `importlib.import_module` or `__import__`. The test reads the syntax tree, so a comment or a docstring does not trip it. An allowlist entry with no Copilot use fails it too. After WS-43r, `pyproject.toml` or `uv.lock` names `github-copilot-sdk` or `agent-framework-github-copilot` |
 | WS43-F16 | `tests/unit/test_mutation_runner_maf.py` | The MAF mutation runner imports `copilot` or sets a permission handler that approves all. The MAF branch of `_run_mutation_sandbox` passes `COPILOT_GITHUB_TOKEN` or any GitHub token. The token probe finds a token in the container. Or the mutation prompt asks for a `GitHubCopilotAgent` factory |
-| WS43-F17 | `tests/unit/test_root_agent_maf.py` | The root `metorite` agent gets a shell, a write tool or `approve_all`, reads a path outside its read roots or a denied path, runs for a caller who is not a first-party admin on the chat route, the gateway run API or `call_agent`, or makes a code change by a path other than `spawn_coding_agent` |
+| WS43-F17 | `tests/unit/test_root_agent_maf.py` (WS-43m), and `tests/unit/test_root_agent_first_party.py` for the access clause (BUILT, PR #598) | The root `metorite` agent gets a shell, a write tool or `approve_all`, reads a path outside its read roots or a denied path, runs for a caller who is not a first-party admin on the chat route, the gateway run API or `call_agent`, or makes a code change by a path other than `spawn_coding_agent` |
 | WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a repo whose `config.json` declares `github-copilot` is accepted at registration or loads, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
@@ -2634,6 +2636,33 @@ route is not enough. These paths start a run with no chat route:
 sits where the executor loads the agent, in `run_agent` (`executor.py:2267`)
 and `run_agent_stream` (`:2923`). It reads the organization and the member
 from the run binding. A delegated run uses the member of its parent run.
+
+✅ **The access rule is BUILT ahead of the MAF move (owner, 2026-10-03, PR
+#598).** The owner chose "Admins of our own org only". The root agent stays a
+`GitHubCopilotAgent` with its terminal until WS-43m, which D86 parks. Only a
+first-party admin may run it.
+
+- `executor._assert_may_run_agent` holds the rule, and three run boundaries
+  call it before they load the agent. They are `run_agent_stream`,
+  `_run_agent_inner` and `_run_sub_agent_streaming`. Every path above
+  reaches one of them.
+- The member is the verified `user` of the run binding. A delegated run
+  keeps the parent's member. A claim in the request body is not verified, so
+  it is refused.
+- The org is `_current_run_org()`. `mutation._read_first_party` is the one
+  read of `organization.first_party`, shared with MT-0b.
+- "Admin" is the gate that the admin routes already use for an admin act,
+  `admin:members:manage`. The `owner` (`*`) and `admin` roles hold it. `admin:members:read` is not the
+  check, because migration 130 gives it to `manager` too.
+- Every other caller gets `AgentNotFound`, "Agent 'metorite' not found." The
+  sync run API answers it with HTTP 404. A stream ends with that `RUN_ERROR`,
+  and a delegation returns that text. No refusal starts a self-anneal or a
+  self-mutation.
+- The name match takes no case and no `agent-` prefix, so an alias is refused
+  too. The registry lists still name the agent, and hiding it there is not
+  part of this rule.
+- Fence: `tests/unit/test_root_agent_first_party.py` (the access clause of
+  WS43-F17). Eleven mutations turn it red.
 
 ### 15.5 Agents from a repo
 

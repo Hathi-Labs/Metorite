@@ -4523,7 +4523,7 @@ is true for it. And the Copilot CLI refuses each of its own shell commands.
   `AGENT_PERMISSION_MODE`. Production runs `enforce` (the box's `.env` sets
   no mode, read on 2026-10-03), and a later switch must not waive D85.
 - Only a `personal` agent is out of scope, and so is the root `metorite` dev
-  agent until the owner decides (H-228).
+  agent, by name.
 
 **What it removes today.** `code_task` and `run_script` leave
 projects-assistant, crm-assistant, apis-config, orchestrator, task-manager and
@@ -4540,8 +4540,12 @@ WS-43h gives it back in the sandbox, and D86 parks WS-43h.
   rule there, once the sandbox covers them.
 - The Projects instructions still forbid code over the rows. WS-43u changes
   them under D86, once the sandbox covers projects-assistant (H-226).
-- The root `metorite` dev agent keeps its tools and its CLI shell until the
-  owner decides (H-228). D86 says leave the older agents alone.
+- The root `metorite` dev agent keeps its tools and its CLI shell. **Owner
+  decision, 2026-10-03:** "Admins of our own org only". Only an admin of the
+  first-party organization may run it, through any path, and a customer
+  organization is refused. `executor._assert_may_run_agent` enforces that at
+  every run boundary (`maf_coding_engine.md` §15.4, fence
+  `tests/unit/test_root_agent_first_party.py`).
 - `agent-sales-assistant` keeps its `approve_all` (H-211), inside the guard.
   It is shared, so it loses the CLI shell. Its own tools run their scripts
   through Python `subprocess`, and they still work.

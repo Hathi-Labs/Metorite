@@ -564,7 +564,7 @@ def test_no_agent_has_its_cli_in_a_broker_sandbox_today() -> None:
 def test_the_root_dev_agent_is_the_one_owner_pending_name() -> None:
     root_cfg = json.loads((REPO / "config.json").read_text(encoding="utf-8"))
     assert root_cfg.get("name") == "metorite" and "sharing" not in root_cfg, (
-        "the root config changed. Re-read H-228 before you touch the exemption"
+        "the root config changed. Re-read maf_coding_engine.md §15.4 before you touch the exemption"
     )
     assert frozenset({"metorite"}) == ti._D85_OWNER_PENDING
     assert ti._withheld_shell_tools("metorite", root_cfg) == frozenset()

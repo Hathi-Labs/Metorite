@@ -106,15 +106,16 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
     return False
 
 
-#: Agents that D85 leaves as they are, until the owner decides (HANDOFF H-228).
-#: ``metorite`` is the root dev agent (repo-root ``agents.py``). It edits
-#: platform code and runs the tests through its Copilot CLI shell, with its own
-#: ``approve_all`` (H-211). Its root ``config.json`` has no ``sharing`` block,
-#: so D85 would read it as shared and take its shell. D86 says leave the older
-#: agents alone, so this PR does not change it. The match is on the registry
-#: name the executor runs. Registering a name needs ``agents:manage``
-#: (``POST /agent``), and a name is unique in the registry. Fence:
-#: ``test_shared_agent_shell_tools.py`` pins this set to exactly one name.
+#: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
+#: agent (repo-root ``agents.py``). It edits platform code and runs the tests
+#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
+#: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
+#: admin of the first-party organization may run it, through any path, and it
+#: keeps its terminal for them. ``executor._assert_may_run_agent`` enforces
+#: that at every run boundary, and it is what makes this exemption safe.
+#: Fences: ``test_shared_agent_shell_tools.py`` pins this set to one name, and
+#: ``test_root_agent_first_party.py`` pins it inside the gated set.
 _D85_OWNER_PENDING: frozenset[str] = frozenset({"metorite"})
 
 
@@ -123,7 +124,8 @@ def _d85_leaves_alone(agent_name: str | None, agent_config: dict[str, Any] | Non
 
     * A ``personal`` agent. The owner left personal agents out of scope
       (HANDOFF H-225 asks for the same rule there).
-    * A name in :data:`_D85_OWNER_PENDING`, until the owner decides (H-228).
+    * A name in :data:`_D85_OWNER_PENDING`: the root dev agent, which only a
+      first-party admin may run (owner, 2026-10-03, §15.4).
 
     Every other agent is in scope: ``shared`` (the default when the config has
     no ``sharing`` block), ``team``, a config that does not parse, and

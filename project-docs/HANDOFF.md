@@ -3976,25 +3976,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
 - **Added:** 2026-10-03 · the D85 interim block
 
-### H-228 · Decide whether the root `metorite` dev agent keeps its host shell · [OWNER]
-- **Check:** `grep -n 'frozenset({"metorite"})' apps/services/orchestrator/orchestrator/_tool_injection.py`
-  → a hit means the root agent is still out of D85's scope.
-- **What happens.** The root `metorite` agent (repo-root `agents.py`) edits
-  platform code and runs the tests through its Copilot CLI shell, with its own
-  `approve_all` (H-211). Its root `config.json` has no `sharing` block, so D85
-  reads it as a shared agent. D86 says leave the older agents alone. So PR
-  #598 keeps it out of scope by name (`_D85_OWNER_PENDING`), and it keeps its
-  tools and its shell.
-- **The question for the owner.** Does it keep its host shell until WS-43m
-  moves it to MAF? Or does D85 bind it now, so it loses the shell? Spec §15.4
-  plans the MAF move, with no shell and with admins of the first-party
-  organization only.
-- **Why it matters.** A name exemption is a hole by design. Any member who can
-  reach that agent can run any command on the host, in every permission mode.
-- **Authority:** `work_plan.md` D85 and D86 · `specs/maf_coding_engine.md`
-  §7.9 and §15.4 · H-211
-- **Added:** 2026-10-03 · fix round 1 of PR #598
-
 ### H-226 · Let the Projects agent write code over the rows, once the sandbox covers it · [AGENT]
 - **Check:** `grep -n 'Never run `run_script` or `code_task` over them' apps/agents/agent-projects/instructions.md`
   → a hit means the instructions still forbid code over the rows.
