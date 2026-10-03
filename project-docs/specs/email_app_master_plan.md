@@ -4109,8 +4109,7 @@ requests, T8f-1 to T8f-3. No migration.
 
 ##### EM-T8f-1 — copy rules, the memory purge and `created_at` (backend, R8)
 
-**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-mailbox-settings`. No
-migration.
+**Status.** ✅ MERGED #605 (2026-10-03). No migration.
 
 **As-built notes.**
 - **The forward rule (D-EM-29).** The copy leaves out the whole rule, and not only its FORWARD.
