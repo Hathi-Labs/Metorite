@@ -192,12 +192,14 @@ async def test_the_name_and_the_labels(broker: sb.SandboxBroker, docker: FakeDoc
     want = hashlib.sha256(f"{ORG}\x00agent-x\x00t-9".encode()).hexdigest()[:16]
     assert name == f"mtr-sbx-{want}"
     labels = dict(v.split("=", 1) for v in flag_values(argv, "--label"))
+    start = labels.pop("metorite.start")
     assert labels == {
         "metorite.sandbox": "1",
         "metorite.org": ORG,
         "metorite.agent": "agent-x",
         "metorite.thread": sb._digest("t-9"),
     }
+    assert len(start) == 32 and int(start, 16) >= 0, "each start gets a fresh id"
 
 
 # ── rule 5: the mounts ───────────────────────────────────────────────────────
@@ -318,7 +320,15 @@ async def test_a_start_and_a_restart_build_the_same_mounts(
     first, second = docker.runs()
     assert mounts_of(first) == mounts_of(second)
     assert any(m.endswith("target=/workspace/.git,readonly") for m in mounts_of(second))
-    assert first == second, "a restart must re-apply every flag and mount"
+    def without_start(argv: list[str]) -> list[str]:
+        return [a for a in argv if not a.startswith("metorite.start=")]
+
+    assert without_start(first) == without_start(second), (
+        "a restart must re-apply every flag and mount"
+    )
+    assert flag_values(first, "--label") != flag_values(second, "--label"), (
+        "a restart must get a fresh start id"
+    )
 
 
 # ── §7.2: the image is pinned ────────────────────────────────────────────────

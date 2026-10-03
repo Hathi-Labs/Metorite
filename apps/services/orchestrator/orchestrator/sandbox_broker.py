@@ -49,6 +49,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,10 @@ LABEL_SANDBOX = "metorite.sandbox"
 LABEL_ORG = "metorite.org"
 LABEL_AGENT = "metorite.agent"
 LABEL_THREAD = "metorite.thread"
+#: A fresh id per container start. The broker finds and removes a start
+#: by this label or by its container id, NEVER by the name, so a late
+#: removal cannot kill a newer container of the same name.
+LABEL_START = "metorite.start"
 
 WORKSPACE_TARGET = "/workspace"
 GIT_COVER_TARGET = "/workspace/.git"
@@ -481,12 +486,19 @@ def build_run_argv(
     gid: int,
     image: str,
     limits: Limits,
+    start_id: str,
 ) -> list[str]:
-    """The ``docker run`` arguments, with no ``docker`` in front."""
+    """The ``docker run`` arguments, with no ``docker`` in front.
+
+    ``--read-only`` always comes with the ``/tmp`` tmpfs. The image sets
+    ``HOME=/tmp``, and tools such as matplotlib fail with no writable home.
+    """
     if uid == 0 or gid == 0:
         raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
+    if not re.fullmatch(r"[0-9a-f]{32}", start_id):
+        raise SandboxRefused("The start id is not valid.")
     argv = ["run", "-d", "--rm", "--name", binding.name]
-    for key, value in binding.labels().items():
+    for key, value in {**binding.labels(), LABEL_START: start_id}.items():
         argv += ["--label", f"{key}={value}"]
     argv += [
         "--network", "none",
@@ -537,9 +549,14 @@ PID_PROBE = (
     'if [ "$pid" != 1 ] && [ "$pid" != "$self" ]; then echo "$pid"; fi; done'
 )
 
-#: Kills every process except init, the keep-alive and itself, then checks
-#: again. A child that called ``setsid`` or forked twice dies too, because the
-#: sweep walks ``/proc`` and not a process group. A zombie is already dead.
+#: Kills every process except init, the keep-alive and itself, in ANY state,
+#: then checks again. A child that called ``setsid`` or forked twice dies too,
+#: because the sweep walks ``/proc`` and not a process group.
+#:
+#: ⚠️ A PID counts as gone only when EVERY task under ``/proc/<pid>/task`` is a
+#: zombie (Z) or dead (X). A leader that left by ``syscall(SYS_exit)`` shows Z
+#: while a worker thread still runs, so a check of the leader alone lets the
+#: worker write after the sweep said "clean" (review P1-a).
 #: Exit 0 prints ``clean``. Exit 3 prints the PIDs that survived.
 KILL_SWEEP = """keep="$1"; self=$$; n=0
 while :; do
@@ -547,14 +564,17 @@ while :; do
   for p in /proc/[0-9]*; do
     pid=${p#/proc/}
     case "$pid" in 1|"$keep"|"$self") continue ;; esac
-    st=""
-    while read -r k v _; do
-      if [ "$k" = "State:" ]; then st="$v"; break; fi
-    done 2>/dev/null < "$p/status"
-    [ -z "$st" ] && continue
-    [ "$st" = "Z" ] && continue
     kill -9 "$pid" 2>/dev/null
-    left="$left $pid"
+    for t in "$p"/task/[0-9]*; do
+      st=""
+      while read -r k v _; do
+        if [ "$k" = "State:" ]; then st="$v"; break; fi
+      done 2>/dev/null < "$t/status"
+      if [ -n "$st" ] && [ "$st" != "Z" ] && [ "$st" != "X" ]; then
+        left="$left $pid"
+        break
+      fi
+    done
   done
   if [ -z "$left" ]; then echo clean; exit 0; fi
   n=$((n+1))
@@ -623,7 +643,11 @@ class CappedOutput:
 
 
 class DockerCLI:
-    """Runs the ``docker`` CLI. The only process starts in this module."""
+    """Runs the ``docker`` CLI. The only process starts in this module.
+
+    A timeout OR a cancel kills the CLI process and reaps it, so a cancelled
+    run never leaves a ``docker`` process behind (review P1-b).
+    """
 
     def _binary(self) -> str:
         path = shutil.which("docker")
@@ -631,21 +655,32 @@ class DockerCLI:
             raise SandboxUnavailable("Docker is not available on this box.")
         return path
 
-    async def run(self, args: Sequence[str], *, timeout: float) -> DockerResult:
-        """Run one short docker command to its end."""
-        proc = await asyncio.create_subprocess_exec(
+    async def _spawn(self, args: Sequence[str]) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
             self._binary(), *args,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+    @staticmethod
+    async def _kill(proc: asyncio.subprocess.Process) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(BaseException):
+            await asyncio.shield(proc.wait())
+
+    async def run(self, args: Sequence[str], *, timeout: float) -> DockerResult:
+        """Run one short docker command to its end."""
+        proc = await self._spawn(args)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
+            await self._kill(proc)
             return DockerResult(-1, "", f"docker {args[0] if args else ''} timed out")
+        except BaseException:
+            await self._kill(proc)
+            raise
         return DockerResult(
             proc.returncode if proc.returncode is not None else -1,
             out.decode("utf-8", errors="replace"),
@@ -656,12 +691,7 @@ class DockerCLI:
         self, args: Sequence[str], *, timeout: float, head: int, tail: int,
     ) -> StreamResult:
         """Run ``docker exec`` and keep a capped copy of its output."""
-        proc = await asyncio.create_subprocess_exec(
-            self._binary(), *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await self._spawn(args)
         capped = CappedOutput(head, tail)
         err = bytearray()
 
@@ -684,10 +714,11 @@ class DockerCLI:
             rc: int | None = await proc.wait()
         except TimeoutError:
             host_timed_out = True
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
+            await self._kill(proc)
             rc = None
+        except BaseException:
+            await self._kill(proc)
+            raise
         return StreamResult(
             rc=rc,
             output=capped.text(),
@@ -703,20 +734,30 @@ class DockerCLI:
 
 @dataclass(eq=False)
 class SandboxHandle:
-    """One container of the bound run. Get it from :meth:`SandboxBroker.acquire`."""
+    """One container of the bound run. Get it from :meth:`SandboxBroker.acquire`.
+
+    ``lock`` belongs to the MOUNT SOURCE, not to the container. Two threads of
+    one organization on one shared agent mount the same ``o:<org>`` dir in two
+    containers, and they share one lock (review P2-b). ``ready`` is set when
+    the start ends, with success or not.
+    """
 
     binding: RunBinding
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: asyncio.Lock
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
     leases: int = 0
     started_at: float = 0.0
     last_used: float = 0.0
     init_pid: int = 1
     keepalive_pid: int | None = None
+    container_id: str = ""
+    start_id: str = ""
     starting: bool = True
     failed: bool = False
     removed: bool = False
     over_quota: bool = False
     workspace_bytes: int = 0
+    workspace_files: int = 0
     network: str = "none"
 
     @property
@@ -753,9 +794,13 @@ class ExecResult:
 # ── Host-side measures ───────────────────────────────────────────────────────
 
 
-def _dir_size_bytes(root: Path) -> int:
-    """The apparent size of every file below *root*, with no link followed."""
-    total = 0
+def _dir_usage(root: Path) -> tuple[int, int]:
+    """``(bytes, entries)`` below *root*, with no link followed.
+
+    ``bytes`` is the apparent size of every file. ``entries`` counts every
+    file, dir and link, because each one takes an inode on the host.
+    """
+    total = entries_seen = 0
     stack = [root]
     while stack:
         here = stack.pop()
@@ -764,6 +809,7 @@ def _dir_size_bytes(root: Path) -> int:
         except OSError:
             continue
         for entry in entries:
+            entries_seen += 1
             try:
                 if entry.is_symlink():
                     continue
@@ -773,7 +819,7 @@ def _dir_size_bytes(root: Path) -> int:
                     total += entry.stat(follow_symlinks=False).st_size
             except OSError:
                 continue
-    return total
+    return total, entries_seen
 
 
 def _free_disk_mb(path: Path) -> int:
@@ -803,6 +849,25 @@ def _ensure_empty_file(path: Path) -> Path:
     return path.resolve()
 
 
+def check_not_nested(source: Path, sandbox_dirs: Iterable[Path]) -> None:
+    """Refuse *source* when another sandbox dir is its ancestor or descendant.
+
+    The link check of a source and the mount by Docker are two steps. A
+    container that writes a parent or a child of another container's source
+    can swap a part of that path for a link between the two steps, and the
+    bind mount then follows the link to any host dir (review P1-c). The same
+    dir for two containers is allowed: they share one lock (P2-b).
+    """
+    for other in sandbox_dirs:
+        if other == source:
+            continue
+        if source.is_relative_to(other) or other.is_relative_to(source):
+            raise SandboxRefused(
+                "The working dir nests with another sandbox dir, so a container "
+                "could swap a part of its path."
+            )
+
+
 def _oldest_idle(handles: Iterable[SandboxHandle]) -> SandboxHandle | None:
     idle = [
         h for h in handles
@@ -826,9 +891,11 @@ class SandboxBroker:
         self._clock = clock
         self._live: dict[str, SandboxHandle] = {}
         self._registry_lock = asyncio.Lock()
+        self._dir_locks: dict[Path, asyncio.Lock] = {}
         self._dirs: set[Path] | None = None
         self._reaper: asyncio.Task[None] | None = None
         self._startup: asyncio.Task[None] | None = None
+        self._background: set[asyncio.Task[Any]] = set()
 
     # ── settings and state ──────────────────────────────────────────────────
 
@@ -864,6 +931,31 @@ class SandboxBroker:
             empty_file=_ensure_empty_file(base / "git-cover-file"),
         )
 
+    def _lock_for(self, source: Path) -> asyncio.Lock:
+        """The one lock of a mount source, shared by every container on it."""
+        lock = self._dir_locks.get(source)
+        if lock is None:
+            lock = self._dir_locks[source] = asyncio.Lock()
+        return lock
+
+    def _spawn_background(self, coro: Any) -> asyncio.Task[Any]:
+        """A task that a cancel of the caller does not stop."""
+        task = asyncio.get_running_loop().create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    async def settle(self) -> None:
+        """Wait for every background removal. Tests call it.
+
+        It waits on the tasks that are still pending. A done task leaves the
+        set in a loop callback, and ``gather`` of done tasks gives the loop no
+        turn, so a loop on the set alone would spin.
+        """
+        while pending := [t for t in self._background if not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.sleep(0)
+
     # ── the sandbox-dir list (§7.1 rule 5, §7.5 rule A) ─────────────────────
 
     def _load_dirs(self) -> set[Path]:
@@ -874,6 +966,10 @@ class SandboxBroker:
                 text = ""
             self._dirs = {Path(line) for line in text.splitlines() if line.strip()}
         return self._dirs
+
+    def _sandbox_dirs(self) -> set[Path]:
+        """Every dir that a container mounts now, or mounted."""
+        return set(self._load_dirs()) | {h.workspace for h in self._live.values()}
 
     def _record_dir(self, path: Path) -> None:
         """Append *path* to the list BEFORE a container mounts it."""
@@ -906,8 +1002,7 @@ class SandboxBroker:
             real = Path(path).resolve()
         except (OSError, RuntimeError):
             return True
-        dirs = set(self._load_dirs()) | {h.workspace for h in self._live.values()}
-        return any(real == d or real.is_relative_to(d) for d in dirs)
+        return any(real == d or real.is_relative_to(d) for d in self._sandbox_dirs())
 
     def refuse_if_sandbox_dir(self, path: str | os.PathLike[str]) -> None:
         """Raise when host git would run on a dir that a container could write."""
@@ -945,12 +1040,23 @@ class SandboxBroker:
                 "The sandbox runs nothing until space is free."
             )
 
+    def _quota(self) -> tuple[int, int]:
+        settings = self._settings()
+        return (
+            int(getattr(settings, "sandbox_workspace_quota_mb", 2048)),
+            int(getattr(settings, "sandbox_workspace_max_files", 100_000)),
+        )
+
     async def measure_workspace(self, handle: SandboxHandle) -> int:
-        """Measure the whole working dir, and set the quota flag."""
-        used = await asyncio.to_thread(_dir_size_bytes, handle.workspace)
-        quota_mb = int(getattr(self._settings(), "sandbox_workspace_quota_mb", 2048))
-        handle.workspace_bytes = used
-        handle.over_quota = used > quota_mb * _MIB
+        """Measure the whole working dir, and set the quota flag.
+
+        The quota bounds the bytes AND the count of entries, so a flood of
+        small files cannot use up the inodes of the host file system.
+        """
+        used, entries = await asyncio.to_thread(_dir_usage, handle.workspace)
+        quota_mb, max_files = self._quota()
+        handle.workspace_bytes, handle.workspace_files = used, entries
+        handle.over_quota = used > quota_mb * _MIB or entries > max_files
         return used
 
     @staticmethod
@@ -967,10 +1073,11 @@ class SandboxBroker:
             return
         await self.measure_workspace(handle)
         if handle.over_quota:
-            quota_mb = int(getattr(self._settings(), "sandbox_workspace_quota_mb", 2048))
+            quota_mb, max_files = self._quota()
             raise SandboxRefused(
-                f"The working dir is over its quota of {quota_mb} MB. "
-                "Delete files to free space, then run the command again."
+                f"The working dir is over its quota of {quota_mb} MB or "
+                f"{max_files} files. Delete files to free space, then run the "
+                "command again."
             )
 
     def _clamp_timeout(self, timeout_s: float) -> int:
@@ -987,6 +1094,11 @@ class SandboxBroker:
         if handle.failed:
             raise SandboxUnavailable("This sandbox did not start.")
 
+    async def _wait_ready(self, handle: SandboxHandle) -> None:
+        if handle.starting:
+            await handle.ready.wait()
+        self._require_live(handle)
+
     # ── acquire / release ───────────────────────────────────────────────────
 
     async def _await_startup(self) -> None:
@@ -1002,6 +1114,10 @@ class SandboxBroker:
         come from the run binding (§7.1 rule 2). Raises
         :class:`SandboxRefused`, :class:`SandboxBusy` or
         :class:`SandboxUnavailable`, and never falls back to the host.
+
+        Cancel-safe (review P1-b): an error or a cancel at any step after the
+        claim unregisters the new handle, or gives back the lease of a reused
+        one. No handle stays ``starting`` and no slot of a cap stays taken.
         """
         binding = read_run_binding()
         if not maf_coding_scope_allows(target_for_agent(binding.agent), binding.org):
@@ -1014,18 +1130,18 @@ class SandboxBroker:
         if not self._reusable(binding):
             await self._preflight(binding)
         handle, victims, fresh = await self._claim(binding)
-        await self._remove_all(victims)
-        if fresh:
-            await self._start_fresh(handle)
-            return handle
-        if handle.starting:
-            async with handle.lock:  # the starter holds it until the start ends
-                pass
+        if not fresh:
+            return await self._join(handle)
         try:
-            self._require_live(handle)
-        except SandboxError:
-            handle.leases = max(0, handle.leases - 1)
+            if victims:
+                await asyncio.shield(self._spawn_background(self._remove_all(victims)))
+            await self._start(handle)
+        except BaseException:
+            self._abandon(handle)
             raise
+        handle.starting = False
+        handle.ready.set()
+        self._ensure_reaper()
         return handle
 
     def _reusable(self, binding: RunBinding) -> bool:
@@ -1044,12 +1160,16 @@ class SandboxBroker:
         uid, gid = _process_ids()
         if uid == 0 or gid == 0:
             raise SandboxRefused("The sandbox never runs as uid 0 or gid 0.")
-        await asyncio.to_thread(self._mounts_for, binding)
+        await self._mounts_for(binding)
 
     async def _claim(
         self, binding: RunBinding,
     ) -> tuple[SandboxHandle, list[SandboxHandle], bool]:
-        """Reuse on a full match, or reserve a new handle within the caps."""
+        """Reuse on a full match, or reserve a new handle within the caps.
+
+        No ``await`` runs in here, so no cancel can land between the
+        decision and the change of the registry.
+        """
         async with self._registry_lock:
             victims: list[SandboxHandle] = []
             held = self._live.get(binding.name)
@@ -1065,15 +1185,39 @@ class SandboxBroker:
                 self._drop(held)
                 victims.append(held)
             victims += self._make_room(binding.org)
-            handle = SandboxHandle(binding=binding, leases=1, last_used=self._clock())
-            await handle.lock.acquire()
+            handle = SandboxHandle(
+                binding=binding, lock=self._lock_for(binding.workspace),
+                leases=1, last_used=self._clock(),
+            )
             self._live[binding.name] = handle
             return handle, victims, True
+
+    async def _join(self, handle: SandboxHandle) -> SandboxHandle:
+        """Wait for a reused handle to be ready. A cancel gives the lease back."""
+        try:
+            await self._wait_ready(handle)
+        except BaseException:
+            handle.leases = max(0, handle.leases - 1)
+            raise
+        return handle
+
+    def _abandon(self, handle: SandboxHandle) -> None:
+        """Unregister a handle whose start failed or was cancelled. No await."""
+        handle.failed = True
+        handle.leases = 0
+        handle.starting = False
+        self._drop(handle)
+        handle.ready.set()
 
     def _drop(self, handle: SandboxHandle) -> None:
         handle.removed = True
         if self._live.get(handle.name) is handle:
             del self._live[handle.name]
+        source = handle.workspace
+        shared = any(h.workspace == source for h in self._live.values())
+        lock = self._dir_locks.get(source)
+        if lock is not None and not shared and not lock.locked():
+            del self._dir_locks[source]
 
     def _make_room(self, org: str) -> list[SandboxHandle]:
         """Stop the oldest idle container that the caps allow (§7.1 rule 8).
@@ -1108,20 +1252,6 @@ class SandboxBroker:
             victims.append(victim)
         return victims
 
-    async def _start_fresh(self, handle: SandboxHandle) -> None:
-        """Start a reserved handle. The caller holds its lock."""
-        try:
-            await self._start(handle)
-        except BaseException:
-            handle.failed = True
-            async with self._registry_lock:
-                self._drop(handle)
-            raise
-        finally:
-            handle.starting = False
-            handle.lock.release()
-        self._ensure_reaper()
-
     async def release(self, handle: SandboxHandle) -> None:
         """Mark the container idle. A container past its lifetime stops now."""
         handle.leases = max(0, handle.leases - 1)
@@ -1132,25 +1262,55 @@ class SandboxBroker:
         if self._clock() - handle.started_at > lifetime:
             async with self._registry_lock:
                 self._drop(handle)
-            await self._remove(handle.name)
+            await self._remove(handle)
 
     # ── start / restart / remove ────────────────────────────────────────────
 
-    def _mounts_for(self, binding: RunBinding) -> list[Mount]:
+    async def _mounts_for(self, binding: RunBinding) -> list[Mount]:
+        """The mounts of a start, after the nesting check (review P1-c)."""
+        others = self._sandbox_dirs()
+        return await asyncio.to_thread(self._build_mounts, binding, others)
+
+    def _build_mounts(self, binding: RunBinding, others: set[Path]) -> list[Mount]:
+        check_not_nested(binding.workspace, others)
         return mount_list(binding, self.git_cover())
 
     async def _start(self, handle: SandboxHandle) -> None:
-        """Run the container and record its init and keep-alive PIDs."""
+        """Run the container and record its id, and its init and keep-alive PIDs.
+
+        On an error or a cancel, the container of THIS start is removed by its
+        id, or by its start label when ``docker run`` printed no id yet.
+        """
         settings = self._settings()
         image = pinned_image(settings)
         limits = Limits.from_settings(settings)
         uid, gid = _process_ids()
-        mounts = await asyncio.to_thread(self._mounts_for, handle.binding)
+        mounts = await self._mounts_for(handle.binding)
+        handle.start_id, handle.container_id = uuid.uuid4().hex, ""
         argv = build_run_argv(
             binding=handle.binding, mounts=mounts, uid=uid, gid=gid,
-            image=image, limits=limits,
+            image=image, limits=limits, start_id=handle.start_id,
         )
         await asyncio.to_thread(self._record_dir, handle.workspace)
+        try:
+            await self._run_container(handle, argv)
+            handle.keepalive_pid = await self._probe_keepalive(handle.name)
+        except BaseException as exc:
+            cleanup = self._spawn_background(
+                self._remove_container(handle.container_id, handle.start_id)
+            )
+            if not isinstance(exc, asyncio.CancelledError):
+                await asyncio.shield(cleanup)
+            raise
+        handle.init_pid = 1
+        handle.started_at = handle.last_used = self._clock()
+        handle.network = "none"
+        _log.info(
+            "sandbox_broker.started", name=handle.name, org=handle.org,
+            agent=handle.agent, keepalive_pid=handle.keepalive_pid,
+        )
+
+    async def _run_container(self, handle: SandboxHandle, argv: list[str]) -> None:
         result = await self._docker.run(argv, timeout=_RUN_TIMEOUT_SECONDS)
         if result.rc != 0 and "already in use" in result.stderr:
             await self._clear_stale_name(handle)
@@ -1161,32 +1321,22 @@ class SandboxBroker:
                 org=handle.org, error=result.stderr[-400:],
             )
             raise SandboxUnavailable("The sandbox container did not start.")
-        try:
-            handle.keepalive_pid = await self._probe_keepalive(handle.name)
-        except SandboxUnavailable:
-            await self._remove(handle.name)
-            raise
-        handle.init_pid = 1
-        handle.started_at = handle.last_used = self._clock()
-        handle.network = "none"
-        _log.info(
-            "sandbox_broker.started", name=handle.name, org=handle.org,
-            agent=handle.agent, keepalive_pid=handle.keepalive_pid,
-        )
+        handle.container_id = (result.stdout.strip().splitlines() or [""])[-1].strip()
 
     async def _clear_stale_name(self, handle: SandboxHandle) -> None:
         """Remove a stale container of the SAME tenant that holds the name."""
         found = await self._docker.run(
-            ["inspect", "--format", "{{json .Config.Labels}}", handle.name],
+            ["inspect", "--format", "{{.Id}}|{{json .Config.Labels}}", handle.name],
             timeout=_SMALL_TIMEOUT_SECONDS,
         )
+        stale_id, _sep, raw = found.stdout.strip().partition("|")
         try:
-            labels = json.loads(found.stdout or "null") or {}
+            labels = json.loads(raw or "null") or {}
         except json.JSONDecodeError:
             labels = {}
         if labels.get(LABEL_ORG) != handle.org or labels.get(LABEL_AGENT) != handle.agent:
             raise SandboxRefused("A container of another tenant holds this sandbox name.")
-        await self._remove(handle.name)
+        await self._remove_container(stale_id.strip(), "")
 
     async def _probe_keepalive(self, name: str) -> int:
         result = await self._docker.run(
@@ -1209,7 +1359,7 @@ class SandboxBroker:
         stays ``none``. Raises :class:`SandboxUnavailable` when it fails.
         """
         _log.info("sandbox_broker.restarting", name=handle.name, reason=reason)
-        await self._remove(handle.name)
+        await self._remove(handle)
         try:
             await self._start(handle)
         except SandboxError as exc:
@@ -1220,14 +1370,27 @@ class SandboxBroker:
                 "Nothing runs on the host."
             ) from exc
 
-    async def _remove(self, name: str) -> None:
-        result = await self._docker.run(["rm", "-f", name], timeout=_SMALL_TIMEOUT_SECONDS)
+    async def _remove_container(self, container_id: str, start_id: str) -> None:
+        """Remove one container by its id, or by its start label. Never by name."""
+        ids = [container_id] if container_id else []
+        if not ids and start_id:
+            found = await self._docker.run(
+                ["ps", "-aq", "--filter", f"label={LABEL_START}={start_id}"],
+                timeout=_SMALL_TIMEOUT_SECONDS,
+            )
+            ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
+        if not ids:
+            return
+        result = await self._docker.run(["rm", "-f", *ids], timeout=_SMALL_TIMEOUT_SECONDS)
         if result.rc != 0 and "No such container" not in result.stderr:
-            _log.warning("sandbox_broker.remove_failed", name=name, error=result.stderr[-300:])
+            _log.warning("sandbox_broker.remove_failed", ids=ids, error=result.stderr[-300:])
+
+    async def _remove(self, handle: SandboxHandle) -> None:
+        await self._remove_container(handle.container_id, handle.start_id)
 
     async def _remove_all(self, handles: Iterable[SandboxHandle]) -> None:
-        for handle in handles:
-            await self._remove(handle.name)
+        for handle in list(handles):
+            await self._remove(handle)
 
     # ── exec (§7.1 rules 9, 10 and 11) ──────────────────────────────────────
 
@@ -1253,9 +1416,9 @@ class SandboxBroker:
         return clean
 
     async def exec(self, handle: SandboxHandle, command: str, timeout_s: float) -> ExecResult:
-        """Run one command in the container, under the container's lock.
+        """Run one command in the container, under the lock of its mount source.
 
-        One exec at a time per container. The disk floor and the quota are
+        One exec at a time per mount source. The disk floor and the quota are
         checked first. After the command, every stray process dies, and the
         container restarts if one survives. A broken container restarts once,
         and the command does not run again.
@@ -1263,7 +1426,7 @@ class SandboxBroker:
         if not isinstance(command, str) or not command.strip():
             raise SandboxRefused("The command is empty.")
         timeout = self._clamp_timeout(timeout_s)
-        self._require_live(handle)
+        await self._wait_ready(handle)
         async with handle.lock:
             self._require_live(handle)
             self._check_free_disk()
@@ -1308,12 +1471,13 @@ class SandboxBroker:
 
     @contextlib.asynccontextmanager
     async def host_files(self, handle: SandboxHandle) -> AsyncIterator[SandboxHandle]:
-        """Hold the container's lock while the host reads or writes its dir.
+        """Hold the mount source's lock while the host reads or writes it.
 
-        No exec runs inside the block, and the kill sweep of rule 9 left no
-        process behind. So no sandbox process races a host file call (§7.5).
+        No exec of ANY container on this dir runs inside the block, and the
+        kill sweep of rule 9 left no process behind. So no sandbox process
+        races a host file call (§7.5).
         """
-        self._require_live(handle)
+        await self._wait_ready(handle)
         async with handle.lock:
             self._require_live(handle)
             yield handle
@@ -1351,7 +1515,7 @@ class SandboxBroker:
     async def _reap_loop(self) -> None:
         interval = float(getattr(self._settings(), "sandbox_reaper_interval_seconds", 60))
         while self._live:
-            await asyncio.sleep(max(1.0, interval))
+            await asyncio.sleep(max(0.05, interval))
             try:
                 await self.reap_once()
             except Exception as exc:
@@ -1363,21 +1527,21 @@ class SandboxBroker:
             self._reaper = asyncio.get_running_loop().create_task(self._reap_loop())
 
     async def sweep(self) -> int:
-        """Remove every container labelled ``metorite.sandbox=1``."""
+        """Remove every container labelled ``metorite.sandbox=1``. Never raises."""
         try:
             found = await self._docker.run(
                 ["ps", "-aq", "--filter", f"label={LABEL_SANDBOX}=1"],
                 timeout=_SMALL_TIMEOUT_SECONDS,
             )
+            if found.rc != 0:
+                _log.info("sandbox_broker.sweep_skipped", error=found.stderr[-200:])
+                return 0
+            ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
+            if ids:
+                await self._docker.run(["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS)
         except (SandboxUnavailable, OSError) as exc:
             _log.info("sandbox_broker.sweep_skipped_no_docker", error=str(exc)[:200])
             return 0
-        if found.rc != 0:
-            _log.info("sandbox_broker.sweep_skipped", error=found.stderr[-200:])
-            return 0
-        ids = [line.strip() for line in found.stdout.splitlines() if line.strip()]
-        if ids:
-            await self._docker.run(["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS)
         async with self._registry_lock:
             for handle in list(self._live.values()):
                 self._drop(handle)

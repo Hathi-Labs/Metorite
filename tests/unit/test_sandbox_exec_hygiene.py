@@ -127,12 +127,13 @@ async def test_a_survivor_restarts_the_container(
     broker: sb.SandboxBroker, docker: FakeDocker,
 ) -> None:
     handle = await _acquire(broker)
+    old_id = handle.container_id
     docker.stream_results.append(_stream(0, "done\n"))
     docker.sweep_results.append(sb.DockerResult(3, "survivors: 41\n", ""))
     result = await broker.exec(handle, "stubborn &", 5)
     assert result.restarted and result.message == sb.SURVIVOR_MESSAGE
     assert result.output == "done\n" and result.exit_code == 0
-    assert docker.removals() == [handle.name]
+    assert docker.removals() == [old_id] and handle.container_id != old_id
     assert len(docker.runs()) == 2
 
 
@@ -157,6 +158,7 @@ async def test_a_broken_container_restarts_once_and_the_command_does_not_rerun(
     broker: sb.SandboxBroker, docker: FakeDocker, err: str,
 ) -> None:
     handle = await _acquire(broker)
+    old_id = handle.container_id
     docker.stream_results.append(_stream(1, err=err))
     result = await broker.exec(handle, "make build", 5)
     assert result.restarted and result.exit_code is None
@@ -164,7 +166,7 @@ async def test_a_broken_container_restarts_once_and_the_command_does_not_rerun(
     assert "/tmp is empty" in result.message and "run the command again" in result.message
     assert len(docker.command_execs()) == 1, "the broker must not run the command again"
     assert len(docker.runs()) == 2
-    assert docker.removals() == [handle.name]
+    assert docker.removals() == [old_id]
     again = await broker.exec(handle, "make build", 5)
     assert not again.restarted and again.exit_code == 0
 
@@ -362,7 +364,7 @@ def test_the_quota_measure_follows_no_link(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_bytes(b"x" * 100)
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b.txt").write_bytes(b"y" * 50)
-    assert sb._dir_size_bytes(tmp_path) == 150
+    assert sb._dir_usage(tmp_path) == (150, 3)
 
 
 # ═════════════════════════ the real-Docker half ═════════════════════════════

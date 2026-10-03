@@ -12,6 +12,8 @@ container of any org.
 """
 from __future__ import annotations
 
+import ast
+import asyncio
 import inspect
 import os
 from pathlib import Path
@@ -271,7 +273,7 @@ async def test_a_full_org_stops_its_own_oldest_idle_container(
     b1 = await _idle(broker, clock, ORG_B, "b1")
     with bound_run(ORG_A, thread="a3"):
         await broker.acquire()
-    assert docker.removals() == [a1.name], "org A must stop its OWN oldest idle container"
+    assert docker.removals() == [a1.container_id], "org A must stop its OWN oldest idle"
     assert a1.removed and not a2.removed and not b1.removed
 
 
@@ -284,7 +286,7 @@ async def test_a_full_box_stops_the_oldest_idle_container_of_any_org(
     a2 = await _idle(broker, clock, ORG_A, "a2")
     with bound_run(ORG_C, thread="c1"):
         await broker.acquire()
-    assert docker.removals() == [b1.name], "the box cap stops the oldest idle of ANY org"
+    assert docker.removals() == [b1.container_id], "the box cap stops the oldest idle of ANY org"
     assert not (a1.removed or b2.removed or a2.removed)
 
 
@@ -322,7 +324,7 @@ async def test_the_caps_come_from_settings(
     a1 = await _idle(broker, clock, ORG_A, "a1")
     with bound_run(ORG_A, thread="a2"):
         await broker.acquire()
-    assert docker.removals() == [a1.name]
+    assert docker.removals() == [a1.container_id]
 
 
 # ── the scope (MAF_CODING_SCOPE) and covers() ───────────────────────────────
@@ -409,24 +411,91 @@ async def test_the_startup_sweep_survives_no_docker(
     await broker.startup()  # never raises
 
 
-async def test_the_lifespan_schedules_the_sweep_and_acquire_waits(
+async def test_acquire_waits_for_the_startup_sweep(
     broker: sb.SandboxBroker, docker: FakeDocker,
 ) -> None:
+    """Deterministic (verifier V4): the sweep blocks, so acquire must block too."""
+    docker.block_ps = asyncio.Event()
     broker.start()
     with bound_run(ORG_A, thread="t-s"):
-        await broker.acquire()
-    assert docker.verbs()[:1] == ["ps"], "acquire must wait for the startup sweep"
+        task = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.1)
+        assert not task.done(), "acquire ran before the startup sweep ended"
+        assert docker.runs() == [], "a container started before the startup sweep"
+        docker.block_ps.set()
+        await asyncio.wait_for(task, timeout=5)
+    assert docker.verbs()[:1] == ["ps"]
     await broker.stop()
+
+
+_CONDITIONAL = (ast.If, ast.IfExp, ast.While, ast.For, ast.AsyncFor, ast.Match, ast.BoolOp)
+
+
+def lifespan_start_guards(source: str) -> list[str]:
+    """Every conditional node that encloses the start call in ``lifespan``.
+
+    An AST walk, not a text window, so a guard above the ``try`` or above the
+    import is seen (verifier V1). Also fails when the call is missing, when
+    there are two, or when it comes after the ``yield``.
+    """
+    tree = ast.parse(source)
+    life = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "lifespan"
+    )
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(life):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    calls = [
+        n for n in ast.walk(life)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "start_sandbox_broker"
+    ]
+    assert len(calls) == 1, f"lifespan must call start_sandbox_broker() once, not {len(calls)}"
+    yields = [n.lineno for n in ast.walk(life) if isinstance(n, ast.Yield)]
+    assert yields and calls[0].lineno < min(yields), "the start must come before the yield"
+    guards: list[str] = []
+    node: ast.AST = calls[0]
+    while node is not life:
+        node = parents[node]
+        if isinstance(node, _CONDITIONAL):
+            guards.append(f"{type(node).__name__} at line {node.lineno}")
+    return guards
 
 
 def test_the_gateway_lifespan_starts_the_broker_unconditionally() -> None:
     main = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/main.py"
-    before, sep, after = main.read_text(encoding="utf-8").partition("\n    yield\n")
-    assert sep
-    assert "start_sandbox_broker()" in before
-    assert "stop_sandbox_broker()" in after
-    block = before[before.index("start_sandbox_broker"):][:200]
-    assert "maf_coding_scope" not in block.lower() and "if " not in block
+    source = main.read_text(encoding="utf-8")
+    assert lifespan_start_guards(source) == [], "no condition may guard the startup sweep"
+    _before, sep, after = source.partition("\n    yield\n")
+    assert sep and "stop_sandbox_broker()" in after
+
+
+def test_the_lifespan_check_sees_a_guard_above_the_try_and_above_the_import() -> None:
+    """The two mutations of V1, as fixtures: each one must be seen."""
+    above_try = (
+        "async def lifespan(app):\n"
+        "    if get_settings().maf_coding_scope:\n"
+        "        try:\n"
+        "            from orchestrator.sandbox_broker import start_sandbox_broker\n"
+        "            start_sandbox_broker()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    yield\n"
+    )
+    above_import = (
+        "async def lifespan(app):\n"
+        "    try:\n"
+        "        if get_settings().maf_coding_scope:\n"
+        "            from orchestrator.sandbox_broker import start_sandbox_broker\n"
+        "            start_sandbox_broker()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    yield\n"
+    )
+    assert lifespan_start_guards(above_try) == ["If at line 2"]
+    assert lifespan_start_guards(above_import) == ["If at line 3"]
 
 
 # ── rule 5: the sandbox-dir list ─────────────────────────────────────────────
@@ -545,7 +614,10 @@ async def test_a_failed_start_raises_and_runs_nothing_on_the_host(
     with bound_run(ORG_A, thread="t-f"), pytest.raises(sb.SandboxUnavailable):
         await broker.acquire()
     assert spawned == [], "no host process may start when the sandbox fails"
-    assert [c[0] for c in docker.calls] == ["run"]
+    # The one other call looks for the container of THIS start by its label,
+    # to remove it. It runs no command.
+    assert [c[0] for c in docker.calls] == ["run", "ps"]
+    assert docker.calls[1][-1].startswith("label=metorite.start=")
 
 
 async def test_no_docker_binary_is_unavailable_not_a_host_run(
@@ -555,3 +627,230 @@ async def test_no_docker_binary_is_unavailable_not_a_host_run(
     broker = sb.SandboxBroker()
     with bound_run(ORG_A, thread="t-nd"), pytest.raises(sb.SandboxUnavailable, match="Docker"):
         await broker.acquire()
+
+
+# ── review of PR #591: cancel safety (P1-b) ──────────────────────────────────
+
+
+def _no_stuck_handle(broker: sb.SandboxBroker) -> None:
+    for name, handle in broker._live.items():
+        assert not handle.starting, f"{name} is stuck in starting"
+        assert not handle.lock.locked(), f"{name} holds its lock"
+
+
+async def test_a_cancel_while_a_victim_is_removed_frees_every_slot(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """repro_cancel.py: a cancel between the claim and the start leaks nothing."""
+    monkeypatch.setattr(env["settings"], "sandbox_max_per_org", 1)
+    with bound_run(ORG_A, thread="t1"):
+        first = await broker.acquire()
+    await broker.release(first)
+    docker.block_rm = asyncio.Event()
+    with bound_run(ORG_A, thread="t2"):
+        task = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.1)
+        assert docker.removals() == [first.container_id], "the victim's rm must be in flight"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    _no_stuck_handle(broker)
+    assert broker._live == {}, "the cancelled start must leave the registry"
+    with bound_run(ORG_A, thread="t2"):
+        again = await asyncio.wait_for(broker.acquire(), timeout=3)
+    await broker.release(again)
+    docker.block_rm.set()
+    with bound_run(ORG_A, thread="t3"):
+        await asyncio.wait_for(broker.acquire(), timeout=3)
+    await broker.settle()
+    assert first.container_id in docker.removals(), "the victim's removal must finish"
+
+
+async def test_a_cancel_during_docker_run_removes_that_start(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    docker.block_run = asyncio.Event()
+    docker.ps_ids = ["cid-half"]  # the daemon made the container after all
+    with bound_run(ORG_A, thread="t-run"):
+        task = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.1)
+        assert docker.runs(), "docker run must be in flight"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await broker.settle()
+    start_id = dict(
+        v.split("=", 1) for v in flag_values(docker.runs()[0], "--label")
+    )["metorite.start"]
+    looked = [c for c in docker.calls if c[0] == "ps"]
+    assert looked and looked[-1][-1] == f"label=metorite.start={start_id}"
+    assert docker.removals() == ["cid-half"], "the half-started container must go"
+    assert broker._live == {}
+    docker.block_run = None
+    docker.ps_ids = []
+    with bound_run(ORG_A, thread="t-run"):
+        handle = await asyncio.wait_for(broker.acquire(), timeout=3)
+    assert handle.leases == 1
+
+
+async def test_a_cancel_during_the_reuse_wait_gives_the_lease_back(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    docker.block_run = asyncio.Event()
+    with bound_run(ORG_A, thread="t-r"):
+        starter = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.05)
+        joiner = asyncio.create_task(broker.acquire())
+        await asyncio.sleep(0.05)
+        joiner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await joiner
+        docker.block_run.set()
+        handle = await asyncio.wait_for(starter, timeout=3)
+    assert handle.leases == 1, "the cancelled join must give its lease back"
+
+
+# ── review of PR #591: nested sources (P1-c) ─────────────────────────────────
+
+
+def test_a_source_that_nests_with_a_sandbox_dir_is_refused(tmp_path: Path) -> None:
+    apps = tmp_path / "apps"
+    outer, inner, other = apps / "x", apps / "x" / "sub", apps / "y"
+    sb.check_not_nested(outer, [outer, other])  # the same dir is allowed
+    with pytest.raises(sb.SandboxRefused, match="nests"):
+        sb.check_not_nested(inner, [outer])
+    with pytest.raises(sb.SandboxRefused, match="nests"):
+        sb.check_not_nested(outer, [inner])
+
+
+async def test_app_builder_cannot_mount_a_dir_inside_another_sandbox_dir(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+) -> None:
+    outer = env["apps"] / "outer-app"
+    inner = outer / "sub"
+    inner.mkdir(parents=True)
+    with bound_run(ORG_A, agent="app-builder", thread="s1", workspace=str(outer), instance=""):
+        await broker.acquire()
+    with bound_run(ORG_A, agent="app-builder", thread="s2", workspace=str(inner), instance=""), (
+        pytest.raises(sb.SandboxRefused, match="nests")
+    ):
+        await broker.acquire()
+    # The list keeps the dir after a restart of the gateway, so it still counts.
+    fresh = sb.SandboxBroker(docker=docker)  # type: ignore[arg-type]
+    with bound_run(ORG_B, agent="app-builder", thread="s3", workspace=str(inner), instance=""), (
+        pytest.raises(sb.SandboxRefused, match="nests")
+    ):
+        await fresh.acquire()
+    assert len(docker.runs()) == 1
+
+
+# ── review of PR #591: removal by id, never by name (P2-a) ───────────────────
+
+
+async def test_a_late_removal_never_kills_a_new_container_of_the_same_name(
+    broker: sb.SandboxBroker, docker: FakeDocker, clock: Clock,
+) -> None:
+    """repro_name.py: the reaper's late rm targets the OLD container id."""
+    old = [await _idle(broker, clock, ORG_A, t) for t in ("t1", "t2")]
+    clock.now += 10_000
+    docker.block_rm = asyncio.Event()
+    reaper = asyncio.create_task(broker.reap_once())
+    await asyncio.sleep(0.05)
+    with bound_run(ORG_A, thread="t2"):
+        fresh = await broker.acquire()
+    docker.block_rm.set()
+    assert await reaper == 2
+    assert docker.removals() == [h.container_id for h in old]
+    assert fresh.container_id not in docker.removals()
+    assert fresh.name not in docker.removals(), "a removal by name would kill the new one"
+    assert broker._live.get(fresh.name) is fresh and not fresh.removed
+
+
+# ── review of PR #591: one lock per mount source (P2-b) ──────────────────────
+
+
+async def test_two_containers_on_one_dir_share_one_lock(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    with bound_run(ORG_A, thread="t1") as ws1:
+        h1 = await broker.acquire()
+    with bound_run(ORG_A, thread="t2") as ws2:
+        h2 = await broker.acquire()
+    assert ws1 == ws2 and h1.name != h2.name, "two threads of one org share the tenant dir"
+    assert h1.lock is h2.lock
+    events: list[str] = []
+
+    async def mark(_argv: list[str]) -> None:
+        events.append("exec-on-h2")
+
+    docker.on_stream = mark
+    async with broker.host_files(h1):
+        task = asyncio.create_task(broker.exec(h2, "touch /workspace/x", 5))
+        await asyncio.sleep(0.05)
+        events.append("host-done")
+    await task
+    assert events == ["host-done", "exec-on-h2"], "an exec in h2 raced a host call on h1"
+
+
+# ── verifier V2: one name, two mount sources ─────────────────────────────────
+
+
+async def test_one_name_with_a_new_mount_source_starts_a_new_container(
+    broker: sb.SandboxBroker, docker: FakeDocker,
+) -> None:
+    """Same org, agent and thread, first the tenant key, then a personal key."""
+    with bound_run(ORG_A, thread="t-v2") as tenant_dir:
+        first = await broker.acquire()
+    await broker.release(first)
+    with bound_run(ORG_A, thread="t-v2", instance="u:alice@example.com") as personal_dir:
+        second = await broker.acquire()
+    assert tenant_dir.resolve() != personal_dir.resolve()
+    assert first.name == second.name and second is not first
+    assert len(docker.runs()) == 2, "a new mount source must never reuse the container"
+    assert str(personal_dir.resolve()) in mounts_of(docker.runs()[1])[0]
+    assert docker.removals() == [first.container_id]
+
+
+# ── verifier V3: the background reaper ───────────────────────────────────────
+
+
+async def test_the_background_reaper_runs_without_a_manual_call(
+    broker: sb.SandboxBroker, docker: FakeDocker, clock: Clock, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(env["settings"], "sandbox_reaper_interval_seconds", 0.05)
+    monkeypatch.setattr(env["settings"], "sandbox_idle_ttl_seconds", 100)
+    with bound_run(ORG_A, thread="t-bg"):
+        handle = await broker.acquire()
+    assert broker._reaper is not None and not broker._reaper.done(), (
+        "the first acquire must schedule the reaper"
+    )
+    await broker.release(handle)
+    clock.now += 200
+    for _ in range(100):
+        if handle.removed:
+            break
+        await asyncio.sleep(0.02)
+    assert handle.removed, "the background reaper did not stop the idle container"
+    assert docker.removals() == [handle.container_id]
+    await asyncio.wait_for(broker._reaper, timeout=2)  # it ends when none lives
+
+
+# ── the review note: the sweep never raises ──────────────────────────────────
+
+
+async def test_the_sweep_never_raises_when_the_removal_fails(
+    broker: sb.SandboxBroker, docker: FakeDocker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker.ps_ids = ["old1"]
+    original = docker.run
+
+    async def broken_rm(args: Any, *, timeout: float) -> Any:
+        if args[0] == "rm":
+            raise OSError("docker went away")
+        return await original(args, timeout=timeout)
+
+    monkeypatch.setattr(docker, "run", broken_rm)
+    await broker.startup()  # must not raise
+    assert await broker.sweep() == 0

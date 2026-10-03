@@ -8,6 +8,7 @@ the store key and the working dir in the run's artifact context.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -32,6 +33,10 @@ class FakeDocker:
         self.inspect_labels: dict[str, str] = {}
         self.name_in_use_once = False
         self.on_stream: Callable[[list[str]], Any] | None = None
+        self.block_run: asyncio.Event | None = None
+        self.block_rm: asyncio.Event | None = None
+        self.block_ps: asyncio.Event | None = None
+        self.started = 0
 
     async def run(self, args: Sequence[str], *, timeout: float) -> sb.DockerResult:
         argv = list(args)
@@ -43,7 +48,10 @@ class FakeDocker:
                 return sb.DockerResult(125, "", "Conflict. The container name is already in use")
             if self.fail_run:
                 return sb.DockerResult(125, "", "docker: Error response from daemon: boom")
-            return sb.DockerResult(0, "cid\n", "")
+            if self.block_run is not None:
+                await self.block_run.wait()
+            self.started += 1
+            return sb.DockerResult(0, f"cid-{self.started}\n", "")
         if verb == "exec" and sb.PID_PROBE in argv:
             return sb.DockerResult(0, "7\n", "")
         if verb == "exec" and sb.KILL_SWEEP in argv:
@@ -51,11 +59,15 @@ class FakeDocker:
                 return self.sweep_results.pop(0)
             return sb.DockerResult(0, "clean\n", "")
         if verb == "ps":
+            if self.block_ps is not None:
+                await self.block_ps.wait()
             return sb.DockerResult(0, "".join(f"{i}\n" for i in self.ps_ids), "")
         if verb == "inspect":
             import json
 
-            return sb.DockerResult(0, json.dumps(self.inspect_labels), "")
+            return sb.DockerResult(0, "cid-stale|" + json.dumps(self.inspect_labels), "")
+        if verb == "rm" and self.block_rm is not None:
+            await self.block_rm.wait()
         return sb.DockerResult(0, "", "")
 
     async def stream(
@@ -84,7 +96,8 @@ class FakeDocker:
         return [c for c in self.calls if c[0] == "exec" and sb.KILL_SWEEP in c]
 
     def removals(self) -> list[str]:
-        return [c[-1] for c in self.calls if c[:2] == ["rm", "-f"]]
+        """Every container id that an ``rm -f`` named, in order."""
+        return [i for c in self.calls if c[:2] == ["rm", "-f"] for i in c[2:]]
 
 
 def mounts_of(argv: Sequence[str]) -> list[str]:

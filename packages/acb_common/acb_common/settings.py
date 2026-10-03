@@ -554,6 +554,10 @@ class Settings(BaseSettings):
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
     sandbox_workspace_quota_mb: int = 2048
+    # The quota also bounds the count of entries (files, dirs and links) in
+    # the working dir, so a flood of small files cannot use up the inodes of
+    # the host file system. Review of PR #591.
+    sandbox_workspace_max_files: int = 100_000
     # The reaper of §7.1 rule 12.
     sandbox_idle_ttl_seconds: int = 600
     sandbox_max_lifetime_seconds: int = 7200
