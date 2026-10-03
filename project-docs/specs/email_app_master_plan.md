@@ -16,7 +16,8 @@
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
-> ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy.
+> ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
+> 🔨 **EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path, and the startup check logs a box that cannot reach `decide` (§10.4.8).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -595,7 +596,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
-| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
+| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
@@ -2469,7 +2470,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 #### 10.4.8 EM-T5b in full
 
-**Status.** ✅ EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR. EM-T5b-3 and EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
+**Status.** ✅ EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR. 🔨 EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03). EM-T5b-3 and EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
 
 **EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. `build_thread_context` builds them only when `email.thread_status` is not `off`, so in `off` the live context is the one from before. These choices of the build are not in the text above:
 
@@ -2513,9 +2514,49 @@ The fences are `tests/unit/test_email_decide_questions.py` and the updated `test
 - The Reply Zero backfill keeps the new-mail floor (item 7 above).
 - On a new-mail cycle the scheduler runs the backfill twice: once inside `process_new_mail`, and once from the every-cycle hook (`scheduler.py`). For the scheduler, the first call adds only an earlier run before auto-archive and a second capped batch. For the manual sync and the Graph webhook, `process_new_mail` is the only call. Not refactored.
 
-Not built in this narrowing: the thread status, the cold check and the sender pin in `on`, the startup check (item 9 below), the `· auto` change (item 7 below) and the docstrings of `acb_llm/decide.py` (item 10 below).
+Not built in this narrowing: the thread status, the cold check and the sender pin in `on`, the startup check (item 9 below), the `· auto` change (item 7 below) and the docstrings of `acb_llm/decide.py` (item 10 below). EM-T5b-2 in full builds them (below).
 
 The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process past and the floor), `tests/unit/test_email_assistant_settings.py` (R8 for the stored `rule_model`) and `workbench/control_plane/src/app/email/lib/noRuleModel.test.ts`.
+
+**Production state (orchestrator report, 2026-10-02).**
+
+- `DECIDE_ENABLED=true` since 12:16 UTC.
+- `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` since 16:31 UTC.
+- The first live `decide.decided` line came at 16:50:47 UTC. It was for account `21e57cfd`, with 11 rules, 1 request and 9 questions, in 940 ms.
+- In that line, `best` was `r5` at 0.91, and `member_verified` was 1.
+- The orchestrator saw 0 refusals at the time of its report.
+
+**EM-T5b-2 in full, as built (2026-10-03).** The owner's direction is that the decide tier does email triage, rules and cleanup (D-EM-7, D-EM-8). This part builds what the narrowing left out:
+
+1. `ON_FEATURES` holds the four email features. `on` for any other name resolves to `off` and logs `decide.mode_refused`.
+2. **The thread status.** In `on`, `replyzero._decide_thread_status` asks the `status` choice, and the choice decides. An answer outside the options is no decision.
+3. With no status, `_decide_thread_status` raises `DecisionUnavailable`. `resolve_conversation_status_matches` passes it through its broad handler, so the runner skips the row. `recompute_thread_status` writes nothing and returns None, so `_mark_thread_replied` leaves the labels.
+4. **The cold check.** An email is cold at 0.5 or above, and only then. With no decision it is not cold: no row, no label and no archive. The rule outcome stands, and the runner stamps the message.
+5. **The sender pin.** A pin needs 0.9 or above. With no decision there is no pin. The rule still applies, and the runner stamps the message.
+6. **The member.** `engine._decide_member(db, account_id, feature)` reads the owner for each feature in `on`. Each site gives it to `ask` as a proven member.
+7. **The cool-down** of fix round 2 is for the organization, so it covers all four features. A 402 from the cold check also stops the status and the pin calls.
+8. **`· auto`.** A decided status is confident, so it never gets the tag. The backfill checks an old `· auto` row once more, and then leaves it. With no decision the row keeps the tag, and the next cycle asks again.
+9. **The startup check.** `register_email_post_sync_hooks` runs `scheduler_hooks.check_decide_wiring()` once. It logs `email.decide_not_wired` at error level when a feature is `on` and `decide_enabled` or `router_is_wired()` is false. It reads the wiring through a new probe, `acb_llm.routed.router_wired()`. The dependency fence admits eight importers of `console_resolve`, and it pins the `decide` facade to two names, so the gateway may not import it here.
+10. With no organization in `DECIDE_FEATURE_ORGS`, no feature is `on`, so the check of item 9 logs nothing.
+11. The docstrings of `acb_llm/decide.py` say that email leaves an email undecided, with no LLM call.
+12. `decide.decided` logs our own keys and numbers only. The status logs `answer`, `confidence`, `margin` and `options`. The cold check logs `p_cold` and `cold`, and the pin logs `p_always` and `pin`.
+13. The sent rows of the Reply Zero backfill keep no new-mail floor (item 7 of the narrowed record). In `on` each such thread costs one Jev call, and the backfill takes 40 or fewer in each cycle.
+
+The fences are the R8 classes `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheSenderPinOnJev`, and the hermetic cases, in `tests/unit/test_email_decide_on.py`.
+
+**To turn the three features on.** After the merge, the orchestrator sets these two values on the box and restarts the gateway:
+
+```text
+DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on
+DECIDE_FEATURE_ORGS=*
+```
+
+⚠️ Use the names in `decide_features.FEATURES`. `email.cold_sender` and `email.pin` are not feature names. A wrong name logs `decide.mode_refused` and stays `off`.
+
+**Two findings for the owner (not built).**
+
+- **The cold check archives at 0.5.** The thresholds table gives the cold check 0.5, and a rule that moves mail 0.7. When the blocker is `ARCHIVE`, a cold verdict moves mail at 0.5. The build keeps the value of the table.
+- **The thread status has no bar.** The status choice selects a conversation rule, and the actions of that rule then run. The four conversation presets only label. A member who adds `ARCHIVE` to "Done" gets that move at the plurality of the choice, as on the old LLM path. The `conv` option of the rule match already needs 0.7 for such a rule.
 
 **Gate.**
 
@@ -2861,15 +2902,16 @@ uv run pytest tests/unit/test_email_decide_on.py tests/unit/test_email_assistant
   tests/unit/test_email_rules_engine.py tests/unit/test_acb_llm_decide.py \
   tests/unit/test_console_dependency_boundary.py tests/unit/test_email_layering.py -q -rs
 uv run ruff check apps/services/gateway/gateway/decide_features.py \
-  tests/unit/test_email_decide_on.py tests/unit/test_email_assistant_settings.py
+  tests/unit/test_email_decide_on.py tests/unit/test_email_assistant_settings.py \
+  tests/unit/test_email_decide_shadow.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/components/email
 ```
 
-The changed automation files carry old ruff findings, so compare them with the base for each file and code, as §10.4.4 says. `scheduler_hooks.py` does not change, and its 8 old RUF100 findings are not part of this check.
+The changed automation files carry old ruff findings, so compare them with the base for each file and code, as §10.4.4 says. EM-T5b-2 in full also changes `scheduler_hooks.py`, `packages/acb_llm/acb_llm/decide.py` and `packages/acb_llm/acb_llm/routed.py`, so compare those three as well. The 8 old RUF100 findings of `scheduler_hooks.py` must stay 8.
 
-The R8 case must show PASSED, not SKIPPED.
+The R8 cases must show PASSED, not SKIPPED.
 
-**After the merge, on the owner's "go".** Set the four features to `on` for the Fracktal organization id. Report the act, the box and the evidence in the same message. The evidence is one `decide.decided` line for each feature, each with a `request_id`.
+**After the merge.** The owner gave the "go" for all organizations (decisions (a) to (d), and the owner's direction for EM-T5b-2 in full). The orchestrator sets the value of "To turn the three features on" above. Report the act, the box and the evidence in the same message. The evidence is one `decide.decided` line for each feature, each with a `request_id`.
 
 ##### EM-T5b-3 — hardcode, and delete the old path
 

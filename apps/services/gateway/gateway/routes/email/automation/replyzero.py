@@ -410,7 +410,7 @@ def _status_question(
     messages: list[dict[str, Any]] | None, user_email: str, about: str,
     *, user_sent_last: bool, corrections: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """The ``decide`` request for the thread status (EM-T5b-1, shadow only).
+    """The ``decide`` request for the thread status (EM-T5b-1), for `shadow` and `on`.
 
     FYI is an option only when ``last_message_side`` is ``other_party``,
     which is when the owner's side did NOT send last, as in the old call.
@@ -418,7 +418,7 @@ def _status_question(
     """
     if not messages:
         return None
-    from acb_llm import ChoiceQuestion  # shadow mode only
+    from acb_llm import ChoiceQuestion  # `shadow` and `on` only
 
     state = _status_state(messages, user_email, about, user_sent_last=user_sent_last)
     criteria = dict(_STATUS_CRITERIA)
@@ -433,12 +433,68 @@ def _status_question(
         )}
 
 
+def _status_keys(user_sent_last: bool) -> tuple[str, ...]:
+    """The status options: FYI only when the owner's side did NOT send last."""
+    return ("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))
+
+
+def _read_status(
+    decision: Any, user_sent_last: bool,
+) -> tuple[str, dict[str, Any]]:
+    """The thread status that a ``decide`` answer gives, in ``on``.
+
+    The choice decides (§10.4.8 "Thresholds": the thread status has no
+    threshold). An answer that is not one of our option keys raises, and
+    ``decide_features.ask`` then logs ``unreadable`` and gives no decision.
+    The log fields are our own key and numbers only.
+    """
+    answer = decision["status"]
+    keys = _status_keys(user_sent_last)
+    if answer.choice not in keys:
+        raise ValueError("an option outside the question")
+    return answer.choice, {
+        "answer": answer.choice,
+        "confidence": answer.confidence,
+        "margin": decide_features.top_margin(answer.probabilities),
+        "options": len(keys),
+    }
+
+
+async def _decide_thread_status(
+    thread_messages: list[dict[str, Any]] | None, user_email: str, about: str,
+    *, user_sent_last: bool, corrections: str,
+    account_id: str | None, message_id: str | None, member: str | None,
+) -> tuple[str, bool]:
+    """The thread status in ``on``: the ``decide`` answer decides.
+
+    EM-T5b-2 (D-EM-8). No LLM call is made. A decided status is confident,
+    so it never gets the ``· auto`` tag (item 7). With no decision this
+    raises ``engine.DecisionUnavailable``. Each caller then writes nothing,
+    and a later cycle asks again.
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    status = await decide_features.ask(
+        "email.thread_status", account_id=account_id, message_id=message_id,
+        build=lambda: _status_question(
+            thread_messages, user_email, about,
+            user_sent_last=user_sent_last, corrections=corrections),
+        read=lambda decision: _read_status(decision, user_sent_last),
+        member=member,
+    )
+    if status is None:
+        raise DecisionUnavailable("decide gave no thread status")
+    return status, True
+
+
 async def _llm_determine_thread_status(
     thread_text: str, user_email: str, about: str, *, user_sent_last: bool = True,
     model: str = _STATUS_MODEL, corrections: str = "",
     account_id: str | None = None,
     thread_messages: list[dict[str, Any]] | None = None,
     message_id: str | None = None,
+    member: str | None = None,
 ) -> tuple[str, bool]:
     """Determine an email thread's status from the user's perspective — a faithful
     port of inbox-zero's aiDetermineThreadStatus.
@@ -454,7 +510,18 @@ async def _llm_determine_thread_status(
     EM-T5b-1: ``thread_messages`` is ``ThreadContext.messages``, the thread as
     facts for the ``decide`` state. With none, the shadow call is skipped.
     ``thread_text`` stays for the old call. ``message_id`` goes into each
-    ``decide`` log line."""
+    ``decide`` log line.
+
+    EM-T5b-2: in ``on``, the ``decide`` answer decides and no LLM call is
+    made (:func:`_decide_thread_status`). No answer raises
+    ``engine.DecisionUnavailable``. ``member`` is the mailbox owner, for a
+    deployment Router key."""
+    if decide_features.mode_for("email.thread_status") == "on":
+        return await _decide_thread_status(
+            thread_messages, user_email, about,
+            user_sent_last=user_sent_last, corrections=corrections,
+            account_id=account_id, message_id=message_id, member=member)
+
     async def _old() -> tuple[str, bool]:
         fallback = "AWAITING_REPLY" if user_sent_last else "FYI"
         try:
@@ -535,16 +602,16 @@ async def _llm_determine_thread_status(
     # ALWAYS the old call's, compared after the escalation, and the log keeps
     # the old `confident` flag (§10.4.4 item 9). EM-T5b-1 rebuilt the question
     # to the System One conventions (§10.4.8).
-    options = 3 if user_sent_last else 4
+    keys = _status_keys(user_sent_last)
     return await decide_features.shadow(
         "email.thread_status", _old, account_id=account_id, message_id=message_id,
         build=lambda: _status_question(
             thread_messages, user_email, about,
             user_sent_last=user_sent_last, corrections=corrections),
         compare=decide_features.compare_choice(
-            lambda r: r[0], qid="status", options=options,
+            lambda r: r[0], qid="status", options=len(keys),
             extra_of=lambda r: {"confident": bool(r[1])},
-            keys=("REPLY", "AWAITING_REPLY", "DONE") + (() if user_sent_last else ("FYI",))),
+            keys=keys),
     )
 
 
@@ -872,7 +939,18 @@ async def resolve_conversation_status_matches(
     Bulk mail — no back-and-forth, no status row, no conversation match — is
     untouched: per-message classification stands, and no model call is spent.
     On any failure (or no enabled rule for the determined status) returns the
-    input unchanged, so classification degrades to the per-message pick."""
+    input unchanged, so classification degrades to the per-message pick.
+
+    EM-T5b-2: in ``on`` of ``email.thread_status``, a missing decision is NOT
+    such a failure. ``DecisionUnavailable`` passes through the broad handler,
+    so the runner skips the row, applies nothing and stamps nothing (D-EM-8).
+    The ``decide`` call names the mailbox owner."""
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import (
+        DecisionUnavailable,
+        _decide_member,
+    )
+
     matches = matches or []
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
@@ -901,7 +979,8 @@ async def resolve_conversation_status_matches(
             corrections=await _status_corrections_block(db, account_id),
             account_id=account_id,
             thread_messages=getattr(ctx, "messages", None),
-            message_id=str(row_id) if row_id is not None else None)
+            message_id=str(row_id) if row_id is not None else None,
+            member=await _decide_member(db, account_id, "email.thread_status"))
         target = await _conversation_rule_for_status(db, account_id, status)
         if not target:
             return matches
@@ -915,6 +994,10 @@ async def resolve_conversation_status_matches(
                       for m in matches if not _match_conversation_key(m)]
         await _restore_conversation_messages(db, provider, account_id, thread_id)
         return [determined, *suppressed]
+    except DecisionUnavailable:
+        # `on`, and `decide` gave no status. The email is undecided, so the
+        # caller skips it. It is not a failure to degrade from (D-EM-8).
+        raise
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.resolve_conversation_status_failed",
                      account_id=account_id, error=str(exc)[:160])
@@ -1078,9 +1161,10 @@ async def build_thread_context(
             f"Subject: {subject or latest.subject or ''}\n{body[:1500]}")
         our_side_last = True
 
-    # The thread as facts serves the `decide` shadow only (EM-T5b-1). In `off`
-    # it is not built, so the live path does exactly what it did before. A
-    # failure here costs the shadow its question, never the status.
+    # The thread as facts serves `decide`, in `shadow` and `on` (EM-T5b-1 and
+    # EM-T5b-2). In `off` it is not built, so the live path does exactly what
+    # it did before. A failure here costs `shadow` its question. In `on` it
+    # costs the decision, so the thread stays undecided (D-EM-8).
     messages: list[dict[str, Any]] = []
     if decide_features.mode_for("email.thread_status") != "off":
         try:
@@ -1125,20 +1209,36 @@ async def recompute_thread_status(
     owner sent (outbound) or an explicit reopen may move it. A low-confidence
     (fallback) determination is tagged ``· auto`` so the backfill re-checks it.
     Returns ``(rz_status, label)`` or None when the thread has no messages.
-    Caller commits; reconciling provider labels is the caller's job."""
+    Caller commits; reconciling provider labels is the caller's job.
+
+    EM-T5b-2: in ``on`` of ``email.thread_status``, ``decide`` decides and
+    names the mailbox owner. A decided status is confident, so it never gets
+    ``· auto``, and an old ``· auto`` row gets one more check. With no
+    decision this writes nothing and returns None (D-EM-8). The caller then
+    leaves the labels, and the backfill asks again in a later cycle."""
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import (
+        DecisionUnavailable,
+        _decide_member,
+    )
+
     ctx = await build_thread_context(
         db, account_id, thread_id, acc_email,
         extra_domains=extra_domains, pending_reply=pending_reply)
     if ctx is None:
         return None
     last_id = ctx.last_message_id
-    status, confident = await _llm_determine_thread_status(
-        ctx.thread_text, acc_email, about,
-        user_sent_last=ctx.our_side_last, model=model,
-        corrections=await _status_corrections_block(db, account_id),
-        account_id=account_id,
-        thread_messages=getattr(ctx, "messages", None),
-        message_id=str(last_id) if last_id is not None else None)
+    try:
+        status, confident = await _llm_determine_thread_status(
+            ctx.thread_text, acc_email, about,
+            user_sent_last=ctx.our_side_last, model=model,
+            corrections=await _status_corrections_block(db, account_id),
+            account_id=account_id,
+            thread_messages=getattr(ctx, "messages", None),
+            message_id=str(last_id) if last_id is not None else None,
+            member=await _decide_member(db, account_id, "email.thread_status"))
+    except DecisionUnavailable:
+        return None
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status), ("AWAITING", "Awaiting Reply"))
     # Whoever spoke last is a FACT, not a judgment call. The determiner

@@ -458,19 +458,24 @@ async def test_any_other_decide_error_never_stops_triage(monkeypatch, tenant) ->
 @pytest.mark.parametrize(
     ("raw", "reason"),
     [
-        ("email.cold_check=on", "on_refused"),
-        ("email.cold_check=ON", "on_refused"),
         ("email.cold_check=sometimes", "unknown"),
         ("email.nonsense=shadow", "unknown"),
+        ("email.nonsense=on", "unknown"),
         ("email.cold_check", "unknown"),
         # F3: a refused value AFTER a valid pair still turns the feature off.
         ("email.cold_check=shadow,email.cold_check=bogus", "unknown"),
+        # `on` for a feature outside ON_FEATURES. EM-T5b-2 in full put all
+        # four email features in the set, so these cases narrow it.
+        ("email.cold_check=on", "on_refused"),
+        ("email.cold_check=ON", "on_refused"),
         ("email.cold_check=shadow,email.cold_check=on", "on_refused"),
     ],
 )
 async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
     monkeypatch, tenant, raw, reason
 ) -> None:
+    if reason == "on_refused":
+        monkeypatch.setattr(df, "ON_FEATURES", frozenset({"email.rule_match"}))
     with structlog.testing.capture_logs() as caps:
         _modes(monkeypatch, raw, ORG)
         assert df.mode_for("email.cold_check") == "off"
@@ -483,7 +488,7 @@ async def test_on_and_unknown_values_resolve_to_off_and_are_refused(
 
 
 async def test_a_refused_pair_does_not_disable_a_good_one(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, "email.cold_check=on, email.rule_match=shadow", ORG)
+    _modes(monkeypatch, "email.cold_check=bogus, email.rule_match=shadow", ORG)
     assert df.mode_for("email.cold_check") == "off"
     assert df.mode_for("email.rule_match") == "shadow"
 

@@ -502,7 +502,7 @@ def _rule_match_requests(
     """
     if not rules:
         return []
-    from acb_llm import BooleanQuestion, ChoiceQuestion  # shadow mode only
+    from acb_llm import BooleanQuestion, ChoiceQuestion  # `shadow` and `on` only
 
     g = guidance or {}
     # The account-wide corrections, newest first (`_load_rule_guidance`
@@ -760,17 +760,20 @@ def _read_with_fields(
     return match, match.fields
 
 
-async def _decide_member(db: Any, account_id: str) -> str | None:
-    """The mailbox owner for a ``decide`` call in ``on``, else None.
+async def _decide_member(
+    db: Any, account_id: str, feature: str = "email.rule_match",
+) -> str | None:
+    """The mailbox owner for a ``decide`` call of ``feature`` in ``on``, else None.
 
     A deployment Router key refuses a ``decide`` call that names no member,
     and a request job runs as its request member, not as the owner. So in
-    ``on`` the matchers name the owner, ``email_accounts.user_id``, read by
+    ``on`` each site names the owner, ``email_accounts.user_id``, read by
     the account id the server holds, in the caller's own session (EM-T5b-2
-    item 5). Outside ``on`` this reads nothing. A failed read gives None, and
-    the call keeps the member of the run context.
+    item 5). The rule match, the thread status, the cold check and the
+    sender pin all read it here. Outside ``on`` this reads nothing. A failed
+    read gives None, and the call keeps the member of the run context.
     """
-    if decide_features.mode_for("email.rule_match") != "on":
+    if decide_features.mode_for(feature) != "on":
         return None
     try:
         async with _savepoint(db):

@@ -1,12 +1,23 @@
-"""EM-T5b-2 (narrowed): the rule match on Jev, ``on``, with no LLM path.
+"""EM-T5b-2: the four triage decisions on Jev, ``on``, with no LLM path.
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.8, "EM-T5b-2", and
-the owner decisions (a) to (d) of 2026-10-02 in §10.2.
+the owner decisions (a) to (d) of 2026-10-02 in §10.2. The narrowed slice
+(#576) opened ``on`` for the rule match. EM-T5b-2 in full opens the thread
+status, the cold check and the sender pin.
 
 The rules these pin:
 
-- ``on`` is accepted for ``email.rule_match`` only. The other three features
-  still refuse it (owner decision (c), the demo scope).
+- ``on`` is accepted for the four email features. A name outside them still
+  resolves to ``off`` and logs ``decide.mode_refused``.
+- The thread status: the choice decides, a decided status never gets
+  ``· auto``, and with no decision nothing is written. Inside
+  ``classify_matches`` the runner then skips the row, and
+  ``recompute_thread_status`` returns None, so the labels stay.
+- The cold check: cold at 0.5 or above only. With no decision the email is
+  not cold, and the rule outcome stands, so the runner stamps it.
+- The sender pin: a pin at 0.9 or above only. With no decision, no pin.
+- The startup check logs ``email.decide_not_wired`` when a feature is ``on``
+  and the box cannot reach ``decide``.
 - ``DECIDE_FEATURE_ORGS=*`` allows every organization (decision (b)). Empty
   still allows none.
 - In ``on`` the Jev answer DECIDES, in both matchers and at every caller, and
@@ -45,8 +56,12 @@ from acb_common import get_settings, job_member_scope
 from acb_common._log import clear_run_context, run_context_scope
 from acb_common.db import bind_tenant, release_tenant
 from gateway import decide_features as df
+from gateway.routes.email import scheduler_hooks as hooks_mod
 from gateway.routes.email.automation import engine as eng
+from gateway.routes.email.automation import learning as lrn
+from gateway.routes.email.automation import replyzero as rz
 from gateway.routes.email.automation import runner as runner_mod
+from gateway.routes.email.automation import senders as snd
 from sqlalchemy import text
 
 from tests.unit._sql_match import hits
@@ -55,6 +70,7 @@ from tests.unit.test_email_automation_tenancy import (
     _FakeProvider,
     _patch_providers,
     _seed_message,
+    _seed_settings,
 )
 from tests.unit.test_email_decide_questions import _RULES, EMAIL, FakeDecide
 from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _seed_account
@@ -73,7 +89,8 @@ ACC = "acc-on-1"
 MID = "msg-on-1"
 OWNER = "owner@acme-on.example"
 
-OTHER_FEATURES = ("email.cold_check", "email.sender_pin", "email.thread_status")
+#: Every email feature in `on`, the value the orchestrator sets on the box.
+ALL_ON = ",".join(f"{f}=on" for f in df.FEATURES)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -136,24 +153,33 @@ def _records(caps, event: str) -> list[dict[str, Any]]:
     return [c for c in caps if c.get("event") == event]
 
 
-# ── Item 1: `on` for the rule match only ───────────────────────────────────
+# ── Item 1: `on` for the four email features ───────────────────────────────
 
 
-async def test_on_is_accepted_for_the_rule_match(monkeypatch, tenant) -> None:
-    _modes(monkeypatch, ON)
-    assert df.mode_for("email.rule_match") == "on"
-    assert frozenset({"email.rule_match"}) == df.ON_FEATURES
-
-
-@pytest.mark.parametrize("feature", OTHER_FEATURES)
-async def test_on_is_still_refused_for_the_other_three(monkeypatch, tenant, feature) -> None:
+@pytest.mark.parametrize("feature", df.FEATURES)
+async def test_on_is_accepted_for_each_email_feature(monkeypatch, tenant, feature) -> None:
     with structlog.testing.capture_logs() as caps:
-        _modes(monkeypatch, f"{feature}=on,{ON}")
-        assert df.mode_for(feature) == "off"
+        _modes(monkeypatch, f"{feature}=on")
+        assert df.mode_for(feature) == "on"
+    assert _records(caps, "decide.mode_refused") == []
+    assert frozenset(df.FEATURES) == df.ON_FEATURES
+
+
+async def test_the_orchestrator_value_turns_all_four_on(monkeypatch, tenant) -> None:
+    assert ALL_ON == ("email.cold_check=on,email.sender_pin=on,"
+                      "email.thread_status=on,email.rule_match=on")
+    _modes(monkeypatch, ALL_ON)
+    assert {f: df.mode_for(f) for f in df.FEATURES} == dict.fromkeys(df.FEATURES, "on")
+
+
+@pytest.mark.parametrize("name", ["email.cold_sender", "email.pin", "email.rule_pick"])
+async def test_on_for_a_name_outside_the_four_is_refused(monkeypatch, tenant, name) -> None:
+    with structlog.testing.capture_logs() as caps:
+        _modes(monkeypatch, f"{name}=on,{ON}")
+        assert df.mode_for(name) == "off"
         assert df.mode_for("email.rule_match") == "on"
     rec = _records(caps, "decide.mode_refused")
-    assert [(r["decide_feature"], r["decide_reason"]) for r in rec] == [
-        (feature, "on_refused")]
+    assert [(r["decide_feature"], r["decide_reason"]) for r in rec] == [(name, "unknown")]
 
 
 # ── Item 2: `*` allows every organization ──────────────────────────────────
@@ -924,3 +950,727 @@ class TestTheReplyZeroBackfillOnJev:
             n = c.execute(text("SELECT count(*) FROM email_thread_status "
                                "WHERE account_id = CAST(:a AS uuid)"), {"a": acc}).scalar()
         assert n == 0
+
+
+# ═══ EM-T5b-2 in full: the thread status, the cold check, the sender pin ═══
+
+#: The thread as facts (`ThreadContext.messages`), the other party last.
+THREAD = [{
+    "side": "other_party", "from": EMAIL["from"], "to": "owner@acme.com",
+    "cc": "", "owner_cc_only": False, "date": "", "subject": EMAIL["subject"],
+    "attachments": "", "body": EMAIL["body"],
+}]
+
+SENDER = "news@list.example"
+PIN_RULE = {"id": "n1", "name": "Newsletter", "instructions": "newsletters"}
+
+#: The tenant text of the fixtures. No `decide.*` line may hold any of it.
+SECRETS = (EMAIL["subject"], EMAIL["body"], EMAIL["from"], "SECRET-SNIPPET")
+
+
+def _llm_tripwire_all(monkeypatch) -> list[Any]:
+    """Any LLM call at any of the four sites, in `on`, is a failure."""
+    calls: list[Any] = []
+
+    async def fake(model, messages, **kw):
+        calls.append(model)
+        return {}, "{}", model
+
+    for module in (eng, rz, snd, lrn):
+        monkeypatch.setattr(module, "_llm_json", fake)
+    return calls
+
+
+class _FailOn(FakeDecide):
+    """Answers as FakeDecide does, and fails each request that asks `qid`."""
+
+    def __init__(self, qid: str, exc: BaseException, **kw) -> None:
+        super().__init__(**kw)
+        self.qid = qid
+        self.exc = exc
+
+    async def __call__(self, state, questions, **kwargs):
+        if self.qid in questions:
+            self.calls.append({"state": state, "questions": questions, **kwargs})
+            raise self.exc
+        return await super().__call__(state, questions, **kwargs)
+
+
+def _call_for(fake: FakeDecide, qid: str) -> dict[str, Any]:
+    (call,) = [c for c in fake.calls if qid in c["questions"]]
+    return call
+
+
+def _site_db(*, recent: int = 4) -> AsyncMock:
+    """A DB for the cold gate and the pin. It answers the owner read for ACC
+    only, `recent` messages of the sender, and nothing else. `db.sql` keeps
+    every statement, so a test can see each write."""
+    sql_seen: list[str] = []
+
+    async def execute(stmt, params=None):
+        sql = " ".join(str(stmt).split())
+        sql_seen.append(sql)
+        if (sql.startswith("SELECT user_id FROM email_accounts")
+                and (params or {}).get("aid") == ACC):
+            return MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(user_id=OWNER)))
+        if sql.startswith("SELECT subject, snippet FROM email_messages"):
+            rows = [SimpleNamespace(subject=EMAIL["subject"], snippet="SECRET-SNIPPET")]
+            return MagicMock(fetchall=MagicMock(return_value=rows * recent))
+        return MagicMock(fetchone=MagicMock(return_value=None),
+                         fetchall=MagicMock(return_value=[]))
+
+    db = AsyncMock()
+    db.execute = execute
+    db.sql = sql_seen
+    return db
+
+
+async def _status(*, user_sent_last: bool = False, member: str | None = None):
+    return await rz._llm_determine_thread_status(
+        "thread text", OWNER, "", user_sent_last=user_sent_last,
+        account_id=ACC, thread_messages=THREAD, message_id=MID, member=member)
+
+
+async def _cold():
+    return await snd._llm_is_cold(EMAIL, account_id=ACC, message_id=MID)
+
+
+async def _pin(db: Any = None):
+    return await lrn._ai_confirms_sender_pattern(
+        db if db is not None else _site_db(), ACC, SENDER, PIN_RULE, message_id=MID)
+
+
+#: What each site gives with no decision (§10.4.8 EM-T5b-2 item 6).
+NO_DECISION: dict[str, Any] = {
+    "email.thread_status": eng.DecisionUnavailable,
+    "email.cold_check": (False, ""),
+    "email.sender_pin": False,
+}
+SITE_CALLS = {"email.thread_status": _status, "email.cold_check": _cold,
+              "email.sender_pin": _pin}
+
+
+# ── Item 3: in `on`, the Jev answer decides each site ──────────────────────
+
+
+@pytest.mark.parametrize(("user_sent_last", "choice"), [
+    (False, "FYI"), (False, "REPLY"), (True, "DONE"), (True, "AWAITING_REPLY")])
+async def test_the_thread_status_uses_the_jev_answer(
+    monkeypatch, tenant, user_sent_last, choice,
+) -> None:
+    _modes(monkeypatch, "email.thread_status=on")
+    fake = _fake(monkeypatch, choices={"status": choice})
+    llm = _llm_tripwire_all(monkeypatch)
+    assert await _status(user_sent_last=user_sent_last) == (choice, True)
+    assert llm == [] and len(fake.calls) == 1
+    options = set(fake.calls[0]["questions"]["status"].criteria)
+    assert ("FYI" in options) is (not user_sent_last)
+
+
+async def test_a_status_outside_the_options_is_no_decision(monkeypatch, tenant) -> None:
+    """The owner's side sent last, so FYI is not an option. An answer of FYI
+    is not ours to act on."""
+    _modes(monkeypatch, "email.thread_status=on")
+    _fake(monkeypatch, choices={"status": "FYI"})
+    with structlog.testing.capture_logs() as caps, \
+            pytest.raises(eng.DecisionUnavailable):
+        await _status(user_sent_last=True)
+    (rec,) = _records(caps, "decide.unavailable")
+    assert rec["decide_reason"] == "unreadable:ValueError"
+
+
+@pytest.mark.parametrize(("p", "cold"), [(0.49, False), (0.5, True), (0.9, True)])
+async def test_the_cold_check_acts_only_at_its_bar(monkeypatch, tenant, p, cold) -> None:
+    _modes(monkeypatch, "email.cold_check=on")
+    _fake(monkeypatch, by_key={"cold": p})
+    llm = _llm_tripwire_all(monkeypatch)
+    verdict = await _cold()
+    assert verdict[0] is cold and llm == []
+    assert verdict[1] == (f"Cold outreach by AI (probability {p:.2f})." if cold else "")
+
+
+@pytest.mark.parametrize(("p", "pin"), [(0.5, False), (0.89, False), (0.9, True), (0.97, True)])
+async def test_the_pin_acts_only_at_ninety_percent(monkeypatch, tenant, p, pin) -> None:
+    _modes(monkeypatch, "email.sender_pin=on")
+    _fake(monkeypatch, by_key={"always": p})
+    llm = _llm_tripwire_all(monkeypatch)
+    assert await _pin() is pin and llm == []
+
+
+async def test_the_pin_still_needs_three_messages(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.sender_pin=on")
+    fake = _fake(monkeypatch, by_key={"always": 0.99})
+    assert await _pin(_site_db(recent=2)) is False
+    assert fake.calls == []
+
+
+# ── Items 3 and 6: no decision, no fallback, and nothing written ───────────
+
+
+@pytest.mark.parametrize("kind", list(FAILURES))
+@pytest.mark.parametrize("feature", list(SITE_CALLS))
+async def test_no_decision_leaves_each_site_undecided_with_no_llm(
+    monkeypatch, tenant, feature, kind,
+) -> None:
+    _modes(monkeypatch, f"{feature}=on")
+    monkeypatch.setattr(df, "ON_BOUND_S", 0.2)
+    make, reason = FAILURES[kind]
+    monkeypatch.setattr(decide_mod, "decide", make())
+    llm = _llm_tripwire_all(monkeypatch)
+    expected = NO_DECISION[feature]
+    with structlog.testing.capture_logs() as caps:
+        if expected is eng.DecisionUnavailable:
+            with pytest.raises(eng.DecisionUnavailable) as raised:
+                await SITE_CALLS[feature]()
+            assert isinstance(raised.value, eng.LLMUnavailable)
+        else:
+            assert await SITE_CALLS[feature]() == expected
+    assert llm == [], "no LLM call replaces a missing decision (D-EM-8)"
+    (rec,) = _records(caps, "decide.unavailable")
+    assert (rec["decide_feature"], rec["account_id"], rec["message_id"]) == (feature, ACC, MID)
+    assert reason in rec["decide_reason"]
+    assert _records(caps, "decide.decided") == []
+    if kind == "invalid":
+        (err,) = _records(caps, "decide.request_invalid")
+        assert err["log_level"] == "error"
+
+
+def _status_env(monkeypatch, *, our_side_last: bool) -> AsyncMock:
+    ctx = rz.ThreadContext(
+        thread_id="t1", last_message_id="m9", last_message_at=None,
+        our_side_last=our_side_last, has_external=True, thread_text="thread",
+        messages=THREAD)
+    monkeypatch.setattr(rz, "build_thread_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(rz, "_status_corrections_block", AsyncMock(return_value=""))
+    monkeypatch.setattr(rz, "_load_assistant_about", AsyncMock(return_value=("", "")))
+    upsert = AsyncMock()
+    monkeypatch.setattr(rz, "_upsert_thread_status", upsert)
+    return upsert
+
+
+async def test_recompute_writes_nothing_with_no_decision(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.thread_status=on")
+    fake = _fake(monkeypatch, raises=decide_mod.DecideUnavailable("HTTP 503"))
+    llm = _llm_tripwire_all(monkeypatch)
+    upsert = _status_env(monkeypatch, our_side_last=True)
+    out = await rz.recompute_thread_status(_owner_db(), ACC, "t1", trigger="backfill")
+    assert out is None
+    upsert.assert_not_awaited()
+    assert llm == [] and fake.calls[0]["member"] == OWNER
+
+
+async def test_a_decided_status_never_gets_the_auto_tag(monkeypatch, tenant) -> None:
+    """Item 7, and the owner as a proven member (item 5)."""
+    _modes(monkeypatch, "email.thread_status=on")
+    fake = _fake(monkeypatch, choices={"status": "AWAITING_REPLY"})
+    upsert = _status_env(monkeypatch, our_side_last=True)
+    out = await rz.recompute_thread_status(_owner_db(), ACC, "t1", trigger="outbound")
+    assert out == ("AWAITING", "Awaiting Reply")
+    assert upsert.await_args.args[6] == "Replied — AWAITING_REPLY"
+    assert fake.calls[0]["member"] == OWNER
+    assert fake.calls[0]["member_proven"] is True
+
+
+async def test_off_still_tags_a_fallback_with_auto(monkeypatch, tenant) -> None:
+    """The contrast: outside `on` the old fallback keeps its `· auto` tag, so
+    the test above proves a change of `on` and not a dead tag."""
+    llm = _llm_tripwire_all(monkeypatch)
+    upsert = _status_env(monkeypatch, our_side_last=True)
+    await rz.recompute_thread_status(_owner_db(), ACC, "t1", trigger="outbound")
+    assert upsert.await_args.args[6].endswith("· auto")
+    assert len(llm) == 2  # the configured tier, then the escalation
+
+
+async def test_mark_thread_replied_leaves_the_labels_with_no_decision(
+    monkeypatch, tenant,
+) -> None:
+    _modes(monkeypatch, "email.thread_status=on")
+    _fake(monkeypatch, raises=decide_mod.DecideUnavailable("HTTP 503"))
+    llm = _llm_tripwire_all(monkeypatch)
+    upsert = _status_env(monkeypatch, our_side_last=True)
+    reconcile = AsyncMock()
+    instantiate = MagicMock()
+    monkeypatch.setattr(rz, "_reconcile_thread_labels", reconcile)
+    monkeypatch.setattr(rz, "_instantiate_provider", instantiate)
+    db = _owner_db()
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(rz, "_tenant_session", session)
+    await rz._mark_thread_replied(ACC, "t1", sent_body="Thanks", sent_subject="Re")
+    upsert.assert_not_awaited()
+    reconcile.assert_not_awaited()
+    instantiate.assert_not_called()
+    assert llm == []
+
+
+def _resolver_env(monkeypatch) -> tuple[AsyncMock, AsyncMock]:
+    _status_env(monkeypatch, our_side_last=False)
+    monkeypatch.setattr(rz, "_thread_is_conversation", AsyncMock(return_value=True))
+    restore = AsyncMock()
+    monkeypatch.setattr(rz, "_restore_conversation_messages", restore)
+    target = AsyncMock(return_value={"id": "v0", "name": "Needs Reply",
+                                     "system_type": "REPLY", "actions": []})
+    monkeypatch.setattr(rz, "_conversation_rule_for_status", target)
+    return restore, target
+
+
+async def test_the_resolver_decides_the_conversation_on_jev(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.thread_status=on")
+    fake = _fake(monkeypatch, choices={"status": "REPLY"})
+    llm = _llm_tripwire_all(monkeypatch)
+    _restore, target = _resolver_env(monkeypatch)
+    receipt = {"rule": {"id": "c", "name": "Receipt"}, "reason": "r", "source": "ai"}
+    row = SimpleNamespace(id=MID, thread_id="t1")
+    out = await rz.resolve_conversation_status_matches(_owner_db(), ACC, row, [receipt])
+    assert out[0]["source"] == "thread_status"
+    assert out[0]["reason"] == "Thread status: REPLY"
+    assert out[1]["suppressed"] == "conversation"
+    assert target.await_args.args[2] == "REPLY"
+    assert fake.calls[0]["member"] == OWNER and llm == []
+
+
+async def test_the_resolver_raises_with_no_decision_and_writes_nothing(
+    monkeypatch, tenant,
+) -> None:
+    """Inside `classify_matches` a missing status passes the broad handler
+    of the resolver, so the runner skips the row (item 6)."""
+    _modes(monkeypatch, "email.thread_status=on")
+    _fake(monkeypatch, raises=decide_mod.DecideUnavailable("HTTP 503"))
+    restore, target = _resolver_env(monkeypatch)
+    row = SimpleNamespace(id=MID, thread_id="t1")
+    with pytest.raises(eng.DecisionUnavailable):
+        await rz.resolve_conversation_status_matches(_owner_db(), ACC, row, [])
+    restore.assert_not_awaited()
+    target.assert_not_awaited()
+
+
+async def test_the_cold_gate_names_the_owner_and_writes_only_above_the_bar(
+    monkeypatch, tenant,
+) -> None:
+    _modes(monkeypatch, "email.cold_check=on")
+    fake = _fake(monkeypatch, by_key={"cold": 0.95})
+    provider = MagicMock(move_to_folder=AsyncMock(), set_labels=AsyncMock())
+    db = _site_db()
+    await snd._maybe_block_cold(db, provider, ACC, MID, "pm-1", EMAIL, "ARCHIVE")
+    assert fake.calls[0]["member"] == OWNER and fake.calls[0]["member_proven"] is True
+    assert any(s.startswith("INSERT INTO email_cold_senders") for s in db.sql)
+    provider.move_to_folder.assert_awaited_once()
+
+
+@pytest.mark.parametrize("answer", ["below", "none"])
+async def test_the_cold_gate_blocks_nothing_below_the_bar_or_with_no_answer(
+    monkeypatch, tenant, answer,
+) -> None:
+    _modes(monkeypatch, "email.cold_check=on")
+    if answer == "below":
+        _fake(monkeypatch, by_key={"cold": 0.49})
+    else:
+        _fake(monkeypatch, raises=decide_mod.DecideUnavailable("HTTP 503"))
+    provider = MagicMock(move_to_folder=AsyncMock(), set_labels=AsyncMock())
+    db = _site_db()
+    await snd._maybe_block_cold(db, provider, ACC, MID, "pm-1", EMAIL, "ARCHIVE")
+    assert not any(s.startswith(("INSERT", "UPDATE")) for s in db.sql), db.sql
+    provider.move_to_folder.assert_not_awaited()
+    provider.set_labels.assert_not_awaited()
+
+
+async def test_the_pin_names_the_owner(monkeypatch, tenant) -> None:
+    _modes(monkeypatch, "email.sender_pin=on")
+    fake = _fake(monkeypatch, by_key={"always": 0.95})
+    with job_member_scope("someone.else@acme-on.example", app="email"):
+        assert await _pin() is True
+    assert fake.calls[0]["member"] == OWNER and fake.calls[0]["member_proven"] is True
+
+
+# ── Item 2 (fix round 2): one cool-down for the organization ───────────────
+
+
+async def test_a_402_on_one_feature_cools_the_others(monkeypatch, tenant) -> None:
+    """The credit belongs to the organization, so a 402 from the cold check
+    stops the status and the pin calls too, with no Router call."""
+    _modes(monkeypatch, ALL_ON)
+    fake = _fake(monkeypatch, raises=decide_mod.DecideUnavailable(
+        "insufficient_credits", status=402))
+    assert await _cold() == (False, "")
+    with structlog.testing.capture_logs() as caps:
+        with pytest.raises(eng.DecisionUnavailable):
+            await _status()
+        assert await _pin() is False
+    assert len(fake.calls) == 1, "a call ran inside the cool-down"
+    assert [r["decide_reason"] for r in _records(caps, "decide.unavailable")] \
+        == ["cooldown", "cooldown"]
+
+
+# ── Item 9: the decide.decided line, keys only ─────────────────────────────
+
+
+@pytest.mark.parametrize(("feature", "fields"), [
+    ("email.thread_status", {"answer": "REPLY", "options": 4}),
+    ("email.cold_check", {"p_cold": 0.8, "cold": True}),
+    ("email.sender_pin", {"p_always": 0.95, "pin": True}),
+])
+async def test_the_decided_line_holds_keys_only(monkeypatch, tenant, feature, fields) -> None:
+    _modes(monkeypatch, f"{feature}=on")
+    _fake(monkeypatch, by_key={"cold": 0.8, "always": 0.95}, choices={"status": "REPLY"})
+    with structlog.testing.capture_logs() as caps:
+        await SITE_CALLS[feature]()
+    (rec,) = _records(caps, "decide.decided")
+    assert (rec["decide_feature"], rec["account_id"], rec["message_id"]) == (feature, ACC, MID)
+    assert rec["request_ids"] == ["req-1"] and isinstance(rec["latency_ms"], int)
+    assert {k: rec[k] for k in fields} == fields
+    text_ = repr([c for c in caps if c["event"].startswith("decide.")])
+    for secret in (*SECRETS, SENDER, PIN_RULE["name"]):
+        assert secret not in text_, secret
+
+
+# ── Item 9: the startup check ──────────────────────────────────────────────
+
+
+def _wiring(monkeypatch, *, enabled: bool, wired: bool) -> None:
+    import acb_auth.console_resolve as resolve_mod
+
+    monkeypatch.setenv("DECIDE_ENABLED", "true" if enabled else "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(resolve_mod, "router_is_wired", lambda: wired)
+
+
+@pytest.mark.parametrize(("enabled", "wired"), [(False, True), (True, False), (False, False)])
+def test_the_startup_check_logs_once_when_on_and_not_wired(monkeypatch, enabled, wired) -> None:
+    _modes(monkeypatch, "email.thread_status=on,email.cold_check=shadow")
+    _wiring(monkeypatch, enabled=enabled, wired=wired)
+    with structlog.testing.capture_logs() as caps:
+        hooks_mod.register_email_post_sync_hooks()
+    (rec,) = _records(caps, "email.decide_not_wired")
+    assert rec["log_level"] == "error"
+    assert rec["decide_features"] == ["email.thread_status"]
+    assert (rec["decide_enabled"], rec["router_wired"]) == (enabled, wired)
+
+
+@pytest.mark.parametrize(("modes", "orgs", "enabled", "wired"), [
+    (ALL_ON, "*", True, True),  # wired
+    ("email.thread_status=shadow", "*", False, False),  # nothing is `on`
+    (ALL_ON, "", False, False),  # no organization may run `on`
+])
+def test_the_startup_check_is_quiet_otherwise(monkeypatch, modes, orgs, enabled, wired) -> None:
+    _modes(monkeypatch, modes, orgs)
+    _wiring(monkeypatch, enabled=enabled, wired=wired)
+    with structlog.testing.capture_logs() as caps:
+        hooks_mod.register_email_post_sync_hooks()
+    assert _records(caps, "email.decide_not_wired") == []
+
+
+def test_a_broken_wiring_read_is_not_wired(monkeypatch) -> None:
+    import acb_auth.console_resolve as resolve_mod
+
+    _modes(monkeypatch, ALL_ON)
+    monkeypatch.setenv("DECIDE_ENABLED", "true")
+    get_settings.cache_clear()
+
+    def broken() -> bool:
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr(resolve_mod, "router_is_wired", broken)
+    with structlog.testing.capture_logs() as caps:
+        hooks_mod.check_decide_wiring()
+    (rec,) = _records(caps, "email.decide_not_wired")
+    assert rec["router_wired"] is False
+
+
+# ── R8: each site on a real database, as the non-owner role under FORCE RLS ─
+
+
+class _ArchivingProvider(_FakeProvider):
+    async def move_to_folder(self, pmid, folder):
+        self.calls.append(f"move_to_folder:{folder}")
+
+
+def _status_rows(admin, account_id: str) -> list[dict[str, Any]]:
+    with admin.connect() as c:
+        return list(c.execute(text(
+            "SELECT thread_id, status, reason FROM email_thread_status "
+            "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).mappings().all())
+
+
+def _conversation(p) -> tuple[str, str, str, str]:
+    """A mailbox of org B with the "Needs Reply" rule, and a thread where
+    the owner wrote first and the other party answered after the rule.
+    Returns (account, owner, thread, the new message)."""
+    owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+    now = datetime.now(UTC)
+    _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Needs Reply",
+               instructions="Emails I need to respond to.",
+               created_at=now - timedelta(hours=1))
+    tid = f"t-conv-{acc}"
+    _seed_message(p.admin_engine, org=p.org_b, account_id=acc, folder="sent",
+                  thread_id=tid, received_at=now - timedelta(minutes=30))
+    new = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread_id=tid,
+                        received_at=now - timedelta(minutes=5))
+    return acc, owner, tid, new
+
+
+@_DB_GATE
+class TestTheThreadStatusOnJev:
+
+    async def test_the_runner_resolves_a_conversation_on_jev(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, owner, tid, new = _conversation(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        fake = _fake(monkeypatch, choices={"status": "REPLY"})
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        call = _call_for(fake, "status")
+        assert call["member"] == owner and call["member_proven"] is True
+        assert llm == []
+        assert _status_rows(p.admin_engine, acc) == [
+            {"thread_id": tid, "status": "NEEDS_REPLY", "reason": "Thread status: REPLY"}]
+        assert _stamps(p.admin_engine, acc)[new] is not None
+        assert [(r["mid"], r["status"], r["rule_name"], r["match_source"])
+                for r in _logged(p.admin_engine, acc)] == [
+            (new, "APPLIED", "Needs Reply", "thread_status")]
+
+    async def test_no_status_skips_the_row_and_writes_nothing(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        p = promoted
+        acc, _owner, _tid, new = _conversation(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        monkeypatch.setattr(decide_mod, "decide", _FailOn(
+            "status", decide_mod.DecideUnavailable("HTTP 503")))
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        with structlog.testing.capture_logs() as caps:
+            async with _as_app(p, p.org_b):
+                await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert llm == []
+        assert _status_rows(p.admin_engine, acc) == []
+        assert _stamps(p.admin_engine, acc)[new] is None
+        assert _logged(p.admin_engine, acc) == []
+        assert [r["message_id"] for r in _records(caps, "email.classify_unavailable_skip")] \
+            == [new]
+
+    def _auto_row(self, p) -> tuple[str, str, str]:
+        """A sent thread whose stored status is a guess (`· auto`)."""
+        owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        tid = f"t-auto-{acc}"
+        sent = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, folder="sent",
+                             thread_id=tid)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_thread_status (account_id, thread_id, status, "
+                "last_message_id, last_message_at, reason, organization_id) VALUES "
+                "(CAST(:a AS uuid), :t, 'AWAITING', CAST(:m AS uuid), now(), :r, "
+                "CAST(:o AS uuid))"),
+                {"a": acc, "t": tid, "m": sent, "r": "Replied — AWAITING_REPLY · auto",
+                 "o": p.org_b})
+        return acc, owner, tid
+
+    async def test_an_auto_row_gets_one_more_check_and_then_none(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Item 7: the backfill checks the guessed row once more on Jev, as
+        the owner, and the decided row carries no `· auto`, so the next
+        cycle leaves it."""
+        p = promoted
+        acc, owner, tid = self._auto_row(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        fake = _fake(monkeypatch, choices={"status": "DONE"})
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        for _ in range(2):
+            async with _as_app(p, p.org_b):
+                await rz._maybe_classify_threads(acc)
+        assert len(fake.calls) == 1, "a decided row was asked again"
+        assert fake.calls[0]["member"] == owner and llm == []
+        assert _status_rows(p.admin_engine, acc) == [
+            {"thread_id": tid, "status": "DONE", "reason": "Replied — DONE"}]
+
+    async def test_with_no_answer_the_auto_row_stays_and_is_asked_again(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        p = promoted
+        acc, _owner, tid = self._auto_row(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        fake = _fake(monkeypatch, raises=decide_mod.DecideUnavailable("HTTP 503"))
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        for _ in range(2):
+            async with _as_app(p, p.org_b):
+                await rz._maybe_classify_threads(acc)
+        assert len(fake.calls) == 2 and llm == []
+        assert _status_rows(p.admin_engine, acc) == [
+            {"thread_id": tid, "status": "AWAITING",
+             "reason": "Replied — AWAITING_REPLY · auto"}]
+
+
+def _cold_mailbox(p) -> tuple[str, str, str]:
+    owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+    _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Receipt",
+               instructions="Receipts and invoices.",
+               created_at=datetime.now(UTC) - timedelta(hours=1))
+    _seed_settings(p.admin_engine, org=p.org_b, account_id=acc,
+                   cold_email_blocker="ARCHIVE")
+    new = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                        thread_id=f"t-cold-{acc}",
+                        received_at=datetime.now(UTC) - timedelta(minutes=5))
+    return acc, owner, new
+
+
+def _cold_rows(admin, account_id: str) -> list[dict[str, Any]]:
+    with admin.connect() as c:
+        return list(c.execute(text(
+            "SELECT from_email, status, reason FROM email_cold_senders "
+            "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).mappings().all())
+
+
+def _folder(admin, message_id: str) -> str:
+    with admin.connect() as c:
+        return c.execute(text("SELECT folder FROM email_messages WHERE id = CAST(:m AS uuid)"),
+                         {"m": message_id}).scalar_one()
+
+
+@_DB_GATE
+class TestTheColdCheckOnJev:
+
+    async def test_a_cold_email_above_the_bar_is_archived(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, owner, new = _cold_mailbox(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        fake = _fake(monkeypatch, by_key={"r0": 0.1, "cold": 0.95})
+        llm = _llm_tripwire_all(monkeypatch)
+        provider = _ArchivingProvider()
+        _patch_providers(monkeypatch, provider)
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        call = _call_for(fake, "cold")
+        assert call["member"] == owner and call["member_proven"] is True
+        assert llm == []
+        assert _cold_rows(p.admin_engine, acc) == [{
+            "from_email": "s@sender.test", "status": "AI_LABELED_COLD",
+            "reason": "Cold outreach by AI (probability 0.95)."}]
+        assert _folder(p.admin_engine, new) == "archive"
+        assert "move_to_folder:archive" in provider.calls
+        assert _stamps(p.admin_engine, acc)[new] is not None
+        assert sorted((r["status"], r["rule_name"] or "") for r in _logged(p.admin_engine, acc)) \
+            == [("APPLIED", "Cold Email Blocker"), ("SKIPPED", "")]
+
+    @pytest.mark.parametrize("answer", ["below", "none"])
+    async def test_below_the_bar_or_with_no_answer_nothing_is_blocked(
+        self, promoted, app_engine, monkeypatch, answer,  # noqa: F811
+    ):
+        """No cold row, no label, no archive. The rule outcome ("No rule
+        matched") stands, so the runner stamps the message (item 6)."""
+        p = promoted
+        acc, _owner, new = _cold_mailbox(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        if answer == "below":
+            _fake(monkeypatch, by_key={"r0": 0.1, "cold": 0.49})
+        else:
+            monkeypatch.setattr(decide_mod, "decide", _FailOn(
+                "cold", decide_mod.DecideUnavailable("HTTP 503"), by_key={"r0": 0.1}))
+        llm = _llm_tripwire_all(monkeypatch)
+        provider = _ArchivingProvider()
+        _patch_providers(monkeypatch, provider)
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert llm == []
+        assert _cold_rows(p.admin_engine, acc) == []
+        assert _folder(p.admin_engine, new) == "inbox"
+        assert not any(c.startswith("move_to_folder") for c in provider.calls)
+        assert _stamps(p.admin_engine, acc)[new] is not None
+        assert [(r["status"], r["rule_name"]) for r in _logged(p.admin_engine, acc)] \
+            == [("SKIPPED", None)]
+
+
+def _pin_mailbox(p) -> tuple[str, str, str, str]:
+    """A Newsletter rule, four older messages of SENDER that it already
+    matched (APPLIED), and one new message of SENDER. The run then reaches
+    the pin question. Returns (account, owner, rule, new message)."""
+    owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+    now = datetime.now(UTC)
+    rid = _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Newsletter",
+                     instructions="Newsletters.", created_at=now - timedelta(hours=1))
+    for i in range(4):
+        old = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, sender=SENDER,
+                            thread_id=f"t-pin-{i}-{acc}",
+                            received_at=now - timedelta(hours=2, minutes=i))
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO email_executed_rules (account_id, rule_id, rule_name, "
+                "message_id, from_address, status, match_source, organization_id) "
+                "VALUES (CAST(:a AS uuid), CAST(:r AS uuid), 'Newsletter', "
+                "CAST(:m AS uuid), :f, 'APPLIED', 'ai', CAST(:o AS uuid))"),
+                {"a": acc, "r": rid, "m": old, "f": SENDER, "o": p.org_b})
+    new = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, sender=SENDER,
+                        thread_id=f"t-pin-new-{acc}",
+                        received_at=now - timedelta(minutes=5))
+    return acc, owner, rid, new
+
+
+def _patterns(admin, account_id: str) -> list[dict[str, Any]]:
+    with admin.connect() as c:
+        return list(c.execute(text(
+            "SELECT rule_id::text AS rule_id, pattern_type, value, source "
+            "FROM email_rule_patterns WHERE account_id = CAST(:a AS uuid)"),
+            {"a": account_id}).mappings().all())
+
+
+@_DB_GATE
+class TestTheSenderPinOnJev:
+
+    async def test_a_pin_at_ninety_percent_is_written_as_the_owner(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, owner, rid, new = _pin_mailbox(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        fake = _fake(monkeypatch, by_key={"r0": 0.92, "always": 0.95})
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        call = _call_for(fake, "always")
+        assert call["member"] == owner and call["member_proven"] is True
+        assert llm == []
+        assert _patterns(p.admin_engine, acc) == [
+            {"rule_id": rid, "pattern_type": "FROM", "value": SENDER, "source": "AI"}]
+        assert _stamps(p.admin_engine, acc)[new] is not None
+
+    @pytest.mark.parametrize("answer", ["below", "none"])
+    async def test_below_the_bar_or_with_no_answer_there_is_no_pin(
+        self, promoted, app_engine, monkeypatch, answer,  # noqa: F811
+    ):
+        p = promoted
+        acc, _owner, _rid, new = _pin_mailbox(p)
+        _modes(monkeypatch, ALL_ON, "*")
+        if answer == "below":
+            _fake(monkeypatch, by_key={"r0": 0.92, "always": 0.89})
+        else:
+            monkeypatch.setattr(decide_mod, "decide", _FailOn(
+                "always", decide_mod.DecideUnavailable("HTTP 503"), by_key={"r0": 0.92}))
+        llm = _llm_tripwire_all(monkeypatch)
+        _patch_providers(monkeypatch, _FakeProvider())
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert llm == []
+        assert _patterns(p.admin_engine, acc) == []
+        # The rule still applied, and the message is stamped.
+        assert _stamps(p.admin_engine, acc)[new] is not None
+        assert ("APPLIED", "Newsletter") in [
+            (r["status"], r["rule_name"]) for r in _logged(p.admin_engine, acc)
+            if r["mid"] == new]
