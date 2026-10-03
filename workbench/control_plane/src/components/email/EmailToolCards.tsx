@@ -491,13 +491,16 @@ function DraftResultCard({
   emailId?: string | null;
 }) {
   const args = e.args as Record<string, unknown> | undefined;
-  // draft_reply returns "Draft[ (saved…)]:\n\n<body>".
+  // draft_reply returns "Draft from <label · address> (mailbox <id>)[ (saved…)]:\n\n<body>".
   const raw = e.result || "";
   const initial = raw.includes("\n\n")
     ? raw.slice(raw.indexOf("\n\n") + 2).trim()
     : raw.trim();
+  const head = draftReplyHead(raw);
   const targetId = (args?.email_id as string) || emailId || "";
-  const acctId = (args?.account_id as string) || accountId || "";
+  // The tool drafts in the mailbox OF THE MAIL, whatever account the model
+  // named, so the card acts there too (EM-T8a, D-EM-19).
+  const acctId = head.mailboxId || (args?.account_id as string) || accountId || "";
   const [body, setBody] = useState(initial);
   const [state, setState] = useState<"idle" | "saving" | "saved" | "sending" | "sent" | "error">("idle");
 
@@ -515,7 +518,7 @@ function DraftResultCard({
   };
 
   const send = async () => {
-    if (!canAct || !confirm("Send this reply now?")) return;
+    if (!canAct || !confirm(head.from ? `Send this reply from ${head.from}?` : "Send this reply now?")) return;
     setState("sending");
     try {
       const res = await saveDraftText(acctId, targetId, body);
@@ -538,6 +541,9 @@ function DraftResultCard({
       <div className="flex items-center gap-1.5 mb-1.5">
         <AppIcon name="PenLine" size={12} className="text-primary" />
         <span className="text-[11px] font-medium text-foreground">Draft reply</span>
+        {head.from ? (
+          <span className="truncate text-[10px] text-muted-foreground">from {head.from}</span>
+        ) : null}
       </div>
       <textarea
         value={body}
@@ -2020,4 +2026,12 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       </div>
     </div>
   );
+}
+
+/** The first line of a `draft_reply` result: the From mailbox and its id.
+ *  Both are absent from a result of an agent before EM-T8a. */
+export function draftReplyHead(raw: string): { from: string | null; mailboxId: string | null } {
+  const first = (raw || "").split("\n", 1)[0];
+  const m = /^Draft from (.+?) \(mailbox ([^)\s]+)\)/.exec(first);
+  return m ? { from: m[1], mailboxId: m[2] } : { from: null, mailboxId: null };
 }

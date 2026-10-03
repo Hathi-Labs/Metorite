@@ -241,6 +241,10 @@ of these two things is true, at which point it is re-costed from scratch:
 "finish the isolation ladder" builds WS-3a and WS-3b and refuses T2 by name. *(Unchanged
 under D16 — `work_plan.md` §6's first blockquote is the registry entry.)*
 
+> ⚠️ **Amended 2026-10-03 by D83 (owner decision).** The owner un-parked T2 for the
+> WS-43 sandbox terminal only (`maf_coding_engine.md` §3). An agent may build that
+> sandbox. It still refuses P5-c, P5-d and T2 for the pooled cutover by name.
+
 ---
 
 ## Part 2 — Hardening findings
