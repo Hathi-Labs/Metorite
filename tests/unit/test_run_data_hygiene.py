@@ -28,6 +28,9 @@ Mutations this suite catches (R7), each run red once by hand:
 * the route rule ``_is_other_thread_path`` answers ``False``: the route test;
 * the route's ``_safe_write`` writes with ``Path.write_bytes``: the route link
   test.
+* the route rule reads the ``.cc-instance`` marker again: the route test;
+* the ``PYTHONNOUSERSITE`` line or the read-only marker mount is dropped: the
+  mount test.
 """
 from __future__ import annotations
 
