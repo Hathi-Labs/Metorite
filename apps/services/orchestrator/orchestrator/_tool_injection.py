@@ -82,15 +82,19 @@ def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
     (``maf_coding_engine.md`` §7.7 condition 2)? Only then may the tool half
     of D85 lift. It never lifts the host half: see :func:`_host_shell_refused`.
 
-    TODO(WS-43f): return ``orchestrator.sandbox_broker.covers(agent_name,
-    organization_id)`` here, for the targets whose shell tools the broker
-    runs. WS-43c (PR #591) added that function, and it answers ``False`` for
-    every agent until WS-43f. ⚠️ The ``projects`` target of D86 is NOT such a
-    cover: ``covers()`` is true there while the three host shell tools stay
-    withheld (§16.3). Until WS-43f this local predicate answers ``False``.
+    It asks ``sandbox_broker.lifts_shell_block`` (WS-43d), never ``covers()``
+    alone. ⚠️ The ``projects`` target of D86 is NOT such a cover:
+    ``covers()`` is true there while the three host shell tools stay withheld
+    (§16.3), so ``lifts_shell_block`` answers ``False`` for it. For every
+    other target it is ``covers()``, which is ``False`` until WS-43f. A
+    broker that cannot answer is no cover, so the block stays.
     """
-    del agent_name, organization_id
-    return False
+    try:
+        from orchestrator import sandbox_broker
+
+        return sandbox_broker.lifts_shell_block(agent_name, organization_id) is True
+    except Exception:  # fail closed: the three tools stay withheld
+        return False
 
 
 def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> bool:

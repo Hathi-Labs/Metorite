@@ -19,10 +19,10 @@ shared agent object, or gives back ``code_task``, ``run_script`` or
 * a skill written under ``agent-data/skills/`` lists on the next turn, and
   its script runs in the sandbox through its ``/workspace`` path.
 
-⚠️ D85 (PR #598) is not on this branch yet. ``covers()`` needs its seam
-(``_tool_injection._withheld_shell_tools``), so the ``sandbox`` fixture
-stands in for it. ``test_with_no_d85_seam_no_org_is_covered`` runs WITHOUT
-the stand-in and shows that main covers nobody today.
+D85 (PR #598) is merged, and every test here runs on its real seam:
+``_tool_injection._withheld_shell_tools`` withholds the three host shell
+tools, and ``_sandbox_covers`` asks ``sandbox_broker.lifts_shell_block``, so
+a true ``covers()`` never gives them back.
 
 Mutations this suite catches (R7), each run red once by hand:
 
@@ -51,6 +51,12 @@ The P3 review (each run red once by hand on 2026-10-04):
 * ``HOST_NETWORK_TOOLS`` taken out of ``WITHHELD_HOST_TOOLS``: the web-tools
   test, which reads the REAL request bodies and traps every real HTTP send
   of the host.
+
+After the merge of D85 (each run red once by hand on 2026-10-04):
+
+* ``_sandbox_covers`` asks ``covers()`` in place of ``lifts_shell_block``:
+  the real-injection tests, which pass ``agent_config``;
+* ``covers()`` drops the D85 seam check: the no-seam test.
 """
 from __future__ import annotations
 
@@ -113,10 +119,10 @@ async def _turn(agent: Any) -> Any:
     return context
 
 
-def _drop_host_shell(agent: Any) -> None:
-    """What the D85 seam does at injection, for a test on this branch."""
-    tools = agent.default_options["tools"]
-    tools[:] = [t for t in tools if _tool_name(t) not in _HOST_SHELL]
+def _config() -> dict[str, Any]:
+    import json
+
+    return json.loads((Path(_M.__file__).parent / "config.json").read_text(encoding="utf-8"))
 
 
 # ── the scope decides, per organization ──────────────────────────────────────
@@ -192,18 +198,14 @@ def test_covers_never_names_star_or_an_empty_org(sandbox) -> None:  # noqa: F811
     assert sb.covers("", ORG_A) is False
 
 
-def test_with_no_d85_seam_no_org_is_covered(sandbox, monkeypatch) -> None:  # noqa: F811
-    """§16.3 condition 3, on the real seam check (no stand-in)."""
-    import importlib
-
+def test_without_the_d85_seam_no_org_is_covered(sandbox, monkeypatch) -> None:  # noqa: F811
+    """§16.3 condition 3, on the real seam check: with the seam of PR #598 the
+    org is covered, and with the seam gone it is not."""
     from orchestrator import _tool_injection
 
-    real = importlib.reload(sb)._host_shell_withheld
-    monkeypatch.setattr(sb, "_BROKER", sandbox.broker)
-    has_seam = callable(getattr(_tool_injection, "_withheld_shell_tools", None))
-    assert real(PA) is has_seam
-    monkeypatch.setattr(sb, "_host_shell_withheld", real)
-    assert sb.covers(PA, ORG_A) is has_seam
+    assert sb.covers(PA, ORG_A) is True
+    monkeypatch.delattr(_tool_injection, "_withheld_shell_tools")
+    assert sb.covers(PA, ORG_A) is False
 
 
 def test_a_true_cover_never_lifts_the_host_shell_block(sandbox) -> None:  # noqa: F811
@@ -234,7 +236,6 @@ async def test_two_runs_at_once_never_share_tools(sandbox) -> None:  # noqa: F81
     async def run(org: str, thread: str) -> tuple[Any, set[str], Path]:
         with bound_run(org, agent=PA, thread=thread) as ws:
             agent = _M.build_agents()[0]
-            _drop_host_shell(agent)
             await asyncio.sleep(0)
             context = await _turn(agent)
             names = {_tool_name(t) for t in context.tools}
@@ -260,7 +261,6 @@ async def test_two_runs_at_once_never_share_tools(sandbox) -> None:  # noqa: F81
 
 async def test_a_covered_turn_gets_run_command_and_the_eight_file_tools(sandbox) -> None:  # noqa: F811
     agent = _build(ORG_A, thread := new_thread())
-    _drop_host_shell(agent)
     with bound_run(ORG_A, agent=PA, thread=thread):
         context = await _turn(agent)
     names = {_tool_name(t) for t in context.tools}
@@ -269,45 +269,57 @@ async def test_a_covered_turn_gets_run_command_and_the_eight_file_tools(sandbox)
     assert not names & _HOST_SHELL
 
 
-async def test_a_run_that_holds_a_host_shell_tool_gets_nothing(sandbox) -> None:  # noqa: F811
-    """§16.3 condition 3, at run time: on this branch the injection still gives
-    projects-assistant ``code_task`` and ``run_script`` (no D85 yet), so the
-    provider must add no sandbox tool beside them."""
-    from orchestrator._tool_injection import _inject_agent_tools
+async def test_a_run_that_holds_a_host_shell_tool_gets_nothing(sandbox, monkeypatch) -> None:  # noqa: F811
+    """§16.3 condition 3, at run time: if a wrong cover gave the run its host
+    shell tools back, the provider adds no sandbox tool beside them."""
+    from orchestrator import _tool_injection as ti
 
+    monkeypatch.setattr(ti, "_sandbox_covers", lambda a, o: True)  # the wrong cover
+    cfg = _config()
     thread = new_thread()
     with bound_run(ORG_A, agent=PA, thread=thread):
         agents = _M.build_agents()
-        _inject_agent_tools(agents, tool_scope=["write_artifact"], agent_name=PA)
+        ti._inject_agent_tools(
+            agents, tool_scope=cfg.get("tool_scope") or None, agent_name=PA, agent_config=cfg,
+        )
         held = {_tool_name(t) for t in agents[0].default_options["tools"]}
         context = await _turn(agents[0])
-    if held & _HOST_SHELL:
-        assert context.tools == [], "a sandbox tool sat beside a host shell tool"
-    names = {_tool_name(t) for t in context.tools} | held
-    assert not ({"run_command"} <= names and names & _HOST_SHELL)
+    assert held & _HOST_SHELL, "the wrong cover gave nothing back, so this proves nothing"
+    assert context.tools == [], "a sandbox tool sat beside a host shell tool"
 
 
-async def test_with_the_host_shell_withheld_the_turn_holds_none_of_the_three(sandbox) -> None:  # noqa: F811
-    """The D85 seam, stood in for: the final tool set of a covered run holds the
-    sandbox tools and none of ``code_task``, ``run_script``, ``install_dependency``."""
-    from orchestrator._tool_injection import _inject_agent_tools
+async def test_the_real_d85_injection_keeps_the_three_withheld_in_a_covered_run(sandbox) -> None:  # noqa: F811
+    """The real seam, with the agent's own ``config.json`` as ``agent_config``,
+    as the executor passes it. ``covers()`` is true, the D85 hook still says no
+    cover, so the turn holds the sandbox tools and none of ``code_task``,
+    ``run_script`` and ``install_dependency``. The per-run middleware of the
+    turn withholds the host floor tools and the web tools."""
+    from orchestrator import _tool_injection as ti
 
+    cfg = _config()
     thread = new_thread()
     with bound_run(ORG_A, agent=PA, thread=thread):
+        assert sb.covers(PA, ORG_A) is True
+        assert ti._sandbox_covers(PA, ORG_A) is False
         agents = _M.build_agents()
-        _inject_agent_tools(agents, tool_scope=["write_artifact"], agent_name=PA)
-        _drop_host_shell(agents[0])
+        ti._inject_agent_tools(
+            agents, tool_scope=cfg.get("tool_scope") or None, agent_name=PA, agent_config=cfg,
+        )
+        injected = {_tool_name(t) for t in agents[0].default_options["tools"]}
         context = await _turn(agents[0])
-    final = {_tool_name(t) for t in agents[0].default_options["tools"]}
-    final |= {_tool_name(t) for t in context.tools}
-    assert "run_command" in final
-    assert not final & _HOST_SHELL
+    final = injected | {_tool_name(t) for t in context.tools}
+    assert {"run_command"} | _FILE_TOOLS <= final
+    assert not final & _HOST_SHELL, final & _HOST_SHELL
+    # The floor still injects the web tools. The turn's middleware hides them.
+    assert {"web_search", "fetch_page"} <= injected
+    held = [m for ms in context.middleware.values() for m in ms]
+    assert any(isinstance(m, st.WithholdHostTools) for m in held)
+    assert any(isinstance(m, st.RefuseHostTools) for m in held)
 
 
 async def test_a_scope_flipped_off_after_the_build_ends_the_tools(sandbox, monkeypatch) -> None:  # noqa: F811
     thread = new_thread()
     agent = _build(ORG_A, thread)
-    _drop_host_shell(agent)
     sandbox.set_scope(monkeypatch, "")
     with bound_run(ORG_A, agent=PA, thread=thread):
         context = await _turn(agent)
@@ -699,23 +711,18 @@ async def test_the_middleware_hides_and_refuses_the_withheld_tools() -> None:
 def _covered_run(monkeypatch, sandbox, turns, *, on_request=None) -> Any:  # noqa: F811
     """projects-assistant through the REAL executor, covered for ORG_A.
 
-    The D85 seam is not on this branch, so the injection here leaves out
-    the three host shell tools, as D85 does.
+    The injection is the real one, D85 included: the executor passes the
+    agent's ``config.json`` as ``agent_config``.
     """
     import json
     import shutil
 
     import httpx
     from acb_common.db import bind_tenant, release_tenant
-    from orchestrator import _tool_injection as ti
     from orchestrator import executor
 
     from tests.unit._native_maf_harness import ScriptedModel, parse_frames
 
-    real = ti._collect_injectable_platform_tools
-    monkeypatch.setattr(ti, "_collect_injectable_platform_tools", lambda: [
-        fn for fn in real() if fn.__name__ not in _HOST_SHELL
-    ])
     # The loader clones an agent as its NAME (``clone_as=agent_name``), so
     # the dir of this run is named ``projects-assistant``, as in production.
     source = Path(_M.__file__).parent
@@ -826,6 +833,27 @@ def test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform(sandbox, m
     assert len(set(refused)) == 2, refused
     assert sent == []
     assert "no web access" in str(model.bodies[0].get("messages"))
+
+
+def test_a_covered_run_on_the_real_injection_offers_no_host_shell_or_web_tool(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """The D85 merge: the real request bodies of a covered run offer
+    ``run_command`` and the file tools, and none of the five host tools that
+    could run code or reach the network. The same agent with the scope empty
+    is offered the web tools and no sandbox tool, so the check is not empty."""
+    from tests.unit._native_maf_harness import text_turn
+
+    five = _HOST_SHELL | {"web_search", "fetch_page"}
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [text_turn("done")])
+    offered = _request_tools(model.bodies[0])
+    assert {"run_command"} | _FILE_TOOLS <= offered, offered
+    assert not offered & five, offered & five
+    sandbox.set_scope(monkeypatch, "")
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [text_turn("done")])
+    plain = _request_tools(model.bodies[0])
+    assert {"web_search", "fetch_page"} <= plain and "run_command" not in plain
+    assert not plain & _HOST_SHELL
 
 
 def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkeypatch) -> None:  # noqa: F811

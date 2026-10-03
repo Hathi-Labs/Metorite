@@ -643,8 +643,6 @@ async def test_docker_run_command_runs_in_the_container(real_projects, monkeypat
 
     broker = real_projects["broker"]
     assert await broker.probe_docker() is True
-    # The D85 seam (PR #598) is not on this branch yet. See _sandbox_tools_fakes.
-    monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
     thread = new_thread()
     with bound_run(DOCKER_ORG, agent=PA, thread=thread):
         assert sb.covers(PA, DOCKER_ORG) is True
@@ -724,8 +722,6 @@ async def test_docker_a_planted_root_pandas_never_leaks_another_threads_rows(
 
     broker = real_projects["broker"]
     assert await broker.probe_docker() is True
-    # The D85 seam (PR #598) is not on this branch yet. See _sandbox_tools_fakes.
-    monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
     mirrored: list[str] = []
 
     async def mirror(rel: str, data: bytes, **_kw: Any) -> None:

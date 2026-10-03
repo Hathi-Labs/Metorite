@@ -2029,7 +2029,7 @@ def lifts_shell_block(agent: str, org: str) -> bool:
     """True when a cover gives *agent* its host shell tools back (D85, §7.9).
 
     The D85 seam (``_tool_injection._sandbox_covers``) asks this, never
-    :func:`covers` alone. A cover lifts the block only for a target whose
+    :func:`covers` alone, since the merge of PR #598. A cover lifts the block only for a target whose
     shell tools route to the broker (WS-43f). The ``projects`` target never
     routes them, so a true ``covers()`` for projects-assistant keeps
     ``code_task``, ``run_script`` and ``install_dependency`` withheld
@@ -2045,11 +2045,11 @@ def _host_shell_withheld(agent: str) -> bool:
     """§16.3 condition 3: the D85 seam keeps the host shell tools from *agent*.
 
     The seam is ``orchestrator._tool_injection._withheld_shell_tools`` (PR
-    #598). Until it is on this branch, nothing withholds ``code_task`` and
-    ``run_script`` from projects-assistant, so no organization is covered.
-    The sandbox tools also refuse at run time when the run holds a host
-    shell tool (``acb_skills.sandbox_tools``), so the two checks fail closed
-    each on its own.
+    #598). Without it, nothing withholds ``code_task`` and ``run_script``
+    from projects-assistant, so no organization is covered. The sandbox
+    tools also refuse at run time when the run holds a host shell tool
+    (``acb_skills.sandbox_tools``), so the two checks fail closed each on
+    its own.
     """
     del agent
     try:

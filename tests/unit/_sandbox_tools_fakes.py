@@ -1,11 +1,8 @@
 """Shared set-up for the WS-43d suites (WS43-F6, F7, F14, F21, F22).
 
 ``sandbox`` gives a broker on a fake Docker, with the scope set to
-``projects:<ORG_A>``, a healthy broker, and the D85 seam present. The D85 seam
-is ``_tool_injection._withheld_shell_tools`` of PR #598. Until that PR is on
-the branch, ``sandbox_broker._host_shell_withheld`` answers ``False``, so the
-fixture stands in for it. A test that needs the real answer does not use the
-patch.
+``projects:<ORG_A>`` and a healthy broker. The D85 seam of PR #598
+(``_tool_injection._withheld_shell_tools``) is real, with no stand-in.
 
 ``host_trap`` makes every way of starting a host process raise, so a test
 proves that a command ran only through the broker.
@@ -73,7 +70,6 @@ def sandbox(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> Sandbox:
     broker = sb.SandboxBroker(docker=docker)  # type: ignore[arg-type]
     broker._note_docker(True)
     monkeypatch.setattr(sb, "_BROKER", broker)
-    monkeypatch.setattr(sb, "_host_shell_withheld", lambda agent: True)
     import acb_skills.tenant_file_store as tfs
 
     monkeypatch.setattr(tfs, "_SHOWN", {})
