@@ -3522,8 +3522,12 @@ async def run_agent_stream(
             # Safety net: if streaming raises BEFORE emitting anything, fall
             # through to the proven Tier 2 batch path below.
             if not _is_copilot_sdk and hasattr(agent, "run"):
-                _native_input = _compose_maf_run_input(
+                # WS-43t1: flag OFF returns today's string and no provider.
+                # Flag ON returns structured turns, and a context provider
+                # that _agent_for_run attaches to THIS run only (§15.9.5).
+                _native_input, _native_ctx = _compose_maf_run(
                     agent_name, run_id, event_payload, integrations,
+                    native=True,
                 )
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
@@ -3557,7 +3561,7 @@ async def run_agent_stream(
                     async with contextlib.AsyncExitStack() as _nstack:
                         if hasattr(type(agent), "__aenter__"):
                             await _nstack.enter_async_context(agent)
-                        _agen = agent.run(
+                        _agen = _agent_for_run(agent, _native_ctx).run(
                             _native_input, stream=True,
                         ).__aiter__()
                         # Race the agent's next update against the injected-tool
@@ -4808,9 +4812,19 @@ async def run_agent_stream(
                     # model's real window, current-turn dedup, system context
                     # preserved, and degrades to the composed string when there's
                     # no history to structure.
-                    _run_input = _compose_maf_run_input(
-                        agent_name, run_id, event_payload, integrations)
-                    response = await agent.run(_run_input)
+                    #
+                    # ⚠️ H-216: until WS-43t1 the structured branch never ran,
+                    # and every turn here got the string. A NATIVE agent that
+                    # fell back here from Tier 1 now takes the same flag-gated
+                    # input as Tier 1. A Copilot SDK agent, or any agent with
+                    # the flag OFF, still gets the string and runs on itself.
+                    _run_input, _run_ctx = _compose_maf_run(
+                        agent_name, run_id, event_payload, integrations,
+                        native=not _is_copilot_sdk,
+                    )
+                    response = await _agent_for_run(agent, _run_ctx).run(
+                        _run_input,
+                    )
                 return getattr(response, "text", "") or ""
 
             run_task = asyncio.create_task(_run_task())
@@ -5405,62 +5419,203 @@ def _compose_maf_run_input(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
 ) -> Any:
-    """Build the input passed to a native MAF ``agent.run(...)`` call.
+    """Build the input of a MAF ``agent.run(...)`` with ``MAF_NATIVE_SESSIONS`` OFF.
 
-    Mirrors the Tier 2 batch path's message construction so the streaming and
-    batch paths feed the agent identically:
+    It is the composed prompt string of :func:`_build_event_message`, which
+    folds in the integrations, ``memory_context``, ``system_context`` and the
+    budgeted history. It is this string on every run, with or without history.
 
-    * History present → a structured ``list[Message]`` (the caller's
-      ``system_context`` as a leading system message, then the budgeted prior
-      turns, then the current user turn) so the model sees full turn structure.
-    * Otherwise → the composed prompt string from :func:`_build_event_message`
-      (which already folds in memory_context + system_context + history).
+    H-216: this function used to carry a structured branch. It built
+    ``Message(role=..., content=...)``, MAF 1.19 refused the keyword, and the
+    ``except`` returned this same string. So every native turn ran on the
+    string, and the flag-off path keeps exactly that. The repaired structured
+    branch lives in :func:`_compose_maf_run`, behind the flag (WS-43t1,
+    ``maf_coding_engine.md`` §15.9).
 
-    C2: the structured-message branch routes through the ONE server-side
-    assembler ``acb_llm.assemble_run_context`` — token-budgeted (fit to the
-    resolved model's window) + current-turn dedup + DB-rebuild-when-empty —
-    instead of the old blind ``[-20:]`` count cap.  The batch path
-    (:func:`run_agent`) calls the same assembler, so streaming and batch feed
-    the model identically (the drift the two duplicated slicers risked).
-
-    This is deliberately NOT gated on BYOK any more. It used to be, which meant
-    a non-BYOK native-MAF agent's STREAMING turn silently fell back to the flat
-    string prompt while its own BATCH turn got the token-budgeted assembly — the
-    same agent remembered a different amount of the conversation depending on
-    whether it streamed. The assembler already degrades safely when the model is
-    unknown (no token fit, just a turn cap), so there is nothing BYOK-specific
-    about wanting real turn structure.
+    ⚠️ The assembler still runs when there is history, and its result is
+    discarded, as it always was. Two things read what the call leaves behind:
+    the Tier 1 "Long conversation" notice reads ``last_fit_stats``, and the
+    route's ``_history_loader`` is called. Dropping the call would change a
+    flag-off run.
     """
     message = _build_event_message(agent_name, run_id, event_payload, integrations)
     history_msgs = event_payload.get("messages") or []
-    current_msg_text = (
-        event_payload.get("message") or event_payload.get("user_query") or ""
-    )
-    system_context = event_payload.get("system_context") or ""
-    # Rebuild history from the store when the caller sent none (API/webhook) —
-    # a loader is threaded in via the payload by the route layer when it has a
-    # thread_id; absent one, this is a no-op and behaviour is unchanged.
     _loader = event_payload.get("_history_loader")
     if history_msgs or _loader:
         try:
             from acb_llm import assemble_run_context
-            from agent_framework import Message as _MAFMsg
             _model = _active_run_model.get() or ""
-            assembled = assemble_run_context(
-                system_context=system_context,
+            assemble_run_context(
+                system_context=event_payload.get("system_context") or "",
                 history=history_msgs,
-                current_message=current_msg_text,
+                current_message=(
+                    event_payload.get("message")
+                    or event_payload.get("user_query")
+                    or ""
+                ),
                 model=_model,
                 max_output_tokens=_reserved_output_tokens(_model),
                 history_loader=_loader if callable(_loader) else None,
             )
-            maf_messages = [
-                _MAFMsg(role=m["role"], content=m["content"]) for m in assembled
-            ]
-            return maf_messages if maf_messages else message
         except Exception:
-            return message
+            pass
     return message
+
+
+def _native_sessions_enabled() -> bool:
+    """The one reader of ``MAF_NATIVE_SESSIONS`` (``maf_native_sessions``).
+
+    Default OFF, and OFF means no change (``maf_coding_engine.md`` §15.9.8).
+    A settings failure reads as OFF.
+    """
+    try:
+        return bool(getattr(get_settings(), "maf_native_sessions", False))
+    except Exception:
+        return False
+
+
+def _compose_maf_run(
+    agent_name: str,
+    run_id: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    *,
+    native: bool,
+) -> tuple[Any, Any]:
+    """Build the input of a MAF run, and the provider of its context.
+
+    Returns ``(run_input, provider)``. Call ``run`` on
+    ``_agent_for_run(agent, provider)``, never on the agent with the input
+    alone, or the run loses its memory.
+
+    * ``native`` False (a Copilot SDK agent), or ``MAF_NATIVE_SESSIONS`` OFF
+      (the default): ``(_compose_maf_run_input(...), None)``. Today's string,
+      byte for byte, and the agent itself.
+    * ON, with history (the browser's ``messages`` or the route's loader): the
+      earlier turns and the current turn as a ``list[Message]``, each built
+      with ``Message(role=..., contents=[...])`` (H-216). The per-turn context
+      (integrations, ``memory_context``, ``system_context`` and so the
+      persona) goes to a per-run :class:`RunContextProvider`, NEVER into the
+      message list. WS-43t2 stores the input messages, and the member's memory
+      must never be stored (§15.9.5).
+    * ON, with no history, or on any failure: the string and no provider. The
+      string already carries the memory.
+
+    The bound (§15.9.6): ``assemble_run_context`` fits the model's window, with
+    the context block counted, and :func:`_cap_structured_history` then holds
+    the earlier turns to ``_HISTORY_MAX_TOKENS``. So the history is capped at
+    the smaller of the two, the same minimum the string path takes.
+    """
+    message = _compose_maf_run_input(agent_name, run_id, event_payload, integrations)
+    if not native or not _native_sessions_enabled():
+        return message, None
+    history_msgs = event_payload.get("messages") or []
+    _loader = event_payload.get("_history_loader")
+    if not (history_msgs or _loader):
+        return message, None
+    current_msg_text = (
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    )
+    try:
+        from acb_llm import assemble_run_context
+        from acb_llm.prompt_cache import CACHE_BREAK
+        from agent_framework import Message as _MAFMsg
+
+        from orchestrator._native_run_context import RunContextProvider
+
+        context_text = _run_context_text(event_payload, integrations).strip()
+        _model = _active_run_model.get() or ""
+        # The context block goes in as the system context so the window fit
+        # counts it. It then leaves the list and travels by the provider.
+        assembled = assemble_run_context(
+            system_context=context_text,
+            history=history_msgs,
+            current_message=current_msg_text,
+            model=_model,
+            max_output_tokens=_reserved_output_tokens(_model),
+            history_loader=_loader if callable(_loader) else None,
+        )
+        fitted_context = ""
+        turns = list(assembled)
+        if context_text and turns and turns[0].get("role") == "system":
+            fitted_context = str(turns.pop(0).get("content") or "")
+        turns = _cap_structured_history(
+            turns, _model, has_current=bool(current_msg_text.strip()),
+        )
+        if not turns:
+            return message, None
+        maf_messages = [
+            _MAFMsg(role=m["role"], contents=[m["content"]]) for m in turns
+        ]
+        provider = (
+            RunContextProvider(f"{CACHE_BREAK}\n{fitted_context}")
+            if fitted_context else None
+        )
+        return maf_messages, provider
+    except Exception as exc:
+        _log.warning(
+            "executor.native_structured_input_failed",
+            agent=agent_name,
+            run_id=run_id,
+            error=str(exc)[:300],
+        )
+        return message, None
+
+
+def _agent_for_run(agent: Any, provider: Any) -> Any:
+    """The object a native run calls ``run`` on.
+
+    No provider: *agent* itself, unchanged (and the flag-off path never
+    imports the provider module). A provider: a per-run copy that carries it,
+    so the shared agent object never holds one run's context
+    (``orchestrator._native_run_context.agent_for_run``, WS43-F20).
+    """
+    if provider is None:
+        return agent
+    from orchestrator._native_run_context import agent_for_run
+
+    return agent_for_run(agent, provider)
+
+
+def _cap_structured_history(
+    turns: list[dict[str, Any]], model: str, *, has_current: bool,
+) -> list[dict[str, Any]]:
+    """Hold the earlier turns of a structured run input to ``_HISTORY_MAX_TOKENS``.
+
+    ``maf_coding_engine.md`` §15.9.6: the history is capped at the smaller of
+    the window budget and ``_HISTORY_MAX_TOKENS``. ``assemble_run_context``
+    already fitted the window, so this applies the other half, as
+    :func:`_history_char_budget` does for the string path. An uncapped history
+    on a 1M-token window is a cost bug.
+
+    *turns* ends with the current user turn when *has_current*, and that turn
+    is never dropped. The oldest earlier turns drop first. One earlier turn
+    that alone passes the cap is trimmed, not dropped, so the turn right
+    before the current one survives.
+    """
+    from acb_llm import compress_message_content, count_message_tokens
+
+    if has_current and turns:
+        history, tail = list(turns[:-1]), [turns[-1]]
+    else:
+        history, tail = list(turns), []
+    for _ in range(_HISTORY_MAX_MESSAGES + 8):
+        if not history:
+            break
+        tokens = count_message_tokens(history, model)
+        if tokens <= _HISTORY_MAX_TOKENS:
+            break
+        if len(history) > 1:
+            history.pop(0)
+            continue
+        only = history[0]
+        content = str(only.get("content") or "")
+        target = max(200, int(len(content) * _HISTORY_MAX_TOKENS / tokens * 0.9))
+        shrunk = compress_message_content(content, target)
+        if len(shrunk) >= len(content):
+            break  # no progress left to make
+        history = [{**only, "content": shrunk}]
+    return history + tail
 
 
 # ── History budgeting for the string-prompt path ──────────────────────────
@@ -5593,20 +5748,17 @@ def _render_history_block(
     return "\n".join(picked)
 
 
-def _build_event_message(
-    agent_name: str,
-    run_id: str,
+def _context_preamble_parts(
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
-) -> str:
-    """Compose a prompt string from an event payload dict.
+) -> list[str]:
+    """The per-turn context blocks, in the order the string prompt carries them.
 
-    Handles both interactive chat events (payload has ``message`` key) and
-    webhook events (arbitrary payload keys).
-
-    When ``messages`` is present in the payload (chat history from the frontend),
-    it is prepended as conversation context so the agent has full continuity
-    regardless of which model/runtime processed previous turns.
+    The connected and missing integrations, then ``memory_context``, then
+    ``system_context`` (which carries the persona). :func:`_build_event_message`
+    puts the history and the current turn after them. The structured path of
+    WS-43t1 sends the same blocks through its per-run context provider
+    (:func:`_run_context_text`). One builder, so the two paths cannot drift.
     """
     integration_warnings: dict[str, str] = event_payload.get("integration_warnings", {})
     parts: list[str] = []
@@ -5622,11 +5774,6 @@ def _build_event_message(
             "When they do, output: <<<SETUP:service_name:ENV_VAR_NAME=value>>>"
         )
 
-    # Conversation history — prepend prior turns so model switching mid-chat
-    # preserves full context even when switching between CLI / BYOK / MAF paths.
-    history: list[dict[str, str]] = event_payload.get("messages") or []
-    current_msg = event_payload.get("message") or event_payload.get("user_query") or ""
-
     # Memory context (pre-enriched by the route handler from Mem0) —
     # inject as a system-level preamble so Tier 2 agents also benefit.
     memory_ctx = event_payload.get("memory_context") or ""
@@ -5639,6 +5786,43 @@ def _build_event_message(
     system_ctx = event_payload.get("system_context") or ""
     if system_ctx:
         parts.append("## Current context\n" + system_ctx)
+    return parts
+
+
+def _run_context_text(
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+) -> str:
+    """The context block of a structured native run (WS-43t1, §15.9.5).
+
+    The same blocks the string prompt leads with, joined the same way. It
+    reaches the model through the per-run context provider, never as a
+    message, so it never enters a stored session.
+    """
+    return "\n".join(_context_preamble_parts(event_payload, integrations))
+
+
+def _build_event_message(
+    agent_name: str,
+    run_id: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+) -> str:
+    """Compose a prompt string from an event payload dict.
+
+    Handles both interactive chat events (payload has ``message`` key) and
+    webhook events (arbitrary payload keys).
+
+    When ``messages`` is present in the payload (chat history from the frontend),
+    it is prepended as conversation context so the agent has full continuity
+    regardless of which model/runtime processed previous turns.
+    """
+    parts: list[str] = _context_preamble_parts(event_payload, integrations)
+
+    # Conversation history — prepend prior turns so model switching mid-chat
+    # preserves full context even when switching between CLI / BYOK / MAF paths.
+    history: list[dict[str, str]] = event_payload.get("messages") or []
+    current_msg = event_payload.get("message") or event_payload.get("user_query") or ""
     if history:
         _rendered = _render_history_block(
             history, current_msg, _active_run_model.get() or "",
