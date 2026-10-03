@@ -5033,8 +5033,10 @@ changed accent.
   better question lists each mailbox and marks the separate one "(separate)".
 - **Two fence gaps.** The bulk scope `pooled_only=not req.message_ids` has a fence for the sender
   filter only, not for `folder` or `older_than_days`. Four answers of the item 3 tools have no
-  fence for the mailbox name: `run_rules` with scope "new", the install without a reset,
-  "already installed", and the update path of `save_knowledge`.
+  fence for the mailbox name:
+  - `run_rules` with scope "new"
+  - the install without a reset, and "already installed"
+  - the update path of `save_knowledge`
 - **Doc slips.** The T8g-1 notes count 21 R8 cases, but 9 are R8 and 12 are hermetic. The T8g-1
   Scope line names `list_senders` only, but round 1 also changes `bulk_action`.
 
