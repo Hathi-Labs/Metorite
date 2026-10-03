@@ -3701,6 +3701,12 @@ line — never reclaim a number by deleting the other entry.
   string prompt, and the token-budgeted `assemble_run_context` result is
   never used. This predates PR #585. Build each message with `contents=`, and
   add a test that drives the real `Message` class.
+- ⚠️ **A naive repair drops the member's memory.** Today the history,
+  `memory_context` and the persona reach the model only through the string
+  fallback, `_build_event_message`. The structured branch passes
+  `system_context` and no `memory_context`. So carry `memory_context` into
+  the structured branch in the same change. A test must show that it
+  reaches the model after the repair.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 

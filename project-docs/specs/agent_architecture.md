@@ -731,7 +731,9 @@ Four things worked only on the Copilot path. None of them is a blocker:
 2. **Tier 1 sends earlier turns as text only.** No SDK session holds the tool results. So a
    confirm turn ("yes") does not see the ids in the tool output of the turn before (H-215).
    The structured branch of `_compose_maf_run_input` also never runs, because MAF 1.19
-   refuses `Message(role=, content=)` (H-216).
+   refuses `Message(role=, content=)` (H-216). So `assemble_run_context` does not supply the
+   history today. The history, `memory_context` and the persona reach the model only through
+   the string fallback, `_build_event_message`.
 3. **Registry MCP servers do not reach these two now.** `merge_mcp_servers` is a no-op on
    MAF (WS-8c). So an `mcp_servers` row with agent scope `*` reaches only Copilot agents
    (H-217).
