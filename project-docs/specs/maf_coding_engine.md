@@ -1270,7 +1270,8 @@ nothing builds it on the box.
   them with `--require-hashes --only-binary=:all:`.
 - The image sets `HOME=/tmp` and ends on `USER 1000:1000`. A uid with no
   passwd entry gets `HOME=/`, and `--read-only` makes that dir unwritable.
-- The image is about 656 MB on disk and about 205 MB compressed.
+- The image is 601 294 266 bytes on disk, as the GitHub runner measured it,
+  and about 205 MB compressed.
 
 **The fence.** The unit job of `pr-check.yml` runs 44 static tests. Each checker also
 runs on bad input, so a checker that goes blind fails. The 4 `sandbox_docker`
