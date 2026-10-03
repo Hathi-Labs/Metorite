@@ -32,6 +32,10 @@ the boundaries are these:
    A per-run chat middleware takes them out of each model request, and a
    per-run function middleware refuses a call to one. The file tools do
    their work, with the safe opener and the lock (review P1, fix round 1).
+   The host web tools ``web_search`` and ``fetch_page`` are withheld the same
+   way (:data:`HOST_NETWORK_TOOLS`). They run on the host with its network,
+   so a model that an injection steers could put member data in a URL or a
+   query. A covered run has no network at all (§16.3, the P3 review).
 6. The container sees ``/workspace`` READ-ONLY, except its own output folder
    and its run data. A skill loads, and its script runs, only for the member
    who made it. So no member's code or skill text reaches another member's
@@ -81,6 +85,7 @@ from acb_skills.write_artifact import announce_artifact, artifact_context
 _log = get_logger("acb_skills.sandbox_tools")
 
 __all__ = [
+    "HOST_NETWORK_TOOLS",
     "PROJECTS_AGENT",
     "WITHHELD_HOST_TOOLS",
     "LockedSkillsSource",
@@ -102,14 +107,25 @@ _SKILLS_REL = "agent-data/skills"
 #: round 1). Each opens the working dir with plain path calls and no dir lock,
 #: so it could follow a link that a container made, or race an exec. The file
 #: tools do the same work with the safe opener and the lock.
-WITHHELD_HOST_TOOLS = frozenset({
+_HOST_FILE_TOOLS = frozenset({
     "write_artifact", "share_artifact", "save_note", "recall_notes",
     "get_errors", "run_diagnostics",
 })
+#: The host web tools that a covered run does not hold (§16.3, the P3
+#: review). The core floor gives them to every agent, and they run on the
+#: HOST with its network. Member data sits in ``.run/`` and in the model's
+#: context, so a URL or a search query could carry it out of the platform.
+HOST_NETWORK_TOOLS = frozenset({"web_search", "fetch_page"})
+WITHHELD_HOST_TOOLS = _HOST_FILE_TOOLS | HOST_NETWORK_TOOLS
 WITHHELD_ANSWER = (
     "{name} is off in this chat, because its commands run in a sandbox. Use the "
     "file_access_* tools for files: outputs/ is this chat's own output folder, "
     "and a file written there shows as a card."
+)
+NETWORK_WITHHELD_ANSWER = (
+    "{name} is off in this chat. A chat whose commands run in a sandbox has no "
+    "web access, so no data of this chat leaves the platform. Work with the "
+    "files of this chat."
 )
 
 NETWORK_OFF = "Network access is off on this platform."
@@ -403,6 +419,7 @@ def _file_instructions() -> str:
         "chat's own output folder. `.run/` holds the data files of this run, "
         "and it is deleted when the run ends. A command can write only "
         "`outputs/` and `.run/`."
+        "\n- This chat has no web access: `web_search` and `fetch_page` are off."
     )
 
 
@@ -510,7 +527,8 @@ class RefuseHostTools(FunctionMiddleware):
     async def process(self, context: Any, call_next: Any) -> None:
         name = getattr(getattr(context, "function", None), "name", "") or ""
         if name in WITHHELD_HOST_TOOLS:
-            context.result = WITHHELD_ANSWER.format(name=name)
+            answer = NETWORK_WITHHELD_ANSWER if name in HOST_NETWORK_TOOLS else WITHHELD_ANSWER
+            context.result = answer.format(name=name)
             return
         await call_next()
 
