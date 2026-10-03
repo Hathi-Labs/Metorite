@@ -21,6 +21,7 @@ import {
   RuleActionType,
 } from "../../../lib/types";
 import { useEmailStore } from "../../../lib/emailStore";
+import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
 import { isPendingReview, PatternRow } from "./SettingsTab";
 import { LabeledToggle, Modal } from "../ui";
 import {
@@ -272,6 +273,7 @@ export function RulesTab({
 }) {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [rulesLoad] = useState(loadGuard);
   const [editing, setEditing] = useState<AutomationRule | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -358,12 +360,15 @@ export function RulesTab({
       return;
     }
     setLoading(true);
-    listRules(accountId)
-      .then(setRules)
-      .catch((e) => setError(e.message || "Failed to load rules"))
-      .finally(() => setLoading(false));
+    // Only the newest load lands, so the rules of the mailbox before a pick
+    // never show under the name of the next one (EM-T8f-2 review F1).
+    void guardedLoad(rulesLoad, () => listRules(accountId), {
+      data: setRules,
+      error: (e) => setError(e.message || "Failed to load rules"),
+      done: () => setLoading(false),
+    });
     loadPatterns();
-  }, [accountId, loadPatterns]);
+  }, [accountId, loadPatterns, rulesLoad]);
 
   const missingDefaults = PRESET_RULES.some(
     (p) => !rules.some((r) => r.name.toLowerCase() === p.name.toLowerCase())

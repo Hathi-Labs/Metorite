@@ -113,7 +113,11 @@ export interface EmailDraft {
 export interface EmailAccount {
   id: string;
   email_address: string;
+  /** The raw stored label. Never drawn: two Outlook mailboxes share "Outlook". */
   label: string;
+  /** The label to draw (WS-17 EM-T8b). The From picker names a mailbox as
+   *  "label · address" from it (EM-T8f-2). */
+  display_label?: string | null;
   is_default: boolean;
 }
 

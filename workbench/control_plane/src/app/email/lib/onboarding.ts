@@ -21,7 +21,7 @@
 
 import { autoDraftRepliesOn } from "./assistantSettings";
 import { isFirstSyncPending } from "./connect";
-import type { AssistantSettings, AutomationRule, EmailAccount } from "./types";
+import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
 
 // ── The stage ───────────────────────────────────────────────────────────────
 
@@ -342,6 +342,9 @@ export interface RulesStepApi {
   saveAssistantSettings(settings: AssistantSettings): Promise<AssistantSettings>;
   /** The PATCH of item 11. It returns the server's copy of the account. */
   finishOnboarding(accountId: string): Promise<EmailAccount>;
+  /** "Copy the rules of <label>" (EM-T8f-2, D-EM-24): `POST /email/rules/copy`.
+   *  The step guards it with `ruleCopier` in `lib/mailboxSettings.ts`. */
+  copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult>;
 }
 
 /**

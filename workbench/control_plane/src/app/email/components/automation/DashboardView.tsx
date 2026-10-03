@@ -16,6 +16,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useEffect, useState, useCallback } from "react";
 import { getDigest, resolveThread, sendDigest, snoozeEmail } from "../../lib/api";
 import { DigestData, DigestThread } from "../../lib/types";
+import { guardedLoad, loadGuard } from "../../lib/mailboxSettings";
 import { DigestSettingsDialog } from "./DigestSettingsDialog";
 
 interface DashboardViewProps {
@@ -38,6 +39,7 @@ export function DashboardView({
   const [period, setPeriod] = useState<"day" | "week">("day");
   const [data, setData] = useState<DigestData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [digestLoad] = useState(loadGuard);
   const [sending, setSending] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,11 +52,14 @@ export function DashboardView({
     }
     if (!quiet) setLoading(true);
     setError(null);
-    getDigest(accountId, period)
-      .then(setData)
-      .catch((e) => setError(e.message || "Failed to build dashboard"))
-      .finally(() => setLoading(false));
-  }, [accountId, period]);
+    // Only the newest load lands, so the dashboard of the mailbox before a
+    // pick never shows under the name of the next one (EM-T8f-2 review F1).
+    void guardedLoad(digestLoad, () => getDigest(accountId, period), {
+      data: setData,
+      error: (e) => setError(e.message || "Failed to build dashboard"),
+      done: () => setLoading(false),
+    });
+  }, [accountId, period, digestLoad]);
 
   useEffect(() => load(), [load]);
 

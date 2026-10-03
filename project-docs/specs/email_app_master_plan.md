@@ -4291,6 +4291,103 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 
 ##### EM-T8f-2 — the settings UI (after EM-T8f-1)
 
+**Status.** 🔨 BUILT, not merged (2026-10-03), on the branch `email-settings-ui`. The branch sits
+on `email-mailbox-settings` (EM-T8f-1), because this slice calls the copy route and reads
+`created_at`. No migration and no backend change.
+
+**As-built notes.**
+
+- **The header (item 1).** `AutomationHeader` in `AutomationView.tsx` is the one header of the four
+  automation views. The page renders one `AutomationView` for desktop and for mobile, so the header
+  shows on both. Its second line names the mailbox as label and address.
+- **The picker.** With two or more mailboxes the header draws the chip and a `SelectButton` of each
+  mailbox. The picker has no All inboxes option. With one mailbox the header shows the name as
+  text, with no chip and no picker (§11.0). §11.4 says "Always", so the name shows for one mailbox.
+- **The pick.** `pickSettingsMailbox` clears the Process past date and calls the `selectAccount` of
+  the store. A pick of the mailbox in view, or of an id that is not a mailbox, does nothing.
+- **The copy (item 2).** For each other mailbox, the rules step shows a "Copy the rules of <label>"
+  button beside the presets. It shows them only before an enabled rule exists, as D-EM-24 says.
+  With two or more mailboxes the step shows the chip and the address of its own mailbox.
+- **No second copy.** `ruleCopier` refuses a start while a copy runs, and a pair that copied
+  before. The check and the mark are one synchronous call, so a double click starts one copy. A
+  failed copy does not count. The step then reads the rules again, and a copy that landed moves the
+  step on.
+- **The answer.** `copyReport` names the copied rules, each new name, and each rule that the copy
+  left out, with its reason in plain words. The test reads the `LEFT_OUT_*` reasons of
+  `rule_copy.py`, and it fails on a reason with no words.
+- **The disconnect (item 3).** `nextDefaultAfter` orders by `createdAt` as text, then by `id`. A
+  missing `createdAt` sorts last, as NULL does in an ascending order of Postgres. The dialog names
+  the mailbox as "label · address". When that mailbox is the default, the dialog names the new
+  default.
+- **The store.** The store marks the same mailbox as the default after the removal. This fixes the
+  STATUS DRIFT of the audit. The dialog holds its names while the disconnect runs. Without the
+  hold, the store drops the mailbox first, and the sentence on the new default disappears during
+  the close.
+- **Notes (item 4).** `notesFromOptions` names each mailbox through `chatMailboxName`, the one rule
+  for "label · address". The From picker is now `SelectButton`. This slice removes the native
+  `<select>` and its `SELECT_DEBT` entry in `conformance.test.ts`.
+
+**Outside the stated scope.**
+
+- `onboardingRules.test.ts`: the fake `RulesStepApi` gets `copyRules`.
+- `src/lib/theme/conformance.test.ts`: this slice removes the `SELECT_DEBT` entry of
+  `FollowupEmailModal.tsx`. The ratchet fails a file that improved until its entry changes.
+- `src/app/notes/lib/types.ts`: the account type of Notes gets the optional `display_label`.
+
+**Narrowed.**
+
+- The automation drawer on mobile keeps `showMailbox={false}`. The header picker is the picker on
+  mobile (MB-11).
+- `FollowupEmailModal.tsx` keeps its own overlay. Only its From picker moved to the house control.
+- Nobody did the look check of CLAUDE.md §4 (light mode, compact density, a changed accent). The
+  agent had no browser. A reviewer must do it.
+
+**Fences.** `src/app/email/lib/mailboxSettings.test.ts` names the four fences of this slice.
+
+**Mutation run.**
+
+- The first run found one gap. The header test read the markup, and the chip holds the address in
+  its `title`, so a header with no visible address passed. The fence now reads the visible text.
+- The final run killed 33 of 33 mutants: 8 for the header, 11 for the copy, 11 for the disconnect
+  and 3 for Notes. Three of them edited `transport/accounts.py`. The script restored each file and
+  checked its hash.
+
+**Verification (2026-10-03).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/app/notes src/components src/lib/theme` gave 49 files and 917
+tests passed. The suites of Integrations, Organization and Chat import `app/email/lib`, and they
+gave 8 files and 92 tests passed.
+
+**Review fix round 1 (2026-10-03).** An independent verifier checked `5d82548a`. It found no P0
+and no P1. This round fixes its four P2 findings. The branch still sits on `7b77980d`.
+
+| Finding | Fix | Mutants | The test that goes red |
+|---|---|---|---|
+| F1: an answer for A that lands after a pick of B shows under "for B". A toggle there then changes A. | `key={accountId}` on the view body. A `guardedLoad` in the loads of `RulesTab`, `DashboardView` and `BulkUnsubscribeView`. | R1 to R8 | `an answer for A that lands after a pick of B is never shown`, `the view body has the key of the mailbox`, `each load of the three views goes through guardedLoad` |
+| F2: no fence on the pick in Notes | `FollowupFromField` holds no hook. `followupSendRequest` makes the body of Send. | N4 to N7 | `a pick in the From field changes the account_id that Send posts` |
+| F3: no fence on the hold of the dialog | `holdNames` decides the names. | D12, D13 | `the names hold while busy, when the list changes under the dialog` |
+| F4: no fence on the end of a copy | `runRuleCopy` gives the answer, the failure and the read of the rules to the step. | C12 to C17 | the four tests of `the end of a copy (review F4)` |
+
+- **The key has a cost.** A pick resets the tab of AI Settings to Rules, and it closes a dialog that
+  is open in the view. The state of the views belongs to one mailbox, so the remount loses nothing
+  else.
+- **The key alone covers two loads.** `loadPatterns` of `RulesTab` and `loadMore` of the Email
+  Cleaner have no guard of their own.
+- **The fences.** The tests call each hook-free component as a function, so the handlers on its
+  elements are the real ones. The links from a container to its own state stay source scans,
+  because vitest here has no DOM.
+- **Found, and not fixed: Integrations.** `integrations/page.tsx:1046-1057` disconnects through a
+  native `confirm("Remove this email account?")`. It names no mailbox and no new default. This is
+  edge case 18 on a second surface. The tab reads its own shape of an account, with no
+  `isDefault`, `displayLabel` or `createdAt`, and `emailRemove.test.ts` pins its `handleDelete`. The
+  fix is more than 30 lines, so it needs a slice of its own.
+- **Mutation run.** The run killed 53 of 53 mutants: the 33 of the build and 20 new ones. D11 has
+  a new anchor, because the hold moved into `holdNames`. N4, D12, C12 and C14 match the four
+  survivors that the verifier named, and the fences now kill all four. The script restored each
+  file and checked its hash.
+- **Verification.** In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run` over
+  `src/app/email`, `src/app/notes`, `src/components`, `src/lib/theme`, `src/app/integrations`,
+  `src/app/settings/organization` and `src/app/chat` gave 57 files and 1020 tests passed.
+
 **Scope.** `components/automation/AutomationView.tsx`, `page.tsx`, `OnboardingRulesStep.tsx`,
 `lib/onboarding.ts`, `DisconnectDialog.tsx`, `lib/connect.ts`, `lib/emailStore.ts`, `lib/api.ts`,
 `lib/types.ts`, a new `lib/mailboxSettings.ts`, and

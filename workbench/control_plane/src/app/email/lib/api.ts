@@ -6,7 +6,7 @@ import {
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
   VoiceProfile, VoiceProfilePreview, VoiceProfileBuildStatus,
-  ContactCard, SenderStatus,
+  ContactCard, SenderStatus, RuleCopyResult,
 } from "./types";
 import { mapMailAppInfo, type MailAppInfo } from "./connect";
 
@@ -87,6 +87,9 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     importPhase: optionalString(raw.import_phase),
     importCount: optionalCount(raw.import_count),
     importEstimate: optionalCount(raw.import_estimate),
+    // EM-T8f-1. ISO text with microseconds. The disconnect dialog names the
+    // next default from it (EM-T8f-2).
+    createdAt: optionalString(raw.created_at),
   };
 }
 
@@ -1406,6 +1409,38 @@ export async function installPresetRules(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+}
+
+/**
+ * Copy the enabled rules of one mailbox of the member to another (EM-T8f-1,
+ * D-EM-24). The copy is one transaction on the gateway. A second call copies
+ * each rule again as "(copy)", so the caller guards it (`ruleCopier` in
+ * `lib/mailboxSettings.ts`).
+ */
+export async function copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>("/email/rules/copy", {
+    method: "POST",
+    body: JSON.stringify({ from_account_id: fromAccountId, to_account_id: toAccountId }),
+  });
+  return mapRuleCopyResult(raw ?? {});
+}
+
+/** The answer of the copy, snake case to camel case. A field that is not a
+ *  list gives an empty list, and an entry with no name is dropped. */
+function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const text = (v: unknown): string => (typeof v === "string" ? v : "");
+  const entries = (v: unknown) =>
+    list(v).filter((e): e is Record<string, unknown> => !!e && typeof e === "object");
+  return {
+    copied: list(raw.copied).map(text).filter(Boolean),
+    renamed: entries(raw.renamed)
+      .map((e) => ({ name: text(e.name), copiedAs: text(e.copied_as) }))
+      .filter((e) => e.name && e.copiedAs),
+    leftOut: entries(raw.left_out)
+      .map((e) => ({ name: text(e.name), reason: text(e.reason) }))
+      .filter((e) => e.name),
+  };
 }
 
 /**

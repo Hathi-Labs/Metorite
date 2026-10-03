@@ -182,6 +182,11 @@ function fakeApi(settings: AssistantSettings) {
       calls.push(["finishOnboarding", id]);
       return { id, onboardingDone: true } as EmailAccount;
     },
+    // EM-T8f-2: the copy of rules. `mailboxSettings.test.ts` fences it.
+    copyRules: async (from, to) => {
+      calls.push(["copyRules", [from, to]]);
+      return { copied: [], renamed: [], leftOut: [] };
+    },
   };
   return { api, calls };
 }
