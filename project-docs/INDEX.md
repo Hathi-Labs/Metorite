@@ -15,7 +15,7 @@ D28 and bind every PR), then **§2** (the dispatch board — ordering, states,
 gates). ⚠️ **Start at §2.0 if you want the shape of the work rather than a ticket** — it is the product roadmap (M0…M4) over the same rows, added 2026-08-26. The board row names the **owning spec**; build
 only from owning specs listed **ACTIVE** here. Anything in DEFERRED or
 HISTORICAL is banner-marked and dispatches nothing. `work_plan.md` §6 is the
-owner-gate registry an agent must refuse by name. Decisions (**D1–D83**, current 2026-10-03, with D74 reserved by `credit_pricing.md` — this read "D1–D54" until then) live in
+owner-gate registry an agent must refuse by name. Decisions (**D1–D84**, current 2026-10-03, with D74 reserved by `credit_pricing.md` — this read "D1–D54" until then) live in
 `work_plan.md` §3 and are never re-litigated in specs.
 
 **The two documentation roots:** `project-docs/` (this folder) = plan +
@@ -65,7 +65,7 @@ limitations). Do not add product specs to `docs/`.
 | `specs/workflows_app.md` | WS-11 |
 | `specs/multi_agent_orchestration.md` | WS-12 — **Phase 4 ONLY** (D6); rest superseded |
 | `specs/agent_architecture.md` | WS-8 |
-| `specs/maf_coding_engine.md` | **WS-43** — **the MAF coding engine and the sandbox terminal** (owner decision, 2026-10-03). Records **D82** (`code_task` runs on a MAF harness session, not on the Copilot SDK, which amends `agent_architecture.md` §11) and **D83** (T2 is un-parked for the sandbox terminal only, which amends D16 and D10.1). One sandbox broker owns the Docker socket. One container serves one organization, agent and thread. It has no network by default, and only an approved request opens an allowlist proxy. Spec only: WS-43a (the eval) comes first, and every slice ships dark. ⚠️ D83 does not un-park P5-c, P5-d or the pooled-cutover T2. |
+| `specs/maf_coding_engine.md` | **WS-43** — **the MAF coding engine and the sandbox terminal** (owner decision, 2026-10-03). Records **D82** (`code_task` runs on a MAF harness session, not on the Copilot SDK, which amends `agent_architecture.md` §11) and **D83** (T2 is un-parked for the sandbox terminal only, which amends D16 and D10.1). One sandbox broker owns the Docker socket. One container serves one organization, agent and thread. It has no network by default, and only an approved request opens an allowlist proxy. Spec only: WS-43a (the eval) comes first, and every slice ships dark. ⚠️ D83 does not un-park P5-c, P5-d or the pooled-cutover T2. 🆕 **D84 (2026-10-03, §15): the GitHub Copilot SDK leaves the platform.** WS-43k to WS-43s plan every other Copilot use and the removal. WS-43t1 and WS-43t2 (native session persistence, §15.9) come first, and the confirm-turn moves wait on their production soak. |
 | `specs/memory_architecture.md` | WS-9 |
 | `specs/observability_e2.md` | WS-6 |
 | `specs/permissions_sandbox_b6.md` | WS-3 |

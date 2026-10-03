@@ -578,6 +578,13 @@ playbook, not as a vector row nobody can see.
 > text below is the record of 2026-07-26, so its "Copilot writes code" wording
 > is history. WS-43h also moves app-builder (§11.3) onto the MAF harness. The
 > owning spec is [`maf_coding_engine.md`](maf_coding_engine.md), board row WS-43.
+>
+> ⚠️ **Amended 2026-10-03 by D84 (owner decision).** The Copilot SDK leaves the
+> platform. "Copilot becomes a tool" is now "Copilot goes": self-mutation, the
+> root `metorite` agent and every agent that a repo registers move to MAF. Then
+> the packages `github-copilot-sdk` and `agent-framework-github-copilot` leave
+> the lock. An agent from a repo must build a MAF `Agent`. The plan is
+> [`maf_coding_engine.md`](maf_coding_engine.md) §15.
 
 **Decision: there is exactly one agent runtime, and `runtime` stops being a variable.**
 
@@ -712,8 +719,8 @@ task-manager needs something Tier 1 does not give yet, so the supervisor split t
   `my_tasks_clarify` proposal) needs the ids in the tool output of the turn before. Tier 1
   sends earlier turns as text only, so a MAF task-manager fetches again and can apply a
   proposal that the member never saw. The Copilot session keeps the tool results. The fix is
-  a new slice: a MAF `AgentSession` or history provider, kept for each thread. Its factory,
-  dependency and `github-copilot` label are the origin/main ones.
+  WS-43t1 and WS-43t2 (`maf_coding_engine.md` §15.9, D84). Its factory, dependency and
+  `github-copilot` label are the origin/main ones.
 - **Why apis-config may move.** It has no propose-then-apply tool. Its follow-up turn needs
   names, and its own answer from the turn before carries them.
 - **The registry label and the factory move together.** The executor reads the label and the
@@ -986,6 +993,11 @@ same blocker. Sequence after WS-8i so the first migration carries the risk alone
 
 > **H-215 blocks WS-8i.** A MAF task-manager loses the tool results of the turn before, and
 > the confirm step of task-manager needs them. So it stays a Copilot agent for now.
+>
+> ⚠️ **Added 2026-10-03 (D84): WS-8i waits on a production soak.** WS-43t1 and WS-43t2
+> (`maf_coding_engine.md` §15.9) fix H-215. WS-8i may go live only after
+> `MAF_NATIVE_SESSIONS` has stayed ON in production for one week (WS43-G13). A merge of
+> WS-43t2 is not enough. The live two-turn probe on task-manager belongs to WS-8i.
 
 #### A1 — one runtime
 

@@ -95,25 +95,49 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the two WS-43 flags · [OWNER]
-- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED" .claude/hooks/plan-guard.mjs`.
-  No hit means this is open.
+### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
+- **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open.
+- **What happens.** `_build_github_url` (`loader.py:75-79`) puts
+  `GITHUB_TOKEN` in the clone URL, so the token lands in each clone's
+  `.git/config`. The token has `repo` scope (`loader.py:16`). The mutation
+  container mounts the clone at `/workspace/repo`, and it has a network. So
+  code that the model writes in that container can read the token and send
+  it out.
+- **Do.**
+  1. Clone and pull with a credential helper or `GIT_ASKPASS` that reads the
+     token from the environment. Then `.git/config` holds a URL with no
+     token.
+  2. Rewrite the remote URL of each existing clone once, in the loader.
+  3. Add the token probe of `specs/maf_coding_engine.md` WS-43l.
+- ⚠️ **A wrong fix stops every pull of a private agent repo.** Test a pull of
+  a private repo on a dev box before the merge.
+- **Authority:** `specs/maf_coding_engine.md` §15.3 and §7.1 rule 5
+- **Added:** 2026-10-03 · the D84 spec session
+
+### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
+- **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
+  No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Why.** `specs/maf_coding_engine.md` §12 gives the WS-43 gates the id
   `ws43-sandbox-flip`. No line of `.claude/OWNER_GRANTS.md` names it, so the
-  dev-phase window does not open it. No hook blocks a write of the two flags
-  today. So the gate binds by prose only.
+  dev-phase window does not open it. No hook blocks a write of the three
+  flags today. So the gate binds by prose only.
 - **Do.**
   1. Add a rule with the id `ws43-sandbox-flip` to `OWNER_GATES` in
      `plan-guard.mjs`.
-  2. Make it match `MAF_CODING_SCOPE` with a non-empty value, and
-     `SANDBOX_EGRESS_ENABLED` with a true value.
-  3. Do not add the two names to `enforcement-flip`. An
+  2. Make it match `MAF_CODING_SCOPE` with any non-empty value. That covers
+     the targets `code_task`, `app_builder`, `mutation:*` and `metorite:*`
+     (WS43-G3, WS43-G10). Add a test case for `mutation:*` and one for
+     `metorite:*`.
+  3. Make it match `SANDBOX_EGRESS_ENABLED` and `MAF_NATIVE_SESSIONS` with a
+     true value (WS43-G4, WS43-G13).
+  4. Do not add these names to `enforcement-flip`. An
      `ALLOW-UNTIL 2026-11-30` line covers that id, so the window would open
      them.
-  4. Add cases to `plan-guard.test.mjs`, then run
+  5. Add cases to `plan-guard.test.mjs`, then run
      `node .claude/hooks/plan-guard.test.mjs`.
 - **The id ends in `-flip` on purpose.** Then plan-guard also checks a file
-  write for the two flags (`plan-guard.mjs:478`).
+  write for the three flags (`plan-guard.mjs:478`).
 - **Why [OWNER].** An edit of `plan-guard.mjs` needs the `guard-write` grant
   (CLAUDE.md §3a). The fix round of PR #584 was told not to edit the guard.
 - **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
@@ -3774,16 +3798,20 @@ line — never reclaim a number by deleting the other entry.
   On the Copilot path (Tier 1.5) the resumed session holds the tool results.
   So the supervisor split the PR: task-manager STAYS on the Copilot path, and
   apis-config moved.
-- **The fix is a new slice:** a MAF `AgentSession` or history provider that is
-  kept for each thread, in place of the text-only history. The supervisor adds
-  it to `specs/agent_architecture.md`. After it ships, move task-manager: the
-  factory, the `pyproject.toml` dependency and the registry label, together.
+- **The fix is WS-43t1 and WS-43t2** (`specs/maf_coding_engine.md` §15.9,
+  D84). They keep a MAF `AgentSession` for each organization, thread and
+  agent, in place of the text-only history.
+- ⚠️ **Move task-manager only after the soak.** `MAF_NATIVE_SESSIONS` must
+  stay ON in production for one week first (WS43-G13). A merge of WS-43t2 is
+  not enough. Then move the factory, the `pyproject.toml` dependency and the
+  registry label together (WS-8i), and run the live probe of §15.9.7.
   `TestTaskManagerIsHeldOnTheCopilotPath` must then flip to a MAF check.
 - ⚠️ **The same gap affects the agents that are native already.** The confirm
   turns of projects-assistant, email-assistant and crm-assistant cannot see
   earlier tool output either. Their write tools ask on a card in the same
   turn, which limits the damage. The same fix helps them. See also H-216.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
+- **Authority:** `specs/maf_coding_engine.md` §15.9 (the owner, `work_plan.md` §4) ·
+  `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-216 · Tier 1's structured history branch never runs · [AGENT]
@@ -3802,7 +3830,10 @@ line — never reclaim a number by deleting the other entry.
   `system_context` and no `memory_context`. So carry `memory_context` into
   the structured branch in the same change. A test must show that it
   reaches the model after the repair.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review
+- **Claimed by WS-43t1** (`specs/maf_coding_engine.md` §15.9.1). The repair
+  sits behind `MAF_NATIVE_SESSIONS`, and it carries `memory_context` through
+  a MAF context provider, never into stored history (§15.9.5).
+- **Authority:** `specs/maf_coding_engine.md` §15.9 · `specs/agent_architecture.md` §11.3.1 · PR #585 review
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
