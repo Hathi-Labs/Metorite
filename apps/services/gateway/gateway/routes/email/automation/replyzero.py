@@ -10,11 +10,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import BackgroundTasks, Depends, Query
+from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
+    SELF_ADDRESSES_SQL,
     resolve_org_domains,
+    resolve_self,
+    resolve_self_addresses,
     sender_scope,
 )
 from gateway.routes.email.automation.jobs import JobTracker
@@ -648,28 +651,35 @@ async def _llm_determine_thread_status(
 def _msg_scope(
     r: Any, self_email: str,
     extra_domains: frozenset[str] | set[str] = frozenset(),
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     """Direction of one stored message: 'self' (the owner sent it — folder='sent'
     or the from-address is the owner), 'internal' (the owner's organisation sent
     it — same/extra domain), or 'external'. The 'sent' folder is authoritative for
     'self' so an owner reply mirrored before its from-address resolves is still
-    recognised as ours."""
+    recognised as ours.
+
+    ``self_addresses`` holds each mailbox of the member (D-EM-27), so mail from
+    another mailbox of the member is 'self' and never makes a thread
+    "awaiting your reply"."""
     if (getattr(r, "folder", "") or "").lower() == "sent":
         return "self"
     raw = getattr(r, "from_address", None)
     frm = raw if isinstance(raw, dict) else json.loads(raw or "{}")
-    return sender_scope(frm.get("email", ""), self_email, extra_domains)
+    return sender_scope(frm.get("email", ""), self_email, extra_domains,
+                        self_addresses=self_addresses)
 
 
 def _fmt_thread_msg(
     r: Any, self_email: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attach_line: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     frm = r.from_address if isinstance(r.from_address, dict) \
         else json.loads(r.from_address or "{}")
     sender = frm.get("name") or frm.get("email") or "?"
-    scope = _msg_scope(r, self_email, extra_domains)
+    scope = _msg_scope(r, self_email, extra_domains, self_addresses)
     direction = {
         "self": " (you sent)",
         "internal": " (your organisation sent)",
@@ -690,7 +700,8 @@ def _fmt_thread_msg(
             _recipient_role,
         )
         if _recipient_role(self_email, getattr(r, "to_addresses", None),
-                           getattr(r, "cc_addresses", None)) == "cc":
+                           getattr(r, "cc_addresses", None),
+                           self_addresses) == "cc":
             lines.append("(the user is only Cc'd here, not a direct To recipient)")
     dt = getattr(r, "received_at", None)
     if hasattr(dt, "isoformat"):
@@ -707,6 +718,7 @@ def _thread_message(
     r: Any, self_email: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attach_line: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, Any]:
     """One message of the thread as FACTS, for the ``decide`` state.
 
@@ -716,7 +728,7 @@ def _thread_message(
     """
     frm = r.from_address if isinstance(r.from_address, dict) \
         else json.loads(r.from_address or "{}")
-    scope = _msg_scope(r, self_email, extra_domains)
+    scope = _msg_scope(r, self_email, extra_domains, self_addresses)
     external = scope == "external"
     to = cc = ""
     cc_only = False
@@ -727,7 +739,7 @@ def _thread_message(
         from gateway.routes.email.automation.engine import _recipient_role
         cc_only = _recipient_role(
             self_email, getattr(r, "to_addresses", None),
-            getattr(r, "cc_addresses", None)) == "cc"
+            getattr(r, "cc_addresses", None), self_addresses) == "cc"
     dt = getattr(r, "received_at", None)
     # `clip_fact` takes any value, so a name that is None or not text reads
     # as text, as the f-string of `_fmt_thread_msg` reads it. It also bounds
@@ -807,7 +819,9 @@ async def _thread_is_conversation(
          proves nothing and falls through to the participation test.
       2. Real back-and-forth: ≥2 messages and OUR side (the owner or their org
          domains) has participated. A newsletter blast never trips this; a
-         colleague thread or a vendor exchange does.
+         colleague thread or a vendor exchange does. A message from another
+         mailbox of the member is our side too (D-EM-27, EM-T8e-1), through
+         ``identity.SELF_ADDRESSES_SQL``.
     """
     st = (await db.execute(text(
         """SELECT 1 FROM email_thread_status
@@ -826,11 +840,13 @@ async def _thread_is_conversation(
     if not doms:
         return False
     row = (await db.execute(text(
-        """SELECT COUNT(*) AS n,
+        f"""SELECT COUNT(*) AS n,
                   BOOL_OR(LOWER(COALESCE(folder, '')) = 'sent'
                           OR split_part(LOWER(COALESCE(
                                  from_address->>'email', '')), '@', 2)
-                             = ANY(:doms)) AS ours
+                             = ANY(:doms)
+                          OR LOWER(from_address->>'email')
+                             IN ({SELF_ADDRESSES_SQL})) AS ours
            FROM email_messages
            WHERE account_id = :aid AND thread_id = :tid"""
     ), {"aid": account_id, "tid": thread_id, "doms": sorted(doms)})).fetchone()
@@ -987,12 +1003,13 @@ async def _determine_status_of(
     # in this prompt. Drop it (3.5).
     about, _sig = await _load_assistant_about(
         db, account_id, include_kb=False)
-    acc = (await db.execute(text(
-        "SELECT email_address FROM email_accounts WHERE id = :id"
-    ), {"id": account_id})).fetchone()
-    acc_email = (acc.email_address if acc else "") or ""
+    # One read gives the address of this mailbox AND each mailbox of the
+    # member, which is "self" over the thread (D-EM-27, EM-T8e-1).
+    me = await resolve_self(db, account_id)
+    acc_email = me.address
     ctx = await build_thread_context(
-        db, account_id, message_row.thread_id, acc_email)
+        db, account_id, message_row.thread_id, acc_email,
+        self_addresses=me.self_addresses)
     if ctx is None:
         return None
     row_id = getattr(message_row, "id", None)
@@ -1333,6 +1350,7 @@ async def build_thread_context(
     db: Any, account_id: str, thread_id: str, self_email: str, *,
     extra_domains: frozenset[str] | set[str] | None = None,
     pending_reply: tuple[str, str] | None = None,
+    self_addresses: frozenset[str] | set[str] | None = None,
 ) -> ThreadContext | None:
     """Load a thread and render it for the determiner, once, for every caller.
 
@@ -1340,12 +1358,18 @@ async def build_thread_context(
     resolved here (so every status path is org-domain-aware without each caller
     plumbing it). Pass an explicit set (e.g. ``frozenset()``) to skip the lookup.
 
+    ``self_addresses`` works the same way: None resolves the address of each
+    mailbox of the member here (D-EM-27, EM-T8e-1), so a message from another
+    mailbox of the member is "(you sent)" and never leaves a thread awaiting.
+
     ``pending_reply`` is ``(body, subject)`` of a reply the owner JUST sent that
     isn't mirrored into ``email_messages`` yet — it's appended as the final
     ``(you sent)`` message so the determination is accurate immediately (and
     ``our_side_last`` becomes True). Returns None when the thread has no rows."""
     if extra_domains is None:
         extra_domains = await resolve_org_domains(db, account_id)
+    if self_addresses is None:
+        self_addresses = await resolve_self_addresses(db, account_id)
     rows = (await db.execute(text(
         """SELECT id, from_address, to_addresses, cc_addresses, subject,
                   body_text, snippet, folder, received_at
@@ -1360,8 +1384,10 @@ async def build_thread_context(
     # "Attachments: invoice.pdf (…)" — a strong signal for status/intent.
     attach = await _attachment_summaries(db, [r.id for r in rows])
     parts = [_fmt_thread_msg(r, self_email, extra_domains,
-                             attach.get(str(r.id), "")) for r in rows]
-    scopes = [_msg_scope(r, self_email, extra_domains) for r in rows]
+                             attach.get(str(r.id), ""), self_addresses)
+             for r in rows]
+    scopes = [_msg_scope(r, self_email, extra_domains, self_addresses)
+              for r in rows]
     has_external = any(s == "external" for s in scopes)
     our_side_last = scopes[-1] != "external"
 
@@ -1382,7 +1408,8 @@ async def build_thread_context(
     if decide_features.mode_for("email.thread_status") != "off":
         try:
             messages = [_thread_message(r, self_email, extra_domains,
-                                        attach.get(str(r.id), "")) for r in rows]
+                                        attach.get(str(r.id), ""),
+                                        self_addresses) for r in rows]
             if reply_pending:
                 fact = decide_features.clip_fact
                 messages.append({
@@ -1412,10 +1439,14 @@ async def recompute_thread_status(
     extra_domains: frozenset[str] | set[str] | None = None,
     pending_reply: tuple[str, str] | None = None,
     model: str = _STATUS_MODEL,
+    self_addresses: frozenset[str] | set[str] | None = None,
 ) -> tuple[str, str] | None:
     """THE thread-status authority: build the context, determine the status over
     the whole thread (with ``user_sent_last`` taken from the real last message —
     not assumed by the trigger), and write it through the single writer.
+
+    ``self_addresses`` reaches :func:`build_thread_context`, which resolves
+    each mailbox of the member when it is None (D-EM-27).
 
     ``trigger`` is one of ``outbound`` / ``inbound`` / ``backfill`` / ``reopen``.
     Automated triggers (inbound / backfill) PRESERVE a user's DONE; a reply the
@@ -1437,7 +1468,8 @@ async def recompute_thread_status(
 
     ctx = await build_thread_context(
         db, account_id, thread_id, acc_email,
-        extra_domains=extra_domains, pending_reply=pending_reply)
+        extra_domains=extra_domains, pending_reply=pending_reply,
+        self_addresses=self_addresses)
     if ctx is None:
         return None
     last_id = ctx.last_message_id
@@ -1831,10 +1863,10 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # token cost in this prompt. Drop it (3.5).
             about, _sig = await _load_assistant_about(
                 db, account_id, include_kb=False)
-            acc = (await db.execute(text(
-                "SELECT email_address FROM email_accounts WHERE id = :id"
-            ), {"id": account_id})).fetchone()
-            self_email = (acc.email_address if acc else "") or ""
+            # The address of this mailbox and each mailbox of the member, in
+            # one read (D-EM-27, EM-T8e-1).
+            me = await resolve_self(db, account_id)
+            self_email = me.address
             extra_domains = await resolve_org_domains(db, account_id)
 
         sent_threads, gap_inbound, filed_rows = _split_backfill_rows(
@@ -1881,7 +1913,8 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # extra_domains is a KEYWORD arg (positional lands it in self_name).
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=extra_domains,
-                attachments=gap_attach.get(str(r.id), ""))
+                attachments=gap_attach.get(str(r.id), ""),
+                self_addresses=me.self_addresses)
             # One block per gap thread. It lands where the per-thread commit
             # used to land. EM-T4 owns the model and provider I/O inside it.
             async with _tenant_session() as db:
@@ -2053,9 +2086,21 @@ async def resolve_thread(
     Done → status='DONE' (shows under the Done tab) and the provider/local labels
     are collapsed to "Done" (clearing stale Reply / Awaiting / Follow-up).
     Reopen → re-derive NEEDS_REPLY/AWAITING from the latest message's folder and
-    swap the label back to Reply / Awaiting Reply."""
+    swap the label back to Reply / Awaiting Reply.
+
+    The pair must match (D-EM-19, EM-T8e-1): when no mail of ``account_id``
+    has ``thread_id``, the answer is 404 and nothing is written. That covers
+    the done, the reopen and the dismiss branches. The chat tool
+    ``mark_thread_done`` has no mail id, so this check is what makes a wrong
+    mailbox from the model fail closed."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        in_mailbox = (await db.execute(text(
+            "SELECT 1 FROM email_messages "
+            "WHERE account_id = :aid AND thread_id = :tid LIMIT 1"
+        ), {"aid": req.account_id, "tid": req.thread_id})).fetchone()
+        if not in_mailbox:
+            raise HTTPException(status_code=404, detail="Thread not found")
         keep_label = "Done"
         if req.dismiss:
             # A dead loop the user will never answer: file it as FYI. DONE

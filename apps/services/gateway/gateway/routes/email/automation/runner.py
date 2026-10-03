@@ -36,7 +36,10 @@ from gateway.routes.email.automation.actions import (  # noqa: F401
     push_label,
     remove_label,
 )
-from gateway.routes.email.automation.identity import resolve_org_domains
+from gateway.routes.email.automation.identity import (
+    resolve_org_domains,
+    resolve_self_addresses,
+)
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.automation.learning import (
     _ai_confirms_sender_pattern,
@@ -91,11 +94,17 @@ async def test_rules(
     req: RuleTestRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Test the rules against one email (selected message or a pasted sample)."""
+    """Test the rules against one email (selected message or a pasted sample).
+
+    A selected message must be a mail of ``account_id``, or the answer is
+    404 (D-EM-19, EM-T8e-1): the rules of one mailbox never judge the mail
+    of another."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         if req.email_id:
-            email = await _email_payload_from_id(db, req.email_id, user.email or "anonymous")
+            email = await _email_payload_from_id(
+                db, req.email_id, user.email or "anonymous",
+                account_id=req.account_id)
         else:
             email = {"subject": req.subject or "", "from": req.from_email or "",
                      "body": req.body or "", "to": ""}
@@ -145,6 +154,7 @@ async def test_rules_recent(
                ORDER BY received_at DESC LIMIT :limit"""
         ), {"aid": req.account_id, "limit": min(req.limit, 15)})).fetchall()
         org_domains = await resolve_org_domains(db, req.account_id)
+        selves = await resolve_self_addresses(db, req.account_id)
         attach = await _attachment_summaries(db, [r.id for r in rows])
         results = []
         for r in rows:
@@ -152,7 +162,7 @@ async def test_rules_recent(
                 else json.loads(r.from_address or "{}")
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
             try:
                 match = await _match_email_to_rule(
                     db, req.account_id, email, message_id=str(r.id))
@@ -1025,7 +1035,8 @@ async def run_rules_on_message(
         attach = (await _attachment_summaries(db, [row.id])).get(str(row.id), "")
         email = email_dict_from_row(
             row, await _account_self_email(db, req.account_id), about,
-            extra_domains=org_domains, attachments=attach)
+            extra_domains=org_domains, attachments=attach,
+            self_addresses=await resolve_self_addresses(db, req.account_id))
         try:
             match = await _match_email_to_rule(
                 db, req.account_id, email, message_id=str(row.id))
@@ -1524,6 +1535,7 @@ async def _process_past_emails_job(
             multi_rule = bool(
                 mr_row and getattr(mr_row, "multi_rule_execution", None))
             org_domains = await resolve_org_domains(db, account_id)
+            selves = await resolve_self_addresses(db, account_id)
             attach = await _attachment_summaries(db, [r.id for r in rows])
             acc = None
             if not dry_run:
@@ -1560,7 +1572,7 @@ async def _process_past_emails_job(
                 else json.loads(r.from_address or "{}")
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
             # One block per row. It lands where the per-row commit used to
             # land. EM-T4a-4 owns the model and provider I/O inside it.
             async with _tenant_session() as db:
@@ -1711,6 +1723,9 @@ async def _run_rules_job(
             # the test/process-past paths and NOT on this one — the path that
             # actually processes new mail.
             org_domains = await resolve_org_domains(db, account_id)
+            # Each mailbox of the member is "self" (D-EM-27): its mail is not
+            # external, and the cold check never flags it.
+            selves = await resolve_self_addresses(db, account_id)
             acc = None
             if not dry_run:
                 acc = (await db.execute(text(
@@ -1743,7 +1758,7 @@ async def _run_rules_job(
             # self_name and silently drops the configured org domains.
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
             # One block per row. It lands where the per-row commit used to
             # land. EM-T4 owns the model and provider I/O that stays inside.
             async with _tenant_session() as db:

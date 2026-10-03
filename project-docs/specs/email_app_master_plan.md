@@ -3666,6 +3666,34 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
 
 ##### EM-T8e-1 — self, the drafter and the server checks (gateway)
 
+**Status.** 🔨 BUILT, not merged (2026-10-03).
+
+**As built.**
+
+- **The helper.** `automation/identity.py` holds `SELF_ADDRESSES_SQL`, a subquery over `:aid`,
+  and `resolve_self`. One read of `resolve_self` gives the address, the label and the set. The
+  label comes from `mailbox_identity.display_labels`. The SQL also compares the organization of
+  each row. Row level security does the same, so the copy guards a session with no bind.
+- **The callers.** The rule match payload, the thread status, the conversation check, the
+  digest, the pin guard, the cleanup scope and the sender categories use the set. The recipient
+  role uses it too, so a member in To under mailbox B is a direct recipient in mailbox A.
+- **The cold check** reads `sender_scope` from the payload. A value of `self` stops the check
+  before any read.
+- **The drafter.** The prompt names "label <address>" of the sending mailbox. With no address,
+  the prompt names nobody. A rule draft that has no `self` in its payload reads the mailbox row.
+  That applies to approve and to retry.
+- **Only compose-assist reads across mailboxes (item 3).** `/draft-reply` still answers 404 for
+  a mail of another mailbox (D-EM-19).
+- **Not changed.** `cleanup._internal_domains` reads the domain of the current mailbox, as item
+  1 says. `_draft_direction_note` still compares one address for its Cc note, because item 1
+  does not name it. A reply across mailboxes stores the AI draft under the thread id of A. So
+  the learning on send can miss it.
+- **Tests.** Four hermetic fakes answer the new read now: `test_email_digest.py`,
+  `test_email_rule_pattern_guards.py`, `test_email_categorization.py` and
+  `test_email_request_jobs_tenancy.py`. `email-self-each-mailbox` has one more case, as the
+  owner role, for the organization compare. A mutation run took out each fix of the slice once,
+  and its fence failed each time.
+
 **Scope.** `apps/services/gateway/gateway/routes/email/**` and new tests. Not in scope: the
 agent, the UI, `routes/crm/**`, and the three files that EM-T8d edits (`transport/messages.py`,
 `transport/accounts.py`, `mailbox_identity.py`).
