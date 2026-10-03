@@ -3749,14 +3749,21 @@ The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
 - **A question never holds `id=`.** It lists each mailbox as "label · address (account_id <id>)",
   because `RULE_ID_RE` in `EmailToolCards.tsx` reads `id=` as the id of a rule.
 - **One more fence.** `email-chat-thread-mailbox` fences the `read_thread` rule of item 1.
+- **Two UI readers changed, outside the stated scope (2026-10-03).** The new answers of the agent
+  made two cards wrong, so this slice fixes them.
+  - A refused send, a question and a cancel get the no-action card ("Not sent", "Needs your
+    answer", "Cancelled"). Before, the generic card said "Email sent" over "Not sent.", which
+    told the member that mail went out. Fence: `email-chat-no-action-card` in
+    `src/components/email/noAction.test.ts`. It reads the lead words from `agents.py`.
+  - The thread card reads the thread in the mailbox of the mail, as `read_thread` now does.
+    Fence: `email-chat-thread-card-mailbox`.
 
 **Found, and not fixed in this slice.**
 
 - `own_tool_scope` in the `config.json` of the agent holds none of the eight tools of item 3. The
   executor keeps only the tools that it names, so the live chat cannot call them yet.
-- The chat cards show a question as a done act. `RuleResultCard` says "Created rule",
-  `SettingsUpdatedCard` says "Settings updated", and `ActionResultCard` says "Email sent".
-  `ThreadBody` still reads `args.account_id`. These are UI files.
+- `RuleResultCard` and `SettingsUpdatedCard` read `args.account_id`. The live chat cannot call
+  their tools yet (the item above), so this has no live effect.
 
 **Scope.** `apps/agents/agent-email-assistant/agents.py`, `instructions.md` and tests. No gateway
 file. No UI file.
