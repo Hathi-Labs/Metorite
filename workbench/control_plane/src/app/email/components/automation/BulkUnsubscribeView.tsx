@@ -12,6 +12,7 @@ import {
 import { SenderStat, NewsletterStatus, SenderStatus, Email } from "../../lib/types";
 import { chipColors } from "../../lib/labelColors";
 import { useEmailStore } from "../../lib/emailStore";
+import { guardedLoad, loadGuard } from "../../lib/mailboxSettings";
 import {
   CLEAN_OLDER_MAIL_CHOICES,
   cleanOlderMailSince,
@@ -136,6 +137,7 @@ export function BulkUnsubscribeView({
   // Distinct senders in the mailbox; > senders.length means the list is capped.
   const [totalSenders, setTotalSenders] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [sendersLoad] = useState(loadGuard);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -187,14 +189,17 @@ export function BulkUnsubscribeView({
     // list. "Include archived" brings the whole mailbox back — the preset
     // Marketing / Cold Email rules archive as they label, so those two category
     // chips only fill in when archived mail is counted.
-    listSenders(accountId, undefined, SENDER_PAGE, 0, includeArchived)
-      .then(({ senders: s, total }) => {
+    // Only the newest load lands, so the senders of the mailbox before a pick
+    // never show under the name of the next one (EM-T8f-2 review F1).
+    void guardedLoad(sendersLoad, () => listSenders(accountId, undefined, SENDER_PAGE, 0, includeArchived), {
+      data: ({ senders: s, total }) => {
         setSenders(s);
         setTotalSenders(total);
-      })
-      .catch((e) => setError(e.message || "Failed to load senders"))
-      .finally(() => setLoading(false));
-  }, [accountId, includeArchived]);
+      },
+      error: (e) => setError(e.message || "Failed to load senders"),
+      done: () => setLoading(false),
+    });
+  }, [accountId, includeArchived, sendersLoad]);
 
   useEffect(load, [load]);
 
