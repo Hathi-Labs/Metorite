@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { mailboxOf, ownAddresses, replyRecipients } from "./mailbox";
+import { mailboxOf, mailboxToOpen, ownAddresses, replyRecipients } from "./mailbox";
 
 const ROOT = join(__dirname, "..");
 const read = (rel: string) =>
@@ -183,16 +183,25 @@ describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
   const body = src.slice(src.indexOf("openEmailById: async"));
   const fn = body.slice(0, body.indexOf("toggleEmailSelected"));
 
+  // EM-T8g-2 moved the rule into `mailboxToOpen`, a pure function in
+  // `lib/mailbox.ts`. These cases test it by behaviour, and the scan proves
+  // that `openEmailById` reads it.
+  const one = { viewAll: false, selectedAccountId: "a", accounts: [{ id: "a" }, { id: "b" }] };
+
   it("selects the mailbox of a mail from another mailbox, then the mail", () => {
-    expect(fn).toContain("email.accountId !== get().selectedAccountId");
-    const select = fn.indexOf("get().selectAccount(email.accountId)");
+    expect(mailboxToOpen(one, "b")).toBe("b");
+    expect(mailboxToOpen(one, "a")).toBeNull();
+    expect(fn).toContain("const target = mailboxToOpen(get(), email.accountId);");
+    const select = fn.indexOf("get().selectAccount(target)");
     const reselect = fn.indexOf("set({ selectedEmailId: id, viewerCommand: null })");
     expect(select).toBeGreaterThan(-1);
     expect(reselect).toBeGreaterThan(select);
   });
 
   it("switches only to a mailbox that the member has", () => {
-    expect(fn).toContain("get().accounts.some((a) => a.id === email.accountId)");
+    expect(mailboxToOpen(one, "gone")).toBeNull();
+    expect(mailboxToOpen(one, null)).toBeNull();
+    expect(mailboxToOpen({ ...one, viewAll: true }, "gone")).toBeNull();
   });
 
   it("drops an opened mail when its mailbox is removed", () => {

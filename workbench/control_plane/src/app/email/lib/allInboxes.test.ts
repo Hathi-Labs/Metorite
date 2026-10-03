@@ -24,13 +24,26 @@
 //   * `email-import-panel-each`: one panel for each importing mailbox, the
 //     mailbox in view first. With two or more mailboxes each panel names its
 //     mailbox with the chip.
-import { readFileSync } from "node:fs";
+//
+// WS-17 EM-T8g-2 (§11.7.7) adds two fences here:
+//   * `email-all-skips-separate`: with one separate mailbox among three, the
+//     All inboxes row, its unread sum, the header count, `scopeBusy` and
+//     `pickInitialView` read only the pooled mailboxes. All inboxes shows for
+//     two or more of them. `pooledMailboxes` is the one rule, and no other
+//     file reads the flag. `allInboxesStore.test.ts` holds the store half:
+//     the folder sums and `syncScope`.
+//   * `email-separate-menu`: the menu offers "Keep separate", or "Show in All
+//     inboxes" for a separate mailbox. A pick sends the `PATCH`, and the
+//     switcher row of a separate mailbox shows the word "Separate".
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountSidebar } from "../components/AccountSidebar";
+import { isKnownIcon } from "@/lib/icons";
+
+import { AccountSidebar, accountMenuItems } from "../components/AccountSidebar";
 import { FirstSyncBanner } from "../components/FirstSyncBanner";
 import { OnboardingPanel } from "../components/OnboardingPanel";
 import {
@@ -39,8 +52,17 @@ import {
   allInboxesFolders,
   listScope,
   pickInitialView,
+  scopeBusy,
   sumFolderCounts,
 } from "./emailStore";
+import {
+  hasAllInboxes,
+  isSeparate,
+  mailboxToOpen,
+  pooledMailboxes,
+  separateMark,
+  separateToggle,
+} from "./mailbox";
 import { firstSyncPanels, importProgress } from "./onboarding";
 import type { EmailAccount, EmailFolder } from "./types";
 
@@ -307,8 +329,9 @@ describe("All inboxes on the page and in the list", () => {
   });
 
   it("names the scope in the header and the mobile top bar", () => {
-    expect(page).toContain("All inboxes · {accounts.length} mailboxes");
-    expect(page).toContain("`All inboxes · ${accounts.length} mailboxes`");
+    // EM-T8g-2: the count is the pooled mailboxes (`email-all-skips-separate`).
+    expect(page).toContain("All inboxes · {pooledCount} mailboxes");
+    expect(page).toContain("`All inboxes · ${pooledCount} mailboxes`");
   });
 
   it("drops the label filter, offers no load older, and keeps an opened mail", () => {
@@ -316,7 +339,10 @@ describe("All inboxes on the page and in the list", () => {
     expect(selectAll.slice(0, 900)).toContain("selectedLabel: null,");
     expect(store).toContain("if (backfilling || !selectedAccountId || get().viewAll) return;");
     expect(page).toMatch(/const canBackfillFolder =\s*!viewAll &&/);
-    expect(store).toContain("if (!get().viewAll && email.accountId && email.accountId !== get().selectedAccountId");
+    // A mail of a pooled mailbox stays in All inboxes (`mailboxToOpen`).
+    const all = { viewAll: true, selectedAccountId: "a", accounts: [{ id: "a" }, { id: "b" }] };
+    expect(mailboxToOpen(all, "b")).toBeNull();
+    expect(store).toContain("const target = mailboxToOpen(get(), email.accountId);");
   });
 
   it("sends new mail from the default mailbox", () => {
@@ -355,5 +381,232 @@ describe("All inboxes on the page and in the list", () => {
       'if (!automationFeature || automationFeature === "chat" || !viewAll) return;');
     expect(page).toContain("const target = open?.accountId || defaultAccountId || st.selectedAccountId;");
     expect(page).toContain("st.selectAccount(target);");
+  });
+});
+
+// ── WS-17 EM-T8g-2 — "Keep separate" ───────────────────────────────────────
+
+/** Three mailboxes: two in All inboxes, and c kept separate. */
+const pa = { ...box("a", "Fracktal", 2), isDefault: true };
+const pb = box("b", "Personal", 3);
+const sc: EmailAccount = { ...box("c", "Client", 7), inAllInboxes: false };
+const three = [pa, pb, sc];
+
+/** Every source file of the email app, as a path under `app/email/`. */
+function appFiles(dir = ROOT, rel = ""): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    const path = rel ? `${rel}/${name}` : name;
+    if (statSync(full).isDirectory()) out.push(...appFiles(full, path));
+    else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)) out.push(path);
+  }
+  return out;
+}
+
+describe("email-all-skips-separate", () => {
+  it("pools each mailbox that is not separate, and a missing flag pools", () => {
+    expect(pooledMailboxes(three).map((m) => m.id)).toEqual(["a", "b"]);
+    expect(isSeparate(sc)).toBe(true);
+    // A gateway before EM-T8g-1 sends no flag: the mailbox stays in.
+    expect(isSeparate(box("x", "X", 0))).toBe(false);
+    expect(isSeparate({ inAllInboxes: true })).toBe(false);
+  });
+
+  it("shows All inboxes for two or more pooled mailboxes only", () => {
+    expect(hasAllInboxes(three)).toBe(true);
+    expect(hasAllInboxes([pa, sc])).toBe(false);
+    expect(hasAllInboxes([sc, { ...pb, inAllInboxes: false }])).toBe(false);
+    expect(hasAllInboxes([pa, pb])).toBe(true);
+  });
+
+  it("opens the first view on the pooled mailboxes", () => {
+    expect(pickInitialView(three, null)).toEqual({ accountId: "a", viewAll: true });
+    expect(pickInitialView(three, ALL_INBOXES)).toEqual({ accountId: "a", viewAll: true });
+    // Fewer than two pooled: no All inboxes, and the default mailbox opens.
+    expect(pickInitialView([pa, sc], null)).toEqual({ accountId: "a", viewAll: false });
+    expect(pickInitialView([pa, sc], ALL_INBOXES)).toEqual({ accountId: "a", viewAll: false });
+    expect(pickInitialView([pa, sc], "gone")).toEqual({ accountId: "a", viewAll: false });
+    // A separate mailbox still opens in its own view.
+    expect(pickInitialView(three, "c")).toEqual({ accountId: "c", viewAll: false });
+  });
+
+  it("is busy for a pooled mailbox only in All inboxes", () => {
+    const state = (viewAll: boolean, busy: string) => ({
+      viewAll,
+      selectedAccountId: viewAll ? "a" : busy,
+      accounts: three,
+      syncStatus: { [busy]: "syncing" },
+    });
+    expect(scopeBusy(state(true, "b"))).toBe(true);
+    expect(scopeBusy(state(true, "c"))).toBe(false);
+    // In its own view, the separate mailbox is the scope.
+    expect(scopeBusy(state(false, "c"))).toBe(true);
+  });
+
+  it("draws the All inboxes row with the pooled count and the pooled unread sum", () => {
+    const html = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: three,
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders,
+      selectedFolder: "inbox",
+      onFolderSelect: () => {},
+      viewAll: false,
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+    expect(html).toContain(">All inboxes<");
+    expect(html).toContain("2 mailboxes");
+    expect(html).not.toContain("3 mailboxes");
+    // 2 + 3. The 7 of the separate mailbox shows on its own row only.
+    expect(html).toContain(">5<");
+    expect(html).not.toContain(">12<");
+    expect(html).toContain(">7<");
+  });
+
+  it("draws no All inboxes row when one mailbox is pooled", () => {
+    const html = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: [pa, sc],
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders,
+      selectedFolder: "inbox",
+      onFolderSelect: () => {},
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+    // The row is gone. The title of the word "Separate" still names it.
+    expect(html).not.toContain(">All inboxes<");
+    expect(html).not.toContain("mailboxes<");
+  });
+
+  it("counts the pooled mailboxes in the header of the page", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("const pooledCount = pooledMailboxes(accounts).length;");
+    expect(page).not.toMatch(/All inboxes · \{accounts\.length\}|All inboxes · \$\{accounts\.length\}/);
+  });
+
+  it("is the one rule: no other file reads the flag", () => {
+    const files = appFiles();
+    expect(files.length).toBeGreaterThan(40);
+    const readers = files.filter((f) => /\.inAllInboxes\b|\bin_all_inboxes\b/.test(codeOnly(read(f))));
+    // `api.ts` maps the field and sends it, and `mailbox.ts` decides.
+    expect(readers.sort()).toEqual(["lib/api.ts", "lib/mailbox.ts"]);
+  });
+});
+
+describe("email-separate-menu", () => {
+  const labels = (items: ReturnType<typeof accountMenuItems>) =>
+    items.flatMap((i) => (i.kind === "item" ? [i.label] : []));
+
+  it("offers Keep separate, or Show in All inboxes for a separate mailbox", () => {
+    expect(separateToggle(pb, three)).toEqual({ label: "Keep separate", icon: "EyeOff", nextPooled: false });
+    expect(separateToggle(sc, three)).toEqual({ label: "Show in All inboxes", icon: "Inbox", nextPooled: true });
+    // One mailbox has no All inboxes, so the menu offers neither (§11.0).
+    expect(separateToggle(sc, [sc])).toBeNull();
+    expect(separateToggle(pa, [pa])).toBeNull();
+    for (const name of ["EyeOff", "Inbox"]) expect(isKnownIcon(name), name).toBe(true);
+  });
+
+  it("puts the item in the mailbox menu, and a pick sends the choice", () => {
+    const picks: Array<[string, boolean]> = [];
+    const on = { onToggleSeparate: (id: string, pooled: boolean) => void picks.push([id, pooled]) };
+    const keep = accountMenuItems(pb, three, on);
+    const show = accountMenuItems(sc, three, on);
+    expect(labels(keep)).toContain("Keep separate");
+    expect(labels(keep)).not.toContain("Show in All inboxes");
+    expect(labels(show)).toContain("Show in All inboxes");
+    for (const items of [keep, show]) {
+      for (const i of items) {
+        if (i.kind === "item" && /separate|All inboxes/.test(i.label)) i.onSelect();
+      }
+    }
+    expect(picks).toEqual([["b", false], ["c", true]]);
+    // No handler, or one mailbox: neither label.
+    expect(labels(accountMenuItems(pb, three, {}))).not.toContain("Keep separate");
+    expect(labels(accountMenuItems(pa, [pa], on))).not.toContain("Keep separate");
+  });
+
+  it("shows the word Separate beside the chip of a separate mailbox only", () => {
+    expect(separateMark(sc, three)).toBe("Separate");
+    expect(separateMark(pb, three)).toBeNull();
+    expect(separateMark(sc, [sc])).toBeNull();
+    const html = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: three,
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders,
+      selectedFolder: "inbox",
+      onFolderSelect: () => {},
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+    expect(html.match(/>Separate</g)).toHaveLength(1);
+    // The word sits in the row of c, after its label.
+    expect(html.indexOf(">Separate<")).toBeGreaterThan(html.indexOf(">Client<"));
+    expect(html.indexOf(">Separate<")).toBeLessThan(html.indexOf("c@x.test<"));
+    const one = renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts: [sc],
+      selectedAccountId: "c",
+      onAccountSelect: () => {},
+      folders,
+      selectedFolder: "inbox",
+      onFolderSelect: () => {},
+      showAutomation: false,
+    }));
+    expect(one).not.toContain("Separate");
+  });
+
+  it("draws the word with the house Badge, and wires the menu on the page", () => {
+    const side = codeOnly(read("components/AccountSidebar.tsx"));
+    expect(side).toContain('<Badge size="xs" title="Kept out of All inboxes" className="flex-shrink-0">');
+    expect(side).toContain("{(onDisconnect || onEditMailbox || onToggleSeparate) && (");
+    const page = codeOnly(read("page.tsx"));
+    expect(page.match(/onToggleSeparate=\{toggleSeparate\}/g)).toHaveLength(2);
+    expect(page).toContain("void setInAllInboxes(id, pooled);");
+  });
+
+  describe("the PATCH", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("sends in_all_inboxes to PATCH /email/accounts/{id}", async () => {
+      const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ id: "c", in_all_inboxes: false }), { status: 200 });
+      }));
+      const api = await import("./api");
+      const saved = await api.updateEmailAccount("c", { inAllInboxes: false });
+      expect(calls).toEqual([{ url: "/api/email/accounts/c", method: "PATCH", body: { in_all_inboxes: false } }]);
+      expect(isSeparate(saved)).toBe(true);
+    });
+
+    it("reads a missing field as in All inboxes, and only false as separate", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([
+        { id: "old" },
+        { id: "in", in_all_inboxes: true },
+        { id: "out", in_all_inboxes: false },
+        { id: "odd", in_all_inboxes: "false" },
+      ]), { status: 200 })));
+      const api = await import("./api");
+      const accounts = await api.listEmailAccounts();
+      expect(accounts.map((m) => [m.id, isSeparate(m)])).toEqual([
+        ["old", false], ["in", false], ["out", true], ["odd", false],
+      ]);
+    });
+  });
+});
+
+describe("email-separate-leaves-at-once, the pure half", () => {
+  it("opens a mail of a separate mailbox in that mailbox, never in All inboxes", () => {
+    const all = { viewAll: true, selectedAccountId: "a", accounts: three };
+    expect(mailboxToOpen(all, "c")).toBe("c");
+    expect(mailboxToOpen(all, "b")).toBeNull();
+    // One mailbox in view keeps the rule of MB-3.
+    expect(mailboxToOpen({ ...all, viewAll: false }, "c")).toBe("c");
+    expect(mailboxToOpen({ ...all, viewAll: false, selectedAccountId: "c" }, "c")).toBeNull();
   });
 });

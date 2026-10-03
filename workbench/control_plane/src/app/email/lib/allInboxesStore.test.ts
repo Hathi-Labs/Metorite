@@ -15,6 +15,15 @@
 //     inboxes, and only the selected one otherwise.
 //   * `email-all-store-label`: no label filter in All inboxes, and the colour
 //     of a label of another mailbox goes to that mailbox only.
+//
+// WS-17 EM-T8g-2 (§11.7.7) adds, at the end of this file:
+//   * `email-separate-leaves-at-once`: a toggle sends the `PATCH`. In All
+//     inboxes the rows, the checks and the open mail of a mailbox kept
+//     separate leave at once, and the list and the sums are read again. A
+//     toggle that leaves fewer than two pooled mailboxes ends All inboxes for
+//     the default mailbox. A mail of a separate mailbox opens in that mailbox.
+//   * `email-all-skips-separate`, the store half: the folder sums and
+//     `syncScope` reach the pooled mailboxes only.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -27,6 +36,8 @@ const api = vi.hoisted(() => ({
   triggerSync: vi.fn(),
   setLabelColor: vi.fn(),
   snoozeEmail: vi.fn(),
+  updateEmailAccount: vi.fn(),
+  getEmail: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => {
@@ -598,6 +609,227 @@ describe("email-all-folder-sums, the review round", () => {
       await next;
       expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(4);
       expect(FOLDER_SUM_TIMEOUT_MS).toBe(15_000);
+    });
+  });
+});
+
+// ── WS-17 EM-T8g-2 — "Keep separate", the store half ───────────────────────
+
+describe("email-separate-leaves-at-once", () => {
+  const row = (id: string) => ({ id, accountId: id.split("-")[0], threadId: id, categories: [] });
+  const raw = (name: string, count: number) => ({
+    provider_folder_id: name, name, type: "system", message_count: count, unread_count: 0,
+  });
+  const sep = (id: string): EmailAccount => ({ ...box(id), inAllInboxes: false });
+  const SUMS = { inbox: 99, drafts: 0, sent: 0, archive: 0, junk: 0, trash: 0 };
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([raw("Inbox", 3)]);
+    // The PATCH answer holds no default flag and no unread count.
+    api.updateEmailAccount.mockImplementation(async (id: string, u: { inAllInboxes?: boolean }) =>
+      ({ ...box(id), inAllInboxes: u.inAllInboxes }));
+    useEmailStore.setState({
+      accounts: [box("a", true), box("b"), box("c")],
+      selectedEmailId: null,
+      selectedEmailOverride: null,
+      selectedIds: new Set(),
+      allFolderCounts: null,
+      error: null,
+    });
+  });
+
+  /** A read that the test settles by hand, so an old sum cannot land first.
+   *  `afterEach` settles it too, so a failed case leaves no round out. */
+  let pending: (() => Promise<void>) | null = null;
+  afterEach(async () => {
+    if (pending) await pending();
+    pending = null;
+  });
+  function held() {
+    let resolve: (v: ReturnType<typeof raw>[]) => void = () => {};
+    const promise = new Promise<ReturnType<typeof raw>[]>((r) => { resolve = r; });
+    api.listEmailFolders.mockReturnValue(promise);
+    pending = async () => {
+      resolve([raw("Inbox", 1)]);
+      await flush();
+      await flush();
+    };
+    return pending;
+  }
+
+  it("sends the PATCH, and the rows, the checks and the open mail of the mailbox leave at once", async () => {
+    const release = held();
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      emails: [row("a-1"), row("b-1"), row("c-1"), row("c-2")] as never,
+      selectedEmailId: "c-1",
+      selectedIds: new Set(["b-1", "c-2"]),
+      allFolderCounts: SUMS,
+    });
+    const ok = await useEmailStore.getState().setInAllInboxes("c", false);
+    const s = useEmailStore.getState();
+    expect(ok).toBe(true);
+    expect(api.updateEmailAccount).toHaveBeenCalledWith("c", { inAllInboxes: false });
+    expect(s.emails.map((e) => e.id)).toEqual(["a-1", "b-1"]);
+    expect([...s.selectedIds]).toEqual(["b-1"]);
+    expect([s.selectedEmailId, s.viewAll]).toEqual([null, true]);
+    expect(s.accounts.map((m) => m.inAllInboxes !== false)).toEqual([true, true, false]);
+    // The old sum, with c in it, never shows while the new round is out.
+    expect(s.allFolderCounts).toBeNull();
+    // The list of All inboxes is read again, with no account_id.
+    expect(api.listEmails).toHaveBeenCalledTimes(1);
+    expect(api.listEmails.mock.calls[0][0].accountId).toBeUndefined();
+    await release();
+  });
+
+  it("reads the sums again over the pooled mailboxes", async () => {
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    await flush();
+    await flush();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(6);
+  });
+
+  it("puts a mailbox back: the list and the sums are read again with it", async () => {
+    const release = held();
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")], allFolderCounts: SUMS });
+    await useEmailStore.getState().setInAllInboxes("c", true);
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    expect(api.listEmails).toHaveBeenCalledTimes(1);
+    expect(api.listEmails.mock.calls[0][0].accountId).toBeUndefined();
+    await release();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b", "c"]);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(3);
+  });
+
+  it("ends All inboxes for the default mailbox when fewer than two are pooled", async () => {
+    useEmailStore.setState({ accounts: [box("a", true), box("b")], selectedAccountId: "b", viewAll: true });
+    await useEmailStore.getState().setInAllInboxes("b", false);
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([false, "a"]);
+    expect(api.listEmails.mock.calls.at(-1)?.[0].accountId).toBe("a");
+  });
+
+  it("moves only the flag: the default and the unread count stay", async () => {
+    useEmailStore.setState({ accounts: [{ ...box("a", true), unreadCount: 4 }, box("b"), box("c")] });
+    await useEmailStore.getState().setInAllInboxes("a", false);
+    const a = useEmailStore.getState().accounts[0];
+    expect([a.isDefault, a.unreadCount, a.inAllInboxes]).toEqual([true, 4, false]);
+  });
+
+  it("changes nothing on a refusal, and says so", async () => {
+    api.updateEmailAccount.mockRejectedValue(Object.assign(new Error("No fields to update"), { status: 400 }));
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), box("c")]);
+    useEmailStore.setState({ emails: [row("a-1"), row("c-1")] as never, selectedEmailId: "c-1" });
+    const ok = await useEmailStore.getState().setInAllInboxes("c", false);
+    const s = useEmailStore.getState();
+    expect(ok).toBe(false);
+    expect(s.error).toBe("No fields to update");
+    expect([s.emails.map((e) => e.id), s.selectedEmailId, s.viewAll]).toEqual([["a-1", "c-1"], "c-1", true]);
+    expect(s.accounts.every((m) => m.inAllInboxes !== false)).toBe(true);
+    expect(api.listEmails).not.toHaveBeenCalled();
+  });
+
+  it("moves only the flag outside All inboxes", async () => {
+    useEmailStore.setState({ viewAll: false, selectedAccountId: "a" });
+    await useEmailStore.getState().setInAllInboxes("c", false);
+    const s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId]).toEqual([false, "a"]);
+    expect(api.listEmails).not.toHaveBeenCalled();
+  });
+
+  it("opens a mail of a separate mailbox in that mailbox, never in All inboxes", async () => {
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")], viewAll: true, selectedAccountId: "a" });
+    api.getEmail.mockResolvedValue({ id: "c-9", accountId: "c", threadId: "c-9" });
+    await useEmailStore.getState().openEmailById("c-9");
+    let s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId, s.selectedEmailId, s.selectedEmailOverride?.id])
+      .toEqual([false, "c", "c-9", "c-9"]);
+    // A mail of a pooled mailbox stays in All inboxes, with its chip.
+    useEmailStore.setState({ viewAll: true, selectedAccountId: "a", emails: [] });
+    api.getEmail.mockResolvedValue({ id: "b-9", accountId: "b", threadId: "b-9" });
+    await useEmailStore.getState().openEmailById("b-9");
+    s = useEmailStore.getState();
+    expect([s.viewAll, s.selectedAccountId, s.selectedEmailOverride?.id]).toEqual([true, "a", "b-9"]);
+  });
+
+  it("drops the rows of a mailbox that another tab kept separate", async () => {
+    const release = held();
+    api.listEmails.mockReturnValue(new Promise(() => {}));
+    useEmailStore.setState({
+      emails: [row("a-1"), row("c-1")] as never,
+      selectedEmailId: "c-1",
+      allFolderCounts: SUMS,
+    });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), sep("c")]);
+    await useEmailStore.getState().fetchAccounts();
+    const s = useEmailStore.getState();
+    expect([s.emails.map((e) => e.id), s.selectedEmailId, s.viewAll, s.allFolderCounts])
+      .toEqual([["a-1"], null, true, null]);
+    await release();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+  });
+
+  it("reads the list and the sums again when another tab puts a mailbox back", async () => {
+    const release = held();
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")], allFolderCounts: SUMS });
+    api.listEmailAccounts.mockResolvedValue([box("a", true), box("b"), box("c")]);
+    await useEmailStore.getState().fetchAccounts();
+    expect(useEmailStore.getState().allFolderCounts).toBeNull();
+    expect(api.listEmails).toHaveBeenCalledTimes(1);
+    await release();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("email-all-skips-separate, the store half", () => {
+  const raw = (name: string, count: number) => ({
+    provider_folder_id: name, name, type: "system", message_count: count, unread_count: 0,
+  });
+  const sep = (id: string): EmailAccount => ({ ...box(id), inAllInboxes: false });
+  beforeEach(async () => {
+    await flush();
+    await flush();
+    api.listEmailFolders.mockReset();
+    api.listEmailFolders.mockResolvedValue([raw("Inbox", 2)]);
+    useEmailStore.setState({ accounts: [box("a", true), box("b"), sep("c")], allFolderCounts: null });
+  });
+
+  it("sums the folders of the pooled mailboxes only", async () => {
+    await useEmailStore.getState().fetchAllFolderCounts();
+    expect(api.listEmailFolders.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+    expect(useEmailStore.getState().allFolderCounts?.inbox).toBe(4);
+  });
+
+  it("reads no sums when fewer than two are pooled", async () => {
+    useEmailStore.setState({ accounts: [box("a", true), sep("c")] });
+    await useEmailStore.getState().fetchAllFolderCounts();
+    expect(api.listEmailFolders).not.toHaveBeenCalled();
+  });
+
+  it("ends All inboxes on a re-read that finds one pooled mailbox", async () => {
+    api.listEmailAccounts.mockResolvedValue([box("a", true), sep("b")]);
+    await useEmailStore.getState().fetchAccounts();
+    expect(useEmailStore.getState().viewAll).toBe(false);
+  });
+
+  describe("with fake timers", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("syncs the pooled mailboxes in All inboxes, and the separate one in its own view", () => {
+      useEmailStore.getState().syncScope();
+      expect(api.triggerSync.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+      api.triggerSync.mockClear();
+      useEmailStore.setState({ viewAll: false, selectedAccountId: "c" });
+      useEmailStore.getState().syncScope();
+      expect(api.triggerSync.mock.calls.map((c) => c[0])).toEqual(["c"]);
     });
   });
 });

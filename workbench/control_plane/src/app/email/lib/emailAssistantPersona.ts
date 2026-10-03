@@ -18,7 +18,7 @@
  * passes no scope and stays on one mailbox. Fence: `chatScope.test.ts`.
  */
 
-import { mailboxLabel } from "./mailbox";
+import { mailboxLabel, pooledMailboxes } from "./mailbox";
 
 export interface PersonaAccount {
   id: string;
@@ -33,6 +33,9 @@ export interface PersonaAccount {
   displayLabel?: string | null;
   /** The label to draw (EM-T8b), gateway shape. */
   display_label?: string | null;
+  /** False for a separate mailbox, store shape (EM-T8g-2, D-EM-28). The All
+   *  inboxes persona lists only the pooled mailboxes. */
+  inAllInboxes?: boolean | null;
 }
 
 export interface PersonaOpenEmail {
@@ -105,10 +108,14 @@ export function buildEmailAssistantPersona(opts: {
       "manage the inbox entirely by chat using your tools.",
   ];
 
-  if (accounts.length > 0) {
+  // All inboxes lists only the pooled mailboxes. A separate mailbox stays out
+  // of the chat in All inboxes (EM-T8g-2 item 5, D-EM-28). One mailbox in
+  // scope lists each mailbox, so the member can still name another one.
+  const listed = allInboxes ? pooledMailboxes(accounts) : accounts;
+  if (listed.length > 0) {
     parts.push(
       "Connected accounts:\n" +
-        accounts
+        listed
           .map((a) => `• ${chatMailboxName(a)} (account_id ${a.id})`)
           .join("\n"),
     );

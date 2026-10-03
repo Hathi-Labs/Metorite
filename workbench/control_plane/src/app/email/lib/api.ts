@@ -90,6 +90,9 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     // EM-T8f-1. ISO text with microseconds. The disconnect dialog names the
     // next default from it (EM-T8f-2).
     createdAt: optionalString(raw.created_at),
+    // EM-T8g-1. Only an explicit false keeps the mailbox separate. A gateway
+    // before EM-T8g-1 sends no field, and each mailbox stays in All inboxes.
+    inAllInboxes: raw.in_all_inboxes !== false,
   };
 }
 
@@ -549,7 +552,7 @@ export async function getSentFrom(emails: string[]): Promise<Record<string, stri
 
 export async function updateEmailAccount(
   id: string,
-  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot">>
+  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot" | "inAllInboxes">>
 ): Promise<EmailAccount> {
   // Map camelCase → snake_case for the backend PATCH
   const body: Record<string, unknown> = {};
@@ -561,6 +564,9 @@ export async function updateEmailAccount(
   // EM-T6d item 11: true closes the guided setup for good (EM-T6a stores
   // `onboarding_done_at`). The handler keeps its owner predicate.
   if (updates.onboardingDone !== undefined) body.onboarding_done = updates.onboardingDone;
+  // EM-T8g-2: false keeps the mailbox separate, and true puts it back in All
+  // inboxes (D-EM-28). The gateway takes a strict boolean.
+  if (updates.inAllInboxes !== undefined) body.in_all_inboxes = updates.inAllInboxes;
   const raw = await gatewayFetch<Record<string, unknown>>(
     `/email/accounts/${id}`,
     { method: "PATCH", body: JSON.stringify(body) }

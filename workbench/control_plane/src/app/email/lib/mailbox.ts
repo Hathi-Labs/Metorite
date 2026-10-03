@@ -225,3 +225,86 @@ export function swapSignature(body: string, oldSig: string, newSig: string): str
   if (!newSig) return body.replace(oldSig, "").replace(/\s+$/, "");
   return body.replace(oldSig, newSig);
 }
+
+// ── Keep separate (EM-T8g-2, D-EM-28 and D-EM-30) ──────────────────────────
+
+/** A mailbox with the flag of "Keep separate". Absent means "in All inboxes",
+ *  so a gateway before EM-T8g-1 keeps each mailbox in All inboxes. */
+interface PoolFlag {
+  inAllInboxes?: boolean | null;
+}
+
+/** True when the member keeps this mailbox out of All inboxes (D-EM-28). */
+export function isSeparate(account: PoolFlag): boolean {
+  return account.inAllInboxes === false;
+}
+
+/**
+ * The mailboxes in All inboxes: each mailbox that is not separate, in the
+ * order of the list. This is the one rule of the pool (D-EM-30). The All
+ * inboxes row, its unread sum, the header count, the folder sums,
+ * `scopeBusy`, `syncScope`, `pickInitialView` and the chat read it. Do not
+ * count `accounts` for an All-inboxes decision. Fence:
+ * `email-all-skips-separate` in `allInboxes.test.ts`.
+ */
+export function pooledMailboxes<T extends PoolFlag>(accounts: ReadonlyArray<T>): T[] {
+  return accounts.filter((a) => !isSeparate(a));
+}
+
+/** True when All inboxes shows: two or more pooled mailboxes (D-EM-30). */
+export function hasAllInboxes(accounts: ReadonlyArray<PoolFlag>): boolean {
+  return pooledMailboxes(accounts).length > 1;
+}
+
+/** The item of the mailbox menu that moves a mailbox in or out of All
+ *  inboxes. `nextPooled` is the value that the `PATCH` sends. */
+export interface SeparateToggle {
+  label: "Keep separate" | "Show in All inboxes";
+  icon: "EyeOff" | "Inbox";
+  nextPooled: boolean;
+}
+
+/**
+ * The menu item of "Keep separate" (EM-T8g-2 item 1). A separate mailbox
+ * offers "Show in All inboxes", and each other mailbox offers "Keep
+ * separate". With one mailbox there is no All inboxes, so the menu offers
+ * neither (§11.0).
+ */
+export function separateToggle(
+  account: PoolFlag,
+  accounts: ReadonlyArray<unknown>,
+): SeparateToggle | null {
+  if (accounts.length < 2) return null;
+  return isSeparate(account)
+    ? { label: "Show in All inboxes", icon: "Inbox", nextPooled: true }
+    : { label: "Keep separate", icon: "EyeOff", nextPooled: false };
+}
+
+/** The word that the switcher row of a separate mailbox shows beside its
+ *  chip, or null. With one mailbox nothing shows (§11.0). */
+export function separateMark(account: PoolFlag, accounts: ReadonlyArray<unknown>): "Separate" | null {
+  return accounts.length > 1 && isSeparate(account) ? "Separate" : null;
+}
+
+/**
+ * The mailbox that "Open in inbox" moves the view to, or null to stay.
+ * - One mailbox in view: a mail of another mailbox opens in its own mailbox
+ *   (EM-T8a, MB-3).
+ * - All inboxes: a mail of a separate mailbox opens in that mailbox, never
+ *   in All inboxes (EM-T8g-2 item 4). A mail of a pooled mailbox stays in
+ *   All inboxes with its chip (EM-T8d).
+ * A mailbox that is not in the list never moves the view.
+ */
+export function mailboxToOpen(
+  state: {
+    viewAll: boolean;
+    selectedAccountId: string | null;
+    accounts: ReadonlyArray<{ id: string } & PoolFlag>;
+  },
+  mailAccountId: string | null | undefined,
+): string | null {
+  const box = mailAccountId ? state.accounts.find((a) => a.id === mailAccountId) : undefined;
+  if (!box) return null;
+  if (state.viewAll) return isSeparate(box) ? box.id : null;
+  return box.id !== state.selectedAccountId ? box.id : null;
+}

@@ -4781,6 +4781,75 @@ The R8 cases must show PASSED, not SKIPPED. With `DATABASE_URL` set, the two WS-
 
 ##### EM-T8g-2 — "Keep separate", the UI half (after T8g-1 and EM-T8f-2)
 
+**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-separate-ui`. No migration and no backend change.
+A toggle saves only after EM-T8g-1 deploys. Before that, the gateway refuses the field, and the UI
+shows the error and moves nothing.
+
+**As-built notes.**
+
+- **One rule.** `isSeparate` and `pooledMailboxes` in `lib/mailbox.ts` decide the pool.
+  `hasAllInboxes` is true for two or more pooled mailboxes. A source scan fails when a file other
+  than `lib/api.ts` or `lib/mailbox.ts` reads the flag.
+- **The field.** `mapAccount` reads `in_all_inboxes`. Only an explicit `false` makes a mailbox
+  separate, so a gateway before EM-T8g-1 keeps each mailbox in All inboxes.
+- **The menu (item 1).** `separateToggle` gives "Keep separate" or "Show in All inboxes".
+  `accountMenuItems` is the menu as a function with no hook, so a test runs each pick. The
+  switcher row draws the word "Separate" in the house `Badge`, after the label of the mailbox.
+- **The pool (item 2).** The All inboxes row, its unread sum, the header count, `scopeBusy`,
+  `syncScope`, the folder sums and `pickInitialView` read `pooledMailboxes`.
+- **The toggle (item 3).** `setInAllInboxes` in the store waits for the `PATCH`, then moves only
+  the flag, because the answer holds no default flag. In All inboxes, the rows, the checks and the
+  open mail of a mailbox kept separate leave at once. Then the store reads the list and the sums
+  again. Fewer than two pooled mailboxes end All inboxes for the default mailbox.
+- **Another tab.** `fetchAccounts` treats a mailbox that left the pool as a removed mailbox. A
+  mailbox that joined the pool makes the store read the list and the sums again.
+- **Open in inbox (item 4).** `mailboxToOpen` in `lib/mailbox.ts` holds the rule of MB-3 and of
+  item 4. In All inboxes, a mail of a separate mailbox opens in that mailbox.
+- **The chat (item 5).** `chatMailboxOptions` offers All inboxes for two or more pooled
+  mailboxes, and a separate mailbox stays an option. The All inboxes persona lists only the pooled
+  mailboxes. `chatScope` falls back through `pickInitialView`.
+- **No change (item 6).** The chips, the From row, "In <chip>", the import panels and the
+  reconnect banner still count each mailbox. New mail in All inboxes starts on the default
+  mailbox, also when the default is separate.
+
+**Narrowed.**
+
+- With one mailbox, the menu offers neither label and the row shows no word (§11.0).
+- A Refresh in All inboxes does not sync a separate mailbox. Its own view and its own loop sync it.
+- A re-read after a change in another tab ends All inboxes on the selected mailbox, as before. Only
+  a toggle in this tab moves to the default mailbox.
+- Nobody did the look check of CLAUDE.md §4: light mode, compact density and a changed accent. The
+  agent had no browser, so a reviewer must do it.
+
+**Outside the stated scope.**
+
+- `lib/mailbox.test.ts`: two cases of `email-open-by-id-switches` read the inline condition that
+  moved into `mailboxToOpen`. They now test the function and scan for its call.
+- `allInboxes.test.ts`: two EM-T8d cases, the header count and "keeps an opened mail", read the
+  new code.
+- `workbench/AGENTS.md`: one line for this slice.
+
+**Fences.**
+
+- `email-all-skips-separate`: `allInboxes.test.ts`, and its store half in `allInboxesStore.test.ts`.
+- `email-separate-menu`: `allInboxes.test.ts`.
+- `email-separate-leaves-at-once`: `allInboxesStore.test.ts`, and its pure half in
+  `allInboxes.test.ts`.
+- `email-chat-separate`: `chatScope.test.ts`.
+
+**Mutation run.**
+
+- The final run killed 46 of 46 mutants. They are 14 for `email-all-skips-separate`, 11 for
+  `email-separate-menu`, 16 for `email-separate-leaves-at-once` and 5 for `email-chat-separate`.
+- The script restored each file and checked its hash.
+- The first run also killed 46 of 46. A failed store case then held a folder read open, so the
+  later cases failed too. An `afterEach` now settles that read, and each kill names its own case.
+
+**Verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat` gave 49
+files and 961 tests passed. The suites of Integrations and Organization gave 8 files and 92 tests
+passed.
+
 **Gate.** 🟢 AGENT-SAFE.
 
 **Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `lib/mailbox.ts`,
