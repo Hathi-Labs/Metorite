@@ -28,7 +28,7 @@ import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import Modal from "@/components/ui/Modal";
 import {
-  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy,
+  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
 } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
@@ -136,12 +136,13 @@ export default function EmailPage() {
     composeDefaults?.accountId ||
     (viewAll ? defaultAccountId || selectedAccountId : selectedAccountId);
 
-  // Automation and the chat act on one mailbox, and All inboxes names none. So
-  // opening one leaves All inboxes for the mailbox of the open mail, else the
-  // default, and the switcher names it. The open mail stays open (EM-T8d
-  // review F4, F5). EM-T8e-3 gives the chat its own All inboxes scope.
+  // Automation acts on one mailbox, and All inboxes names none. So opening it
+  // leaves All inboxes for the mailbox of the open mail, else the default, and
+  // the switcher names it. The open mail stays open (EM-T8d review F4, F5).
+  // The chat has its own All inboxes scope (EM-T8e-3), so it keeps the page in
+  // All inboxes and gets `ALL_INBOXES` as its scope, never the hidden mailbox.
   useEffect(() => {
-    if (!automationFeature || !viewAll) return;
+    if (!automationFeature || automationFeature === "chat" || !viewAll) return;
     const st = useEmailStore.getState();
     const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
     const target = open?.accountId || defaultAccountId || st.selectedAccountId;
@@ -789,7 +790,7 @@ export default function EmailPage() {
         // Chat is a full scene (like Assistant / Reply Zero), not a side rail.
         <div className="flex-1 min-w-0 overflow-hidden">
           <EmailAssistantChat
-            selectedAccountId={selectedAccountId}
+            pageScope={viewAll ? ALL_INBOXES : selectedAccountId}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
           />

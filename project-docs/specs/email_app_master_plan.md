@@ -20,7 +20,7 @@
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -3364,7 +3364,7 @@ opens All inboxes. After that, Email opens the last scope.
 | 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27) | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
-| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
+| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e (the note: EM-T8f) |
 | 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
 | 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8f |
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
@@ -3545,7 +3545,7 @@ The theme suite holds the design-system fences, so leave it in.
 
 #### 11.7.4 EM-T8d — All inboxes
 
-**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-all-inboxes`, no migration).
+**Status.** ✅ MERGED #596 (2026-10-03, no migration).
 
 1. **The store scope** is `"all"` or a mailbox id. The URL holds it (§11.4).
 2. **The list and search** call the backend with no `account_id` in All inboxes. Each row draws
@@ -3849,18 +3849,98 @@ Do not smoke-test `send_email` on production. It sends real mail (CLAUDE.md §3a
 
 **Build order.** EM-T8e-1 and EM-T8e-2 touch disjoint source files, and each can merge first.
 Each slice writes its status under its own heading. The slice that merges second rebases and
-merges the shared status lines in place.
+merges the shared status lines in place. EM-T8e-3 merges after EM-T8e-2. Its All inboxes persona
+tells the model to leave `account_id` out, and only EM-T8e-2 makes that argument optional.
 
 ##### EM-T8e-3 — the chat scope (UI)
 
-1. **The picker** in `EmailAssistantChat` offers "All inboxes" when the member has two or more
-   mailboxes, and each mailbox as its chip. It follows the scope of the page.
-2. **The persona** names the scope. In one mailbox, it gives that `account_id`. In All inboxes,
-   it gives no default and lists each mailbox as "label · address (account_id)".
-3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
-   inboxes, or to the only mailbox.
+**Status.** ✅ MERGED #599 (2026-10-03), after EM-T8e-2 #597. No migration.
 
-EM-T8e-3 starts after EM-T8d merges, because it reads the `viewAll` scope of the store.
+**As built (2026-10-03).**
+
+- **The decisions are pure functions.** `lib/chatScope.ts` holds the scope of the chat, the
+  options of the picker and the settings read. Vitest runs in node and cannot render
+  `EmailAssistantChat`, so a source scan checks the wiring.
+- **The picker (item 1).** "All inboxes" comes first, for two or more mailboxes. Each mailbox
+  shows as "label · address". When the label is the address, the address shows once. A pick
+  stays while the page scope stays. When the page scope changes, the chat follows the page.
+- **The persona (item 2).** `chatMailboxName()` makes "label · address" from `mailboxLabel()`.
+  It reads the store shape and the gateway shape, so `chat/page.tsx` gets the MB-15 fix with no
+  change. The list writes each mailbox as "label · address (account_id <id>)" in both scopes.
+  All inboxes ignores `selectedAccountId` and `settings`. An open mail names its mailbox.
+- **The fallback (item 3)** calls `pickInitialView`. The note "the chat says so" is not built.
+- **The page (item 4)** passes the prop `pageScope`, which is `ALL_INBOXES` or a mailbox id. The
+  prop `selectedAccountId` is gone.
+- **Item 5** is a test only. No card file changed.
+
+**Fences.** `src/app/email/lib/chatScope.test.ts` names the five fence ids. A mutation run killed
+13 of 13 mutants. `allInboxes.test.ts` keeps the automation half of
+`email-all-automation-names-mailbox`.
+
+**Review round 1 (2026-10-03).** The verifier found no P0 and no P1. This round fixes its P2
+findings.
+
+- **The settings of the last mailbox clear first (F1).** A switch from A to B clears the
+  settings and the chat model before it reads B. Before, the standing orders of A stood under
+  the name of B while the read was out, and after a failed read.
+- **A read tool that needs one mailbox runs for each mailbox (F4).** The All inboxes persona
+  says so. Without it, the model could answer "what needs a reply?" for one mailbox as if for
+  all.
+- **Three fences got tighter (F2, F3, F1).** The picker mark in All inboxes, the page scope that
+  a pick holds, and the clear before the read. A mutation run killed 5 of 5.
+- **The deferred items have an owner (F5).** The colour dot in the picker and the note "the chat
+  says so" moved to EM-T8f.
+
+**Not checked.** This session had no browser. Nobody looked at the chat in light mode, at compact
+density or under a changed accent.
+
+**Scope.** `workbench/control_plane/src/app/email/` (`EmailAssistantChat.tsx`,
+`lib/emailAssistantPersona.ts` and `page.tsx`) and tests. No agent file and no gateway file. Not
+in scope: `src/components/AgentChat.tsx`, which draws the picker, `src/components/email/
+EmailToolCards.tsx`, and `src/app/chat/page.tsx`, which stays on one mailbox.
+
+1. **The picker.** `EmailAssistantChat` gives the picker an "All inboxes" option when the member
+   has two or more mailboxes. It names each mailbox as "label · address", from `mailboxLabel()`.
+   It starts on the scope of the page. The member can change it, and the change holds only for
+   that chat. A pick calls neither `selectAccount` nor `selectAll`. A colour dot in the picker needs
+   `AgentChat.tsx`, so it is deferred.
+   The chat model in All inboxes is "tier-powerful", the current default with no mailbox.
+2. **The persona** names the scope.
+   - In one mailbox, it gives that `account_id` and the settings of that mailbox: the standing
+     instructions and the writing style.
+   - In All inboxes, it gives no default `account_id`, and it lists each mailbox as
+     "label · address (account_id <id>)". It holds the settings of no mailbox, because each
+     mailbox has its own (D-EM-24). It tells the model to leave `account_id` out of a write act,
+     so the tool binds it or asks (§11.3).
+   - An open mail names its mailbox in the persona, in both scopes.
+3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
+   inboxes, or to the only mailbox, by the rule of `pickInitialView`. The note "the chat says so"
+   of edge case 17 is deferred.
+4. **The chat keeps All inboxes.** EM-T8d moved the page out of All inboxes when automation or
+   the chat opened. At that time the chat had no All inboxes scope. The chat now has one, so that
+   move skips the chat. Automation still moves. The page passes the scope of the chat to
+   `EmailAssistantChat`, never the hidden `selectedAccountId`. This rewrites the chat half of the
+   EM-T8d fence `email-all-automation-names-mailbox` (`allInboxes.test.ts`), and keeps its
+   automation half.
+5. **No hidden mailbox.** In All inboxes, `emailContext.accountId` is null, and no settings read
+   runs. Each card already reads the mailbox from the tool result or the mail, or fails closed.
+   EM-T8e-2 owns the one card fix, the thread card.
+
+**Fences (R7).** The vitest files name their fence ids.
+
+- `email-chat-scope-picker`: the picker offers All inboxes only with two or more mailboxes, and
+  it starts on the scope of the page. A pick changes the chat, not the page.
+- `email-chat-scope-persona`: a pure test of `buildEmailAssistantPersona` for both scopes. In All
+  inboxes, the text holds no "Active account", no default `account_id` and no settings of a
+  mailbox. It lists each mailbox as "label · address".
+- `email-chat-scope-fallback`: a removed mailbox gives All inboxes, or the only mailbox.
+- `email-chat-keeps-all-inboxes`: the move of EM-T8d skips the chat.
+- `email-chat-scope-no-hidden-mailbox`: in All inboxes, `emailContext.accountId` is null, and no
+  `getAssistantSettings` call runs. An open mail names its mailbox in the persona.
+
+**Verification.** In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme`. Look at the
+chat in light mode, at compact density, and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.6 EM-T8f — settings for each mailbox
 
@@ -3873,6 +3953,9 @@ EM-T8e-3 starts after EM-T8d merges, because it reads the `viewAll` scope of the
 5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
    folder. The page shows one import panel for each importing mailbox, each one named (edge case
    19).
+6. **From EM-T8e-3 (moved 2026-10-03).** The chat picker shows the colour dot of each mailbox. A
+   chat whose mailbox the member removes says so (edge case 17). Both need
+   `src/components/AgentChat.tsx`.
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
