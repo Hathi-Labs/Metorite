@@ -71,6 +71,16 @@ __all__ = [
 ]
 
 
+#: The page size of ``MemoryClient.delete_scope``. One read gives at most this
+#: many rows, and the method reads again until a read is empty.
+DELETE_SCOPE_PAGE = 100
+
+#: The most reads of one ``delete_scope`` call. 1000 pages of 100 rows is
+#: 100,000 memories in one scope. Past it the call raises, so a fault fails a
+#: test run and does not hang it.
+DELETE_SCOPE_MAX_PAGES = 1000
+
+
 class MemoryClient:
     """Thin wrapper around the mem0ai MemoryClient with lazy initialisation.
 
@@ -263,6 +273,76 @@ class MemoryClient:
             await asyncio.to_thread(client.delete, memory_id=memory_id)
         except Exception as exc:  # noqa: BLE001
             _log.debug("mem0.delete_error", error=str(exc)[:100])
+
+    async def delete_scope(self, user_id: str) -> int:
+        """Delete every memory under one scope key, and return the count.
+
+        WS-17 EM-T8f-1 (MB-17): a disconnect purges the drafting memory of a
+        mailbox. ``Memory.get_all`` of mem0ai 2.2.1 returns 20 rows when no
+        ``top_k`` is given, so one read does not see the whole scope. This
+        method reads one page of ``DELETE_SCOPE_PAGE`` rows, deletes each one,
+        and reads again until a read is empty. ``show_expired=True`` makes the
+        read include expired rows, so they go too.
+
+        A plain string matches ``user_id`` exactly, so the scope ``a@x#acct:1``
+        does not touch ``a@x`` or ``a@x#acct:10``. Two values do NOT match
+        exactly, and this method refuses both with ``ValueError`` before any
+        call (EM-T8f-1 review, round 1):
+
+        * ``"*"``. The pgvector store of mem0ai 2.2.1 turns it into
+          ``payload ? 'user_id'``, which matches every memory of every tenant.
+          mem0 trims the value first, so ``" * "`` is the same value.
+        * A value that is not a ``str``. ``get_all`` of mem0ai 2.2.1 changes
+          it with ``str()`` first (``_validate_and_trim_entity_id``), so a
+          dict or a list becomes the text of it. That key is not the scope
+          that the caller meant. A purge must name its scope exactly.
+
+        A blank value is refused too. A scope check that is special to one
+        caller stays with that caller (``routes/email/memory_purge.py``).
+
+        Unlike ``delete``, this method RAISES on a Mem0 error. A purge that
+        fails in silence reads the same as a purge that worked. With Mem0 off
+        the answer is 0. A read that gives the same page twice raises
+        ``RuntimeError``, so a delete that has no effect cannot loop for ever.
+        More than ``DELETE_SCOPE_MAX_PAGES`` reads raise ``RuntimeError`` too,
+        so a fault fails a run and does not hang it.
+        """
+        if not isinstance(user_id, str):
+            raise ValueError("delete_scope needs a str scope key")
+        scope = user_id.strip()
+        if not scope:
+            raise ValueError("delete_scope needs a scope key")
+        if scope == "*":
+            raise ValueError("delete_scope refuses the wildcard scope")
+        client = self._get_client()
+        if client is None:
+            return 0
+
+        def _sync() -> int:
+            deleted = 0
+            seen: set[tuple[str, ...]] = set()
+            for _page in range(DELETE_SCOPE_MAX_PAGES):
+                page = client.get_all(
+                    filters={"user_id": scope},
+                    top_k=DELETE_SCOPE_PAGE,
+                    show_expired=True,
+                )
+                rows = page.get("results", []) if isinstance(page, dict) else list(page or [])
+                ids = [str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")]
+                if not ids:
+                    return deleted
+                batch = tuple(sorted(ids))
+                if batch in seen:
+                    raise RuntimeError("mem0 delete_scope read the same page twice")
+                seen.add(batch)
+                for memory_id in ids:
+                    client.delete(memory_id=memory_id)
+                    deleted += 1
+            raise RuntimeError(
+                f"mem0 delete_scope read {DELETE_SCOPE_MAX_PAGES} pages and the scope "
+                "is not empty")
+
+        return await asyncio.to_thread(_sync)
 
 
 @lru_cache(maxsize=1)

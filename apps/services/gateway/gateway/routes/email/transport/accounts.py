@@ -31,6 +31,7 @@ from gateway.routes.email.mailbox_identity import (
     valid_slot,
     work_domain,
 )
+from gateway.routes.email.memory_purge import schedule_mailbox_memory_purge
 from pydantic import BaseModel, StrictInt
 from sqlalchemy import text
 
@@ -105,6 +106,12 @@ class EmailAccountModel(BaseModel):
     #: mailbox cannot send until the member reconnects it. Any other sync
     #: error leaves it False: a send does not read the sync status (EM-T8c).
     needs_reconnect: bool = False
+    #: When the member connected the mailbox, as ISO text with six digits of
+    #: microseconds, so two values sort as text in the order of time. A
+    #: disconnect makes the oldest mailbox that is left the default
+    #: (``ORDER BY created_at, id`` in ``delete_account``). The UI names that
+    #: mailbox before the removal (EM-T8f-1 item 3). ``None`` for a NULL.
+    created_at: str | None = None
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -138,6 +145,15 @@ class AccountUpdateModel(BaseModel):
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if value else None
+
+
+def _iso_us(value: Any) -> str | None:
+    """ISO text that always holds microseconds (EM-T8f-1).
+
+    ``isoformat()`` drops the fraction when it is zero, so two values would
+    not compare as text. The fixed form keeps the order of time.
+    """
+    return value.isoformat(timespec="microseconds") if value else None
 
 
 class CreateAccountRequest(BaseModel):
@@ -263,7 +279,8 @@ async def list_accounts(
                 f"""SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
                           is_default, initial_sync_done, import_since,
-                          onboarding_done_at, color_slot, {_PROGRESS_COLUMNS}
+                          onboarding_done_at, color_slot, created_at,
+                          {_PROGRESS_COLUMNS}
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -299,6 +316,7 @@ async def list_accounts(
                 default_label=defaults.get(str(row.id), row.email_address),
                 work_domain=work_domain(row.email_address),
                 needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+                created_at=_iso_us(row.created_at),
                 **_progress(row),
             ))
         return accounts
@@ -427,7 +445,7 @@ async def create_account(
                                        WHERE user_id = :user_id
                                          AND organization_id = CAST(:org AS uuid)),
                            CAST(:org AS uuid), {NEXT_SLOT_SQL})
-                   RETURNING is_default, color_slot"""
+                   RETURNING is_default, color_slot, created_at"""
             ),
             {
                 "id": account_id,
@@ -470,6 +488,7 @@ async def create_account(
         display_label=labels.get(account_id, req.email_address),
         default_label=defaults.get(account_id, req.email_address),
         work_domain=work_domain(req.email_address),
+        created_at=_iso_us(created.created_at),
     )
 
 
@@ -511,7 +530,7 @@ async def set_default_account(
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
                              import_since, onboarding_done_at, color_slot,
-                             {_PROGRESS_COLUMNS}"""
+                             created_at, {_PROGRESS_COLUMNS}"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -541,6 +560,7 @@ async def set_default_account(
             default_label=defaults.get(str(row.id), row.email_address),
             work_domain=work_domain(row.email_address),
             needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+            created_at=_iso_us(row.created_at),
             **_progress(row),
         )
 
@@ -574,6 +594,12 @@ async def delete_account(
     ``commit()`` (mechanism (A) of §10.4.2). EM-T4f part 2 makes one sync
     run at a time for each mailbox (``email_ingestion.scheduler``). The fence
     is ``tests/unit/test_email_disconnect_order.py``.
+
+    EM-T8f-1 (MB-17): after the block of step 3 commits, a task deletes the
+    Mem0 drafting memory of the mailbox (``memory_purge.py``). A 404, a 409 or
+    a failed ``DELETE`` raises first, so it starts no purge. The route does
+    not wait for the task. The fence is
+    ``tests/unit/test_email_disconnect_memory_purge.py``.
     """
     owner = user.email or "anonymous"
 
@@ -641,7 +667,12 @@ async def delete_account(
                 status_code=409, detail=DISCONNECT_BUSY_DETAIL) from None
         raise
 
-    # ── 4. the Graph subscription, best effort, with no session open ────────
+    # ── 4. the Mem0 memory of the mailbox, in a task, after the commit ──────
+    # The owner predicate of the DELETE matched, so the row's user_id is
+    # ``owner``. The writers key the memory on that member (EM-T8f-1).
+    schedule_mailbox_memory_purge(owner, account_id)
+
+    # ── 5. the Graph subscription, best effort, with no session open ────────
     await _drop_graph_subscription(account_id, deleted)
 
 
@@ -828,7 +859,8 @@ async def update_account(
                     RETURNING id, provider, email_address, label, avatar_color,
                               sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,
-                              onboarding_done_at, color_slot, {_PROGRESS_COLUMNS}"""
+                              onboarding_done_at, color_slot, created_at,
+                              {_PROGRESS_COLUMNS}"""
             ),
             params,
         )
@@ -856,6 +888,7 @@ async def update_account(
         default_label=defaults.get(str(row.id), row.email_address),
         work_domain=work_domain(row.email_address),
         needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+        created_at=_iso_us(row.created_at),
         **_progress(row),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels

@@ -44,6 +44,7 @@ import {
   type ConnectProviderId,
 } from "./lib/connect";
 import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
+import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
 import { ownAddresses, replyRecipients } from "./lib/mailbox";
 import { isSearchActive } from "./lib/searchFilters";
@@ -802,6 +803,19 @@ export default function EmailPage() {
           <AutomationView
             feature={automationFeature}
             accountId={selectedAccountId}
+            accounts={accounts}
+            onPickMailbox={(id) => {
+              // The header picker (EM-T8f-2, MB-11). It selects through the
+              // store, because RulesTab reads the folders of the selected
+              // mailbox. The Process past date belongs to the mailbox of the
+              // setup, so a pick clears it.
+              pickSettingsMailbox(id, {
+                accounts,
+                current: selectedAccountId,
+                selectAccount,
+                clearProcessPastFrom: () => setProcessPastFrom(null),
+              });
+            }}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
             onArchived={fetchEmails}
@@ -1067,6 +1081,7 @@ export default function EmailPage() {
               replaceAccount(updated);
               void refreshAccounts();
             }}
+            mailboxes={accounts}
           />
         )}
 
@@ -1285,6 +1300,7 @@ export default function EmailPage() {
 
       <DisconnectDialog
         account={disconnecting}
+        accounts={accounts}
         onDisconnect={deleteAccount}
         onClose={() => setDisconnecting(null)}
       />

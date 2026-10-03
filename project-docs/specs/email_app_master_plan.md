@@ -3224,7 +3224,7 @@ that design. The owner can reverse any of them. Q-MB-1 is the one open owner que
 | **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
 | **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
 | **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
-| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. |
+| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until EM-T8g ships the loop guard, `POST /email/rules/copy` leaves out each WHOLE rule that has a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. The reason for the whole rule is in the As-built notes of EM-T8f-1 (§11.7.6). |
 
 ### 11.3 How the AI keeps the mailboxes apart
 
@@ -4109,9 +4109,115 @@ requests, T8f-1 to T8f-3. No migration.
 
 ##### EM-T8f-1 — copy rules, the memory purge and `created_at` (backend, R8)
 
+**Status.** ✅ MERGED #605 (2026-10-03). No migration.
+
+**As-built notes.**
+- **The forward rule (D-EM-29).** The copy leaves out the whole rule, and not only its FORWARD.
+  Without the FORWARD, the other actions of the rule stay. An ARCHIVE would then hide mail that
+  the member meant to forward. The answer names the rule. The owner can reverse this.
+- **The address scan.** The guard finds each `x@y` token in the To, Cc and Bcc of a FORWARD. The
+  strict `getaddresses` of Python 3.12 gives no address for a field that it cannot parse. The
+  guard would then let a loop through, so it does not use that parser.
+- **The answer.** `copied` holds the names in the target. `renamed` holds `{name, copied_as}`.
+  `left_out` holds `{name, reason}`. The reason is `disabled`, `forward_to_own_address` or
+  `reply_rule_exists`.
+- **The names.** The compare of names ignores case. The INSERT has
+  `ON CONFLICT (account_id, name) DO NOTHING`, so a name that another writer takes moves the copy
+  to the next name. After 50 tries the route answers 409, and the copy writes nothing.
+- **One reply rule (D-EM-6).** The target keeps one reply rule at most (`rules._is_reply_rule`).
+  The "Auto draft replies" switch edits only the first reply rule. A second one would go on
+  drafting while the switch shows OFF. So a source reply rule is left out as `reply_rule_exists`
+  when the target holds a reply rule, enabled or not. It is also left out when the copy already
+  took a reply rule.
+- **Drafting (D-EM-6).** The copied reply rule keeps DRAFT_EMAIL only when the target drafts. A
+  DRAFT_EMAIL on a rule that is not a reply rule stays, because the switch does not govern it.
+- **The columns.** Three tuples in `rule_copy.py` name each column of `email_rules` and
+  `email_actions`. The fence reads `information_schema` and fails on a column in no tuple.
+- **The purge.** `MemoryClient.delete_scope` reads pages of 100 rows with `show_expired=True`.
+  Unlike `delete`, it raises on a Mem0 error. A page that comes back twice raises, and so do more
+  than 1000 pages. So a fault fails a run and does not hang it. With Mem0 off the count is 0.
+- **The refusals.** `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value,
+  before any read. The pgvector store of mem0ai 2.2.1 turns `"*"` into `payload ? 'user_id'`,
+  which matches each memory of each tenant. The purge also refuses an account id that is not a
+  UUID. Since round 2, `core.email_memory_scope` builds the key from `str(UUID(id))` for each
+  writer and for the purge. Some writers take the id from the request, and Postgres finds the
+  row for an id in capitals.
+- **Two passes.** Three writers fill the key. The third is the precedent of each draft, which a
+  background task adds, and no lock holds it. So the purge runs `delete_scope` twice, 120 seconds
+  apart. An add that lands after the second pass stays.
+- **The log.** A purge logs the account id and the counts `first` and `second`. A failed pass
+  logs the pass and the error class only. No purge log holds an address or the text of a memory.
+- **`created_at`.** Each account read returns ISO text with six digits of microseconds. Two values
+  then sort as text in the order of time.
+- **Findings, not built here.** `MemoryClient.get_all` passes no `top_k`, and mem0ai 2.2.1 then
+  returns 20 rows at most. The memory panel can show only 20. `routes/admin/members.py` deletes
+  the mailboxes of a purged member and starts no Mem0 purge.
+- **Deferred: a durable sweeper.** The purge task lives in one gateway process. A restart during
+  the 120 seconds loses the second pass, and an add after the second pass stays. A durable sweep
+  of `#acct:<id>` keys with no mailbox row closes both. It is not built here. A run of it against
+  production is OWNER-GATE, as the sweep of older disconnects is.
+- **Verification (2026-10-03).** With `DATABASE_URL` unset, the block below gave 278 passed and 2
+  skipped. The two skips are the WS-29 gates of `test_tenant_coverage.py`, which read
+  `DATABASE_URL`. With `DATABASE_URL` set to the base database as well, those two gates failed
+  and the other 278 passed. `test_app_role_cannot_bypass_rls` reuses an engine of a stopped event
+  loop. `test_live_catalog_has_column_force_and_policy` reads a ladder that an earlier suite
+  replayed with no FORCE RLS phase. Both fail the same way on the base tree. Each of 16
+  mutations of the fences went red.
+
+**Review fix round 1 (2026-10-03).** An adversarial reviewer and a verifier checked 41c9c0b4.
+They found no P0, and no leak across members or organizations. The round fixed one P1, four P2s,
+four fence gaps and two doc defects. The agent rebased the branch on `a6b5b3ae` (#602). The
+rebase dropped the two narrowing commits, because #602 carries them.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| P1: a renamed copy of a reply rule drafts after the switch goes OFF | The target keeps one reply rule (`reply_rule_exists`) | the check off | `TestTheTargetKeepsOneReplyRule` |
+| P1, second half | The copy counts the reply rule that it took | `reply_held` not set | `test_a_second_reply_rule_of_the_source_is_left_out` |
+| P2: a late Mem0 add lands after the purge | A second pass after 120 seconds, logged as `first` and `second` | no second pass | `TestTheSecondPass` |
+| P2: `delete_scope("*")` deletes each memory of each tenant | Refuse `"*"`, a non-`str` and a blank value | each check off | `test_delete_scope_refuses_before_any_read` |
+| P2: the page loop has no cap | 1000 pages, then `RuntimeError` | `while True` | `TestThePageCap` |
+| P2: a path id in capitals misses the Mem0 key | The key holds `str(UUID(id))` | the raw id | `test_a_path_id_in_another_form_purges_the_canonical_key` |
+| M5: no fence for a rule that is not a reply rule | That rule keeps DRAFT_EMAIL | `keep_draft=target_drafts` | `TestDraftingFollowsTheTarget` |
+| M6: no fence for zero microseconds | A seed with a whole second | plain `isoformat()` | `test_each_account_read_returns_created_at` |
+| M7: no fence for the 409 | A copy that cannot land | the 409 path answers a name | `TestACopyThatCannotLand` |
+| M8: no fence for the strong reference | The set holds the running task | no `_PURGES.add` | `TestTheStrongReference` |
+
+- **Docs.** The D-EM-29 row in §11.2 now says that the copy leaves out the whole rule (F1). The
+  docstring of `memory_purge.py` names the three writers (F9).
+- **Mutation check.** 27 mutations went red: the 11 of the table and the 16 of the build, with
+  their round 1 anchors. The script restored each file and checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 307 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 127 email suites, with the memory and
+  seam suites, gave 2291 passed. The ruff gate passed.
+
+**Review fix round 2 (2026-10-03).** The verifier passed round 1 with no code blocker. Round 2
+fixed two P3s and two P4s. The agent rebased the branch on `ceba07cb` (#604, EM-T8e-1). In
+`apps/services/gateway/AGENTS.md` both sides added a bullet after the EM-T4e bullet, and the
+agent kept both.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| F1 (P3): a writer that takes the id from the request keys Mem0 on capitals | `core.email_memory_scope` builds `str(UUID(id))` when the id parses | the key keeps the request id | `TestTheKeyIsCanonical` and `test_a_writer_given_capitals_writes_the_key_that_the_purge_deletes` |
+| F2 (P3): a writer commits "Needs Reply" between the read and the INSERT | A reply rule is never renamed. When the target holds its name, the copy leaves it out as `reply_rule_exists` | rename allowed, or the check gone | `test_a_reply_rule_that_another_writer_commits_during_the_copy` |
+
+- **F1, the writers.** The writing-style route, the draft routes and the send route take the id
+  from the request. A canonical id does not change, so a key from a database id stays the same.
+- **F2, the residual.** A writer that commits a reply rule under ANOTHER name in the same window
+  still gives two reply rules. Only a lock that "Add defaults" also takes can close it. It is not
+  built here.
+- **Docs.** The docstring of `delete_scope` gives the real reason to refuse a value that is not a
+  `str` (F4). Version 2.2.1 of mem0ai changes such a value with `str()`. The Fences list and scope item 2
+  carry the fences and the log of rounds 1 and 2 (F5).
+- **Mutation check.** The 4 mutants of the table went red. The script restored each file and
+  checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 315 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 128 email suites, with the memory and
+  seam suites, gave 2373 passed. The ruff gate passed.
+
 **Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
 `automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`
 and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-1 edits both.
+After EM-T8e-1 merged (#604), review round 2 edits `core.email_memory_scope` only.
 
 1. **Copy rules (item 2).**
    - `POST /email/rules/copy` takes `from_account_id` and `to_account_id`. Each must be a mailbox
@@ -4129,8 +4235,8 @@ and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-
    - The answer lists the copied names, the renamed names and the rules that it left out.
 2. **The memory purge (item 4, MB-17).**
    - After the DELETE of a disconnect commits, a task with a strong reference deletes each Mem0
-     memory under `email_memory_scope(owner, account_id)`. It logs
-     `email.disconnect.memory_purged` with the count.
+     memory under `email_memory_scope(owner, account_id)`. It makes two passes, 120 seconds
+     apart. It logs `email.disconnect.memory_purged` with the counts `first` and `second`.
    - The helper refuses a scope that has no `#acct:`. A purge of the bare member scope would
      delete every personal memory of the member.
    - A 404, a 409 or a failed DELETE makes no purge call.
@@ -4151,10 +4257,22 @@ and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-
   - `email-rule-copy-drafting`: with `draft_replies` false or absent, no copied reply rule holds
     DRAFT_EMAIL. With it true, the rule keeps it.
   - `email-rule-copy-forward-loop`: a FORWARD to an own address is left out and named.
+  - `email-rule-copy-one-reply-rule` (round 1): the target keeps one reply rule. After a copy,
+    the switch OFF stops each reply draft.
+  - `email-rule-copy-reply-race` (round 2): another writer commits "Needs Reply" between the read
+    and the INSERT. The reply rule is left out, and never lands under another name.
+  - `email-rule-copy-409` (round 1): a copy that cannot land answers 409 and writes nothing.
 - `tests/unit/test_email_disconnect_memory_purge.py` (a fake Mem0 client):
   - `email-disconnect-purges-memory`: a 204 deletes each memory under `<owner>#acct:<id>`, over
     more than one page. It deletes no memory of the bare scope or of another mailbox.
-  - `email-purge-refuses-bare-scope`: an empty account id deletes nothing.
+  - `email-memory-key-canonical` (round 2): each form of one id gives one key. A writer given an
+    id in capitals writes the key that the purge deletes (R8).
+  - `email-purge-second-pass` (round 1): the second pass deletes an add that lands between the
+    passes.
+  - `email-purge-refuses-bare-scope`: an empty account id, or one that is not a UUID, deletes
+    nothing. `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value.
+  - `email-purge-page-cap` (round 1): a scope that never empties raises after 1000 pages.
+  - `email-purge-strong-reference` (round 1): `_PURGES` holds the task while it runs.
   - `email-purge-after-delete`: a 404, a 409 or a failed DELETE makes no purge call. A failed
     purge still gives 204, and its log holds no memory text.
   - `email-account-created-at`: each account read returns `created_at`.
@@ -4172,6 +4290,102 @@ The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.
 `test_memory_e2e.py`.
 
 ##### EM-T8f-2 — the settings UI (after EM-T8f-1)
+
+**Status.** ✅ MERGED #606 (2026-10-03), after EM-T8f-1 #605, whose copy route and `created_at` it
+calls. No migration and no backend change.
+
+**As-built notes.**
+
+- **The header (item 1).** `AutomationHeader` in `AutomationView.tsx` is the one header of the four
+  automation views. The page renders one `AutomationView` for desktop and for mobile, so the header
+  shows on both. Its second line names the mailbox as label and address.
+- **The picker.** With two or more mailboxes the header draws the chip and a `SelectButton` of each
+  mailbox. The picker has no All inboxes option. With one mailbox the header shows the name as
+  text, with no chip and no picker (§11.0). §11.4 says "Always", so the name shows for one mailbox.
+- **The pick.** `pickSettingsMailbox` clears the Process past date and calls the `selectAccount` of
+  the store. A pick of the mailbox in view, or of an id that is not a mailbox, does nothing.
+- **The copy (item 2).** For each other mailbox, the rules step shows a "Copy the rules of <label>"
+  button beside the presets. It shows them only before an enabled rule exists, as D-EM-24 says.
+  With two or more mailboxes the step shows the chip and the address of its own mailbox.
+- **No second copy.** `ruleCopier` refuses a start while a copy runs, and a pair that copied
+  before. The check and the mark are one synchronous call, so a double click starts one copy. A
+  failed copy does not count. The step then reads the rules again, and a copy that landed moves the
+  step on.
+- **The answer.** `copyReport` names the copied rules, each new name, and each rule that the copy
+  left out, with its reason in plain words. The test reads the `LEFT_OUT_*` reasons of
+  `rule_copy.py`, and it fails on a reason with no words.
+- **The disconnect (item 3).** `nextDefaultAfter` orders by `createdAt` as text, then by `id`. A
+  missing `createdAt` sorts last, as NULL does in an ascending order of Postgres. The dialog names
+  the mailbox as "label · address". When that mailbox is the default, the dialog names the new
+  default.
+- **The store.** The store marks the same mailbox as the default after the removal. This fixes the
+  STATUS DRIFT of the audit. The dialog holds its names while the disconnect runs. Without the
+  hold, the store drops the mailbox first, and the sentence on the new default disappears during
+  the close.
+- **Notes (item 4).** `notesFromOptions` names each mailbox through `chatMailboxName`, the one rule
+  for "label · address". The From picker is now `SelectButton`. This slice removes the native
+  `<select>` and its `SELECT_DEBT` entry in `conformance.test.ts`.
+
+**Outside the stated scope.**
+
+- `onboardingRules.test.ts`: the fake `RulesStepApi` gets `copyRules`.
+- `src/lib/theme/conformance.test.ts`: this slice removes the `SELECT_DEBT` entry of
+  `FollowupEmailModal.tsx`. The ratchet fails a file that improved until its entry changes.
+- `src/app/notes/lib/types.ts`: the account type of Notes gets the optional `display_label`.
+
+**Narrowed.**
+
+- The automation drawer on mobile keeps `showMailbox={false}`. The header picker is the picker on
+  mobile (MB-11).
+- `FollowupEmailModal.tsx` keeps its own overlay. Only its From picker moved to the house control.
+- Nobody did the look check of CLAUDE.md §4 (light mode, compact density, a changed accent). The
+  agent had no browser. A reviewer must do it.
+
+**Fences.** `src/app/email/lib/mailboxSettings.test.ts` names the four fences of this slice.
+
+**Mutation run.**
+
+- The first run found one gap. The header test read the markup, and the chip holds the address in
+  its `title`, so a header with no visible address passed. The fence now reads the visible text.
+- The final run killed 33 of 33 mutants: 8 for the header, 11 for the copy, 11 for the disconnect
+  and 3 for Notes. Three of them edited `transport/accounts.py`. The script restored each file and
+  checked its hash.
+
+**Verification (2026-10-03).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/app/notes src/components src/lib/theme` gave 49 files and 917
+tests passed. The suites of Integrations, Organization and Chat import `app/email/lib`, and they
+gave 8 files and 92 tests passed.
+
+**Review fix round 1 (2026-10-03).** An independent verifier checked `5d82548a`. It found no P0
+and no P1. This round fixes its four P2 findings. The branch still sits on `7b77980d`.
+
+| Finding | Fix | Mutants | The test that goes red |
+|---|---|---|---|
+| F1: an answer for A that lands after a pick of B shows under "for B". A toggle there then changes A. | `key={accountId}` on the view body. A `guardedLoad` in the loads of `RulesTab`, `DashboardView` and `BulkUnsubscribeView`. | R1 to R8 | `an answer for A that lands after a pick of B is never shown`, `the view body has the key of the mailbox`, `each load of the three views goes through guardedLoad` |
+| F2: no fence on the pick in Notes | `FollowupFromField` holds no hook. `followupSendRequest` makes the body of Send. | N4 to N7 | `a pick in the From field changes the account_id that Send posts` |
+| F3: no fence on the hold of the dialog | `holdNames` decides the names. | D12, D13 | `the names hold while busy, when the list changes under the dialog` |
+| F4: no fence on the end of a copy | `runRuleCopy` gives the answer, the failure and the read of the rules to the step. | C12 to C17 | the four tests of `the end of a copy (review F4)` |
+
+- **The key has a cost.** A pick resets the tab of AI Settings to Rules, and it closes a dialog that
+  is open in the view. The state of the views belongs to one mailbox, so the remount loses nothing
+  else.
+- **The key alone covers two loads.** `loadPatterns` of `RulesTab` and `loadMore` of the Email
+  Cleaner have no guard of their own.
+- **The fences.** The tests call each hook-free component as a function, so the handlers on its
+  elements are the real ones. The links from a container to its own state stay source scans,
+  because vitest here has no DOM.
+- **Found, and not fixed: Integrations.** `integrations/page.tsx:1046-1057` disconnects through a
+  native `confirm("Remove this email account?")`. It names no mailbox and no new default. This is
+  edge case 18 on a second surface. The tab reads its own shape of an account, with no
+  `isDefault`, `displayLabel` or `createdAt`, and `emailRemove.test.ts` pins its `handleDelete`. The
+  fix is more than 30 lines, so it needs a slice of its own.
+- **Mutation run.** The run killed 53 of 53 mutants: the 33 of the build and 20 new ones. D11 has
+  a new anchor, because the hold moved into `holdNames`. N4, D12, C12 and C14 match the four
+  survivors that the verifier named, and the fences now kill all four. The script restored each
+  file and checked its hash.
+- **Verification.** In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run` over
+  `src/app/email`, `src/app/notes`, `src/components`, `src/lib/theme`, `src/app/integrations`,
+  `src/app/settings/organization` and `src/app/chat` gave 57 files and 1020 tests passed.
 
 **Scope.** `components/automation/AutomationView.tsx`, `page.tsx`, `OnboardingRulesStep.tsx`,
 `lib/onboarding.ts`, `DisconnectDialog.tsx`, `lib/connect.ts`, `lib/emailStore.ts`, `lib/api.ts`,
