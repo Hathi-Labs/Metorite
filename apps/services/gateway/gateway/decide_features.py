@@ -302,8 +302,10 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
                 modes[feature] = "off"
             continue
         if mode == "on" and feature not in ON_FEATURES:
-            # 🔴 EM-T5b-2 opens `on` for the rule match only (owner decision
-            # (c)). The other three features keep the old path.
+            # 🔴 `on` only for a feature in ON_FEATURES. Since EM-T5b-2 in
+            # full, that set holds all four email features, so no feature of
+            # FEATURES reaches this branch today. It stays as the guard for a
+            # feature that joins FEATURES without `on`.
             _log.warning(
                 "decide.mode_refused",
                 decide_feature=feature,

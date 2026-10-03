@@ -177,7 +177,8 @@ def _llm(monkeypatch, module, data: Any, delay: float = 0.0) -> list[Any]:
 
 async def _site_cold(monkeypatch, delay: float = 0.0):
     _llm(monkeypatch, snd, {"cold": True, "reason": SECRET_REASON}, delay)
-    return await snd._llm_is_cold(EMAIL, account_id=ACC), (True, SECRET_REASON)
+    return (await snd._llm_is_cold(EMAIL, blocker="LABEL", account_id=ACC),
+            (True, SECRET_REASON))
 
 
 def _pin_db() -> AsyncMock:

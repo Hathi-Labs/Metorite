@@ -1419,11 +1419,26 @@ async def classify_matches(
     classifier model itself is down (a genuine no-match still returns ``[]``), so
     the caller can skip its ``rules_processed_at`` watermark and retry next cycle
     instead of burning the message unseen.
+
+    EM-T5b-2 fix round 3: in ``on`` of ``email.thread_status``, the status
+    is asked BEFORE the match when it is sure to be asked
+    (``replyzero.status_before_match``). A missing status then raises
+    ``DecisionUnavailable`` before the match is paid. Outside ``on`` the
+    step reads nothing, and the order is the one above.
     """
     # The message id for the `decide` shadow log (EM-T5b-1). It comes from the
     # row, so no caller of this function changes.
     row_id = getattr(message_row, "id", None)
     message_id = str(row_id) if row_id is not None else None
+    # Lazy import: replyzero sits ABOVE the engine (it imports match helpers from
+    # here), so importing it at module scope would cycle. The resolver is the
+    # thread-status authority; it owns the #110 conversation logic.
+    from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+        resolve_conversation_status_matches,
+        status_before_match,
+    )
+    first = (await status_before_match(db, account_id, message_row)
+             if resolve else None)
     if multi_rule:
         matches = await _match_email_to_rules_multi(
             db, account_id, email, message_id=message_id)
@@ -1432,14 +1447,8 @@ async def classify_matches(
         matches = [m] if m else []
     if not resolve:
         return matches
-    # Lazy import: replyzero sits ABOVE the engine (it imports match helpers from
-    # here), so importing it at module scope would cycle. The resolver is the
-    # thread-status authority; it owns the #110 conversation logic.
-    from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-        resolve_conversation_status_matches,
-    )
     resolved = await resolve_conversation_status_matches(
-        db, account_id, message_row, matches, provider=provider)
+        db, account_id, message_row, matches, provider=provider, first=first)
     return resolved or []
 
 

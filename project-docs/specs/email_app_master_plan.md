@@ -19,7 +19,7 @@
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
-> 🔨 **EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path, and the startup check logs a box that cannot reach `decide` (§10.4.8).
+> 🔨 **EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -2524,7 +2524,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 #### 10.4.8 EM-T5b in full
 
-**Status.** ✅ EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR. 🔨 EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03). EM-T5b-3 and EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
+**Status.** ✅ EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR. 🔨 EM-T5b-2 in full BUILT, NOT MERGED (`email-t5b2`, 2026-10-03), with review fix round 3. EM-T5b-3 and EM-T5b-4 are SPEC ONLY. The audit read each anchor at `01d760e6`. EM-T5b has four parts, and each part is one PR. D-EM-7 to D-EM-9 are the decisions. The "Question conventions" of `customer_console.md` §6A.14 are the contract for each question.
 
 **EM-T5b-1 as built (2026-10-02).** `engine.py` holds `_rule_match_requests`, `_read_rule_match` and the result type `RuleMatch`. `RuleMatch.as_pick` and `RuleMatch.as_picks` give the two return shapes of item 10, for EM-T5b-2. `_fetch_sender_history` gives the history rows, and the old prompt keeps its text form. `ThreadContext.messages` holds the thread as facts. `build_thread_context` builds them only when `email.thread_status` is not `off`, so in `off` the live context is the one from before. These choices of the build are not in the text above:
 
@@ -2585,7 +2585,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 1. `ON_FEATURES` holds the four email features. `on` for any other name resolves to `off` and logs `decide.mode_refused`.
 2. **The thread status.** In `on`, `replyzero._decide_thread_status` asks the `status` choice, and the choice decides. An answer outside the options is no decision.
 3. With no status, `_decide_thread_status` raises `DecisionUnavailable`. `resolve_conversation_status_matches` passes it through its broad handler, so the runner skips the row. `recompute_thread_status` writes nothing and returns None, so `_mark_thread_replied` leaves the labels.
-4. **The cold check.** An email is cold at 0.5 or above, and only then. With no decision it is not cold: no row, no label and no archive. The rule outcome stands, and the runner stamps the message.
+4. **The cold check.** An email is cold at 0.5 or above when the blocker labels. When the blocker archives, the bar is 0.7 (fix round 3). With no decision it is not cold: no row, no label and no archive. The rule outcome stands, and the runner stamps the message.
 5. **The sender pin.** A pin needs 0.9 or above. With no decision there is no pin. The rule still applies, and the runner stamps the message.
 6. **The member.** `engine._decide_member(db, account_id, feature)` reads the owner for each feature in `on`. Each site gives it to `ask` as a proven member.
 7. **The cool-down** of fix round 2 is for the organization, so it covers all four features. A 402 from the cold check also stops the status and the pin calls.
@@ -2593,8 +2593,8 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 9. **The startup check.** `register_email_post_sync_hooks` runs `scheduler_hooks.check_decide_wiring()` once. It logs `email.decide_not_wired` at error level when a feature is `on` and `decide_enabled` or `router_is_wired()` is false. It reads the wiring through a new probe, `acb_llm.routed.router_wired()`. The dependency fence admits eight importers of `console_resolve`, and it pins the `decide` facade to two names, so the gateway may not import it here.
 10. With no organization in `DECIDE_FEATURE_ORGS`, no feature is `on`, so the check of item 9 logs nothing.
 11. The docstrings of `acb_llm/decide.py` say that email leaves an email undecided, with no LLM call.
-12. `decide.decided` logs our own keys and numbers only. The status logs `answer`, `confidence`, `margin` and `options`. The cold check logs `p_cold` and `cold`, and the pin logs `p_always` and `pin`.
-13. The sent rows of the Reply Zero backfill keep no new-mail floor (item 7 of the narrowed record). In `on` each such thread costs one Jev call, and the backfill takes 40 or fewer in each cycle.
+12. `decide.decided` logs our own keys and numbers only. The status logs `answer`, `confidence`, `margin`, `options`, `p_answer`, `moves` and `move_bar_met`. The cold check logs `p_cold`, `cold` and `threshold`, and the pin logs `p_always` and `pin`.
+13. The sent rows of the Reply Zero backfill keep the new-mail floor too (fix round 3, item 5 below). Item 7 of the narrowed record gave them no floor.
 
 The fences are the R8 classes `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheSenderPinOnJev`, and the hermetic cases, in `tests/unit/test_email_decide_on.py`.
 
@@ -2607,10 +2607,22 @@ DECIDE_FEATURE_ORGS=*
 
 ⚠️ Use the names in `decide_features.FEATURES`. `email.cold_sender` and `email.pin` are not feature names. A wrong name logs `decide.mode_refused` and stays `off`.
 
-**Two findings for the owner (not built).**
+**Fix round 3 (review, 2026-10-03).** The house rule for a bar is 0.5, 0.7 for a decision that moves mail, and 0.9 for a pin. Items 1 and 2 build the two findings that the first build left open.
 
-- **The cold check archives at 0.5.** The thresholds table gives the cold check 0.5, and a rule that moves mail 0.7. When the blocker is `ARCHIVE`, a cold verdict moves mail at 0.5. The build keeps the value of the table.
-- **The thread status has no bar.** The status choice selects a conversation rule, and the actions of that rule then run. The four conversation presets only label. A member who adds `ARCHIVE` to "Done" gets that move at the plurality of the choice, as on the old LLM path. The `conv` option of the rule match already needs 0.7 for such a rule.
+1. **A cold check that archives needs 0.7.** `senders._cold_threshold` gives 0.7 when the blocker is `ARCHIVE`, and 0.5 when the blocker labels. `_cold_blocker_moves` is the one test, so the archive and the bar cannot disagree. The `shadow` line uses the same bar.
+2. **A thread status that moves mail needs 0.7.** The status selects a conversation rule, and the runner runs its actions. When that rule moves mail, the status needs 0.7 on its own option (`replyzero._STATUS_MOVE_THRESHOLD`).
+   - Under the bar the rule does not run, and the per-message matches stand, as for a status with no enabled rule. The log line is `email.thread_status_under_move_bar`.
+   - A status whose rule only labels keeps the plurality of the choice. `recompute_thread_status` runs no rule, so it has no bar.
+3. **The status comes first when it is sure.** `classify_matches` calls `replyzero.status_before_match` before the rule match. The status is sure when the mailbox has an enabled conversation rule and the thread is already a conversation.
+   - Then a missing status raises `DecisionUnavailable` before the rule match is paid. The email stays undecided, and the next cycle asks again (D-EM-8).
+   - For another thread, the resolver asks only after the rule match picks a conversation rule. An earlier ask would pay for each email that matches no conversation rule.
+4. **No conversation rule, no status call.** With no enabled conversation rule (`replyzero._enabled_conversation_rules`), the resolver asks no status.
+5. **The sent rows keep the floor.** The Reply Zero backfill selects a sent gap thread only when its latest message arrived at or after `NEW_MAIL_FLOOR_SQL`. With no enabled rule it selects none.
+   - The filed rows keep no floor. They get a fixed FYI, with no model call and no provider write.
+   - "Reclassify" reuses the backfill, so it no longer reaches older sent threads either.
+6. `off` and `shadow` keep the old resolver path and the old order. In those modes `status_before_match` reads nothing.
+
+The fences are in `tests/unit/test_email_decide_on.py`. The hermetic cases are `test_an_archiving_cold_blocker_needs_the_move_bar`, `test_the_cold_shadow_line_uses_the_bar_of_the_blocker`, `test_a_status_whose_rule_moves_mail_needs_the_move_bar`, `test_the_status_is_asked_before_the_rule_match`, `test_a_missing_status_costs_no_rule_match` and `test_no_enabled_conversation_rule_means_no_status_call`. The R8 cases are in `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheReplyZeroBackfillOnJev`. A temporary mutation of each fix made its fences fail.
 
 **Gate.**
 
@@ -2801,9 +2813,11 @@ For the pin, `criteria.true` is "Every message from this sender fits this rule."
 |---|---|---|
 | A rule that only labels | 0.5 | A wrong label costs one Fix |
 | A rule that moves mail | 0.7 | A wrong move hides real mail from the inbox |
-| Cold check | 0.5 | The old prompt asked for no margin |
+| Cold check, the blocker labels | 0.5 | The old prompt asked for no margin |
+| Cold check, the blocker archives | 0.7 | An archive moves mail (fix round 3) |
 | Sender pin | 0.9 | The old prompt asked for 90% sure, and a pin is permanent |
-| Thread status | none | The choice decides. The log keeps the confidence |
+| Thread status, its rule labels | none | The choice decides. The log keeps the confidence |
+| Thread status, its rule moves mail | 0.7 | The status runs the move of its rule (fix round 3) |
 
 **The log line.** Each call logs the feature, `account_id`, `message_id`, each `request_id`, the latency, and the counts of questions and requests. It also logs these values:
 
