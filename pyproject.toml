@@ -132,10 +132,15 @@ disallow_untyped_decorators = false
 exclude = ["workbench/", "infra/", "build/", "dist/"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers -m 'not integration'"
+# `sandbox_docker` tests need a real Docker daemon, and they build the coding
+# sandbox image. The default run deselects them. The workflow
+# .github/workflows/sandbox-docker.yml runs them with `-m sandbox_docker`, and
+# it fails on any skip (maf_coding_engine.md §10).
+addopts = "-ra --strict-markers -m 'not integration and not sandbox_docker'"
 asyncio_mode = "auto"
 testpaths = ["tests", "apps", "packages"]
 markers = [
     "integration: requires docker-compose stack",
     "slow: long-running tests",
+    "sandbox_docker: needs a Docker daemon, and builds and runs the coding sandbox image (WS-43)",
 ]
