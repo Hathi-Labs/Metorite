@@ -57,6 +57,13 @@ After the merge of D85 (each run red once by hand on 2026-10-04):
 * ``_sandbox_covers`` asks ``covers()`` in place of ``lifts_shell_block``:
   the real-injection tests, which pass ``agent_config``;
 * ``covers()`` drops the D85 seam check: the no-seam test.
+
+WS-43u (each run red once by hand on 2026-10-04):
+
+* ``_add_tools`` drops its ``extend_instructions`` call: the WS-43u test,
+  which reads the REAL system text through the executor;
+* ``NETWORK_WITHHELD_ANSWER`` claims that no data leaves the platform again:
+  the middleware test.
 """
 from __future__ import annotations
 
@@ -705,7 +712,11 @@ async def test_the_middleware_hides_and_refuses_the_withheld_tools() -> None:
     assert ran == [] and "off in this chat" in call.result
     web = types.SimpleNamespace(function=types.SimpleNamespace(name="fetch_page"), result=None)
     await st.RefuseHostTools().process(web, go)
-    assert ran == [] and "no web access" in web.result
+    assert ran == [] and "has no network" in web.result
+    # The owner kept delegation (2026-10-03): the answer names what is true of
+    # this chat and claims nothing about the whole platform.
+    assert "runs outside the sandbox" in web.result
+    assert "platform" not in web.result
 
 
 def _covered_run(monkeypatch, sandbox, turns, *, on_request=None) -> Any:  # noqa: F811
@@ -799,12 +810,16 @@ def test_a_covered_run_never_offers_or_runs_a_withheld_host_tool(sandbox, monkey
     assert sandbox.mirrored == [] and sandbox.cards == []
 
 
-def test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform(sandbox, monkeypatch) -> None:  # noqa: F811
+def test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing(sandbox, monkeypatch) -> None:  # noqa: F811
     """The P3 review: ``web_search`` and ``fetch_page`` run on the HOST, with
     its network. A model that an injection steers could put the rows of
     ``.run/`` in a URL or a query. A covered run is offered neither, and a
     call that names one anyway sends nothing: every real HTTP send of the
-    host is trapped. The model's own client uses a mock transport."""
+    host is trapped. The model's own client uses a mock transport.
+
+    Renamed by WS-43u: the owner kept delegation on 2026-10-03, so this
+    fence no longer claims that no data leaves the platform. An agent that
+    the run calls runs outside the sandbox (H-236)."""
     import httpx
 
     from tests.unit._native_maf_harness import text_turn, tool_turn
@@ -829,7 +844,7 @@ def test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform(sandbox, m
     ])
     for body in model.bodies:
         assert not _request_tools(body) & st.HOST_NETWORK_TOOLS, _request_tools(body)
-    refused = [r for body in model.bodies[1:] for r in _tool_results(body) if "no web access" in r]
+    refused = [r for body in model.bodies[1:] for r in _tool_results(body) if "has no network" in r]
     assert len(set(refused)) == 2, refused
     assert sent == []
     assert "no web access" in str(model.bodies[0].get("messages"))
@@ -854,6 +869,36 @@ def test_a_covered_run_on_the_real_injection_offers_no_host_shell_or_web_tool(
     plain = _request_tools(model.bodies[0])
     assert {"web_search", "fetch_page"} <= plain and "run_command" not in plain
     assert not plain & _HOST_SHELL
+
+
+def _system_text(body: dict[str, Any]) -> str:
+    return "\n".join(
+        str(m.get("content")) for m in body.get("messages") or [] if m.get("role") == "system"
+    )
+
+
+def test_ws43u_the_sandbox_rules_reach_the_model_only_with_run_command(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """WS-43u through the REAL executor: the system text of a covered run
+    carries the sandbox section once, beside ``run_command``. The same agent
+    with the scope empty holds no ``run_command``, its system text has no
+    section, and it keeps the ban of ``instructions.md``."""
+    from acb_skills import addendum as ad
+
+    from tests.unit._native_maf_harness import text_turn
+
+    ban = "If you do not hold `run_command`,"
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [text_turn("done")])
+    covered = _system_text(model.bodies[0])
+    assert "run_command" in _request_tools(model.bodies[0])
+    assert covered.count(ad.SANDBOX_CODE_HEADING) == 1, covered[-2000:]
+    sandbox.set_scope(monkeypatch, "")
+    model, _events, _built = _covered_run(monkeypatch, sandbox, [text_turn("done")])
+    plain = _system_text(model.bodies[0])
+    assert "run_command" not in _request_tools(model.bodies[0])
+    assert ad.SANDBOX_CODE_HEADING not in plain
+    assert ban in plain and ban in covered
 
 
 def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkeypatch) -> None:  # noqa: F811

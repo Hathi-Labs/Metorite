@@ -35,7 +35,11 @@ the boundaries are these:
    The host web tools ``web_search`` and ``fetch_page`` are withheld the same
    way (:data:`HOST_NETWORK_TOOLS`). They run on the host with its network,
    so a model that an injection steers could put member data in a URL or a
-   query. A covered run has no network at all (§16.3, the P3 review).
+   query (§16.3, the P3 review). The container has no network, and the run
+   holds no web tool. The delegation tools stay: the owner kept them on
+   2026-10-03, and an agent that the run calls runs outside the sandbox, with
+   its own tools. H-236 asks for a network control on those agents before the
+   owner flip (WS-43w).
 6. The container sees ``/workspace`` READ-ONLY, except its own output folder
    and its run data. A skill loads, and its script runs, only for the member
    who made it. So no member's code or skill text reaches another member's
@@ -80,6 +84,7 @@ from agent_framework import (
     tool,
 )
 
+from acb_skills.addendum import render_run_sections
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
 _log = get_logger("acb_skills.sandbox_tools")
@@ -122,10 +127,15 @@ WITHHELD_ANSWER = (
     "file_access_* tools for files: outputs/ is this chat's own output folder, "
     "and a file written there shows as a card."
 )
+#: The owner kept delegation on 2026-10-03 (§16.3), so this answer claims
+#: nothing about the whole platform. It says what is true of this chat: the
+#: sandbox has no network and the host web tools are off, and an agent that
+#: this chat calls runs outside the sandbox.
 NETWORK_WITHHELD_ANSWER = (
-    "{name} is off in this chat. A chat whose commands run in a sandbox has no "
-    "web access, so no data of this chat leaves the platform. Work with the "
-    "files of this chat."
+    "{name} is off in this chat. The sandbox that runs the commands of this "
+    "chat has no network, and the host web tools web_search and fetch_page are "
+    "off. An agent that you call with call_agent runs outside the sandbox. "
+    "Work with the files of this chat."
 )
 
 NETWORK_OFF = "Network access is off on this platform."
@@ -627,6 +637,12 @@ async def _add_tools(
     context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
     context.extend_middleware(SOURCE_ID, [WithholdHostTools(), RefuseHostTools()])
+    # WS-43u (§16.3): the rules for code, keyed on `run_command`. They come
+    # from the tools that this turn now holds, so a run without the tool never
+    # reads them.
+    rules = render_run_sections(_one_tool_name(t) for t in context.tools)
+    if rules:
+        context.extend_instructions(SOURCE_ID, rules)
 
 
 def attach_for_run(agent: Any, agent_name: str) -> Any:
