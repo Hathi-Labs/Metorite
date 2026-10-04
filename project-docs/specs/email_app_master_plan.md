@@ -1824,7 +1824,7 @@ API, and EM-T4b adds the shared cap and the budget.
 
 ##### EM-T4b — one cap and one daily budget for the model calls
 
-**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-llm-budget`, dark. The audit narrowed it on 2026-10-04 and verified it at 012483a43. The build keeps the defaults (budget `log`, cap 0) and makes no box change. The as-built notes follow the Verify block.
+**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-llm-budget`, dark. Review round 1 fixed four findings and recorded three more on 2026-10-04. The audit narrowed it on 2026-10-04 and verified it at 012483a43. The build keeps the defaults (budget `log`, cap 0) and makes no box change. The as-built notes and the review round 1 note follow the Verify block.
 
 **Order.** EM-T5 merged (#569), so item 2 of the EM-T4 order no longer holds this part. EM-T4a-2 splits functions in `engine.py` and `replyzero.py`, and items 12 and 13 below touch the same files. So EM-T4a-2 must not run in parallel with EM-T4b.
 
@@ -1838,23 +1838,24 @@ API, and EM-T4b adds the shared cap and the budget.
    - `_reclassify_reply_zero_job` (`replyzero.py:2071`) and `_mark_thread_replied` (`replyzero.py:1576`).
    - `_build_voice_profile_job` (`voice_profile.py:338`) and `_learn_from_sent` (`drafting.py:531`).
    - The cleanup jobs `_sweep_job` (`cleanup.py:703`) and `_backfill_and_clean_job` (`cleanup.py:869`).
+   - `_maybe_classify_threads` (`replyzero.py:1834`), the Reply Zero backfill. Each caller is a background path. On a mailbox with no status row, the Reply Zero list starts it as a `BackgroundTask` (`replyzero.py:2344`). Before review round 1 that task ran outside each scope (finding C).
 
    These stay outside the scope, because a member drives each one:
    - `/compose-assist` (`_compose_assist_run`, `drafting.py:1863`) and `/draft-reply` (`draft_reply_smart`, `drafting.py:1765`).
    - The voice sample (`voice_profile.py:673`), the writing style (`assistant.py:613`) and the rule generation (`rules.py:588`).
    - The chat (`chat.py:144`).
 6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
-7. `llm_slot` is re-entrant, as a guard. A task that holds a slot goes through a nested `llm_slot` with no second permit. Item 17 keeps this case rare.
+7. A slot wraps only a leaf, the model await itself. A task started inside a held slot runs under that slot, with no permit and no count of its own. So a nested `llm_slot` takes no second permit, and a cap of 1 cannot deadlock. The AST fence keeps each call that is not a leaf out of a slot (review round 1, finding A). Its one exception is the gather of the `decide` requests in `_ask_all` (item 19).
 8. The budget counts model requests for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
-9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call.
-10. In `log` mode, each call runs, because `log` never refuses a call. The budget logs `email.llm_budget_count` when a mailbox reaches 50% and then 100% of the limit (R-6). Each line logs once a day for each mailbox. Past the limit, `email.llm_budget_exceeded` logs once a day for each mailbox.
+9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call. A call that reaches no model gives its count back with `decrby` (review round 1, finding B). That covers a refusal in `enforce`, a body that raises and a body that times out.
+10. In `log` mode, each call runs, because `log` never refuses a call. The budget logs `email.llm_budget_count` when a mailbox reaches 50% and then 100% of the limit (R-6). Each line logs once a day for each mailbox. Past the limit, `email.llm_budget_exceeded` logs once a day for each mailbox. Each of these lines logs after a call that succeeded, and never for a count that went back.
 11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
 12. The rule match at the budget, in `enforce`, by mode:
     - With `email.rule_match=on` (live), `ask` makes no Router call. It logs `decide.unavailable` with `decide_reason=budget` and returns None. `_decide_rule_match` then raises `DecisionUnavailable` (`engine.py:767`).
     - In `off` and `shadow`, `_llm_json` raises `LLMBudgetExhausted` in the `_old` path. Its handler (`engine.py:877-881`, and `:970-973` for multi-rule) turns it into `LLMUnavailable`.
     - Either way the runner leaves `rules_processed_at` NULL (`runner.py:1777-1785`). So the mail stays undecided (D-EM-8), and a later cycle retries it.
 13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again (its handler is `replyzero.py:682-684`). It does not write its `· auto` fallback for it.
-14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
+14. Each Redis command of the budget waits 0.25 s at most. A failure or a timeout opens a breaker for 60 s, and logs `email.llm_budget_unavailable` once. While the breaker is open, the budget counts nothing and the call runs, also in `enforce`. The cap still binds (review round 1, finding D).
 15. `core._llm_json` (`core.py:749`) and each other model await in the tables above enter `llm_slot`. Two kinds of call are exempt. A member drives `run_agent_stream` (`chat.py:226`), and Mem0 is out of this slice (item 20).
 16. In `shadow`, the `_ask_all` task (`decide_features.py:698`) takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on`, `_ask_all` waits for a slot, as `_llm_json` does.
 17. `llm_slot` wraps only the model await itself, the leaf call. It never wraps an enclosing function. So a parent holds no permit while it awaits a child. Each child task takes its own permit at its own model await. If a parent held its permit at a cap of 1, its children could never get one. That is a deadlock.
@@ -1875,6 +1876,11 @@ API, and EM-T4b adds the shared cap and the budget.
 2. The limit. 2000 is a guess (R-6).
 3. Whether "Process past emails" counts. Its ceiling is also 2000 (`runner.py:977`), so one run can spend the budget of a whole day.
 4. Q-MB-1 (§11.8), because the total of an organization is the count of its mailboxes times the limit.
+
+Agent work that must land BEFORE the flip (review round 1, finding G). Neither item binds in `log`, the shipped mode.
+
+5. **The template fill at the budget.** `_render_template` (`actions.py:279-318`) catches `LLMBudgetExhausted` and returns the raw template. In `enforce`, a LABEL then gets a literal `{{...}}` name. A REPLY, DRAFT, FORWARD or SEND gets raw placeholders. A FORWARD note or a SEND subject can reach a third party, and the runner then stamps the row. The fix must decide what a rule with several actions does when one action cannot render.
+6. **One warning a day, not one a cycle.** In `enforce`, a spent mailbox logs WARNING lines on each cycle until UTC midnight. The lines are `decide.unavailable`, `email.classify_unavailable_skip` and `email.mark_thread_replied_failed`. Check the budget once for each job, and log once.
 
 **Follow-ups.**
 
@@ -1897,7 +1903,7 @@ API, and EM-T4b adds the shared cap and the budget.
 - `test_tenant_redis.py` passes with no new allowlist entry.
 - **F1.** With `email.rule_match=on`, a call past the limit in `enforce` makes no Router call. `ask` returns None with `decide_reason=budget`, and the runner leaves `rules_processed_at` NULL.
 - **F2.** The same case with the feature `off` takes the `_old` path and gets the same NULL stamp.
-- **F3.** With a cap of 1, a gather of two child model calls never runs two at once. It completes within a test timeout, with no deadlock.
+- **F3.** With a cap of 1, a gather of two child model calls never runs two at once. It completes within a test timeout, with no deadlock. A slot wraps only a leaf. A task started inside a held slot runs under that slot. The fence keeps each call that is not a leaf out of a slot.
 - **F4.** With the shipped defaults (`EMAIL_LLM_CONCURRENCY=0`), no call takes a permit.
 - **F5.** One `_ask_all` call takes one permit, and the budget counts the requests that it sends (item 19).
 - **F6.** A call from `/compose-assist`, `/draft-reply`, the voice sample or the chat takes no permit and counts nothing.
@@ -1927,12 +1933,12 @@ With the database exported, the run must show 0 skips. The baseline at `012483a4
 
 1. `email_ingestion/llm_cap.py` holds the scope, the cap and the budget. It imports no `gateway` module.
 2. `automation_job` is a decorator. It opens the scope for a job whose first argument is the account id. The signature of the job does not change.
-3. The eight jobs of item 5 carry `automation_job`. `as_mailbox_owner` opens the scope beside `job_member_scope`.
-4. `llm_slot(requests=1, wait=True)` takes the permit first, then counts, then runs the call. A call that finds no free permit counts nothing.
+3. The nine jobs of item 5 carry `automation_job`. `as_mailbox_owner` opens the scope beside `job_member_scope`. Review round 1 added the ninth, `_maybe_classify_threads`.
+4. `llm_slot(requests=1, wait=True, settle=True)` takes the permit first, then counts, then runs the call. A call that finds no free permit counts nothing. The slot yields a `Charge`, which gives the count back and logs the marks.
 5. The re-entrant guard covers this task and each task that a held slot starts. Such a slot takes no second permit and counts nothing. So the guard cannot deadlock.
-6. The budget bounds its two Redis commands at 2 seconds. Past that the call runs, and `email.llm_budget_unavailable` logs `TimeoutError` as the reason.
+6. Each Redis command of the budget waits 0.25 s at most (`BUDGET_REDIS_TIMEOUT_S`). It waited 2 s before review round 1. A failure opens the breaker of item 14 (`BUDGET_BREAKER_S`).
 7. A limit under 1 means no limit. An unknown mode reads as `log`, and `email.llm_budget_mode_refused` logs once.
-8. `_ask_all` holds one slot around the gather of its requests. In `shadow` the slot does not wait. `NoFreeSlot` then logs `decide.shadow_skipped` with `reason=cap`.
+8. `_ask_all` holds one slot around the gather of its requests. In `shadow` the slot does not wait. `NoFreeSlot` then logs `decide.shadow_skipped` with `reason=cap`. The gather returns each failure and never raises. So `_ask_all` passes `settle=False`, and it settles the charge after the slot with the count of failed requests.
 9. Item 12 needed no change in `engine.py`. Each `_old` handler already turns each failure into `LLMUnavailable`.
 10. Item 13: `recompute_thread_status` passes `LLMBudgetExhausted` up. So `_mark_thread_replied` logs its failure and writes nothing.
 11. The build deletes `_draft_via_maf_agent` and `_strip_draft_markers`, its one helper. Nothing else called either of them.
@@ -1946,7 +1952,10 @@ With the database exported, the run must show 0 skips. The baseline at `012483a4
 **Known behaviour, recorded.**
 
 - In `off` and `shadow`, the thread-status resolver treats a spent budget as each other failure. It keeps the match for each message, and the runner stamps the row. Only the rule match leaves a row undecided at the budget.
-- In `log`, each model call in the scope sends two Redis commands, `incr` and `expire`.
+- In `log`, each model call in the scope sends two Redis commands, `incr` and `expire`. A call that gives its count back sends a third, `decrby`.
+- While the breaker is open, `enforce` fails open. Each call runs and counts nothing, as on a Redis error before review round 1. The breaker skips a give-back too, so a call that failed then can stay counted.
+- A refusal in `enforce` gives its count back. So the process keeps a record of the refusal line, and `email.llm_budget_exceeded` logs once a day for each mailbox. A restart can log it once more.
+- With calls at one time, a mark or the exceeded line can go unlogged. This happens when the call that crossed it fails, and a parallel call already passed it.
 
 **Fences.** Each line of "Done when" has a test in `tests/unit/test_email_llm_cap.py`.
 
@@ -1968,8 +1977,16 @@ With the database exported, the run must show 0 skips. The baseline at `012483a4
 | F5 | `test_one_ask_all_takes_one_permit_and_counts_each_request` |
 | F6 | the four tests that end in `takes_no_permit_and_counts_nothing` |
 | F7 | `test_log_counts_at_fifty_and_a_hundred_percent_once_a_day` |
+| Review A, item 7 | `test_the_fence_finds_a_call_in_a_slot_that_is_not_a_leaf` (five shapes) |
+| Review A, item 7 | `test_the_one_exception_is_the_gather_of_decide_in_ask_all` and `test_the_exception_is_narrow` |
+| Review A, item 7 | `test_the_fence_fails_on_the_real_drafter_with_a_slot_around_a_non_leaf` (ITEM1-b and the drafter) |
+| Review B, items 9 and 10 | `test_a_call_that_fails_gives_its_count_back_and_logs_no_mark` and `test_a_call_that_times_out_gives_its_count_back` |
+| Review B, item 11 | `test_enforce_gives_the_refused_count_back_and_logs_once_a_day` |
+| Review B, item 19 | `test_ask_all_counts_only_the_requests_that_got_an_answer` (three cases) |
+| Review C, item 5 | `test_the_cold_start_backfill_of_reply_zero_opens_the_scope` and `test_each_mailbox_job_opens_the_scope` |
+| Review D, item 14 | `test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_after_60_s` |
 
-**Mutations (R7).** Each row changed one place in the code. The named tests went red, and the file went back to its exact SHA-256 before the next row. 21 rows, 21 red.
+**Mutations (R7).** Each row changed one place in the code. The named tests went red, and the file went back to its exact SHA-256 before the next row. 29 rows, 29 red. Review round 1 added the last eight rows.
 
 | Fence | Mutation | Red |
 |---|---|---|
@@ -1994,8 +2011,30 @@ With the database exported, the run must show 0 skips. The baseline at `012483a4
 | Item 13 | the status call writes its `· auto` fallback | 1 test |
 | Item 5 | `_run_rules_job` opens no scope | 3 tests, one R8 |
 | Item 5 | `as_mailbox_owner` opens no scope | 1 test |
+| Review A | ITEM1-b: a slot around the gather of `_orchestrate_draft` | `test_each_model_await_sits_inside_llm_slot` |
+| Review A | a slot around the `_llm_draft_reply` call of `_orchestrate_draft` | `test_each_model_await_sits_inside_llm_slot` |
+| Review B | a body that raises keeps its count | 2 tests |
+| Review B | a refusal in `enforce` keeps its count | 4 tests, two R8 |
+| Review B | `_ask_all` keeps the count of a failed request | 2 tests |
+| Review B | the marks log before the call | 6 tests |
+| Review C | `_maybe_classify_threads` opens no scope | 2 tests |
+| Review D | no breaker, and a bound of 2.0 s | 2 tests |
 
 **Verified (2026-10-04, a private database).** The Verify block gave 565 passed and 0 skipped. All the `test_email_*.py` suites, with the seam and tenancy fences, gave 2603 passed. The 2 skips there are the two `test_tenant_coverage.py` tests that need `DATABASE_URL`, which `scripts/dev_db.sh` does not set on purpose.
+
+**Review round 1 (2026-10-04).** An independent verifier passed the slice with findings, and an adversarial reviewer approved it with findings. The orchestrator recorded a decision for each one. This round built four fixes and recorded the rest. The branch rebased onto `5e268c766` (#614) first, and onto `3d11922c2` (#615) at the end. Only the docs had conflicts.
+
+| Finding | Fix or record | Fence |
+|---|---|---|
+| A. A task started in a held slot skips the cap. ITEM1-b survived the old fence. | The hold stays, because it stops a deadlock at a cap of 1. The fence now refuses each call in a slot that is not a leaf. The one exception is the gather of `_ask_all`. Item 7 and F3 say so. Two slot bodies of `drafting.py` and one of `email_embeddings.py` moved their non-leaf calls out. | `test_the_fence_finds_a_call_in_a_slot_that_is_not_a_leaf`, `test_the_exception_is_narrow`, `test_the_fence_fails_on_the_real_drafter_with_a_slot_around_a_non_leaf` |
+| B. A call that failed still used the budget, so an outage looked like a busy mailbox. | The refusal check and the `incr` stay before the call. A refusal, a raise and a timeout give the count back with `decrby`. `TenantRedis` gained `decrby` beside `incr`. The marks log after a call that succeeded. `_ask_all` gives back each request that got no answer. The R8 case now expects a count of 1. | `test_a_call_that_fails_gives_its_count_back_and_logs_no_mark`, `test_ask_all_counts_only_the_requests_that_got_an_answer`, `TestTheRunnerAtTheBudget` |
+| C. The cold start of the Reply Zero list ran the backfill with no scope. | `_maybe_classify_threads` carries `automation_job`, because each caller is a background path. Item 5 lists it. | `test_the_cold_start_backfill_of_reply_zero_opens_the_scope` |
+| D. A Redis that hung added 2 s to each model call in `log`. | The bound is 0.25 s. A failure opens a breaker for 60 s and logs once. `enforce` fails open while it is open. | `test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_after_60_s` |
+| E. The gateway `AGENTS.md` put the thread-status raise and the NULL stamp in one sentence. | The rule match leaves the row NULL. In `off` and `shadow` the resolver catches the thread-status raise, and the runner stamps the row. | None, a text fix |
+| F. A status paragraph of this section held 10 sentences. | The rebase took the split of #614, so each status paragraph holds 5 sentences. | `ste-lint.mjs` |
+| G. Two gaps bind in `enforce` only. | Recorded as items 5 and 6 of the owner list above, as agent work before the flip. | None, recorded |
+
+**Verified after review round 1 (2026-10-04, a private database).** The Verify block gave 584 passed and 0 skipped. It gave 584 passed once more with `EMAIL_LLM_BUDGET_MODE=log` and a throwaway Redis index, and that index then held one key with a count of 1. On `3d11922c2`, all the `test_email_*.py` suites, with the seam fences, gave 2651 passed. The 2 skips there are the same two `test_tenant_coverage.py` tests.
 
 ##### EM-T4c — refresh on a 401 during a sync, and try once more
 

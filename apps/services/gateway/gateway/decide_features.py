@@ -508,7 +508,10 @@ async def _ask_all(
     ``shadow`` the call takes a permit only when one is free, or it logs
     ``decide.shadow_skipped`` with ``reason=cap`` and asks nothing. A spent
     budget in ``enforce`` asks nothing and gives the reason ``budget``.
-    Outside the automation scope none of this binds.
+    A request that gets no answer counts nothing (review round 1, finding
+    B). The gather returns each failure and never raises, so this function
+    settles the charge itself after the slot. Outside the automation scope
+    none of this binds.
     """
     # The package attributes, as `acb_skills/decide_tools.py` reads them, so
     # one monkeypatch of `acb_llm.decide` reaches every caller.
@@ -516,17 +519,20 @@ async def _ask_all(
     from acb_llm import decide as facade
     from email_ingestion.llm_cap import LLMBudgetExhausted, NoFreeSlot, llm_slot
 
-    async def _send() -> list[Any]:
-        # The slot wraps the leaf `decide` await only (EM-T4b item 17).
-        async with llm_slot(requests=len(requests), wait=on):
-            return await asyncio.gather(
+    async def _send() -> tuple[Any, list[Any]]:
+        # The slot wraps the leaf `decide` awaits only (EM-T4b item 17). This
+        # gather is the ONE call that is not a leaf and that the AST fence
+        # lets into a slot (`test_email_llm_cap.py`, GATHER_EXCEPTION).
+        async with llm_slot(requests=len(requests), wait=on, settle=False) as charge:
+            results = await asyncio.gather(
                 *(facade(state, questions, **attribution) for state, questions in requests),
                 return_exceptions=True,
             )
+        return charge, results
 
     started = time.monotonic()
     try:
-        results = await asyncio.wait_for(
+        charge, results = await asyncio.wait_for(
             _send(), timeout=ON_BOUND_S if on else SHADOW_BOUND_S,
         )
     except NoFreeSlot:
@@ -546,6 +552,9 @@ async def _ask_all(
         return None
 
     failures = [r for r in results if isinstance(r, BaseException)]
+    # EM-T4b review round 1, finding B: a request that got no answer gives its
+    # count back, and the 50% and 100% lines log for the rest. Never raises.
+    await charge.settle(failed=len(failures))
     if failures:
         invalid = next((e for e in failures if isinstance(e, DecideRequestInvalid)), None)
         unavailable = next((e for e in failures if isinstance(e, DecideUnavailable)), None)

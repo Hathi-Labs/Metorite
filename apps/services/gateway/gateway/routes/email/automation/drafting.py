@@ -656,12 +656,14 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
             "bullet guidelines (tone, length, greeting/sign-off, formatting, what "
             "to include or omit). No preamble — just the bullet lines."
         )
-        async with llm_slot():  # EM-T4b: the cap and the daily budget
+        listed = "\n".join(f"- {p}" for p in prefs[:25])
+        # EM-T4b: the cap and the daily budget. The slot holds the leaf call
+        # and nothing else, so the prompt is built before it.
+        async with llm_slot():
             resp, _ = await acompletion_with_fallback(
                 model="tier-powerful",
                 messages=[{"role": "system", "content": sys_prompt},
-                          {"role": "user", "content": "Preferences:\n"
-                           + "\n".join(f"- {p}" for p in prefs[:25])}],
+                          {"role": "user", "content": "Preferences:\n" + listed}],
                 temperature=0.2, max_tokens=1000,
             )
         return (resp.choices[0].message.content or "").strip()[:1500]
@@ -1513,14 +1515,14 @@ async def _orchestrate_draft(
                     on_activity, kind="consult", status="start",
                     agent=item["agent"], question=item["question"])
                 try:
-                    # EM-T4b: one permit for the consult, the leaf call.
-                    async with llm_slot():
-                        res = await asyncio.wait_for(
-                            run_agent(
-                                item["agent"],
-                                {"message": item["question"], "user_email": user_email},
-                            ),
-                            timeout=agent_timeout,
+                    # EM-T4b: one permit for the consult, the leaf call. The
+                    # bound sits outside the slot, so the slot holds the leaf
+                    # and nothing else, and the wait for a permit counts
+                    # inside the bound (review round 1, finding A).
+                    async with asyncio.timeout(agent_timeout), llm_slot():
+                        res = await run_agent(
+                            item["agent"],
+                            {"message": item["question"], "user_email": user_email},
                         )
                     ans = ""
                     if isinstance(res, dict):

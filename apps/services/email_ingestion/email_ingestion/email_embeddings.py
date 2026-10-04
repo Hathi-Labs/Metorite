@@ -86,13 +86,15 @@ async def _embed_batch(texts: list[str], model: str) -> list[list[float]] | None
         from acb_common.settings import get_settings  # noqa: PLC0415
         litellm.drop_params = True
         settings = get_settings()
+        api_base = settings.litellm_base_url.rstrip("/") + "/v1"
         # EM-T4b: inside the automation scope (the cleanup backfill) the
         # cap and the daily budget bind the embed. Elsewhere this is a no-op.
+        # The slot holds the leaf call and nothing else.
         async with llm_slot():
             resp = await litellm.aembedding(
                 model=model,
                 input=texts,
-                api_base=settings.litellm_base_url.rstrip("/") + "/v1",
+                api_base=api_base,
                 api_key=settings.litellm_master_key,
                 custom_llm_provider="openai",
             )

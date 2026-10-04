@@ -14,16 +14,21 @@ The rules these pin:
   1 never deadlocks. A nested slot takes no second permit.
 - The budget counts model requests for each mailbox for each UTC day in
   tenant Redis. ``log`` never refuses. ``enforce`` refuses past the limit
-  with ``LLMBudgetExhausted`` and makes no model call. A Redis failure lets
-  the call run.
-- ``decide``: one ``_ask_all`` call holds one permit and counts each request.
-  The shadow takes a permit only when one is free. In ``on`` a spent budget
-  gives no decision with the reason ``budget``.
+  with ``LLMBudgetExhausted`` and makes no model call.
+- A call that reaches no model counts nothing (review round 1, finding B).
+  A refusal, a body that raises and a body that times out give the count
+  back. The 50% and 100% lines log after a call that succeeded only.
+- A Redis that fails or hangs costs one bound of 0.25 s, once. A breaker
+  then skips the count for 60 s, and the call runs (finding D).
+- ``decide``: one ``_ask_all`` call holds one permit and counts each request
+  that gets an answer. The shadow takes a permit only when one is free. In
+  ``on`` a spent budget gives no decision with the reason ``budget``.
 - At the budget the runner leaves ``rules_processed_at`` NULL, in ``on`` and
   in ``off``, and a static rule still applies (R8).
 - An AST fence finds each model await of ``routes/email``, ``email_ingestion``
-  and ``decide_features.py`` inside ``llm_slot``, and companion tests prove
-  that it can fail (F8).
+  and ``decide_features.py`` inside ``llm_slot``. It also refuses each call in
+  a slot that is not a leaf, apart from the gather of ``_ask_all`` (finding
+  A). Companion tests prove that it can fail (F8).
 
 Redis is a FAKE raw client under the REAL ``TenantRedis`` wrapper, so each key
 is built by ``tenant_redis.key`` exactly as on the box. The R8 classes run the
@@ -42,6 +47,7 @@ import asyncio
 import time
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -165,6 +171,13 @@ class FakeRedisClient:
         self.calls.append(("expire", name, seconds))
         return True
 
+    async def decrby(self, name: str, amount: int = 1) -> int:
+        self.calls.append(("decrby", name, amount))
+        if self.fail is not None:
+            raise self.fail
+        self.store[name] = int(self.store.get(name, 0)) - amount
+        return self.store[name]
+
     @property
     def keys(self) -> list[str]:
         return [name for verb, name, _ in self.calls if verb == "incr"]
@@ -204,6 +217,7 @@ class FakeModel:
         self.peak = 0
         self.permits: list[int] = []
         self.accounts: list[str | None] = []
+        self.fail: BaseException | None = None
 
     async def __call__(self, model: str | None = None, messages: Any = None, **kw: Any):
         self.calls += 1
@@ -215,6 +229,8 @@ class FakeModel:
             await asyncio.sleep(self.delay)
         finally:
             self.active -= 1
+        if self.fail is not None:
+            raise self.fail
         if kw.get("response_format"):
             content = '{"index": -1, "consult": [], "kind": "other", "status": "DONE"}'
         else:
@@ -397,7 +413,8 @@ async def test_enforce_refuses_call_2001_before_the_model(
         with pytest.raises(llm_cap.LLMBudgetExhausted):
             await _ask_model()
     assert model.calls == 2000, "call 2001 reached the model"
-    assert redis.store[_wire_key(ORG, ACC)] == 2001
+    # Finding B: the refused call reached no model, so it gave its count back.
+    assert redis.store[_wire_key(ORG, ACC)] == 2000
 
 
 async def test_log_runs_call_2001_and_logs_exceeded_once(
@@ -466,7 +483,9 @@ async def test_a_charge_of_many_requests_logs_each_mark_it_crosses(
     _settings(monkeypatch, mode="log", limit=4)
     redis.store[_wire_key(ORG, ACC)] = before
     with structlog.testing.capture_logs() as caps:
-        await llm_cap._charge(ACC, requests)
+        charge = await llm_cap._charge(ACC, requests)
+        assert _events(caps, "email.llm_budget_count") == [], "a mark logged before the call"
+        await charge.settle()
     assert [e["pct"] for e in _events(caps, "email.llm_budget_count")] == pcts
     assert bool(_events(caps, "email.llm_budget_exceeded")) is exceeded
 
@@ -484,6 +503,162 @@ async def test_an_unknown_mode_reads_as_log_and_says_so_once(monkeypatch, tenant
         assert llm_cap.budget_mode() == "log"
         assert llm_cap.budget_mode() == "log"
     assert len(_events(caps, "email.llm_budget_mode_refused")) == 1
+
+
+# ── Review round 1, finding B: a call that reached no model counts nothing ──
+
+
+async def test_a_call_that_fails_gives_its_count_back_and_logs_no_mark(
+    monkeypatch,
+    tenant,
+    model,
+    redis,
+) -> None:
+    """A Router outage must not read as a busy mailbox (R-6). The count goes
+    in before the call and comes back out when the call raises. The 50% mark
+    logs only after a call that succeeded."""
+    _settings(monkeypatch, mode="log", limit=2)
+    model.fail = RuntimeError("router down")
+    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
+        for _ in range(3):
+            with pytest.raises(RuntimeError):
+                await _ask_model()
+    assert model.calls == 3
+    assert redis.store == {_wire_key(ORG, ACC): 0}, "a failed call kept its count"
+    assert _events(caps, "email.llm_budget_count") == []
+    assert _events(caps, "email.llm_budget_exceeded") == []
+    model.fail = None
+    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
+        await _ask_model()
+    assert redis.store == {_wire_key(ORG, ACC): 1}
+    assert [e["pct"] for e in _events(caps, "email.llm_budget_count")] == [50]
+
+
+async def test_a_call_that_times_out_gives_its_count_back(
+    monkeypatch,
+    tenant,
+    model,
+    redis,
+) -> None:
+    _settings(monkeypatch, mode="log", limit=100)
+    model.delay = 1.0
+    with llm_cap.automation_scope(ACC), pytest.raises(TimeoutError):
+        await asyncio.wait_for(_ask_model(), timeout=0.05)
+    assert redis.store == {_wire_key(ORG, ACC): 0}
+    assert llm_cap.permits_in_use() == 0
+
+
+async def test_enforce_gives_the_refused_count_back_and_logs_once_a_day(
+    monkeypatch,
+    tenant,
+    model,
+    redis,
+) -> None:
+    """A refusal reached no model, so the count stays at the limit. The
+    refusal still logs `email.llm_budget_exceeded` once a day, not once for
+    each refused call."""
+    _settings(monkeypatch, mode="enforce", limit=1)
+    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
+        await _ask_model()
+        for _ in range(3):
+            with pytest.raises(llm_cap.LLMBudgetExhausted):
+                await _ask_model()
+        tomorrow = datetime.now(UTC) + timedelta(days=1)
+        monkeypatch.setattr(llm_cap, "_now", lambda: tomorrow)
+        await _ask_model()
+        with pytest.raises(llm_cap.LLMBudgetExhausted):
+            await _ask_model()
+    assert model.calls == 2
+    assert redis.store == {_wire_key(ORG, ACC): 1, _wire_key(ORG, ACC, _day(1)): 1}
+    exceeded = _events(caps, "email.llm_budget_exceeded")
+    assert [(e["count"], e["limit"], e["mode"]) for e in exceeded] == [
+        (2, 1, "enforce"),
+        (2, 1, "enforce"),
+    ]
+
+
+def _answers_except(failing: set[str]):
+    async def fake(state, questions, **kw):
+        qid = next(iter(questions))
+        if qid in failing:
+            raise decide_mod.DecideUnavailable("unreachable")
+        return decide_mod.Decision(
+            answers=MappingProxyType({qid: decide_mod.BooleanAnswer(probability=0.9)}),
+            request_id=f"r-{qid}",
+        )
+
+    return fake
+
+
+@pytest.mark.parametrize(
+    ("failing", "counted", "marks"),
+    [
+        (set(), 3, [50]),
+        ({"q1"}, 2, [50]),
+        ({"q0", "q1", "q2"}, 0, []),
+    ],
+    ids=["all-answered", "one-failed", "router-down"],
+)
+async def test_ask_all_counts_only_the_requests_that_got_an_answer(
+    monkeypatch,
+    tenant,
+    redis,
+    failing,
+    counted,
+    marks,
+) -> None:
+    """The gather of `_ask_all` returns each failure and never raises, so
+    `_ask_all` settles the charge itself after the slot."""
+    _settings(monkeypatch, mode="log", limit=4)
+    monkeypatch.setattr(decide_mod, "decide", _answers_except(failing))
+    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
+        await df._ask_all("email.rule_match", {"account_id": ACC}, _requests(3), {}, on=True)
+    assert redis.store == {_wire_key(ORG, ACC): counted}
+    assert [e["pct"] for e in _events(caps, "email.llm_budget_count")] == marks
+
+
+# ── Review round 1, finding D: a Redis that hangs costs one bound, once ─────
+
+
+async def test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_after_60_s(
+    monkeypatch,
+    tenant,
+    model,
+    redis,
+) -> None:
+    """The first call waits 0.25 s at most. The breaker then skips the count
+    for 60 s, so the next calls send no Redis command and wait for nothing.
+    In `enforce` the call runs while the breaker is open (it fails open)."""
+    assert llm_cap.BUDGET_REDIS_TIMEOUT_S == 0.25
+    assert llm_cap.BUDGET_BREAKER_S == 60.0
+    _settings(monkeypatch, mode="enforce", limit=1)
+    now = [1000.0]
+    monkeypatch.setattr(llm_cap, "_clock", lambda: now[0])
+    redis.hang = True
+    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
+        started = time.monotonic()
+        await asyncio.wait_for(_ask_model(), timeout=2)
+        first = time.monotonic() - started
+        started = time.monotonic()
+        for _ in range(5):
+            await _ask_model()
+        rest = time.monotonic() - started
+    assert 0.2 <= first < 0.6, f"the first call waited {first:.2f}s"
+    assert rest < 0.1, f"five calls inside the breaker waited {rest:.2f}s"
+    assert len(redis.keys) == 1, "a call inside the breaker sent a Redis command"
+    assert model.calls == 6, "enforce refused a call while the breaker was open"
+    lines = _events(caps, "email.llm_budget_unavailable")
+    assert [(e["reason"], e["skip_s"]) for e in lines] == [("TimeoutError", 60)]
+    redis.hang = False
+    now[0] += 59.0
+    with llm_cap.automation_scope(ACC):
+        await _ask_model()
+    assert len(redis.keys) == 1, "the breaker closed before 60 s"
+    now[0] += 1.5
+    with llm_cap.automation_scope(ACC):
+        await _ask_model()
+    assert len(redis.keys) == 2
+    assert redis.store == {_wire_key(ORG, ACC): 1}
 
 
 # ── Done when 7: the key carries the organization ───────────────────────────
@@ -539,18 +714,11 @@ async def test_with_redis_down_the_call_runs_and_the_cap_still_binds(
         await asyncio.wait_for(asyncio.gather(_ask_model(), _ask_model()), 5)
     assert model.calls == 2
     assert model.peak == 1, "the cap let go while Redis was down"
+    # Finding D: the first failure opens the breaker and logs once. The
+    # second call sends no Redis command.
     reasons = [e["reason"] for e in _events(caps, "email.llm_budget_unavailable")]
-    assert reasons == ["ConnectionError", "ConnectionError"]
-
-
-async def test_a_redis_that_hangs_does_not_hold_the_call(monkeypatch, tenant, model, redis) -> None:
-    _settings(monkeypatch, mode="enforce", limit=1)
-    monkeypatch.setattr(llm_cap, "BUDGET_REDIS_TIMEOUT_S", 0.05)
-    redis.hang = True
-    with structlog.testing.capture_logs() as caps, llm_cap.automation_scope(ACC):
-        await asyncio.wait_for(_ask_model(), timeout=2)
-    assert model.calls == 1
-    assert _events(caps, "email.llm_budget_unavailable")[0]["reason"] == "TimeoutError"
+    assert reasons == ["ConnectionError"]
+    assert len(redis.keys) == 1
 
 
 # ── Done when 9, F5, F1 hermetic: the `decide` facade ───────────────────────
@@ -790,10 +958,16 @@ async def test_a_model_call_from_the_chat_takes_no_permit_and_counts_nothing(
 
 _AUTOMATION = "apps/services/gateway/gateway/routes/email/automation"
 
-#: Item 5: the functions that open the scope with `@automation_job`.
+#: Item 5: the functions that open the scope with `@automation_job`. Review
+#: round 1 (finding C) added the Reply Zero backfill, because the Reply Zero
+#: list starts it as a BackgroundTask on a cold mailbox.
 SCOPE_JOBS: dict[str, tuple[str, ...]] = {
     f"{_AUTOMATION}/runner.py": ("_run_rules_job", "_process_past_emails_job"),
-    f"{_AUTOMATION}/replyzero.py": ("_reclassify_reply_zero_job", "_mark_thread_replied"),
+    f"{_AUTOMATION}/replyzero.py": (
+        "_reclassify_reply_zero_job",
+        "_mark_thread_replied",
+        "_maybe_classify_threads",
+    ),
     f"{_AUTOMATION}/voice_profile.py": ("_build_voice_profile_job",),
     f"{_AUTOMATION}/drafting.py": ("_learn_from_sent",),
     f"{_AUTOMATION}/cleanup.py": ("_sweep_job", "_backfill_and_clean_job"),
@@ -878,6 +1052,39 @@ async def test_the_rules_job_runs_in_the_scope_of_its_mailbox(monkeypatch) -> No
     monkeypatch.setattr(runner_mod, "_tenant_session", session)
     await runner_mod._run_rules_job(ACC, 5, False, OWNER)
     assert seen == [ACC]
+
+
+async def test_the_cold_start_backfill_of_reply_zero_opens_the_scope(monkeypatch, tenant) -> None:
+    """Finding C. A member opens the Reply Zero list of a mailbox with no
+    status row. The route starts the backfill as a BackgroundTask. The route
+    itself runs outside the scope, and the backfill runs inside it."""
+    from fastapi import BackgroundTasks
+
+    seen: list[str | None] = []
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        return_value=MagicMock(
+            fetchone=MagicMock(return_value=None),
+            fetchall=MagicMock(return_value=[]),
+            scalar=MagicMock(return_value=0),
+        )
+    )
+
+    @asynccontextmanager
+    async def session():
+        seen.append(llm_cap.current_account())
+        yield db
+
+    monkeypatch.setattr(rz, "_tenant_session", session)
+    monkeypatch.setattr(rz, "_assert_account_owner", AsyncMock())
+    background = BackgroundTasks()
+    await rz.reply_zero(background, account_id=ACC, type="needs_reply", limit=50, user=_member())
+    assert [t.func.__name__ for t in background.tasks] == ["_maybe_classify_threads"]
+    in_route = len(seen)
+    assert in_route >= 1 and set(seen) == {None}, "the route itself opened the scope"
+    await background()
+    assert len(seen) > in_route, "the backfill opened no session"
+    assert set(seen[in_route:]) == {ACC}, "the cold-start backfill ran outside the scope"
 
 
 def test_automation_job_keeps_the_signature() -> None:
@@ -981,6 +1188,17 @@ _FENCE_ROOTS = (
 )
 _FACADE_MODULE = "apps/services/gateway/gateway/decide_features.py"
 
+#: Review round 1, finding A. A task that a held slot starts runs under that
+#: slot, with no permit and no count of its own (item 7). So a slot around a
+#: call that is not a leaf runs the model calls inside it uncapped and
+#: uncounted. The fence refuses each such call in a slot. This is the ONE
+#: exception: the gather of the `decide` requests in `_ask_all`, because one
+#: bound and one permit cover all of them (item 19). Each call in its
+#: arguments must be the `decide` leaf, so a gather of anything else in the
+#: same place is still a finding. The fence reads it as
+#: (the facade module, the enclosing function, the callee).
+GATHER_EXCEPTION = (_FACADE_MODULE, "_ask_all", "gather")
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -1041,7 +1259,17 @@ def _kind_of(call: ast.Call, leaves: set[str], modules: set[str], functions: set
 
 def scan(source: str, path: str, *, facade_module: bool = False) -> tuple[list[Finding], Counter]:
     """The fence. Returns its findings and what it saw, so a blind fence
-    fails on its own counts."""
+    fails on its own counts.
+
+    Three kinds of finding:
+
+    - ``unslotted``: a leaf model call outside each slot.
+    - ``facade_in_slot``: a `decide` facade call inside a slot.
+    - ``non_leaf_in_slot``: any other call inside a slot, for example
+      `_llm_json`, `_llm_draft_reply`, a function of the email packages,
+      `create_task` or `gather`. :data:`GATHER_EXCEPTION` is the one call
+      that it lets through.
+    """
     tree = ast.parse(source)
     leaves, modules, functions = _aliases(tree)
     leaves |= MODEL_CALLEES
@@ -1049,31 +1277,62 @@ def scan(source: str, path: str, *, facade_module: bool = False) -> tuple[list[F
         functions |= DECIDE_FACADE
     findings: list[Finding] = []
     seen: Counter = Counter()
-    # A leaf outside a slot, or a facade call inside one, is a finding.
-    wrong = {"leaf": ("unslotted", False), "facade": ("facade_in_slot", True)}
 
-    def visit(node: ast.AST, slotted: bool) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+    def kind(call: ast.Call) -> str:
+        return _kind_of(call, leaves, modules, functions)
+
+    def visit(node: ast.AST, slotted: bool, funcs: tuple[str, ...]) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # A body runs where it is called, not where it is written.
+            slotted = False
+            funcs = (*funcs, node.name)
+        elif isinstance(node, ast.Lambda):
             slotted = False
         elif isinstance(node, (ast.With, ast.AsyncWith)) and any(_is_slot(i) for i in node.items):
             for item in node.items:
-                visit(item, slotted)
+                visit(item, slotted, funcs)
             for stmt in node.body:
-                visit(stmt, True)
+                visit(stmt, True, funcs)
             return
         elif isinstance(node, ast.Call):
-            kind = _kind_of(node, leaves, modules, functions)
-            if kind:
-                seen[kind] += 1
-                label, bad_when = wrong[kind]
-                if slotted is bad_when:
-                    findings.append(Finding(path, node.lineno, label, _callee(node)))
+            found = kind(node)
+            excepted = bool(
+                slotted and not found and facade_module and _is_the_gather(node, funcs, kind)
+            )
+            if found or excepted:
+                seen[found or "gather_exception"] += 1
+            label = _label(found, slotted=slotted, excepted=excepted)
+            if label:
+                findings.append(Finding(path, node.lineno, label, _callee(node)))
         for child in ast.iter_child_nodes(node):
-            visit(child, slotted)
+            visit(child, slotted, funcs)
 
-    visit(tree, False)
+    visit(tree, False, ())
     return findings, seen
+
+
+def _is_the_gather(call: ast.Call, funcs: tuple[str, ...], kind: Callable[[ast.Call], str]) -> bool:
+    """True for :data:`GATHER_EXCEPTION`: a `gather` in `_ask_all` whose
+    arguments call the `decide` leaf and nothing else."""
+    _module, function, callee = GATHER_EXCEPTION
+    if function not in funcs or _callee(call) != callee:
+        return False
+    inner = [
+        c
+        for arg in (*call.args, *(k.value for k in call.keywords))
+        for c in ast.walk(arg)
+        if isinstance(c, ast.Call)
+    ]
+    return bool(inner) and all(kind(c) == "leaf" for c in inner)
+
+
+def _label(found: str, *, slotted: bool, excepted: bool) -> str:
+    """The finding for one call, or "" for none."""
+    if found == "leaf":
+        return "" if slotted else "unslotted"
+    if found == "facade":
+        return "facade_in_slot" if slotted else ""
+    return "non_leaf_in_slot" if slotted and not excepted else ""
 
 
 def _fence_files() -> list[Path]:
@@ -1099,12 +1358,14 @@ def test_each_model_await_sits_inside_llm_slot() -> None:
         findings += found
         total += seen
     assert not findings, (
-        "a model await outside `llm_slot`, or a `decide` facade call inside "
-        f"one (EM-T4b items 15 and 17): {findings}"
+        "a model await outside `llm_slot`, or a call inside one that is not "
+        f"a leaf (EM-T4b items 7, 15 and 17, review round 1 finding A): {findings}"
     )
     # Measured 2026-10-04: 13 leaves and 11 facade calls. A fence that sees
     # fewer has gone blind, for example after a rename.
     assert total["leaf"] >= 12 and total["facade"] >= 10, total
+    # The one exception is used once, by `_ask_all`, and nowhere else.
+    assert total["gather_exception"] == 1, total
 
 
 def test_the_facade_takes_its_permit_in_ask_all_only() -> None:
@@ -1155,7 +1416,11 @@ def test_the_exempt_calls_are_named_and_outside_the_callee_list() -> None:
 )
 def test_the_fence_finds_an_unslotted_leaf(source) -> None:
     findings, _ = scan(source, "<synthetic>")
-    assert [f.kind for f in findings] == ["unslotted"]
+    assert [f.kind for f in findings if f.kind == "unslotted"] == ["unslotted"]
+    # Only the def-in-slot shape has a second finding: the call of `g` in
+    # the slot is not a leaf (finding A).
+    others = [(f.kind, f.callee) for f in findings if f.kind != "unslotted"]
+    assert others == ([("non_leaf_in_slot", "g")] if "def g" in source else [])
 
 
 @pytest.mark.parametrize(
@@ -1178,16 +1443,146 @@ def test_the_fence_passes_the_right_shapes_and_counts_them() -> None:
         "from acb_llm import decide as facade\n"
         "from gateway import decide_features\n"
         "async def f():\n"
+        "    prompt = build(x)\n"
         "    async with llm_slot():\n"
-        "        await acompletion_with_fallback()\n"
+        "        await acompletion_with_fallback(messages=prompt)\n"
         "    async with llm_slot(requests=2, wait=False):\n"
-        "        await asyncio.gather(facade(1, 2))\n"
+        "        await facade(1, 2)\n"
+        "    async with asyncio.timeout(9), llm_slot():\n"
+        "        await run_agent('a', {})\n"
         "    await decide_features.shadow('x', old)\n"
         "    await run_agent_stream('chat')\n"
     )
     findings, seen = scan(source, "<synthetic>")
     assert findings == []
-    assert seen == Counter(leaf=2, facade=1)
+    assert seen == Counter(leaf=3, facade=1)
+
+
+# Review round 1, finding A: each call in a slot that is not a leaf.
+
+
+@pytest.mark.parametrize(
+    ("source", "callees"),
+    [
+        (
+            "async def f():\n    async with llm_slot():\n"
+            "        await asyncio.gather(_llm_json('m', []), _llm_json('m', []))\n",
+            ["gather", "_llm_json", "_llm_json"],
+        ),
+        (
+            "async def f():\n    async with llm_slot():\n"
+            "        draft = await _llm_draft_reply(email, about)\n",
+            ["_llm_draft_reply"],
+        ),
+        (
+            "async def f():\n    async with llm_slot():\n"
+            "        task = asyncio.create_task(acompletion_with_fallback())\n"
+            "        await task\n",
+            ["create_task"],
+        ),
+        (
+            "async def f():\n    async with llm_slot():\n"
+            "        await asyncio.wait_for(run_agent('a', {}), timeout=9)\n",
+            ["wait_for"],
+        ),
+        (
+            "async def f():\n    async with llm_slot():\n"
+            "        async with llm_slot():\n"
+            "            await acompletion_with_fallback()\n",
+            ["llm_slot"],
+        ),
+    ],
+    ids=["gather-of-llm-json", "drafter", "create-task", "wait-for", "nested-slot"],
+)
+def test_the_fence_finds_a_call_in_a_slot_that_is_not_a_leaf(source, callees) -> None:
+    findings, _ = scan(source, "<synthetic>")
+    assert {f.kind for f in findings} == {"non_leaf_in_slot"}
+    assert sorted(f.callee for f in findings) == sorted(callees)
+
+
+_ASK_ALL_SHAPE = (
+    "import asyncio\n"
+    "from acb_llm import decide as facade\n"
+    "async def {fn}(requests):\n"
+    "    async def _send():\n"
+    "        async with llm_slot(requests=len(requests), settle=False) as charge:\n"
+    "            results = await asyncio.gather(\n"
+    "                *({calls} for state, questions in requests),\n"
+    "                return_exceptions=True,\n"
+    "            )\n"
+    "        return charge, results\n"
+    "    return await _send()\n"
+)
+
+
+def test_the_one_exception_is_the_gather_of_decide_in_ask_all() -> None:
+    source = _ASK_ALL_SHAPE.format(fn="_ask_all", calls="facade(state, questions)")
+    findings, seen = scan(source, _FACADE_MODULE, facade_module=True)
+    assert findings == []
+    assert seen["gather_exception"] == 1
+
+
+@pytest.mark.parametrize(
+    ("fn", "calls", "facade_module"),
+    [
+        ("_ask_all", "_llm_json(state, questions)", True),
+        ("_ask_all", "facade(_llm_json(state), questions)", True),
+        ("_ask_some", "facade(state, questions)", True),
+        ("_ask_all", "facade(state, questions)", False),
+    ],
+    ids=["gather-of-llm-json", "llm-json-in-an-argument", "another-function", "another-module"],
+)
+def test_the_exception_is_narrow(fn, calls, facade_module) -> None:
+    source = _ASK_ALL_SHAPE.format(fn=fn, calls=calls)
+    findings, seen = scan(source, "<synthetic>", facade_module=facade_module)
+    assert "non_leaf_in_slot" in {f.kind for f in findings}
+    assert seen["gather_exception"] == 0
+
+
+def _wrap_in_slot(source: str, function: str, callee: str) -> str:
+    """Wrap the first statement of ``function`` whose value awaits a call
+    of ``callee`` in ``async with llm_slot():``, and return the new source.
+    Mutation proof on a real file, in memory."""
+    tree = ast.parse(source)
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == function
+    )
+
+    def awaits_callee(stmt: ast.stmt) -> bool:
+        value = getattr(stmt, "value", None)
+        value = value.value if isinstance(value, ast.Await) else value
+        return isinstance(value, ast.Call) and _callee(value) == callee
+
+    for parent in ast.walk(fn):
+        for name in ("body", "orelse", "finalbody"):
+            stmts = getattr(parent, name, None)
+            if not isinstance(stmts, list):
+                continue
+            for i, stmt in enumerate(stmts):
+                if isinstance(stmt, (ast.Assign, ast.Expr, ast.Return)) and awaits_callee(stmt):
+                    slot = ast.Call(func=ast.Name("llm_slot", ast.Load()), args=[], keywords=[])
+                    stmts[i] = ast.AsyncWith(items=[ast.withitem(context_expr=slot)], body=[stmt])
+                    return ast.unparse(ast.fix_missing_locations(tree))
+    raise AssertionError(f"no statement of {function} awaits {callee}")
+
+
+@pytest.mark.parametrize(
+    ("function", "callee", "callees"),
+    [
+        # ITEM1-b of the build's mutation table: it survived the old fence.
+        ("_orchestrate_draft", "gather", {"gather", "_memory_context", "_draft_consult_plan"}),
+        ("_orchestrate_draft", "_llm_draft_reply", {"_llm_draft_reply"}),
+    ],
+    ids=["item1-b-gather", "drafter"],
+)
+def test_the_fence_fails_on_the_real_drafter_with_a_slot_around_a_non_leaf(
+    function, callee, callees
+) -> None:
+    rel = f"{_AUTOMATION}/drafting.py"
+    mutated = _wrap_in_slot((REPO / rel).read_text(encoding="utf-8"), function, callee)
+    findings, _ = scan(mutated, rel)
+    assert {f.kind for f in findings} == {"non_leaf_in_slot"}
+    assert callees <= {f.callee for f in findings}
 
 
 def test_the_fence_fails_on_the_real_seam_without_its_slot() -> None:
@@ -1290,6 +1685,7 @@ class TestTheRunnerAtTheBudget:
         assert fake.calls == [], "a Router call ran past the budget"
         assert model.calls == 0
         assert [e["decide_reason"] for e in _events(caps, "decide.unavailable")] == ["budget"]
+        assert redis.store[_wire_key(p.org_b, acc)] == 1, "a refused request counted"
         stamps = _stamps(p.admin_engine, acc)
         assert stamps[ai] is None, "the undecided message was stamped"
         assert stamps[static] is not None, "the static rule did not apply"
@@ -1318,7 +1714,9 @@ class TestTheRunnerAtTheBudget:
         stamps = _stamps(p.admin_engine, acc)
         assert stamps[ai] is None and stamps[static] is not None
         assert [e["message_id"] for e in _events(caps, "email.classify_unavailable_skip")] == [ai]
-        assert redis.store[_wire_key(p.org_b, acc)] == 2, "the refused call was not counted"
+        # Review round 1, finding B: the refused call reached no model, so it
+        # gave its count back. The count stays at the limit.
+        assert redis.store[_wire_key(p.org_b, acc)] == 1, "a refused call counted"
 
     async def test_in_log_the_same_run_decides_both_messages(
         self,

@@ -101,9 +101,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
      `automation_job` or `automation_scope`. A call that a member drives never
      opens it. Outside the scope, `llm_slot` takes no permit and counts nothing.
    - `llm_slot` wraps the leaf model await only. Do not wrap an enclosing
-     function. A parent that holds a permit while its children wait for one
-     deadlocks at a cap of 1. The AST fence of the test finds a model await
-     outside `llm_slot`, and a `decide` facade call inside one.
+     function. A task started inside a held slot runs under that slot, with
+     no permit and no count of its own. So a slot around a function runs its
+     model calls uncapped and uncounted. The AST fence of the test finds a
+     model await outside `llm_slot`, a `decide` facade call inside one, and
+     each call inside one that is not a leaf. Its one exception is the
+     gather of `decide` requests in `gateway.decide_features._ask_all`.
    - The cap is one `asyncio.Semaphore` for the process, because the gateway
      runs as one process. `EMAIL_LLM_CONCURRENCY=0` means no cap, and 0 is
      the default.
@@ -112,8 +115,13 @@ All providers implement the `BaseEmailProvider` abstract interface:
      and it never refuses a call. `enforce` raises `LLMBudgetExhausted` past
      `EMAIL_LLM_DAILY_CALLS`, before the model call. 🔴 `enforce` on a box is
      OWNER-GATE.
-   - A Redis failure, or a Redis that hangs for 2 seconds, logs
-     `email.llm_budget_unavailable`, and the call runs. The cap still binds.
+   - A call that reaches no model counts nothing. A refusal, a body that
+     raises and a body that times out give the count back with `decrby`. The
+     50% and 100% lines log after a call that succeeded.
+   - Each Redis command waits 0.25 seconds at most. A failure or a timeout
+     opens a breaker for 60 seconds and logs `email.llm_budget_unavailable`
+     once. While it is open, the budget counts nothing and the call runs,
+     also in `enforce`. The cap still binds.
 
 ## Inbound SMTP Server
 

@@ -1827,6 +1827,10 @@ async def _write_filed_fyi(account_id: str, filed_rows: list[Any]) -> None:
                      error=str(exc)[:200])
 
 
+# EM-T4b review round 1, finding C: every caller is a background path. The
+# Reply Zero list starts it as a BackgroundTask on a cold mailbox, outside any
+# job scope, so the function opens the scope itself.
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _maybe_classify_threads(account_id: str) -> None:
     """Reply Zero BACKFILL: fill in per-thread status for threads the live rules
     pipeline hasn't classified yet — historical mail, accounts with auto-apply
