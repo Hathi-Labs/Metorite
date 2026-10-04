@@ -488,7 +488,9 @@ def skill_owner(
         except safe_open.UnsafePath:
             return SKILL_FOREIGN
         except OSError:
-            return SKILL_MINE  # the author's own marker; the next read tries again
+            # This read proved the author. A write that failed after the
+            # truncate leaves an empty marker, which no member owns (fail closed).
+            return SKILL_MINE
         upgraded.append((marker, data))
     return SKILL_MINE
 
