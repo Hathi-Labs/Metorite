@@ -4736,7 +4736,9 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
    mints the thread `<agent>:<run id>` itself, with no parent run bound. A
    thread id from a client never marks a batch run. Every member lists,
    opens and reads the history of such a file. Nobody changes, deletes or
-   promotes it. A batch run never replaces an existing file. The purge of a
+   promotes it. A batch run never replaces an existing file. A name is
+   free only when the disk and the history hold nothing there. One
+   exclusive create takes it (fix round 2). The purge of a
    deleted chat never touches a batch row.
 9. **No thread folder in a chat, no document.** A chat run whose thread id
    names no folder writes nothing. The upload route and the broker have the
@@ -4847,7 +4849,8 @@ mutation of one layer alone stays green. The table shows those too.
    `sessions.ts` makes it. So after a delete, a member who knows the id can
    make a new session with it. The thread rule would then give that
    session the old files. So the delete route calls
-   `workspace.purge_thread_files` after the row is gone. The purge works in
+   `workspace.purge_thread_files` before the row goes (fix round 2). The
+   purge works in
    every tenant dir of the organization. It removes the two thread folders
    and the loose files that the chat began. It removes their rows in the
    blob store and in its history (`acb_memory.purge_files` and
@@ -4901,6 +4904,35 @@ mutation of one layer alone stays green. The table shows those too.
 | no refusal of an odd name form | 1 |
 | a trailing dot allowed | 1 |
 
+**Fix round 2 (the second review, 2026-10-04).**
+
+1. **A batch run takes a free name in one step.** A member's loose file can
+   be missing on disk and kept in the store. So the batch run checks the
+   history of a name and the disk. Then
+   `safe_open.write_bytes(..., exclusive=True)` takes the name, so two batch
+   runs never write one name (`write_artifact._take_batch_name`).
+2. **The purge reads before it changes anything.** `session_paths` now
+   raises on a database error. An empty history read of a path that the
+   chat wrote raises too. So a failed read deletes no row and no file, and
+   no ownership moves.
+3. **The purge runs before the delete.** The route checks that the caller
+   owns the chat (`chat._may_delete_session`, the predicate of
+   `_delete_session`). Then it purges, and only then it deletes the row. A
+   failed purge answers 503, the chat stays, and the member can try again.
+   A second pass after the delete sweeps a file that a run wrote in
+   between. That pass only logs.
+4. **The empty dir of an alias mount** does not show in the Files tree,
+   because the tree lists files only.
+
+| Mutation | Tests that fail |
+|---|---|
+| a batch run checks no history before it takes a name | 2 |
+| a batch run writes with no exclusive create | 2 |
+| `session_paths` swallows its error | 1 |
+| an empty history read goes on | 1 |
+| a failed purge only logs | 1 |
+| the row goes before the purge | 3 |
+
 **Residuals, named.**
 
 1. **`agent-data/` of a shared agent is one folder for the whole
@@ -4910,9 +4942,8 @@ mutation of one layer alone stays green. The table shows those too.
    older than H-227, and this PR keeps it. To make it per member or per
    thread is a decision about the memory of a shared agent. HANDOFF H-237
    carries it.
-2. **The purge runs once, after the delete.** On a database error it logs
-   `workspace.thread_purge_failed`, and the files stay. A live container of
-   the thread keeps its mounts of the removed folders until it stops.
+2. **A live container of the thread** keeps its mounts of the removed
+   folders until it stops.
 3. **The member purge of the admin routes deletes private chats and keeps
    their folders** (`routes/admin/members.py`). Only the purged person knew
    those ids. HANDOFF H-237 carries it.
