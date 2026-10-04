@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 from dataclasses import dataclass
 
 from acb_common import get_logger
@@ -385,6 +386,52 @@ async def file_history(
 # ---------------------------------------------------------------------------
 
 
+class _SafeDisk:
+    """The rehydrate's reads and writes, through the safe opener (WS-43d).
+
+    ``maf_coding_engine.md`` §7.5 rule B. A sandbox container can write a
+    link into the dir it mounts, and the next rehydrate would then write the
+    blob through it, onto a host file. ``acb_skills.safe_open`` refuses a
+    link at any depth.
+
+    ⚠️ A deliberate lazy import of ``acb_skills`` from this lower package, at
+    the call site and never at module top: the opener lives in
+    ``acb_skills`` (spec §7.5), and the rehydrate is the one writer here.
+    Without ``acb_skills`` installed there is no sandbox either, so the
+    writes fall back to the plain path calls of before.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        try:
+            from acb_skills import safe_open
+        except ImportError:  # no acb_skills means no sandbox on this box
+            safe_open = None
+        self._safe = safe_open
+
+    def read(self, rel: str) -> bytes | None:
+        try:
+            if self._safe is not None:
+                return self._safe.read_bytes(self.root, rel)
+            path = self.root / rel
+            return path.read_bytes() if path.is_file() else None
+        except (OSError, ValueError):
+            return None
+
+    def write(self, rel: str, data: bytes) -> bool:
+        try:
+            if self._safe is not None:
+                self._safe.write_bytes(self.root, rel, data)
+            else:
+                path = self.root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        except (OSError, ValueError) as exc:
+            _log.warning("blob_store.rehydrate_refused", path=rel, error=str(exc)[:200])
+            return False
+        return True
+
+
 async def rehydrate_workspace(
     agent_name: str, workspace_root: str, *, instance: str = "",
     organization_id: str | None = None,
@@ -413,8 +460,6 @@ async def rehydrate_workspace(
 
     Returns the number of files restored/updated. Never raises.
     """
-    from pathlib import Path  # noqa: PLC0415
-
     if not agent_name or not workspace_root:
         return 0
     try:
@@ -432,25 +477,21 @@ async def rehydrate_workspace(
         if not plan:
             return 0
         root = Path(workspace_root)
+        disk = _SafeDisk(root)
         restored = 0
         for meta, from_instance in plan:
-            dest = root / meta.path
             # Skip if disk already has this exact version.
-            if dest.exists():
-                try:
-                    if _sha256(dest.read_bytes()) == meta.sha256:
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
+            current = await asyncio.to_thread(disk.read, meta.path)
+            if current is not None and _sha256(current) == meta.sha256:
+                continue
             data = await get_file(
                 agent_name, meta.path, instance=from_instance,
                 organization_id=org,
             )
             if data is None:
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            restored += 1
+            if await asyncio.to_thread(disk.write, meta.path, data):
+                restored += 1
         if restored:
             _log.info(
                 "blob_store.rehydrated",

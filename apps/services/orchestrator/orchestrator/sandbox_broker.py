@@ -10,8 +10,9 @@ pids limits, and ONE read-write mount, the run's own working dir.
 
 **Dark by construction.** ``acquire()`` refuses unless ``MAF_CODING_SCOPE``
 names the bound agent's target for the bound organization, and the scope is
-empty by default. Nothing on a live path calls the broker yet (WS-43d and
-WS-43e wire the tools). The startup sweep is the one part that always runs.
+empty by default. The one live caller is ``acb_skills.sandbox_tools`` (WS-43d),
+for projects-assistant under ``projects:<org>`` (§16.3), and only when
+:func:`covers` is true. The startup sweep is the one part that always runs.
 
 **The tenant comes from the run binding, never from input (R5).** The
 organization is ``executor._current_run_org()``. The agent, the thread, the
@@ -73,11 +74,25 @@ LABEL_START = "metorite.start"
 
 WORKSPACE_TARGET = "/workspace"
 GIT_COVER_TARGET = "/workspace/.git"
+#: The two nested mounts of the ``projects`` target (§16.3, D86). They lie
+#: inside ``/workspace``, and no other target gets them.
+OUTPUTS_TARGET = "/workspace/outputs"
+RUN_DATA_TARGET = "/workspace/.run"
+#: The placeholder dir in the working dir that ``/workspace/.run`` mounts on.
+#: The host makes it, so Docker never makes it as root.
+RUN_DATA_MOUNTPOINT = ".run"
+#: The tenant dir's partition marker (``agent_paths._INSTANCE_MARKER``). The
+#: gateway's write-through reads it, so the ``projects`` target covers it with
+#: a read-only mount of itself, and no container can rewrite it.
+INSTANCE_MARKER = ".cc-instance"
+INSTANCE_MARKER_TARGET = "/workspace/.cc-instance"
 
-#: The agent whose target is ``app_builder``. Every other agent is ``code_task``
-#: (§7.7 condition 1).
+#: The agent whose target is ``app_builder``, and the one whose target is
+#: ``projects``. Every other agent is ``code_task`` (§7.7 condition 1, §16.3).
 APP_BUILDER_AGENT = "app-builder"
-MAF_CODING_TARGETS = frozenset({"code_task", "app_builder"})
+PROJECTS_AGENT = "projects-assistant"
+PROJECTS_TARGET = "projects"
+MAF_CODING_TARGETS = frozenset({"code_task", "app_builder", PROJECTS_TARGET})
 
 #: The system part of ``PATH``. The thread's ``.local/bin`` goes LAST, so a
 #: package one thread installs never shadows a system tool (§7.1 rule 6).
@@ -96,6 +111,7 @@ SURVIVOR_MESSAGE = (
 )
 
 _MIB = 1024 * 1024
+_HEALTH_TTL_SECONDS = 60.0
 _HOST_GRACE_SECONDS = 15.0
 _RUN_TIMEOUT_SECONDS = 60.0
 _SMALL_TIMEOUT_SECONDS = 30.0
@@ -140,10 +156,10 @@ class SandboxUnavailable(SandboxError):
 def parse_maf_coding_scope(raw: str) -> frozenset[tuple[str, str]]:
     """``{(target, org)}`` from a comma list of ``<target>:<org>`` entries.
 
-    A target is ``code_task`` or ``app_builder``. An org is one organization
-    id, or ``*`` for every organization. Raises :class:`ValueError` on an
-    unknown target or an entry with no org, so a typo never turns on a target
-    that nobody named.
+    A target is ``code_task``, ``app_builder`` or ``projects`` (D86, §16.3).
+    An org is one organization id, or ``*`` for every organization. Raises
+    :class:`ValueError` on an unknown target or an entry with no org, so a
+    typo never turns on a target that nobody named.
     """
     entries: set[tuple[str, str]] = set()
     for part in (raw or "").split(","):
@@ -179,8 +195,13 @@ def maf_coding_scope_allows(target: str, org: str) -> bool:
 
 
 def target_for_agent(agent: str) -> str:
-    """``app_builder`` for app-builder, ``code_task`` for every other agent."""
-    return "app_builder" if agent == APP_BUILDER_AGENT else "code_task"
+    """``app_builder`` for app-builder, ``projects`` for projects-assistant,
+    and ``code_task`` for every other agent."""
+    if agent == APP_BUILDER_AGENT:
+        return "app_builder"
+    if agent == PROJECTS_AGENT:
+        return PROJECTS_TARGET
+    return "code_task"
 
 
 # ── The run binding ──────────────────────────────────────────────────────────
@@ -203,6 +224,34 @@ class RunBinding:
     @property
     def thread_hash(self) -> str:
         return _digest(self.thread)
+
+    @property
+    def target(self) -> str:
+        return target_for_agent(self.agent)
+
+    @property
+    def thread_slug(self) -> str:
+        """The folder name of this thread's outputs (§16.3). Raises ``ValueError``."""
+        from acb_skills.agent_paths import thread_slug
+
+        return thread_slug(self.thread)
+
+    @property
+    def outputs_rel(self) -> str:
+        """``outputs/<thread slug>``, relative to the working dir."""
+        return f"outputs/{self.thread_slug}"
+
+    @property
+    def run_data_rel(self) -> str:
+        """``.run-data/<org slug>/<thread slug>``, relative to the state root."""
+        from acb_skills.agent_paths import run_data_rel
+
+        return run_data_rel(self.org, self.thread)
+
+    @property
+    def run_data(self) -> Path:
+        """The run-data dir of this thread, outside every kept folder (§16.3)."""
+        return _real_state_root() / self.run_data_rel
 
     @property
     def name(self) -> str:
@@ -230,6 +279,13 @@ def _custom_apps_root() -> Path:
     from orchestrator.executor import _custom_apps_root as root
 
     return root()
+
+
+def _real_state_root() -> Path:
+    """``state_root()`` with every link resolved, as a mount source needs it."""
+    from acb_skills.agent_paths import state_root
+
+    return state_root().resolve()
 
 
 def _is_link(path: Path) -> bool:
@@ -391,6 +447,74 @@ def _git_cover_mount(ws: Path, cover: GitCover) -> Mount | None:
     return None
 
 
+def prepare_projects_dirs(binding: RunBinding) -> None:
+    """Make the thread's output folder, the ``.run`` placeholder and the run-data dir.
+
+    The ``projects`` target only (§16.3). Each dir is made with the safe
+    opener, so no part of its path can be a link, just before the start. A
+    plain file or a link in the way raises :class:`SandboxRefused`.
+    """
+    from acb_skills import safe_open
+
+    try:
+        safe_open.ensure_dir(binding.workspace, binding.outputs_rel)
+        safe_open.ensure_dir(binding.workspace, RUN_DATA_MOUNTPOINT)
+        safe_open.ensure_dir(_real_state_root(), binding.run_data_rel)
+        marker = binding.instance.encode("utf-8")
+        if safe_open.read_bytes(binding.workspace, INSTANCE_MARKER, limit=4096) != marker:
+            safe_open.write_bytes(binding.workspace, INSTANCE_MARKER, marker)
+    except (safe_open.UnsafePath, FileExistsError, NotADirectoryError) as exc:
+        raise SandboxRefused(
+            "A dir of this thread's sandbox is not a real dir, so no sandbox starts."
+        ) from exc
+    except ValueError as exc:
+        raise SandboxRefused("This thread's id cannot name a sandbox folder.") from exc
+
+
+def _real_dir(path: Path) -> Path:
+    """*path*, when it is a real dir whose real path is itself."""
+    _check_source_text(path)
+    if _is_link(path) or not path.is_dir() or path.resolve() != path:
+        raise SandboxRefused("A sandbox dir of this thread is not a real dir.")
+    return path
+
+
+def projects_mounts(binding: RunBinding) -> list[Mount]:
+    """The two nested read-write mounts of the ``projects`` target (§16.3).
+
+    - ``outputs/<thread slug>/`` at ``/workspace/outputs``, over the shared
+      ``outputs/``. So a container sees only its own thread's outputs, and
+      never the parent folder or another thread's folder. It is the one
+      nested mount that the broker allows within its own workspace.
+    - The run-data dir at ``/workspace/.run``, in this thread's container
+      only. It lies under ``state_root()/.run-data``, outside every kept
+      folder, so the blob store never holds it.
+    - The partition marker ``.cc-instance`` at itself, READ-ONLY. The
+      gateway's write-through and fault-in read it, so a container must not
+      rewrite it.
+
+    :func:`prepare_projects_dirs` makes the dirs. This checks them again.
+    """
+    ws = binding.workspace
+    try:
+        outputs = _real_dir(ws / binding.outputs_rel)
+        _real_dir(ws / RUN_DATA_MOUNTPOINT)
+        run_data = _real_dir(binding.run_data)
+    except ValueError as exc:
+        if isinstance(exc, SandboxError):
+            raise
+        raise SandboxRefused("This thread's id cannot name a sandbox folder.") from exc
+    marker = ws / INSTANCE_MARKER
+    _check_source_text(marker)
+    if _is_link(marker) or not marker.is_file() or marker.resolve() != marker:
+        raise SandboxRefused("The partition marker of the working dir is not a real file.")
+    return [
+        Mount(outputs, OUTPUTS_TARGET, readonly=False),
+        Mount(run_data, RUN_DATA_TARGET, readonly=False),
+        Mount(marker, INSTANCE_MARKER_TARGET, readonly=True),
+    ]
+
+
 def mount_list(
     binding: RunBinding,
     cover: GitCover,
@@ -399,13 +523,21 @@ def mount_list(
     """THE one function that builds the mounts of a container.
 
     Every start and every restart calls it, and so will a grant and a revoke
-    (WS-43g). So no recreate can miss the cover on ``/workspace/.git``.
+    (WS-43g). So no recreate can miss the cover on ``/workspace/.git``, or
+    the cover of a thread's output folder.
 
-    - The run's working dir at ``/workspace``, read-write.
+    - The run's working dir at ``/workspace``, read-write. For the
+      ``projects`` target it is READ-ONLY (review P1, fix round 1): every
+      thread of one organization mounts the same dir, so a thread that could
+      write it could plant code that another member's thread runs beside that
+      member's run data. Its only writable paths are its own output folder
+      and its run data, the two nested mounts below.
     - A ``.git`` at the root of the working dir is covered by an empty
       read-only bind mount, so the container can neither read nor write it.
     - A ``.git`` deeper in the working dir is refused, and so is a root
       ``.git`` that is a link.
+    - The ``projects`` target adds its two nested mounts
+      (:func:`projects_mounts`). No other target gets them.
     - *readonly_mounts* come from code, never from a caller. WS-43h adds the
       app-builder list. A source with ``.git`` at any depth is refused.
     """
@@ -417,10 +549,13 @@ def mount_list(
         raise SandboxRefused(
             "The working dir holds a .git below its root. Only a root .git is allowed."
         )
-    mounts = [Mount(ws, WORKSPACE_TARGET, readonly=False)]
+    shared = binding.target == PROJECTS_TARGET
+    mounts = [Mount(ws, WORKSPACE_TARGET, readonly=shared)]
     git_cover = _git_cover_mount(ws, cover)
     if git_cover is not None:
         mounts.append(git_cover)
+    if binding.target == PROJECTS_TARGET:
+        mounts += projects_mounts(binding)
     for source, target in readonly_mounts:
         _check_readonly_source(source)
         if not target.startswith("/") or target.startswith(WORKSPACE_TARGET):
@@ -516,7 +651,19 @@ def build_run_argv(
     ]
     for mount in mounts:
         argv += mount.args()
-    for key, value in sandbox_env(binding.thread_hash).items():
+    env = sandbox_env(binding.thread_hash)
+    if binding.target == PROJECTS_TARGET:
+        # Every thread of one organization mounts the same working dir, so
+        # another thread could plant a package in this thread's `.local`
+        # user site, and a script here would import it beside this run's own
+        # data. This track has no network and so no install: no user site.
+        env["PYTHONNOUSERSITE"] = "1"
+        # No implicit import from the cwd (`/workspace`) or a script's dir:
+        # `python3 -c` and `python3 x.py` put only the system paths on
+        # sys.path, so a module that another member's run wrote in a shared
+        # folder is never imported by name (review P1, fix round 1).
+        env["PYTHONSAFEPATH"] = "1"
+    for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
     return [*argv, image, *KEEPALIVE]
 
@@ -755,6 +902,10 @@ class SandboxHandle:
     starting: bool = True
     failed: bool = False
     removed: bool = False
+    #: The run that used this container ended and its run data is gone, so
+    #: the ``/workspace/.run`` mount points at a deleted dir. The next acquire
+    #: of the thread starts a fresh container (§16.3, data hygiene).
+    stale: bool = False
     over_quota: bool = False
     workspace_bytes: int = 0
     workspace_files: int = 0
@@ -849,6 +1000,33 @@ def _ensure_empty_file(path: Path) -> Path:
     return path.resolve()
 
 
+def _require_thread_slug(binding: RunBinding) -> None:
+    """Refuse a thread id that cannot name a folder the routes recognise (§16.3)."""
+    try:
+        binding.thread_slug  # noqa: B018 — the property raises on a bad id
+    except ValueError as exc:
+        raise SandboxRefused(
+            "This thread's id cannot name a sandbox folder, so no sandbox starts."
+        ) from exc
+
+
+def _remove_run_data(rel: str) -> bool:
+    """Delete one run-data dir with the safe opener. ``False`` when absent."""
+    from acb_skills import safe_open
+
+    root = _real_state_root()
+    if not root.is_dir():
+        return False
+    return safe_open.remove_tree(root, rel)
+
+
+def remove_all_run_data() -> bool:
+    """Delete every run-data dir. The startup sweep calls it (§16.3, §7.1 rule 13)."""
+    from acb_skills.agent_paths import RUN_DATA_DIR
+
+    return _remove_run_data(RUN_DATA_DIR)
+
+
 def check_not_nested(source: Path, sandbox_dirs: Iterable[Path]) -> None:
     """Refuse *source* when another sandbox dir is its ancestor or descendant.
 
@@ -896,6 +1074,13 @@ class SandboxBroker:
         self._reaper: asyncio.Task[None] | None = None
         self._startup: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[Any]] = set()
+        #: Every run-data dir this process made, keyed by (working dir, thread),
+        #: as a path relative to the real state root. ``end_run`` deletes it.
+        self._run_data: dict[tuple[Path, str], str] = {}
+        #: Docker health for ``covers()``: the last answer and when it came.
+        self._docker_ok: bool | None = None
+        self._docker_checked = 0.0
+        self._probe: asyncio.Task[None] | None = None
 
     # ── settings and state ──────────────────────────────────────────────────
 
@@ -1014,15 +1199,83 @@ class SandboxBroker:
 
     # ── coverage (§7.7) ─────────────────────────────────────────────────────
 
-    @staticmethod
-    def covers(agent: str, org: str) -> bool:
-        """``False`` for every agent until WS-43f is built (§7.7).
+    def covers(self, agent: str, org: str) -> bool:
+        """True when every code path of *agent* in *org* runs in this broker.
 
-        A report, a log line or a WS-3a check must not count an agent as
-        covered only because its ``code_task`` runs in the broker.
+        §7.7 and §16.3. The ``code_task`` and ``app_builder`` targets answer
+        ``False`` for every agent until WS-43f is built. A report, a log line
+        or a WS-3a check must not count an agent as covered only because its
+        ``code_task`` runs in the broker.
+
+        The ``projects`` target (projects-assistant, D86) is true when all
+        three hold:
+
+        1. ``MAF_CODING_SCOPE`` holds ``projects:<org>`` or ``projects:*``.
+        2. The broker is healthy (:meth:`healthy`).
+        3. The agent holds no shell tool outside the broker: the D85 seam
+           withholds ``code_task``, ``run_script`` and ``install_dependency``
+           (:func:`_host_shell_withheld`). A true answer here never gives them
+           back (:func:`lifts_shell_block`).
+
+        *org* is the run's own tenant, from the run binding. ``*`` is never an
+        organization here, so it is never covered.
         """
-        del agent, org
-        return False
+        if not agent or not org or org == "*":
+            return False
+        if target_for_agent(agent) != PROJECTS_TARGET:
+            return False
+        if not maf_coding_scope_allows(PROJECTS_TARGET, org):
+            return False
+        if not self.healthy():
+            return False
+        return _host_shell_withheld(agent)
+
+    def healthy(self) -> bool:
+        """§7.7 condition 4: Docker answers, and the free-space floor holds.
+
+        The image must be pinned too, or no container can start. The Docker
+        answer is cached for ``_HEALTH_TTL_SECONDS``. A stale answer starts a
+        probe in the background and is used until the probe ends. Before the
+        first answer, the broker is not healthy, so a flip fails closed.
+        """
+        settings = self._settings()
+        try:
+            pinned_image(settings)
+        except SandboxError:
+            return False
+        try:
+            if self.free_disk_mb() < int(getattr(settings, "sandbox_min_free_disk_mb", 5120)):
+                return False
+        except OSError:
+            return False
+        if self._docker_ok is None or self._clock() - self._docker_checked > _HEALTH_TTL_SECONDS:
+            self._schedule_probe()
+        return bool(self._docker_ok)
+
+    def _note_docker(self, ok: bool) -> None:
+        self._docker_ok = ok
+        self._docker_checked = self._clock()
+
+    def _schedule_probe(self) -> None:
+        if self._probe is not None and not self._probe.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._probe = loop.create_task(self.probe_docker())
+
+    async def probe_docker(self) -> bool:
+        """Ask Docker for its server version. Records and returns the answer."""
+        try:
+            result = await self._docker.run(
+                ["version", "--format", "{{.Server.Version}}"], timeout=_SMALL_TIMEOUT_SECONDS,
+            )
+            ok = result.rc == 0 and bool(result.stdout.strip())
+        except (SandboxError, OSError):
+            ok = False
+        self._note_docker(ok)
+        return ok
 
     # ── checks ──────────────────────────────────────────────────────────────
 
@@ -1054,6 +1307,13 @@ class SandboxBroker:
         small files cannot use up the inodes of the host file system.
         """
         used, entries = await asyncio.to_thread(_dir_usage, handle.workspace)
+        if handle.binding.target == PROJECTS_TARGET:
+            # The run-data dir lies outside the working dir, and the same
+            # quota bounds it (§16.3).
+            more_used, more_entries = await asyncio.to_thread(
+                _dir_usage, handle.binding.run_data,
+            )
+            used, entries = used + more_used, entries + more_entries
         quota_mb, max_files = self._quota()
         handle.workspace_bytes, handle.workspace_files = used, entries
         handle.over_quota = used > quota_mb * _MIB or entries > max_files
@@ -1125,6 +1385,8 @@ class SandboxBroker:
                 "MAF_CODING_SCOPE does not name this target for this organization, "
                 "so the sandbox starts nothing."
             )
+        if binding.target == PROJECTS_TARGET:
+            _require_thread_slug(binding)
         await self._await_startup()
         self._check_free_disk()
         if not self._reusable(binding):
@@ -1146,7 +1408,10 @@ class SandboxBroker:
 
     def _reusable(self, binding: RunBinding) -> bool:
         held = self._live.get(binding.name)
-        return held is not None and held.workspace == binding.workspace and not held.failed
+        return (
+            held is not None and held.workspace == binding.workspace
+            and not held.failed and not held.stale
+        )
 
     async def _preflight(self, binding: RunBinding) -> None:
         """Check every input of a start BEFORE a container is evicted for it.
@@ -1176,7 +1441,7 @@ class SandboxBroker:
             if held is not None:
                 if held.org != binding.org or held.agent != binding.agent:
                     raise SandboxRefused("A sandbox of another tenant holds this name.")
-                if held.workspace == binding.workspace and not held.failed:
+                if held.workspace == binding.workspace and not held.failed and not held.stale:
                     held.leases += 1
                     held.last_used = self._clock()
                     return held, victims, False
@@ -1269,11 +1534,100 @@ class SandboxBroker:
     async def _mounts_for(self, binding: RunBinding) -> list[Mount]:
         """The mounts of a start, after the nesting check (review P1-c)."""
         others = self._sandbox_dirs()
+        if binding.target == PROJECTS_TARGET:
+            # Recorded BEFORE the dir exists, so end_run deletes it even when
+            # the start fails half way.
+            self._note_run_data(binding)
         return await asyncio.to_thread(self._build_mounts, binding, others)
 
     def _build_mounts(self, binding: RunBinding, others: set[Path]) -> list[Mount]:
         check_not_nested(binding.workspace, others)
+        if binding.target == PROJECTS_TARGET:
+            prepare_projects_dirs(binding)
         return mount_list(binding, self.git_cover())
+
+    # ── the projects target: host files and run data (§16.3) ────────────────
+
+    def _note_run_data(self, binding: RunBinding) -> None:
+        self._run_data[(binding.workspace, binding.thread)] = binding.run_data_rel
+
+    @contextlib.asynccontextmanager
+    async def host_dir(self) -> AsyncIterator[RunBinding]:
+        """Hold the bound run's dir lock while the host reads or writes, with no start.
+
+        The twin of :meth:`host_files` for a host file call that needs no
+        container: the file tools of projects-assistant, and the skill list.
+        It takes the SAME lock as every container on the dir (the lock of the
+        mount source), so no exec of any container on it runs inside the
+        block. It reads the run binding itself, so no caller names a dir (R5).
+        """
+        binding = read_run_binding()
+        async with self._lock_for(binding.workspace):
+            yield binding
+
+    async def ensure_thread_dirs(self, binding: RunBinding) -> None:
+        """Make the thread's output folder and run-data dir before any start.
+
+        The file tools call it, so a write to ``outputs/`` or ``.run/`` lands
+        where the container will see it. The caller holds :meth:`host_dir`.
+        """
+        _require_thread_slug(binding)
+        self._note_run_data(binding)
+        await asyncio.to_thread(prepare_projects_dirs, binding)
+
+    def writes_refused(self, workspace: Path) -> bool:
+        """True while a container on *workspace* is over its quota (§7.1 rule 10).
+
+        The file tools refuse a write then, and still allow a delete.
+        """
+        return any(h.workspace == workspace and h.over_quota for h in self._live.values())
+
+    async def end_run(self) -> bool:
+        """Delete the bound run's run-data dir at the end of the run (§16.3).
+
+        The executor calls it in the ``finally`` of every run, so a failed or
+        a cancelled run deletes it too. It reads the run's own artifact
+        context, never an argument (R5). With no run data recorded, it
+        returns at once, so a run of any other agent pays nothing.
+
+        The delete runs under the dir lock, with the safe opener. The
+        thread's container then mounts a deleted dir at ``/workspace/.run``,
+        so it is marked stale, and removed when idle. The next run of the
+        thread starts a fresh container on a fresh run-data dir.
+        """
+        if not self._run_data:
+            return False
+        from acb_skills.write_artifact import artifact_context
+
+        ctx = artifact_context()
+        thread = str(ctx.get("session_id") or "")
+        raw = str(ctx.get("workspace_root") or "")
+        if not thread or not raw:
+            return False
+        try:
+            workspace = Path(raw).resolve()
+        except (OSError, RuntimeError):
+            return False
+        rel = self._run_data.get((workspace, thread))
+        if rel is None:
+            return False
+        async with self._lock_for(workspace):
+            removed = await asyncio.to_thread(_remove_run_data, rel)
+            self._run_data.pop((workspace, thread), None)
+            stale = [
+                h for h in self._live.values()
+                if h.workspace == workspace and h.binding.thread == thread
+            ]
+            for handle in stale:
+                handle.stale = True
+        idle = [h for h in stale if h.leases == 0 and not h.starting]
+        if idle:
+            async with self._registry_lock:
+                for handle in idle:
+                    self._drop(handle)
+            self._spawn_background(self._remove_all(idle))
+        _log.info("sandbox_broker.run_data_deleted", removed=removed, containers=len(idle))
+        return removed
 
     async def _start(self, handle: SandboxHandle) -> None:
         """Run the container and record its id, and its init and keep-alive PIDs.
@@ -1583,6 +1937,7 @@ class SandboxBroker:
                 ["ps", "-aq", "--filter", f"label={LABEL_SANDBOX}=1"],
                 timeout=_SMALL_TIMEOUT_SECONDS,
             )
+            self._note_docker(found.rc == 0)
             if found.rc != 0:
                 _log.info("sandbox_broker.sweep_skipped", error=found.stderr[-200:])
                 return 0
@@ -1590,6 +1945,7 @@ class SandboxBroker:
             if ids:
                 await self._docker.run(["rm", "-f", *ids], timeout=_RUN_TIMEOUT_SECONDS)
         except (SandboxUnavailable, OSError) as exc:
+            self._note_docker(False)
             _log.info("sandbox_broker.sweep_skipped_no_docker", error=str(exc)[:200])
             return 0
         async with self._registry_lock:
@@ -1610,7 +1966,17 @@ class SandboxBroker:
         except (OSError, SandboxError) as exc:
             _log.warning("sandbox_broker.trim_failed", error=str(exc)[:300])
             kept = -1
-        _log.info("sandbox_broker.startup", removed=removed, sandbox_dirs=kept)
+        # §16.3: a run-data dir that a crash left goes too. No run is live.
+        try:
+            run_data = await asyncio.to_thread(remove_all_run_data)
+        except (OSError, ValueError) as exc:
+            _log.warning("sandbox_broker.run_data_sweep_failed", error=str(exc)[:300])
+            run_data = False
+        self._run_data.clear()
+        _log.info(
+            "sandbox_broker.startup", removed=removed, sandbox_dirs=kept,
+            run_data_removed=run_data,
+        )
 
     def start(self) -> None:
         """Schedule :meth:`startup` on the running loop. The lifespan calls it."""
@@ -1619,12 +1985,12 @@ class SandboxBroker:
 
     async def stop(self) -> None:
         """Cancel the background tasks. The next startup sweeps the containers."""
-        for task in (self._reaper, self._startup):
+        for task in (self._reaper, self._startup, self._probe):
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-        self._reaper = self._startup = None
+        self._reaper = self._startup = self._probe = None
 
 
 # ── The module seam ──────────────────────────────────────────────────────────
@@ -1651,8 +2017,61 @@ def refuse_if_sandbox_dir(path: str | os.PathLike[str]) -> None:
 
 
 def covers(agent: str, org: str) -> bool:
-    """``False`` for every agent until WS-43f (§7.7). WS-3a reads this."""
-    return SandboxBroker.covers(agent, org)
+    """True when the broker runs every code path of *agent* in *org* (§7.7, §16.3).
+
+    ``False`` for every ``code_task`` and ``app_builder`` agent until WS-43f.
+    WS-3a reads this. See :meth:`SandboxBroker.covers`.
+    """
+    return get_broker().covers(agent, org)
+
+
+def lifts_shell_block(agent: str, org: str) -> bool:
+    """True when a cover gives *agent* its host shell tools back (D85, §7.9).
+
+    The D85 seam (``_tool_injection._sandbox_covers``) asks this, never
+    :func:`covers` alone, since the merge of PR #598. A cover lifts the block only for a target whose
+    shell tools route to the broker (WS-43f). The ``projects`` target never
+    routes them, so a true ``covers()`` for projects-assistant keeps
+    ``code_task``, ``run_script`` and ``install_dependency`` withheld
+    (§16.3 condition 3). The target is checked first, so this never calls
+    back into the seam.
+    """
+    if target_for_agent(agent) == PROJECTS_TARGET:
+        return False
+    return covers(agent, org)
+
+
+def _host_shell_withheld(agent: str) -> bool:
+    """§16.3 condition 3: the D85 seam keeps the host shell tools from *agent*.
+
+    The seam is ``orchestrator._tool_injection._withheld_shell_tools`` (PR
+    #598). Without it, nothing withholds ``code_task`` and ``run_script``
+    from projects-assistant, so no organization is covered. The sandbox
+    tools also refuse at run time when the run holds a host shell tool
+    (``acb_skills.sandbox_tools``), so the two checks fail closed each on
+    its own.
+    """
+    del agent
+    try:
+        from orchestrator import _tool_injection
+    except ImportError:
+        return False
+    return callable(getattr(_tool_injection, "_withheld_shell_tools", None))
+
+
+async def end_sandbox_run() -> bool:
+    """The end of a run: delete its run-data dir (§16.3). Never raises.
+
+    A no-op that touches no file when no sandbox ran in this process.
+    """
+    broker = _BROKER
+    if broker is None:
+        return False
+    try:
+        return await broker.end_run()
+    except Exception as exc:  # the run's own finally must never fail
+        _log.warning("sandbox_broker.end_run_failed", error=str(exc)[:300])
+        return False
 
 
 def start_sandbox_broker() -> None:

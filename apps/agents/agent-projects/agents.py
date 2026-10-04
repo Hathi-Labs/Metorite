@@ -100,49 +100,64 @@ def build_agents() -> list[Any]:
             default_headers={"X-CC-Agent": AGENT_NAME, "X-CC-Source": "chat"},
         ),
     )
-    return [
-        Agent(
-            client=client,
-            instructions=INSTRUCTIONS,
-            name=AGENT_NAME,
-            description=(
-                "Projects assistant — reads the Projects app as the member "
-                "who is asking: the tree of spaces and projects, a node's "
-                "summary, task lists with the app's own filters, one task in "
-                "full with its timeline, the member's own work, who could "
-                "take a task, a project's vocabulary, the five analytics "
-                "reads (stuck, load, throughput, finished, outlook), the team's "
-                "capacity (who holds the work, their hours, skills and "
-                "at-risk tasks, for a member with HR read access), who fits "
-                "a task best and who could help whom (ranked by skill, spare "
-                "hours and availability, for the same member), where the plan "
-                "interferes with itself (dependencies out of order, late "
-                "blockers, parallel work, and for the same member overcommitment, "
-                "absence, leaving and work over a ceiling), a table of "
-                "tasks or the server's exact groups over them for a "
-                "question no analytics read answers, and the "
-                "saved reports, rendered now. Creates and updates tasks and "
-                "projects, assigns, comments, links, moves, watches, defers "
-                "and completes, saves a report, edits the project's statuses, "
-                "types, fields and tags, sets a repeat rule, captures a "
-                "private task and files the member's own triage. Every write "
-                "shows the member a card first and does nothing if they "
-                "decline. Archives, restores and moves a project, archives, "
-                "merges and bulk-edits tasks, deletes a status, type, field, "
-                "tag, view, report, comment or attachment and reverts a "
-                "change, one act per card with the counts on the card. Draws a "
-                "timeline, a board, a task table and a report as cards, edits "
-                "a task or a project from a form in the chat, plans a project "
-                "from a goal as an editable plan, and writes a status report. "
-                "Reads the calendar, the intake queue, notifications, watchers, "
-                "saved views and who may see a project; captures and triages "
-                "intake, saves a view and clears the bell. Opens a task, a "
-                "project or an app in the member's page. It never deletes a "
-                "project or a task."
-            ),
-            tools=list(_TOOLS),
-        )
-    ]
+    agent = Agent(
+        client=client,
+        instructions=INSTRUCTIONS,
+        name=AGENT_NAME,
+        description=(
+            "Projects assistant — reads the Projects app as the member "
+            "who is asking: the tree of spaces and projects, a node's "
+            "summary, task lists with the app's own filters, one task in "
+            "full with its timeline, the member's own work, who could "
+            "take a task, a project's vocabulary, the five analytics "
+            "reads (stuck, load, throughput, finished, outlook), the team's "
+            "capacity (who holds the work, their hours, skills and "
+            "at-risk tasks, for a member with HR read access), who fits "
+            "a task best and who could help whom (ranked by skill, spare "
+            "hours and availability, for the same member), where the plan "
+            "interferes with itself (dependencies out of order, late "
+            "blockers, parallel work, and for the same member overcommitment, "
+            "absence, leaving and work over a ceiling), a table of "
+            "tasks or the server's exact groups over them for a "
+            "question no analytics read answers, and the "
+            "saved reports, rendered now. Creates and updates tasks and "
+            "projects, assigns, comments, links, moves, watches, defers "
+            "and completes, saves a report, edits the project's statuses, "
+            "types, fields and tags, sets a repeat rule, captures a "
+            "private task and files the member's own triage. Every write "
+            "shows the member a card first and does nothing if they "
+            "decline. Archives, restores and moves a project, archives, "
+            "merges and bulk-edits tasks, deletes a status, type, field, "
+            "tag, view, report, comment or attachment and reverts a "
+            "change, one act per card with the counts on the card. Draws a "
+            "timeline, a board, a task table and a report as cards, edits "
+            "a task or a project from a form in the chat, plans a project "
+            "from a goal as an editable plan, and writes a status report. "
+            "Reads the calendar, the intake queue, notifications, watchers, "
+            "saved views and who may see a project; captures and triages "
+            "intake, saves a view and clears the bell. Opens a task, a "
+            "project or an app in the member's page. It never deletes a "
+            "project or a task."
+        ),
+        tools=list(_TOOLS),
+    )
+    # WS-43d (maf_coding_engine.md §16.3, D86): the sandbox tools join THIS
+    # run only, as a per-run view, and only when the broker covers this
+    # agent for the run's own organization. Otherwise this is `agent`.
+    return [_for_this_run(agent)]
+
+
+def _for_this_run(agent: Any) -> Any:
+    """*agent*, or a per-run view that carries the sandbox tools.
+
+    ``acb_skills.sandbox_tools.attach_for_run`` decides, from the run's own
+    tenant. With an empty ``MAF_CODING_SCOPE`` it returns *agent* itself.
+    """
+    try:
+        from acb_skills.sandbox_tools import attach_for_run
+    except ImportError:
+        return agent
+    return attach_for_run(agent, AGENT_NAME)
 
 
 __all__ = ["AGENT_NAME", "INSTRUCTIONS", "_register_agent_tools", "build_agents"]

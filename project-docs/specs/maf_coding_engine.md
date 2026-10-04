@@ -7,8 +7,9 @@
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
-and a guard always refuses its Copilot CLI shell. Every other slice is spec
-only.** Owner decisions, 2026-10-03.
+and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
+step 1) is built and dark in PR #603, which waits for review. Every other
+slice is spec only.** Owner decisions, 2026-10-03.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**
 and **D86**.
@@ -1033,13 +1034,15 @@ reason codes.
 - email-assistant and whatsapp-assistant are personal, and they keep their
   tools.
 
-**`_sandbox_covers` is a local predicate.** It returns `False` for every
-agent, as `covers()` does until WS-43f. It answers one question: does the
-broker run the three shell tools of this agent (§7.7 condition 2)? WS-43c
-(PR #591) added `sandbox_broker.covers`, and WS-43f points `_sandbox_covers`
-at it (WS-43f done-when 6). ⚠️ The `projects` target of D86 is not such a
-cover. Under it `covers()` is true for projects-assistant, and the D85 seam
-keeps the three host shell tools withheld (§16.3).
+**`_sandbox_covers` asks `sandbox_broker.lifts_shell_block`.** WS-43d
+pointed it there after the merge of PR #598, so it never asks `covers()`
+alone. It answers one question: does the broker run the three shell tools
+of this agent (§7.7 condition 2)? `lifts_shell_block` is `False` for the
+`projects` target, and it is `covers()` for every other target. That is
+`False` for every agent until WS-43f (WS-43f done-when 6). ⚠️ The
+`projects` target of D86 is not such a cover. Under it `covers()` is true
+for projects-assistant, and the D85 seam keeps the three host shell tools
+withheld (§16.3).
 
 **projects-assistant goes first (D85, D86).** D85 lets its code work on the
 project and task data that the asking member can see, in the sandbox only.
@@ -1261,7 +1264,7 @@ until its PR merges.
 | WS-43a | Eval harness, then the first sweep | Nothing | AGENT-SAFE on a local stack. The sweep is NO-GO until the stack of WS-43a serves the Router |
 | WS-43b | The sandbox image and the Docker test workflow | Nothing | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43c | The sandbox broker and the scope setting | WS-43b | AGENT-SAFE |
-| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86) | WS-43c | AGENT-SAFE |
+| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, in review | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
 | WS-43e | `code_task` on a MAF harness session, and no host git | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
@@ -1607,7 +1610,7 @@ These facts change or add to the text above:
   the Docker tests use a named volume in place of each bind mount, and the
   bind-mount test skips.
 
-### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Active: Projects track step 1 (D86)**
+### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Built 2026-10-03, dark, in review: Projects track step 1 (D86)**
 
 **Narrowed by D86.** This slice now serves projects-assistant first (§16.3).
 Everything below stays. These items are added:
@@ -1680,6 +1683,116 @@ uv run pytest tests/unit/test_run_data_hygiene.py -q -rs -m sandbox_docker
 
 **Gate.** AGENT-SAFE. It ships dark: no organization is in the scope.
 
+**Built 2026-10-03 in PR #603. It ships dark.**
+These facts change or add to the text above:
+
+- **`covers()` needs the D85 seam.** Condition 3 of §16.3 reads
+  `_tool_injection._withheld_shell_tools`, which PR #598 added. Without the
+  seam, `covers()` is false for every organization, also with a scope set.
+- **A second check at run time.** At the start of each turn, the provider
+  adds no tool when the run holds `code_task`, `run_script` or
+  `install_dependency`. So the sandbox tools never sit beside a host shell.
+- **`lifts_shell_block(agent, org)` is the D85 hook.** It is false for the
+  `projects` target, and `covers()` for every other target until WS-43f.
+  `_sandbox_covers` calls it, and never `covers()` alone. A test passes the
+  agent's own `config.json` as `agent_config`, as the executor does. A
+  covered run gets `run_command` and the file tools. It never gets
+  `code_task`, `run_script`, `install_dependency`, `web_search` or
+  `fetch_page` (WS43-F21).
+- **The broker is healthy** when Docker answered in the last 60 s, the
+  free-space floor holds, and the image is pinned. Before the first answer it
+  is not healthy, so a flip fails closed.
+- **The factory** (`agent-projects/agents.py`) calls
+  `sandbox_tools.attach_for_run`. That gives a per-run view through
+  `_native_run_context.agent_with_providers`, the one copy of WS-43t1.
+- **`host_dir()` is the lock of `host_files()` with no start.** The file tools
+  and the skill list use it, so a read needs no container.
+- **The file tools call `decide()`** with the real host path of each write and
+  delete. The containment root of the call is the root of that path, set as
+  `permission_check_root` for the call only.
+- **The run data ends in the executor's `finally`** of every run, the
+  delegated run too. The thread's container then mounts a deleted dir, so the
+  broker marks it stale and removes it. The next run starts a fresh one.
+- **The host makes the `.run` mountpoint** in the working dir, so Docker
+  never makes it as root.
+- **No Python user site in a `projects` container** (`PYTHONNOUSERSITE=1`).
+  Every thread of one organization mounts the same working dir, so another
+  thread could plant a package in this thread's `.local`. This track has no
+  network, so no install needs the user site.
+- **Fix round 1 of PR #603 closed the shared-code path.** The verifier
+  showed it live. Thread T1 wrote `pandas.py` at the root with
+  `file_access_write`. In thread T2, a plain `python3 -c "import pandas"`
+  ran that file, because the cwd comes first on `sys.path`. T2 made no
+  choice to run it. The file copied T2's `/workspace/.run/rows.csv` into
+  `agent-data/`, the sweep mirrored it, and T1 read it back. Three layers
+  now stop it: the read-only mount, `PYTHONSAFEPATH` and the four heads of
+  the file tools. The `sandbox_docker` test
+  `test_docker_a_planted_root_pandas_never_leaks_another_threads_rows` goes
+  red if any one of the three goes. The round made these changes:
+  - The `projects` container mounts `/workspace` read-only. Its only writable
+    paths are its own output folder and its run data.
+  - `PYTHONSAFEPATH=1`, so `python3 -c` and a script never import a module
+    from `/workspace` or from a script's own dir.
+  - The file tools take only the heads `agent-data/`, `inputs/`, `outputs/`
+    and `.run/`, and no name that starts with a dot.
+  - A skill folder belongs to the member who first writes into it. The
+    marker is `.metorite-author`, and every writer refuses that name. A run
+    loads, lists, reads and runs only its own member's skills. The routes
+    refuse another member's skill with 403.
+  - **How a check reads the skill rule** (for the P3 eval, E17). The
+    marker `agent-data/skills/<name>/.metorite-author` holds the author's
+    email in lower case, and `agent_paths.skill_author()` reads it. In a run
+    of another member, the `<available_skills>` block of each request does
+    not name the skill, or the block is absent. A `load_skill` call for it
+    answers `Error: Skill '<name>' not found.` The source of the list is
+    `sandbox_tools.LockedSkillsSource(workspace, guard, member)`.
+  - A covered run does not hold `write_artifact`, `share_artifact`,
+    `save_note`, `recall_notes`, `get_errors` or `run_diagnostics`. A per-run
+    chat middleware takes them out of each model request, and a function
+    middleware refuses a call to one. The file tools do that work, with the
+    safe opener and the lock. The P3 review added `web_search` and
+    `fetch_page` to the set, by the §16.3 rule of no host web tool.
+  - `write_artifact`, `share_artifact` and `save_note` refuse another chat's
+    output folder and another member's skill in every run.
+  - The opener passes `O_NONBLOCK` and refuses a file that is not regular,
+    so a FIFO never blocks a host thread.
+  - The steer drain runs at the eight file tools and the skill tools.
+  - The sweep after a command covers only the thread's own output folder.
+    A file whose content has not changed is not mirrored or shown again.
+- **The residual risk that stays.** `agent-data/` and `inputs/` stay shared
+  by the organization, as H-201 built them. A member's model can still read
+  a note from another member's run, and that note can carry an injection.
+  The model can also run a script of a shared folder by its full path. That
+  is no longer implicit: no import by name, no cwd shadow and no skill of
+  another member runs it. And the container cannot write a shared folder,
+  so a script has no place to put another member's data where its author
+  can read it.
+- **The partition marker is read-only in the container.** The `projects`
+  target covers `.cc-instance` with a read-only mount of itself, because the
+  gateway's write-through and fault-in read it. The route rule never reads
+  the marker. It tells a tenant dir from its path and the caller's tenant.
+- **A thread id must name a folder that the routes can recognise.** A UUID
+  does. Any other id gets no sandbox (`agent_paths.is_thread_slug`).
+- **The route rule, as built.** Under `outputs/`, the session routes hide
+  and refuse the folder of another thread. A file of `outputs/` that is in no
+  thread folder is served as before. `write_artifact` still writes there, so
+  S8 does not change. A thread folder is a name that `is_thread_slug`
+  accepts.
+- **Skills offer no resources.** The model reads a skill's other files with
+  the file tools, which hold the lock.
+- **The steer drain** runs for `run_command` and a skill script. It does not
+  run for the eight file tools.
+- **The risk block of the addendum names no sandbox tool**
+  (`tool_annotations.SANDBOX_TOOL_NAMES`), so every other agent's prompt is
+  byte-identical.
+- **`acb_skills` declares `agent-framework-core`**, because the store and the
+  tools build on MAF's file tools.
+- **The rehydrate imports the safe opener at the call site**, from the lower
+  package `acb_memory`.
+- **On Docker Desktop** a named volume stands in for each bind mount, and it
+  outlives the host dir. So only CI shows that the run data is gone from a
+  fresh container.
+
 ### WS-43e — `code_task` on a MAF harness session, and no host git 🔲
 
 **Scope.** `run_maf_code_session` in `code_session.py`, the scope switch in
@@ -1738,7 +1851,9 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
    a test names each condition.
 5. WS43-E9 passes for a covered agent on the local stack.
 6. `_tool_injection._sandbox_covers` returns `sandbox_broker.covers(agent,
-   org)` for the targets whose shell tools the broker runs. So the D85 block
+   org)` for the targets whose shell tools the broker runs. WS-43d already
+   routes it through `lifts_shell_block`, which is `covers()` for each
+   target but `projects`. So the D85 block
    lifts for such a covered agent only (§7.9). The `projects` target does not
    lift it (§16.3). WS43-F23 passes with the real function in place.
 
@@ -3028,7 +3143,7 @@ assistants for now.
 
 | Slice | State under D86 |
 |---|---|
-| WS-43d | ▶ **Active.** Projects track step 1, narrowed (§16.3) |
+| WS-43d | ▶ **Built, dark, in review.** Projects track step 1, narrowed (§16.3). `covers()` waits for D85 (PR #598) |
 | WS-43u | ▶ **Active.** Projects track step 2: the instructions |
 | WS-43v | ▶ **Active.** Projects track step 3: the light eval |
 | WS-43w | ▶ **Active.** Projects track step 4: the owner flip for Fracktal |
@@ -3112,6 +3227,16 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
 - **The HR-only fields stay gated.** A script reads only the files that the
   agent wrote from tool results. So it cannot see more than the tools give.
 - **Nothing leaves the platform.** The container has `--network none`.
+- **A covered run holds no host web tool.** The core floor
+  (`_CORE_STANDARD_TOOL_NAMES`) gives every agent `web_search` and
+  `fetch_page`, and they run on the HOST with its network. Member data sits
+  in `.run/` and in the model's context. So a model that an injection steers
+  could send it out in a URL or a search query, with no container network at
+  all. A covered run does not hold the two tools
+  (`sandbox_tools.HOST_NETWORK_TOOLS`). The withhold middleware of the
+  host floor tools takes them out of each request and refuses a call to one.
+  The fence is `test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform`
+  (WS43-F21). It traps every real HTTP send of the host.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
