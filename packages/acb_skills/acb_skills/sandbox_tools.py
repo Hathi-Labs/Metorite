@@ -38,10 +38,11 @@ the boundaries are these:
    query (§16.3, the P3 review). The container has no network, and the run
    holds no web tool. The delegation tools stay: the owner kept them on
    2026-10-03, and an agent that the run calls runs outside the sandbox, with
-   its own tools. H-236 puts the network control on those agents: each run
-   that a covered run delegates to binds ``no_egress`` and gets no egress
-   tool (``acb_skills.egress``). The injection seam reuses
-   :data:`HOST_NETWORK_TOOLS` there as a floor.
+   its own tools. H-236 binds ``no_egress`` on the covered run itself and on
+   each run under it, and the rule fails closed (``acb_skills.egress``). The
+   injection seam reuses :data:`HOST_NETWORK_TOOLS` there as a floor. The
+   host-tool middleware here and the egress middleware share one pair
+   (``acb_skills.tool_guard``).
 6. The container sees ``/workspace`` READ-ONLY, except its own output folder
    and its run data. A skill loads, and its script runs, only for the member
    who made it. So no member's code or skill text reaches another member's

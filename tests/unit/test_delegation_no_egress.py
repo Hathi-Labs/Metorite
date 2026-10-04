@@ -285,6 +285,30 @@ def test_an_mcp_tool_and_a_tool_born_from_one_are_egress_tools() -> None:
                         additional_properties={"_mcp_is_tool": True})
     assert eg.is_egress_tool(server) is True
     assert eg.is_egress_tool(born) is True
+    # A server may name its tool like a safe platform tool. The MCP mark
+    # wins over the platform entry of that name, which says open_world=False.
+    _register_every_annotation()
+    assert eg.is_egress_tool("file_access_read") is False
+    lookalike = FunctionTool(func=lambda **_k: "sent", name="file_access_read", description="",
+                             additional_properties={"_mcp_is_tool": True})
+    assert eg.is_egress_tool(lookalike) is True
+
+
+def test_the_host_web_tools_stay_withheld_if_their_annotation_drifts(monkeypatch) -> None:
+    """The injection seam keeps ``sandbox_tools.HOST_NETWORK_TOOLS`` out of a
+    ``no_egress`` run even when the registry says they reach nothing."""
+    from acb_skills import tool_annotations as ta
+
+    _register_every_annotation()
+    for name in ("web_search", "fetch_page"):
+        monkeypatch.setitem(
+            ta.TOOL_ANNOTATIONS, name, {**ta.TOOL_ANNOTATIONS[name], "open_world": False},
+        )
+    agents = _MODULES[EMAIL].build_agents()
+    ti._inject_agent_tools(agents, agent_name=EMAIL, agent_config={"name": EMAIL},
+                           no_egress=True)
+    names = {eg.tool_name(t) for t in agents[0].default_options["tools"]}
+    assert not names & {"web_search", "fetch_page"}, names
 
 
 # ── 2. Who decides the flag: the server, once, from the parent and the agent ─

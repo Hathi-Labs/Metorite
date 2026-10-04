@@ -73,7 +73,7 @@ clone cache.
    covered run holds no web tool and its container has no network (§16.3).
    Do not write that no data leaves the platform: the owner kept delegation
    on 2026-10-03, and an agent that the run calls runs outside the sandbox.
-   H-236 (5f) withholds every egress tool from that agent. The store takes only the
+   H-236 (5f) binds the covered run and every run under it. The store takes only the
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
@@ -89,20 +89,31 @@ clone cache.
    tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
    for code tests/unit/test_generated_addendum.py and
    tests/unit/test_projects_agent.py.
-5f. egress.py -- the network control on the agents that a covered run calls
-   (H-236, spec `maf_coding_engine.md` §16.3). A run that a covered run
-   delegates to, at any depth, binds `no_egress=True` in its artifact
-   context. `no_egress_for_this_run()` is the one reader, and any value but
-   an explicit `False` reads as set. `is_egress_tool()` is the one test: a
-   tool whose annotation says `open_world`, or an MCP tool. The four
-   delegation tools (`DELEGATION_TOOLS`) never are, because the flag travels
-   with them. So `open_world` is the egress annotation: a tool that can send
-   data off the platform MUST set it. `EgressGuardProvider` adds the
-   per-run middleware that hides and refuses egress tools on the MAF path.
-   `permission_policy.guard_shared_agent_shell` refuses an egress request on
-   the Copilot path (`is_egress_request`). The orchestrator decides the flag
-   (`_tool_injection._delegated_no_egress`), because this package cannot
-   import it. Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
+5f. egress.py -- the network control on a covered run and every run under it
+   (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
+   binds `no_egress=True` in its artifact context and holds only the four
+   `DELEGATION_TOOLS`, the sandbox tools and tools whose annotation says
+   `open_world=False` explicitly. `is_egress_tool()` is the one test: a tool
+   with no annotation, or no `open_world` key, is an egress tool, and so is an
+   MCP tool, an MCP-born tool and a `STORE_WRITES` member. An agent's own tool
+   carries its annotation on the function (`__tool_risk__`), so another
+   repo's tool that shares a name with ours still fails closed.
+   `no_egress_for_this_run()` is the one reader: a frame with no run context
+   and any value but an explicit `False` read as `no_egress`.
+   `EgressGuardProvider` adds the per-run MAF middleware.
+   `permission_policy.guard_shared_agent_shell` refuses on the Copilot path
+   (`is_egress_request`). The orchestrator decides the flag
+   (`_tool_injection._run_no_egress`), because this package cannot import it.
+   Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
+5g. tool_annotations.py -- `annotate()` has NO default for `open_world`
+   (H-236). Every tool of every in-repo agent states it, and the WS43-F24
+   fence reads the real registry to check. The risk block of the addendum
+   lists the platform's own names only: an agent's own tools, the sandbox
+   tools and the names that H-236 added stay out, so the block stays static.
+5h. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`,
+   `RefuseTools`) that takes a rule. The host-tool control of
+   `sandbox_tools` and the egress control of `egress` both use it. Do not
+   write a third copy of the pair.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
