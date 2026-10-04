@@ -6680,6 +6680,52 @@ POST actions that a second try cannot change.
 9. **The fallback.** The `NotImplementedError` fallback (`drafting.py:2144`, `:2274`, `:2279`)
    stays for IMAP. A draft made in Gmail web syncs as one row, and it now sends.
 
+**The dispatch points (E-A1 to E-A5, 2026-10-05).** The audit said GO after EM-G2 merged, on five
+points. The orchestrator decided E-A2, E-A3 and the trash rule of E-A5. They bind the build. The
+anchors are at `241dddccf`.
+
+- **E-A1, the send path.** Item 8 names the send of a signed draft too (`drafting.py:2264-2280`).
+  The route signs the draft with `update_draft`. Then it gives `send_draft` the id that
+  `update_draft` returns, and never the old id. Gmail gives the draft a new message id at each
+  update, so the old id is no draft after the update. Fence:
+  `test_a_signed_send_sends_the_id_that_the_update_returns` (hermetic).
+- **E-A2, the collision rule (decided).** The sync can write the new message id as its own row
+  before the save moves the local row. So the save makes two writes in ONE transaction. First it
+  deletes the row of the same mailbox that holds the new provider id. That row is the copy that
+  the sync made of this same draft. Then it moves the local row to the new id. The local row keeps
+  its row id, because other tables point at it. Fence:
+  `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` (R8, as the role that owns no table).
+- **E-A3, a failed parent read (decided).** When the read of the parent fails, the mail goes with
+  no `In-Reply-To` and no `References`. The provider then writes one line to the log, with no
+  subject and no address. A failed parent read never fails the send. Fence: `test_a_failed_parent_read_still_sends`.
+- **E-A4, the tests that exist and change.** Each one changes only where this slice changes the
+  behaviour.
+  - `tests/unit/test_email_reply_threading.py:86-103`,
+    `test_gmail_update_draft_keeps_thread_and_html`. It asserts `text/html`, and it gives an answer
+    to `client.put` only. Item 1 makes the body `multipart/alternative`, and item 7 adds a read of
+    `drafts.list`. The case keeps its intent: the thread id and the HTML body survive the update.
+  - `tests/unit/test_email_reply_threading.py:34-83`, the four send cases. They give no answer to
+    `client.get`, so the parent read of item 4 meets an `AsyncMock`. Each case gets an answer for
+    `client.get`, and it keeps its asserts.
+  - `tests/unit/test_gmail_rate_limits.py:337-338`, the `drafts.send` case of
+    `test_a_send_is_not_retried_after_the_request_was_sent`. It sends the draft id `r-draft-1`.
+    Item 7 makes `send_draft` take a message id and read `drafts.list` first. The case gets a
+    `drafts.list` answer, and it passes a message id.
+- **E-A5, three more fences, the R8 harness, the cache and the trash rule.**
+  - Item 5: `test_a_reply_with_only_a_thread_id_reads_the_newest_message_that_is_no_draft`.
+  - Item 7: `test_a_message_id_that_is_no_draft_raises_a_clear_error`, and
+    `test_the_draft_lookup_reads_each_page` for a `drafts.list` of more than one page.
+  - The R8 tests use the harness of `tests/unit/test_email_rekey_reclaim.py` and
+    `tests/unit/test_email_duplicates.py`. That is the two-org catalog of
+    `test_h3_rls_promotion_rehearsal` under FORCE RLS, with the role `acb_app_h3rls` (NOSUPERUSER,
+    NOBYPASSRLS). The admin engine seeds the rows and reads them.
+  - The cache of item 7 lives for one provider instance. `provider_session` builds one provider
+    for each request, so the cache never spans two saves.
+  - **The trash rule (decided).** `trash_message` on a Gmail draft finds the draft id through
+    `drafts.list` and calls `drafts.delete`. That is "Discard draft" in Gmail. The local row is
+    deleted. `drafts.delete` removes the draft for good, as Gmail itself does, and the scope
+    `gmail.modify` of D-EM-31 allows it. Fence: `test_trash_of_a_draft_discards_it`.
+
 **Non-goals.** No change to Outlook drafts. No schedule-send. No migration. No change to the
 signature rules.
 
@@ -6692,8 +6738,10 @@ signature rules.
 - `test_an_attachment_keeps_its_mime_type`
 - `test_a_file_name_outside_ascii_survives`
 - `test_update_and_send_resolve_a_message_id_to_its_draft`
+- The fences of E-A1, E-A3 and E-A5 above.
 - R8: `test_a_draft_saved_here_is_one_row_after_the_sync`
 - R8: `test_an_update_moves_the_row_to_the_new_message_id`
+- R8: `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` (E-A2)
 
 `tests/unit/test_email_reply_threading.py` gains a case for the two headers.
 
@@ -6702,17 +6750,25 @@ signature rules.
 and the type test fails. M4 returns the draft id from `create_draft`, and the one-row R8 test
 fails. M5 skips the row move on update, and the second R8 test fails.
 
+The dispatch adds three. M6 makes the signed send pass the old id, and the E-A1 test fails. M7
+makes a failed parent read fail the send, and the E-A3 test fails. M8 makes a collision insert a
+second row, and the E-A2 test fails. Each run restores each file to its SHA-256.
+
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_reply_threading.py \
-  tests/unit/test_outlook_drafts.py tests/unit/test_email_signature_placement.py -v -rs
+  tests/unit/test_outlook_drafts.py tests/unit/test_email_signature_placement.py \
+  tests/unit/test_email_multi_inbox.py tests/unit/test_email_ai_context.py \
+  tests/unit/test_gmail_parse.py tests/unit/test_gmail_rate_limits.py -v -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
   tests/unit/test_gmail_send_and_drafts.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
-The R8 tests must show PASSED, with 0 skips.
+The R8 tests must show PASSED, with 0 skips. Run each other test that patches
+`_upsert_local_draft`, or that calls `send_draft`, `update_draft` or `create_draft`, too.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
