@@ -20,12 +20,13 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import httpx
 from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
-from acb_common import get_logger, get_settings
+from acb_common import env_guard, get_logger, get_settings
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.db import current_tenant
 from pydantic import BaseModel
@@ -70,6 +71,19 @@ router = APIRouter(
 # `_is_configured` and `missing_keys` below read those env vars, so
 # `/integrations/status`'s `configured` / `env-file` columns stay deployment-wide
 # too — only the `db_keys` / `encrypted-db` half is per organization.
+#
+# 🔒 **Three layers narrow that write (security fix, 2026-10-05).** They only
+# remove ability, and the rule lives in ONE module, `acb_common.env_guard`.
+#   A. A key or a value with a control character or a line separator is 400,
+#      and so is a value that the shell reads as code under `source`.
+#   B. A platform name (`env_guard.is_platform_env`) is 403, for every route
+#      here: configure, put, delete, custom registration, the GitHub writers.
+#   C. `POST /integrations/configure` takes only a key that a setup guide, the
+#      LLM key list or a registered custom integration declares, else 422.
+# Each route checks the WHOLE request before its first write, and
+# `_upsert_env_var` checks again. The fence is
+# `tests/unit/test_integrations_env_hardening.py`. Per-request credentials,
+# which would end the env write, stay owner gate §6 (f).
 
 # ---------------------------------------------------------------------------
 # Static setup guides — one entry per registered integration.
@@ -427,6 +441,10 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 # /integrations/configure endpoint to serve as the fallback write path for
 # LLM provider keys when the gateway is running code that predates the
 # /settings/llm/key endpoint's knowledge of those providers.
+#
+# Layer C reads this set, plus the keys of the registered custom
+# integrations. Layer B still refuses the platform names in it:
+# LITELLM_MASTER_KEY, COPILOT_CHAT_MODEL, VLLM_BASE_URL and the mail-app keys.
 _ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
     var["key"]
     for guide in _SETUP_GUIDES.values()
@@ -466,8 +484,23 @@ def _find_env_file() -> Path:
 
 
 def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
-    """Add or update KEY=VALUE in the .env file.  Creates the file if absent."""
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    """Add or update KEY=VALUE in the .env file.  Creates the file if absent.
+
+    🔒 It refuses first: ``env_guard.check_env_write`` raises
+    ``EnvWriteRefused`` for a bad key, a value the file cannot hold, or a
+    platform name. A route checks before this, to answer 400 or 403. This
+    second check means a caller that forgets still cannot write.
+
+    It splits the file on ``\\n`` only, and it reads and writes bytes, so no
+    newline translation runs. ``str.splitlines`` also splits on U+2028,
+    U+0085, ``\\r``, ``\\x0b`` and ``\\x0c``. With it, a line that already
+    holds one of them became two real lines on the next rewrite of any key.
+    """
+    env_guard.check_env_write(key, value)
+    text = env_path.read_bytes().decode("utf-8") if env_path.exists() else ""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     updated = False
     new_lines: list[str] = []
     for line in lines:
@@ -480,7 +513,100 @@ def _upsert_env_var(env_path: Path, key: str, value: str) -> None:
             new_lines.append(line)
     if not updated:
         new_lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    env_path.write_bytes(("\n".join(new_lines) + "\n").encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Env-write hardening — layers A and B for a route, C for configure
+# ---------------------------------------------------------------------------
+
+#: What a caller reads when a write names a platform key (layer B).
+PLATFORM_KEY_REFUSAL = (
+    "These are platform settings of the deployment, and Integrations cannot "
+    "set or remove them for any organization: {keys}. An operator sets them "
+    "on the box."
+)
+
+
+def _refuse_unsafe_env_writes(
+    pairs: Iterable[tuple[str, str]], *, actor: str | None = None,
+) -> None:
+    """Refuse the whole request before any write. Layers A (400) and B (403).
+
+    ``pairs`` holds each ``(env var name, value)`` that the route would write.
+    Pass ``""`` as the value when the route writes no value (a delete, or a
+    custom registration). The detail and the log name the keys and a
+    character code, never a value, because a value is a credential.
+    """
+    pairs = [(str(k), str(v)) for k, v in pairs]
+    malformed: list[str] = []
+    for key, value in pairs:
+        problem = env_guard.control_problem(key)
+        where = "key"
+        if problem is None:
+            problem = env_guard.value_problem(value)
+            where = "value"
+        if problem:
+            malformed.append(f"{key!r} ({where}: {problem})")
+    if malformed:
+        _log.warning(
+            "integrations.env_write_refused", layer="A", refused=malformed, actor=actor,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The env file cannot hold these writes: " + "; ".join(malformed)
+                + ". Use printable ASCII with no space, quote, backslash or "
+                "shell character."
+            ),
+        )
+    platform = sorted({k.strip().upper() for k, _ in pairs if env_guard.is_platform_env(k)})
+    if platform:
+        _log.warning(
+            "integrations.env_write_refused", layer="B", refused=platform, actor=actor,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PLATFORM_KEY_REFUSAL.format(keys=", ".join(platform)),
+        )
+
+
+def _guide_env_var(service: str, key_name: str) -> str | None:
+    """The env var that a setup guide maps ``key_name`` to, or None.
+
+    The same suffix rule as the loops in ``put_integration_key`` and
+    ``delete_integration_key``.
+    """
+    for var in _SETUP_GUIDES.get(service, {}).get("env_vars", []):
+        suffix = var["key"].lower().removeprefix(
+            f"{service}_".upper().lower()
+        ).replace("-", "_")
+        if suffix == key_name:
+            return var["key"]
+    return None
+
+
+async def _custom_declared_keys() -> frozenset[str]:
+    """The env var names that the registered custom integrations declare.
+
+    Layer C. It runs the SAME query as ``integration_status`` and
+    ``list_custom_apis``, so configure takes exactly the keys that the
+    Integrations page shows. A failed read answers an empty set, so a custom
+    key is refused and never accepted on a guess.
+    """
+    try:
+        rows = await _db_query(
+            "SELECT * FROM custom_api_definitions ORDER BY created_at"
+        )
+    except Exception as exc:
+        _log.warning("integrations.custom_keys_unreadable", error=str(exc))
+        return frozenset()
+    keys: set[str] = set()
+    for row in rows:
+        for var in row.get("env_vars") or []:
+            if isinstance(var, dict) and isinstance(var.get("key"), str):
+                keys.add(var["key"])
+    return frozenset(keys)
 
 
 # ---------------------------------------------------------------------------
@@ -678,13 +804,22 @@ async def configure_integrations(
 
     Only keys present in the allowed list (derived from _SETUP_GUIDES) may
     be written — all others are rejected with 422.
+
+    🔒 Layers A (400), B (403) and C (422) refuse the WHOLE request before
+    any write (2026-10-05). A value is written with its surrounding space
+    removed, which is the value systemd reads from the file anyway.
     """
+    # Layers A and B, over every key and value of the request.
+    _refuse_unsafe_env_writes(
+        ((v.key, v.value.strip()) for v in req.vars), actor=user.email,
+    )
+
     # Validate all keys — allow known keys OR any valid SCREAMING_SNAKE_CASE name
     # (custom APIs define their own env var names)
     _env_var_re = re.compile(r"^[A-Z][A-Z0-9_]{1,100}$")
     illegal = [
         v.key for v in req.vars
-        if v.key not in _ALLOWED_ENV_KEYS and not _env_var_re.match(v.key)
+        if v.key not in _ALLOWED_ENV_KEYS and not _env_var_re.fullmatch(v.key)
     ]
     if illegal:
         raise HTTPException(
@@ -692,6 +827,26 @@ async def configure_integrations(
             detail=(
                 f"Invalid env var key(s): {illegal}. "
                 "Keys must be SCREAMING_SNAKE_CASE (A-Z, 0-9, underscore)."
+            ),
+        )
+
+    # Layer C: a key that no setup guide, no LLM key entry and no registered
+    # custom integration declares is refused. The custom read runs only when a
+    # key is outside the static set.
+    declared: frozenset[str] = _ALLOWED_ENV_KEYS
+    if any(v.key not in declared for v in req.vars):
+        declared = declared | await _custom_declared_keys()
+    undeclared = sorted({v.key for v in req.vars if v.key not in declared})
+    if undeclared:
+        _log.warning(
+            "integrations.env_write_refused", layer="C", refused=undeclared,
+            actor=user.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"No integration declares these keys: {undeclared}. Register "
+                "a custom integration that declares a key before you set it."
             ),
         )
 
@@ -725,7 +880,8 @@ async def configure_integrations(
     db_written: list[str] = []
 
     for var in req.vars:
-        if not var.value.strip():
+        value = var.value.strip()
+        if not value:
             continue  # skip empties
 
         # 1. Write to encrypted DB store (primary persistence)
@@ -738,7 +894,7 @@ async def configure_integrations(
                 store = get_key_store()
                 await store.put(
                     provider,
-                    var.value,
+                    value,
                     credential_type="integration",
                     service=svc,
                     organization_id=current_tenant(),
@@ -757,11 +913,11 @@ async def configure_integrations(
         # see the MT-1j slice 5 block at the top of this module. Steps 2
         # and 3 have one value for the whole deployment; only step 1 above
         # is per organization.
-        os.environ[var.key] = var.value
+        os.environ[var.key] = value
 
         # 3. Write to .env as bootstrap fallback (still useful for
         #    bare-metal dev and first-boot before DB is available)
-        _upsert_env_var(env_path, var.key, var.value)
+        _upsert_env_var(env_path, var.key, value)
 
         written.append(var.key)
         _log.info(
@@ -839,8 +995,12 @@ async def put_integration_key(
 
     Also sets the corresponding os.environ variable for immediate effect
     and writes to .env as a bootstrap fallback.
+
+    🔒 Layers A (400) and B (403) run before the store write (2026-10-05).
+    The value is written with its surrounding space removed.
     """
-    if not req.value.strip():
+    value = req.value.strip()
+    if not value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="value cannot be empty",
@@ -882,13 +1042,16 @@ async def put_integration_key(
             ),
         )
 
+    # Layers A and B, before the store write, the env var and the file.
+    _refuse_unsafe_env_writes([(env_var, value)], actor=user.email)
+
     # Store in encrypted DB
     provider = f"{req.service}:{req.key_name}"
     from acb_llm.key_store import get_key_store
     store = get_key_store()
     await store.put(
         provider,
-        req.value,
+        value,
         credential_type="integration",
         service=req.service,
         organization_id=current_tenant(),
@@ -913,11 +1076,11 @@ async def put_integration_key(
     # Fixing the reachability by re-breaking the write would be repairing the
     # fail-closed contract in the wrong direction (D33 finding 3); the fix is
     # per-request provider credentials — `work_plan.md` §6 gate (f).
-    os.environ[env_var] = req.value
+    os.environ[env_var] = value
 
     # Write to .env as bootstrap fallback
     env_path = _find_env_file()
-    _upsert_env_var(env_path, env_var, req.value)
+    _upsert_env_var(env_path, env_var, value)
 
     # Bust settings cache
     from acb_common.settings import get_settings as _gs  # noqa: PLC0415
@@ -946,12 +1109,21 @@ async def delete_integration_key(
     req: IntegrationKeyDelete,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Remove a single integration credential from the encrypted DB."""
+    """Remove a single integration credential from the encrypted DB.
+
+    🔒 Layer B (403) runs before the store delete (2026-10-05). The pop below
+    unsets the variable for every organization, so a platform name such as a
+    mail-app key is refused, and nothing is deleted.
+    """
     if req.service not in _SETUP_GUIDES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown service: {req.service!r}",
         )
+
+    popped = _guide_env_var(req.service, req.key_name)
+    if popped is not None:
+        _refuse_unsafe_env_writes([(popped, "")], actor=user.email)
 
     provider = f"{req.service}:{req.key_name}"
     from acb_llm.key_store import get_key_store
@@ -1189,7 +1361,12 @@ async def create_custom_api(
     req: CustomApiDef,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Save a custom API definition (upsert on service_id)."""
+    """Save a custom API definition (upsert on service_id).
+
+    🔒 A definition declares the keys that layer C lets configure write. So a
+    key with a control character is 400, and a platform name is 403, before
+    the row is saved (2026-10-05).
+    """
     import json as _json  # noqa: PLC0415
 
     if not re.match(r"^[a-z][a-z0-9-]{0,60}$", req.service_id):
@@ -1197,6 +1374,10 @@ async def create_custom_api(
             400,
             "service_id must be lowercase letters, numbers, and hyphens.",
         )
+    _refuse_unsafe_env_writes(
+        ((str(v["key"]), "") for v in req.env_vars if v.get("key") is not None),
+        actor=user.email,
+    )
     try:
         await _db_query(
             """
@@ -1860,6 +2041,8 @@ async def github_device_poll(
 
     if "access_token" in data:
         token: str = data["access_token"]
+        # Layer A before any write: the token comes from GitHub, not from us.
+        _refuse_unsafe_env_writes([("GITHUB_TOKEN", str(token))], actor=user.email)
         # Persist to .env and hot-reload
         env_path = _find_env_file()
         _upsert_env_var(env_path, "GITHUB_TOKEN", token)
@@ -2047,7 +2230,8 @@ async def github_connect_cli(
     except Exception:  # noqa: BLE001
         pass
 
-    # 3. Save to .env and hot-reload settings
+    # 3. Save to .env and hot-reload settings. Layer A runs before any write.
+    _refuse_unsafe_env_writes([("GITHUB_TOKEN", token)], actor=user.email)
     env_path = _find_env_file()
     _upsert_env_var(env_path, "GITHUB_TOKEN", token)
     os.environ["GITHUB_TOKEN"] = token

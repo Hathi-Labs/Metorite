@@ -26,6 +26,7 @@ import os
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.env_guard import control_problem
 from cryptography.fernet import Fernet
 
 _log = get_logger("key_store")
@@ -349,6 +350,11 @@ class ProviderKeyStore:
 
         Integration → env var mapping mirrors _SETUP_GUIDES in
         apps/services/gateway/gateway/routes/integrations.py.
+
+        🔒 A stored value with a control character is skipped and logged,
+        never set (``acb_common.env_guard``, layer A, 2026-10-05). A row that
+        an older route wrote must not reach ``os.environ``. A NUL raises
+        there, and that aborts the whole loop.
         """
         # Service name → {provider suffix → env var name}
         _integration_env_map: dict[str, dict[str, str]] = {
@@ -414,6 +420,13 @@ class ProviderKeyStore:
             for suffix, env_var in key_map.items():
                 provider = f"{service}:{suffix}"
                 key = await self.get(provider)
+                if key and control_problem(key):
+                    _log.warning(
+                        "key_store.integration_value_refused",
+                        service=service,
+                        env_var=env_var,
+                    )
+                    continue
                 if key:
                     os.environ[env_var] = key
                     _log.debug(
@@ -470,6 +483,10 @@ class ProviderKeyStore:
             if not key:
                 continue
             cfg = _provider_config.get(provider)
+            if cfg and control_problem(key):
+                # Layer A (acb_common.env_guard): skip, never set.
+                _log.warning("key_store.litellm_value_refused", provider=provider)
+                continue
             if cfg:
                 litellm_attr, env_var = cfg
                 setattr(_litellm, litellm_attr, key)

@@ -95,6 +95,42 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-244 · Check the box for what the open env write could leave, and decide on SETUP tokens · [OWNER]
+- **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
+  A hit means the model-output path to configure still exists, and item 3 is
+  open. Items 1 and 2 stay open until the owner writes their result here.
+- **What changed.** The security fix of 2026-10-05 closed the Integrations env
+  write in three layers (`acb_common/env_guard.py`, fence
+  `tests/unit/test_integrations_env_hardening.py`). Before it, an org admin
+  could write any key and any line into `/opt/acb/app/.env`. The fix stops new
+  writes. It cannot see what an earlier write left.
+- **Do.**
+  1. Look for a hidden line break in the env file of the box. The check of
+     2026-10-05 counted lines with `wc -l`, and `wc -l` does not see `\r`,
+     `\x0b`, `\x0c`, `\x1c` to `\x1e`, U+0085, U+2028 or U+2029. systemd
+     splits on `\r`, so such a line can set a second key. This prints key
+     names only, never a value:
+     `LC_ALL=C grep -naP '[\x0b\x0c\x0d\x1c-\x1e]|\xc2\x85|\xe2\x80[\xa8\xa9]' /opt/acb/app/.env | cut -d= -f1`
+  2. Look for stored mail-app rows. At each restart,
+     `key_store.configure_integrations` copies `gmail-oauth:*` and
+     `microsoft-oauth:*` rows over the env value of the box. Run
+     `SELECT organization_id, provider, updated_at FROM provider_keys WHERE provider LIKE 'gmail-oauth:%' OR provider LIKE 'microsoft-oauth:%'`.
+     Then decide whether to delete them and drop the two services from the
+     map of that function.
+  3. Decide whether an agent may set an env var at all. The orchestrator and
+     the chat route post `<<<SETUP:service:KEY=value>>>` from model output to
+     configure. A prompt injection can now write only a declared integration
+     key with a clean value. It can still replace `GITHUB_TOKEN` or a Zoho
+     secret for every organization.
+- **Not for the owner, and still open.** `routes/settings.py::_write_env_key`
+  is a second env writer, behind `feature:models`. `/settings/llm/key` and
+  `/settings/llm/copilot-model` write a value with no check, so a newline or
+  `$(` still reaches the file that `deploy.sh` reads with `source`. An agent
+  can close it with `env_guard.check_env_write`.
+- **Authority:** `work_plan.md` §6 gate (f) · `apps/services/gateway/AGENTS.md`
+  item 5
+- **Added:** 2026-10-05 · branch `integrations-env-hardening`
+
 ### H-243 · Answer WS-44's four open questions before a shell flag goes on · [OWNER]
 - **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
   still shows only a default means that question is open.

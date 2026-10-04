@@ -1,0 +1,239 @@
+"""The one rule for a write to the deployment environment.
+
+Three surfaces write ``os.environ`` and the env file of the box: the
+Integrations routes (``gateway/routes/integrations.py``), the OAuth token
+writer (``gateway/routes/oauth.py``), and the startup load of the credential
+store (``acb_llm/key_store.py``). On the box the env file is
+``/opt/acb/app/.env``. It is the ``EnvironmentFile`` of ``acb-gateway.service``,
+and ``deploy/hostinger/deploy.sh`` runs ``source`` on it. One process env and
+one file serve every organization, so a write here changes the deployment.
+
+This module holds the rule, and it holds no I/O. A caller asks it, and then
+the caller refuses. Do not copy a rule into a route. A second copy of a
+security rule misses the next fix.
+
+Three parts:
+
+* ``control_problem`` (layer A). A key or a value that holds a control
+  character, a format character or a line separator is refused. A newline in
+  a value adds a line to the file, and systemd reads the last line of a key.
+  ``str.splitlines`` also breaks on U+2028, U+0085, ``\\x0b``, ``\\x0c`` and
+  ``\\x1c`` to ``\\x1e``, so a value that holds one of them is a line break
+  that waits for the next rewrite.
+* ``value_problem`` (layer A, the file form). The writer puts ``KEY=value``
+  into the file with no quotes, and it must stay so, because other readers
+  parse the file line by line. So a value may hold only the characters that
+  systemd, ``bash`` (``source``), python-dotenv and Docker Compose all read
+  as themselves in an unquoted value. A space ends the assignment in
+  ``bash`` and runs the next word as a command. ``$``, a backtick, a quote,
+  a backslash, ``;``, ``&``, ``|``, ``<``, ``>``, ``(`` and ``)`` are code
+  to the shell. A first ``~``, a ``~`` after ``:`` and a first ``#`` change
+  the value in one reader or another. Decision recorded 2026-10-05: refuse,
+  and do not quote. Quotes would add a second form to a file that readers
+  parse by hand, and this change only removes ability.
+* ``is_platform_env`` (layer B). The names that no Integrations route may
+  write, for any organization. The list comes from
+  ``acb_common/settings.py``, ``.env.example``, ``deploy/``, the key names
+  that the specs record for the box, and the process environment that
+  Python, Node, git, the dynamic linker, the shell and the HTTP clients
+  read. The test ``test_integrations_env_hardening.py`` sorts every
+  ``Settings`` field into this list or into a short list of integration
+  fields, so a new setting fails until somebody sorts it.
+
+The wider fix is per-request provider credentials, owner gate §6 (f) of
+``project-docs/work_plan.md``. Until then, these rules narrow the write.
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+
+__all__ = [
+    "KEY_SHAPE",
+    "PLATFORM_ENV_NAMES",
+    "PLATFORM_ENV_PREFIXES",
+    "PLATFORM_ENV_SUFFIXES",
+    "EnvWriteRefused",
+    "check_env_write",
+    "control_problem",
+    "is_platform_env",
+    "value_problem",
+]
+
+#: The shape of a key that a writer may put into the env file.
+#: ``fullmatch`` only: ``re.match`` with ``$`` accepts a trailing newline.
+KEY_SHAPE = re.compile(r"[A-Z][A-Z0-9_]{1,100}")
+
+#: Unicode categories that are never part of a credential. ``Cc`` holds NUL,
+#: TAB, LF, CR, VT, FF, the C1 set and U+0085. ``Zl`` and ``Zp`` are U+2028 and
+#: U+2029. ``Cf`` holds U+FEFF, which systemd refuses, and the bidi controls.
+#: ``Cs`` is a lone surrogate, which UTF-8 cannot encode. ``Cn`` holds the
+#: noncharacters, which systemd refuses. ``Co`` is private use.
+_CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+#: Characters that the shell reads as code or as a word break in
+#: ``KEY=value``. Each one either runs a command under ``source`` or makes
+#: two readers disagree about the value.
+_SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
+
+# ── Layer B: the platform names ─────────────────────────────────────────────
+#
+# Matched case-insensitively after strip, because Settings reads the
+# environment with ``case_sensitive=False``. Err on the side of refusing. A
+# refused integration key is a bug report. A written platform key is an
+# outage or a breach.
+
+#: Exact names.
+PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
+    # Database, cache and graph.
+    "DATABASE_URL", "REDIS_URL", "CC_DSN",
+    # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
+    # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
+    "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
+    "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
+    # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
+    # the directory of the Microsoft app, a per-deployment decision
+    # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* is the app of oauth.py.
+    "MICROSOFT_TENANT_ID", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    # Runtime settings of the deployment.
+    "LOG_LEVEL", "LLM_USAGE_AUDIT", "PROJECTS_IMPORT", "AGENTS_CLONE_DIR",
+    "GITHUB_INSTALLATION_ID", "GITHUB_ORG", "GITHUB_BOT_NAME",
+    "GITHUB_BOT_EMAIL", "GITHUB_PAT",
+    # Deploy scripts.
+    "APP_DIR", "ENV_FILE",
+    # The process environment: shell, Python, linker, TLS, resolver.
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "TEMP",
+    "TMP", "LANG", "LANGUAGE", "TZ", "IFS", "ENV", "BASH_ENV", "PS4",
+    "PROMPT_COMMAND", "VIRTUAL_ENV", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "GCONV_PATH", "HOSTALIASES", "RES_OPTIONS", "LOCALDOMAIN",
+    "NOTIFY_SOCKET", "INVOCATION_ID", "JOURNAL_STREAM", "DEBIAN_FRONTEND",
+    "GOFLAGS", "RUBYOPT", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+})
+
+#: Prefixes. ``AUTH_`` covers AUTH_SECRET, AUTH_URL and every
+#: AUTH_MICROSOFT_ENTRA_ID_* and AUTH_GOOGLE_* sign-in key.
+PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
+    # Database, cache and graph.
+    "DATABASE_", "DB_", "PG", "POSTGRES_", "REDIS_", "NEO4J_", "GRAPHITI_",
+    "MEM0_",
+    # The deployment's own secrets and identity. ACB_MASTER_KEY encrypts
+    # every stored credential.
+    "ACB_", "FERNET", "GATEWAY_", "LITELLM_", "AUTH_", "NEXTAUTH_",
+    "SUPABASE_", "OPERATOR_", "CUSTOMER_CONSOLE_", "CONSOLE_", "ROUTER_",
+    "RESEND_", "LANGFUSE_", "OTEL_", "GOOGLE_SSO_",
+    # The mail apps (D-EM-1). WS-17 EM-G7 names the same three prefixes in
+    # `email_ingestion.providers.app_credentials.MAIL_APP_ENV_PREFIXES`.
+    "GMAIL_OAUTH_", "MSFT_OAUTH_", "AUTH_MICROSOFT_ENTRA_ID_", "GMAIL_PUSH_",
+    # Flags and switches.
+    "EMAIL_", "DECIDE_", "BYOK_", "CRM_", "INGESTION_", "ACTION_BROKER_",
+    "WORKFLOW_", "WHATSAPP_", "MEETING_BOT_", "MIGRATION_", "SKIP_",
+    # Agent runtime, sandbox and models.
+    "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
+    "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_PUBLIC_",
+    "AWS_", "AZURE_", "VERTEX_",
+    # Deploy and release.
+    "DEPLOY_", "RELEASE_", "VPS_", "CADDY_", "SMOKE_", "GH_",
+    # The process environment and the toolchain.
+    "LC_", "BASH_FUNC_", "PYTHON", "UV_", "PIP_", "LD_", "DYLD_", "NODE_",
+    "NPM_", "GIT_", "SSH_", "DOCKER_", "COMPOSE_", "SSL_", "OPENSSL_",
+    "SYSTEMD_", "XDG_", "PERL5",
+)
+
+#: Suffixes.
+PLATFORM_ENV_SUFFIXES: tuple[str, ...] = (
+    "_DATABASE_URL", "_SESSION_SECRET", "_ENCRYPTION_KEY", "_FERNET_KEY",
+    "_MASTER_KEY", "_INTERNAL_TOKEN", "_OPERATOR_TOKEN", "_DEPLOYMENT_KEY",
+    "_WEBHOOK_SECRET", "_PUBSUB_TOKEN",
+    # A base URL sends a request, and the platform key with it, to the host
+    # it names. OPENAI_BASE_URL, OPENAI_API_BASE and the like.
+    "_PUBLIC_URL", "_BASE_URL", "_API_BASE",
+    # Feature flags. A dark flag is the owner's to flip.
+    "_ENABLED", "_DISABLED", "_ENFORCE",
+    # Paths on the box.
+    "_DIR", "_ROOT",
+    # HTTP_PROXY and the like send every outbound call through the host.
+    "_PROXY",
+)
+
+
+class EnvWriteRefused(ValueError):
+    """A write that the rule refuses. The message names the key, never the value.
+
+    ``platform`` is True when the key is a platform name (layer B), and False
+    when the key or the value is malformed (layer A).
+    """
+
+    def __init__(self, key: str, reason: str, *, platform: bool = False) -> None:
+        self.key = key
+        self.reason = reason
+        self.platform = platform
+        super().__init__(f"env write refused for {key!r}: {reason}")
+
+
+def control_problem(text: str) -> str | None:
+    """Say why ``text`` holds a control character, or return None.
+
+    Layer A. It applies to every write of ``os.environ`` and of the env file.
+    """
+    for ch in str(text):
+        if unicodedata.category(ch) in _CONTROL_CATEGORIES:
+            return f"it holds the control character U+{ord(ch):04X}"
+    return None
+
+
+def value_problem(value: str) -> str | None:
+    """Say why the env file cannot hold ``value`` unquoted, or return None.
+
+    Layer A, the file form. It applies to every value that goes into the env
+    file. The reason names a character code and never the value, because the
+    value is a credential.
+    """
+    value = str(value)
+    problem = control_problem(value)
+    if problem:
+        return problem
+    for ch in value:
+        if ch in _SHELL_SPECIAL:
+            name = "a space" if ch == " " else repr(ch)
+            return f"it holds {name}, which the shell reads as code"
+        if not "\x21" <= ch <= "\x7e":
+            return f"it holds U+{ord(ch):04X}, and the env file takes printable ASCII only"
+    if value.startswith(("~", "#")) or ":~" in value:
+        return "it starts with '~' or '#', or holds ':~', which a reader changes"
+    return None
+
+
+def is_platform_env(name: str) -> bool:
+    """True when ``name`` is a platform setting that no Integrations route may write.
+
+    Layer B. The match ignores case and surrounding space.
+    """
+    n = str(name).strip().upper()
+    if not n:
+        return False
+    return (
+        n in PLATFORM_ENV_NAMES
+        or n.startswith(PLATFORM_ENV_PREFIXES)
+        or n.endswith(PLATFORM_ENV_SUFFIXES)
+    )
+
+
+def check_env_write(key: str, value: str) -> None:
+    """Raise ``EnvWriteRefused`` unless ``KEY=value`` is safe to write.
+
+    The whole rule, for a writer of the env file: the key shape, layer A on
+    the key and the value, and layer B on the key. A route calls the parts
+    first, to answer with the right status. The writer calls this again, so a
+    caller that forgets cannot write.
+    """
+    problem = control_problem(key)
+    if problem:
+        raise EnvWriteRefused(key, f"the key: {problem}")
+    if not KEY_SHAPE.fullmatch(key):
+        raise EnvWriteRefused(key, "the key is not A-Z, 0-9 and underscore")
+    problem = value_problem(value)
+    if problem:
+        raise EnvWriteRefused(key, f"the value: {problem}")
+    if is_platform_env(key):
+        raise EnvWriteRefused(key, "it is a platform setting", platform=True)

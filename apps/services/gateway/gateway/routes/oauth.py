@@ -35,6 +35,7 @@ from urllib.parse import urlencode
 import httpx
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
+from acb_common.env_guard import EnvWriteRefused, check_env_write
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from gateway.routes.integrations import _find_env_file, _upsert_env_var
@@ -200,7 +201,13 @@ async def oauth_callback(
     if not access:
         return _html_result(service, ok=False, detail=f"No access_token in response: {resp.text[:200]}")
 
-    _persist_tokens(provider, tokens)
+    try:
+        _persist_tokens(provider, tokens)
+    except EnvWriteRefused as exc:
+        _log.warning("oauth.token_refused", service=service, key=exc.key, reason=exc.reason)
+        return _html_result(
+            service, ok=False, detail="The provider returned a token that Metorite cannot store.",
+        )
     _log.info("oauth.callback_success", service=service)
     return _html_result(service, ok=True, detail="Connected successfully. You can close this tab.")
 
@@ -222,20 +229,31 @@ async def oauth_refresh(
 # ---------------------------------------------------------------------------
 
 def _persist_tokens(provider: dict[str, Any], tokens: dict[str, Any]) -> None:
-    """Write access/refresh/expiry tokens to .env and hot-reload Settings."""
+    """Write access/refresh/expiry tokens to .env and hot-reload Settings.
+
+    🔒 All or nothing (2026-10-05): ``check_env_write`` runs on every pair
+    before the first write, so a bad refresh token cannot leave a new access
+    token beside an old refresh token. It raises ``EnvWriteRefused``.
+    """
     env_path = _find_env_file()
-    access = tokens.get("access_token", "")
-    _upsert_env_var(env_path, provider["access_env"], access)
+    writes: list[tuple[str, str]] = [
+        (provider["access_env"], str(tokens.get("access_token", ""))),
+    ]
 
     if provider["refresh_env"] and tokens.get("refresh_token"):
-        _upsert_env_var(env_path, provider["refresh_env"], tokens["refresh_token"])
+        writes.append((provider["refresh_env"], str(tokens["refresh_token"])))
 
     if provider["expiry_env"] and tokens.get("expires_in"):
         try:
             expiry = datetime.now(UTC) + timedelta(seconds=int(tokens["expires_in"]))
-            _upsert_env_var(env_path, provider["expiry_env"], expiry.isoformat())
+            writes.append((provider["expiry_env"], expiry.isoformat()))
         except (ValueError, TypeError):
             pass
+
+    for key, value in writes:
+        check_env_write(key, value)
+    for key, value in writes:
+        _upsert_env_var(env_path, key, value)
 
     try:
         get_settings.cache_clear()  # type: ignore[attr-defined]
