@@ -16,8 +16,8 @@ network control on a covered run and every run under it) is built and
 merged in PR #613 (2026-10-04), and it acts only when the scope covers a
 run. Its follow-up is built (2026-10-04, in review). It trusts a platform
 tool by identity, keeps only the platform's own delegation tools, and lets
-the chat save to memory on unmount only for the default agent. Every other
-slice is spec only.**
+the chat save to memory on unmount only the default agent's turns. Every
+other slice is spec only.**
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -3417,15 +3417,26 @@ decision inside D86, after review: the control fails closed.
   tool list, 110 tools on 2026-10-04. They are every Projects tool,
   `run_command`, the eight file tools, the delegation tools, and the platform
   tools that say `open_world=False`, `read_attachment` (H-229) among them.
-- **The chat saves to memory on unmount only for the default agent.**
+- **The chat saves to memory on unmount only the default agent's turns.**
   `AgentChat` posts the conversation to `/api/chat/memories` when its panel
   closes, and that save went around the extraction skip above. It is for
   the default agent, which can run on the direct LiteLLM path, where
   nothing extracts memory. Each named agent runs in `copilot` mode through
   `/agent/run/stream`, so the gateway extracts each of its turns at the
-  run's end and skips a covered run. So a named agent's chat loses no
-  memory without that save. `lib/chatMemorySave.ts` holds the rule, and its
-  test is the fence.
+  run's end and skips a covered run.
+- **The save reads each turn's own agent, never the agent at close.** A
+  chat can switch agents, so one conversation can hold default turns and
+  covered turns. `useAgentChat` stamps each assistant turn with the agent it
+  was sent to, and the server keeps that stamp on the row. The save takes
+  each turn of the default agent, with the user messages that it answered.
+  It leaves out a turn that names no agent. `lib/chatMemorySave.ts` holds
+  the rule, and `lib/chatMemorySave.test.ts` is the fence.
+- **Two outage losses, accepted and not fixed.** The old unmount save
+  covered both for a named agent, and nothing covers them now. First, when
+  Redis is down or the relay is degraded, the gateway streams with no
+  relay and runs no run-end hook. So that named-agent conversation saves no
+  memory. Second, a turn whose run-end fold returns nothing is not
+  extracted (`_extract_run_memory` needs `folded`).
 - **Assignment is dispatch.** Assigning `agent:<name>` to a task starts that
   agent's run in the gateway (`routes/projects/agent_dispatch.py`), where the
   flag does not reach. So in a `no_egress` run, `create_task`, `assign`,

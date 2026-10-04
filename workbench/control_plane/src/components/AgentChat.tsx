@@ -1038,20 +1038,13 @@ export default function AgentChat({
     prevLoadingRef.current = isLoading;
   }, [isLoading, sendMessage]);
 
-  // Persist the conversation to Mem0 on unmount, for the DEFAULT agent only
-  // (H-236 follow-up). The gateway extracts every named agent's turns at the
-  // run's end, and it skips a covered run. See lib/chatMemorySave.ts.
-  const agentNameRef = useRef(currentAgentName);
-  useEffect(() => {
-    agentNameRef.current = currentAgentName;
-  }, [currentAgentName]);
+  // Persist the DEFAULT agent's turns to Mem0 on unmount (H-236 follow-up).
+  // Each turn names its own agent, so a switch mid-chat changes nothing. The
+  // gateway extracts every named agent's turns at the run's end, and it skips
+  // a covered run. See lib/chatMemorySave.ts.
   useEffect(() => {
     return () => {
-      saveConversationOnUnmount({
-        agentName: agentNameRef.current,
-        memoryUserId,
-        messages: messagesRef.current,
-      });
+      saveConversationOnUnmount({ memoryUserId, messages: messagesRef.current });
     };
   }, [memoryUserId]);
 
