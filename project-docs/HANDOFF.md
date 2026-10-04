@@ -4122,8 +4122,8 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-04 · the chat click-to-load PR
 
 ### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
-- **Check:** `grep -n "assigned_by" apps/services/gateway/gateway/routes/projects/tasks.py apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
-  → no hit in both files means the gap is open.
+- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
+  → `0` means the gap is open. The sink passes no member to `run_agent`.
 - **What happens.** `pm.task.assigned` carries the task, the new assignees
   and the org, and no assigner. So `agent_dispatch` calls `run_agent` with no
   `session_user`, and the executor logs `executor.run_has_no_acting_user`.
@@ -4139,6 +4139,11 @@ line — never reclaim a number by deleting the other entry.
      a payload key.
   3. Fence it on the R8 database: the run binds the member as verified, and
      a `skill-projects` write in that run is limited to what the member may do.
+- **Two more items for the flip (no fix now).**
+  1. With the flag ON, no cap limits the number of dispatched runs at one
+     time. Only the Router's credit cap stops them.
+  2. A workflow node that assigns an agent no longer waits for the run,
+     because the sink starts each run in the background.
 - **Why it waits.** The run is dark (`PROJECTS_AGENT_DISPATCH`, PR #622).
   This gap must close before the owner flips the flag.
 - **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10 ·
