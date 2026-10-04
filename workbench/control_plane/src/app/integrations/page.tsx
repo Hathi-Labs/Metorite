@@ -21,6 +21,7 @@ import { deleteEmailAccount } from "@/app/email/lib/api";
 import { disconnectFailureText } from "@/app/email/lib/connect";
 import Tabs from "@/components/Tabs";
 import type { TabDef } from "@/components/Tabs";
+import OperatorEnvVars from "./OperatorEnvVars";
 
 // ---------------------------------------------------------------------------
 // Tab navigation
@@ -196,7 +197,11 @@ function ApiTile({ api, selected, onClick }: { api: ApiEntry; selected: boolean;
 }
 
 function CredentialForm({ api, onSaved }: {
-  api: { env_vars: { key: string; label: string; sensitive: boolean }[] };
+  api: {
+    env_vars: { key: string; label: string; sensitive: boolean }[];
+    // Read-only: the operator sets these on the server (security fix, 2026-10-05).
+    operator_env_vars?: { key: string; label: string }[];
+  };
   onSaved: () => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>(
@@ -244,6 +249,7 @@ function CredentialForm({ api, onSaved }: {
           <div className="text-[9px] text-muted mt-0.5 font-mono">{v.key}</div>
         </div>
       ))}
+      <OperatorEnvVars api={api} />
       {err && <p className="text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">{err}</p>}
       <Button size="none" layout="flex items-center justify-center" onClick={() => void save()} disabled={saving} className="w-full py-2.5 text-sm gap-2">
         {saving ? <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" /> : done ? <Icon name="Check" className="w-3.5 h-3.5" /> : null}

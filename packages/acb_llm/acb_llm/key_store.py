@@ -26,6 +26,7 @@ import os
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.env_guard import EnvWriteRefused, check_env_write, is_platform_env
 from cryptography.fernet import Fernet
 
 _log = get_logger("key_store")
@@ -47,6 +48,80 @@ def _derive_fernet_key(master_key: str) -> bytes:
         iterations=480_000,
     )
     return base64.urlsafe_b64encode(kdf.derive(master_key.encode("utf-8")))
+
+
+#: Service name → {provider suffix → env var name}. The built-in
+#: integrations whose stored keys ``configure_integrations`` copies into
+#: ``os.environ`` at startup. It mirrors ``_SETUP_GUIDES`` in
+#: ``apps/services/gateway/gateway/routes/integrations.py``, and the gateway
+#: reserves every service id here: a custom integration may not take one
+#: (security fix round 2, 2026-10-05).
+INTEGRATION_ENV_MAP: dict[str, dict[str, str]] = {
+    "zoho-crm": {
+        "client_id": "ZOHO_CLIENT_ID",
+        "client_secret": "ZOHO_CLIENT_SECRET",
+        "refresh_token": "ZOHO_REFRESH_TOKEN",
+        "api_domain": "ZOHO_API_DOMAIN",
+        "accounts_url": "ZOHO_ACCOUNTS_URL",
+        "region": "ZOHO_REGION",
+    },
+    "apollo": {
+        "api_key": "APOLLO_API_KEY",
+    },
+    "google-maps": {
+        "api_key": "GOOGLE_MAPS_API_KEY",
+    },
+    "instantly": {
+        "api_key": "INSTANTLY_API_KEY",
+    },
+    "gmail": {
+        "sa_json_path": "GMAIL_SA_JSON_PATH",
+        "default_user": "GMAIL_DEFAULT_USER",
+    },
+    "gmail-send": {
+        "sa_json_path": "GMAIL_SA_JSON_PATH",
+        "default_user": "GMAIL_DEFAULT_USER",
+    },
+    "smtp": {
+        "host": "SMTP_HOST",
+        "port": "SMTP_PORT",
+        "username": "SMTP_USERNAME",
+        "password": "SMTP_PASSWORD",
+    },
+    "github": {
+        "token": "GITHUB_TOKEN",
+        "client_id": "GITHUB_CLIENT_ID",
+    },
+    "serpapi": {
+        "api_key": "SERPAPI_API_KEY",
+    },
+    "apify": {
+        "api_token": "APIFY_API_TOKEN",
+    },
+    "anymailfinder": {
+        "api_key": "ANYMAILFINDER_API_KEY",
+    },
+    "google-sheets": {
+        "sa_json_path": "GOOGLE_SHEETS_SA_JSON_PATH",
+    },
+    "gmail-oauth": {
+        "gmail_oauth_client_id": "GMAIL_OAUTH_CLIENT_ID",
+        "gmail_oauth_client_secret": "GMAIL_OAUTH_CLIENT_SECRET",
+    },
+    "microsoft-oauth": {
+        "msft_oauth_client_id": "MSFT_OAUTH_CLIENT_ID",
+        "msft_oauth_client_secret": "MSFT_OAUTH_CLIENT_SECRET",
+        "microsoft_tenant_id": "MICROSOFT_TENANT_ID",
+    },
+}
+
+#: The ``credential_type`` of a built-in integration key. Startup loads
+#: only this type.
+BUILTIN_INTEGRATION_TYPE = "integration"
+
+#: The ``credential_type`` of a key that a custom integration declares. It
+#: lives in the store only, and nothing copies it into ``os.environ``.
+CUSTOM_INTEGRATION_TYPE = "custom"
 
 
 class ProviderKeyStore:
@@ -349,79 +424,48 @@ class ProviderKeyStore:
 
         Integration → env var mapping mirrors _SETUP_GUIDES in
         apps/services/gateway/gateway/routes/integrations.py.
-        """
-        # Service name → {provider suffix → env var name}
-        _integration_env_map: dict[str, dict[str, str]] = {
-            "zoho-crm": {
-                "client_id": "ZOHO_CLIENT_ID",
-                "client_secret": "ZOHO_CLIENT_SECRET",
-                "refresh_token": "ZOHO_REFRESH_TOKEN",
-                "api_domain": "ZOHO_API_DOMAIN",
-                "accounts_url": "ZOHO_ACCOUNTS_URL",
-                "region": "ZOHO_REGION",
-            },
-            "apollo": {
-                "api_key": "APOLLO_API_KEY",
-            },
-            "google-maps": {
-                "api_key": "GOOGLE_MAPS_API_KEY",
-            },
-            "instantly": {
-                "api_key": "INSTANTLY_API_KEY",
-            },
-            "gmail": {
-                "sa_json_path": "GMAIL_SA_JSON_PATH",
-                "default_user": "GMAIL_DEFAULT_USER",
-            },
-            "gmail-send": {
-                "sa_json_path": "GMAIL_SA_JSON_PATH",
-                "default_user": "GMAIL_DEFAULT_USER",
-            },
-            "smtp": {
-                "host": "SMTP_HOST",
-                "port": "SMTP_PORT",
-                "username": "SMTP_USERNAME",
-                "password": "SMTP_PASSWORD",
-            },
-            "github": {
-                "token": "GITHUB_TOKEN",
-                "client_id": "GITHUB_CLIENT_ID",
-            },
-            "serpapi": {
-                "api_key": "SERPAPI_API_KEY",
-            },
-            "apify": {
-                "api_token": "APIFY_API_TOKEN",
-            },
-            "anymailfinder": {
-                "api_key": "ANYMAILFINDER_API_KEY",
-            },
-            "google-sheets": {
-                "sa_json_path": "GOOGLE_SHEETS_SA_JSON_PATH",
-            },
-            "gmail-oauth": {
-                "gmail_oauth_client_id": "GMAIL_OAUTH_CLIENT_ID",
-                "gmail_oauth_client_secret": "GMAIL_OAUTH_CLIENT_SECRET",
-            },
-            "microsoft-oauth": {
-                "msft_oauth_client_id": "MSFT_OAUTH_CLIENT_ID",
-                "msft_oauth_client_secret": "MSFT_OAUTH_CLIENT_SECRET",
-                "microsoft_tenant_id": "MICROSOFT_TENANT_ID",
-            },
-        }
 
-        for service, key_map in _integration_env_map.items():
+        🔒 Layers A and B (``acb_common.env_guard.check_env_write``, security
+        fix round 1, 2026-10-05). A stored row whose value fails layer A (a
+        control character, more than 4096 bytes, or a shell character) or
+        whose name fails layer B (a platform or operator-only name, such as a
+        mail-app key or ``ZOHO_API_DOMAIN``) is skipped and logged with the
+        key name only. It never reaches ``os.environ``. A row that an older
+        route wrote must not override the env value of the box, and a NUL
+        raises in ``os.environ``, which aborts the whole loop. A platform name
+        is never copied from the env into the store either.
+
+        🔒 Round 2: it reads only ``credential_type = 'integration'`` rows, so
+        a row of a custom service never reaches ``os.environ``. Before this, a
+        custom service named ``github`` could store ``github:token`` and land
+        in ``GITHUB_TOKEN`` at the next start, past the BYOK gate.
+        """
+        # 🔒 Only BUILT-IN integration rows (round 2, 2026-10-05). A custom
+        # integration's key is stored as credential_type 'custom' under
+        # `custom:<service_id>:<key>`, so this read never sees it, even when a
+        # row of a custom service takes a built-in provider name.
+        stored = await self.get_by_type(BUILTIN_INTEGRATION_TYPE)
+        for service, key_map in INTEGRATION_ENV_MAP.items():
             for suffix, env_var in key_map.items():
                 provider = f"{service}:{suffix}"
-                key = await self.get(provider)
+                key = stored.get(provider, "")
                 if key:
+                    try:
+                        check_env_write(env_var, key)
+                    except EnvWriteRefused as exc:
+                        _log.warning(
+                            "key_store.integration_row_refused",
+                            env_var=env_var,
+                            rule="platform" if exc.platform else "value",
+                        )
+                        continue
                     os.environ[env_var] = key
                     _log.debug(
                         "key_store.integration_configured",
                         service=service,
                         env_var=env_var,
                     )
-                else:
+                elif not is_platform_env(env_var):
                     # Preserve any existing env var (from .env bootstrap)
                     existing = os.environ.get(env_var, "")
                     if existing and existing.strip():
@@ -465,6 +509,10 @@ class ProviderKeyStore:
             "assemblyai": ("assemblyai_api_key",  "ASSEMBLYAI_API_KEY"),
         }
 
+        # 🔒 Layers A and B (acb_common.env_guard). The provider keys are on
+        # the deny list, and this loader owns exactly the names of its map.
+        owned = frozenset(env for _, env in _provider_config.values())
+
         all_keys = await self.get_all()
         for provider, key in all_keys.items():
             if not key:
@@ -472,6 +520,15 @@ class ProviderKeyStore:
             cfg = _provider_config.get(provider)
             if cfg:
                 litellm_attr, env_var = cfg
+                try:
+                    check_env_write(env_var, key, owned=owned)
+                except EnvWriteRefused as exc:
+                    _log.warning(
+                        "key_store.litellm_row_refused",
+                        env_var=env_var,
+                        rule="platform" if exc.platform else "value",
+                    )
+                    continue
                 setattr(_litellm, litellm_attr, key)
                 os.environ[env_var] = key
                 _log.debug("key_store.litellm_configured", provider=provider)

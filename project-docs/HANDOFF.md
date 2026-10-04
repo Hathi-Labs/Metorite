@@ -95,6 +95,58 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
+- **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
+  A hit means the model-output path to configure still exists, and the
+  decision is open.
+- **What happens today.** The orchestrator and the chat route post
+  `<<<SETUP:service:KEY=value>>>` from model output to
+  `POST /integrations/configure`. The security fix of 2026-10-05 and its
+  round 1 narrow that write (`acb_common/env_guard.py`, fence
+  `tests/unit/test_integrations_env_hardening.py`). Only a key that a
+  built-in guide declares reaches the env file now. So a prompt injection can
+  write only one of 13 integration keys, with a clean value. It can still
+  replace `GITHUB_TOKEN` (when BYOK is on) or a Zoho secret for every
+  organization.
+- **Do.** Decide one of three: keep the path, limit it to a key that is not
+  set yet, or remove it. Then an agent builds the decision.
+- **What changed for the box (round 1).** A key that a custom integration
+  declares now goes to the store of the organization only. No resolver read
+  such a key, but agent code that called `os.getenv` for it no longer finds a
+  value that the page set. The key store no longer loads an operator-only or
+  platform row at startup, so the env file of the box wins for those names.
+  Round 2 adds two more. `GMAIL_DEFAULT_USER` is operator-only, so the
+  operator sets the mailbox of the Gmail service account on the box. A
+  custom integration may not take a built-in service id, and the start
+  loads only rows of credential_type `integration`.
+- **Done on 2026-10-05.** The orchestrator ran read-only checks on the box,
+  after the fix. None found anything that an earlier write left.
+  1. A hidden line break in `/opt/acb/app/.env`. A count with `wc -l` does not
+     see `\r`, `\x0b`, `\x0c`, `\x1c` to `\x1e`, U+0085, U+2028 or U+2029.
+     This grep prints key names only, and it found no line (an empty result):
+     `LC_ALL=C grep -naP '[\x0b\x0c\x0d\x1c-\x1e]|\xc2\x85|\xe2\x80[\xa8\xa9]' /opt/acb/app/.env | cut -d= -f1`
+  2. Stored mail-app rows. This query returned no row:
+     `SELECT organization_id, provider, updated_at FROM provider_keys WHERE provider LIKE 'gmail-oauth:%' OR provider LIKE 'microsoft-oauth:%'`
+  3. The journal since 2026-09-28 holds no `integrations.configure`,
+     `integrations.key_put`, `integrations.key_deleted` or
+     `integrations.custom_created` event.
+     ⚠️ **The journal starts on 2026-09-28. Nothing before that date is
+     covered.**
+  4. No value in the env file holds a character that the fix now refuses.
+     No line is longer than 2 KB.
+  5. The backup and server key names are absent: no `BACKUP_*`, `KEEP_*`,
+     `UVICORN_*`, `WEB_CONCURRENCY`, `FORWARDED_ALLOW_IPS`, `SHELLOPTS`,
+     `BASHOPTS`, `V1_*` or `LIVE_ASR_URL`. `SKILLS_ROOT` is the only
+     `SKILLS_*` name. `MEET_PROFILE_DIR` and `MEET_VNC` are present, and the
+     operator set them.
+- **Board:** the R4 line is on row WS-2 (Secrets) in `work_plan.md` §2.
+  Row WS-29 owns the cross-tenant env write too, but its legacy text holds
+  141 semicolons, so a line there fails the STE gate on commit.
+- **Authority:** `work_plan.md` §6 gate (f) · `apps/services/gateway/AGENTS.md`
+  items 5 and 7
+- **Added:** 2026-10-05 · branch `integrations-env-hardening`. The box results
+  are from 2026-10-05.
+
 ### H-243 · Answer WS-44's four open questions before a shell flag goes on · [OWNER]
 - **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
   still shows only a default means that question is open.
