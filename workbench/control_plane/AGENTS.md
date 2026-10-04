@@ -129,6 +129,10 @@ Five rules on top of the three above. Each one exists because it was broken:
    with `rehype-raw` also runs `rehypeGateRemoteMedia` after it. Both live in
    `src/lib/markdownMedia.ts` and `src/components/MarkdownImage.tsx`. Fence:
    `src/components/markdownImage.test.ts`.
+   **Untrusted HTML has one DOMPurify policy,** `src/lib/untrustedHtml.ts`.
+   The email pane and the `.docx` viewer use it. A new raw-HTML sink
+   (`dangerouslySetInnerHTML`, an `innerHTML` write, a `srcdoc`) fails
+   `src/lib/htmlSinks.test.ts` until it is on that list with its gate.
    **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
    (WS-27bm S9). Do not draw a task, a project or a person as bold text or
    as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.
