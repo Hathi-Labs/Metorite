@@ -19,6 +19,9 @@ dependencies = [
     # provider: `tenant_file_store.py` and `sandbox_tools.py`. The same pin
     # the orchestrator declares.
     "agent-framework-core>=1.19.0",
+    # read_attachment (H-229) parses a chat PDF. pypdf is pure Python, and
+    # each parse switches off its one subprocess (jbig2dec).
+    "pypdf>=6.19",
 ]
 
 [build-system]

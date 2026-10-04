@@ -21,8 +21,9 @@ DELETE /agent/workspace/{session_id}/file?path=<rel_path>
     Delete a file from the workspace.
 
 POST /agent/workspace/{session_id}/upload
-    Upload one or more files (multipart/form-data).  Files land in .tmp/
-    under the workspace root.  Returns the list of created FileEntry objects.
+    Upload one or more files (multipart/form-data).  Files land in the
+    session's attachment folder: ``inputs/<thread slug>/`` in a shared agent's
+    tenant dir, else ``inputs/`` (H-229).  Returns the created FileEntry objects.
 
 PATCH /agent/workspace/{session_id}
     Set or update the workspace_path for a session (called by write_artifact tool).
@@ -1433,12 +1434,17 @@ async def upload_files(
     files: list[UploadFile],
     _user: UserContext = Depends(get_current_user),
 ) -> list[FileEntry]:
-    """Upload one or more files into the session workspace .tmp/ directory.
+    """Upload one or more files into the session's attachment folder.
 
-    Files are stored under ``{workspace_root}/.tmp/`` and are automatically
-    tracked by Git.  The agent receives a system message with the list of
-    uploaded files and their paths so it can reference them.
+    The folder is ``acb_skills.agent_paths.upload_dir_rel`` (H-229). A shared
+    agent's tenant dir is one folder for every member of the organization, so
+    there a file lands in ``inputs/<thread slug>/``, the folder of this
+    session's thread, and only a run of that thread reads it
+    (``read_attachment``, D12). Any other workspace keeps ``inputs/``. The
+    browser tells the agent the names and the paths in the next message.
     """
+    from acb_skills.agent_paths import upload_dir_rel
+
     await _refuse_unless_room(session_id, _user, send=True)
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email,
@@ -1452,14 +1458,24 @@ async def upload_files(
         )
     _refuse_shared_clone_write(workspace)
 
-    # Upload to inputs/ (visible workspace directory) — not .tmp/
-    upload_dir = workspace / "inputs"
+    # The session id is the thread id, and the room check above admitted the
+    # caller to it. The rule is shared with the tool that reads the folder.
+    # The tenant dir is told from its PATH and the caller's own tenant, as
+    # `_own_thread_slug` tells it, never from the `.cc-instance` marker that
+    # a container could rewrite.
+    from acb_skills.agent_paths import tenant_instance
+
+    org = _user.organization_id
+    tenant_key = (
+        tenant_instance(org)
+        if _own_thread_slug(workspace, session_id, org) is not None else ""
+    )
     try:
-        upload_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
+        upload_rel = upload_dir_rel(tenant_key, session_id)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=500,
-            detail=f"Cannot create inputs directory: {exc}",
+            status_code=400,
+            detail="This chat cannot take an upload: its id is not a plain thread id.",
         ) from exc
 
     uploaded: list[FileEntry] = []
@@ -1486,7 +1502,7 @@ async def upload_files(
         # Avoid overwrites: append (1), (2), etc. WS-43d (§7.5 rule B): the
         # name is taken and written in one exclusive create, with no link.
         rel_path = await asyncio.to_thread(
-            _safe_upload, workspace, "inputs", safe_name, content,
+            _safe_upload, workspace, upload_rel, safe_name, content,
         )
         dest_name = rel_path.rsplit("/", 1)[-1]
 

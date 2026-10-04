@@ -79,6 +79,21 @@ clone cache.
    tests/unit/test_run_command_tool.py (WS43-F6),
    tests/unit/test_maf_code_session.py (WS43-F7, R8) and
    tests/unit/test_projects_sandbox_tools.py (WS43-F21).
+5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
+   spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
+   `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
+   chat. `attachment_text` parses bytes only: no subprocess, no code, and
+   pypdf's `jbig2dec` is off. Every cap is a module constant there.
+   `attachment_tools` takes the workspace, the thread and the store key from
+   `artifact_context()`, never from the `.cc-instance` marker, and only a
+   file name from the model. It opens through `safe_open` (5d). In a run that
+   `sandbox_broker.covers()`, it holds `broker.host_dir()` during the read,
+   so `WITHHELD_HOST_TOOLS` (5e) does not name it.
+   `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands:
+   `inputs/<thread slug>/` in a shared agent's tenant dir, else `inputs/`.
+   It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
+   The gateway upload route and this tool both call it. Do not add a second
+   reader of an attachment. Fence: tests/unit/test_read_attachment.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

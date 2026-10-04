@@ -88,6 +88,7 @@ __all__ = [
     "tenant_instance",
     "thread_outputs_rel",
     "thread_slug",
+    "upload_dir_rel",
     "workspace_blob_key",
 ]
 
@@ -252,6 +253,27 @@ def thread_slug(thread_id: object) -> str:
 def thread_outputs_rel(thread_id: object) -> str:
     """``outputs/<thread slug>``, relative to the working dir."""
     return f"outputs/{thread_slug(thread_id)}"
+
+
+def upload_dir_rel(instance: object, thread_id: object) -> str:
+    """Where a chat upload lands, relative to the workspace root (H-229).
+
+    THE one rule. The upload route writes there, and ``read_attachment``
+    reads there, so the two cannot disagree. It takes the thread folder from
+    :func:`thread_slug`, the same slug as :func:`thread_outputs_rel`.
+
+    * A shared agent's tenant dir (``o:<org>``) is one folder for every member
+      of the organization. So an upload lands in ``inputs/<thread slug>/``, and
+      only a run of that thread reads it (D12).
+    * Any other workspace keeps ``inputs/``. A personal agent's dir holds only
+      its member's files.
+
+    A tenant dir with an id that is not a plain thread id raises
+    ``ValueError``, so the caller fails closed.
+    """
+    if is_tenant_instance(instance):
+        return f"inputs/{thread_slug(thread_id)}"
+    return "inputs"
 
 
 def run_data_rel(organization_id: object, thread_id: object) -> str:
