@@ -35,6 +35,22 @@ export function fullDateLabel(dateStr: string): string {
   });
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * "14 Sep" in the member's own time zone, with the year when it is not the
+ * year of `now`. Month names come from a fixed list, so the text does not
+ * change with the version of the runtime's date data.
+ *
+ * The import panel (`lib/onboarding.ts`, EM-T6d) and the storage notice
+ * (`lib/storage.ts`, EM-T6e) both read it, so it lives here and neither
+ * module imports the other for it. `onboarding.ts` re-exports it.
+ */
+export function shortDate(d: Date, now: Date): string {
+  const base = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === now.getFullYear() ? base : `${base} ${d.getFullYear()}`;
+}
+
 /**
  * Get initials from a name for avatar display.
  * e.g. "Alex Morgan" → "AM", "Priya Sharma" → "PS"

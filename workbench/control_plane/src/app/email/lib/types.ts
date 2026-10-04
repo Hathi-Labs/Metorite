@@ -109,12 +109,29 @@ export interface EmailAccount {
   onboardingDone?: boolean;
   /** The oldest `received_at` the first import wrote so far (EM-T6b). */
   importReachedAt?: string | null;
-  /** `counting`, `importing` or `done` (EM-T6b). */
+  /**
+   * `counting`, `importing` or `done` (EM-T6b), or `limit` (EM-T6c): the
+   * first import stopped at the storage limit, and `initialSyncDone` is true.
+   */
   importPhase?: string | null;
   /** The rows the first import wrote so far (EM-T6b). */
   importCount?: number | null;
   /** The provider's count of the range, or null when it gave none (EM-T6b). */
   importEstimate?: number | null;
+  // ── Storage (EM-T6c meter, EM-T6e UI, spec §10.4.7) ──
+  /**
+   * The bytes of the copy that Metorite keeps of this mailbox (EM-T6c). Null
+   * before the first meter run, and a null meter is not at the limit. Absent
+   * from a gateway before EM-T6c. Read it through `atStorageLimit` in
+   * `lib/storage.ts`, never by hand.
+   */
+  storedBytes?: number | null;
+  /**
+   * The storage limit of each mailbox, in bytes (the setting in MB times
+   * 1,048,576). Absent from a gateway before EM-T6c, and then Email draws no
+   * storage UI.
+   */
+  storageLimitBytes?: number;
   /**
    * When the member connected the mailbox, as ISO text with six digits of
    * microseconds (EM-T8f-1). A disconnect of the default makes the oldest
@@ -131,6 +148,29 @@ export interface EmailAccount {
    * `lib/mailbox.ts`, never by hand.
    */
   inAllInboxes?: boolean;
+}
+
+// ── Remove older mail from Metorite (EM-T6c routes, EM-T6e UI) ─────────────
+
+/** The answer of `GET /email/accounts/{id}/storage/older?before=`. It writes
+ *  nothing, and it counts no draft (EM-T6c, G1). */
+export interface OlderMailPreview {
+  /** The cutoff as the gateway parsed it, as ISO text in UTC. */
+  before: string;
+  /** The messages received before the cutoff. */
+  messages: number;
+  /** The bytes of the meter that their removal would free. */
+  bytes: number;
+}
+
+/** The answer of `POST /email/accounts/{id}/storage/remove-older`. */
+export interface RemoveOlderResult {
+  before: string;
+  /** The messages that the removal took out of Metorite. */
+  removed: number;
+  /** The new meter of the mailbox. Null when the meter did not run. */
+  storedBytes: number | null;
+  storageLimitBytes: number;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────
