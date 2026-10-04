@@ -78,6 +78,35 @@ describe("describeActivity", () => {
     );
   });
 
+  it("shows what an agent run said, and falls back to its name", () => {
+    // The three rows the dispatch sink writes. The member must read the reply
+    // and the failure, not `Agent run researcher` three times.
+    const agentRun = (body: string | null, state: string) =>
+      row({
+        type: "agent_run",
+        body,
+        created_by: "agent:researcher",
+        meta: { agent: "researcher", state },
+      });
+    expect(
+      describeActivity(
+        agentRun("Assigned to researcher; starting a run.", "started"),
+      ),
+    ).toBe("Assigned to researcher; starting a run.");
+    expect(describeActivity(agentRun("I drafted the notes.", "finished"))).toBe(
+      "I drafted the notes.",
+    );
+    expect(
+      describeActivity(agentRun("Agent run failed: timed out", "failed")),
+    ).toBe("Agent run failed: timed out");
+    expect(describeActivity(agentRun(null, "started"))).toBe(
+      "Agent run researcher",
+    );
+    expect(describeActivity(agentRun("   ", "finished"))).toBe(
+      "Agent run researcher",
+    );
+  });
+
   it("reads an assignment in both directions", () => {
     expect(
       describeActivity(
