@@ -4364,11 +4364,29 @@ it in its `tool_scope`.
    sets `jbig2dec_binary=None`, so that path is off.
 2. **The caps.** A file has at most 25 MB, the upload cap. A `.docx` reads
    one part, the main document, and at most 20 MB of it once unpacked. A
-   PDF reads at most 100 pages, and one stream unpacks to at most 8 MB. A
-   text file keeps 5,000 lines. One call returns 40,000 characters, and a
-   longer file gives the offset of the next page.
-3. **A deadline.** A parse stops itself after 20 seconds. The tool waits
-   25 seconds at most.
+   PDF reads at most 100 pages. One PDF stream unpacks to at most 1 MB, and
+   one page enters a form XObject at most 100 times. A text file keeps
+   5,000 lines. One call returns 40,000 characters, and a longer file gives
+   the offset of the next page.
+3. **A deadline that stops a parse in the middle** (fix round 1). A parse
+   stops itself after 20 seconds. A PDF checks it before each operator,
+   through pypdf's `visitor_operand_before`, also inside a page. pypdf parses
+   a whole stream before the hook runs, so a stop comes at most one stream
+   parse late: about 0.6 s at the 1 MB cap, and 0.81 s at most in the
+   measured cases. A Word part checks it between 64 KB chunks and every
+   1,024 elements. The tool waits 2 seconds past the deadline, and then it
+   frees the parse slot, also when the worker still runs. So a slow file
+   never holds a slot past its deadline.
+3a. **Why not a child process.** A child process with a hard kill was the
+   other choice. The in-thread hook bounds the time, so the parse stays in
+   the process, and the "no process" rule and its trap test hold as they are.
+3b. **A Word part is UTF-8, and has no DTD** (fix round 1). A UTF-16 part
+   once hid its DTD from a byte search, and its entities grew to about 2 GB.
+   Now the tool refuses a part with another encoding before the parse. The
+   parser (`pyexpat`) decodes the part as UTF-8, and it refuses a DTD and an
+   entity declaration at the first event. `_rels/.rels` goes through the
+   same parser. Each element costs O(1), and a deep nesting does not change
+   that.
 4. **A zip bomb costs no more than the cap.** A part that declares more
    than 20 MB is refused before it is opened. A part that hides its size
    unpacks no more than the read asks for, which is the cap plus one byte.
@@ -4424,6 +4442,13 @@ Each item has a test in `tests/unit/test_read_attachment.py`.
    keep the tool.
 9. A rewritten marker moves no upload out of its thread, and opens no flat
    file for the tool. A thread id that names no folder gets 400 (R8).
+10. Fix round 1. The reviewer's one-page PDF stops within 2 seconds of a
+    1-second deadline, and its slot is free afterwards. A parse that runs
+    on loses its slot at the deadline. The tool refuses entity bombs in
+    UTF-8, UTF-16 with and without a BOM, and UTF-32 in under 1 second,
+    under 8 MB. It refuses a part that is not UTF-8, and a DTD in
+    `_rels/.rels`. 30,000 nested paragraphs parse in under 2 seconds. A clip
+    in the last PDF page, or in a Word paragraph, sets `stopped`.
 
 ### 22.6 Mutations
 
@@ -4437,7 +4462,7 @@ Each mutation below turns at least one test red.
 | no declared-size check in a `.docx` | 1 |
 | an unbounded read of the main part | 1 |
 | a pypdf error escapes | 3 |
-| a DTD is parsed | 1 |
+| the parser takes a DTD | 1 |
 | no thread folder in a tenant dir | 3 |
 | the name keeps its path | 1 |
 | the history ignores the session | 2 |
@@ -4445,7 +4470,6 @@ Each mutation below turns at least one test red.
 | a parse starts a process | 3 |
 | the scope loses the tool | 2 |
 | D85 counts it as a shell tool | 2 |
-| the PDF loop has no deadline | 1 |
 | no parse slot | 1 |
 | a covered run takes no dir lock | 1 |
 | a plain open in place of the safe opener | 1 |
@@ -4454,6 +4478,22 @@ Each mutation below turns at least one test red.
 | the upload route reads the marker | 1 |
 | the upload route writes the flat `inputs/` | 2 |
 | an odd thread id falls back to `inputs/` | 1 |
+| fix round 1: the PDF page has no deadline visitor | 1 |
+| fix round 1: pypdf's own cap of 5,000 form entries | 1 |
+| fix round 1: the old 8 MB stream cap | 1 |
+| fix round 1: the slot frees only when the worker ends | 1 |
+| fix round 1: no UTF-8 check | 3 |
+| fix round 1: any encoding, a DTD and no UTF-8 check | 4 |
+| fix round 1: the package relationships skip the safe parser | 1 |
+| fix round 1: each close sums every open paragraph | 1 |
+| fix round 1: no deadline inside a chunk | 1 |
+| fix round 1: a PDF cut in its last page reads as whole | 1 |
+| fix round 1: a cut Word paragraph reads as whole | 1 |
+| fix round 1: the instructions say there is no file tool | 1 |
+
+The deadline check between two PDF pages is now a second layer, because
+the visitor checks first. So a mutation that drops it alone stays green,
+and the visitor mutation stands for it.
 
 ### 22.7 What H-229 does not do
 

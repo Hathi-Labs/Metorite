@@ -83,7 +83,10 @@ clone cache.
    spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
    `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
    chat. `attachment_text` parses bytes only: no subprocess, no code, and
-   pypdf's `jbig2dec` is off. Every cap is a module constant there.
+   pypdf's `jbig2dec` is off. Every cap is a module constant there. The PDF
+   deadline stops a page in the middle (pypdf's `visitor_operand_before`). A
+   Word part must be UTF-8, and `pyexpat` refuses a DTD at its first event.
+   The tool frees a parse slot at the deadline, also when the worker runs on.
    `attachment_tools` takes the workspace, the thread and the store key from
    `artifact_context()`, never from the `.cc-instance` marker, and only a
    file name from the model. It opens through `safe_open` (5d). In a run that
