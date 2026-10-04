@@ -6647,8 +6647,8 @@ owns it, and it needs its own audit.
 
 #### 12.3.3 EM-G3a — send and drafts
 
-**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3a`. The as-built notes, the
-fences and the mutation table are at the end of this section.
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3a`, with review round 1. The
+as-built notes, the fences, the mutation table and review round 1 are at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the draft row is SQL. No migration.
 
@@ -6824,8 +6824,8 @@ four send cases there use one client that answers `client.get` with a parent wit
 The `drafts.send` case of `test_gmail_rate_limits.py` answers `drafts.list`, and it sends the
 message id `m-draft-1`.
 
-**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 35 cases. 30 are
-hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 5 are R8.
+**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 42 cases after review
+round 1. 33 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 9 are R8.
 
 | Test | What it proves |
 |---|---|
@@ -6849,29 +6849,36 @@ hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 5 are R
 | `test_a_failed_draft_lookup_still_trashes_a_mail` | A failed `drafts.list` still trashes a mail, and logs one line. |
 | `test_a_signed_send_sends_the_id_that_the_update_returns` | E-A1. The route signs, then sends the new message id. |
 | `test_a_signed_send_of_a_provider_that_keeps_its_id_is_unchanged` | Outlook sends the same id as before. |
+| `test_an_update_keeps_the_files_of_the_draft` | Review round 1, F1. An update keeps each file of the draft, and adds the given files. |
+| `test_a_failed_file_read_fails_the_update` | F1. An update that cannot read the files writes nothing. |
+| `test_a_draft_that_changed_in_gmail_answers_409` | Item 5 of review round 1. The send, with and with no signature, and the save answer 409. |
 | R8 `test_a_draft_saved_here_is_one_row_after_the_sync` | A saved draft and its sync copy are one row. |
 | R8 `test_an_update_moves_the_row_to_the_new_message_id` | The row keeps its row id, and each request builds its own provider. |
 | R8 `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` | E-A2. A sync copy that commits before the move goes, and one row stays. |
 | R8 `test_an_update_that_keeps_its_id_moves_nothing` | Outlook: no statement of the move reaches Postgres. |
 | R8 `test_a_discarded_gmail_draft_leaves_no_row` | E-A5. The route deletes the row of a discarded draft, and a mail goes to `trash`. |
+| R8 `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three` | F2. The real Outlook provider PATCHes two To addresses and one Cc, and uploads no file again. |
+| R8 `test_a_signed_gmail_send_keeps_the_cc_and_the_file` | F1. The signing `drafts.update` carries the Cc of the row and the file of the draft. |
+| R8 `test_a_failed_send_leaves_the_row_on_the_live_id` | F3. After a failed `drafts.send`, the row holds the live id, and a second Send works. |
+| R8 `test_the_move_never_touches_another_mailbox` | F4. The same new id in another mailbox of the organization and in another organization stays. |
 
 `test_email_reply_threading.py::test_gmail_reply_sets_in_reply_to_and_references` is the case for
 the two headers there.
 
-**Mutations, as run (2026-10-05).** A script ran each mutation against
+**Mutations, as run (2026-10-05, review round 1).** A script ran each mutation against
 `test_gmail_send_and_drafts.py`, `test_email_reply_threading.py` and `test_gmail_rate_limits.py`,
 on a real Postgres with 0 skips. It then wrote back the original bytes, and the SHA-256 of
 `gmail.py`, `drafting.py` and `messages.py` matched each time. Each mutation turned a named test
-red.
+red. The counts are from the run of review round 1, which ran each row again on the new code.
 
 | Id | Mutation | Red tests |
 |---|---|---|
-| M1 | The builder puts back `MIMEText(body_text, "html")` | 10, with the three MIME tests and the update case of `test_email_reply_threading.py` |
+| M1 | The builder puts back `MIMEText(body_text, "html")` | 11, with the three MIME tests and the update case of `test_email_reply_threading.py` |
 | M2 | No `In-Reply-To` | 5, with both cases of the reply test and the new case of `test_email_reply_threading.py` |
-| M3 | Each file goes as `application/octet-stream` | the 4 cases of the type test that name a type |
-| M4 | `create_draft` returns the draft id | `test_create_and_update_return_the_message_id` and the 4 R8 tests of the Gmail save |
-| M5 | The save skips the move | the R8 move test and the R8 collision test |
-| M6 | The signed send passes the old id | `test_a_signed_send_sends_the_id_that_the_update_returns` |
+| M3 | Each file goes as `application/octet-stream` | 6, with the 4 cases of the type test that name a type |
+| M4 | `create_draft` returns the draft id | 9, with `test_create_and_update_return_the_message_id` and each R8 test of the Gmail save |
+| M5 | The save skips the move | the R8 move, collision and two-mailbox tests |
+| M6 | The signed send passes the old id | the E-A1 test, the F1 test and the F3 test |
 | M7 | A failed parent read fails the send | the 4 cases of `test_a_failed_parent_read_still_sends` |
 | M8 | The move keeps the sync copy and gives way to it, so a second row stays | the R8 collision test |
 | M8a | The move keeps the sync copy, so the move meets the unique key | the R8 collision test |
@@ -6879,11 +6886,48 @@ red.
 | M10 | The delete route keeps the row of a discarded draft | the R8 discard test |
 | M11 | The parent of a thread can be a draft | the thread-only test and the update test |
 | M12 | The lookup reads the first page only | `test_the_draft_lookup_reads_each_page` |
+| R1 | The row stores the first To address only (F2) | the R8 Outlook test |
+| R2a | The signing update drops the Cc (F1) | the R8 Gmail F1 test and the R8 Outlook test |
+| R2b | The Gmail update drops the files of the draft (F1) | the R8 Gmail F1 test, `test_an_update_keeps_the_files_of_the_draft` and `test_a_failed_file_read_fails_the_update` |
+| R3 | The move runs in the block of the route, so a failed send rolls it back (F3) | the R8 F3 test |
+| V2 | `_DROP_SYNC_COPY_SQL` has no account bind (F4) | the R8 two-mailbox test |
+| R5 | `GmailDraftNotFound` is not mapped to 409 | `test_a_draft_that_changed_in_gmail_answers_409` |
+
+**Review round 1 (2026-10-05).** An independent verifier passed the branch with two P1 and two P3
+findings. It also confirmed that the branch does not change how Outlook drafts. Each fix has a
+fence above.
+
+- **F2, P1, a LIVE Outlook defect on main, fixed here.** The save stored the first To address of a
+  draft only. The signed send read the row back and PATCHed `toRecipients` with it. So a draft to
+  two people, sent with a signature, reached the first person only. Now `_upsert_local_draft`
+  takes `to_addresses`, and `PUT /email/drafts` passes each To address. The ON CONFLICT key does
+  not change. This changes live Outlook behaviour, and the change is correct.
+- **F1, P1 for Gmail.** The signing update gave no Cc, no Bcc and no file, and Gmail replaces the
+  whole draft. So the mail went out with no Cc and no file. Now the route passes each To, Cc and
+  Bcc address of the row. Outlook PATCHes the Cc list and the Bcc list only when the row holds an
+  address.
+- **F1, the files.** Metorite keeps no bytes of a draft file. So the Gmail `update_draft` reads the
+  files from the draft in Gmail (`_draft_files`), and it builds them in again. That binds each
+  Gmail update, an autosave too, because each one replaces the whole draft. Outlook gets no file
+  again, because its draft keeps its files.
+- **F3, P3.** A `drafts.send` that failed after the signing update rolled back the route, and the
+  row kept the old message id. Now `_commit_draft_move` moves the row in a block of its own, and
+  that block commits before `drafts.send`. A commit inside the block of the route would end its
+  tenant.
+- **F4, P3, a fence gap.** No test failed when the account bind left `_DROP_SYNC_COPY_SQL`. The
+  two-mailbox R8 test now fails.
+- **Item 5.** `_draft_changed_upstream` answers 409 with "This draft changed in Gmail. Refresh and
+  try again." on the save and on the send, for `GmailDraftNotFound`.
+- **The IMAP fallback.** The fallback of the send now passes the Cc and the Bcc of the row too.
+
+**Fixed defect EM-G3a-F2 (LIVE on Outlook before this branch).** A signed send of an Outlook draft
+to more than one To address reached the first address only. Review round 1 fixes it, with the R8
+fence `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three`.
 
 **Known limit EM-G3a-f1.** A member edits a draft in Gmail web, then in Metorite before the next
 sync. Gmail gave the draft a new message id, so the local row holds an old id. `update_draft` then
-raises `GmailDraftNotFound`, and the route answers 500. The sync writes the new id as a second
-row, and the old row stays until a reconcile removes it (EM-G4b, EM-G5).
+raises `GmailDraftNotFound`, and the route answers 409 since review round 1. The sync writes the
+new id as a second row, and the old row stays until a reconcile removes it (EM-G4b, EM-G5).
 
 **Known limit EM-G3a-f2.** A sync can hold its copy of the new id in an open transaction while the
 save moves its row. The move then waits for that transaction, and it fails on the unique key. The
@@ -6902,6 +6946,13 @@ cases, and the move adds no loss. A later slice owns the fix of the IMAP id, wit
 **Known limit EM-G3a-f5.** A Gmail draft row from before EM-G3a holds a draft id, so its update and
 its send raise `GmailDraftNotFound`. Production holds no Gmail mailbox, so no such row exists
 there.
+
+**Known limit EM-G3a-f6 (on main before EM-G3a).** The IMAP fallback of the send builds a new mail,
+and it sends no file of the draft.
+
+**Known limit EM-G3a-f7.** Each Gmail update reads each file of the draft and sends it again, and
+an autosave is an update. An inline image (`cid:`) of a draft made in Gmail web is no file in that
+read, so an update drops it.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 

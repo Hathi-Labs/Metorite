@@ -245,6 +245,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
     - `trash_message` discards a draft with `drafts.delete`, which removes
       it for good, as Gmail does. It adds the id to `discarded_drafts`, so
       the caller deletes the local row.
+    - Gmail replaces the whole draft at each update. So `update_draft`
+      reads the files of the draft from Gmail (`_draft_files`) and builds
+      them in again, and `attachments` adds files to them. Metorite keeps
+      no bytes of a draft file. A read that fails fails the update, because
+      an update with no files would delete them in Gmail (review round 1).
 
 ## Inbound SMTP Server
 

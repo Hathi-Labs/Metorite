@@ -6,13 +6,15 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
+from email_ingestion.providers.gmail import GmailDraftNotFound
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
@@ -2008,6 +2010,7 @@ async def _upsert_local_draft(
     subject: str, body: str,
     cc: list[str] | None = None, bcc: list[str] | None = None,
     has_attachments: bool = False,
+    to_addresses: list[str] | None = None,
 ) -> str:
     """Persist a just-created/updated provider draft into ``email_messages`` so it
     shows in the Drafts folder and in-thread immediately — without waiting for the
@@ -2016,7 +2019,14 @@ async def _upsert_local_draft(
     local message id.
 
     ``cc``/``bcc`` are mirrored locally too, so a reopened draft shows its Cc/Bcc
-    from our own copy immediately instead of waiting for the next Drafts sweep."""
+    from our own copy immediately instead of waiting for the next Drafts sweep.
+
+    ``to_addresses`` holds each To address of the draft, and it wins over
+    ``to_email`` when given. The signed send reads the row back, so a row
+    with the first address only sent the mail to that one person (WS-17
+    EM-G3a review round 1, F2, a live Outlook defect)."""
+    to_list = (to_addresses if to_addresses is not None
+               else [to_email] if to_email else [])
     res = await db.execute(text(
         """INSERT INTO email_messages
              (id, account_id, provider_message_id, thread_id, folder,
@@ -2048,7 +2058,7 @@ async def _upsert_local_draft(
         "tid": thread_id or None,
         "from_addr": json.dumps({"name": "", "email": owner_email or ""}),
         "to_addrs": json.dumps(
-            [{"name": "", "email": to_email}] if to_email else []),
+            [{"name": "", "email": a} for a in to_list if a]),
         "cc_addrs": json.dumps(
             [{"name": "", "email": a} for a in (cc or []) if a]),
         "bcc_addrs": json.dumps(
@@ -2088,6 +2098,45 @@ async def _move_local_draft(
     params = {"aid": account_id, "id": local_id, "pmid": provider_message_id}
     await db.execute(text(_DROP_SYNC_COPY_SQL), params)
     await db.execute(text(_MOVE_LOCAL_DRAFT_SQL), params)
+
+
+async def _commit_draft_move(
+    account_id: str, local_id: str, provider_message_id: str,
+) -> None:
+    """Move the local row in a block of its own, so the move commits at once.
+
+    WS-17 EM-G3a review round 1, F3. The signed send moves the row to the id
+    that ``update_draft`` returned BEFORE ``drafts.send``. A send that then
+    fails rolls back the block of the route, and the committed move stays.
+    So the row holds the live id, and the next Send or save works. A commit
+    inside a ``_tenant_session`` block ends its tenant, so this opens a new
+    block with the tenant of the request, and the seam commits it."""
+    async with _tenant_session() as move_db:
+        await _move_local_draft(
+            move_db, account_id, local_id, provider_message_id)
+
+
+def _draft_addresses(value: Any) -> list[str]:
+    """Each address of one address column of a draft row (JSONB)."""
+    items = value if isinstance(value, list) else json.loads(value or "[]")
+    return [a["email"] for a in items if isinstance(a, dict) and a.get("email")]
+
+
+#: The answer when Gmail no longer holds the draft that the row names.
+DRAFT_CHANGED_DETAIL = "This draft changed in Gmail. Refresh and try again."
+
+
+@contextmanager
+def _draft_changed_upstream() -> Iterator[None]:
+    """Answer 409 when Gmail holds no draft with the id of the row.
+
+    WS-17 EM-G3a review round 1, item 5. ``GmailDraftNotFound`` means that the
+    draft changed or left Gmail after the last sync (known limit EM-G3a-f1).
+    That is a conflict with the provider, not a fault of the server."""
+    try:
+        yield
+    except GmailDraftNotFound as exc:
+        raise HTTPException(status_code=409, detail=DRAFT_CHANGED_DETAIL) from exc
 
 
 async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
@@ -2165,12 +2214,13 @@ async def upsert_draft(
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
                 try:
-                    provider_id = await provider.update_draft(
-                        drow.provider_message_id, to=to or None,
-                        subject=subject or None, body_text=body,
-                        thread_id=thread_id or None,
-                        cc=cc, bcc=bcc, attachments=atts or None,
-                    )
+                    with _draft_changed_upstream():
+                        provider_id = await provider.update_draft(
+                            drow.provider_message_id, to=to or None,
+                            subject=subject or None, body_text=body,
+                            thread_id=thread_id or None,
+                            cc=cc, bcc=bcc, attachments=atts or None,
+                        )
                 except NotImplementedError:
                     # No in-place update primitive → fresh draft, drop the old.
                     provider_id = await provider.create_draft(
@@ -2224,11 +2274,13 @@ async def upsert_draft(
                     attachments=atts or None,
                 )
 
+            # Each To address goes into the row, because the signed send reads
+            # them back (EM-G3a review round 1, F2).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=thread_id,
                 owner_email=sess.owner_email, to_email=(to[0] if to else ""),
                 subject=subject, body=body, cc=cc, bcc=bcc,
-                has_attachments=bool(atts),
+                has_attachments=bool(atts), to_addresses=to,
             )
         return await _fetch_message_dict(db, local_id)
 
@@ -2250,8 +2302,8 @@ async def send_draft_endpoint(
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         drow = (await db.execute(text(
-            "SELECT provider_message_id, subject, to_addresses, body_text,"
-            " thread_id"
+            "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
+            " bcc_addresses, body_text, thread_id"
             " FROM email_messages WHERE id = :id AND account_id = :aid"
             " AND LOWER(folder) IN ('drafts', 'draft')"
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
@@ -2278,9 +2330,12 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
-            recips = drow.to_addresses if isinstance(drow.to_addresses, list) \
-                else json.loads(drow.to_addresses or "[]")
-            to = [a.get("email") for a in recips if a.get("email")]
+            # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
+            # F1 and F2). Gmail rebuilds the whole draft on the signing
+            # update, and Outlook PATCHes each list that it gets.
+            to = _draft_addresses(drow.to_addresses)
+            cc = _draft_addresses(drow.cc_addresses)
+            bcc = _draft_addresses(drow.bcc_addresses)
 
             async def _send_new_and_trash() -> None:
                 # Fallback (e.g. IMAP): send a fresh message threaded via the
@@ -2290,6 +2345,7 @@ async def send_draft_endpoint(
                 await provider.send_message(
                     to=to, subject=drow.subject or "",
                     body_text=send_text, body_html=send_html,
+                    cc=cc or None, bcc=bcc or None,
                     reply_to_message_id=drow.thread_id or None,
                     thread_id=drow.thread_id or None)
                 try:
@@ -2301,21 +2357,32 @@ async def send_draft_endpoint(
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
                 try:
-                    signed_id = await provider.update_draft(
-                        drow.provider_message_id, to=to or None,
-                        subject=drow.subject or None,
-                        body_text=send_text, body_html=send_html,
-                        thread_id=drow.thread_id or None)
-                    # Gmail gives the draft a new message id at each update,
-                    # so the send takes the id that the update returns
-                    # (EM-G3a E-A1). Outlook returns the same id.
-                    await provider.send_draft(
-                        signed_id or drow.provider_message_id)
+                    with _draft_changed_upstream():
+                        # No ``attachments``: Outlook keeps the files of its
+                        # draft, and Gmail reads them back from its draft.
+                        signed_id = await provider.update_draft(
+                            drow.provider_message_id, to=to or None,
+                            cc=cc or None, bcc=bcc or None,
+                            subject=drow.subject or None,
+                            body_text=send_text, body_html=send_html,
+                            thread_id=drow.thread_id or None,
+                        ) or drow.provider_message_id
+                        # Gmail gives the draft a new message id at each
+                        # update, so the send takes the id that the update
+                        # returns (EM-G3a E-A1). The row moves to it, and the
+                        # move commits BEFORE the send, so a failed send
+                        # leaves the row on the live id (review round 1, F3).
+                        # Outlook returns the same id and moves nothing.
+                        if signed_id != drow.provider_message_id:
+                            await _commit_draft_move(
+                                req.account_id, req.draft_id, signed_id)
+                        await provider.send_draft(signed_id)
                 except NotImplementedError:
                     await _send_new_and_trash()
             else:
                 try:
-                    await provider.send_draft(drow.provider_message_id)
+                    with _draft_changed_upstream():
+                        await provider.send_draft(drow.provider_message_id)
                 except NotImplementedError:
                     await _send_new_and_trash()
             # The draft has left the mailbox — remove the local row.

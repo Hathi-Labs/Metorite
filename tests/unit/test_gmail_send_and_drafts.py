@@ -122,6 +122,7 @@ class _Gmail:
         self.sent_drafts: list[str] = []          # draft ids of drafts.send
         self.deleted_drafts: list[str] = []
         self.trashed: list[str] = []
+        self.files: dict[str, bytes] = {}         # attachment id → bytes
         self.seen: list[tuple[str, str, httpx.QueryParams]] = []
         self.page_size = 500
         self.fail: dict[tuple[str, str], int] = {}
@@ -161,21 +162,37 @@ class _Gmail:
 
     # ── the transport ──
 
+    def _payload(self, part: Message) -> dict[str, Any]:
+        """The ``payload`` that Gmail gives for one MIME part. A file part
+        gets an ``attachmentId``, as Gmail gives it (review round 1, F1)."""
+        out: dict[str, Any] = {
+            "mimeType": part.get_content_type(),
+            "filename": part.get_filename() or "",
+            "headers": [{"name": k, "value": str(v)} for k, v in part.items()]}
+        if part.is_multipart():
+            out["body"] = {"size": 0}
+            out["parts"] = [self._payload(p) for p in part.get_payload()]
+        elif part.get_filename():
+            data = part.get_payload(decode=True) or b""
+            aid = f"att-{len(self.files) + 1}"
+            self.files[aid] = data
+            out["body"] = {"attachmentId": aid, "size": len(data)}
+        else:
+            data = part.get_payload(decode=True) or b""
+            out["body"] = {"data": base64.urlsafe_b64encode(data).decode(),
+                           "size": len(data)}
+        return out
+
     def _store_draft(self, did: str, body: dict[str, Any]) -> dict[str, Any]:
         message = body.get("message") or {}
         mid = self._next("m")
         thread = message.get("threadId") or mid
-        parsed = _decode(message["raw"])
+        payload = self._payload(_decode(message["raw"]))
+        payload["headers"].append({"name": "From", "value": "me@em-g3a.test"})
         self.drafts[did] = mid
         self.messages[mid] = {
             "id": mid, "threadId": thread, "labelIds": ["DRAFT"],
-            "internalDate": "9", "snippet": "",
-            "payload": {"mimeType": "text/plain", "headers": [
-                {"name": "Subject", "value": str(parsed["Subject"] or "")},
-                {"name": "To", "value": str(parsed["To"] or "")},
-                {"name": "From", "value": "me@em-g3a.test"},
-            ], "body": {"data": _b64("draft body")}},
-        }
+            "internalDate": "9", "snippet": "", "payload": payload}
         return {"id": did, "message": {"id": mid, "threadId": thread,
                                        "labelIds": ["DRAFT"]}}
 
@@ -216,6 +233,12 @@ class _Gmail:
         if method == "POST" and parts[2:] == ["trash"]:
             self.trashed.append(parts[1])
             return httpx.Response(200, json={"id": parts[1]})
+        if (method == "GET" and len(parts) == 4 and parts[2] == "attachments"
+                and parts[3] in self.files):
+            data = self.files[parts[3]]
+            return httpx.Response(200, json={
+                "data": base64.urlsafe_b64encode(data).decode(),
+                "size": len(data)})
         if method == "GET" and len(parts) == 2 and parts[1] in self.messages:
             return httpx.Response(200, json=self.messages[parts[1]])
         return _not_found()
@@ -666,7 +689,8 @@ _ME = UserContext(email="me@em-g3a.test", role=UserRole.EMPLOYEE)
 def _draft_row(pmid: str) -> SimpleNamespace:
     return SimpleNamespace(
         provider_message_id=pmid, subject="Re: Quote", body_text="Thanks",
-        to_addresses=[{"name": "", "email": RAVI}], thread_id="t-1")
+        to_addresses=[{"name": "", "email": RAVI}], cc_addresses=[],
+        bcc_addresses=[], thread_id="t-1")
 
 
 async def test_a_signed_send_sends_the_id_that_the_update_returns(
@@ -713,6 +737,73 @@ async def test_a_signed_send_of_a_provider_that_keeps_its_id_is_unchanged(
         BackgroundTasks(), user=_ME)
 
     provider.send_draft.assert_awaited_once_with("AAMk-1")
+
+
+# ── review round 1: an update keeps the files, and a 409 for a lost draft ───
+
+
+def _file_parts(raw: str) -> list[tuple[str, str, bytes]]:
+    """(name, type, bytes) of each file part of a raw mail."""
+    return [(p.get_filename(), p.get_content_type(), p.get_payload(decode=True))
+            for p in _decode(raw).walk() if p.get_filename()]
+
+
+async def test_an_update_keeps_the_files_of_the_draft(fake: _Gmail) -> None:
+    """Review round 1, F1. Gmail replaces the whole draft, so an update with
+    no ``attachments`` still carries each file of the draft. Files that the
+    caller gives are added to them."""
+    p = _provider()
+    mid = await p.create_draft(
+        to=[RAVI], subject="Quote", body_text="v1",
+        attachments=[{"filename": "quote.pdf", "content": b"%PDF-1",
+                      "mime_type": "application/pdf"}])
+
+    mid = await p.update_draft(mid, to=[RAVI], body_text="v2")
+    assert _file_parts(fake.saved[-1]["message"]["raw"]) == [
+        ("quote.pdf", "application/pdf", b"%PDF-1")]
+
+    await p.update_draft(mid, to=[RAVI], body_text="v3", attachments=[
+        {"filename": "photo.png", "content": b"PNG", "mime_type": "image/png"}])
+    assert _file_parts(fake.saved[-1]["message"]["raw"]) == [
+        ("quote.pdf", "application/pdf", b"%PDF-1"),
+        ("photo.png", "image/png", b"PNG")]
+
+
+async def test_a_failed_file_read_fails_the_update(fake: _Gmail) -> None:
+    """An update that cannot read the files of the draft writes nothing,
+    because an update without them would delete them in Gmail."""
+    fake.add_draft("r-7", "m-7", thread="t-7")
+    fake.fail[("GET", "/messages/m-7")] = 503
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _provider().update_draft("m-7", body_text="v2")
+    assert fake.saved == []
+
+
+async def test_a_draft_that_changed_in_gmail_answers_409(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 1, item 5. ``GmailDraftNotFound`` becomes a 409 with a
+    clear message on the save and on the send, never a 500."""
+    from fastapi import HTTPException
+
+    fake.add_draft("r-7", "m-7", thread="t-7")
+    for signature in ("", "Asha"):
+        _route_patches(monkeypatch, _Rows(_draft_row("m-gone"), signature),
+                       _provider())
+        with pytest.raises(HTTPException) as caught:
+            await drafting.send_draft_endpoint(
+                drafting.DraftSendRequest(account_id="acc-1",
+                                          draft_id="local-1"),
+                BackgroundTasks(), user=_ME)
+        assert caught.value.status_code == 409
+        assert caught.value.detail == drafting.DRAFT_CHANGED_DETAIL
+
+    _route_patches(monkeypatch, _Rows(_draft_row("m-gone"), ""), _provider())
+    with pytest.raises(HTTPException) as caught:
+        await drafting.upsert_draft(drafting.DraftUpsertRequest(
+            account_id="acc-1", draft_id="local-1", body="v2"), user=_ME)
+    assert caught.value.status_code == 409
+    assert fake.saved == [] and fake.sent_drafts == []
 
 
 # ── R8: the local draft row (items 6 and 8, E-A2, E-A5) ─────────────────────
@@ -826,6 +917,40 @@ async def _write_sync_copy(m: SimpleNamespace, mid: str) -> None:
 async def _sync(m: SimpleNamespace, mid: str) -> None:
     async with _as_member(m):
         await _write_sync_copy(m, mid)
+
+
+async def _send(m: SimpleNamespace, local_id: str) -> dict[str, Any]:
+    """One POST /email/drafts/send of the member: the real route."""
+    async with _as_member(m):
+        return await drafting.send_draft_endpoint(
+            drafting.DraftSendRequest(account_id=m.aid, draft_id=local_id),
+            BackgroundTasks(), user=m.me)
+
+
+def _sign(m: SimpleNamespace, signature: str) -> None:
+    """The signature of the mailbox, so the send signs the draft."""
+    with m.admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_assistant_settings (account_id, signature, "
+            "organization_id) VALUES (CAST(:a AS uuid), :s, CAST(:o AS uuid))"),
+            {"a": m.aid, "s": signature, "o": m.org})
+
+
+def _seed_row(admin: Any, *, org: str, account_id: str, pmid: str) -> str:
+    with admin.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO email_messages (account_id, provider_message_id, "
+            "folder, from_address, to_addresses, organization_id) VALUES "
+            "(CAST(:a AS uuid), :p, 'drafts', '{}'::jsonb, '[]'::jsonb, "
+            "CAST(:o AS uuid)) RETURNING id::text"),
+            {"a": account_id, "p": pmid, "o": org}).scalar_one())
+
+
+def _graph_answer(value: dict[str, Any] | None = None) -> Any:
+    answer = SimpleNamespace(status_code=200, headers={})
+    answer.json = lambda: value or {}
+    answer.raise_for_status = lambda: None
+    return answer
 
 
 @_DB_GATE
@@ -950,3 +1075,131 @@ class TestTheLocalDraftRow:
         assert m.fake.deleted_drafts == [did]
         assert m.fake.trashed == ["i-1"]
         assert _rows(m.admin, m.aid) == {mail: ("i-1", "trash")}
+
+    # ── review round 1 ──
+
+    async def test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three(
+            self, mailbox, monkeypatch):
+        """F2, a live Outlook defect. The row kept the first To address only,
+        and the signed send PATCHed the draft with it, so the second person
+        got nothing. The row now keeps each To, Cc and Bcc address, and the
+        PATCH carries all three people. No file goes up again."""
+        from email_ingestion.providers.outlook import (
+            OutlookProvider,
+        )
+
+        m = mailbox
+        outlook = OutlookProvider({"access_token": "x", "refresh_token": "y"})
+        client = AsyncMock()
+        client.post.return_value = _graph_answer({"id": "AAMk-1"})
+        client.patch.return_value = _graph_answer({"id": "AAMk-1"})
+        outlook._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+        @asynccontextmanager
+        async def _outlook_session(*_a: Any, **_kw: Any) -> AsyncIterator[Any]:
+            yield SimpleNamespace(provider=outlook, owner_email=m.owner)
+
+        monkeypatch.setattr(drafting, "provider_session", _outlook_session)
+        _sign(m, "Asha, Contoso")
+        two = [RAVI, "meera@contoso-em-g3a.test"]
+        saved = await _save(m, to=two, cc=["lead@contoso-em-g3a.test"],
+                            subject="Quote", body="Hello both")
+
+        await _send(m, saved["id"])
+
+        [patch] = client.patch.await_args_list
+        assert patch.args[0] == "/me/messages/AAMk-1"
+        sent = patch.kwargs["json"]
+        assert [r["emailAddress"]["address"] for r in sent["toRecipients"]] == two
+        assert [r["emailAddress"]["address"] for r in sent["ccRecipients"]] == [
+            "lead@contoso-em-g3a.test"]
+        assert "bccRecipients" not in sent
+        assert "Asha, Contoso" in sent["body"]["content"]
+        posts = [c.args[0] for c in client.post.await_args_list]
+        assert posts == ["/me/messages", "/me/messages/AAMk-1/send"]
+        assert _rows(m.admin, m.aid) == {}
+
+    async def test_a_signed_gmail_send_keeps_the_cc_and_the_file(self, mailbox):
+        """F1. Gmail replaces the whole draft on the signing update. The
+        update carries the Cc of the row and the file of the draft, so the
+        mail goes out with both."""
+        m = mailbox
+        _sign(m, "Asha, Contoso")
+        saved = await _save(
+            m, to=[RAVI], cc=["lead@contoso-em-g3a.test"], subject="Quote",
+            body="See the file.", attachments=[{
+                "filename": "quote.pdf", "mime_type": "application/pdf",
+                "content_b64": base64.b64encode(b"%PDF-1.7").decode()}])
+        [did] = m.fake.drafts
+
+        await _send(m, saved["id"])
+
+        signed = m.fake.saved[-1]["message"]["raw"]
+        msg = _decode(signed)
+        assert msg["Cc"] == "lead@contoso-em-g3a.test"
+        assert msg["To"] == RAVI
+        assert _file_parts(signed) == [
+            ("quote.pdf", "application/pdf", b"%PDF-1.7")]
+        body = next(p for p in msg.walk()
+                    if p.get_content_type() == "text/plain")
+        assert "Asha, Contoso" in body.get_payload(decode=True).decode()
+        assert m.fake.sent_drafts == [did]
+        assert _rows(m.admin, m.aid) == {}
+
+    async def test_a_failed_send_leaves_the_row_on_the_live_id(self, mailbox):
+        """F3. The signing update gives the draft a new message id. The move
+        commits before ``drafts.send``, so a send that fails leaves the row
+        on the live id, and the next Send works."""
+        m = mailbox
+        _sign(m, "Asha, Contoso")
+        saved = await _save(m, to=[RAVI], subject="Quote", body="v1")
+        [did] = m.fake.drafts
+        m.fake.fail[("POST", "/drafts/send")] = 500
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await _send(m, saved["id"])
+
+        live = m.fake.drafts[did]
+        assert live == m.fake.updated[-1] != saved["provider_message_id"]
+        assert _rows(m.admin, m.aid) == {saved["id"]: (live, "drafts")}
+
+        del m.fake.fail[("POST", "/drafts/send")]
+        assert await _send(m, saved["id"]) == {"sent": True}
+        assert m.fake.sent_drafts == [did]
+        assert _rows(m.admin, m.aid) == {}
+
+    async def test_the_move_never_touches_another_mailbox(self, mailbox):
+        """F4. The new message id also sits in another mailbox of the same
+        organization, and in a mailbox of another organization. The move
+        deletes the copy of THIS mailbox only, so both rows stay."""
+        m = mailbox
+        p = m.p
+        other = _account(m.admin, org=m.org, provider="gmail",
+                         owner=f"g3a-other-{uuid.uuid4().hex[:8]}@em-g3a.test")
+        foreign = _account(m.admin, org=p.org_a, provider="gmail",
+                           owner=f"g3a-far-{uuid.uuid4().hex[:8]}@em-g3a.test")
+        kept: dict[str, str] = {}
+
+        async def _same_id_elsewhere(new_mid: str) -> None:
+            kept[other] = _seed_row(m.admin, org=m.org, account_id=other,
+                                    pmid=new_mid)
+            kept[foreign] = _seed_row(m.admin, org=p.org_a,
+                                      account_id=foreign, pmid=new_mid)
+
+        try:
+            first = await _save(m, to=[RAVI], subject="Quote", body="v1")
+            m.fake.after_update = _same_id_elsewhere
+            await _save(m, draft_id=first["id"], to=[RAVI], subject="Quote",
+                        body="v2")
+
+            new_mid = m.fake.updated[-1]
+            assert _rows(m.admin, m.aid) == {first["id"]: (new_mid, "drafts")}
+            assert _rows(m.admin, other) == {kept[other]: (new_mid, "drafts")}
+            assert _rows(m.admin, foreign) == {
+                kept[foreign]: (new_mid, "drafts")}
+        finally:
+            with m.admin.begin() as c:
+                c.execute(text(
+                    "DELETE FROM email_messages WHERE account_id = ANY("
+                    "CAST(:a AS uuid[]))"), {"a": [other, foreign]})
+            _purge(m.admin, [other, foreign])

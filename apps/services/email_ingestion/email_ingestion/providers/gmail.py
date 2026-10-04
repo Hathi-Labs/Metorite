@@ -1101,11 +1101,17 @@ class GmailProvider(BaseEmailProvider):
         ``References`` again from the newest message of the thread (item 5).
         ``threadId`` MUST be sent again too, or Gmail drops the draft from its
         conversation, and the sent reply starts a new one.
+
+        ``attachments`` are files to ADD, as the base class says. The files
+        that the draft holds stay: the update reads them from the draft first
+        and builds them in again (review round 1, F1). Metorite keeps no bytes
+        of a draft file, so Gmail is the one source of them.
         """
         gmail_draft_id = await self._draft_id_for(draft_id)
+        files = [*await self._draft_files(draft_id), *(attachments or [])]
         raw = _build_gmail_raw(
             to=to, subject=subject, body_text=body_text, body_html=body_html,
-            cc=cc, bcc=bcc, attachments=attachments,
+            cc=cc, bcc=bcc, attachments=files or None,
             reply_headers=await self._reply_headers(None, thread_id))
         message: dict[str, Any] = {"raw": raw}
         if thread_id:
@@ -1164,6 +1170,38 @@ class GmailProvider(BaseEmailProvider):
                 "gmail.parent_read_failed kind=%s id=%s error=%s status=%s",
                 kind, ref, type(exc).__name__, status)
             return {}
+
+    async def _draft_files(self, message_id: str) -> list[dict[str, Any]]:
+        """The files of a draft, in the shape of ``attachments``.
+
+        WS-17 EM-G3a review round 1, F1. ``drafts.update`` replaces the whole
+        draft, so an update that leaves out the files drops them. This reads
+        the draft (``format=full``) and each file part that is not inline. A
+        part with ``attachmentId`` downloads through ``get_attachment``. A
+        read that fails raises, because an update with no read loses files.
+        """
+        client = await self._get_client()
+        resp = await client.get(f"/users/me/messages/{message_id}",
+                                params={"format": "full"})
+        resp.raise_for_status()
+        payload = (resp.json() or {}).get("payload") or {}
+        files: list[dict[str, Any]] = []
+        for part in _iter_gmail_parts(payload):
+            name = part.get("filename")
+            if not name or _gmail_part_is_inline(part):
+                continue
+            body = part.get("body") or {}
+            if body.get("attachmentId"):
+                content = await self.get_attachment(
+                    message_id, str(body["attachmentId"]))
+            elif body.get("data"):
+                data = str(body["data"])
+                content = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+            else:
+                continue
+            files.append({"filename": name, "content": content,
+                          "mime_type": part.get("mimeType") or _OCTET_STREAM})
+        return files
 
     def _remember_draft(
         self, data: dict[str, Any], *, old_message_id: str | None = None,
