@@ -7,6 +7,13 @@ These lock the provider-level threading contract that the reported bug broke:
   * Gmail must prefer the real ``thread_id`` over a message id for threadId.
   * IMAP must thread via In-Reply-To/References from the reply reference.
   * Gmail update_draft must keep an HTML (signed) body as HTML.
+  * Gmail must set In-Reply-To and References from the parent, which it
+    reads from Gmail (WS-17 EM-G3a item 4).
+
+WS-17 EM-G3a (``email_app_master_plan.md`` §12.3.3, E-A4): a Gmail reply
+now reads its parent with ``client.get``, so each Gmail send case gives
+``client.get`` an answer. The update case answers ``drafts.list`` too, and
+the HTML body is the second part of ``multipart/alternative``.
 """
 from __future__ import annotations
 
@@ -31,11 +38,25 @@ def _resp(json_value: dict | None = None) -> MagicMock:
     return r
 
 
+def _parent(*headers: tuple[str, str]) -> MagicMock:
+    """The answer of the parent read (``format=metadata``)."""
+    return _resp({"payload": {"headers": [
+        {"name": name, "value": value} for name, value in headers]}})
+
+
+def _gmail_client() -> AsyncMock:
+    """A client whose send answers ``m2``, and whose parent read answers a
+    parent with no Message-ID, so a reply gets no reply headers."""
+    client = AsyncMock()
+    client.post.return_value = _resp({"id": "m2"})
+    client.get.return_value = _parent()
+    return client
+
+
 async def test_gmail_send_threads_by_thread_id() -> None:
     """A reply carries the conversation threadId so Gmail keeps it in-thread."""
     p = _gmail()
-    client = AsyncMock()
-    client.post.return_value = _resp({"id": "m2"})
+    client = _gmail_client()
     p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
 
     await p.send_message(
@@ -50,8 +71,7 @@ async def test_gmail_send_threads_by_thread_id() -> None:
 
 async def test_gmail_send_falls_back_to_reply_id_when_no_thread() -> None:
     p = _gmail()
-    client = AsyncMock()
-    client.post.return_value = _resp({"id": "m2"})
+    client = _gmail_client()
     p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
 
     await p.send_message(
@@ -62,8 +82,7 @@ async def test_gmail_send_falls_back_to_reply_id_when_no_thread() -> None:
 
 async def test_gmail_send_new_message_has_no_thread() -> None:
     p = _gmail()
-    client = AsyncMock()
-    client.post.return_value = _resp({"id": "m2"})
+    client = _gmail_client()
     p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
 
     await p.send_message(to=["a@b.com"], subject="Hi", body_text="new")
@@ -72,8 +91,7 @@ async def test_gmail_send_new_message_has_no_thread() -> None:
 
 async def test_gmail_send_carries_bcc() -> None:
     p = _gmail()
-    client = AsyncMock()
-    client.post.return_value = _resp({"id": "m2"})
+    client = _gmail_client()
     p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
 
     await p.send_message(
@@ -85,10 +103,21 @@ async def test_gmail_send_carries_bcc() -> None:
 
 async def test_gmail_update_draft_keeps_thread_and_html() -> None:
     """Updating a reply draft must re-supply threadId (else Gmail un-threads it)
-    and keep an HTML signed body as HTML."""
+    and keep an HTML signed body as HTML.
+
+    EM-G3a: the local row holds the MESSAGE id, so the update finds the draft
+    id in ``drafts.list`` first (item 7). The body is ``multipart/alternative``
+    with the HTML part second (item 1)."""
     p = _gmail()
     client = AsyncMock()
-    client.put.return_value = _resp({"id": "draft-1"})
+
+    async def _get(path: str, **_kw):  # type: ignore[no-untyped-def]
+        if path == "/users/me/drafts":
+            return _resp({"drafts": [{"id": "r-1", "message": {"id": "draft-1"}}]})
+        return _parent()
+
+    client.get.side_effect = _get
+    client.put.return_value = _resp({"id": "r-1", "message": {"id": "draft-2"}})
     p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
 
     await p.update_draft(
@@ -96,11 +125,38 @@ async def test_gmail_update_draft_keeps_thread_and_html() -> None:
         body_text="plain fallback", body_html="<p>signed</p>",
         thread_id="thread-42")
 
+    assert client.put.await_args.args[0] == "/users/me/drafts/r-1"
     message = client.put.await_args.kwargs["json"]["message"]
     assert message["threadId"] == "thread-42"
     msg = message_from_bytes(base64.urlsafe_b64decode(message["raw"]))
-    assert msg.get_content_type() == "text/html"
-    assert "<p>signed</p>" in msg.get_payload(decode=True).decode()
+    assert msg.get_content_type() == "multipart/alternative"
+    text_part, html_part = msg.get_payload()
+    assert text_part.get_payload(decode=True).decode() == "plain fallback"
+    assert html_part.get_content_type() == "text/html"
+    assert "<p>signed</p>" in html_part.get_payload(decode=True).decode()
+
+
+async def test_gmail_reply_sets_in_reply_to_and_references() -> None:
+    """EM-G3a item 4 (GM-11). Gmail threads a reply at the recipient only
+    with In-Reply-To and References. The provider reads both from the parent
+    in Gmail, and References ends with the Message-ID of the parent."""
+    p = _gmail()
+    client = _gmail_client()
+    client.get.return_value = _parent(
+        ("Message-Id", "<parent@contoso.test>"),
+        ("References", "<root@contoso.test>"))
+    p._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    await p.send_message(
+        to=["a@b.com"], subject="Re: hi", body_text="hello",
+        reply_to_message_id="msg-99", thread_id="thread-42")
+
+    assert client.get.await_args.args[0] == "/users/me/messages/msg-99"
+    body = client.post.await_args.kwargs["json"]
+    msg = message_from_bytes(base64.urlsafe_b64decode(body["raw"]))
+    assert msg["In-Reply-To"] == "<parent@contoso.test>"
+    assert msg["References"] == "<root@contoso.test> <parent@contoso.test>"
+    assert body["threadId"] == "thread-42"
 
 
 def _imap() -> IMAPProvider:

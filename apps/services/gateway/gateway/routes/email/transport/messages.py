@@ -961,9 +961,16 @@ async def delete_message(
             )
             if await provider.authenticate():
                 new_pid = await provider.trash_message(provider_msg_id)
+                if provider_msg_id in getattr(provider, "discarded_drafts", ()):
+                    # Gmail discards a draft for good (``drafts.delete``), so
+                    # no copy stays in Trash here either (WS-17 EM-G3a, E-A5).
+                    await db.execute(
+                        text("DELETE FROM email_messages WHERE id = :id"),
+                        {"id": message_id},
+                    )
                 # Outlook trash = /move to Deleted Items, which re-keys the
                 # message; persist the new id so it stays addressable.
-                if new_pid and new_pid != provider_msg_id:
+                elif new_pid and new_pid != provider_msg_id:
                     await db.execute(
                         text(
                             """UPDATE email_messages
