@@ -5,9 +5,11 @@ against projects-assistant and checks each result. The owning spec is
 `project-docs/specs/maf_coding_engine.md`, the WS-43v slice and §16 (D86).
 
 **Status.** The harness and the checkers are built, and `main` holds WS-43d
-and WS-43u. On 2026-10-05 the scripted run passed 7 tasks in 8 on Linux.
-WS43-E17 fails one hygiene rule (see "The author marker" below). The model
-sweep is NO-GO at step 3 of WS-43a: the local stack has no provider key.
+and WS-43u. On 2026-10-05 the first scripted run passed 7 tasks in 8 on
+Linux, because WS43-E17 failed one hygiene rule. The product then changed (see
+"The author marker" below), and the scripted run passed 8 tasks in 8 in WSL.
+The model sweep is NO-GO at step 3 of WS-43a: the local stack has no provider
+key.
 
 ## Three harness fixes (2026-10-05)
 
@@ -28,11 +30,14 @@ in the harness caused it. None of them was a product fault.
 
 ## The author marker
 
-Since PR #603, the file `agent-data/skills/<name>/.metorite-author` holds the
-email of the member who made the skill. The design needs it: a run loads only
-the skills of its own member. The hygiene rule of WS43-E16 reads that email as
-member data, so WS43-E17 fails on every run. The owner must decide which rule
-changes. The harness does not decide it.
+The file `agent-data/skills/<name>/.metorite-author` records the member who
+made the skill, because a run loads only the skills of its own member. PR #603
+wrote the email in it. The hygiene rule of WS43-E16 read that email as member
+data, so WS43-E17 failed on every run.
+
+The hygiene rule stays strict. Since WS-43v the marker holds an opaque member
+id, an HMAC of the email under `GATEWAY_SESSION_SECRET`. With no usable secret
+no member id exists, so the runner sets a secret of its own for the sweep.
 
 ## The files
 
