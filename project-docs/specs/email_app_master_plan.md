@@ -3049,7 +3049,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
    - Fix: `acceptedConfirm` in `lib/storage.ts` asks the reducer. `sendRemoval` sends the POST only for its value, and the confirm button reads the same function.
    - The first version of `acceptedConfirm` read only the phase after the reducer. A refused confirm in the phase `removing` keeps that phase, so the fence found the error.
    - Fences: `email-storage-one-guard` and `email-storage-one-confirm`.
-7. **A15.** The visual review below now says where the captures are, and that the PR carries a selection of them.
+7. **A15.** The visual review below now says where the captures are, and who looked at them.
 8. **The spec text.** The status commit cut the first sentence of the paragraph "Narrowed", and this round puts it back. The status line names the real commits and their base. The six new lint errors of this section are gone.
 9. **The command palette.** The open points record it as a follow-up.
 
@@ -3111,7 +3111,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 **Visual review (A15, 2026-10-04).** The rig of the `visual-review` skill ran on the local Next dev server, with each `/api` call stubbed. No gateway, no database and no mailbox took part, so no call reached the removal route. The captures use dark, light, compact density, a changed accent and mobile width.
 
 - The captures show the notice in All inboxes, the switcher marks and each state of the dialog. They also show the storage step, the state after "Keep it as it is" and the gap line.
-- The captures exist at review time in a private scratch folder, and not in the repo. The PR carries a selection of them.
+- The captures exist at review time in a private scratch folder, and not in the repo. The `gh` tool cannot attach an image to a PR. So the PR lists what the captures show, and the orchestrator looked at the notice and the dialog in light mode before the merge.
 - The review found a duplicate React key. After "Keep it as it is", the notice and the rules step drew for one mailbox with one key. The keys now carry a prefix, and `storage.test.ts` fences it.
 - At mobile width, the action of the notice squeezed the words into a narrow column. The row now wraps, and the action drops below the words.
 - Review round 1 changes no drawn state, so the captures stay current.
