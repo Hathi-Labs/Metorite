@@ -6731,8 +6731,9 @@ anchors are at `241dddccf`.
     deleted. `drafts.delete` removes the draft for good, as Gmail itself does, and the scope
     `gmail.modify` of D-EM-31 allows it. Fence: `test_trash_of_a_draft_discards_it`.
 
-**Non-goals.** No change to Outlook drafts. No schedule-send. No migration. No change to the
-signature rules.
+**Non-goals.** No schedule-send. No migration. No change to the signature rules. Outlook drafts
+change in one way only, the live fix EM-G3a-F2 of review round 1. A signed send now reaches each To
+address, and it carries the Cc and the Bcc of the row.
 
 **Fences (R7).** A new `tests/unit/test_gmail_send_and_drafts.py`.
 
@@ -6776,8 +6777,9 @@ The R8 tests must show PASSED, with 0 skips. Run each other test that patches
 `_upsert_local_draft`, or that calls `send_draft`, `update_draft` or `create_draft`, too.
 
 **As built (2026-10-05, branch `email-gmail-g3a`).** The build follows items 1 to 9 and E-A1 to
-E-A5. It adds no migration, no column, no flag and no change to Outlook. Production holds no Gmail
-mailbox, so no live mailbox changes.
+E-A5. It adds no migration, no column and no flag. Production holds no Gmail mailbox, so no live
+Gmail mailbox changes. One live Outlook change is in it: EM-G3a-F2 (review round 1). A signed send
+of an Outlook draft now reaches each To address, and it carries the Cc and the Bcc of the row.
 
 - **The builder.** `_build_gmail_raw` in `gmail.py` is the one builder. Each part is UTF-8. A
   header goes out only when the caller gives its value, so an update with no `Cc` writes no `Cc`.
@@ -6824,8 +6826,8 @@ four send cases there use one client that answers `client.get` with a parent wit
 The `drafts.send` case of `test_gmail_rate_limits.py` answers `drafts.list`, and it sends the
 message id `m-draft-1`.
 
-**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 42 cases after review
-round 1. 33 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 9 are R8.
+**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 49 cases after review
+round 2. 40 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 9 are R8.
 
 | Test | What it proves |
 |---|---|
@@ -6852,6 +6854,10 @@ round 1. 33 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps it
 | `test_an_update_keeps_the_files_of_the_draft` | Review round 1, F1. An update keeps each file of the draft, and adds the given files. |
 | `test_a_failed_file_read_fails_the_update` | F1. An update that cannot read the files writes nothing. |
 | `test_a_draft_that_changed_in_gmail_answers_409` | Item 5 of review round 1. The send, with and with no signature, and the save answer 409. |
+| `test_an_outlook_signed_send_patches_only_the_lists_the_row_holds` (2 cases) | Review round 2. A row with no Cc and no Bcc sends neither key. A row with both sends both lists. |
+| `test_a_signed_gmail_send_keeps_the_bcc` | Review round 2. The signing `drafts.update` carries the Bcc of the row. |
+| `test_the_imap_fallback_sends_each_to_cc_and_bcc` (2 cases) | Review round 2. The new mail of the IMAP fallback, signed and not signed, goes to each address of the row. |
+| `test_an_attached_mail_stays_one_file_after_an_update` (2 cases) | Review round 2. A forwarded mail, with no name and as a named `.eml` that holds `inner.pdf`, stays one `message/rfc822` part, and no inner file comes to the top. |
 | R8 `test_a_draft_saved_here_is_one_row_after_the_sync` | A saved draft and its sync copy are one row. |
 | R8 `test_an_update_moves_the_row_to_the_new_message_id` | The row keeps its row id, and each request builds its own provider. |
 | R8 `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` | E-A2. A sync copy that commits before the move goes, and one row stays. |
@@ -6865,20 +6871,20 @@ round 1. 33 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps it
 `test_email_reply_threading.py::test_gmail_reply_sets_in_reply_to_and_references` is the case for
 the two headers there.
 
-**Mutations, as run (2026-10-05, review round 1).** A script ran each mutation against
+**Mutations, as run (2026-10-05, review round 2).** A script ran each mutation against
 `test_gmail_send_and_drafts.py`, `test_email_reply_threading.py` and `test_gmail_rate_limits.py`,
 on a real Postgres with 0 skips. It then wrote back the original bytes, and the SHA-256 of
 `gmail.py`, `drafting.py` and `messages.py` matched each time. Each mutation turned a named test
-red. The counts are from the run of review round 1, which ran each row again on the new code.
+red. The counts are from the run of review round 2, which ran each row again on the new code.
 
 | Id | Mutation | Red tests |
 |---|---|---|
 | M1 | The builder puts back `MIMEText(body_text, "html")` | 11, with the three MIME tests and the update case of `test_email_reply_threading.py` |
 | M2 | No `In-Reply-To` | 5, with both cases of the reply test and the new case of `test_email_reply_threading.py` |
-| M3 | Each file goes as `application/octet-stream` | 6, with the 4 cases of the type test that name a type |
+| M3 | Each file goes as `application/octet-stream` | 8, with the 4 cases of the type test that name a type |
 | M4 | `create_draft` returns the draft id | 9, with `test_create_and_update_return_the_message_id` and each R8 test of the Gmail save |
 | M5 | The save skips the move | the R8 move, collision and two-mailbox tests |
-| M6 | The signed send passes the old id | the E-A1 test, the F1 test and the F3 test |
+| M6 | The signed send passes the old id | 4, with the E-A1 test, the F1 test and the F3 test |
 | M7 | A failed parent read fails the send | the 4 cases of `test_a_failed_parent_read_still_sends` |
 | M8 | The move keeps the sync copy and gives way to it, so a second row stays | the R8 collision test |
 | M8a | The move keeps the sync copy, so the move meets the unique key | the R8 collision test |
@@ -6887,11 +6893,15 @@ red. The counts are from the run of review round 1, which ran each row again on 
 | M11 | The parent of a thread can be a draft | the thread-only test and the update test |
 | M12 | The lookup reads the first page only | `test_the_draft_lookup_reads_each_page` |
 | R1 | The row stores the first To address only (F2) | the R8 Outlook test |
-| R2a | The signing update drops the Cc (F1) | the R8 Gmail F1 test and the R8 Outlook test |
-| R2b | The Gmail update drops the files of the draft (F1) | the R8 Gmail F1 test, `test_an_update_keeps_the_files_of_the_draft` and `test_a_failed_file_read_fails_the_update` |
+| R2a | The signing update drops the Cc (F1) | 3, with the R8 Gmail F1 test and the R8 Outlook test |
+| R2b | The Gmail update drops the files of the draft (F1) | 5, with the R8 Gmail F1 test, `test_an_update_keeps_the_files_of_the_draft` and both cases of the attached-mail test |
 | R3 | The move runs in the block of the route, so a failed send rolls it back (F3) | the R8 F3 test |
 | V2 | `_DROP_SYNC_COPY_SQL` has no account bind (F4) | the R8 two-mailbox test |
 | R5 | `GmailDraftNotFound` is not mapped to 409 | `test_a_draft_that_changed_in_gmail_answers_409` |
+| X1 | An empty Cc goes out as an empty list (P3-1) | the no-Cc case of the Outlook list test |
+| X2 | The signing update drops the Bcc (P3-2) | `test_a_signed_gmail_send_keeps_the_bcc` and the Cc-and-Bcc case of the Outlook list test |
+| X6 | The IMAP fallback drops the Cc and the Bcc (P3-3) | both cases of `test_the_imap_fallback_sends_each_to_cc_and_bcc` |
+| Y1 | The file read walks into an attached mail (P3-4) | both cases of `test_an_attached_mail_stays_one_file_after_an_update` |
 
 **Review round 1 (2026-10-05).** An independent verifier passed the branch with two P1 and two P3
 findings. It also confirmed that the branch does not change how Outlook drafts. Each fix has a
@@ -6919,6 +6929,24 @@ fence above.
 - **Item 5.** `_draft_changed_upstream` answers 409 with "This draft changed in Gmail. Refresh and
   try again." on the save and on the send, for `GmailDraftNotFound`.
 - **The IMAP fallback.** The fallback of the send now passes the Cc and the Bcc of the row too.
+
+**Review round 2 (2026-10-05).** The re-verify passed review round 1 with six P3 findings and no
+P0, P1 or P2. It confirmed the live Outlook fix: the PATCH carries each To, the Cc and the Bcc. An
+empty list sends no key, so Outlook keeps its own, and nothing goes twice.
+
+- **P3-1, P3-2 and P3-3, three fence gaps.** Three mutations survived round 1. X1 sends an empty
+  Cc as an empty list. X2 drops the Bcc from the signing update. X6 drops the Cc and the Bcc from
+  the IMAP fallback. Each one now turns a fence above red.
+- **P3-4, data loss on the dark Gmail path.** `_draft_files` read `format=full` and walked into an
+  attached mail. Gmail opens a `message/rfc822` part into its parts and gives no bytes for it. So
+  an update lost a forwarded mail, or put its inner files at the top. Now `_draft_files` reads the
+  draft once as a raw mail (`format=raw`), and the standard `iter_attachments` gives each file of
+  the top level. An attached mail stays one file, with its name, else `attached.eml`. The builder
+  puts a `message/*` file in as a mail part (`MIMEMessage`), not as base64.
+- **The cost of the read.** The raw read takes the place of `messages.get` with `format=full` and
+  each `attachments.get`. So an update of a draft with files now makes one read of the draft.
+- **P3-5 and P3-6.** EM-G3a-f8 below records the cost of an autosave. The non-goals, the as-built
+  notes and the WS-17 row name the one live Outlook change.
 
 **Fixed defect EM-G3a-F2 (LIVE on Outlook before this branch).** A signed send of an Outlook draft
 to more than one To address reached the first address only. Review round 1 fixes it, with the R8
@@ -6953,6 +6981,17 @@ and it sends no file of the draft.
 **Known limit EM-G3a-f7.** Each Gmail update reads each file of the draft and sends it again, and
 an autosave is an update. An inline image (`cid:`) of a draft made in Gmail web is no file in that
 read, so an update drops it.
+
+**Known limit EM-G3a-f8, a precondition of EM-G10 and of the Gmail go-live.** The re-verify measured
+one autosave of a Gmail draft with one 5 MB file. It made 4 Gmail calls: `drafts.list`,
+`messages.get` with `format=full`, `attachments.get` and `drafts.update`. It sent 9.44 MB up and
+took 6.99 MB down, and the composer autosaves after each pause of 1.2 seconds. Review round 2 puts
+one `messages.get` with `format=raw` in the place of the second and the third call. The bytes stay
+about the same.
+
+A file read that fails gives a 500, and the `catch` of the autosave hides it from the member.
+Before the go-live, a later slice must check the size limit of Google on a plain `drafts.update`.
+It must also decide how often an autosave of a draft with files may run.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 

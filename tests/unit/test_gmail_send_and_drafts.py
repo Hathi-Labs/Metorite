@@ -50,6 +50,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from email import message_from_bytes
 from email.message import Message
+from email.mime.text import MIMEText
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -123,6 +124,7 @@ class _Gmail:
         self.deleted_drafts: list[str] = []
         self.trashed: list[str] = []
         self.files: dict[str, bytes] = {}         # attachment id → bytes
+        self.raws: dict[str, str] = {}            # message id → raw mail
         self.seen: list[tuple[str, str, httpx.QueryParams]] = []
         self.page_size = 500
         self.fail: dict[tuple[str, str], int] = {}
@@ -152,10 +154,24 @@ class _Gmail:
             "payload": {"mimeType": "text/plain", "headers": headers,
                         "body": {"data": _b64("hello")}},
         }
+        mail = MIMEText("hello")
+        for header in headers:
+            mail[header["name"]] = header["value"]
+        self.raws[mid] = base64.urlsafe_b64encode(mail.as_bytes()).decode()
 
     def add_draft(self, did: str, mid: str, *, thread: str, at: int = 9) -> None:
         self.drafts[did] = mid
         self.add_message(mid, thread=thread, labels=["DRAFT"], at=at)
+
+    def add_raw_draft(self, did: str, mid: str, mail: bytes, *,
+                      thread: str) -> None:
+        """A draft made in Gmail web, from its raw mail (review round 2)."""
+        self.drafts[did] = mid
+        self.raws[mid] = base64.urlsafe_b64encode(mail).decode()
+        self.messages[mid] = {
+            "id": mid, "threadId": thread, "labelIds": ["DRAFT"],
+            "internalDate": "9", "snippet": "",
+            "payload": self._payload(message_from_bytes(mail))}
 
     def calls(self, method: str, path: str) -> int:
         return sum(1 for m, p, _ in self.seen if (m, p) == (method, path))
@@ -190,6 +206,7 @@ class _Gmail:
         payload = self._payload(_decode(message["raw"]))
         payload["headers"].append({"name": "From", "value": "me@em-g3a.test"})
         self.drafts[did] = mid
+        self.raws[mid] = message["raw"]
         self.messages[mid] = {
             "id": mid, "threadId": thread, "labelIds": ["DRAFT"],
             "internalDate": "9", "snippet": "", "payload": payload}
@@ -212,7 +229,7 @@ class _Gmail:
         if parts[0] == "drafts":
             return await self._drafts(method, parts, body, request.url.params)
         if parts[0] == "messages":
-            return self._messages(method, parts, body)
+            return self._messages(method, parts, body, request.url.params)
         if (method, parts[0]) == ("GET", "threads") and len(parts) == 2:
             listed = [m for m in self.messages.values()
                       if m["threadId"] == parts[1]]
@@ -223,8 +240,8 @@ class _Gmail:
             return httpx.Response(200, json={"labels": []})
         return _not_found()
 
-    def _messages(self, method: str, parts: list[str],
-                  body: dict[str, Any]) -> httpx.Response:
+    def _messages(self, method: str, parts: list[str], body: dict[str, Any],
+                  params: httpx.QueryParams) -> httpx.Response:
         if (method, parts[1:]) == ("POST", ["send"]):
             self.sent.append(body)
             mid = self._next("s")
@@ -240,7 +257,12 @@ class _Gmail:
                 "data": base64.urlsafe_b64encode(data).decode(),
                 "size": len(data)})
         if method == "GET" and len(parts) == 2 and parts[1] in self.messages:
-            return httpx.Response(200, json=self.messages[parts[1]])
+            found = self.messages[parts[1]]
+            if params.get("format") == "raw":
+                return httpx.Response(200, json={
+                    "id": found["id"], "threadId": found["threadId"],
+                    "raw": self.raws[parts[1]]})
+            return httpx.Response(200, json=found)
         return _not_found()
 
     async def _drafts(self, method: str, parts: list[str], body: dict[str, Any],
@@ -686,11 +708,17 @@ def _route_patches(monkeypatch: pytest.MonkeyPatch, db: Any, provider: Any) -> N
 _ME = UserContext(email="me@em-g3a.test", role=UserRole.EMPLOYEE)
 
 
-def _draft_row(pmid: str) -> SimpleNamespace:
+def _listed(*addresses: str) -> list[dict[str, str]]:
+    return [{"name": "", "email": a} for a in addresses]
+
+
+def _draft_row(pmid: str, *, to: tuple[str, ...] = (RAVI,),
+               cc: tuple[str, ...] = (), bcc: tuple[str, ...] = ()
+               ) -> SimpleNamespace:
     return SimpleNamespace(
         provider_message_id=pmid, subject="Re: Quote", body_text="Thanks",
-        to_addresses=[{"name": "", "email": RAVI}], cc_addresses=[],
-        bcc_addresses=[], thread_id="t-1")
+        to_addresses=_listed(*to), cc_addresses=_listed(*cc),
+        bcc_addresses=_listed(*bcc), thread_id="t-1")
 
 
 async def test_a_signed_send_sends_the_id_that_the_update_returns(
@@ -804,6 +832,158 @@ async def test_a_draft_that_changed_in_gmail_answers_409(
             account_id="acc-1", draft_id="local-1", body="v2"), user=_ME)
     assert caught.value.status_code == 409
     assert fake.saved == [] and fake.sent_drafts == []
+
+
+# ── review round 2: the Cc, the Bcc, the IMAP fallback, an attached mail ───
+
+LEAD = "lead@contoso-em-g3a.test"
+AUDIT = "audit@contoso-em-g3a.test"
+
+
+def _outlook() -> tuple[Any, AsyncMock]:
+    """The real Outlook provider on an ``AsyncMock`` Graph client."""
+    from email_ingestion.providers.outlook import OutlookProvider
+
+    outlook = OutlookProvider({"access_token": "x", "refresh_token": "y"})
+    client = AsyncMock()
+    answer = SimpleNamespace(status_code=200, headers={},
+                             json=lambda: {"id": "AAMk-1"},
+                             raise_for_status=lambda: None)
+    client.post.return_value = answer
+    client.patch.return_value = answer
+    outlook._get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+    return outlook, client
+
+
+@pytest.mark.parametrize("cc, bcc", [((), ()), ((LEAD,), (AUDIT,))],
+                         ids=["no-cc-no-bcc", "cc-and-bcc"])
+async def test_an_outlook_signed_send_patches_only_the_lists_the_row_holds(
+        monkeypatch: pytest.MonkeyPatch, cc: tuple[str, ...],
+        bcc: tuple[str, ...]) -> None:
+    """Review round 2, P3-1 and P3-2. A row with no Cc sends no
+    ``ccRecipients`` key, so Outlook keeps its own Cc. A row with a Cc and a
+    Bcc sends both lists."""
+    outlook, client = _outlook()
+    _route_patches(monkeypatch, _Rows(_draft_row("AAMk-1", cc=cc, bcc=bcc),
+                                      "Asha"), outlook)
+
+    await drafting.send_draft_endpoint(
+        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        BackgroundTasks(), user=_ME)
+
+    [patch] = client.patch.await_args_list
+    sent = patch.kwargs["json"]
+    if cc:
+        assert [r["emailAddress"]["address"] for r in sent["ccRecipients"]] == [
+            LEAD]
+        assert [r["emailAddress"]["address"]
+                for r in sent["bccRecipients"]] == [AUDIT]
+    else:
+        assert "ccRecipients" not in sent and "bccRecipients" not in sent
+    assert [c.args[0] for c in client.post.await_args_list] == [
+        "/me/messages/AAMk-1/send"]
+
+
+async def test_a_signed_gmail_send_keeps_the_bcc(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 2, P3-2. Gmail rebuilds the whole draft on the signing
+    update, so the update carries the Bcc of the row."""
+    _thread(fake)
+    _route_patches(monkeypatch, _Rows(_draft_row("m-90", bcc=(AUDIT,)),
+                                      "Asha"), _provider())
+
+    await drafting.send_draft_endpoint(
+        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        BackgroundTasks(), user=_ME)
+
+    assert _decode(fake.saved[-1]["message"]["raw"])["Bcc"] == AUDIT
+    assert fake.sent_drafts == ["r-90"]
+
+
+@pytest.mark.parametrize("signature", ["Asha", ""], ids=["signed", "unsigned"])
+async def test_the_imap_fallback_sends_each_to_cc_and_bcc(
+        monkeypatch: pytest.MonkeyPatch, signature: str) -> None:
+    """Review round 2, P3-3. IMAP has no update or send of a draft, so the
+    route sends a new mail. That mail goes to each To, Cc and Bcc address of
+    the row."""
+    from email_ingestion.providers.imap import IMAPProvider
+
+    imap = IMAPProvider({"smtp_host": "smtp.example.com", "smtp_port": 587,
+                         "smtp_username": "me@example.com",
+                         "smtp_password": "pw"})
+    imap.send_message = AsyncMock(return_value="sent")  # type: ignore[method-assign]
+    imap.trash_message = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    row = _draft_row("draft-Drafts", to=(RAVI, "meera@contoso-em-g3a.test"),
+                     cc=(LEAD,), bcc=(AUDIT,))
+    _route_patches(monkeypatch, _Rows(row, signature), imap)
+
+    await drafting.send_draft_endpoint(
+        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        BackgroundTasks(), user=_ME)
+
+    sent = imap.send_message.await_args.kwargs
+    assert sent["to"] == [RAVI, "meera@contoso-em-g3a.test"]
+    assert sent["cc"] == [LEAD] and sent["bcc"] == [AUDIT]
+    imap.trash_message.assert_awaited_once_with("draft-Drafts")
+
+
+def _forwarded_draft(name: str | None) -> bytes:
+    """A draft that forwards a mail as an attachment. The attached mail holds
+    a text part and ``inner.pdf``, as ``fixtures/gmail/i_forwarded_rfc822``
+    holds a nested mail."""
+    from email.mime.base import MIMEBase
+    from email.mime.message import MIMEMessage
+    from email.mime.multipart import MIMEMultipart
+
+    inner = MIMEMultipart("mixed")
+    inner["From"] = f"Ravi <{RAVI}>"
+    inner["Subject"] = "Original"
+    inner["Message-ID"] = "<original@contoso.test>"
+    inner.attach(MIMEText("The original mail."))
+    pdf = MIMEBase("application", "pdf")
+    pdf.set_payload(b"%PDF-inner")
+    from email import encoders
+
+    encoders.encode_base64(pdf)
+    pdf.add_header("Content-Disposition", "attachment", filename="inner.pdf")
+    inner.attach(pdf)
+    outer = MIMEMultipart("mixed")
+    outer["To"] = RAVI
+    outer["Subject"] = "Fwd: Original"
+    outer.attach(MIMEText("See the mail below."))
+    forwarded = MIMEMessage(inner)
+    if name:
+        forwarded.add_header("Content-Disposition", "attachment", filename=name)
+    else:
+        forwarded.add_header("Content-Disposition", "attachment")
+    outer.attach(forwarded)
+    return outer.as_bytes()
+
+
+@pytest.mark.parametrize("name, kept_as", [
+    (None, "attached.eml"), ("forward.eml", "forward.eml"),
+], ids=["no-name", "named-eml-with-inner-pdf"])
+async def test_an_attached_mail_stays_one_file_after_an_update(
+        fake: _Gmail, name: str | None, kept_as: str) -> None:
+    """Review round 2, P3-4. Gmail opens an attached mail into its parts.
+    The update reads the draft as one raw mail and never opens a file, so
+    the draft keeps exactly one attached mail, with ``inner.pdf`` still in
+    it, and no ``inner.pdf`` at the top."""
+    fake.add_raw_draft("r-f", "m-f", _forwarded_draft(name), thread="t-f")
+
+    await _provider().update_draft("m-f", to=[RAVI], body_text="v2")
+
+    rebuilt = _decode(fake.saved[-1]["message"]["raw"])
+    top = rebuilt.get_payload()
+    assert [part.get_content_type() for part in top] == [
+        "text/plain", "message/rfc822"]
+    mail_part = top[1]
+    assert mail_part.get_filename() == kept_as
+    [inner] = mail_part.get_payload()
+    assert inner["Subject"] == "Original"
+    assert [(p.get_filename(), p.get_payload(decode=True))
+            for p in inner.walk() if p.get_filename()] == [
+        ("inner.pdf", b"%PDF-inner")]
 
 
 # ── R8: the local draft row (items 6 and 8, E-A2, E-A5) ─────────────────────

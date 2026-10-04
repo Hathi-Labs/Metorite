@@ -16,11 +16,13 @@ import mimetypes
 import random
 from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime, timezone
-from email import encoders
+from email import encoders, message_from_bytes
+from email import policy as mail_policy
 from email.errors import HeaderParseError
 from email.header import decode_header, make_header
 from email.message import Message
 from email.mime.base import MIMEBase
+from email.mime.message import MIMEMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import getaddresses, parsedate_to_datetime
@@ -637,12 +639,22 @@ def _attachment_type(att: dict[str, Any]) -> tuple[str, str]:
     return "application", "octet-stream"
 
 
-def _attachment_part(att: dict[str, Any]) -> MIMEBase:
-    """One attachment of a send or a draft (EM-G3a items 2 and 3)."""
+def _attachment_part(att: dict[str, Any]) -> Message:
+    """One attachment of a send or a draft (EM-G3a items 2 and 3).
+
+    An attached mail (``message/*``) goes in as ONE mail part, with the mail
+    inside it, because RFC 2046 §5.2 gives such a part no base64. So a
+    forwarded mail stays one file (review round 2, P3-4)."""
     main, sub = _attachment_type(att)
-    part = MIMEBase(main, sub)
-    part.set_payload(att.get("content") or b"")
-    encoders.encode_base64(part)
+    content = att.get("content") or b""
+    part: Message
+    if main == "message":
+        raw = content if isinstance(content, bytes) else str(content).encode()
+        part = MIMEMessage(message_from_bytes(raw), sub)
+    else:
+        part = MIMEBase(main, sub)
+        part.set_payload(content)
+        encoders.encode_base64(part)
     # ``add_header`` writes the name with RFC 2231 when it needs it, so a
     # quote or a letter outside ASCII survives (item 3).
     part.add_header("Content-Disposition", "attachment",
@@ -1175,32 +1187,39 @@ class GmailProvider(BaseEmailProvider):
         """The files of a draft, in the shape of ``attachments``.
 
         WS-17 EM-G3a review round 1, F1. ``drafts.update`` replaces the whole
-        draft, so an update that leaves out the files drops them. This reads
-        the draft (``format=full``) and each file part that is not inline. A
-        part with ``attachmentId`` downloads through ``get_attachment``. A
-        read that fails raises, because an update with no read loses files.
+        draft, so an update that leaves out the files drops them. A read that
+        fails raises, because an update with no read loses files.
+
+        Review round 2, P3-4: the read takes the draft as one RFC 5322 mail
+        (``format=raw``). With ``format=full`` Gmail opens an attached mail
+        into its parts and gives no bytes for it, so an update lost it, or
+        put its inner files at the top. ``iter_attachments`` of the standard
+        library gives each file of the top level once and never opens one.
+        An attached mail stays one file: the mail, with its name, else
+        ``attached.eml``. The body parts are no files, so they stay out.
         """
         client = await self._get_client()
         resp = await client.get(f"/users/me/messages/{message_id}",
-                                params={"format": "full"})
+                                params={"format": "raw"})
         resp.raise_for_status()
-        payload = (resp.json() or {}).get("payload") or {}
+        raw = str((resp.json() or {}).get("raw") or "")
+        if not raw:
+            return []
+        mail = message_from_bytes(
+            base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)),
+            policy=mail_policy.default)
         files: list[dict[str, Any]] = []
-        for part in _iter_gmail_parts(payload):
-            name = part.get("filename")
-            if not name or _gmail_part_is_inline(part):
-                continue
-            body = part.get("body") or {}
-            if body.get("attachmentId"):
-                content = await self.get_attachment(
-                    message_id, str(body["attachmentId"]))
-            elif body.get("data"):
-                data = str(body["data"])
-                content = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+        for part in mail.iter_attachments():
+            if part.get_content_maintype() == "message":
+                inner = part.get_payload()
+                content = (inner[0].as_bytes()
+                           if isinstance(inner, list) and inner else b"")
+                name = part.get_filename() or "attached.eml"
             else:
-                continue
+                content = part.get_payload(decode=True) or b""
+                name = part.get_filename() or "attachment"
             files.append({"filename": name, "content": content,
-                          "mime_type": part.get("mimeType") or _OCTET_STREAM})
+                          "mime_type": part.get_content_type()})
         return files
 
     def _remember_draft(

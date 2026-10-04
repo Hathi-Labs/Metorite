@@ -250,6 +250,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
       them in again, and `attachments` adds files to them. Metorite keeps
       no bytes of a draft file. A read that fails fails the update, because
       an update with no files would delete them in Gmail (review round 1).
+    - `_draft_files` reads the draft as one raw mail (`format=raw`) and
+      takes the files of the top level with `iter_attachments`. Gmail
+      opens an attached mail into its parts in `format=full`. Do not walk
+      into a `message/*` part. It is one file, and the builder puts it in
+      as a mail part (review round 2).
 
 ## Inbound SMTP Server
 
