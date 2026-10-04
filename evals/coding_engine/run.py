@@ -19,6 +19,8 @@ What the runner replaces, and nothing more:
 * The state root. ``agents_clone_dir`` is a dir of this sweep, so the eval
   never touches the files of the local stack.
 * The scope. ``maf_coding_scope`` is ``projects:<test org>`` in THIS process.
+* The session secret, only when the box has no usable one. A skill marker
+  holds an HMAC under it (WS-43v), so with no secret no skill can be made.
 * With ``--scripted`` only: the model. ``ScriptedModel`` replays a known-good
   sequence (:mod:`evals.coding_engine.scripted`) under the real client.
 
@@ -35,6 +37,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import secrets
 import shutil
 import subprocess
 import sys
@@ -188,6 +191,7 @@ class Harness:
         import gateway.routes.agent as routes_agent
         import skill_projects.client as projects_client
         from acb_common import get_settings
+        from acb_skills.agent_paths import skill_author_id
         from orchestrator import executor
 
         from tests.unit._native_maf_harness import load_agent_module
@@ -197,6 +201,11 @@ class Harness:
         self._patches.set(settings, "agents_clone_dir", str(self.state_root))
         if hasattr(settings, "maf_coding_scope"):
             self._patches.set(settings, "maf_coding_scope", f"projects:{self.org}")
+        if skill_author_id("eval@example.invalid") is None:
+            # A skill marker holds a member id, an HMAC under the session
+            # secret (WS-43v). A box with no usable secret has no member id
+            # and refuses every skill, so this sweep uses a secret of its own.
+            self._patches.set(settings, "gateway_session_secret", secrets.token_urlsafe(32))
         url = self.stub.url
         self._patches.set(projects_client, "gateway_url", lambda: url)
         self._module = load_agent_module(AGENT_DIR)

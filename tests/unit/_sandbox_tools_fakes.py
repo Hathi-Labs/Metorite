@@ -24,6 +24,9 @@ from tests.unit._sandbox_broker_fakes import FakeDocker, configure_env
 PA = "projects-assistant"
 ORG_A = "aaaaaaaa-0000-0000-0000-0000000000a1"
 ORG_B = "bbbbbbbb-0000-0000-0000-0000000000b2"
+#: A usable session secret, so a skill marker can hold a member id (WS-43v).
+#: Under the public default no member id exists, and every claim fails closed.
+SKILL_SECRET = "ws43-skill-author-test-secret"
 
 
 def new_thread() -> str:
@@ -66,6 +69,9 @@ def short_tmp() -> Any:
 def sandbox(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> Sandbox:
     env = configure_env(monkeypatch, short_tmp)
     monkeypatch.setattr(env["settings"], "maf_coding_scope", f"projects:{ORG_A}")
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", SKILL_SECRET, raising=False)
     docker = FakeDocker()
     broker = sb.SandboxBroker(docker=docker)  # type: ignore[arg-type]
     broker._note_docker(True)

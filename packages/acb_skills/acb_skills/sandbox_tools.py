@@ -353,11 +353,11 @@ class SandboxScriptRunner:
         self._member = str(member or "").strip().lower()
 
     def _own_skill(self, posix: str) -> bool:
-        from acb_skills.agent_paths import skill_author, skill_top_rel
+        from acb_skills.agent_paths import SKILL_MINE, skill_owner, skill_top_rel
 
         top = skill_top_rel(posix)
         return top is not None and bool(self._member) and (
-            skill_author(self._workspace, top) == self._member
+            skill_owner(self._workspace, top, self._member) == SKILL_MINE
         )
 
     def container_path(self, full_path: str) -> str:
@@ -468,7 +468,7 @@ class LockedSkillsSource(SkillsSource):
             resource_extensions=(),
         )
 
-    def _scan(self, context: Any) -> list[Any]:
+    def _scan(self, context: Any, upgraded: list[tuple[str, bytes]]) -> list[Any]:
         """MAF's scan and the author filter, in a worker thread.
 
         ``FileSkillsSource.get_skills`` does its disk work synchronously, so
@@ -478,7 +478,7 @@ class LockedSkillsSource(SkillsSource):
         import asyncio
 
         from acb_skills import safe_open
-        from acb_skills.agent_paths import skill_author
+        from acb_skills.agent_paths import SKILL_MINE, skill_owner
 
         try:
             if safe_open.list_dir(self._workspace, _SKILLS_REL) is None:
@@ -495,15 +495,29 @@ class LockedSkillsSource(SkillsSource):
                 top = Path(skill.path).resolve().relative_to(root).parts[0]
             except (AttributeError, IndexError, OSError, ValueError):
                 continue
-            if skill_author(self._workspace, f"{_SKILLS_REL}/{top}") == self._member:
+            owner = skill_owner(
+                self._workspace, f"{_SKILLS_REL}/{top}", self._member, upgraded=upgraded,
+            )
+            if owner == SKILL_MINE:
                 mine.append(skill)
         return mine
 
     async def get_skills(self, context: Any) -> list[Any]:
+        """This member's skills. A marker from before WS-43v that holds this
+        member's address becomes the member id here, on disk and in the blob
+        store, so the address does not stay in ``agent-data/``.
+        """
         import asyncio
 
+        upgraded: list[tuple[str, bytes]] = []
         async with self._guard.hold():
-            return await asyncio.to_thread(self._scan, context)
+            skills = await asyncio.to_thread(self._scan, context, upgraded)
+        if upgraded:
+            from acb_skills.write_artifact import mirror_to_blob_store
+
+            for rel, data in upgraded:
+                await mirror_to_blob_store(rel, data, mime_type="text/plain", action="modify")
+        return skills
 
 
 class ProjectsSandboxProvider(ContextProvider):

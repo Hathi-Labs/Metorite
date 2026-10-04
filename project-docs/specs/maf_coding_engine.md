@@ -1765,8 +1765,16 @@ These facts change or add to the text above:
     loads, lists, reads and runs only its own member's skills. The routes
     refuse another member's skill with 403.
   - **How a check reads the skill rule** (for the P3 eval, E17). The
-    marker `agent-data/skills/<name>/.metorite-author` holds the author's
-    email in lower case, and `agent_paths.skill_author()` reads it. In a run
+    marker `agent-data/skills/<name>/.metorite-author` holds an opaque
+    member id and never the email (WS-43v). The id is `m1.` and an HMAC of
+    the lower-case email under `GATEWAY_SESSION_SECRET`, from
+    `agent_paths.skill_author_id()`. `agent_paths.skill_owner()` reads the
+    marker. An empty, unknown or unreadable marker belongs to no member. A
+    marker from before WS-43v holds an email. It loads only for that member,
+    and that member's next read writes the id in its place. With no usable
+    secret, no member id exists, so no member can make or load a skill. A
+    new secret orphans each skill. The member UUID is not the key, because
+    IDENTITY_CUTOVER changes its UUID space. In a run
     of another member, the `<available_skills>` block of each request does
     not name the skill, or the block is absent. A `load_skill` call for it
     answers `Error: Skill '<name>' not found.` The source of the list is
@@ -2620,10 +2628,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
 - **Scripted, no model.** It passed 7 tasks in 8, in WSL on Linux. First the
   harness needed three fixes, and the README of `evals/coding_engine/` names
   them. None of them was a product fault.
-- **WS43-E17 fails one rule.** `agent-data/skills/<name>/.metorite-author`
-  holds the email of the skill's author, by the design of PR #603. The
-  hygiene rule of WS43-E16 reads it as member data. The owner must decide
-  which rule changes.
+- **WS43-E17 failed one rule.** `agent-data/skills/<name>/.metorite-author`
+  held the email of the skill's author, by the design of PR #603. The
+  hygiene rule of WS43-E16 read it as member data. The hygiene rule stays
+  strict. Since WS-43v the marker holds an opaque member id. The scripted
+  run then passed 8 tasks in 8 in WSL.
 - **The model sweep is NO-GO at step 3** of "The stack that serves the
   Router". The local stack holds no provider key. These six names of
   `.env.example` are unset:

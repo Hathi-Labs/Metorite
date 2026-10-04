@@ -58,7 +58,9 @@ has always honoured it.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import re
 from pathlib import Path
 
@@ -67,6 +69,10 @@ __all__ = [
     "RUN_DATA_DIR",
     "SKILLS_REL",
     "SKILL_AUTHOR_MARKER",
+    "SKILL_AUTHOR_PURPOSE",
+    "SKILL_FOREIGN",
+    "SKILL_MINE",
+    "SKILL_UNCLAIMED",
     "TENANT_INSTANCE_PREFIX",
     "THREAD_HEADS",
     "InvalidAgentName",
@@ -84,7 +90,8 @@ __all__ = [
     "refused_write",
     "require_agent_name",
     "run_data_rel",
-    "skill_author",
+    "skill_author_id",
+    "skill_owner",
     "skill_top_rel",
     "state_root",
     "tenant_instance",
@@ -356,7 +363,7 @@ def is_loose_rel(rel: str) -> bool:
     return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
 
 
-# ── The author of a skill (review P1, fix round 1) ───────────────────────────
+# ── The author of a skill (review P1, fix round 1; the member id, WS-43v) ────
 
 #: The skills of a working dir, relative to it.
 SKILLS_REL = "agent-data/skills"
@@ -367,6 +374,29 @@ SKILLS_REL = "agent-data/skills"
 #: it, and only for the member who first writes into the folder.
 SKILL_AUTHOR_MARKER = ".metorite-author"
 
+#: The marker holds an OPAQUE member id, never the address (WS-43v, the
+#: WS43-E16 hygiene rule). The id is an HMAC of the lower-cased address under
+#: ``gateway_session_secret``, and this purpose string starts the MAC input,
+#: so no other value that the secret signs can pass as an author id.
+#:
+#: Why not a member UUID: ``UserContext.user_id`` is ``app_user.id`` with
+#: IDENTITY_CUTOVER off and ``user_identity.id`` with it on, two UUID spaces,
+#: so a marker keyed on it would orphan every skill on the flag flip. The run
+#: binding carries only the address, from the session (R5).
+#:
+#: A new secret orphans every skill: no member then owns it. That fails
+#: closed, and the author makes the skill again.
+SKILL_AUTHOR_PURPOSE = "metorite-skill-author:v1"
+_AUTHOR_ID_PREFIX = "m1."
+_AUTHOR_ID_RE = re.compile(r"m1\.[A-Za-z0-9_-]{43}")
+_MARKER_LIMIT = 1024
+
+#: What a skill folder is to one member: no marker, the member's own, or not
+#: the member's. An unreadable, empty or unknown marker is FOREIGN.
+SKILL_UNCLAIMED = "unclaimed"
+SKILL_MINE = "mine"
+SKILL_FOREIGN = "foreign"
+
 
 def skill_top_rel(rel: str) -> str | None:
     """``agent-data/skills/<top>`` for a path inside a skill folder, else ``None``."""
@@ -376,17 +406,93 @@ def skill_top_rel(rel: str) -> str | None:
     return None
 
 
-def skill_author(workspace: Path, top_rel: str) -> str | None:
-    """The member recorded for a skill folder, read with the safe opener, or ``None``."""
+def _member_address(member: str | None) -> str:
+    return str(member or "").strip().lower()
+
+
+def _author_secret() -> str | None:
+    """``gateway_session_secret``, or ``None`` when it is empty or public.
+
+    A public secret is no secret (``acb_auth.member_proof``): an HMAC under it
+    is a hash that anyone can compute, so no member id comes from it.
+    """
+    try:
+        from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "gateway_session_secret", "") or "").strip()
+    except Exception:  # no settings means no id, never a crash
+        return None
+    if not raw or raw in PUBLIC_DEFAULT_SECRETS:
+        return None
+    return raw
+
+
+def skill_author_id(member: str | None) -> str | None:
+    """The opaque id that a skill marker holds for *member*, or ``None``.
+
+    ``None`` when there is no member, or when the server has no usable
+    secret. Then no skill is the member's, and no skill folder can be claimed.
+    """
+    who = _member_address(member)
+    secret = _author_secret()
+    if not who or secret is None:
+        return None
+    mac = hmac.new(
+        secret.encode("utf-8"), f"{SKILL_AUTHOR_PURPOSE}\n{who}".encode(), hashlib.sha256,
+    ).digest()
+    return _AUTHOR_ID_PREFIX + base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def skill_owner(
+    workspace: Path, top_rel: str, member: str | None, *,
+    upgraded: list[tuple[str, bytes]] | None = None,
+) -> str:
+    """What the skill folder *top_rel* is to *member*: one of the ``SKILL_*`` values.
+
+    The marker is read with the safe opener. No marker is UNCLAIMED. The
+    member's own id is MINE. Each other case is FOREIGN, and that includes a
+    link, a read error, an empty marker, an unknown value and the id of
+    another member, so the rule fails closed.
+
+    A marker from before WS-43v holds an address. It is MINE only when it is
+    THIS member's address, and it is FOREIGN for every other member. With a
+    list in *upgraded*, the marker is rewritten to the member's id, and
+    ``(marker rel, bytes)`` goes in the list, so the caller can mirror it to
+    the blob store. Without a list, the marker does not change.
+    """
     from acb_skills import safe_open
 
+    marker = f"{top_rel}/{SKILL_AUTHOR_MARKER}"
     try:
-        raw = safe_open.read_bytes(Path(workspace), f"{top_rel}/{SKILL_AUTHOR_MARKER}", limit=1024)
+        raw = safe_open.read_bytes(Path(workspace), marker, limit=_MARKER_LIMIT)
     except (safe_open.UnsafePath, OSError):
-        return None
+        return SKILL_FOREIGN
     if raw is None:
-        return None
-    return raw.decode("utf-8", errors="replace").strip().lower() or None
+        return SKILL_UNCLAIMED
+    try:
+        value = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return SKILL_FOREIGN
+    mine = skill_author_id(member)
+    if not value or mine is None:
+        return SKILL_FOREIGN
+    if _AUTHOR_ID_RE.fullmatch(value):
+        return SKILL_MINE if hmac.compare_digest(value, mine) else SKILL_FOREIGN
+    if "@" not in value or value.lower() != _member_address(member):
+        return SKILL_FOREIGN
+    if upgraded is not None:
+        data = mine.encode("ascii")
+        try:
+            safe_open.write_bytes(Path(workspace), marker, data)
+        except safe_open.UnsafePath:
+            return SKILL_FOREIGN
+        except OSError:
+            # This read proved the author. A write that failed after the
+            # truncate leaves an empty marker, which no member owns (fail closed).
+            return SKILL_MINE
+        upgraded.append((marker, data))
+    return SKILL_MINE
 
 
 def refused_write(
@@ -398,7 +504,8 @@ def refused_write(
     1. The author marker itself is reserved.
     2. The output or upload folder of another thread is not this run's (§16.3,
        H-227). The own folder is *own_slug*, else the slug of *thread_id*.
-    3. A skill folder that another member made is theirs alone.
+    3. A skill folder that is not this member's is refused: another member's,
+       and one with a marker that cannot be read (:func:`skill_owner`).
     """
     parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
     if parts and parts[-1] == SKILL_AUTHOR_MARKER:
@@ -407,11 +514,8 @@ def refused_write(
     if is_other_thread_rel(rel, own):
         return "that folder belongs to another chat"
     top = skill_top_rel(rel)
-    if top is not None:
-        author = skill_author(workspace, top)
-        who = str(member or "").strip().lower()
-        if author is not None and author != who:
-            return "that skill belongs to another member"
+    if top is not None and skill_owner(workspace, top, member) == SKILL_FOREIGN:
+        return "that skill belongs to another member"
     return None
 
 
@@ -419,19 +523,24 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     """Record *member* as the author of the skill folder of *rel*, when none is.
 
     Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
-    mirror it to the blob store, else ``None``. Raises ``ValueError`` when
-    there is no member, because a skill with no author never loads.
+    mirror it to the blob store, else ``None``. It also writes the marker when
+    it upgrades this member's own address marker to the member id. Raises
+    ``ValueError`` when there is no member id (no member, or no usable
+    secret), because a skill with no author never loads.
     """
     top = skill_top_rel(rel)
-    if top is None or skill_author(workspace, top) is not None:
+    if top is None:
         return None
-    who = str(member or "").strip().lower()
-    if not who:
+    upgraded: list[tuple[str, bytes]] = []
+    if skill_owner(workspace, top, member, upgraded=upgraded) != SKILL_UNCLAIMED:
+        return upgraded[0] if upgraded else None
+    who = skill_author_id(member)
+    if who is None:
         raise ValueError("a skill needs a member who makes it")
     from acb_skills import safe_open
 
     marker = f"{top}/{SKILL_AUTHOR_MARKER}"
-    data = who.encode("utf-8")
+    data = who.encode("ascii")
     try:
         safe_open.write_bytes(Path(workspace), marker, data, exclusive=True)
     except FileExistsError:

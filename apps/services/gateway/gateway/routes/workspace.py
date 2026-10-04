@@ -1349,8 +1349,10 @@ async def _apply_write_rules(
     WS-43d (review P1, fix round 1). The skill author marker is reserved
     (400), and a skill folder that another member made is theirs (403). In a
     shared agent's tenant dir, the first member who writes into a skill folder
-    becomes its author, and the marker goes to the blob store too. A sandboxed
-    run loads, and runs the scripts of, only its own member's skills.
+    becomes its author, and the marker goes to the blob store too. The marker
+    holds an opaque member id (``agent_paths.skill_author_id``), never the
+    address (WS-43v). A sandboxed run loads, and runs the scripts of, only its
+    own member's skills.
     """
     from acb_skills.agent_paths import SKILL_AUTHOR_MARKER, claim_skill, refused_write
 
@@ -1368,7 +1370,12 @@ async def _apply_write_rules(
     try:
         claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
     except ValueError:
-        return
+        # No member id: no member, or no usable session secret. A skill folder
+        # with no author would go to the next member who writes into it, with
+        # this member's files in it, so the write is refused (WS-43v).
+        raise HTTPException(
+            status_code=403, detail="This server cannot record the author of a skill.",
+        ) from None
     if claimed is not None:
         await _mirror_gateway_write(
             workspace, claimed[0], claimed[1], action="create", session_id=session_id,

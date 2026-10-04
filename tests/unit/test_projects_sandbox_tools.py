@@ -74,6 +74,7 @@ from typing import Any
 
 import pytest
 from acb_skills import sandbox_tools as st
+from acb_skills.agent_paths import skill_author_id
 from acb_skills.tenant_file_store import TenantFileStore
 from orchestrator import sandbox_broker as sb
 
@@ -632,8 +633,9 @@ async def test_a_skill_belongs_to_the_member_who_made_it(sandbox) -> None:  # no
     await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
     await x_store.write("agent-data/skills/chart/scripts/plot.py", "print(1)")
     marker = ws / "agent-data" / "skills" / "chart" / ".metorite-author"
-    assert marker.read_text() == _X
-    assert ("agent-data/skills/chart/.metorite-author", _X.encode()) in sandbox.mirrored
+    x_id = skill_author_id(_X)
+    assert marker.read_text() == x_id and "@" not in x_id
+    assert ("agent-data/skills/chart/.metorite-author", x_id.encode()) in sandbox.mirrored
     for call in (
         y_store.read("agent-data/skills/chart/SKILL.md"),
         y_store.list_children("agent-data/skills/chart"),
@@ -680,6 +682,142 @@ async def test_a_member_never_runs_another_members_skill_script(sandbox, host_tr
     assert "only the member who made a skill" in refused
     assert "exit 0" in ran
     assert len(sandbox.docker.command_execs()) == 1 and host_trap == []
+
+
+# ══════════════ WS-43v: the author marker holds a member id, not an address ═
+#
+# Mutations, each run red once by hand on 2026-10-05:
+#
+# * ``claim_skill`` writes the address again: the member-id test;
+# * ``skill_owner`` takes any member id as the member's own: the session test;
+# * ``skill_owner`` takes any address marker as the member's own: the legacy
+#   test;
+# * ``skill_owner`` leaves a legacy marker as it is: the legacy test;
+# * ``LockedSkillsSource.get_skills`` does not mirror the upgrade: the legacy
+#   test;
+# * ``skill_owner`` reads an empty or unreadable marker as UNCLAIMED: the
+#   garbage test;
+# * ``_author_secret`` accepts the public default: the secret test.
+
+
+async def _names(ws: Path, member: str) -> list[str]:
+    from agent_framework import AgentSession, SkillsSourceContext
+
+    ctx = SkillsSourceContext(agent=None, session=AgentSession())
+    got = await st.LockedSkillsSource(ws, _Guard(), member).get_skills(ctx)
+    return sorted(s.frontmatter.name for s in got)
+
+
+def _marker(ws: Path, name: str) -> Path:
+    return ws / "agent-data" / "skills" / name / ".metorite-author"
+
+
+async def test_the_marker_holds_a_member_id_and_no_address(sandbox, monkeypatch) -> None:  # noqa: F811
+    from acb_common import get_settings
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    held = _marker(ws, "chart").read_text()
+    assert "@" not in held and "example.com" not in held and "x-member" not in held
+    assert held == skill_author_id(_X) == skill_author_id(f"  {_X.upper()} ")
+    assert held != skill_author_id(_Y)
+    for rel, data in sandbox.mirrored:
+        assert _X.encode() not in data, f"the blob store got the address in {rel}"
+    # The id is keyed: another secret gives another id, so nobody without the
+    # server secret can compute a member's id from the address.
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "another-secret")
+    assert skill_author_id(_X) != held
+
+
+async def test_the_authors_next_session_loads_the_skill_and_no_other_member(sandbox) -> None:  # noqa: F811
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    # A new session of X: a new source and a new store, with only the address.
+    assert await _names(ws, _X) == ["chart"]
+    again, _ws, _ = _store(sandbox, new_thread(), member=_X)
+    assert await again.read("agent-data/skills/chart/SKILL.md")
+    assert await _names(ws, _Y) == []
+    y_store, _ws, _ = _store(sandbox, new_thread(), member=_Y)
+    with pytest.raises(ValueError, match="another member"):
+        await y_store.write("agent-data/skills/chart/SKILL.md", "stolen")
+
+
+async def test_a_legacy_address_marker_is_upgraded_for_its_author_only(sandbox) -> None:  # noqa: F811
+    ws = _store(sandbox, member=_X)[1]
+    for name in ("old", "older"):
+        (ws / "agent-data" / "skills" / name).mkdir(parents=True)
+        (ws / "agent-data" / "skills" / name / "SKILL.md").write_text(_SKILL.format(name=name))
+        _marker(ws, name).write_text(_X)
+    # Another member never loads it, never writes it, and does not change it.
+    assert await _names(ws, _Y) == []
+    y_store, _ws, _ = _store(sandbox, member=_Y)
+    with pytest.raises(ValueError, match="another member"):
+        await y_store.write("agent-data/skills/old/SKILL.md", "stolen")
+    assert _marker(ws, "old").read_text() == _X
+    assert sandbox.mirrored == []
+    # The author's next session loads it, and the marker becomes the id, on
+    # disk and in the blob store.
+    assert await _names(ws, _X) == ["old", "older"]
+    x_id = skill_author_id(_X)
+    assert _marker(ws, "old").read_text() == x_id
+    assert ("agent-data/skills/old/.metorite-author", x_id.encode()) in sandbox.mirrored
+    # A write by the author upgrades it too (the file store's claim path).
+    _marker(ws, "older").write_text(_X)
+    sandbox.mirrored.clear()
+    x_store, _ws, _ = _store(sandbox, member=_X)
+    await x_store.write("agent-data/skills/older/notes.md", "mine")
+    assert _marker(ws, "older").read_text() == x_id
+    assert ("agent-data/skills/older/.metorite-author", x_id.encode()) in sandbox.mirrored
+    assert await _names(ws, _Y) == []
+
+
+@pytest.mark.parametrize("held", [
+    b"", b"   \n", b"garbage", b"m1.short", b"m1." + b"A" * 44, b"\xff\xfe\x00", b"@",
+])
+async def test_an_empty_or_garbage_marker_is_refused(sandbox, held) -> None:  # noqa: F811
+    import types
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    skill = ws / "agent-data" / "skills" / "bad"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text(_SKILL.format(name="bad"))
+    (skill / "scripts" / "plot.py").write_text("print(1)")
+    _marker(ws, "bad").write_bytes(held)
+    y_store, _ws, _ = _store(sandbox, member=_Y)
+    for member, store in ((_X, x_store), (_Y, y_store)):
+        assert await _names(ws, member) == [], member
+        with pytest.raises(ValueError, match="another member"):
+            await store.write("agent-data/skills/bad/SKILL.md", "planted")
+        script = types.SimpleNamespace(full_path=str(skill / "scripts" / "plot.py"), name="p")
+        assert "refused" in await st.SandboxScriptRunner(ws, member)(None, script, None)
+    assert _marker(ws, "bad").read_bytes() == held
+    assert (skill / "SKILL.md").read_text() == _SKILL.format(name="bad")
+
+
+async def test_an_unreadable_marker_is_refused(sandbox) -> None:  # noqa: F811
+    x_store, ws, _ = _store(sandbox, member=_X)
+    (ws / "agent-data" / "skills" / "dir").mkdir(parents=True)
+    (ws / "agent-data" / "skills" / "dir" / "SKILL.md").write_text(_SKILL.format(name="dir"))
+    _marker(ws, "dir").mkdir()  # a folder in the place of the marker file
+    assert await _names(ws, _X) == []
+    with pytest.raises(ValueError, match="another member"):
+        await x_store.write("agent-data/skills/dir/SKILL.md", "planted")
+
+
+async def test_no_member_id_comes_from_a_public_secret(sandbox, monkeypatch) -> None:  # noqa: F811
+    from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
+    from acb_common import get_settings
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    for public in (*PUBLIC_DEFAULT_SECRETS, "", "  "):
+        monkeypatch.setattr(get_settings(), "gateway_session_secret", public)
+        assert skill_author_id(_X) is None
+        assert await _names(ws, _X) == []
+        with pytest.raises(ValueError):
+            await x_store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
+        assert not (ws / "agent-data" / "skills" / "fresh").exists()
 
 
 def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
