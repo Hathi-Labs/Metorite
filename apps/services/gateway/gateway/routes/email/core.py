@@ -990,16 +990,20 @@ def _row_to_message(row: Any) -> EmailMessageModel:
     )
 
 
-async def _upsert_message(db: Any, account_id: str, msg: Any) -> None:
+async def _upsert_message(
+    db: Any, account_id: str, msg: Any, *, reclaim: bool = False,
+) -> None:
     """Insert/update one normalized provider message into ``email_messages``.
 
     Thin gateway adapter over the shared ingest helper
     (:func:`email_ingestion.persist.upsert_message`) — the ONE upsert every
     ingest path shares. Used here by the on-demand history backfill.
+    ``reclaim`` goes to the upsert. The caller passes the
+    ``REKEYS_MESSAGE_IDS`` attribute of its provider (WS-17 EM-G1, D-EM-34).
     """
     from email_ingestion.persist import upsert_message
 
-    await upsert_message(db, account_id, msg)
+    await upsert_message(db, account_id, msg, reclaim=reclaim)
 
 
 async def _fetch_attachments(db: Any, message_id: str) -> list[AttachmentModel]:

@@ -401,7 +401,9 @@ async def backfill_folder(
                     if import_window.below_floor(msg.received_at, ceiling):
                         dropped += 1
                         continue
-                    await _upsert_message(db, account_id, msg)
+                    await _upsert_message(
+                        db, account_id, msg,
+                        reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
                     synced += 1
                 if dropped:
                     # Every later page is older still, so stop here.

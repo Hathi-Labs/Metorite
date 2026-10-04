@@ -537,7 +537,7 @@ async def _cycle(monkeypatch, graph: _Graph, cursor: str | None, *,
         finally:
             state["open"] -= 1
 
-    async def _upsert(db, aid, msg):
+    async def _upsert(db, aid, msg, *, reclaim=False):
         upserted.append(msg)
 
     async def _no_hook(*_a, **_k):

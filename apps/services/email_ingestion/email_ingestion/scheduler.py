@@ -505,7 +505,7 @@ async def _drop_below_floor(
 
 async def _write_messages(
     db: Any, account_id: str, messages: list[Any], floor: datetime, *,
-    learn_labels: bool = False,
+    learn_labels: bool = False, reclaim: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     """Write *messages* in the session of the caller. Returns the messages
     that it wrote, and the label changes.
@@ -515,6 +515,8 @@ async def _write_messages(
     ``[DELETED]`` marker moves its row to TRASH. Every other message goes
     through the shared upsert. With ``learn_labels``, it reads the stored
     categories of an existing row first, because the upsert overwrites them.
+    ``reclaim`` goes to the upsert. Each caller passes the
+    ``REKEYS_MESSAGE_IDS`` attribute of its provider (WS-17 EM-G1, D-EM-34).
     It never calls ``commit()``."""
     kept = await _drop_below_floor(db, account_id, messages, floor)
     label_changes: list[Any] = []
@@ -534,7 +536,7 @@ async def _write_messages(
             old_categories = list(stored.categories or []) if stored else None
         # ONE shared ingest upsert (message + attachments); see
         # email_ingestion.persist.upsert_message.
-        await upsert_message(db, account_id, msg)
+        await upsert_message(db, account_id, msg, reclaim=reclaim)
         if old_categories is not None:
             label_changes.append((msg, old_categories))
     return kept, label_changes
@@ -801,7 +803,9 @@ async def _run_import(
             on_estimate=on_estimate)) as batches:
         async for batch in batches:
             async with tenant_session(org) as db:
-                kept, _ = await _write_messages(db, account_id, batch, floor)
+                kept, _ = await _write_messages(
+                    db, account_id, batch, floor,
+                    reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
                 if progress:
                     count += len(kept)
                     await db.execute(_IMPORT_BATCH, {
@@ -1359,7 +1363,8 @@ async def _sync_cycle(
             # The reconcile below then reads the same list.
             sync_result.messages, label_changes = await _write_messages(
                 db, account_id, sync_result.messages, floor,
-                learn_labels=learn_labels)
+                learn_labels=learn_labels,
+                reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
         persisted_count = imported + len(sync_result.messages)
 
         # Revive label-learning on the scheduler path (email item 2.1): the

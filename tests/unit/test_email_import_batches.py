@@ -806,7 +806,7 @@ def core(monkeypatch):
     state = {"open": 0, "opens": 0}
     log: list = []
 
-    async def _upsert(db, account_id, msg):
+    async def _upsert(db, account_id, msg, *, reclaim=False):
         upserts.append((state["opens"], msg.provider_message_id))
 
     async def _noop(*_a, **_k):

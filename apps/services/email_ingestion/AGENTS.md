@@ -56,8 +56,14 @@ All providers implement the `BaseEmailProvider` abstract interface:
 1. **SyncResult.messages** must be populated with full `EmailMessage` objects.
    The sync endpoint and scheduler both use this to persist messages to `email_messages`.
 
-2. **ON CONFLICT (account_id, provider_message_id) DO UPDATE** — upsert pattern ensures
-   idempotent syncs. Deleted messages move to `folder='TRASH'` locally.
+2. **ON CONFLICT (account_id, provider_message_id) DO UPDATE** — the upsert makes sure
+   that a sync is idempotent. Deleted messages move to `folder='TRASH'` locally.
+   - **`persist.upsert_message` reclaims a re-keyed row only with `reclaim=True`
+     (WS-17 EM-G1, D-EM-34).** Each update-path caller passes
+     `getattr(provider, "REKEYS_MESSAGE_IDS", False)`, and only Outlook sets it.
+     Gmail never changes an id, so a reclaim would fold two Gmail messages with
+     one Message-ID into one row. A new caller names `reclaim=`. R7:
+     `tests/unit/test_email_rekey_reclaim.py`.
 
 3. **history_id format is provider-specific:**
    - Gmail: Google historyId (string)

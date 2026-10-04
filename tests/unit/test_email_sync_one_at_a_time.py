@@ -895,8 +895,8 @@ class TestTwoSyncsOfOneMailboxDoNotOverlap:
         real_upsert = sched.upsert_message
         upserts = {"n": 0}
 
-        async def _parking_upsert(db, aid, msg):
-            await real_upsert(db, aid, msg)
+        async def _parking_upsert(db, aid, msg, *, reclaim=False):
+            await real_upsert(db, aid, msg, reclaim=reclaim)
             upserts["n"] += 1
             if upserts["n"] == 1:
                 # Sync A holds an uncommitted row in its open phase (c).

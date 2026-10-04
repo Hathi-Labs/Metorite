@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. Nothing is built yet.
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. 🔨 **EM-G1 is BUILT, not merged (2026-10-04), branch `email-gmail-g1`.** The re-key reclaim runs only for Outlook (D-EM-34). Nothing else is built yet.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6126,7 +6126,8 @@ change.
 > D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
 > configures an OAuth client, never pastes a key and never opens Integrations.
 
-> **Status (2026-10-04).** 📝 SPECIFIED by EM-G0, docs only. Nothing is built. Each anchor below is
+> **Status (2026-10-04).** 📝 SPECIFIED by EM-G0, and only EM-G1 is 🔨 BUILT, not merged, on the
+> branch `email-gmail-g1` (§12.3.1). Each anchor below is
 > verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
 > because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
 > the only provider.
@@ -6280,6 +6281,9 @@ can merge dark before that, because D-EM-35 keeps Gmail hidden on a box with no 
 
 #### 12.3.1 EM-G1 — the reclaim gate (D-EM-34)
 
+**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-gmail-g1`. The as-built notes, the
+mutation table and the known limit EM-G1-f1 are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE · R8. No migration.
 
 **Order.** First. EM-G2 fills the Message-ID, so EM-G2 must not merge before EM-G1.
@@ -6333,6 +6337,71 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/ro
 ```
 
 The R8 tests must show PASSED, with 0 skips.
+
+**As built (2026-10-04, branch `email-gmail-g1`).** The build follows the four rules E1 to E4 of
+the audit. The SQL of the reclaim did not change, and the slice needs no migration.
+
+- **The gate.** `persist.upsert_message` takes the keyword-only `reclaim: bool = False`. The
+  reclaim runs only when `reclaim` is true, on the update path, for a message with a Message-ID.
+  The comment above the reclaim names D-EM-34, GM-2 and EM-G1-f1.
+- **The attribute.** `BaseEmailProvider.REKEYS_MESSAGE_IDS` is false. `OutlookProvider` sets it
+  to true. Gmail and IMAP inherit false.
+- **The callers (E3).** `scheduler._write_messages` and `core._upsert_message` take the same
+  keyword and pass it on. Three calls pass `getattr(provider, "REKEYS_MESSAGE_IDS", False)`.
+  These are the import batch in `_run_import`, the sweep in `_sync_cycle` and "Load older" in
+  `transport/folders.py`. The `getattr` form is deliberate, because five test fakes do not
+  subclass the base.
+- **Inbound.** `inbound.py` keeps `on_conflict="nothing"` and passes no `reclaim`.
+- **The test fakes (E1).** Seven upsert fakes had the fixed signature `(db, account_id, msg)`.
+  Each one now takes `*, reclaim=False`. The fake of `test_email_sync_one_at_a_time.py` passes
+  `reclaim` on to the real upsert. No expected value changed.
+- **The scope of the AST fence (E2).** The fence reads `apps/services/email_ingestion` and
+  `apps/services/gateway/gateway/routes/email` only. `whatsapp_ingestion/persist.py` has an
+  `upsert_message` of its own, with no reclaim.
+- **`test_email_persist_upsert.py`.** The reclaim test passes `reclaim=True`. Its twin
+  `test_a_rekeyed_message_without_reclaim_runs_no_update` proves `reclaim=False` and the default.
+  The two older guards (no Message-ID, the insert-only path) now pass `reclaim=True`, so each
+  one still proves its own condition.
+
+**The fences, as built.** `tests/unit/test_email_rekey_reclaim.py` holds 11 cases. The five R8
+cases run on a real Postgres as `acb_app_h3rls`.
+
+| Test | Kind | What it proves |
+|---|---|---|
+| `test_only_outlook_rekeys_its_ids` | hermetic | The base, Gmail and IMAP read false. Outlook reads true. |
+| `test_each_reclaim_keyword_is_keyword_only_and_false_by_default` (3 cases) | hermetic | Each of the three keywords is keyword-only, with false as its default. |
+| `test_each_upsert_caller_names_reclaim` | hermetic, AST | Each update-path call names `reclaim=`. The scan finds the five known calls and the one insert-only call. |
+| `test_the_caller_fence_can_fail` | hermetic | The fence finds each planted call with no `reclaim=`, also a call through `**kwargs`. |
+| `test_two_gmail_messages_with_one_message_id_keep_two_rows` | R8 | Two Gmail messages with one Message-ID keep two rows. No row swaps its id on a second sync. |
+| `test_an_outlook_rekey_still_reclaims_its_row` | R8 | An Outlook move keeps its one row and its row id. |
+| `test_the_default_is_no_reclaim` | R8 | An upsert with no keyword moves no row. |
+| `test_each_caller_passes_the_attribute_of_its_provider` (2 cases) | R8 (E4) | `_sync_account` (the first import, then the sweep) and "Load older" pass the flag of the provider, for true and for false. |
+
+**Mutations, as run (2026-10-04).** Each mutation ran against `test_email_rekey_reclaim.py` and
+`test_email_persist_upsert.py` on a real Postgres. A script then wrote back the original bytes of
+the file and checked its SHA-256.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The reclaim ignores the flag (`persist.py`) | `test_two_gmail_messages_with_one_message_id_keep_two_rows`, `test_the_default_is_no_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[keeps_ids]`, and both cases of the twin in `test_email_persist_upsert.py` |
+| M2 | The base attribute is true (`base.py`) | `test_only_outlook_rekeys_its_ids`, `test_two_gmail_messages_with_one_message_id_keep_two_rows` |
+| M2b | The default of `upsert_message` is true (`persist.py`) | `test_the_default_is_no_reclaim`, `test_each_reclaim_keyword_is_keyword_only_and_false_by_default[persist.upsert_message]`, the twin `[no_keyword]` |
+| M3 | The Outlook attribute is false (`outlook.py`) | `test_only_outlook_rekeys_its_ids`, `test_an_outlook_rekey_still_reclaims_its_row` |
+| M4 | The `_sync_cycle` call drops `reclaim=` (`scheduler.py`) | `test_each_upsert_caller_names_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M5 | The `_sync_cycle` call passes `reclaim=False` (`scheduler.py`) | `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M6 | The `_run_import` call reads `"REKEYS_MESSAGE_ID"` (`scheduler.py`) | `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M7 | The "Load older" call passes `reclaim=True` (`folders.py`) | `test_each_caller_passes_the_attribute_of_its_provider[keeps_ids]` |
+| M8 | `core._upsert_message` drops the keyword when it calls the upsert (`core.py`) | `test_each_upsert_caller_names_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+
+M5 is the reason for the value fence (E4). The AST fence stays green for M5, M6 and M7, because
+each of those calls names `reclaim=`. Without the value fence, M5 gives each production Outlook
+mailbox a second row at each folder move.
+
+**Known limit EM-G1-f1 (a follow-up, not fixed here).** The Outlook reclaim folds a mail that a
+member sends to their own address. The Sent Items copy and the Inbox copy have two Graph ids and
+one Message-ID. So each sweep moves the one row between `sent` and `inbox`. EM-G1 keeps this fold,
+because Outlook keeps `REKEYS_MESSAGE_IDS = True`, and no fence treats the fold as correct. The
+follow-up EM-G1-f1 owns the fix, and it needs its own audit before a build.
 
 #### 12.3.2 EM-G2 — the parse and the folder model
 
