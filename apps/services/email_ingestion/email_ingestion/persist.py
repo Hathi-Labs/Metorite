@@ -202,7 +202,8 @@ def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
 
 
 async def upsert_message(
-    db: Any, account_id: str, msg: Any, *, on_conflict: str = "update"
+    db: Any, account_id: str, msg: Any, *, on_conflict: str = "update",
+    reclaim: bool = False,
 ) -> None:
     """Insert or update one normalized provider message + its attachment metadata.
 
@@ -213,6 +214,9 @@ async def upsert_message(
       non-empty stored body / snippet / unsubscribe link.
     * ``on_conflict="nothing"`` inserts brand-new mail only and never touches an
       existing row (inbound SMTP/webhook).
+    * ``reclaim=True`` runs the re-key reclaim below, on the update path only.
+      Pass the ``REKEYS_MESSAGE_IDS`` attribute of the provider. The default
+      is false, so a caller that does not name it never moves a row (D-EM-34).
 
     The caller owns the transaction (``db.commit()``).
     """
@@ -229,8 +233,17 @@ async def upsert_message(
     # UPDATE can never collapse two rows onto the same (account_id, provider id)
     # and trip its unique index. A rare pre-existing multi-ghost (both rows
     # already carrying the id) is left untouched for the one-off merge pass.
+    #
+    # The gate (WS-17 EM-G1, D-EM-34): the reclaim runs only when the caller
+    # passes ``reclaim=True``, which is the ``REKEYS_MESSAGE_IDS`` attribute of
+    # its provider. Only Outlook sets it. Gmail never changes an id, and two
+    # Gmail messages can hold one Message-ID (a list copy and a direct copy of
+    # one mail). Without the gate, the second one would take the row of the
+    # first, and the row would swap its id at each sync (GM-2). Known limit
+    # EM-G1-f1: on Outlook, the Sent copy and the Inbox copy of a mail that a
+    # member sends to their own address hold one Message-ID, so this folds them.
     imid = getattr(msg, "internet_message_id", None)
-    if on_conflict == "update" and imid:
+    if reclaim and on_conflict == "update" and imid:
         await db.execute(text(
             "UPDATE email_messages SET provider_message_id = :new_pmid, "
             "updated_at = now() "

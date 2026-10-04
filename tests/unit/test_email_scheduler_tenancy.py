@@ -705,7 +705,7 @@ async def test_no_session_is_open_during_the_provider_calls(monkeypatch):
         assert state["open"] == 0, "a session is open during _embed_batch"
         return [[0.25, 0.5] for _ in texts]
 
-    async def _upsert(db, account_id, msg):
+    async def _upsert(db, account_id, msg, *, reclaim=False):
         return None
 
     async def _no_hook(*_a, **_k):

@@ -909,7 +909,7 @@ async def test_a_refresh_during_a_sync_then_a_failure_writes_the_new_token(
     service, provider = _refreshing_outlook(wire)
     log: list = []
 
-    async def _upsert_fails(db, account_id, msg):
+    async def _upsert_fails(db, account_id, msg, *, reclaim=False):
         raise RuntimeError("phase (c) failed")
 
     monkeypatch.setattr(sched, "tenant_session", _logged_sessions(log))
@@ -1357,7 +1357,7 @@ class TestRefreshedTokensReachTheDatabase:
 
         service, provider = _refreshing_outlook(wire)
 
-        async def _upsert_fails(db, account_id, msg):
+        async def _upsert_fails(db, account_id, msg, *, reclaim=False):
             raise RuntimeError("phase (c) failed")
 
         monkeypatch.setattr(sched, "upsert_message", _upsert_fails)

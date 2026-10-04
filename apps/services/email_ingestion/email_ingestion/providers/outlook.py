@@ -411,6 +411,10 @@ GRAPH_SCOPES = [
 class OutlookProvider(BaseEmailProvider):
     """Microsoft Graph API email provider."""
 
+    #: Graph gives a message a new id when it moves to another folder, so the
+    #: ingest upsert moves its one row to the new id (D-EM-34).
+    REKEYS_MESSAGE_IDS = True
+
     def __init__(
         self, credentials: dict[str, Any], *, app: OAuthApp | None = None,
     ):

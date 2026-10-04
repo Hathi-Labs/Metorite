@@ -406,6 +406,15 @@ class BaseEmailProvider(ABC):
     #: deep sync of a member act then reconciles deletions from it (EM-T6b).
     import_full_snapshot: bool = False
 
+    #: True when the provider gives a message a new id when it moves, so the
+    #: ingest upsert may move the one row of a Message-ID to the new id
+    #: (``persist.upsert_message(reclaim=...)``). Only Outlook does that.
+    #: Gmail never changes an id, and two Gmail messages can hold one
+    #: Message-ID, so a reclaim would fold them into one row (D-EM-34, GM-2).
+    #: A caller reads it with ``getattr(provider, "REKEYS_MESSAGE_IDS",
+    #: False)``, because some test fakes do not subclass this class.
+    REKEYS_MESSAGE_IDS: bool = False
+
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
 
