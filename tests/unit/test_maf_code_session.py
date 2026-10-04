@@ -35,7 +35,11 @@ pytest.importorskip("sqlalchemy")
 
 from acb_skills.tenant_file_store import TenantFileStore
 
-from tests.unit._sandbox_tools_fakes import PA, short_tmp  # noqa: F401 — fixture by name
+from tests.unit._sandbox_tools_fakes import (  # noqa: F401 — fixture by name
+    PA,
+    SKILL_SECRET,
+    short_tmp,
+)
 from tests.unit.test_chat_write_under_rls import graph_as_app, members  # noqa: F401
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -102,6 +106,8 @@ def clone(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> Path:  # noqa: F8
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "agents_clone_dir", str(short_tmp / "agents"))
+    # A skill marker holds a member id, an HMAC under this secret (WS-43v).
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", SKILL_SECRET, raising=False)
     return short_tmp
 
 

@@ -218,8 +218,12 @@ class TenantFileStore(FileSystemAgentFileStore):
         return rest[1:]
 
     def _foreign_skill(self, place: _Place) -> bool:
-        """True when *place* lies in a skill folder that another member made."""
-        from acb_skills.agent_paths import skill_author, skill_top_rel
+        """True when *place* lies in a skill folder that is not this member's.
+
+        Another member's folder, and one whose marker cannot be read, empty or
+        unknown (``agent_paths.skill_owner`` fails closed).
+        """
+        from acb_skills.agent_paths import SKILL_FOREIGN, skill_owner, skill_top_rel
 
         if place.store_rel is None or place.root != self._workspace:
             return False
@@ -227,8 +231,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         top = skill_top_rel(place.store_rel) or skill_top_rel(f"{place.store_rel}/x")
         if top is None:
             return False
-        author = skill_author(self._workspace, top)
-        return author is not None and author != self._member
+        return skill_owner(self._workspace, top, self._member) == SKILL_FOREIGN
 
     def _refuse_foreign_skill(self, place: _Place) -> None:
         if self._foreign_skill(place):

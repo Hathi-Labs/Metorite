@@ -44,6 +44,11 @@ Fix round 1 of PR #603 (each run red once by hand on 2026-10-03):
   ``pandas.py`` test red;
 * the sweep shows a file again with no content change, or sweeps
   ``agent-data/``: the two sweep tests.
+
+WS-43v (each run red once by hand on 2026-10-05):
+
+* the route lets a write through when ``claim_skill`` finds no member id: the
+  route skill test.
 """
 from __future__ import annotations
 
@@ -442,10 +447,20 @@ def test_another_member_cannot_list_or_read_a_threads_output_folder(graph_as_app
 
 
 @_DB_GATE
-def test_a_member_cannot_change_another_members_skill_through_the_routes(graph_as_app, disk) -> None:  # noqa: F811
+def test_a_member_cannot_change_another_members_skill_through_the_routes(
+    graph_as_app, disk, monkeypatch,  # noqa: F811
+) -> None:
     """Review P1 (fix round 1). The first member who writes into a skill
     folder becomes its author. Another member of the org gets 403 for a PUT,
-    a DELETE or a promote into it, and the author marker is reserved."""
+    a DELETE or a promote into it, and the author marker is reserved.
+
+    WS-43v: the marker holds the member id, never the address. With no usable
+    session secret no member id exists, and the route refuses the write."""
+    from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
+    from acb_common import get_settings
+    from acb_skills.agent_paths import skill_author_id
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "ws43v-route-secret")
     a = graph_as_app.org_a
     s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
     s2 = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
@@ -455,7 +470,9 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(graph_a
                      json={"content": "print(1)"})
     assert made.status_code == 200, made.text
     top = script.rsplit("/scripts/", 1)[0]
-    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == _ALICE.lower()
+    alice_id = skill_author_id(_ALICE)
+    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == alice_id
+    assert "@" not in alice_id
     assert bob.put(f"/agent/workspace/{s2}/file", params={"path": script},
                    json={"content": "import exfil"}).status_code == 403
     assert bob.delete(f"/agent/workspace/{s2}/file", params={"path": script}).status_code == 403
@@ -467,7 +484,13 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(graph_a
     assert bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{top}/.metorite-author"},
                    json={"content": _BOB}).status_code == 400
     assert (_tenant_dir(a) / script).read_text() == "print(1)"
-    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == _ALICE.lower()
+    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == alice_id
+    # No usable secret: no member id, so no new skill folder.
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", next(iter(PUBLIC_DEFAULT_SECRETS)))
+    fresh = f"agent-data/skills/n{uuid.uuid4().hex[:6]}/SKILL.md"
+    assert alice.put(f"/agent/workspace/{s1}/file", params={"path": fresh},
+                     json={"content": "x"}).status_code == 403
+    assert not (_tenant_dir(a) / fresh).exists()
 
 
 @_DB_GATE
