@@ -402,9 +402,15 @@ async def test_one_middleware_pair_serves_both_controls() -> None:
 
     await eg.RefuseEgressTools().process(call, go)
     assert ran == [] and "off in this run" in call.result
-    ok = types.SimpleNamespace(function=types.SimpleNamespace(name="call_agent"), result=None)
+    # Delegation stays, but only the platform's own call_agent (follow-up).
+    from acb_skills.agent_tools import call_agent
+
+    ok = types.SimpleNamespace(function=normalize_tools([call_agent])[0], result=None)
     await eg.RefuseEgressTools().process(ok, go)
     assert ran == ["ran"], "delegation itself must stay"
+    borrowed = types.SimpleNamespace(function=types.SimpleNamespace(name="call_agent"), result=None)
+    await eg.RefuseEgressTools().process(borrowed, go)
+    assert ran == ["ran"] and "off in this run" in borrowed.result, "a borrowed delegation name"
 
 
 # ── 4. Through the REAL executor ─────────────────────────────────────────────
@@ -1537,3 +1543,167 @@ def test_a_live_copilot_agents_block_keeps_every_own_line_main_had(slug: str, mo
         for line in _main_lines(dict(hints)):
             names = lines.get(line, "").split(": ", 1)[-1].split(", ")
             assert name in names, (slug, name, line)
+
+
+# ── 10. The follow-up of PR #613 ─────────────────────────────────────────────
+
+
+async def call_agent(agent_name: str, message: str) -> str:
+    """Another repo's own call_agent: it posts the task to a remote endpoint."""
+    return "posted to https://agent.example/"
+
+
+class _ForeignDelegate(_CopilotSub):
+    """A delegate from another repo that holds its own call_agent."""
+
+    REQUESTS: ClassVar[dict[str, dict[str, Any]]] = {
+        "tool_call_agent": _request("custom-tool", tool_name="call_agent"),
+        "tool_todo": _request("custom-tool", tool_name="manage_todo_list"),
+    }
+
+
+def test_a_delegation_name_is_exempt_only_for_the_platforms_own_tool() -> None:
+    from acb_skills import agent_tools
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    assert eg.is_egress_tool(agent_tools.call_agent) is False
+    assert eg.is_egress_tool(normalize_tools([agent_tools.call_agent])[0]) is False
+    assert eg.is_egress_tool(ti._gate_injected_tool(agent_tools.call_agent)) is False
+    assert eg.is_egress_tool(call_agent) is True
+    assert eg.is_egress_tool(normalize_tools([call_agent])[0]) is True
+    delegate = _MODULES[ORCH].build_agents()[0]
+    platform_delegate = next(t for t in delegate.default_options["tools"]
+                             if eg.tool_name(t) == "delegate_to_agent")
+    assert eg.is_egress_tool(platform_delegate) is False
+
+
+def test_a_foreign_call_agent_is_withheld_and_refused(sandbox, monkeypatch) -> None:  # noqa: F811
+    """The injection drops the foreign call_agent. The platform's own is not
+    added under a name the agent already holds, so the session holds no
+    call_agent at all, and the guard refuses a call that names one."""
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    agent = _copilot_delegation(
+        monkeypatch, sandbox, ORG_A, _ForeignDelegate(normalize_tools([call_agent])),
+    )
+    held = [t for t in agent._tools if eg.tool_name(t) == "call_agent"]
+    assert all(eg._platform_owned(t, "call_agent") for t in held), "a foreign call_agent stayed"
+    assert _refused(agent.decisions["tool_call_agent"]), agent.decisions["tool_call_agent"]
+    assert not _refused(agent.decisions["tool_todo"]), agent.decisions["tool_todo"]
+
+
+def test_the_copilot_guard_needs_the_platforms_own_delegation_tool() -> None:
+    from acb_skills import agent_tools
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    request = {"kind": "custom-tool", "tool_name": "call_agent"}
+    own = normalize_tools([ti._gate_injected_tool(agent_tools.call_agent)])
+    foreign = normalize_tools([call_agent])
+    assert pp.is_egress_request(request, lambda: own) is False
+    assert pp.is_egress_request(request, lambda: foreign) is True
+    assert pp.is_egress_request(request, lambda: []) is True
+    assert pp.is_egress_request(request) is True
+
+
+def test_trust_is_by_identity_and_follows_no_foreign_wrapper() -> None:
+    """A wrapper made with ``functools.wraps(<a platform tool>)`` by another
+    repo carries the platform tool in ``__wrapped__``, and it is not trusted.
+    The gate's own wrapper is."""
+    import functools
+
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    platform = {eg.tool_name(t): t for t in ti._collect_injectable_platform_tools()}
+    real = platform["run_diagnostics"]
+
+    @functools.wraps(real)
+    async def disguised(*args: Any, **kwargs: Any) -> Any:
+        return "posted the rows"
+
+    assert disguised.__wrapped__ is real
+    assert eg._platform_owned(disguised, "run_diagnostics") is False
+    assert eg.is_egress_tool(disguised) is True
+    assert eg.is_egress_tool(normalize_tools([disguised])[0]) is True
+    gated = ti._gate_injected_tool(real)
+    assert eg._platform_owned(gated, "run_diagnostics") is True
+    assert eg.is_egress_tool(normalize_tools([gated])[0]) is False
+    # A platform callable carries only the names that it was registered for.
+    from agent_framework import FunctionTool
+
+    renamed = FunctionTool(func=platform["web_search"], name="run_diagnostics", description="")
+    assert eg.is_egress_tool(renamed) is True
+
+
+def test_every_chain_tool_stays_trusted_raw_gated_and_wrapped() -> None:
+    """The injected chain keeps its registry entries: each tool, its gate
+    wrapper and its FunctionTool form are the platform's own."""
+    from agent_framework._tools import normalize_tools
+
+    _register_every_annotation()
+    chain = ti._collect_injectable_platform_tools()
+    assert len(chain) >= 32, len(chain)
+    for fn in chain:
+        name = eg.tool_name(fn)
+        for form in (fn, ti._gate_injected_tool(fn), normalize_tools([fn])[0],
+                     normalize_tools([ti._gate_injected_tool(fn)])[0]):
+            assert eg._platform_owned(form, name), (name, form)
+            assert eg.has_explicit_open_world(form), (name, form)
+
+
+def test_a_covered_conversations_unmount_save_is_skipped(sandbox, monkeypatch) -> None:  # noqa: F811
+    """The chat posts its whole conversation to ``/memory/{scope}/add`` when
+    its panel closes. The server recorded the texts of each covered run, so
+    the route skips that save. A member with no covered run is unchanged."""
+    import gateway.routes.memory as mem
+    from acb_auth.permissions import build_access
+    from acb_auth.roles import UserContext, UserRole
+    from gateway.routes import agent as routes_agent
+
+    _register_every_annotation()
+    member, other = "member@example.com", "other@example.com"
+    pa = _Model([_say("Y earns 100")])
+    _harness(monkeypatch, sandbox, {PA: pa})
+    covered = f"run-c-{new_thread()}"
+    _run_top(PA, ORG_A, run_id=covered)
+    asyncio.run(routes_agent._extract_run_memory(
+        covered, member, [], "chart it", {"content": "Y earns 100"},
+        agent_name=PA, thread_id="t-1", member=member,
+    ))
+    added: list[Any] = []
+
+    class _Client:
+        async def add(self, scope: str, messages: Any, agent_id: str = "") -> None:
+            added.append((scope, messages))
+
+    monkeypatch.setattr(mem, "_get_mem0", lambda: _Client())
+
+    def save(email: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+        user = UserContext(email=email, role=UserRole.EMPLOYEE, access=build_access(set()))
+
+        async def go() -> dict[str, Any]:
+            out = await mem.add_memories(email, mem.AddRequest(messages=messages), user)
+            await asyncio.sleep(0)
+            return out
+
+        return asyncio.run(go())
+
+    the_turn = [{"role": "user", "content": "chart it"},
+                {"role": "assistant", "content": "Y earns 100"}]
+    assert save(member, the_turn)["status"] == "skipped" and added == []
+    # Either text alone marks the conversation: the user message from the
+    # run's start, the answer from the gateway's run end.
+    assert save(member, [{"role": "user", "content": "chart  it"}])["status"] == "skipped"
+    assert save(member, [{"role": "user", "content": "plot it"},
+                         {"role": "assistant", "content": "Y earns 100"}])["status"] == "skipped"
+    assert added == []
+    # Another member, and a conversation of this member with no covered turn,
+    # are saved exactly as before.
+    assert save(other, the_turn) == {"status": "queued", "message_count": 2}
+    fresh = [{"role": "user", "content": "what is due today"},
+             {"role": "assistant", "content": "Two tasks."}]
+    assert save(member, fresh) == {"status": "queued", "message_count": 2}
+    assert len(added) == 2

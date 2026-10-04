@@ -12,9 +12,12 @@ step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
 and a run without it keeps the ban. WS-43u merged in PR #612. H-236 (the
-network control on a covered run and every run under it) is built
-(2026-10-04, in review, fix round 1), and it acts only when the scope covers
-a run. Every other slice is spec only.**
+network control on a covered run and every run under it) is built and
+merged in PR #613 (2026-10-04), and it acts only when the scope covers a
+run. Its follow-up is built (2026-10-04, in review). It trusts a platform
+tool by identity, keeps only the platform's own delegation tools, and skips
+the chat's panel-close memory save of a covered conversation. Every other
+slice is spec only.**
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -1253,7 +1256,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true. WS-43u: the system text of a covered run lacks the sandbox section, or a run without `run_command` reads it |
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
 | WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
-| WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection |
+| WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection. The follow-up: a tool of another repo that borrows a delegation name stays or runs, the control trusts a foreign wrapper of a platform tool, or a chain tool loses its trust. The panel-close save of a covered conversation reaches memory, or an uncovered save changes |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
@@ -2630,11 +2633,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
   WS43-F24). A covered run and each run under it bind `no_egress`, and the
   rule fails closed: such a run holds only the delegation tools, the sandbox
   tools and tools that say `open_world=False`. At the flip, the owner
-  accepts the six residual items that §16.3 names, by name. They are an
+  accepts the seven residual items that §16.3 names, by name. They are an
   agent that a member assigns by hand, a delayed send through a store, what
   an agent from another repo does on its own servers, a workflow on a task
-  event, a remote image in the answer text, and the answer that an
-  uncovered parent gets.
+  event, a remote image in the answer text, the answer that an uncovered
+  parent gets, and a panel-close save after a gateway restart.
 
 **Done when:**
 
@@ -3332,8 +3335,9 @@ decision inside D86, after review: the control fails closed.
 
 - **The one rule.** A covered run, and each run that it delegates to at any
   depth, binds `no_egress=True` in its artifact context. Such a run holds
-  only three kinds of tool: the four delegation tools, the sandbox tools,
-  and tools whose annotation says `open_world=False` explicitly.
+  only three kinds of tool: the platform's own four delegation tools, the
+  sandbox tools, and tools whose annotation says `open_world=False`
+  explicitly.
 - **A tool with no annotation is an egress tool.** So is a tool whose
   annotation has no `open_world` key, an MCP tool, and a tool that MAF made
   from an MCP server. A tool write to a store that later runs read is one
@@ -3343,13 +3347,26 @@ decision inside D86, after review: the control fails closed.
   rule. The injection seam also keeps `sandbox_tools.HOST_NETWORK_TOOLS` out,
   whatever their annotation says. An agent from another repo keeps none of
   its unannotated tools.
-- **A platform entry is trusted only for the platform's own tool.** A tool
-  object takes a registry entry that the platform made only when its
-  callable comes from a platform package and carries the tool's name
-  (`egress._platform_owned`). So a tool of another repo that borrows the
-  name `run_diagnostics` or `write_artifact` is an egress tool. The Copilot
-  guard gets only a name, so it finds the tool object of that name in the
-  session's own tool list, and it fails closed when the list has none.
+- **The control trusts a platform entry only for the platform's own
+  callable.** The
+  test is identity (H-236 follow-up, `egress._platform_owned`). The platform
+  registers each callable that it injects, with the tool names that it may
+  carry (`egress.register_platform_callable`). The orchestrator registers
+  its 32 chain tools, the workflow trio, the app tools and
+  `delegate_to_agent`. The sandbox registers its own tools.
+- **The control trusts a wrapper only when our own code made it.** The permission
+  gate and the steer wrap of a sandbox tool call
+  `egress.register_platform_wrapper`. Nothing follows `__wrapped__`. So a
+  tool of another repo that borrows the name `run_diagnostics`, or wraps a
+  platform tool with `functools.wraps`, is an egress tool. A platform
+  callable under a name that it was not registered for is one too.
+- **A delegation tool stays only when it is the platform's own.** A tool of
+  another repo that borrows a delegation name gets the normal rule. An
+  example is a `call_agent` that posts the task to a remote server. With no
+  `open_world=False`, the injection drops it and the middleware refuses it.
+  The Copilot guard gets only a name, so it finds the tool object of that
+  name in the session's own tool list. It fails closed when the list has
+  none, or when that tool is not the platform's own.
 - **Every tool of every in-repo agent states `open_world`.** The fence reads
   the real registry: `_AGENT_REGISTRY`, the dynamic registry and
   `agents.json`. `annotate()` has no default for `open_world`. An agent's own
@@ -3396,6 +3413,15 @@ decision inside D86, after review: the control fails closed.
   tool list, 110 tools on 2026-10-04. They are every Projects tool,
   `run_command`, the eight file tools, the delegation tools, and the platform
   tools that say `open_world=False`, `read_attachment` (H-229) among them.
+- **The chat's save when its panel closes.** The chat sends the whole
+  conversation to `/memory/{scope}/add` when its panel closes
+  (`AgentChat.tsx`). The server decides, so an uncovered save does not
+  change, and nothing that the client sends decides it. A covered run
+  records a fingerprint of the member's message at its start, and of its
+  answer at its end (`executor.remember_no_egress_text`). The route skips the
+  whole save when any message text matches a fingerprint of that member
+  (`routes/memory.py::_holds_a_covered_turn`), and an error in the check
+  skips it too.
 - **Assignment is dispatch.** Assigning `agent:<name>` to a task starts that
   agent's run in the gateway (`routes/projects/agent_dispatch.py`), where the
   flag does not reach. So in a `no_egress` run, `create_task`, `assign`,
@@ -3455,6 +3481,12 @@ decision inside D86, after review: the control fails closed.
   6. An uncovered parent that calls a covered agent gets its answer, and the
      parent keeps its own tools. The answer holds only what the member may
      see, as it did before the sandbox.
+  7. The fingerprints of the panel-close save live in the gateway process.
+     If the gateway restarts between a covered run and the panel close, that
+     one save goes through. Production runs one gateway worker. The match is
+     also by text, so the check can skip a later save of the same member
+     that repeats a short text of a covered turn. That save is lost, which
+     fails closed.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,

@@ -446,17 +446,17 @@ def is_egress_request(request: Any, tools: Any = None) -> bool:
     callable that returns the session's own tool list. The name passes only
     when that list holds a tool of that name and the tool OBJECT is not an
     egress tool, so a tool of another repo that borrows a platform name fails
-    (fix round 2). With no *tools*, or no such tool, it fails closed.
+    (fix round 2). A delegation name is no exception: the session must hold
+    the platform's own delegation tool under it (follow-up). With no *tools*,
+    or no such tool, it fails closed.
     """
     kind = str(_field(request, "kind") or "").strip().lower()
     if kind not in _NO_EGRESS_KINDS or is_shell_request(request):
         return True
     if kind == "custom-tool":
-        from acb_skills.egress import DELEGATION_TOOLS, is_egress_tool, tool_name
+        from acb_skills.egress import is_egress_tool, tool_name
 
         name = str(_field(request, "tool_name") or "")
-        if name in DELEGATION_TOOLS:
-            return False
         try:
             held = list(tools() if callable(tools) else [])
         except Exception:

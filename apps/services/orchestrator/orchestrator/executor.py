@@ -247,6 +247,51 @@ def run_was_no_egress(run_id: str | None) -> bool:
     return bool(run_id) and run_id in _NO_EGRESS_RUNS
 
 
+#: H-236 follow-up: fingerprints of the texts of covered conversations, per
+#: member. A covered streamed run records its user message at its start, and
+#: the gateway records the folded answer at its end. The gateway's memory-add
+#: route (``routes/memory.py``) skips a conversation that holds one of them,
+#: so the chat's unmount save cannot carry a covered turn into Mem0. Only the
+#: server writes it. Bounded, and process-local like ``_NO_EGRESS_RUNS``.
+_NO_EGRESS_TEXTS: dict[str, dict[str, None]] = {}
+_NO_EGRESS_TEXTS_MAX_MEMBERS = 2048
+_NO_EGRESS_TEXTS_MAX_PER_MEMBER = 1024
+
+
+def _text_fingerprint(text: object) -> str | None:
+    """A fingerprint of *text* that ignores runs of white space, or None."""
+    import hashlib
+
+    norm = " ".join(str(text or "").split())
+    if not norm:
+        return None
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def remember_no_egress_text(member: str | None, text: object) -> None:
+    """Record that *text* belongs to a covered conversation of *member*."""
+    who = str(member or "").strip().lower()
+    mark = _text_fingerprint(text)
+    if not who or not mark:
+        return
+    marks = _NO_EGRESS_TEXTS.pop(who, None) or {}
+    marks.pop(mark, None)
+    marks[mark] = None
+    while len(marks) > _NO_EGRESS_TEXTS_MAX_PER_MEMBER:
+        marks.pop(next(iter(marks)))
+    _NO_EGRESS_TEXTS[who] = marks
+    while len(_NO_EGRESS_TEXTS) > _NO_EGRESS_TEXTS_MAX_MEMBERS:
+        _NO_EGRESS_TEXTS.pop(next(iter(_NO_EGRESS_TEXTS)))
+
+
+def texts_were_no_egress(member: str | None, texts: list[object]) -> bool:
+    """True when any of *texts* belongs to a covered conversation of *member*."""
+    marks = _NO_EGRESS_TEXTS.get(str(member or "").strip().lower())
+    if not marks:
+        return False
+    return any(_text_fingerprint(t) in marks for t in texts)
+
+
 def _opener_for_org(org: str | None):
     """Map an already-resolved tenant to the ``acb_graph`` session opener.
 
@@ -3308,6 +3353,8 @@ async def run_agent_stream(
     _derive_ctx(no_egress=_stream_no_egress)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
+        if isinstance(event_payload, dict):
+            remember_no_egress_text(_corr_user, event_payload.get("message"))
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)

@@ -114,18 +114,23 @@ clone cache.
    reader of an attachment. Fence: tests/unit/test_read_attachment.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
-   binds `no_egress=True` in its artifact context and holds only the four
-   `DELEGATION_TOOLS`, the sandbox tools and tools whose annotation says
-   `open_world=False` explicitly. `is_egress_tool()` is the one test: a tool
-   with no annotation, or no `open_world` key, is an egress tool, and so is an
-   MCP tool, an MCP-born tool and a `STORE_WRITES` member (the four memory
-   writes and `save_note`). An agent's own tool carries its annotation on the
-   function (`__tool_risk__`). A registry entry that the platform made is
-   trusted for a tool OBJECT only when its callable comes from `acb_skills.`
-   or `orchestrator.` and carries the tool's name, or is a MAF sandbox tool
-   (`_platform_owned`). So a tool of another repo that borrows a platform
-   name fails closed. The Copilot guard resolves a request's name in the
-   session's own tool list, and fails closed when it finds none.
+   binds `no_egress=True` in its artifact context and holds only the
+   platform's own four `DELEGATION_TOOLS`, the sandbox tools and tools whose
+   annotation says `open_world=False` explicitly. `is_egress_tool()` is the
+   one test: a tool with no annotation, or no `open_world` key, is an egress
+   tool, and so is an MCP tool, an MCP-born tool and a `STORE_WRITES` member
+   (the four memory writes and `save_note`). An agent's own tool carries its
+   annotation on the function (`__tool_risk__`).
+   TRUST IS BY IDENTITY (H-236 follow-up). `_platform_owned` reads
+   `_PLATFORM_CALLABLES`, a weak map from each platform callable to the tool
+   names that it may carry. A tool OBJECT takes a registry entry, or a
+   delegation name's exemption, only through that map. Register a new
+   platform tool with `register_platform_callable` where you build it. A
+   wrapper that our code makes calls `register_platform_wrapper(original,
+   wrapper)`, as the permission gate and the steer wrap do. Never follow
+   `__wrapped__`, or a `functools.wraps` wrapper of another repo becomes
+   trusted. The Copilot guard resolves a request's name in the session's own
+   tool list (a delegation name too), and fails closed when it finds none.
    `no_egress_for_this_run()` is the one reader: a frame with no run context
    and any value but an explicit `False` read as `no_egress`.
    `EgressGuardProvider` adds the per-run MAF middleware.

@@ -33,6 +33,8 @@ and the call-time refusal: :class:`EgressGuardProvider` on the MAF path, and
 """
 from __future__ import annotations
 
+import contextlib
+import weakref
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -55,6 +57,8 @@ __all__ = [
     "has_explicit_open_world",
     "is_egress_tool",
     "no_egress_for_this_run",
+    "register_platform_callable",
+    "register_platform_wrapper",
     "tool_name",
 ]
 
@@ -109,43 +113,61 @@ def _from_mcp(item: Any) -> bool:
     return isinstance(props, Mapping) and bool(props.get("_mcp_is_tool"))
 
 
-#: The packages whose callables ARE the platform's tools. A registry entry
-#: that the platform made (not an agent's ``annotate`` call) is trusted for a
-#: tool object only when the object's callable comes from one of these.
-_PLATFORM_PACKAGES = ("acb_skills.", "orchestrator.")
-#: MAF's own provider tools (the file and skill tools of a sandboxed run).
-#: Their callables are closures inside ``agent_framework``, so their names
-#: differ from the tool names, and only the sandbox names are trusted there.
-_MAF_PROVIDER_PACKAGE = "agent_framework."
+#: The platform's own tool callables, by IDENTITY, and the tool names each one
+#: may carry (H-236 follow-up). The orchestrator registers what it injects
+#: (``_tool_injection._collect_injectable_platform_tools``), the workflow and
+#: app tools, and the sandbox registers its tools (``sandbox_tools``). A
+#: wrapper is trusted only when OUR code made it from a trusted callable
+#: (:func:`register_platform_wrapper`). Nothing follows ``__wrapped__``, so a
+#: tool of another repo made with ``functools.wraps(<a platform tool>)`` is not
+#: trusted. Weak keys, so a per-run closure leaves with its run.
+_PLATFORM_CALLABLES: weakref.WeakKeyDictionary[Any, frozenset[str]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
-def _base_callable(item: Any) -> Any:
-    """The callable under a tool object, through its wrappers."""
-    fn = getattr(item, "func", item)
-    for _ in range(16):
-        inner = getattr(fn, "__wrapped__", None)
-        if inner is None:
-            break
-        fn = inner
+def register_platform_callable(fn: Any, name: str | None = None) -> Any:
+    """Record *fn* as a platform tool that may carry *name* (its own name by
+    default). Returns *fn*, so it works as a decorator. Never raises."""
+    tool = str(name or getattr(fn, "__name__", "") or "")
+    if not tool:
+        return fn
+    with contextlib.suppress(TypeError):  # an object that takes no weak reference
+        _PLATFORM_CALLABLES[fn] = _PLATFORM_CALLABLES.get(fn, frozenset()) | {tool}
     return fn
+
+
+def register_platform_wrapper(original: Any, wrapper: Any) -> Any:
+    """Trust *wrapper* exactly as far as *original* is trusted. Returns it.
+
+    Our own wrappers call this: the permission gate, the steer wrap of a
+    sandbox tool. A wrapper that another repo made does not, so it stays
+    untrusted whatever it wraps.
+    """
+    try:
+        names = _PLATFORM_CALLABLES.get(original)
+    except TypeError:
+        names = None
+    if names:
+        with contextlib.suppress(TypeError):
+            _PLATFORM_CALLABLES[wrapper] = _PLATFORM_CALLABLES.get(wrapper, frozenset()) | names
+    return wrapper
 
 
 def _platform_owned(item: Any, name: str) -> bool:
     """True when the tool object *item*, called *name*, is the platform's own.
 
-    Module and name (H-236, fix round 2): the callable comes from a platform
-    package and carries the tool's name, as every injected tool, sandbox tool,
-    workflow tool and app tool does. Or it is one of MAF's provider tools of a
-    sandboxed run. A tool of another repo that only borrows a platform name
-    (its own ``run_diagnostics`` or ``write_artifact``) fails this test.
+    Identity (H-236 follow-up): the callable under *item* (``item.func``, or
+    *item* itself) is one that the platform registered for that name. A tool
+    of another repo that borrows a platform name, or wraps a platform tool
+    with ``functools.wraps``, fails this test.
     """
-    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
-
-    fn = _base_callable(item)
-    module = str(getattr(fn, "__module__", "") or "")
-    if module.startswith(_PLATFORM_PACKAGES):
-        return str(getattr(fn, "__name__", "") or "") == name
-    return module.startswith(_MAF_PROVIDER_PACKAGE) and name in SANDBOX_TOOL_NAMES
+    fn = getattr(item, "func", item)
+    try:
+        names = _PLATFORM_CALLABLES.get(fn)
+    except TypeError:
+        return False
+    return bool(names) and name in names
 
 
 def _risk_of(item: Any, name: str) -> Mapping[str, Any] | None:
@@ -185,13 +207,16 @@ def is_egress_tool(item: Any) -> bool:
     """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
 
     *item* is a tool object, a plain function, a dict spec or a bare name. A
-    delegation tool may stay. An MCP tool, a store write, and a tool with no
-    explicit ``open_world=False`` may not.
+    delegation tool may stay, but only the platform's own: a tool of another
+    repo that borrows a delegation name is judged like any other tool. An MCP
+    tool, a store write, and a tool with no explicit ``open_world=False`` may
+    not stay. A bare name reads the registry, so only a caller that resolved
+    the tool object first may pass one (the Copilot guard does).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
     name = item if isinstance(item, str) else tool_name(item)
-    if name in DELEGATION_TOOLS:
+    if name in DELEGATION_TOOLS and (isinstance(item, str) or _platform_owned(item, name)):
         return False
     if not name or name in STORE_WRITES:
         return True

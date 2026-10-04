@@ -86,6 +86,7 @@ from agent_framework import (
 )
 
 from acb_skills.addendum import render_run_sections
+from acb_skills.egress import register_platform_callable, register_platform_wrapper
 from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
@@ -325,6 +326,11 @@ async def request_network_access(reason: str, hosts: list[str]) -> str:
     """
     del reason, hosts
     return NETWORK_OFF
+
+
+# H-236: the sandbox tools are the platform's own, trusted by identity.
+register_platform_callable(run_command)
+register_platform_callable(request_network_access)
 
 
 # ── skills ───────────────────────────────────────────────────────────────────
@@ -567,7 +573,7 @@ def _steered(item: Any) -> Any:
 
     call.__cc_steered__ = True  # type: ignore[attr-defined]
     clone = copy.copy(item)
-    clone.func = call
+    clone.func = register_platform_wrapper(func, call)
     return clone
 
 
@@ -627,6 +633,10 @@ async def _add_tools(
         disable_run_skill_script_approval=True,
     )
     await skills.before_run(agent=agent, session=session, context=context, state=state)
+    # H-236: the provider tools ARE the platform's, so record each one by
+    # identity under its tool name before the steer wrap copies it.
+    for added in context.tools[before:]:
+        register_platform_callable(getattr(added, "func", None), _one_tool_name(added))
     # The steer drain at every tool these two providers added (review P2).
     context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])

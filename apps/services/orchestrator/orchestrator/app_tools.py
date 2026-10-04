@@ -183,6 +183,12 @@ def _make_action_tool(slug: str, action: dict[str, Any], agent_name: str) -> Any
         TOOL_ANNOTATIONS[tool_name] = _action_risk(slug, action)
     except ImportError:
         pass
+    try:  # H-236: a platform-made tool, trusted by identity for its own name
+        from acb_skills.egress import register_platform_callable
+
+        register_platform_callable(_run, tool_name)
+    except ImportError:
+        pass
 
     return _run
 
