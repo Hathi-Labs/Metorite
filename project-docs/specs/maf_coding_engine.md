@@ -1762,8 +1762,24 @@ These facts change or add to the text above:
     and `.run/`, and no name that starts with a dot.
   - A skill folder belongs to the member who first writes into it. The
     marker is `.metorite-author`, and every writer refuses that name. A run
-    loads, lists, reads and runs only its own member's skills. The routes
-    refuse another member's skill with 403.
+    loads, lists, reads and runs only its own member's skills. A PUT or a
+    promote into another member's skill folder answers 403, because the name
+    is taken.
+  - **The Files routes hide another member's skill** (WS-43v). In a shared
+    agent's tenant dir, the tree, GET, history and DELETE treat a skill
+    folder that is not the caller's own as absent. The tree and the history
+    leave out its paths. GET, history and DELETE answer as for a missing
+    file, with the same body. The check runs before the fault-in, which
+    restores only the marker, so the store never restores another member's
+    file. A folder with no marker is hidden from every member, and
+    `claim_skill` refuses it when it holds files, so no member can take what
+    a writer with no author left there. Fence:
+    `test_the_files_routes_hide_another_members_skill`.
+  - **A skill folder name must fit a mount.** Letters, digits, `.`, `_` and
+    `-`, no `.` or `-` first, at most 128 characters
+    (`agent_paths.SKILL_NAME_RULE`). Each writer refuses another name, and
+    the route answers 400 with the rule. So no skill lists in the prompt
+    that the sandbox cannot run.
   - **How a check reads the skill rule** (for the P3 eval, E17). The
     marker `agent-data/skills/<name>/.metorite-author` holds an opaque
     member id and never the email (WS-43v). The id is `m1.` and an HMAC of
@@ -1814,7 +1830,7 @@ These facts change or add to the text above:
   | Path under `/workspace` | Verdict |
   |---|---|
   | `agent-data/skills/<name>/` | Private to its author. Covered, and only the run member's own folders are mounted |
-  | `agent-data/` (each other file, such as `NOTES.md`) | Org-wide by design (H-201). The host file tools of each member read and write it too |
+  | `agent-data/` (each other file, such as `NOTES.md`) | Org-wide today (H-201). The decision is open in HANDOFF H-237 step 2 |
   | `inputs/` | Covered by the thread's own upload folder (H-227). Another thread's uploads and the flat legacy uploads do not show |
   | `outputs/` | Covered by the thread's own output folder. Another thread's folder and the flat S8 outputs do not show |
   | `.run/` | Covered by this run's own run data |
