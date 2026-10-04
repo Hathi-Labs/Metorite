@@ -394,9 +394,10 @@ def _reset_run_state() -> None:
 
 async def run_session(
     harness: Harness, spec: tasks.SessionSpec, steps: list[tuple[Any, ...]] | None,
+    thread_id: str | None = None,
 ) -> tuple[Session, ModelTap, float, int]:
     """One session: a new thread, one prompt, the real executor."""
-    thread_id = str(uuid.uuid4())
+    thread_id = thread_id or str(uuid.uuid4())
     session = Session(
         member=spec.member, thread_id=thread_id, prompt=spec.prompt,
         outputs_rel=harness.outputs_rel(thread_id), run_data_dir=harness.run_data_dir(thread_id),
@@ -435,7 +436,27 @@ async def _clear_blob_store(org: str) -> None:
         )
 
 
-async def reset_workspace(harness: Harness, spec: TaskSpec) -> Path:
+def input_targets(harness: Harness, rel: str, thread_ids: list[str]) -> list[str]:
+    """Where one input of a task lands, relative to the working dir.
+
+    An upload (``inputs/...``) lands in the upload folder of each session's
+    thread, ``inputs/<thread slug>/`` in a tenant dir, as the upload route
+    puts it (``agent_paths.upload_dir_rel``, H-227). A run reads only its own
+    thread's folder. Any other input lands at *rel*.
+    """
+    from acb_skills import agent_paths
+
+    parts = rel.replace("\\", "/").split("/", 1)
+    upload_dir = getattr(agent_paths, "upload_dir_rel", None)
+    if parts[0] != "inputs" or len(parts) < 2 or upload_dir is None or not thread_ids:
+        return [rel]
+    instance = agent_paths.tenant_instance(harness.org)
+    return [f"{upload_dir(instance, t)}/{parts[1]}" for t in thread_ids]
+
+
+async def reset_workspace(
+    harness: Harness, spec: TaskSpec, thread_ids: list[str] | None = None,
+) -> Path:
     """An empty working dir of the test org, with the task's inputs in place."""
     from acb_skills.agent_paths import ensure_state_dir, tenant_instance
 
@@ -445,9 +466,10 @@ async def reset_workspace(harness: Harness, spec: TaskSpec) -> Path:
     shutil.rmtree(workspace, ignore_errors=True)
     workspace = ensure_state_dir(AGENT, tenant_instance(harness.org))
     for rel, source in spec.inputs.items():
-        target = workspace / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        for target_rel in input_targets(harness, rel, thread_ids or []):
+            target = workspace / target_rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
     return workspace
 
 
@@ -471,12 +493,15 @@ async def run_task(
         gate = preflight.sandbox_tools(harness.org)
         if not gate.ok:
             return {**head, **_skipped(gate.reason), "wall_s": 0.0}
-    workspace = await reset_workspace(harness, spec)
+    thread_ids = [str(uuid.uuid4()) for _ in spec.sessions]
+    workspace = await reset_workspace(harness, spec, thread_ids)
     before = checkers.snapshot(workspace)
     sessions, taps, walls, declined = [], [], [], 0
     for index, session_spec in enumerate(spec.sessions):
         steps = scripted.steps_for(spec.id, index, harness.dataset) if harness.scripted else None
-        session, tap, wall, n = await run_session(harness, session_spec, steps)
+        session, tap, wall, n = await run_session(
+            harness, session_spec, steps, thread_ids[index],
+        )
         sessions.append(session)
         taps.append(tap)
         walls.append(wall)

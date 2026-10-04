@@ -78,7 +78,7 @@ async def warm_broker() -> None:
         return
     try:
         await probe()
-    except Exception:  # noqa: BLE001 — the gate below reports the broker state
+    except Exception:  # the gate below reports the broker state
         return
 
 
