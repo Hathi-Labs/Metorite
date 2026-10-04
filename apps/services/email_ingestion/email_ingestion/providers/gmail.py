@@ -31,6 +31,7 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
@@ -301,12 +302,13 @@ _REPEATABLE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
 _REPEATABLE_POST_ACTIONS = ("/modify", "/batchModify", "/trash", "/untrash")
 
 
-class GmailRateLimited(httpx.HTTPStatusError):
+class GmailRateLimited(httpx.HTTPStatusError, ProviderRateLimited):
     """Gmail refused a request for a rate limit, and the helper sends it no
     more (EM-G4a item 9). A sync that gets it fails, and the loop backs off.
 
     It is an ``httpx.HTTPStatusError``, so each caller that handles an HTTP
-    failure handles it too."""
+    failure handles it too. It is a ``ProviderRateLimited``, so the
+    scheduler never degrades it (EM-G4b review round 1, F2)."""
 
     def __init__(self, response: httpx.Response, *, tries: int) -> None:
         request = response.request
@@ -389,8 +391,9 @@ _HISTORY_TYPES = ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"
 #: upsert applies its new folder, read mark, star and labels.
 _HISTORY_FETCH_EVENTS = ("messagesAdded", "labelsAdded", "labelsRemoved")
 #: A fetch on the history path that a later cycle can fix (a 5xx or a
-#: transport error) holds the cursor. After this many cycles in a row for one
-#: message, the cursor passes it (EM-G4a-f2, decided 2026-10-05).
+#: transport error) holds the cursor at its old position. The cursor counts
+#: the cycles that it was held. On the cycle that reaches this count, it moves
+#: on past each message that still fails (EM-G4a-f2, review round 1 F1).
 GMAIL_FETCH_HOLD_CYCLES = 3
 #: The name of the sweep after a stale cursor in ``catch_up_folders``. The
 #: scheduler puts it into the ``sync_error`` note of a short catch-up.
@@ -402,31 +405,39 @@ class _StaleCursor(Exception):
     cursor, so the provider seeds again and sweeps (item 5)."""
 
 
-def _parse_cursor(raw: Any) -> tuple[str, dict[str, int]] | None:
-    """The history id and the held fetches of a stored cursor.
+def _is_history_id(text: str) -> bool:
+    """True for a Gmail history id: ASCII digits only. ``str.isdigit`` also
+    takes other digits, such as Arabic-Indic digits (review round 1 F5)."""
+    return bool(text) and text.isascii() and text.isdigit()
+
+
+def _parse_cursor(raw: Any) -> tuple[str, int] | None:
+    """The history id of a stored cursor, and the cycles that it was held.
 
     The cursor is a plain history id, or JSON while a failed fetch holds it:
-    ``{"v": 1, "history_id": "<id>", "held": {"<message id>": <cycles>}}``.
-    Text that is neither is no cursor, so the sync seeds again and does not
-    send text to Gmail that it refuses on each cycle."""
+    ``{"held_cycles": <n>, "history_id": "<id>", "v": 1}``. Text that is
+    neither is no cursor, so the sync seeds again and does not send text to
+    Gmail that it refuses on each cycle."""
     text = str(raw or "").strip()
-    if text.isdigit():
-        return text, {}
+    if _is_history_id(text):
+        return text, 0
     try:
         data = json.loads(text)
         history_id = str(data["history_id"])
-        held = {str(mid): int(n) for mid, n in data.get("held", {}).items()}
+        held_cycles = max(int(data.get("held_cycles", 0)), 0)
     except (ValueError, TypeError, KeyError, AttributeError):
         return None
-    return (history_id, held) if history_id.isdigit() else None
+    return (history_id, held_cycles) if _is_history_id(history_id) else None
 
 
-def _format_cursor(history_id: str, held: dict[str, int]) -> str:
-    """The stored form of a cursor: the plain id, or JSON with the held
-    fetches. A message id names no content."""
-    if not held:
+def _format_cursor(history_id: str, held_cycles: int) -> str:
+    """The stored form of a cursor: the plain id, or JSON with the count of
+    held cycles. It holds no message id, so its size never grows (review
+    round 1 F7)."""
+    if held_cycles <= 0:
         return history_id
-    return json.dumps({"v": 1, "history_id": history_id, "held": held},
+    return json.dumps({"v": 1, "history_id": history_id,
+                       "held_cycles": held_cycles},
                       sort_keys=True, separators=(",", ":"))
 
 
@@ -453,7 +464,8 @@ def _deleted_marker(message_id: str) -> EmailMessage:
     ``scheduler._write_messages`` moves its row to trash, and deletes a row
     in ``drafts`` (E-B2)."""
     return EmailMessage(provider_message_id=message_id, thread_id=None,
-                        folder="TRASH", labels=["TRASH"], subject="[DELETED]")
+                        folder="TRASH", labels=["TRASH"], subject="[DELETED]",
+                        deletion_marker=True)
 
 
 def _transient(exc: BaseException) -> bool:
@@ -468,23 +480,28 @@ def _transient(exc: BaseException) -> bool:
 
 
 def _cursor_after_read(
-    start: str, last_id: str | None, held: dict[str, int], failed: list[str],
+    start: str, last_id: str | None, held_cycles: int, failed: list[str],
     errors: list[str],
 ) -> str:
     """The cursor after one read of the history (item 2, EM-G4a-f2).
 
-    With no failed fetch, it is the ``historyId`` of the last answer. A fetch
-    that a later cycle can fix keeps the OLD position, and the cursor counts
-    the cycles of that message. When each failed message has failed for
-    ``GMAIL_FETCH_HOLD_CYCLES`` cycles in a row, the cursor passes them, and
-    each one gets a log line and a record in ``errors``. A message that
-    succeeds drops out of the count."""
-    counts = {mid: held.get(mid, 0) + 1 for mid in failed}
-    if any(n < GMAIL_FETCH_HOLD_CYCLES for n in counts.values()):
-        return _format_cursor(start, counts)
-    for mid, n in counts.items():
-        logger.warning("gmail.fetch_abandoned message_id=%s cycles=%d", mid, n)
-        errors.append(f"gmail.fetch_abandoned id={mid} cycles={n}")
+    With no failed fetch, it is the ``historyId`` of the last answer, and the
+    count of held cycles goes back to 0. A fetch that a later cycle can fix
+    keeps the OLD position, and the count goes up by 1. The count belongs to
+    the cursor, not to a message, so a new failure on each cycle cannot hold
+    the cursor longer (review round 1 F1). On the cycle that reaches
+    ``GMAIL_FETCH_HOLD_CYCLES``, the cursor moves to the last answer. Each
+    message that still fails gets a log line and a record in ``errors``,
+    with its id only. A message that succeeds is not in them."""
+    if not failed:
+        return last_id or start
+    cycles = held_cycles + 1
+    if cycles < GMAIL_FETCH_HOLD_CYCLES:
+        return _format_cursor(start, cycles)
+    for mid in failed:
+        logger.warning("gmail.fetch_abandoned message_id=%s held_cycles=%d",
+                       mid, cycles)
+        errors.append(f"gmail.fetch_abandoned id={mid} held_cycles={cycles}")
     return last_id or start
 
 
@@ -1472,11 +1489,11 @@ class GmailProvider(BaseEmailProvider):
             params["pageToken"] = token
 
     async def _history_sync(
-        self, cursor: tuple[str, dict[str, int]], max_results: int,
+        self, cursor: tuple[str, int], max_results: int,
         since: datetime | None, catch_up: datetime | None,
     ) -> SyncResult:
         """The sync from a cursor (items 2 to 5, EM-G4a-f2)."""
-        start, held = cursor
+        start, held_cycles = cursor
         try:
             fetch, deleted, last_id = await self._read_history(start, max_results)
         except _StaleCursor:
@@ -1489,7 +1506,7 @@ class GmailProvider(BaseEmailProvider):
             [mid for mid in fetch if mid not in deleted], result)
         result.messages_synced += len(deleted)
         result.new_history_id = _cursor_after_read(
-            start, last_id, held, failed, result.errors)
+            start, last_id, held_cycles, failed, result.errors)
         return result
 
     async def _recover_stale_cursor(
@@ -1505,9 +1522,11 @@ class GmailProvider(BaseEmailProvider):
         watermark, and the next cycle sweeps again. ``reseed_history_id``
         always holds the seed, and the scheduler writes it only when it
         abandons the catch-up (``CATCH_UP_MAX_MISSES``). A failed seed makes
-        the sweep short too, because it has no cursor to return."""
+        the sweep short too, because it has no cursor to return.
+        ``cursor_reset`` tells the scheduler to log the reset with the
+        mailbox id, also when the seed failed (review round 1 F6)."""
         seed = await self._try_seed()
-        result = SyncResult(reseed_history_id=seed)
+        result = SyncResult(reseed_history_id=seed, cursor_reset=True)
         after = _reset_sweep_after(catch_up, since)
         complete = await self._sweep_after_reset(max_results, after, result)
         if complete and seed is not None:

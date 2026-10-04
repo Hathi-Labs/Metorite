@@ -55,6 +55,7 @@ from sqlalchemy import text
 from email_ingestion import body_backfill, email_embeddings, import_window, storage
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
+from email_ingestion.providers.base import ProviderRateLimited
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import (
     import_reconcile_candidates,
@@ -538,8 +539,12 @@ async def _write_messages(
         if msg.subject == "[DELETED]":
             params = {"account_id": account_id,
                       "provider_id": msg.provider_message_id}
-            # The draft goes first, so the move to TRASH cannot keep it.
-            await db.execute(_DELETE_DELETED_DRAFT, params)
+            # Only a real marker deletes a draft, never a subject (review
+            # round 1 F3). The draft goes first, so the move to TRASH cannot
+            # keep it. A message whose subject is "[DELETED]" moves to TRASH,
+            # as on main.
+            if getattr(msg, "deletion_marker", False):
+                await db.execute(_DELETE_DELETED_DRAFT, params)
             await db.execute(_TRASH_DELETED, params)
             continue
         old_categories = None
@@ -668,29 +673,52 @@ def _cycle_result(
     return result
 
 
-def _next_cursor(account_id: str, sync_result: Any, catch_up: _CatchUp) -> Any:
-    """The cursor that phase (d) writes (WS-17 EM-G4b E-B1).
+def _next_cursor(
+    account_id: str, sync_result: Any, catch_up: _CatchUp,
+) -> tuple[Any, _CatchUp]:
+    """The cursor that phase (d) writes, and the catch-up outcome (WS-17
+    EM-G4b E-B1).
 
-    It is ``new_history_id``. When that is None, phase (d) keeps the stored
-    cursor through ``COALESCE``. Only Gmail sets ``reseed_history_id``,
+    The cursor is ``new_history_id``. When that is None, phase (d) keeps the
+    stored cursor through ``COALESCE``. Only Gmail sets ``cursor_reset``,
     after its cursor went stale and it swept back to the watermark. A sweep
     that stopped short returns no cursor, so the stale one stays and the
     next cycle sweeps again. When ``_watermark_outcome`` abandons that
     catch-up after ``CATCH_UP_MAX_MISSES`` short loop cycles, phase (d)
-    writes the fresh cursor instead. A Resync then recovers the older gap.
-    The log names the mailbox and the count, and never a subject or an
-    address."""
+    writes ``reseed_history_id`` instead. A Resync then recovers the older
+    gap.
+
+    Each reset logs ``gmail.history_reset`` with the mailbox id. When the
+    seed failed too, it logs ``gmail.reseed_failed``, and the cycle backs
+    off, because the stale cursor stays and the next cycle sweeps again.
+    Without the back-off, a sticky abandon swept at each interval (review
+    round 1 F6). No line names a subject or an address."""
     new = getattr(sync_result, "new_history_id", None)
+    if not getattr(sync_result, "cursor_reset", False):
+        return new, catch_up
     fresh = getattr(sync_result, "reseed_history_id", None)
+    logger.warning("gmail.history_reset account=%s complete=%s seeded=%s",
+                   account_id, new is not None, fresh is not None)
     if fresh is None:
-        return new
-    logger.warning("gmail.history_reset account=%s complete=%s",
-                   account_id, new is not None)
+        logger.warning("gmail.reseed_failed account=%s", account_id)
+        return new, catch_up._replace(back_off=True)
     if new is None and catch_up.note and not catch_up.back_off:
         logger.warning("email.gmail_history_gap_abandoned account=%s misses=%d",
                        account_id, CATCH_UP_MAX_MISSES)
-        return fresh
-    return new
+        return fresh, catch_up
+    return new, catch_up
+
+
+def _log_cursor(cursor: Any) -> Any:
+    """The cursor that ``email_sync_log.provider_history_id`` keeps (WS-17
+    EM-G4b review round 1 F7).
+
+    A JSON cursor goes in as NULL, as the cursor of the Outlook delta does
+    (EM-T4d review round 1 F5), because nothing reads that copy. So a held
+    Gmail cursor gives NULL, and a plain history id goes in as it is."""
+    if isinstance(cursor, str) and cursor.lstrip().startswith("{"):
+        return None
+    return cursor
 
 
 async def _seed_before_import(
@@ -705,7 +733,10 @@ async def _seed_before_import(
     stored value then goes on unchanged. A fake with no ``seed_cursor`` gets
     the same. A failed seed never stops new mail (owner answer Q2): it logs
     ``sync.seed_failed`` with the class of the error, and the import and
-    the sweep still run. The sweep then seeds on its own."""
+    the sweep still run. The sweep then seeds on its own. A rate limit whose
+    tries are spent (``ProviderRateLimited``) is no failed seed. It fails
+    the cycle before the import sends a request (EM-G4a item 9, review
+    round 1 F2)."""
     if history_id:
         return history_id
     seed = getattr(provider, "seed_cursor", None)
@@ -713,6 +744,8 @@ async def _seed_before_import(
         return history_id
     try:
         return await seed() or history_id
+    except ProviderRateLimited:
+        raise
     except Exception as exc:
         logger.warning("sync.seed_failed account=%s error=%s",
                        account_id, type(exc).__name__)
@@ -1422,8 +1455,9 @@ async def _sync_cycle(
         catch_up = _watermark_outcome(
             account_id, sync_result, row, import_error, from_loop=from_loop)
         # The cursor of phase (d). After a stale Gmail cursor, an abandoned
-        # catch-up writes the fresh seed (EM-G4b E-B1).
-        cursor = _next_cursor(account_id, sync_result, catch_up)
+        # catch-up writes the fresh seed (EM-G4b E-B1). A failed reseed
+        # backs the loop off (review round 1 F6).
+        cursor, catch_up = _next_cursor(account_id, sync_result, catch_up)
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
@@ -1519,7 +1553,7 @@ async def _sync_cycle(
                     "log_id": sync_log_id,
                     "synced": persisted_count,
                     "skipped": 0,
-                    "history_id": None if delta_shadow else cursor,
+                    "history_id": None if delta_shadow else _log_cursor(cursor),
                 },
             )
             # A failed import records its error after the new mail landed.

@@ -59,7 +59,9 @@ All providers implement the `BaseEmailProvider` abstract interface:
 2. **ON CONFLICT (account_id, provider_message_id) DO UPDATE** — the upsert makes sure
    that a sync is idempotent. Deleted messages move to `folder='TRASH'` locally.
    A deleted row in `drafts` goes instead (WS-17 EM-G4b E-B2). Each edit of a
-   draft in Gmail web deletes its old id. Only Gmail sends the marker.
+   draft in Gmail web deletes its old id. Only a marker with
+   `EmailMessage.deletion_marker` deletes a row, and only the Gmail history sets
+   it. Never key the rule on the subject, because a real draft can have it.
    - **`persist.upsert_message` reclaims a re-keyed row only with `reclaim=True`
      (WS-17 EM-G1, D-EM-34).** Each update-path caller passes
      `getattr(provider, "REKEYS_MESSAGE_IDS", False)`, and only Outlook sets it.
@@ -68,10 +70,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
      `tests/unit/test_email_rekey_reclaim.py`.
 
 3. **history_id format is provider-specific:**
-   - Gmail: the Google historyId as text. While a failed fetch holds the cursor,
-     it is `{"v": 1, "history_id": <id>, "held": {<message id>: <cycles>}}`
+   - Gmail: the Google historyId as text, in ASCII digits. While a failed fetch
+     holds the cursor, it is `{"held_cycles": <n>, "history_id": <id>, "v": 1}`
      (contract 10). Text that is neither form is no cursor, and the sync seeds
-     again.
+     again. The sync log keeps the plain id, and NULL for the JSON form.
    - Outlook: NULL, or the JSON cursor of the delta shadow,
      `{"v": 1, "folders": {<sweep key>: {"link": <url>, "at": <UTC time>}}}`
      (WS-17 EM-T4d). The sweep never reads it. Text that does not parse is
@@ -204,7 +206,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
       returns None, so Outlook and IMAP get no seed. With no cursor,
       `scheduler._seed_before_import` seeds BEFORE the import, and the sweep
       with no cursor seeds before it reads. A failed seed never stops new
-      mail. It logs, and the next cycle seeds again.
+      mail. It logs, and the next cycle seeds again. A spent rate limit is no
+      failed seed: a `ProviderRateLimited` fails the cycle.
     - **The read.** The history read follows each `nextPageToken`. The cursor
       is the `historyId` of the last answer. `labelsAdded` and
       `labelsRemoved` fetch the message in full, as `messagesAdded` does.
@@ -213,10 +216,13 @@ All providers implement the `BaseEmailProvider` abstract interface:
       short sweep returns no cursor and sets `catch_up_incomplete`, so the
       stale cursor stays. The count of the Outlook catch-up decides the
       abandon. Then `_next_cursor` writes `SyncResult.reseed_history_id`.
+      The scheduler logs each reset with the mailbox id. A failed reseed
+      backs the loop off.
     - **A failed fetch.** A 5xx or a transport error keeps the old position.
-      The cursor counts the cycles of each message. After
-      `GMAIL_FETCH_HOLD_CYCLES` (3) cycles in a row, the cursor passes the
-      message and logs `gmail.fetch_abandoned`. A rate limit fails the cycle.
+      The cursor counts its held cycles, not the cycles of each message. At
+      `GMAIL_FETCH_HOLD_CYCLES` (3), it moves on and logs
+      `gmail.fetch_abandoned` for each message that still fails. The cursor
+      holds no message id. A rate limit fails the cycle.
 
 ## Inbound SMTP Server
 

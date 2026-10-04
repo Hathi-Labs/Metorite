@@ -21,6 +21,15 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+class ProviderRateLimited(Exception):
+    """A provider refused a request for a rate limit, and its tries are spent.
+
+    A typed error of a provider adds this class, as ``GmailRateLimited``
+    does. A sync that gets it fails, and the loop backs off (WS-17 EM-G4a
+    item 9). The scheduler reads it where it degrades other failures, so a
+    rate limit is never degraded (EM-G4b review round 1, F2)."""
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 
@@ -316,6 +325,11 @@ class EmailMessage:
     unsubscribe_link: str | None = None
     received_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # True only on a ``[DELETED]`` marker that a change feed made (WS-17
+    # EM-G4b E-B2, review round 1 F3). Only the Gmail history sets it. A
+    # marker with it deletes a row in ``drafts``. A real message whose
+    # subject is "[DELETED]" never has it, so the rule cannot meet its row.
+    deletion_marker: bool = False
 
 
 @dataclass
@@ -382,6 +396,10 @@ class SyncResult:
     # so the stale cursor stays and the next cycle sweeps again (E-B1). The
     # scheduler writes this value only when it abandons that catch-up.
     reseed_history_id: str | None = None
+    # True when the provider found its cursor stale and swept again (WS-17
+    # EM-G4b review round 1 F6). The scheduler then logs the reset with the
+    # mailbox id. When ``reseed_history_id`` is None too, the seed failed.
+    cursor_reset: bool = False
 
 
 #: The callback that an import calls once, before its first batch, with the

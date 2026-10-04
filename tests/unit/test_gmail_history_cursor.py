@@ -60,8 +60,9 @@ from acb_common.settings import get_settings
 # Import it before the ``fake`` fixture swaps ``httpx.AsyncClient``:
 # ``openai``, which it imports, subclasses that class at import.
 from acb_llm import key_store
+from email_ingestion.persist import upsert_message
 from email_ingestion.providers.app_credentials import OAuthApp
-from email_ingestion.providers.base import EmailMessage, SyncResult
+from email_ingestion.providers.base import Attachment, EmailMessage, SyncResult
 from email_ingestion.providers.gmail import (
     GMAIL_FETCH_HOLD_CYCLES,
     GMAIL_RESET_SWEEP_NAME,
@@ -70,6 +71,7 @@ from email_ingestion.providers.gmail import (
 )
 from email_ingestion.providers.imap import IMAPProvider
 from email_ingestion.providers.outlook import OutlookProvider
+from gateway.routes.email import core
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -307,14 +309,23 @@ async def test_a_rate_limited_seed_fails_the_sync(fake: _Gmail) -> None:
         await _provider().sync_messages()
 
 
-async def test_text_that_is_no_cursor_seeds_again(fake: _Gmail) -> None:
+@pytest.mark.parametrize("raw", [
+    "garbage", '{"history_id": "x1"}', "{not json",
+    '{"v":1,"folders":{}}', '{"v": 1, "held_cycles": 2}',
+    "١٢", '{"v": 1, "history_id": "١٢"}', "[1, 2]",
+], ids=["text", "json_id_not_digits", "broken_json", "outlook_shape",
+        "json_with_no_history_id", "arabic_indic_digits",
+        "json_arabic_indic_digits", "json_list"])
+async def test_text_that_is_no_cursor_seeds_again(fake: _Gmail, raw: str) -> None:
     """Text that is neither a history id nor the JSON form is no cursor. The
-    sync seeds again and sends nothing to ``history.list``."""
+    sync seeds again and sends nothing to ``history.list``. A JSON object
+    with no ``history_id`` is no cursor (review round 1 F4). A history id
+    is ASCII digits only, so "١٢" is no cursor (review round 1 F5)."""
     fake.profile = [_ok({"historyId": "777"})]
 
-    for raw in ("garbage", '{"history_id": "x1"}', "{not json"):
-        result = await _provider().sync_messages(history_id=raw)
-        assert result.new_history_id == "777", raw
+    result = await _provider().sync_messages(history_id=raw)
+
+    assert result.new_history_id == "777"
     assert fake.requests("/history") == []
 
 
@@ -560,7 +571,7 @@ async def test_a_5xx_fetch_keeps_the_old_cursor(fake: _Gmail) -> None:
 
     assert _ids(result) == ["m1"]
     assert json.loads(result.new_history_id) == {
-        "v": 1, "history_id": "100", "held": {"m2": 1}}
+        "v": 1, "history_id": "100", "held_cycles": 1}
     assert result.errors == [
         "gmail.fetch_failed id=m2 error=HTTPStatusError status=503"]
 
@@ -573,7 +584,24 @@ async def test_a_transport_error_holds_the_cursor(fake: _Gmail) -> None:
 
     result = await _provider().sync_messages(history_id="100")
 
-    assert json.loads(result.new_history_id)["held"] == {"m2": 1}
+    assert json.loads(result.new_history_id)["held_cycles"] == 1
+
+
+async def test_a_held_cursor_holds_no_message_id(fake: _Gmail) -> None:
+    """M24 (review round 1 F7). 150 fetches fail in one cycle, and the held
+    cursor keeps its three keys. It stores no message id, so its size never
+    grows."""
+    ids = [f"x{i}" for i in range(150)]
+    fake.history = [_ok({"historyId": "120", "history": [_added(*ids)]})]
+    for mid in ids:
+        fake.message(mid, _refuse(503))
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert json.loads(result.new_history_id) == {
+        "v": 1, "history_id": "100", "held_cycles": 1}
+    assert len(result.new_history_id) < 64
+    assert len(result.errors) == 150
 
 
 def _no_id(_request: httpx.Request) -> httpx.Response:
@@ -616,18 +644,46 @@ async def test_a_message_that_fails_three_cycles_is_passed_and_recorded(
             cursor = result.new_history_id
             seen.append(cursor)
 
-    assert [json.loads(c)["held"] for c in seen[:-1]] == [
-        {"m2": n} for n in range(1, GMAIL_FETCH_HOLD_CYCLES)]
+    assert [json.loads(c)["held_cycles"] for c in seen[:-1]] == list(
+        range(1, GMAIL_FETCH_HOLD_CYCLES))
     assert seen[-1] == "120"
     assert result.errors == [
         "gmail.fetch_failed id=m2 error=HTTPStatusError status=500",
-        f"gmail.fetch_abandoned id=m2 cycles={GMAIL_FETCH_HOLD_CYCLES}"]
+        f"gmail.fetch_abandoned id=m2 held_cycles={GMAIL_FETCH_HOLD_CYCLES}"]
     logged = [r.getMessage() for r in caplog.records
               if r.getMessage().startswith("gmail.fetch_abandoned")]
     assert logged == [
-        f"gmail.fetch_abandoned message_id=m2 cycles={GMAIL_FETCH_HOLD_CYCLES}"]
+        f"gmail.fetch_abandoned message_id=m2 held_cycles={GMAIL_FETCH_HOLD_CYCLES}"]
     for line in [*result.errors, *logged]:
         assert "@" not in line and "About" not in line
+
+
+async def test_a_new_failure_each_cycle_cannot_hold_the_cursor_longer(
+        fake: _Gmail) -> None:
+    """M23 (review round 1 F1). m2 fails on each cycle, and a NEW message
+    fails on each cycle too. The count belongs to the cursor, so the cursor
+    moves on at cycle ``GMAIL_FETCH_HOLD_CYCLES`` and records both messages
+    that still fail. A count for each message held the cursor with no end."""
+    fake.history = [
+        _ok({"historyId": "120", "history": [_added("m2", f"n{k}")]})
+        for k in range(1, GMAIL_FETCH_HOLD_CYCLES + 1)]
+    fake.message("m2", _refuse(500))
+    for k in range(1, GMAIL_FETCH_HOLD_CYCLES + 1):
+        fake.message(f"n{k}", _refuse(503))
+    cursor = "100"
+    cursors: list[Any] = []
+
+    for _ in range(GMAIL_FETCH_HOLD_CYCLES):
+        result = await _provider().sync_messages(history_id=cursor)
+        cursor = result.new_history_id
+        cursors.append(cursor)
+
+    assert [json.loads(c)["held_cycles"] for c in cursors[:-1]] == [1, 2]
+    assert cursors[-1] == "120"
+    last = f"n{GMAIL_FETCH_HOLD_CYCLES}"
+    assert [e for e in result.errors if e.startswith("gmail.fetch_abandoned")] == [
+        f"gmail.fetch_abandoned id=m2 held_cycles={GMAIL_FETCH_HOLD_CYCLES}",
+        f"gmail.fetch_abandoned id={last} held_cycles={GMAIL_FETCH_HOLD_CYCLES}"]
 
 
 async def test_a_message_that_recovers_drops_out_of_the_count(
@@ -640,9 +696,10 @@ async def test_a_message_that_recovers_drops_out_of_the_count(
     held = await _provider().sync_messages(history_id="100")
     again = await _provider().sync_messages(history_id=held.new_history_id)
 
-    assert json.loads(held.new_history_id)["held"] == {"m2": 1}
+    assert json.loads(held.new_history_id)["held_cycles"] == 1
     assert again.new_history_id == "120"
     assert sorted(_ids(again)) == ["m1", "m2"]
+    assert again.errors == []
     assert fake.requests("/history")[1]["startHistoryId"] == ["100"]
 
 
@@ -808,8 +865,70 @@ async def test_a_complete_reset_sweep_writes_the_seed(
     [phase_d] = cycle.phase_d()
     assert phase_d["history_id"] == "900"
     assert phase_d["keep_watermark"] is False
-    assert any(r.getMessage() == "gmail.history_reset account=acc-1 complete=True"
+    assert any(r.getMessage()
+               == "gmail.history_reset account=acc-1 complete=True seeded=True"
                for r in caplog.records)
+
+
+async def test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """M25 (review round 1 F2). A 429 on each of the 3 tries of the seed is
+    no failed seed. The cycle fails before the import sends a request, and
+    phase (d) writes nothing (EM-G4a item 9)."""
+    fake.profile = [_refuse(429, "rateLimitExceeded")]
+    fake.listing = _by_label(INBOX=["m1"])
+
+    res = await cycle.run(_row(initial_sync_done=False, last_synced_at=None))
+
+    assert "error" in res, res
+    assert [path for _, path, _ in fake.seen] == ["/profile"] * 3
+    assert cycle.phase_d() == []
+    assert any("sync_status = 'error'" in sql for sql, _ in cycle.log)
+
+
+async def test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off(
+        fake: _Gmail, cycle: SimpleNamespace,
+        caplog: pytest.LogCaptureFixture) -> None:
+    """M26 (review round 1 F6). The mailbox holds a sticky abandon, and the
+    seed of the reset fails. The scheduler logs the reset and the failed
+    reseed with the mailbox id. The cycle counts as a soft failure, so the
+    loop backs off and does not sweep at each interval."""
+    fake.history = [_refuse(404, "notFound")]
+    fake.profile = [_refuse(500)]
+    fake.listing = _ok({"messages": []})
+    sched._catch_up_abandoned.add("acc-1")
+
+    with caplog.at_level(logging.WARNING, logger=SCHED_LOGGER):
+        res = await cycle.run(_row(last_history_id="100"), from_loop=True)
+
+    assert res.get("catch_up_incomplete") is True, res
+    assert [w["history_id"] for w in cycle.phase_d()] == [None]
+    lines = [r.getMessage() for r in caplog.records]
+    assert "gmail.history_reset account=acc-1 complete=False seeded=False" in lines
+    assert "gmail.reseed_failed account=acc-1" in lines
+
+
+def _log_writes(log: list[tuple[str, dict[str, Any]]]) -> list[Any]:
+    """The ``provider_history_id`` of each sync-log write of phase (d)."""
+    return [p["history_id"] for sql, p in log
+            if "provider_history_id = :history_id" in sql]
+
+
+async def test_the_sync_log_keeps_no_held_cursor(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """M27 (review round 1 F7). A held cycle writes the JSON cursor into the
+    account row and NULL into the sync log, as the Outlook delta does. The
+    next cycle moves on, and the sync log gets the plain history id."""
+    fake.history = [_ok({"historyId": "120", "history": [_added("m1")]})]
+    fake.message("m1", _refuse(503), _ok(_message("m1", "INBOX")))
+
+    await cycle.run(_row(last_history_id="100"))
+    held = cycle.phase_d()[0]["history_id"]
+    await cycle.run(_row(last_history_id=held))
+
+    assert json.loads(held)["held_cycles"] == 1
+    assert [w["history_id"] for w in cycle.phase_d()] == [held, "120"]
+    assert _log_writes(cycle.log) == [None, "120"]
 
 
 async def test_six_short_loop_cycles_abandon_the_gap_and_write_the_fresh_seed(
@@ -870,17 +989,37 @@ def _dsn(p: Any) -> str:
     return p.app_url.render_as_string(hide_password=False)
 
 
-def _gmail_account(admin: Any, org: str) -> str:
+def _gmail_account(admin: Any, org: str, provider: str = "gmail") -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, sync_enabled, sync_interval_secs, "
             "sync_status, organization_id) "
-            "VALUES (:u, 'gmail', :m, 'x', true, 300, 'idle', CAST(:o AS uuid)) "
+            "VALUES (:u, :p, :m, 'x', true, 300, 'idle', CAST(:o AS uuid)) "
             "RETURNING id"),
-            {"u": f"g4b-{uuid.uuid4().hex[:8]}@em-g4b.test",
+            {"u": f"g4b-{uuid.uuid4().hex[:8]}@em-g4b.test", "p": provider,
              "m": f"box-{uuid.uuid4().hex[:8]}@em-g4b.test",
              "o": org}).scalar_one())
+
+
+def _sync_log_cursors(admin: Any, account_id: str) -> list[str | None]:
+    """``provider_history_id`` of each sync-log row, oldest first."""
+    with admin.connect() as c:
+        return list(c.execute(text(
+            "SELECT provider_history_id FROM email_sync_log "
+            "WHERE account_id = CAST(:a AS uuid) ORDER BY started_at"),
+            {"a": account_id}).scalars().all())
+
+
+def _row_state(admin: Any, account_id: str, pmid: str) -> tuple[str, str, int] | None:
+    """The id and the folder of one stored message, and its attachment count."""
+    with admin.connect() as c:
+        row = c.execute(text(
+            "SELECT m.id::text AS id, m.folder, "
+            "(SELECT count(*) FROM email_attachments a WHERE a.message_id = m.id) AS n "
+            "FROM email_messages m WHERE m.account_id = CAST(:a AS uuid) "
+            "AND m.provider_message_id = :p"), {"a": account_id, "p": pmid}).first()
+    return None if row is None else (row.id, row.folder, int(row.n))
 
 
 def _account_state(admin: Any, account_id: str) -> dict[str, Any]:
@@ -980,7 +1119,7 @@ class TestTheCursorOnARealDatabase:
             assert "error" not in res, res
             held = _account_state(p.admin_engine, account)["last_history_id"]
             assert json.loads(held) == {"v": 1, "history_id": "520",
-                                        "held": {"m3": 1}}
+                                        "held_cycles": 1}
 
             # 4. A rate limit fails the cycle, and the cursor stays.
             fake.history = [_refuse(429, "rateLimitExceeded")]
@@ -998,6 +1137,10 @@ class TestTheCursorOnARealDatabase:
             assert fake.requests("/history")[-1]["startHistoryId"] == ["520"]
             assert _account_state(p.admin_engine, account)["last_history_id"] == "540"
             assert "m3" in _stored_rows(p.admin_engine, account)
+            # The sync log keeps no held cursor (review round 1 F7). The
+            # failed cycle 4 wrote no cursor into its log row.
+            assert _sync_log_cursors(p.admin_engine, account) == [
+                "500", "520", None, None, "540"]
         finally:
             release_tenant(cleared)
             _drop(p.admin_engine, account)
@@ -1035,3 +1178,58 @@ class TestTheCursorOnARealDatabase:
         finally:
             release_tenant(cleared)
             _drop(p.admin_engine, account)
+
+    async def test_a_real_subject_of_deleted_keeps_its_draft_row(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """M28 (review round 1 F3). An Outlook draft and an IMAP draft whose
+        REAL subject is "[DELETED]" keep their rows and their attachments, as
+        on main: each moves to TRASH. Only a Gmail marker, which sets
+        ``deletion_marker``, deletes a draft row."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        boxes = {kind: _gmail_account(p.admin_engine, p.org_b, provider=kind)
+                 for kind in ("microsoft", "imap", "gmail")}
+        folders = {"microsoft": "drafts", "imap": "Drafts", "gmail": "drafts"}
+        floor = datetime(2000, 1, 1, tzinfo=UTC)
+        cleared = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                async with core._tenant_session(p.org_b) as db:
+                    for kind, account in boxes.items():
+                        await upsert_message(db, account, _draft(
+                            f"{kind}-d1", folders[kind]), reclaim=False)
+                before = {kind: _row_state(p.admin_engine, account, f"{kind}-d1")
+                          for kind, account in boxes.items()}
+                async with core._tenant_session(p.org_b) as db:
+                    for kind in ("microsoft", "imap"):
+                        real = _draft(f"{kind}-d1", folders[kind],
+                                      subject="[DELETED]")
+                        await sched._write_messages(
+                            db, boxes[kind], [real], floor, reclaim=False)
+                    await sched._write_messages(
+                        db, boxes["gmail"], [gmail_mod._deleted_marker("gmail-d1")],
+                        floor, reclaim=False)
+            for kind in ("microsoft", "imap"):
+                row_id, folder, attachments = before[kind]
+                assert (folder, attachments) == (folders[kind], 1), kind
+                assert _row_state(p.admin_engine, boxes[kind], f"{kind}-d1") == (
+                    row_id, "TRASH", 1), f"the {kind} draft lost its row"
+            assert before["gmail"] is not None
+            assert _row_state(p.admin_engine, boxes["gmail"], "gmail-d1") is None
+        finally:
+            release_tenant(cleared)
+            for account in boxes.values():
+                _drop(p.admin_engine, account)
+
+
+def _draft(pmid: str, folder: str, *, subject: str = "Quote") -> EmailMessage:
+    """A draft with one attachment, in the shape that each provider gives."""
+    return EmailMessage(
+        provider_message_id=pmid, thread_id=f"t-{pmid}", folder=folder,
+        subject=subject, body_text="Please send it.", snippet="Please send it.",
+        has_attachments=True,
+        attachments=[Attachment(id=f"a-{pmid}", filename="quote.pdf",
+                                mime_type="application/pdf", size_bytes=10,
+                                provider_attachment_id=f"att-{pmid}")],
+        received_at=datetime.now(UTC) - timedelta(minutes=5))
