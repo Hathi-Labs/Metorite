@@ -208,6 +208,24 @@ def outlook_delta_mode(account_id: str) -> str:
     return mode
 
 
+def _runs_delta_shadow(
+    provider_name: str, account_id: str, row: Any, *, deep: bool | None,
+) -> bool:
+    """True when this cycle runs the Graph delta in shadow (WS-17 EM-T4d).
+
+    Only a normal incremental cycle of a listed Outlook mailbox runs it
+    (review round 1 F6). A first import, the deep sync of a member act
+    (``deep=True``) and each cycle before ``initial_sync_done`` run none.
+    Those cycles already hold the mailbox lock for a long sweep. The delta
+    adds its Graph calls, so a manual sync could pass the 30 seconds of the
+    Control Plane proxy."""
+    if provider_name != "microsoft" or deep:
+        return False
+    if not getattr(row, "initial_sync_done", False):
+        return False
+    return outlook_delta_mode(account_id) == "shadow"
+
+
 def _log_delta_shadow(account_id: str, sync_result: Any) -> None:
     """Log the record of the delta shadow of one poll (EM-T4d items 8, 11).
 
@@ -1171,15 +1189,17 @@ async def _sync_cycle(
         # ``last_synced_at``, so the next cycle reads the pause again.
         # ``delta_shadow`` adds the Graph delta of a listed Outlook mailbox
         # after the sweep (EM-T4d). The sweep stays the one writer, and the
-        # delta runs inside this one call, with no session open.
+        # delta runs inside this one call, with no session open. A first
+        # import or a deep sync runs no delta (review round 1 F6).
+        delta_shadow = _runs_delta_shadow(provider_name, account_id, row,
+                                          deep=deep)
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,
             deep=False,
             since=floor,
             catch_up=_catch_up_watermark(row),
-            delta_shadow=(provider_name == "microsoft"
-                          and outlook_delta_mode(account_id) == "shadow"),
+            delta_shadow=delta_shadow,
         )
         _log_delta_shadow(account_id, sync_result)
         # Fix rounds 3 and 4: whether phase (d) keeps the watermark, the note
@@ -1264,7 +1284,11 @@ async def _sync_cycle(
                  "sync_note": catch_up.note},
             )
 
-            # Mark sync log success
+            # Mark sync log success. A cycle with the delta in shadow writes
+            # NULL, as ``off`` does for Outlook. Its cursor is 3 to 17 KB,
+            # and a row for each poll would keep a copy that nothing reads.
+            # ``last_history_id`` above keeps the cursor (EM-T4d review
+            # round 1 F5).
             await db.execute(
                 text(
                     """UPDATE email_sync_log
@@ -1277,7 +1301,8 @@ async def _sync_cycle(
                     "log_id": sync_log_id,
                     "synced": persisted_count,
                     "skipped": 0,
-                    "history_id": sync_result.new_history_id,
+                    "history_id": (None if delta_shadow
+                                   else sync_result.new_history_id),
                 },
             )
             # A failed import records its error after the new mail landed.

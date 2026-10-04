@@ -245,6 +245,67 @@ _DELTA_PREFER = "odata.maxpagesize=100"
 #: folder, so the next poll seeds it again (EM-T4d item 11).
 _DELTA_GONE = 410
 
+#: The status of a stored link that Graph refuses as a request. A stored link
+#: is a fixed request, so each later poll gets the same 400. It drops the link
+#: as a 410 does (EM-T4d item 11, review round 1 F3).
+_DELTA_BAD_REQUEST = 400
+
+#: The start of each link that the delta may call. A stored link and each
+#: link in a Graph answer must start with it. Else the bearer goes to the host
+#: that the link names (EM-T4d review round 1 F1).
+_GRAPH_LINK_PREFIX = f"{GRAPH_API_BASE}/"
+
+
+class _ForeignLink(RuntimeError):
+    """A delta link that does not start with ``_GRAPH_LINK_PREFIX``.
+
+    ``source`` names where the link came from: ``stored`` (the cursor),
+    ``next`` (an ``@odata.nextLink``) or ``delta`` (an ``@odata.deltaLink``).
+    The message holds no URL, so no log line can print the link."""
+
+    def __init__(self, source: str) -> None:
+        super().__init__(f"a {source} delta link is not a Graph link")
+        self.source = source
+
+
+def _graph_link(link: Any, source: str) -> str:
+    """*link* when it is a Graph link, else raise ``_ForeignLink``.
+
+    The delta calls this before it sends a request to a link, and before it
+    stores a link. So no request with the bearer goes to another host
+    (review round 1 F1)."""
+    if not isinstance(link, str) or not link.startswith(_GRAPH_LINK_PREFIX):
+        raise _ForeignLink(source)
+    return link
+
+
+def _from_graph(exc: BaseException) -> bool:
+    """True when the failed request of *exc* went to Graph.
+
+    A refused refresh fails on the token endpoint with a 400 (EM-T4c). That
+    is a fault of the token, not of the link, so it must not drop a link."""
+    try:
+        url = str(exc.response.request.url)  # type: ignore[attr-defined]
+    except (AttributeError, RuntimeError):
+        return False
+    return url.startswith(_GRAPH_LINK_PREFIX)
+
+
+def _drops_link(exc: BaseException) -> bool:
+    """True when a failed round drops the stored link of its folder.
+
+    A refused link, a 410 and a 400 of Graph drop it, so the folder seeds
+    again at the next poll (EM-T4d item 11, review round 1 F1 and F3). Any
+    other failure keeps it: a 401, a 403 or a 404 on a system folder, a 429,
+    a 5xx, a timeout and a transport error. A 403 or a 404 on Archive or a
+    user folder never gets here, because ``_skips_folder`` skips it first."""
+    if isinstance(exc, _ForeignLink):
+        return True
+    status = _status(exc)
+    if status == _DELTA_GONE:
+        return True
+    return status == _DELTA_BAD_REQUEST and _from_graph(exc)
+
 
 def parse_delta_cursor(raw: str | None) -> dict[str, dict[str, str | None]]:
     """The entries of a stored delta cursor, by folder key (EM-T4d items 5, 6).
@@ -370,6 +431,10 @@ class OutlookProvider(BaseEmailProvider):
         # check existence, so this turns the 3-Graph-call apply into 2. None =
         # not yet fetched; a set (possibly empty for MSA/403) = fetched.
         self._master_categories: set[str] | None = None
+        # True when the last ``list_folders`` skipped a failed ``childFolders``
+        # read. The delta then keeps the links of the folders that the list
+        # left out (WS-17 EM-T4d review round 1 F2).
+        self._folder_list_partial = False
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -516,6 +581,7 @@ class OutlookProvider(BaseEmailProvider):
         deeper nesting is followed only when a child reports its own children).
         """
         client = await self._get_client()
+        self._folder_list_partial = False
         # NB: ``wellKnownName`` is intentionally NOT requested — personal/consumer
         # (MSA) accounts reject it in ``$select`` with HTTP 400, which used to fail
         # the whole folder listing. We classify system vs user by name instead
@@ -571,7 +637,10 @@ class OutlookProvider(BaseEmailProvider):
                     for child in children:
                         out.extend(await _descend(child))
                 except Exception:  # noqa: BLE001
-                    pass  # a forbidden subtree shouldn't drop the parent
+                    # A forbidden subtree shouldn't drop the parent. The mark
+                    # tells the delta that the list is short (EM-T4d review
+                    # round 1 F2). The list itself does not change.
+                    self._folder_list_partial = True
             return out
 
         top = await _page("/me/mailFolders", {"$top": 200, "$select": select})
@@ -1366,7 +1435,10 @@ class OutlookProvider(BaseEmailProvider):
         folder whose canonical name is a system folder is skipped, because
         the sweep reads it by its well-known name. A failed folder list
         gives no user folder and False, so the delta keeps the link of each
-        user folder (EM-T4d item 9).
+        user folder (EM-T4d item 9). A list that skipped a failed
+        ``childFolders`` read gives the folders it has and False, so the
+        delta keeps the links of the folders it left out (review round 1
+        F2). The sweep reads only the folders, so its result stays the same.
         """
         try:
             folders = await self.list_folders()
@@ -1380,7 +1452,7 @@ class OutlookProvider(BaseEmailProvider):
             if canon in _CORE_CANONICAL:
                 continue
             out.append((f.provider_folder_id, canon))
-        return out, True
+        return out, not self._folder_list_partial
 
     async def _user_sweep_folders(self) -> list[tuple[str, str]]:
         """The user folders of a full sweep: (folder id, canonical name). A
@@ -1507,22 +1579,26 @@ class OutlookProvider(BaseEmailProvider):
 
         It returns the next cursor and the record. The folder set follows
         the sweep (item 9): a new user folder seeds, and a folder that the
-        list no longer returns loses its link. A failed folder list
-        (``listed`` False) keeps the link of each stored user folder.
+        list no longer returns loses its link. A failed or short folder list
+        (``listed`` False) keeps the link of each stored user folder that
+        this poll does not read (review round 1 F2).
 
-        A failed folder never raises (item 11). A 410 drops its link, and
-        any other failure keeps the stored entry. The record counts each
-        failure and names its status. A 403 or a 404 on Archive or a user
-        folder skips the folder with no count and no link, by the one rule
-        of the sweep (``_skips_folder``). A mailbox with no Archive then
-        logs no failure on each poll."""
+        A failed folder never raises (item 11). A refused link, a 410 and a
+        400 of Graph drop its link (``_drops_link``), and any other failure
+        keeps the stored entry. The record counts each failure and names its
+        status. A refused link logs ``email.delta_link_refused`` with the
+        folder and the source, and never the link. A 403 or a 404 on
+        Archive or a user folder skips the folder with no count and no link,
+        by the one rule of the sweep (``_skips_folder``). A mailbox with no
+        Archive then logs no failure on each poll."""
         stored = parse_delta_cursor(raw_cursor)
         report = DeltaShadowReport()
         out: dict[str, dict[str, str | None]] = {}
+        seen = set(keys)
         if not listed:
             out.update({k: v for k, v in stored.items()
-                        if k not in SWEEP_SYSTEM_FOLDERS})
-        user = set(keys) - set(SWEEP_SYSTEM_FOLDERS)
+                        if k not in SWEEP_SYSTEM_FOLDERS and k not in seen})
+        user = seen - set(SWEEP_SYSTEM_FOLDERS)
         for key in keys:
             entry = stored.get(key)
             after = _cursor_time(entry.get("at")) if entry else None
@@ -1534,9 +1610,15 @@ class OutlookProvider(BaseEmailProvider):
                 status = _status(exc)
                 report.folders += 1
                 report.failed += 1
-                report.statuses.append(
-                    str(status) if status is not None else type(exc).__name__)
-                if entry is not None and status != _DELTA_GONE:
+                if isinstance(exc, _ForeignLink):
+                    logger.warning(
+                        "email.delta_link_refused folder=%s source=%s "
+                        "reason=foreign_host", key, exc.source)
+                    report.statuses.append("link_refused")
+                else:
+                    report.statuses.append(
+                        str(status) if status is not None else type(exc).__name__)
+                if entry is not None and not _drops_link(exc):
                     out[key] = entry
                 continue
             report.folders += 1
@@ -1575,12 +1657,19 @@ class OutlookProvider(BaseEmailProvider):
         A round that ends stores the delta link and the time it ended as
         ``at``. A round at the page cap stores its next link and no ``at``,
         so the next poll goes on, and the folder seeds until a round ends.
-        A failed request raises, and the caller decides."""
+        A failed request raises, and the caller decides.
+
+        Each link that the code did not build must be a Graph link
+        (``_graph_link``, review round 1 F1). That is the stored link, each
+        ``@odata.nextLink`` and the ``@odata.deltaLink``. A link that fails
+        raises ``_ForeignLink`` before any request goes to it. The seed path
+        is relative to the base URL of the client, so it cannot leave
+        Graph."""
         client = await self._get_client()
         headers = {"Prefer": _DELTA_PREFER}
         params: dict[str, Any] | None = None
         if entry is not None:
-            url: str | None = entry["link"]
+            url: str | None = _graph_link(entry["link"], "stored")
         else:
             url = f"/me/mailFolders/{_folder_path(key)}/messages/delta"
             params = {"$select": _MESSAGE_SELECT}
@@ -1600,12 +1689,14 @@ class OutlookProvider(BaseEmailProvider):
                     out.new_ids.add(str(item["id"]))
             ended = data.get("@odata.deltaLink")
             if ended:
-                out.entry = {"link": ended, "at": datetime.now(UTC).isoformat()}
+                out.entry = {"link": _graph_link(ended, "delta"),
+                             "at": datetime.now(UTC).isoformat()}
                 out.ended = True
                 return out
             url, params = data.get("@odata.nextLink"), None
             if not url:
                 raise RuntimeError("a delta page with no next link and no delta link")
+            url = _graph_link(url, "next")
         out.entry = {"link": url, "at": None}
         return out
 

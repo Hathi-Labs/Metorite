@@ -1185,6 +1185,28 @@ async def test_a_first_page_that_fails_leaves_its_folder_short(slept, status) ->
     assert set(graph.ids("sentitems")) <= {m.provider_message_id for m in res.messages}
 
 
+@pytest.mark.parametrize("page", [1, 2], ids=["first-page", "catch-up-page"])
+async def test_a_short_user_folder_is_named_by_its_canonical_name(slept, page) -> None:
+    """``email-catch-up-folder-name`` (WS-17 EM-T4d review round 1, F7). It
+    pins the behaviour of today, and changes none of it. A user folder that
+    stops short goes into ``catch_up_folders`` by its canonical name, never
+    by its Graph id. Page 2 fails after page 1 read past the watermark, so
+    the sweep raises ``CatchUpIncomplete``. Page 1 fails before any page."""
+    now = _now()
+    graph = _FakeGraph({"F-user": [now - timedelta(minutes=k + 1) for k in range(150)]},
+                       fail={("F-user", page): 500})
+    p = _outlook(graph, ("F-user",))
+
+    res = await p.sync_messages(deep=False, since=now - timedelta(days=30),
+                                catch_up=now - timedelta(days=1))
+
+    assert res.catch_up_incomplete is True
+    assert res.catch_up_folders == [canonical_folder("Folder F-user")]
+    assert res.catch_up_folders != ["F-user"]
+    read = {m.provider_message_id for m in res.messages}
+    assert len(read & set(graph.ids("F-user"))) == (100 if page == 2 else 0)
+
+
 @pytest.mark.parametrize("status", [403, 404])
 @pytest.mark.parametrize("path", ["archive", "F-user"])
 async def test_a_403_or_404_skips_archive_or_a_user_folder_in_the_sweep(

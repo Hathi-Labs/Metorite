@@ -29,14 +29,28 @@ R7 fences named here:
   ``messages``, ``full_snapshot``, ``catch_up_incomplete`` and
   ``catch_up_folders``. An ``@removed`` item writes no TRASH row.
 * ``email-delta-failure-isolated``: a raise, a 410 or a 500 leaves the sweep
-  result unchanged, and the cycle succeeds. A 410 drops that link, and a 500
-  keeps it.
+  result unchanged, and the cycle succeeds. A 410 or a 400 drops that link.
+  Any other failure keeps it: a 429, a 5xx, a raise, a 403 or 404 on the
+  inbox, and a refused refresh. A 403 or 404 on a user folder skips it. A
+  defect outside the guard of each folder leaves the sweep unchanged and
+  logs once (review round 1, F3 and F4).
+* ``email-delta-link-host``: a stored link, a next link and a delta link
+  that do not start with the Graph base URL get no request and no store.
+  The link drops, and the log names the folder and no URL (review round 1,
+  F1).
+* ``email-delta-sync-log``: a shadow cycle writes NULL into the sync log
+  row, and the cursor goes into ``last_history_id`` only. A provider with
+  its own cursor still writes it (review round 1, F5).
+* ``email-delta-normal-cycle``: only a normal incremental cycle sends a
+  delta request. A first import and a deep sync send none (review round 1,
+  F6).
 * ``email-delta-new-mail-counts``: a new message that the fake delta leaves
   out gives ``sweep_only=1``. A message older than ``at`` adds no count. The
   record holds no subject, no address and no link.
 * ``email-delta-folder-set``: a new user folder seeds on its first poll. A
   folder that the list no longer returns loses its link. A failed folder
-  list keeps each link.
+  list keeps each link. A failed ``childFolders`` read keeps the link of
+  the nested folder (review round 1, F2).
 * ``email-delta-floor``: the first request of a seed round filters
   ``receivedDateTime ge <floor>``.
 * ``email-delta-page-cap``: a folder at 20 pages stores its nextLink and
@@ -69,7 +83,9 @@ from acb_common.settings import get_settings
 # Imported here, before any test runs ``wire``: ``acb_llm`` imports a client
 # that subclasses ``httpx.AsyncClient``, and ``wire`` replaces that class.
 from acb_llm import key_store
-from email_ingestion.providers.app_credentials import OAuthApp
+from email_ingestion.providers import outlook
+from email_ingestion.providers.app_credentials import MICROSOFT_OAUTH_BASE, OAuthApp
+from email_ingestion.providers.base import SyncResult
 from email_ingestion.providers.outlook import (
     _MESSAGE_SELECT,
     SWEEP_SYSTEM_FOLDERS,
@@ -121,7 +137,12 @@ class _Graph:
     mail between the sweep and the delta.
 
     ``deltas`` holds ``(path, request)`` for each delta request, and
-    ``issued`` the last delta link of each path."""
+    ``issued`` the last delta link of each path.
+
+    ``children`` maps a user folder to its nested folders, and the list
+    reads them through ``childFolders``. A parent in ``child_fail`` answers
+    503 to that read. ``token_status`` is the answer of the token endpoint
+    to a refresh, and ``None`` gives the 404 of an unknown route."""
 
     def __init__(self, *, user: dict[str, str] | None = None,
                  page_size: int = 100, missing: tuple[str, ...] = ()) -> None:
@@ -134,6 +155,9 @@ class _Graph:
         self.hide: set[str] = set()
         self.fail: dict[str, list[int | str]] = {}
         self.list_fails = False
+        self.children: dict[str, dict[str, str]] = {}
+        self.child_fail: set[str] = set()
+        self.token_status: int | None = None
         self.on_round: Callable[[str], None] | None = None
         self.requests: list[httpx.Request] = []
         self.deltas: list[tuple[str, httpx.Request]] = []
@@ -150,8 +174,11 @@ class _Graph:
     def drop(self, path: str, mid: str) -> None:
         self.mail[path].pop(mid)
 
-    def add_folder(self, fid: str, name: str) -> None:
-        self.user[fid] = name
+    def add_folder(self, fid: str, name: str, *, parent: str | None = None) -> None:
+        if parent is None:
+            self.user[fid] = name
+        else:
+            self.children.setdefault(parent, {})[fid] = name
         self.mail[fid] = {}
 
     def remove_folder(self, fid: str) -> None:
@@ -168,16 +195,21 @@ class _Graph:
         url = str(request.url)
         if url in self._links:
             return self._follow(request, url)
+        if url.startswith(f"{MICROSOFT_OAUTH_BASE}/token") and self.token_status:
+            return httpx.Response(self.token_status, json={"error": "invalid_grant"})
         path = request.url.path
         if path == "/v1.0/me":
             return httpx.Response(200, json={"id": "me"})
         if path == "/v1.0/me/mailFolders":
             if self.list_fails:
                 return httpx.Response(500, json={"error": {"code": "busy"}})
-            return httpx.Response(200, json={"value": [
-                {"id": f, "displayName": n, "childFolderCount": 0}
-                for f, n in self.user.items()]})
+            return httpx.Response(200, json={"value": self._folders(self.user)})
         parts = path.split("/")
+        if len(parts) == 6 and parts[3] == "mailFolders" and parts[5] == "childFolders":
+            if parts[4] in self.child_fail:
+                return httpx.Response(503, json={"error": {"code": "busy"}})
+            return httpx.Response(200, json={
+                "value": self._folders(self.children.get(parts[4], {}))})
         if len(parts) in (6, 7) and parts[3] == "mailFolders" and parts[5] == "messages":
             folder = parts[4]
             is_delta = len(parts) == 7 and parts[6] == "delta"
@@ -190,6 +222,11 @@ class _Graph:
                     folder, _since(request.url.params.get("$filter")), {})
             return self._sweep(folder, request)
         return httpx.Response(404, json={"error": {"code": "NoRoute"}})
+
+    def _folders(self, folders: dict[str, str]) -> list[dict[str, Any]]:
+        return [{"id": f, "displayName": n,
+                 "childFolderCount": len(self.children.get(f, {}))}
+                for f, n in folders.items()]
 
     def _message(self, mid: str, at: datetime) -> dict[str, Any]:
         return {"id": mid, "receivedDateTime": _iso(at),
@@ -460,28 +497,37 @@ class _Store:
         return f"enc:{raw}"
 
 
-def _row(cursor: str | None) -> SimpleNamespace:
-    """The account row of phase (a): an Outlook mailbox that has imported."""
+def _row(cursor: str | None, *, initial_sync_done: bool = True) -> SimpleNamespace:
+    """The account row of phase (a): an Outlook mailbox that has imported,
+    unless ``initial_sync_done`` is False."""
     return SimpleNamespace(
         id="log-1", provider="microsoft", credentials_encrypted="x",
-        last_history_id=cursor, sync_interval_secs=300, initial_sync_done=True,
+        last_history_id=cursor, sync_interval_secs=300,
+        initial_sync_done=initial_sync_done,
         import_since=None, import_reached_at=None, import_count=0,
         last_synced_at=None, created_at=None, db_now=datetime.now(UTC),
         categories=[], user_id="o@x.test")
 
 
 async def _cycle(monkeypatch, graph: _Graph, cursor: str | None, *,
-                 account_id: str = _ACCOUNT) -> SimpleNamespace:
+                 account_id: str = _ACCOUNT, deep: bool | None = None,
+                 since: datetime | None = None,
+                 initial_sync_done: bool = True,
+                 provider: Callable[[], Any] | None = None,
+                 provider_name: str = "microsoft") -> SimpleNamespace:
     """One ``_sync_account`` cycle on fake sessions and the real provider.
 
-    It returns the result, the cursor that phase (d) writes, the messages
-    that phase (c) upserts, every statement, and the open blocks at each
-    delta request."""
+    It returns the result, the cursor that phase (d) writes, the value that
+    phase (d) writes into the sync log, the messages that phase (c)
+    upserts, every statement, and the open blocks at each delta request.
+    ``deep`` and ``since`` go to ``_sync_account`` as a member act passes
+    them."""
     log: list = []
     upserted: list = []
     state = {"open": 0}
     open_at_delta: list[int] = []
-    row = _row(cursor)
+    row = _row(cursor, initial_sync_done=initial_sync_done)
+    row.provider = provider_name
 
     @asynccontextmanager
     async def _ts(org=None):
@@ -521,14 +567,19 @@ async def _cycle(monkeypatch, graph: _Graph, cursor: str | None, *,
     monkeypatch.setattr(sched, "upsert_message", _upsert)
     monkeypatch.setattr(sched, "run_label_learn_hook", _no_hook)
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
-    monkeypatch.setattr(sched, "build_provider", lambda name, creds: _provider())
+    monkeypatch.setattr(sched, "build_provider",
+                        lambda name, creds: (provider or _provider)())
     try:
-        res = await sched._sync_account(account_id, organization_id="org-1")
+        res = await sched._sync_account(account_id, organization_id="org-1",
+                                        deep=deep, since=since)
     finally:
         graph.handle = real_handle  # type: ignore[method-assign]
         monkeypatch.setattr(httpx, "AsyncClient", real_client)
     written = [p["history_id"] for sql, p in log if "last_history_id = COALESCE(" in sql]
+    logged = [p["history_id"] for sql, p in log
+              if sql.startswith("UPDATE email_sync_log SET status = 'success'")]
     return SimpleNamespace(result=res, cursor=written[0] if written else "unset",
+                           sync_log=logged[0] if logged else "unset",
                            upserted=upserted, log=log, open_at_delta=open_at_delta)
 
 
@@ -580,6 +631,114 @@ async def test_the_delta_runs_with_no_session_open(monkeypatch) -> None:
     assert "error" not in run.result, run.result
     assert len(run.open_at_delta) == len(SWEEP_SYSTEM_FOLDERS)
     assert set(run.open_at_delta) == {0}, "a session was open during a delta request"
+
+
+# ── email-delta-sync-log ────────────────────────────────────────────────────
+
+
+async def test_a_shadow_cycle_writes_no_cursor_into_the_sync_log(monkeypatch) -> None:
+    """``email-delta-sync-log``, review round 1 F5. A shadow cycle writes its
+    cursor into ``last_history_id`` and NULL into the sync log row, as
+    ``off`` does for Outlook. A row for each poll would hold 3 to 17 KB that
+    nothing reads. A later ``off`` cycle writes NULL too."""
+    graph = _Graph()
+    _mailbox(graph)
+    _set_mode(monkeypatch, "shadow")
+    run = await _cycle(monkeypatch, graph, None)
+    assert "error" not in run.result, run.result
+    assert set(parse_delta_cursor(run.cursor)) == set(SWEEP_SYSTEM_FOLDERS)
+    assert run.sync_log is None, "a shadow cycle wrote its cursor into the sync log"
+
+    _set_mode(monkeypatch, "off")
+    off = await _cycle(monkeypatch, graph, run.cursor)
+    assert (off.cursor, off.sync_log) == (None, None)
+
+
+class _CursorProvider:
+    """A provider with a cursor of its own, as Gmail and IMAP have."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def authenticate(self) -> bool:
+        return True
+
+    def credentials_dirty(self) -> bool:
+        return False
+
+    def export_credentials(self) -> dict[str, Any]:
+        return {}
+
+    async def sync_messages(self, **kwargs: Any) -> SyncResult:
+        self.calls.append(kwargs)
+        return SyncResult(messages_synced=0, messages=[], new_history_id="h-77")
+
+
+async def test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log(
+    monkeypatch,
+) -> None:
+    """``email-delta-sync-log``: F5 changes the shadow cycle only. A Gmail
+    cycle still writes its own cursor into the sync log, with the mode
+    ``shadow`` too, because only an Outlook mailbox runs the delta."""
+    graph = _Graph()
+    made: list[_CursorProvider] = []
+
+    def _make() -> _CursorProvider:
+        made.append(_CursorProvider())
+        return made[-1]
+
+    for mode in ("off", "shadow"):
+        _set_mode(monkeypatch, mode)
+        sched._resolve_delta_mode.cache_clear()
+        made.clear()
+        run = await _cycle(monkeypatch, graph, None, provider=_make,
+                           provider_name="gmail")
+        assert "error" not in run.result, run.result
+        assert (run.cursor, run.sync_log) == ("h-77", "h-77"), mode
+        assert made[0].calls[0]["delta_shadow"] is False, mode
+
+
+# ── email-delta-normal-cycle ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("deep", "since", "done", "imports", "runs"), [
+    (None, None, True, False, True),
+    (None, None, False, True, False),
+    (True, "floor", True, True, False),
+    (True, None, True, True, False),
+    (False, None, False, False, False),
+], ids=["normal-cycle", "first-import", "member-deep-sync", "manual-full-sync",
+        "rerun-during-import"])
+async def test_only_a_normal_cycle_sends_a_delta_request(
+    monkeypatch, deep, since, done, imports, runs,
+) -> None:
+    """``email-delta-normal-cycle``, review round 1 F6. A listed mailbox in
+    ``shadow`` runs the delta on a normal incremental cycle only. A first
+    import, the deep sync of a member act (with or without ``since``) and a
+    rerun before the import ends send no delta request. Those cycles hold
+    the mailbox lock for a long sweep, and a manual sync has 30 seconds.
+    The sweep runs in each of them."""
+    graph = _Graph()
+    _mailbox(graph)
+    _set_mode(monkeypatch, "shadow")
+    imported: list[bool] = []
+
+    async def _import(org, account_id, provider, row, *, floor, progress):
+        imported.append(progress)
+        return 0, None
+
+    monkeypatch.setattr(sched, "_import_in_batches", _import)
+    run = await _cycle(monkeypatch, graph, None, deep=deep,
+                       since=_floor() if since else None, initial_sync_done=done)
+    assert "error" not in run.result, run.result
+    assert bool(imported) is imports
+    assert graph.sweeps, "the sweep did not run"
+    if runs:
+        assert len(graph.delta_requests()) == len(SWEEP_SYSTEM_FOLDERS)
+        assert set(parse_delta_cursor(run.cursor)) == set(SWEEP_SYSTEM_FOLDERS)
+    else:
+        assert graph.delta_requests() == [], "a delta ran outside a normal cycle"
+        assert run.cursor is None
 
 
 # ── email-delta-links-whole ─────────────────────────────────────────────────
@@ -723,14 +882,24 @@ async def test_a_removed_item_writes_no_trash_row(monkeypatch) -> None:
 @pytest.mark.parametrize(("answer", "status", "keeps"), [
     ("raise", "ConnectError", True),
     (500, "500", True),
+    (503, "503", True),
+    (429, "429", True),
+    (403, "403", True),
+    (404, "404", True),
     (410, "410", False),
-], ids=["raise", "500", "410"])
+    (400, "400", False),
+], ids=["raise", "500", "503", "429", "403-inbox", "404-inbox", "410", "400"])
 async def test_a_failed_delta_leaves_the_sweep_unchanged(
     wire, answer, status, keeps,
 ) -> None:
     """``email-delta-failure-isolated``. The inbox link fails. The sweep
-    fields equal those of ``off``. A 410 drops the inbox link, and a raise
-    or a 500 keeps the stored entry as it was. The other folders go on."""
+    fields equal those of ``off``. The other folders go on.
+
+    * A 410 drops the inbox link. A 400 drops it too (review round 1 F3): a
+      stored link is a fixed request, so the 400 comes back at each poll.
+    * Any other failure keeps the stored entry as it was (review round 1
+      F4c): a raise, a 5xx, a 429, and a 403 or a 404 on the inbox. Each
+      mailbox has an inbox, so that 403 or 404 is a failure, not a skip."""
     graph = wire(_Graph())
     _mailbox(graph)
     seeded = await _poll(None)
@@ -782,6 +951,198 @@ async def test_a_mailbox_with_no_archive_logs_no_failure(wire) -> None:
     assert report["failed"] == 0
     assert report["folders"] == len(SWEEP_SYSTEM_FOLDERS) - 1
     assert "archive" not in parse_delta_cursor(res.new_history_id)
+
+
+async def test_a_refused_refresh_on_a_stored_link_keeps_the_link(wire) -> None:
+    """``email-delta-failure-isolated``, review round 1 F3. The inbox link
+    gets a 401, and the token endpoint refuses the refresh with a 400
+    (EM-T4c). That 400 is a fault of the token, not of the link, so the
+    stored inbox entry stays."""
+    graph = wire(_Graph())
+    _mailbox(graph)
+    seeded = await _poll(None)
+    stored = parse_delta_cursor(seeded.new_history_id)
+    graph.fail["inbox"] = [401]
+    graph.token_status = 400
+    res = await _poll(seeded.new_history_id)
+    assert _report(res)["failed"] == 1
+    assert parse_delta_cursor(res.new_history_id)["inbox"] == stored["inbox"]
+    assert any(str(r.url).startswith(MICROSOFT_OAUTH_BASE) for r in graph.requests), (
+        "the 401 did not reach the token endpoint")
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_a_403_or_404_on_a_user_folder_skips_it(wire, status) -> None:
+    """``email-delta-failure-isolated``, review round 1 F4b. A 403 or a 404
+    on a USER folder skips it by the one rule of the sweep: no count, no
+    link and no failure. The same answer on the inbox is a failure (the
+    test above)."""
+    graph = wire(_Graph(user={"uf-a": "Projects"}))
+    _mailbox(graph)
+    graph.add("uf-a", "a-1", _now() - timedelta(hours=1))
+    seeded = await _poll(None)
+    assert "uf-a" in parse_delta_cursor(seeded.new_history_id)
+    graph.fail["uf-a"] = [status]
+    res = await _poll(seeded.new_history_id)
+    report = _report(res)
+    assert (report["failed"], report["statuses"]) == (0, [])
+    assert report["folders"] == len(SWEEP_SYSTEM_FOLDERS)
+    assert "uf-a" not in parse_delta_cursor(res.new_history_id)
+
+
+def _boom(*_a: Any, **_k: Any) -> Any:
+    raise RuntimeError("a defect in the compare")
+
+
+@pytest.mark.parametrize("helper", ["dump_delta_cursor", "_new_since"])
+async def test_a_defect_in_the_compare_leaves_the_sweep_unchanged(
+    wire, monkeypatch, helper,
+) -> None:
+    """``email-delta-failure-isolated``, review round 1 F4a: the outer guard
+    of ``sync_messages``. A helper outside the guard of each folder raises.
+    The sweep fields equal those of ``off``, the poll returns no cursor, and
+    the record counts each folder as failed with ONE status."""
+    graph = wire(_Graph())
+    _mailbox(graph)
+    seeded = await _poll(None)
+    off = await _poll(seeded.new_history_id, shadow=False)
+    monkeypatch.setattr(outlook, helper, _boom)
+    shadow = await _poll(seeded.new_history_id)
+    assert _sweep_fields(shadow) == _sweep_fields(off)
+    assert shadow.new_history_id is None
+    folders = len(SWEEP_SYSTEM_FOLDERS)
+    assert _report(shadow) == {
+        "folders": folders, "both": 0, "sweep_only": 0, "delta_only": 0,
+        "seeding": 0, "removed": 0, "failed": folders,
+        "statuses": ["RuntimeError"]}
+
+
+async def test_a_defect_in_the_compare_keeps_the_cycle_a_success_and_logs_once(
+    monkeypatch, caplog,
+) -> None:
+    """``email-delta-failure-isolated``, review round 1 F4a, through
+    ``_sync_account``. The cycle succeeds and upserts what ``off`` upserts.
+    Phase (d) gets no cursor, so it keeps the stored one. The cycle logs
+    ``email.delta_shadow_failed`` once."""
+    graph = _Graph()
+    _mailbox(graph)
+    _set_mode(monkeypatch, "shadow")
+    seeded = await _cycle(monkeypatch, graph, None)
+    _set_mode(monkeypatch, "off")
+    off = await _cycle(monkeypatch, graph, seeded.cursor)
+    _set_mode(monkeypatch, "shadow")
+    monkeypatch.setattr(outlook, "dump_delta_cursor", _boom)
+    with caplog.at_level("INFO", logger=sched.logger.name):
+        run = await _cycle(monkeypatch, graph, seeded.cursor)
+    assert "error" not in run.result, run.result
+
+    def _ids(cycle):
+        return sorted((m.provider_message_id, m.folder) for m in cycle.upserted)
+
+    assert _ids(run) == _ids(off)
+    assert run.cursor is None and run.sync_log is None
+    failed = [r.getMessage() for r in caplog.records
+              if "email.delta_shadow_failed" in r.getMessage()]
+    assert failed == [f"email.delta_shadow_failed account={_ACCOUNT} "
+                      f"folders={len(SWEEP_SYSTEM_FOLDERS)} status=RuntimeError"]
+
+
+# ── email-delta-link-host ───────────────────────────────────────────────────
+
+#: Stored links that are not Graph links. The second puts Graph in the user
+#: info, so the host is the collector. The fourth sends the bearer in clear.
+_FOREIGN_LINKS = {
+    "other-host": "https://collector.example/v1.0/me/mailFolders('inbox')"
+                  "/messages/delta?$deltatoken=x",
+    "user-info": "https://graph.microsoft.com@collector.example/v1.0/me"
+                 "/mailFolders('inbox')/messages/delta?$deltatoken=x",
+    "suffix-host": "https://graph.microsoft.com.collector.example/v1.0/me"
+                   "/mailFolders('inbox')/messages/delta?$deltatoken=x",
+    "plain-http": "http://graph.microsoft.com/v1.0/me/mailFolders('inbox')"
+                  "/messages/delta?$deltatoken=x",
+    "relative": "/me/mailFolders/inbox/messages/delta?$deltatoken=x",
+}
+
+
+def _safe(requests: list[httpx.Request]) -> bool:
+    """True when each request went to Graph over https."""
+    return all(r.url.scheme == "https" and r.url.host == "graph.microsoft.com"
+               for r in requests)
+
+
+@pytest.mark.parametrize("link", list(_FOREIGN_LINKS.values()),
+                         ids=list(_FOREIGN_LINKS))
+async def test_a_stored_link_that_is_not_a_graph_link_sends_no_request(
+    wire, caplog, link,
+) -> None:
+    """``email-delta-link-host``, review round 1 F1. The cursor is text in
+    the database, so its inbox link can name any host. No request goes to
+    it, so the bearer stays with Graph. The poll drops the link, the record
+    names ``link_refused``, and the log names the folder and no URL. The
+    next poll seeds the inbox again."""
+    graph = wire(_Graph())
+    _mailbox(graph)
+    stored = parse_delta_cursor((await _poll(None)).new_history_id)
+    stored["inbox"] = {"link": link, "at": _iso(_now())}
+    cursor = dump_delta_cursor(stored)
+    off = await _poll(cursor, shadow=False)
+    before, deltas_before = len(graph.requests), len(graph.deltas)
+    with caplog.at_level("WARNING", logger=outlook.logger.name):
+        shadow = await _poll(cursor)
+    assert _safe(graph.requests[before:]), "a request left Graph"
+    assert all(str(r.url) != link for r in graph.requests)
+    assert not [p for p, _ in graph.deltas[deltas_before:] if p == "inbox"], (
+        "the refused inbox link was called")
+    assert _sweep_fields(shadow) == _sweep_fields(off)
+    report = _report(shadow)
+    assert (report["failed"], report["statuses"]) == (1, ["link_refused"])
+    after = parse_delta_cursor(shadow.new_history_id)
+    assert "inbox" not in after
+    assert after["sent"]["link"] == graph.issued["sentitems"]
+    lines = [r.getMessage() for r in caplog.records]
+    assert [m for m in lines if "email.delta_link_refused" in m] == [
+        "email.delta_link_refused folder=inbox source=stored reason=foreign_host"]
+    assert not [m for m in lines if "collector" in m or "deltatoken" in m]
+
+    before = len(graph.deltas)
+    again = await _poll(shadow.new_history_id)
+    inbox = [r for p, r in graph.deltas[before:] if p == "inbox"]
+    assert inbox and inbox[0].url.path == "/v1.0/me/mailFolders/inbox/messages/delta"
+    assert "inbox" in parse_delta_cursor(again.new_history_id)
+
+
+@pytest.mark.parametrize(("field", "source"), [
+    ("@odata.nextLink", "next"), ("@odata.deltaLink", "delta")])
+async def test_a_link_in_a_graph_answer_that_is_not_a_graph_link_is_refused(
+    wire, caplog, field, source,
+) -> None:
+    """``email-delta-link-host``, review round 1 F1. Each inbox page names a
+    next link or a delta link on another host. The round sends no request
+    to it and stores no link for the inbox. The other folders go on."""
+    graph = wire(_Graph(page_size=2))
+    _mailbox(graph, n=5)
+    real_page = graph._page
+
+    def _foreign(folder: str, rid: int, k: int) -> httpx.Response:
+        resp = real_page(folder, rid, k)
+        body = json.loads(resp.content)
+        if folder == "inbox" and field in body:
+            body[field] = _FOREIGN_LINKS["other-host"]
+        return httpx.Response(200, json=body)
+
+    graph._page = _foreign  # type: ignore[method-assign]
+    off = await _poll(None, shadow=False)
+    with caplog.at_level("WARNING", logger=outlook.logger.name):
+        shadow = await _poll(None)
+    assert _safe(graph.requests), "a request left Graph"
+    assert _sweep_fields(shadow) == _sweep_fields(off)
+    report = _report(shadow)
+    assert (report["failed"], report["statuses"]) == (1, ["link_refused"])
+    after = parse_delta_cursor(shadow.new_history_id)
+    assert "inbox" not in after and "sent" in after
+    assert [r.getMessage() for r in caplog.records
+            if "email.delta_link_refused" in r.getMessage()] == [
+        f"email.delta_link_refused folder=inbox source={source} reason=foreign_host"]
 
 
 # ── email-delta-new-mail-counts ─────────────────────────────────────────────
@@ -878,6 +1239,41 @@ async def test_the_folder_set_follows_the_sweep(wire) -> None:
     kept = parse_delta_cursor(fourth.new_history_id)
     assert kept["uf-b"] == cursor["uf-b"], "a failed folder list dropped a link"
     assert [p for p, _ in graph.deltas[before:]] == list(_SYSTEM.values())
+
+
+async def test_a_failed_child_folder_read_keeps_the_link_of_the_nested_folder(
+    wire,
+) -> None:
+    """``email-delta-folder-set``, review round 1 F2. ``list_folders`` skips
+    a ``childFolders`` read that fails, so the list comes back short. The
+    sweep reads what the list gives, as before. The delta keeps the link of
+    the nested folder that the list left out, and the parent goes on."""
+    graph = wire(_Graph(user={"uf-a": "Projects"}))
+    graph.add_folder("uf-n", "Nested", parent="uf-a")
+    _mailbox(graph)
+    graph.add("uf-n", "n-1", _now() - timedelta(hours=1))
+    first = await _poll(None)
+    cursor = parse_delta_cursor(first.new_history_id)
+    assert {"uf-a", "uf-n"} <= set(cursor)
+
+    graph.child_fail.add("uf-a")
+    assert [f.provider_folder_id for f in await _provider().list_folders()] == [
+        "uf-a"], "a failed childFolders read changed the list"
+    off = await _poll(first.new_history_id, shadow=False)
+    shadow = await _poll(first.new_history_id)
+    assert _sweep_fields(shadow) == _sweep_fields(off)
+    assert "n-1" not in {m.provider_message_id for m in shadow.messages}
+    kept = parse_delta_cursor(shadow.new_history_id)
+    assert kept["uf-n"] == cursor["uf-n"], "a short folder list dropped a link"
+    assert kept["uf-a"]["link"] == graph.issued["uf-a"] != cursor["uf-a"]["link"]
+    assert _report(shadow)["failed"] == 0
+
+    # A folder that the short list DOES give follows the normal rules: a 410
+    # drops its link. Only the folders that the list left out keep theirs.
+    graph.fail["uf-a"] = [410]
+    later = parse_delta_cursor((await _poll(shadow.new_history_id)).new_history_id)
+    assert "uf-a" not in later, "a short folder list kept a link that Graph dropped"
+    assert later["uf-n"] == cursor["uf-n"]
 
 
 # ── email-delta-page-cap ────────────────────────────────────────────────────

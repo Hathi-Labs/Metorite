@@ -1085,9 +1085,11 @@ class TestTheSyncCoreWritesItsOwnTenant:
     ):
         """EM-T4d (R8). A ``shadow`` cycle of a listed Outlook mailbox of
         org B runs the real ``OutlookProvider`` against a fake Graph. It
-        writes the JSON cursor into the row and the log row of org B, and
-        org A reads neither. A later ``off`` cycle sends no delta request,
-        and phase (d) keeps the cursor through its ``COALESCE``."""
+        writes the JSON cursor into the row of org B, and org A cannot read
+        it. The log row of org B holds NULL, not the cursor (review round 1
+        F5), and org A cannot read that row. A later ``off`` cycle sends no
+        delta request, and phase (d) keeps the cursor through its
+        ``COALESCE``."""
         from acb_llm import key_store
         from email_ingestion.providers.outlook import (
             SWEEP_SYSTEM_FOLDERS,
@@ -1147,19 +1149,20 @@ class TestTheSyncCoreWritesItsOwnTenant:
             parsed = parse_delta_cursor(cursor)
             assert set(parsed) == set(SWEEP_SYSTEM_FOLDERS)
             assert parsed["inbox"]["link"] == graph.issued["inbox"]
-            assert logged == [cursor]
+            assert logged == [None], "a shadow cycle wrote its cursor into the log"
 
             same = ("SELECT count(*) FROM email_accounts "
                     "WHERE id = CAST(:a AS uuid) AND last_history_id = :c")
             logs = ("SELECT count(*) FROM email_sync_log "
-                    "WHERE account_id = CAST(:a AS uuid) AND provider_history_id = :c")
+                    "WHERE account_id = CAST(:a AS uuid) AND status = 'success' "
+                    "AND provider_history_id IS NULL")
             params = {"a": account_id, "c": cursor}
             assert _count_as(p.app_url, p.org_b, same, params) == 1
-            assert _count_as(p.app_url, p.org_b, logs, params) == 1
+            assert _count_as(p.app_url, p.org_b, logs, {"a": account_id}) == 1
             assert _count_as(p.app_url, p.org_a, same, params) == 0, (
                 "org A read the cursor of org B"
             )
-            assert _count_as(p.app_url, p.org_a, logs, params) == 0
+            assert _count_as(p.app_url, p.org_a, logs, {"a": account_id}) == 0
 
             monkeypatch.setattr(settings, "email_outlook_delta", "off")
             before = len(graph.deltas)
@@ -1170,7 +1173,7 @@ class TestTheSyncCoreWritesItsOwnTenant:
             assert len(graph.deltas) == before, "an off cycle sent a delta request"
             kept, logged = _stored()
             assert kept == cursor, "an off cycle changed the stored cursor"
-            assert logged == [cursor, None]
+            assert logged == [None, None]
         finally:
             release_tenant(token)
             with p.admin_engine.begin() as c:

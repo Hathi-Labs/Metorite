@@ -202,8 +202,17 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `_sync_cycle` logs `email.delta_shadow` with counts only. The cursor goes
   into `last_history_id`. Phase (d) keeps it through `COALESCE`, so `off`
   never clears it.
-  - A delta failure never changes the four sweep fields. A 410 drops the
-    link of its folder, and any other failure keeps it.
+  - A delta failure never changes the four sweep fields. A 410 or a 400 of
+    Graph drops the link of its folder, and any other failure keeps it.
+  - 🔴 **Each link must start with `GRAPH_API_BASE` and a slash** (review
+    round 1). `_graph_link` checks the stored link, each next link and the
+    delta link before a request or a store. Else the bearer goes to the host
+    that the cursor names. A refused link drops, and the log names no URL.
+  - Only a normal incremental cycle runs the delta. A first import, a deep
+    sync and a cycle before `initial_sync_done` run none
+    (`scheduler._runs_delta_shadow`).
+  - A shadow cycle writes NULL into `email_sync_log.provider_history_id`.
+    Only `last_history_id` keeps the cursor.
   - No `@removed` item becomes a `[DELETED]` marker, so the reconcile reads
     the sweep alone.
   - One poll reads at most 20 delta pages for each folder.
