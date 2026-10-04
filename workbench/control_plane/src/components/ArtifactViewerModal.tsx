@@ -18,6 +18,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform, rehypeGateRemoteMedia } from "@/lib/markdownMedia";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
@@ -143,42 +145,64 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
   );
 }
 
-// ─── Markdown image path resolver ─────────────────────────────────────────────
+// ─── Markdown renderer ──────────────────────────────────────────────────────
 
 /**
- * Rewrite an image src found inside a markdown file so it routes through the
- * gateway file proxy.
+ * An agent-written `.md` file, rendered. The view and the live edit preview
+ * both draw through this, so the two cannot disagree about what loads.
  *
- * Rules (in priority order):
- *  1. Already a full URL (http/https/data:) → pass through unchanged
- *  2. Absolute path starting with /          → treat as workspace-relative and proxy
- *  3. Relative path                          → resolve against the markdown file's
- *                                             directory, then proxy
+ * Raw HTML is allowed (`rehype-raw`), so an attacker who steers the file can
+ * write any tag. `rehypeGateRemoteMedia` runs after it and strips every remote
+ * fetch a browser would make on render. `MarkdownImage` draws a remote image
+ * as a click-to-load placeholder. `lib/markdownMedia.ts` holds the threat.
+ * Fence: `src/components/markdownImage.test.ts`.
  */
-function resolveMediaSrc(src: string, sessionId: string, mdFilePath: string): string {
-  // Full URLs and data URIs pass through unchanged
-  if (/^(https?:|data:)/i.test(src)) return src;
-
-  let workspacePath: string;
-  if (src.startsWith("/")) {
-    // Treat absolute paths as workspace-root-relative
-    workspacePath = src.replace(/^\/+/, "");
-  } else {
-    // Relative: resolve against the directory containing the .md file
-    const mdDir = mdFilePath.includes("/")
-      ? mdFilePath.substring(0, mdFilePath.lastIndexOf("/"))
-      : "";
-    // Resolve ".." segments manually (URL has no filesystem resolve in browser)
-    const parts = (mdDir ? `${mdDir}/${src}` : src).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "..") resolved.pop();
-      else if (part !== ".") resolved.push(part);
-    }
-    workspacePath = resolved.join("/");
-  }
-
-  return `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(workspacePath)}`;
+export function ArtifactMarkdown({
+  content,
+  sessionId,
+  mdFilePath,
+}: {
+  content: string;
+  sessionId: string;
+  mdFilePath: string;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw, rehypeGateRemoteMedia]}
+      urlTransform={markdownUrlTransform}
+      components={{
+        // A workspace path routes through the file proxy. A remote URL is a
+        // click-to-load placeholder.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        img: ({ node: _node, ...props }) => (
+          <MarkdownImage
+            {...props}
+            sessionId={sessionId}
+            mdFilePath={mdFilePath}
+            className="max-w-full rounded"
+          />
+        ),
+        // Open links in a new tab and guard external URLs
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        a({ node: _node, href, children, ...rest }) {
+          const isExternal = href?.startsWith("http");
+          return (
+            <a
+              href={href}
+              target={isExternal ? "_blank" : undefined}
+              rel={isExternal ? "noreferrer noopener" : undefined}
+              {...rest}
+            >
+              {children}
+            </a>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 }
 
 // ─── PDF renderer (react-pdf) ─────────────────────────────────────────────────
@@ -625,33 +649,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                         </p>
                       )
                     ) : editContent.trim() ? (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
-                        components={{
-                          img({ src, alt, ...rest }) {
-                            const rawSrc = typeof src === "string" ? src : "";
-                            const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, entry.path);
-                            // eslint-disable-next-line @next/next/no-img-element
-                            return <img src={resolvedSrc} alt={alt ?? ""} {...rest} className="max-w-full rounded" />;
-                          },
-                          a({ href, children, ...rest }) {
-                            const isExternal = href?.startsWith("http");
-                            return (
-                              <a
-                                href={href}
-                                target={isExternal ? "_blank" : undefined}
-                                rel={isExternal ? "noreferrer noopener" : undefined}
-                                {...rest}
-                              >
-                                {children}
-                              </a>
-                            );
-                          },
-                        }}
-                      >
-                        {editContent}
-                      </ReactMarkdown>
+                      <ArtifactMarkdown
+                        content={editContent}
+                        sessionId={sessionId}
+                        mdFilePath={entry.path}
+                      />
                     ) : (
                       <p className="text-muted-foreground text-sm italic">
                         Start typing to see a live preview…
@@ -719,35 +721,11 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
               prose-th:text-foreground prose-td:text-muted-foreground
               prose-img:rounded prose-img:mx-auto"
             >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw]}
-                components={{
-                  // Rewrite image src: relative paths → gateway file proxy
-                  img({ src, alt, ...rest }) {
-                    const rawSrc = typeof src === "string" ? src : "";
-                    const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, entry.path);
-                    // eslint-disable-next-line @next/next/no-img-element
-                    return <img src={resolvedSrc} alt={alt ?? ""} {...rest} className="max-w-full rounded" />;
-                  },
-                  // Open links in a new tab and guard external URLs
-                  a({ href, children, ...rest }) {
-                    const isExternal = href?.startsWith("http");
-                    return (
-                      <a
-                        href={href}
-                        target={isExternal ? "_blank" : undefined}
-                        rel={isExternal ? "noreferrer noopener" : undefined}
-                        {...rest}
-                      >
-                        {children}
-                      </a>
-                    );
-                  },
-                }}
-              >
-                {state.content}
-              </ReactMarkdown>
+              <ArtifactMarkdown
+                content={state.content}
+                sessionId={sessionId}
+                mdFilePath={entry.path}
+              />
             </div>
           )}
 

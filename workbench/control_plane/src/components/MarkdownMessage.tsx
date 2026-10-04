@@ -9,6 +9,7 @@
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
  *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
  *  • Streaming cursor (blinking ▌) while the response is in-flight
@@ -20,6 +21,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import { ControlLink } from "@/components/ControlLink";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform } from "@/lib/markdownMedia";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
@@ -87,52 +90,6 @@ interface MarkdownMessageProps {
   /** The index the caller already built (`MessageBubble`). Absent: built
    *  here from `toolEvents`, so the index is made once either way. */
   entityIndex?: EntityIndex;
-}
-
-// ─── Media path resolver (shared with ArtifactViewerModal) ────────────────────
-
-/**
- * Rewrite an image src found inside a markdown message so it routes through the
- * gateway file proxy.
- *
- * Rules (in priority order):
- *  1. Already a full URL (http/https/data:) → pass through unchanged
- *  2. Absolute path starting with /          → treat as workspace-relative and proxy
- *  3. Relative path                          → resolve against the mdFilePath's
- *                                             directory, then proxy
- */
-function resolveMediaSrc(
-  src: string,
-  sessionId: string | undefined,
-  mdFilePath: string | undefined,
-): string {
-  // Full URLs and data URIs pass through unchanged
-  if (/^(https?:|data:)/i.test(src)) return src;
-  // No session context → can't resolve; return as-is
-  if (!sessionId) return src;
-
-  let workspacePath: string;
-  if (src.startsWith("/")) {
-    // Treat absolute paths as workspace-root-relative
-    workspacePath = src.replace(/^\/+/, "");
-  } else if (mdFilePath) {
-    // Relative: resolve against the directory containing the .md file
-    const mdDir = mdFilePath.includes("/")
-      ? mdFilePath.substring(0, mdFilePath.lastIndexOf("/"))
-      : "";
-    const parts = (mdDir ? `${mdDir}/${src}` : src).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "..") resolved.pop();
-      else if (part !== ".") resolved.push(part);
-    }
-    workspacePath = resolved.join("/");
-  } else {
-    // No mdFilePath context — treat as workspace-root-relative
-    workspacePath = src;
-  }
-
-  return `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(workspacePath)}`;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -339,6 +296,7 @@ export function MarkdownBody({
   return (
     <ReactMarkdown
       remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
+      urlTransform={markdownUrlTransform}
       components={{
         // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
         // `node` is react-markdown's own prop, and must not reach the DOM.
@@ -420,22 +378,18 @@ export function MarkdownBody({
         ),
 
         // ── Images ──
-        // Rewrite src to route through the gateway workspace file proxy.
-        // Full URLs (https://…) and data: URIs pass through unchanged.
-        img({ src, alt, ...rest }) {
-          const rawSrc = typeof src === "string" ? src : "";
-          const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, mdFilePath);
-          // eslint-disable-next-line @next/next/no-img-element
-          return (
-            <img
-              src={resolvedSrc}
-              alt={alt ?? ""}
-              {...rest}
-              className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
-              loading="lazy"
-            />
-          );
-        },
+        // A workspace path routes through the gateway file proxy. A remote
+        // URL draws as a click-to-load placeholder and loads only on a
+        // member's click (`lib/markdownMedia.ts` holds the threat).
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        img: ({ node: _node, ...props }) => (
+          <MarkdownImage
+            {...props}
+            sessionId={sessionId}
+            mdFilePath={mdFilePath}
+            className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
+          />
+        ),
 
         // ── Tables (GFM) ──
         // A table keeps its words whole and scrolls when it is wider than its
