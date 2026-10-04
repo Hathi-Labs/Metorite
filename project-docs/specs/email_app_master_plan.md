@@ -6575,6 +6575,25 @@ fixtures. The R8 case runs on a real Postgres as `acb_app_h3rls`.
 | `test_each_fixture_is_a_gmail_message_with_no_real_address` | hermetic | Eight fixtures, the shape of `format=full`, and only RFC 2606 domains. |
 | `test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows` | R8 | Two parses of fixture (a), each with its own Gmail id, keep two rows over two syncs through `_write_messages`. |
 
+**Mutations, as run (2026-10-05).** Each mutation ran against `test_gmail_parse.py`,
+`test_email_folders.py` and the R8 class of `test_email_rekey_reclaim.py`, on a real Postgres with
+0 skips. A script then wrote back the original bytes of `gmail.py` and checked its SHA-256. Each
+mutation turned a named test red.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M1 | The body walk reads the top level only | `test_a_nested_alternative_gives_text_and_html`, both cases |
+| M2 | `_parse_headers` keeps the case of each name | the `Message-ID` and `Message-Id` cases of `test_message_id_reads_in_any_case`, `test_message_id_keeps_the_form_of_graph`, the two address tests and the R8 case |
+| M3 | The fallback is `inbox` | `test_no_system_label_files_as_archive`, `test_a_user_label_never_sets_the_folder`, the three page tests and `test_email_folders.py::test_gmail_folder_from_labels_priority` |
+| M4 | `list_messages` writes `canonical_override` into the folder | `test_a_label_page_keeps_the_folder_of_the_parse` |
+| M5 | The Archive branch never runs, so `labelIds` goes out | `test_the_archive_page_sends_a_query_and_no_label`, `test_a_user_label_named_archive_does_not_replace_the_query` |
+| M6a | The Message-ID loses its angle brackets | `test_message_id_keeps_the_form_of_graph`, the three cases of `test_message_id_reads_in_any_case`, the R8 case |
+| M6b | The Message-ID is lower-cased | the same five tests as M6a |
+| M7 | The address list splits on each comma | `test_a_quoted_comma_is_one_address` |
+| M8 | Each part decodes as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
+| M9 | A single-part body goes into `body_text` | `test_single_part_html_fills_body_html` |
+| E6 | The names decode before the split | `test_an_encoded_display_name_decodes` |
+
 #### 12.3.3 EM-G3a — send and drafts
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the draft row is SQL. No migration.
