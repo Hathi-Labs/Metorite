@@ -26,6 +26,7 @@ providers/
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
+storage.py         — the storage meter, the limit, and the removal of older mail (EM-T6c)
 ```
 
 ## Providers
@@ -238,6 +239,16 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   member moved it in the Outlook client. A failed lookup, or a row with no
   internet message id, keeps its row too. `trash_import_rows` checks
   `updated_at` again in its own block.
+- ⚠️ **Each mailbox has a storage limit (WS-17 EM-T6c, D-EM-14).**
+  `storage.py` is the one owner of the limit, the meter and the removal.
+  The limit is `email_mailbox_storage_limit_mb` (500) for each mailbox. The
+  meter sums `pg_column_size` of each column of variable length. Do not use
+  `octet_length` or the size of a whole row. It runs in the block of each
+  import batch and in phase (d). At the limit, the import fetches no next
+  batch, a first import ends at `import_phase = 'limit'`, and phases (e)
+  and (f) do not run (owner answer Q3). New mail still syncs (Q2). The
+  removal deletes Metorite's copy only, and `storage.py` imports nothing
+  from `providers`. R7: `tests/unit/test_email_storage_limit.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
