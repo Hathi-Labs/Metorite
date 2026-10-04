@@ -125,9 +125,11 @@ clone cache.
    `_PLATFORM_CALLABLES`, a weak map from each platform callable to the tool
    names that it may carry. A tool OBJECT takes a registry entry, or a
    delegation name's exemption, only through that map. Register a new
-   platform tool with `register_platform_callable` where you build it. A
-   wrapper that our code makes calls `register_platform_wrapper(original,
-   wrapper)`, as the permission gate and the steer wrap do. Never follow
+   platform tool with `_register_platform_callable` where you build it. A
+   wrapper that our code makes calls `_register_platform_wrapper(original,
+   wrapper)`, as the permission gate and the steer wrap do. Both functions
+   are private, and they register nothing for a caller whose module is not in
+   `acb_skills` or `orchestrator` (`_caller_is_platform`). Never follow
    `__wrapped__`, or a `functools.wraps` wrapper of another repo becomes
    trusted. The Copilot guard resolves a request's name in the session's own
    tool list (a delegation name too), and fails closed when it finds none.

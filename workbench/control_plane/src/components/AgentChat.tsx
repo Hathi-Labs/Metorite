@@ -30,6 +30,7 @@ import type { ElicitationQuestion, ElicitationAnswers } from "@/components/Elici
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
+import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
@@ -1037,22 +1038,20 @@ export default function AgentChat({
     prevLoadingRef.current = isLoading;
   }, [isLoading, sendMessage]);
 
-  // Persist the conversation to Mem0 on unmount (default / Metorite agent).
+  // Persist the conversation to Mem0 on unmount, for the DEFAULT agent only
+  // (H-236 follow-up). The gateway extracts every named agent's turns at the
+  // run's end, and it skips a covered run. See lib/chatMemorySave.ts.
+  const agentNameRef = useRef(currentAgentName);
+  useEffect(() => {
+    agentNameRef.current = currentAgentName;
+  }, [currentAgentName]);
   useEffect(() => {
     return () => {
-      if (!memoryUserId) return;
-      const payload = messagesRef.current
-        .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
-        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-      if (payload.length === 0) return;
-      fetch("/api/chat/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // No userId: the scope is the signed-in member, resolved server-side.
-        // Sending one here would be a claim the route no longer accepts.
-        body: JSON.stringify({ messages: payload }),
-        keepalive: true,
-      }).catch(() => {});
+      saveConversationOnUnmount({
+        agentName: agentNameRef.current,
+        memoryUserId,
+        messages: messagesRef.current,
+      });
     };
   }, [memoryUserId]);
 

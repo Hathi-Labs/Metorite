@@ -1920,7 +1920,6 @@ async def _extract_run_memory(
     *,
     agent_name: str,
     thread_id: str,
-    member: str = "",
 ) -> bool:
     """Extract one finished turn into Mem0. Returns True when it extracted.
 
@@ -1943,14 +1942,6 @@ async def _extract_run_memory(
     if skip:
         _log.info("agent.run_end_memory_extraction_skipped_no_egress",
                   thread_id=thread_id[:12])
-        # H-236 follow-up: the answer joins the run's user message as a text
-        # of a covered conversation, so the chat's unmount save skips it too.
-        try:
-            from orchestrator.executor import remember_no_egress_text
-            answer = (folded or {}).get("content")
-            remember_no_egress_text(member or extract_user, answer)
-        except Exception:  # never kill the relay
-            pass
         return False
     try:
         from acb_memory import add_memories_background
@@ -2285,7 +2276,7 @@ async def run_agent_stream_endpoint(
         # (route.ts no longer extracts for named agents). Best-effort.
         await _extract_run_memory(
             run_id, _extract_user, _mem_history, _mem_message, folded,
-            agent_name=agent_name, thread_id=thread_id, member=_mem_user,
+            agent_name=agent_name, thread_id=thread_id,
         )
 
     _actor = (getattr(user, "email", "") or "").strip()

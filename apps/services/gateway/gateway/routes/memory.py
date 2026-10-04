@@ -244,33 +244,6 @@ async def delete_memory(
     await client.delete(memory_id)
 
 
-def _holds_a_covered_turn(
-    scope: str, user: UserContext, messages: list[dict[str, str]],
-) -> bool:
-    """True when *messages* hold a turn of a covered run (H-236 follow-up).
-
-    The chat posts the whole conversation here when its panel closes. A
-    covered run's conversation holds member data from a sandboxed turn, and
-    the run's own extraction skips it (``routes/agent.py``). The server
-    recorded the texts of each covered conversation
-    (``executor.remember_no_egress_text``), so this route skips the save too.
-    The request names no run and no session, and nothing in it decides this.
-    An error skips the save. A member with no covered run is unchanged.
-    """
-    texts: list[object] = [m.get("content") for m in messages if isinstance(m, dict)]
-    try:
-        from orchestrator.executor import texts_were_no_egress
-    except Exception:  # no record to read: nothing was covered here
-        return False
-    try:
-        covered = texts_were_no_egress(user.email, texts) or texts_were_no_egress(scope, texts)
-    except Exception:  # fail closed: skip the save
-        covered = True
-    if covered:
-        _log.info("memory.add_skipped_no_egress", messages=len(texts))
-    return covered
-
-
 @router.post("/{scope}/add", status_code=202, summary="Save a conversation to Mem0")
 async def add_memories(
     scope: str,
@@ -283,8 +256,6 @@ async def add_memories(
     The extraction runs asynchronously — returns 202 immediately.
     """
     _authorize_scope(scope, user, write=True)
-    if _holds_a_covered_turn(scope, user, req.messages):
-        return {"status": "skipped", "message_count": len(req.messages)}
     client = _get_mem0()
     if client is None:
         return {"status": "mem0_disabled"}

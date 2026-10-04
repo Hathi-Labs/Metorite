@@ -722,9 +722,9 @@ def _gate_injected_tool(fn: Any) -> Any:
 
     # H-236: the gate's wrapper is trusted exactly as far as the tool it wraps.
     try:
-        from acb_skills.egress import register_platform_wrapper
+        from acb_skills.egress import _register_platform_wrapper
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
-        def register_platform_wrapper(_original: Any, wrapper: Any) -> Any:
+        def _register_platform_wrapper(_original: Any, wrapper: Any) -> Any:
             return wrapper
 
     if inspect.iscoroutinefunction(fn):
@@ -734,7 +734,7 @@ def _gate_injected_tool(fn: Any) -> Any:
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
             return _with_steer(await fn(*args, **kwargs))
-        return register_platform_wrapper(fn, _agated)
+        return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
     def _sgated(*args: Any, **kwargs: Any) -> Any:
@@ -742,7 +742,7 @@ def _gate_injected_tool(fn: Any) -> Any:
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
         return _with_steer(fn(*args, **kwargs))
-    return register_platform_wrapper(fn, _sgated)
+    return _register_platform_wrapper(fn, _sgated)
 
 
 def _gate_own_maf_tools(tools: list[Any]) -> int:
@@ -1125,13 +1125,13 @@ def _collect_injectable_platform_tools() -> list[Any]:
 
     # H-236: these ARE the platform's tools. Record each one by identity, so
     # the egress rule trusts their registry entries and nothing that only
-    # borrows their names (``acb_skills.egress.register_platform_callable``).
+    # borrows their names (``acb_skills.egress._register_platform_callable``).
     try:
-        from acb_skills.egress import register_platform_callable
+        from acb_skills.egress import _register_platform_callable
     except ImportError:
         return _all_tools
     for _fn in _all_tools:
-        register_platform_callable(_fn)
+        _register_platform_callable(_fn)
     return _all_tools
 
 

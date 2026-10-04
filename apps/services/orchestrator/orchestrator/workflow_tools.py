@@ -151,10 +151,10 @@ def load_workflow_tools(agent_name: str) -> list[Any]:
         pass
     trio = [list_workflows, run_workflow, get_workflow_run]
     try:  # H-236: the platform's own tools, trusted by identity
-        from acb_skills.egress import register_platform_callable
+        from acb_skills.egress import _register_platform_callable
 
         for fn in trio:
-            register_platform_callable(fn)
+            _register_platform_callable(fn)
     except ImportError:
         pass
     return trio

@@ -34,6 +34,7 @@ and the call-time refusal: :class:`EgressGuardProvider` on the MAF path, and
 from __future__ import annotations
 
 import contextlib
+import sys
 import weakref
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -57,8 +58,6 @@ __all__ = [
     "has_explicit_open_world",
     "is_egress_tool",
     "no_egress_for_this_run",
-    "register_platform_callable",
-    "register_platform_wrapper",
     "tool_name",
 ]
 
@@ -118,7 +117,7 @@ def _from_mcp(item: Any) -> bool:
 #: (``_tool_injection._collect_injectable_platform_tools``), the workflow and
 #: app tools, and the sandbox registers its tools (``sandbox_tools``). A
 #: wrapper is trusted only when OUR code made it from a trusted callable
-#: (:func:`register_platform_wrapper`). Nothing follows ``__wrapped__``, so a
+#: (:func:`_register_platform_wrapper`). Nothing follows ``__wrapped__``, so a
 #: tool of another repo made with ``functools.wraps(<a platform tool>)`` is not
 #: trusted. Weak keys, so a per-run closure leaves with its run.
 _PLATFORM_CALLABLES: weakref.WeakKeyDictionary[Any, frozenset[str]] = (
@@ -126,9 +125,32 @@ _PLATFORM_CALLABLES: weakref.WeakKeyDictionary[Any, frozenset[str]] = (
 )
 
 
-def register_platform_callable(fn: Any, name: str | None = None) -> Any:
+#: The packages whose code may register a platform callable. A guard against
+#: a mistake, not a security boundary: code that runs in this process can
+#: forge its module name. It stops an author who calls the registry from an
+#: agent repo, a skill or a test helper by accident.
+_PLATFORM_PACKAGES: tuple[str, ...] = ("acb_skills", "orchestrator")
+
+
+def _caller_is_platform(depth: int = 2) -> bool:
+    """True when the caller *depth* frames up lives in a platform package."""
+    try:
+        module = str(sys._getframe(depth).f_globals.get("__name__", "") or "")
+    except ValueError:  # the stack is not that deep
+        return False
+    return any(module == p or module.startswith(p + ".") for p in _PLATFORM_PACKAGES)
+
+
+def _register_platform_callable(fn: Any, name: str | None = None) -> Any:
     """Record *fn* as a platform tool that may carry *name* (its own name by
-    default). Returns *fn*, so it works as a decorator. Never raises."""
+    default). Returns *fn*. Never raises.
+
+    Only code in :data:`_PLATFORM_PACKAGES` may call it. A call from any other
+    module registers nothing and logs ``egress.register_refused``.
+    """
+    if not _caller_is_platform():
+        _log.warning("egress.register_refused", tool=str(name or getattr(fn, "__name__", "")))
+        return fn
     tool = str(name or getattr(fn, "__name__", "") or "")
     if not tool:
         return fn
@@ -137,13 +159,17 @@ def register_platform_callable(fn: Any, name: str | None = None) -> Any:
     return fn
 
 
-def register_platform_wrapper(original: Any, wrapper: Any) -> Any:
+def _register_platform_wrapper(original: Any, wrapper: Any) -> Any:
     """Trust *wrapper* exactly as far as *original* is trusted. Returns it.
 
     Our own wrappers call this: the permission gate, the steer wrap of a
     sandbox tool. A wrapper that another repo made does not, so it stays
-    untrusted whatever it wraps.
+    untrusted whatever it wraps. A call from outside
+    :data:`_PLATFORM_PACKAGES` registers nothing.
     """
+    if not _caller_is_platform():
+        _log.warning("egress.register_refused", tool=str(getattr(wrapper, "__name__", "")))
+        return wrapper
     try:
         names = _PLATFORM_CALLABLES.get(original)
     except TypeError:

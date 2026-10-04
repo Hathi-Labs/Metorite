@@ -44,6 +44,7 @@ import {
   groupReasoningBlocks,
 } from "@/lib/chatStream";
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
+import { isDefaultAgent } from "@/lib/chatMemorySave";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -655,10 +656,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   // and stored sessions can carry for it; normalise them to the registered slug
   // so the named-agent path resolves instead of 422-ing.
   // (agent_architecture.md §11.1.1 — retires the /copilot/chat branch.)
-  const ORCHESTRATOR_ALIASES = new Set(["orchestrator", "default", "metorite", ""]);
-  const resolvedAgentName = ORCHESTRATOR_ALIASES.has(agentName.toLowerCase().trim())
-    ? "orchestrator"
-    : agentName;
+  // `isDefaultAgent` holds the one alias list. The chat's unmount memory save
+  // reads the same list (lib/chatMemorySave.ts, H-236 follow-up).
+  const resolvedAgentName = isDefaultAgent(agentName) ? "orchestrator" : agentName;
 
   // ── Executor path: named agents (copilot mode) + langgraph mode ──────────
   // Named agents (copilot mode): route through /agent/run/stream which returns

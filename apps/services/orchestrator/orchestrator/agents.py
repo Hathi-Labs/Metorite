@@ -320,7 +320,7 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
 # H-236: the platform's own delegate_to_agent, trusted by identity. A tool of
 # another repo that borrows the name is judged like any other tool.
 try:
-    from acb_skills.egress import register_platform_callable as _register_platform
+    from acb_skills.egress import _register_platform_callable as _register_platform
 except ImportError:  # pragma: no cover — acb_skills ships with the platform
     pass
 else:

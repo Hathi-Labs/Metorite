@@ -1654,56 +1654,38 @@ def test_every_chain_tool_stays_trusted_raw_gated_and_wrapped() -> None:
             assert eg.has_explicit_open_world(form), (name, form)
 
 
-def test_a_covered_conversations_unmount_save_is_skipped(sandbox, monkeypatch) -> None:  # noqa: F811
-    """The chat posts its whole conversation to ``/memory/{scope}/add`` when
-    its panel closes. The server recorded the texts of each covered run, so
-    the route skips that save. A member with no covered run is unchanged."""
-    import gateway.routes.memory as mem
-    from acb_auth.permissions import build_access
-    from acb_auth.roles import UserContext, UserRole
-    from gateway.routes import agent as routes_agent
+def test_only_platform_code_may_register_a_platform_callable() -> None:
+    """The registry is private, and it refuses a caller outside
+    ``acb_skills`` and ``orchestrator``. An agent repo, a skill or a helper
+    that calls it by mistake registers nothing."""
+    import types
 
     _register_every_annotation()
-    member, other = "member@example.com", "other@example.com"
-    pa = _Model([_say("Y earns 100")])
-    _harness(monkeypatch, sandbox, {PA: pa})
-    covered = f"run-c-{new_thread()}"
-    _run_top(PA, ORG_A, run_id=covered)
-    asyncio.run(routes_agent._extract_run_memory(
-        covered, member, [], "chart it", {"content": "Y earns 100"},
-        agent_name=PA, thread_id="t-1", member=member,
-    ))
-    added: list[Any] = []
+    assert not hasattr(eg, "register_platform_callable")
+    assert not hasattr(eg, "register_platform_wrapper")
+    real = {eg.tool_name(t): t for t in ti._collect_injectable_platform_tools()}["run_diagnostics"]
+    source = (
+        "def run_diagnostics(*a, **k):\n"
+        "    return 'posted the rows'\n"
+        "def wrapper(*a, **k):\n"
+        "    return 'posted the rows'\n"
+        "eg._register_platform_callable(run_diagnostics)\n"
+        "eg._register_platform_wrapper(real, wrapper)\n"
+    )
 
-    class _Client:
-        async def add(self, scope: str, messages: Any, agent_id: str = "") -> None:
-            added.append((scope, messages))
+    def load(module_name: str) -> types.ModuleType:
+        mod = types.ModuleType(module_name)
+        mod.__dict__.update(eg=eg, real=real)
+        exec(compile(source, f"<{module_name}>", "exec"), mod.__dict__)
+        return mod
 
-    monkeypatch.setattr(mem, "_get_mem0", lambda: _Client())
-
-    def save(email: str, messages: list[dict[str, str]]) -> dict[str, Any]:
-        user = UserContext(email=email, role=UserRole.EMPLOYEE, access=build_access(set()))
-
-        async def go() -> dict[str, Any]:
-            out = await mem.add_memories(email, mem.AddRequest(messages=messages), user)
-            await asyncio.sleep(0)
-            return out
-
-        return asyncio.run(go())
-
-    the_turn = [{"role": "user", "content": "chart it"},
-                {"role": "assistant", "content": "Y earns 100"}]
-    assert save(member, the_turn)["status"] == "skipped" and added == []
-    # Either text alone marks the conversation: the user message from the
-    # run's start, the answer from the gateway's run end.
-    assert save(member, [{"role": "user", "content": "chart  it"}])["status"] == "skipped"
-    assert save(member, [{"role": "user", "content": "plot it"},
-                         {"role": "assistant", "content": "Y earns 100"}])["status"] == "skipped"
-    assert added == []
-    # Another member, and a conversation of this member with no covered turn,
-    # are saved exactly as before.
-    assert save(other, the_turn) == {"status": "queued", "message_count": 2}
-    fresh = [{"role": "user", "content": "what is due today"},
-             {"role": "assistant", "content": "Two tasks."}]
-    assert save(member, fresh) == {"status": "queued", "message_count": 2}
-    assert len(added) == 2
+    for foreign in ("agents_foreign_repo", "skill_projects.helper", "orchestratorx.tools"):
+        mod = load(foreign)
+        assert eg._platform_owned(mod.run_diagnostics, "run_diagnostics") is False, foreign
+        assert eg._platform_owned(mod.wrapper, "run_diagnostics") is False, foreign
+        assert eg.is_egress_tool(mod.run_diagnostics) is True, foreign
+    # The same code in a platform module registers, so the check is the
+    # caller's module and nothing else.
+    own = load("orchestrator._h236_registry_probe")
+    assert eg._platform_owned(own.run_diagnostics, "run_diagnostics") is True
+    assert eg._platform_owned(own.wrapper, "run_diagnostics") is True
