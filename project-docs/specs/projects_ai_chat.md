@@ -27,7 +27,9 @@ the sandbox, and until then projects-assistant holds no `run_script` and no
 2026-10-04, dark: a run that holds `run_command` reads the sandbox rules,
 and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
 on the platform, §22) was built 2026-10-04: projects-assistant reads an
-attached `.docx`, PDF or text file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+attached `.docx`, PDF or text file again, and no code runs. The security
+fix of §14.8 (a remote image in agent Markdown loads only on a click) was
+built and deployed on 2026-10-04 (PR #618).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -2099,10 +2101,12 @@ query. So the gate treats these same-origin URLs as remote:
 `rehypeGateRemoteMedia` runs after it. It removes `script`, `style`, `link`,
 `meta`, `base`, `title`, `template`, `iframe`, `object` and `embed`. It strips
 each URL attribute that the gate treats as remote, for example `src`, `srcset`,
-`poster` and `background`. It also strips each attribute that holds a CSS fetch.
-That covers `style`, the SVG presentation attributes such as `mask` and `fill`,
-and the SMIL values. A CSS fetch is a `url()` that is not a fragment, an
-`image-set()`, or a CSS escape.
+`poster` and `background`.
+
+**CSS fetches.** The gate also strips each attribute that holds a CSS fetch:
+a `url()` that is not a fragment, an `image-set()`, or a CSS escape. That
+covers `style`, the SVG presentation attributes such as `mask` and `fill`,
+and the SMIL values.
 
 **No forms.** A form inside the app's origin is a credential phish that needs
 no script. So the gate removes `form`, `input`, `button`, `select`,
@@ -2112,7 +2116,7 @@ It strips `action`, `formAction`, `ping` and `autoFocus` from every element.
 The email sanitizer forbids `form` and `ping` for the same reason.
 
 Before this fix, an agent `.md` file with `<script async src>` ran that script
-in the app's origin, because React 19 hoists an async script and loads it. An
+in the app's origin. React 19 hoists an async script and loads it. An
 email attachment opens in the same viewer. The raw-HTML gate is a block list,
 so a new vector is a new case in the plugin and in its test.
 

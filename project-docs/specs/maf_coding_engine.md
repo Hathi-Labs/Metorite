@@ -2630,11 +2630,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
   WS43-F24). A covered run and each run under it bind `no_egress`, and the
   rule fails closed: such a run holds only the delegation tools, the sandbox
   tools and tools that say `open_world=False`. At the flip, the owner
-  accepts the six residual items that §16.3 names, by name. They are an
-  agent that a member assigns by hand, a delayed send through a store, what
-  an agent from another repo does on its own servers, a workflow on a task
-  event, a remote image in the answer text, and the answer that an
-  uncovered parent gets.
+  accepts the five open residual items that §16.3 names, by name. They are
+  an agent that a member assigns by hand, a delayed send through a store,
+  what an agent from another repo does on its own servers, a workflow on a
+  task event, and the answer that an uncovered parent gets. PR #618 closed
+  the sixth, a remote image in the answer text.
 
 **Done when:**
 
@@ -3450,8 +3450,9 @@ decision inside D86, after review: the control fails closed.
      `pm.task.created` and `pm.task.comment_added`. The workflows sink runs
      any published workflow on them, and an `http.request` node can post the
      payload. The member's card gates each such write.
-  5. A remote image in the answer text. A separate fix is in flight: a
-     remote image in an agent message loads only on a member's click.
+  5. CLOSED by PR #618 (2026-10-04). A remote image in the answer text now
+     loads only on a member's click (`projects_ai_chat.md` §14.8). So the
+     owner accepts five open items, not six.
   6. An uncovered parent that calls a covered agent gets its answer, and the
      parent keeps its own tools. The answer holds only what the member may
      see, as it did before the sandbox.
