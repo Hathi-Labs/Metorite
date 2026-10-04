@@ -4944,6 +4944,15 @@ and one thing that cannot be written until a second person exists.
 > owner accepts the residual by name at the flip, and an agent may not take
 > that acceptance as given.
 >
+> **Added 2026-10-04 with H-227.**
+>
+> WS43-G3 waits on one more act, the merge and the deploy of H-227. H-227
+> makes the uploads and the S8 documents of a shared agent thread-scoped.
+> A container then mounts only the uploads of its own thread
+> (`specs/maf_coding_engine.md` §16.3). Without it, the container of one
+> member's covered run mounts the uploads of every other member of the
+> organization.
+>
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
 >

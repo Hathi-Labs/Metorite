@@ -27,7 +27,9 @@ the sandbox, and until then projects-assistant holds no `run_script` and no
 2026-10-04, dark: a run that holds `run_command` reads the sandbox rules,
 and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
 on the platform, §22) was built 2026-10-04: projects-assistant reads an
-attached `.docx`, PDF or text file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+attached `.docx`, PDF or text file again, and no code runs. H-227 (§22.9)
+was built 2026-10-04, in review: the uploads and the S8 documents of the
+chat are private to their thread.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor

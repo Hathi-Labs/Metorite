@@ -11,7 +11,9 @@ and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
-and a run without it keeps the ban. Every other slice is spec only.** Owner
+and a run without it keeps the ban. H-227 (the uploads and the S8 documents
+of a shared agent are thread-scoped, §16.3) is built (2026-10-04, in
+review), and WS-43w waits on its deploy. Every other slice is spec only.** Owner
 decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. WS-43w
 now waits on a network control for the agents that such a run calls (H-236).
@@ -2623,6 +2625,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
   policy. H-236 builds it. Without the control, the owner accepts the
   residual by name at the flip: a called agent runs outside the sandbox,
   with the network of the host.
+- **H-227 is merged and deployed** (added 2026-10-04). The uploads and the
+  S8 documents of a shared agent are thread-scoped, and a container mounts
+  only the uploads of its own thread, read-only (§16.3). Without it, the
+  container of one member's covered run mounts the uploads of every other
+  member in `/workspace/inputs/`.
 
 **Done when:**
 
@@ -3343,9 +3350,9 @@ decision on WS43-Q6, and H-227, D12).**
   `inputs/x` in `inputs/<thread hash>/x` (`agent_paths.thread_scoped_rel`).
   The store key and the thread come from the run, never from the model. A
   thread id that names no folder writes nothing. One example is
-  `<agent>:<run id>`, the thread of a batch run with no chat. `share_artifact` reads a
-  path the same way, and it shows no loose file (below). A personal agent
-  keeps its flat folders.
+  `<agent>:<run id>`, the thread of a batch run with no chat.
+  `share_artifact` reads a path the same way, and it shows no loose file
+  (below). A personal agent keeps its flat folders.
 - **The container.** The broker mounts `outputs/<thread hash>/` at
   `/workspace/outputs/`, read-write, and `inputs/<thread hash>/` at
   `/workspace/inputs/`, read-only (H-227). Each one lies over the shared
