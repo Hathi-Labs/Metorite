@@ -25,6 +25,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform } from "@/lib/markdownMedia";
 
 interface ThinkingContainerProps {
   toolEvents: ToolEvent[];
@@ -107,10 +109,16 @@ const PROSE_MD_COMPONENTS = {
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <a href={href} className="text-sky-400 underline" target="_blank" rel="noopener">{children}</a>,
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-[13px] font-bold text-foreground mt-2 mb-1">{children}</h1>,
   h2: ({ children }: { children?: React.ReactNode }) => <h2 className="text-[12px] font-semibold text-foreground mt-1.5 mb-1">{children}</h2>,
+  // Reasoning is agent text too: a remote image loads only on a click.
+  // The container has no session, so a workspace-relative path stays as it
+  // is and does not resolve through the file proxy (as before the gate).
+  img: ({ src, alt, title }: { src?: unknown; alt?: unknown; title?: unknown }) => (
+    <MarkdownImage src={src} alt={alt} title={title} className="my-1 max-h-48 max-w-full rounded border border-border/50 object-contain" />
+  ),
 };
 
 /** One prose entry (reasoning or narration) on the timeline axis. */
-function ProseTimelineEntry({
+export function ProseTimelineEntry({
   text, live, icon: Icon, iconClass,
 }: {
   text: string;
@@ -124,7 +132,7 @@ function ProseTimelineEntry({
         <Icon className={iconClass} size={13} strokeWidth={1.5} />
       </div>
       <div className="ml-8 mr-3 text-[11.5px] text-muted-foreground leading-relaxed">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={PROSE_MD_COMPONENTS}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform} components={PROSE_MD_COMPONENTS}>
           {text}
         </ReactMarkdown>
         {live && <span className="inline-block w-[2px] h-[1em] bg-muted-foreground/50 animate-pulse ml-0.5 align-middle rounded-full" />}
