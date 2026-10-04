@@ -1530,7 +1530,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03). 🔨 EM-T4d BUILT, not merged (2026-10-04, branch `email-delta-shadow`, no migration, review round 1 fixed). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
+
+🔨 EM-T4d BUILT, not merged (2026-10-04, branch `email-delta-shadow`, no migration, review round 1 fixed). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1945,7 +1947,9 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 
 ##### EM-T4d — Graph delta, in shadow first
 
-**Status (2026-10-04).** 🔨 BUILT, not merged. Review round 1 fixed seven findings. The branch is `email-delta-shadow`, and there is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box. To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
+**Status (2026-10-04).** 🔨 BUILT, not merged. Review round 1 fixed seven findings. The branch is `email-delta-shadow`, and there is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box.
+
+To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). Settle EM-T4d-f3 before that act. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
 
 1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
 2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
@@ -2163,6 +2167,8 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 - **EM-T4d-2**, as above: `on` and a delete rule, after the live check.
 - **EM-T4d-f1.** Count an id that the sweep saw and that the delta reports as `@removed` in the same round apart from `sweep_only`. It would remove the false `sweep_only` of a draft that the member sends. Item 8 says that an `@removed` item adds to `removed` only, so this needs an edit of item 8.
 - **EM-T4d-f2 (review round 1).** The `httpx` logger at INFO can print the URL of each request. A delta URL holds its `$deltatoken`, and a sweep URL is in the log the same way. Decide the level of that logger for the whole service. This round changed no logging.
+- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes.
+- **EM-T4d-f4 (re-verify of round 1).** When the `childFolders` read fails on every poll, the delta keeps the link of a deleted top-level user folder. The growth stops at the count of deleted folders.
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
 
