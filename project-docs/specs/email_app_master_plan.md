@@ -2340,7 +2340,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-storage-limit` (2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed, no PR. EM-T6e not built. Anchors re-verified at `012483a43` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-storage-limit` (2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed, no PR. EM-T6e not built. Anchors re-verified at `5e268c766` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2562,7 +2562,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit. Review round 1 adds a third test: no gap is left below `import_reached_at`.
 - **G5. The last block deletes the orphan drafts of the AI.** It deletes the `email_ai_drafts` row of each thread that this removal emptied (review round 1).
 
-**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-storage-limit`, four commits on `012483a43`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
+**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-storage-limit`, four commits on `5e268c766`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
 
 **As built.**
 
@@ -2591,7 +2591,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - **(Noted) The fence of the lock key.** Fence `email-storage-rr1-lock-key`: `test_the_lock_key_is_the_canonical_uuid`, `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, and `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`. In the third test, the sync names the mailbox in upper case with no hyphens.
 - **(Noted, and verifier P2) The orphan deletes take only the threads of this removal.** `remove_older_chunk` returns `RemovedChunk`, with the threads of the deleted mail (`RETURNING thread_id`). The route collects them for the last block. Fence `email-storage-rr1-orphans`: `test_the_orphan_deletes_touch_only_the_threads_of_this_removal`.
 - **(Verifier P2) A draft in a non-English Outlook mailbox.** No code change. The open points below record it.
-- **(Verifier P3)** The base of this section now reads `012483a43`. This round removed the STE errors on the added lines of `email_ingestion/AGENTS.md`, `work_plan.md` and this section.
+- **(Verifier P3)** The base of this section now reads `5e268c766`, the merge of EM-T4d (#614). This round removed the STE errors on the added lines of `email_ingestion/AGENTS.md`, `work_plan.md` and this section.
 
 **Agent decisions of review round 1.** The owner can reverse each one.
 
@@ -2699,7 +2699,8 @@ uv run pytest tests/unit/test_email_storage_limit.py tests/unit/test_email_impor
   tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_email_embeddings_hash.py tests/unit/test_email_owner_scope_fence.py \
   tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_keep_separate.py \
-  tests/unit/test_org_purge_tenant.py tests/unit/test_db_engine_seam.py -q -rs
+  tests/unit/test_org_purge_tenant.py tests/unit/test_db_engine_seam.py \
+  tests/unit/test_outlook_delta_shadow.py -q -rs
 uv run ruff check apps/services/email_ingestion/email_ingestion/storage.py \
   apps/services/gateway/gateway/routes/email/transport/storage.py \
   tests/unit/test_email_storage_limit.py
