@@ -12,6 +12,12 @@ injected-tools addendum so agents can reason about risk, and permission /
 confirmation layers consult it to decide what may proceed without a human.
 
 Agents' own tools can register too via :func:`annotate`.
+
+``open_world`` is also the egress annotation (H-236). ``acb_skills.egress``
+reads it: a run that a covered Projects run delegates to gets no tool that
+sets it, the delegation tools excepted. So a tool that can carry data off the
+platform (a send, a fetch, a push to an outside system, a rule that forwards)
+MUST set ``open_world=True``. Fence: ``tests/unit/test_delegation_no_egress.py``.
 """
 from __future__ import annotations
 

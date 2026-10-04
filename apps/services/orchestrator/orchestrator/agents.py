@@ -159,6 +159,17 @@ async def search_timeline(entity_name: str, query: str) -> str:
     return await search_entity_timeline(entity_name, query)
 
 
+try:  # H-236: the risk registry is the one source of the egress set
+    from acb_skills.tool_annotations import annotate as _annotate_risk
+except ImportError:  # pragma: no cover — acb_skills ships with the platform
+    def _annotate_risk(**_hints: Any) -> Any:
+        return lambda fn: fn
+
+
+# H-236: open_world, because the container it starts has a network and a
+# GitHub token, and it pushes. A run that a covered Projects run delegates
+# to does not get it (``acb_skills.egress``).
+@_annotate_risk(open_world=True)
 async def spawn_copilot_agent(    task: str,
     agent_name: str = "orchestrator",
     agent_dir: str | None = None,

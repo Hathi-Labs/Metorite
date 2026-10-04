@@ -56,6 +56,10 @@ from uuid import UUID
 import httpx
 from acb_common import get_logger, get_settings
 
+# H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
+# queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
+# data off the platform. A run that a covered Projects run delegates to does
+# not get them (``acb_skills.egress``). The reads stay.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -688,7 +692,7 @@ def _quoted_names(rows: Any, field: str) -> str:
     return ", ".join(f"'{name}'" for name in _names(rows, field))
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def create_lead(
     lead_name: str,
     email: str | None = None,
@@ -745,7 +749,7 @@ async def create_lead(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def update_deal_status(
     deal_id: str, stage: str, lost_reason: str | None = None,
 ) -> str:
@@ -822,7 +826,7 @@ async def update_deal_status(
     return f"Moved {title} to {lane}."
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def log_activity(
     entity: str,
     record_id: str,
@@ -888,7 +892,7 @@ async def log_activity(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def convert_lead(
     lead_id: str,
     deal_name: str | None = None,

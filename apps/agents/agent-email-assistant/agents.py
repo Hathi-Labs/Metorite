@@ -23,6 +23,11 @@ from typing import Any
 import httpx
 from acb_common import get_logger, get_settings
 
+# H-236: ``open_world=True`` marks a tool that can send data off the platform:
+# a send, a forward or reply or webhook rule, a rule run that applies those, a
+# signature on outgoing mail, and the approval of a pending send. A run that a
+# covered Projects run delegates to does not get these (``acb_skills.egress``).
+# A new tool that can send mail must carry the annotation too.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -1046,6 +1051,7 @@ async def get_rules_and_settings(account_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def create_rule(
     account_id: str | None = None,
     *,
@@ -1138,6 +1144,7 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     return f"Deleted rule {rule_id}."
 
 
+@_annotate_risk(open_world=True)
 async def run_rules(
     account_id: str | None = None,
     scope: str = "new",
@@ -1188,6 +1195,7 @@ async def run_rules(
     )
 
 
+@_annotate_risk(open_world=True)
 async def update_rule(
     account_id: str,
     rule_id: str,
@@ -1239,6 +1247,7 @@ async def update_rule(
     return f"Updated rule '{rule.get('name')}'."
 
 
+@_annotate_risk(open_world=True)
 async def learn_rule_pattern(
     account_id: str | None = None, *, rule_id: str, sender: str = "",
     exclude: bool = False, subject_keyword: str = "",
@@ -1282,6 +1291,7 @@ async def learn_rule_pattern(
     )
 
 
+@_annotate_risk(open_world=True)
 async def update_assistant_settings(
     account_id: str | None = None,
     about: str | None = None,
@@ -1452,7 +1462,7 @@ async def generate_writing_style(account_id: str | None = None) -> str:
     )
 
 
-@_annotate_risk(destructive=True)
+@_annotate_risk(destructive=True, open_world=True)
 async def install_default_rules(
     account_id: str | None = None, reset: bool = False,
 ) -> str:
@@ -1938,6 +1948,7 @@ async def list_rule_history(account_id: str, limit: int = 15) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def resolve_execution(execution_id: str, decision: str) -> str:
     """Act on a rule execution from list_rule_history:
 
@@ -2153,6 +2164,7 @@ async def list_senders(
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def create_rules_from_prompt(
     account_id: str | None = None, *, prompt: str,
 ) -> str:
