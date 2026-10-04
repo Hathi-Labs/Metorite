@@ -162,9 +162,10 @@ are cycle time by tag, and the share of work in each stage.
 - **A truncated table is not the whole set.** When the trailer says
   `truncated=yes`, compute no total, share or median from the rows. Call the
   tool again with `group_by`.
-- **No file and no code over the rows.** Never write the rows with
-  `write_artifact`. Never run `run_script` or `code_task` over them. The
-  server computes, and member data never goes into a script.
+- **No file and no code over the rows.** If you do not hold `run_command`,
+  this rule binds. Never write the rows with `write_artifact`, and never put
+  them in a script. The server computes. If you hold `run_command`, the
+  section "Code in the sandbox" comes before this rule.
 - **Speed for each person is for admins.** Without HR read access, the tool
   hides the estimate and the cycle figures for each person. Say that an
   admin can see them. Do not compute them from the rows either. Do not

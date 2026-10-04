@@ -23,9 +23,11 @@ artifact routes, §21.14), part 3 (a tenant dir for a shared agent,
 questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).
 D85 reverses O1 of S7e on 2026-10-03: code over member data runs only in
 the sandbox, and until then projects-assistant holds no `run_script` and no
-`code_task` (§13.7). H-229 (chat attachments, read on the platform, §22) was
-built 2026-10-04: projects-assistant reads an attached `.docx`, PDF or text
-file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+`code_task` (§13.7). WS-43u (D86) built the instructions for code on
+2026-10-04, dark: a run that holds `run_command` reads the sandbox rules,
+and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
+on the platform, §22) was built 2026-10-04: projects-assistant reads an
+attached `.docx`, PDF or text file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -1625,8 +1627,13 @@ three product decisions were open. The owner answered all three on
   fields stay gated, as O3 says. Until the sandbox covers projects-assistant,
   the agent holds no `run_script` and no `code_task`. So WS43-F23 now
   ENFORCES that half of the fence. The `write_artifact` half stays ADVISORY.
-  The instructions keep the ban until the cover. Then WS-43u (D86) changes
-  them (H-226).
+  **WS-43u (D86) changed the instructions on 2026-10-04.** A run that holds
+  `run_command` reads the section "Code in the sandbox"
+  (`acb_skills/addendum.py`, `maf_coding_engine.md` §16.3). The section
+  comes before the ban. A run without `run_command` keeps the ban, which
+  now names no withheld tool. The owner kept delegation in such a run on
+  2026-10-03, so the sandbox has no network, but an agent that the run calls
+  runs outside it (H-236).
 - **O2 · The server groups the data.** The route takes an optional `group_by`
   from an allowlist and a `measure` from an allowlist. The server returns
   exact figures. The model picks figures and explains them. It never adds

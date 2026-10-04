@@ -70,15 +70,25 @@ clone cache.
    plain path calls (`WITHHELD_HOST_TOOLS`): a per-run chat middleware hides
    them and a function middleware refuses them. The same set holds the host
    web tools `web_search` and `fetch_page` (`HOST_NETWORK_TOOLS`), so a
-   covered run has no network at all (§16.3). The store takes only the
+   covered run holds no web tool and its container has no network (§16.3).
+   Do not write that no data leaves the platform: the owner kept delegation
+   on 2026-10-03, and an agent that the run calls runs outside the sandbox
+   (H-236). The store takes only the
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
    The store maps `outputs/` to the thread's own folder and `.run/` to the
-   run data, and it mirrors each kept write and delete. Fences:
+   run data, and it mirrors each kept write and delete. WS-43u: the provider
+   adds the rules for code to the instructions of the turn, from
+   `addendum.render_run_sections` over the tools that the turn holds. Put
+   prose for a tool that only a sandboxed run holds in `addendum.RUN_SECTIONS`,
+   never in `FULL_SECTIONS`, because an unscoped agent renders every section
+   there. Fences:
    tests/unit/test_run_command_tool.py (WS43-F6),
-   tests/unit/test_maf_code_session.py (WS43-F7, R8) and
-   tests/unit/test_projects_sandbox_tools.py (WS43-F21).
+   tests/unit/test_maf_code_session.py (WS43-F7, R8),
+   tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
+   for code tests/unit/test_generated_addendum.py and
+   tests/unit/test_projects_agent.py.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
    spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
    `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own

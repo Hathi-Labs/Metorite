@@ -8,8 +8,13 @@ PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
 and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
-step 1) is built and dark in PR #603, which waits for review. Every other
-slice is spec only.** Owner decisions, 2026-10-03.
+step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
+track step 2, the instructions for code) is built and dark (2026-10-04, in
+review): a run that holds `run_command` reads the sandbox section of §16.3,
+and a run without it keeps the ban. Every other slice is spec only.** Owner
+decisions, 2026-10-03. The owner kept delegation in a covered run on
+2026-10-03, so §16.3 no longer says that no data leaves the platform. WS-43w
+now waits on a network control for the agents that such a run calls (H-236).
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**
 and **D86**.
@@ -1056,8 +1061,10 @@ withheld (§16.3).
 project and task data that the asking member can see, in the sandbox only.
 That reverses O1 of `projects_ai_chat.md` §13.7. D86 gives it its own target,
 `projects:<org>` (§16.3), so its sandbox tools run in its own loop. WS-43u
-changes its instructions (H-226). The HR-only fields stay gated, and member
-data never leaves the platform.
+changed its instructions on 2026-10-04. The HR-only fields stay gated. The
+sandbox has no network, and a covered run holds no host web tool. An agent
+that the run calls with `call_agent` runs outside the sandbox, because the
+owner kept delegation (§16.3).
 
 **What the block does not reach.**
 
@@ -1239,7 +1246,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F18 | `tests/unit/test_agent_runtime_default.py` | A repo-registered agent defaults to `github-copilot`, a repo whose `config.json` declares `github-copilot` is accepted at registration or loads, or a loaded Copilot agent gives no deprecation line before WS-43r, or no `AgentRuntimeUnsupported` after it |
 | WS43-F19 | `tests/unit/test_router_model_list.py` | With `routing_is_on()` true, a model list in the gateway or the Control Plane reads `CopilotClient.list_models`, or `/health/runtime` checks the Copilot SDK |
 | WS43-F20 | `tests/unit/test_native_session_persistence.py` | §15.9. A case of §15.9 fails: the two-turn probe, org A's session for org B, agent X's session for agent Y in the same org and thread, one thread's session for another, a duplicated history, a stale session after a regenerate, an agent switch, an edited or deleted message or a new clearance, stored system context or memory, a session left after the chat is deleted, a session for a run with no thread or a delegated run, or the flag OFF that changes today's behaviour |
-| WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true |
+| WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true. WS-43u: the system text of a covered run lacks the sandbox section, or a run without `run_command` reads it |
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
 | WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
 
@@ -1272,7 +1279,7 @@ until its PR merges.
 | WS-43a | Eval harness, then the first sweep | Nothing | AGENT-SAFE on a local stack. The sweep is NO-GO until the stack of WS-43a serves the Router |
 | WS-43b | The sandbox image and the Docker test workflow | Nothing | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43c | The sandbox broker and the scope setting | WS-43b | AGENT-SAFE |
-| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, in review | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
+| WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, merged in PR #603 | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
 | WS-43e | `code_task` on a MAF harness session, and no host git | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
@@ -1290,7 +1297,7 @@ until its PR merges.
 | WS-43s | Drop `chat_session.service_session_id` | WS-43r, one release on production | **OWNER-GATE** to merge (WS43-G9). A one-way migration. ⏸ Parked by D86 |
 | WS-43t1 | The structured history path, behind `MAF_NATIVE_SESSIONS`. No SQL. **It comes EARLY** | PR #585 (its test harness) | AGENT-SAFE. Dark |
 | WS-43t2 | The session store: the table, load and save, the dedup, staleness and room rules, compaction and R8. **It comes EARLY.** WS-8i and WS-43q wait on its production soak | WS-43t1 | AGENT-SAFE. Dark. The production flip is WS43-G13. ⏸ Parked by D86 |
-| WS-43u | ▶ Projects track step 2: the instructions (H-226) | WS-43d | AGENT-SAFE |
+| WS-43u | ▶ Projects track step 2: the instructions (H-226). Built, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43v | ▶ Projects track step 3: the light eval | WS-43d, WS-43u | AGENT-SAFE on a local stack |
 | WS-43w | ▶ Projects track step 4: the owner flip for Fracktal | WS-43v, PR #591, PR #598 | **OWNER-GATE** (WS43-G1, WS43-G2, WS43-G3) |
 | WS-43x | The Email track, a stub (§16.4) | WS-43w | Not written yet |
@@ -1618,7 +1625,7 @@ These facts change or add to the text above:
   the Docker tests use a named volume in place of each bind mount, and the
   bind-mount test skips.
 
-### WS-43d — `run_command`, the file store, the safe opener and skills 🔲 ▶ **Built 2026-10-03, dark, in review: Projects track step 1 (D86)**
+### WS-43d — `run_command`, the file store, the safe opener and skills ✅ ▶ **Built 2026-10-03, dark, merged in PR #603 (2026-10-04): Projects track step 1 (D86)**
 
 **Narrowed by D86.** This slice now serves projects-assistant first (§16.3).
 Everything below stays. These items are added:
@@ -2456,7 +2463,7 @@ instead.
 **Gate.** AGENT-SAFE. It ships dark. The table is an expand step (R6). The
 production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
 
-### WS-43u — Projects track step 2: the instructions 🔲 ▶ **Active (D86)**
+### WS-43u — Projects track step 2: the instructions 🔲 ▶ **Built 2026-10-04, dark, in review (D86)**
 
 **Scope.** An addendum section keyed on `run_command` in
 `acb_skills/addendum.py`, `apps/agents/agent-projects/instructions.md`, and
@@ -2485,6 +2492,28 @@ uv run pytest tests/unit/test_projects_agent.py \
 
 **Gate.** AGENT-SAFE. It ships dark, because no organization is in the
 scope.
+
+**As built (2026-10-04).** §16.3 "The instructions (WS-43u)" gives the
+seven rules and the fences.
+
+- **Where the rules live.** `RUN_SECTIONS` and `render_run_sections` in
+  `acb_skills/addendum.py`, the one addendum seam. The section is not in
+  `FULL_SECTIONS`, because an unscoped agent renders every section there.
+  `sandbox_tools._add_tools` calls the renderer with the tools of the turn,
+  and adds the text with `extend_instructions`.
+- **Done-when 1 to 3 and 5.** The provider test in `test_projects_agent.py`
+  checks both cases. A run of org A in the scope reads the section once,
+  and a run of org B reads none of it and keeps the ban. The WS43-F21 test
+  reads the real system text through the executor.
+- **Done-when 4** stands on WS-43d. `test_the_run_data_never_reaches_the_blob_store`
+  (WS43-F22) shows the card at `outputs/<thread hash>/<name>`. The R8 test
+  `test_another_member_cannot_list_or_read_a_threads_output_folder` shows
+  that it opens for the member of that thread, and for no other member.
+- **The owner decision of 2026-10-03** (§16.3, "Keep delegation") changed
+  rule 4 of the first text, `NETWORK_WITHHELD_ANSWER` and the name of one
+  WS43-F21 fence. It added a prerequisite to WS-43w.
+- **Mutations.** Thirteen, each run red once by hand. The test modules list
+  them.
 
 ### WS-43v — Projects track step 3: the light eval 🔲 ▶ **Active (D86). The harness and the checkers are built (PR #607). The sweep waits on WS-43d and WS-43u**
 
@@ -2586,6 +2615,14 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
 - PR #591 (the broker) and PR #598 (D85) are merged and deployed.
 - WS-43d, WS-43u and WS-43v are done, and WS-43v passed.
 - The owner confirms that the caps of §7.1 rule 8 fit the box's memory.
+- **A network control covers the agents that a covered Projects run can
+  call** (added 2026-10-03, the owner decision "Keep delegation" of §16.3).
+  The tools are `call_agent`, `call_agents_parallel` and
+  `call_agent_background`. One way is to withhold the host web tools of the
+  called agent when the broker covers the parent run. Another is an egress
+  policy. H-236 builds it. Without the control, the owner accepts the
+  residual by name at the flip: a called agent runs outside the sandbox,
+  with the network of the host.
 
 **Done when:**
 
@@ -3151,8 +3188,8 @@ assistants for now.
 
 | Slice | State under D86 |
 |---|---|
-| WS-43d | ▶ **Built, dark, in review.** Projects track step 1, narrowed (§16.3). `covers()` waits for D85 (PR #598) |
-| WS-43u | ▶ **Active.** Projects track step 2: the instructions |
+| WS-43d | ▶ **Built, dark, merged in PR #603.** Projects track step 1, narrowed (§16.3). `covers()` stands on the D85 seam (PR #598) |
+| WS-43u | ▶ **Built, dark, in review (2026-10-04).** Projects track step 2: the instructions |
 | WS-43v | ▶ **Active.** Projects track step 3: the light eval |
 | WS-43w | ▶ **Active.** Projects track step 4: the owner flip for Fracktal |
 | WS-43x | Next. The Email track, a stub (§16.4) |
@@ -3234,7 +3271,13 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
   asked for, such as a chart or a file.
 - **The HR-only fields stay gated.** A script reads only the files that the
   agent wrote from tool results. So it cannot see more than the tools give.
-- **Nothing leaves the platform.** The container has `--network none`.
+- **The sandbox has no network.** The container has `--network none`, and a
+  covered run holds no host web tool (the next item). That does not mean
+  that no data leaves the platform. A covered run keeps `call_agent`,
+  `call_agents_parallel` and `call_agent_background`. An agent that it calls
+  runs outside the sandbox, with its own tools, and the core floor gives
+  that agent `web_search` and `fetch_page` on the host. The owner chose this
+  on 2026-10-03 (below).
 - **A covered run holds no host web tool.** The core floor
   (`_CORE_STANDARD_TOOL_NAMES`) gives every agent `web_search` and
   `fetch_page`, and they run on the HOST with its network. Member data sits
@@ -3243,14 +3286,35 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
   all. A covered run does not hold the two tools
   (`sandbox_tools.HOST_NETWORK_TOOLS`). The withhold middleware of the
   host floor tools takes them out of each request and refuses a call to one.
-  The fence is `test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform`
-  (WS43-F21). It traps every real HTTP send of the host.
+  The fence is `test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing`
+  (WS43-F21). It traps every real HTTP send of the host. WS-43u renamed it,
+  because its old name said that no data leaves the platform.
 - **A covered run keeps `read_attachment` (H-229).** It opens the thread's
   own upload folder, `inputs/<thread slug>/`, through the safe opener, and
-  it holds `host_dir()` during the read. It starts no process and sends
-  nothing out. The fence is
+  it holds `host_dir()` during the read. The tool itself starts no process
+  and sends nothing out. The fence is
   `test_a_covered_run_reads_its_own_attachment_and_no_other`
   (`tests/unit/test_read_attachment.py`).
+
+**Owner decision, 2026-10-03: delegation stays in a covered run.** The
+question in chat was "During a sandboxed coding turn, should the Projects
+agent be able to call other agents?" The owner answered "Keep delegation".
+
+1. A covered run keeps the three delegation tools. The agent can call
+   another agent during a coding turn.
+2. This spec drops the promise that nothing leaves the platform. The true
+   claim is narrower: the container has no network, and the run holds no
+   host web tool. An agent that the run calls runs outside the sandbox.
+   `sandbox_tools.NETWORK_WITHHELD_ANSWER` says the same to the model.
+3. Before the owner flip (WS-43w), a network control must cover the agents
+   that a covered run can call. One way is to withhold their host web tools
+   when the broker covers the parent run. Another is an egress policy. The owner
+   may instead accept the residual by name at the flip. H-236 builds the
+   control, and `work_plan.md` §6.1 records the prerequisite.
+
+The record is a dated line in D86 of `work_plan.md` §3. It takes no D-number
+of its own, as the owner's answer "Admins of our own org only" in D85 did
+not.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
@@ -3282,22 +3346,44 @@ at `/workspace/outputs/`. No other target gets them.
   thread, under `outputs/`. They keep the room check of today.
 - **The artifact cards** link to `outputs/<thread hash>/<name>`.
 
-**The instructions (WS-43u).** The rule goes into an addendum section keyed
-on `run_command` (`acb_skills/addendum.py`). So a run without the tools never
-reads it. It says:
+**The instructions (WS-43u), built 2026-10-04.** The rules are a per-run
+section keyed on `run_command`: `RUN_SECTIONS` in `acb_skills/addendum.py`.
+`sandbox_tools._add_tools` adds it to the instructions of the turn, from the
+tools that the turn holds. So a run without the tools never reads it. No
+injected addendum names it either, not even the addendum of an unscoped
+agent, because `rendered_parts` never reads `RUN_SECTIONS`. The section
+says:
 
 1. Write and run code when a request needs it. Examples: a custom chart, a
-   calculation that the analytics tools do not give, a file conversion.
-2. Get the data through the existing tools, write it to a file in
-   `/workspace/.run/`, and run the script on it.
-3. Keep the HR-only fields gated, as today.
-4. Never send data off the platform. The sandbox has no network.
-5. Put the result in `/workspace/outputs/`, the thread's own folder, so it
-   shows as an artifact card.
+   calculation that the analytics tools do not give, a file conversion. Use
+   an analytics, report or render tool when it already answers.
+2. Get the data only through the existing Projects tools, which show only
+   what the member can see. Write it to a file in `/workspace/.run/`, and
+   run the script on it. Never write member data to `agent-data/`,
+   `inputs/` or a `skills/` folder.
+3. Keep the HR gate exactly as today, and never route around it.
+4. Put the result in `/workspace/outputs/`, the thread's own folder, so it
+   shows as an artifact card. Make only the result that the member asked
+   for.
+5. Label a figure that a script computes, as "Numbers you compute" says.
+   Compute no total over a truncated table.
+6. The sandbox has no network, so install nothing and fetch nothing. The
+   image has the data libraries.
+7. Make a skill under `agent-data/skills/` for a job that will come again.
+   A skill is private to the member who made it.
 
-`instructions.md` keeps its ban for a run that holds no `run_command`, and
-the pin in `tests/unit/test_projects_agent.py` (~1873) changes in the same PR.
-This closes H-226.
+The first text of rule 4 was "Never send data off the platform". The owner
+decision above made that claim untrue, so the section says only that the
+sandbox has no network.
+
+`instructions.md` keeps its ban for a run that holds no `run_command`. The
+ban names no `run_script` and no `code_task`, which D85 withholds, and it
+points at the section. The pin in `tests/unit/test_projects_agent.py`
+changed in the same PR. This closed H-226. Fences:
+`tests/unit/test_projects_agent.py` (both cases, through the provider),
+`tests/unit/test_generated_addendum.py` (the gate and the text) and
+`test_ws43u_the_sandbox_rules_reach_the_model_only_with_run_command` in
+WS43-F21 (the real system text, through the executor).
 
 ### 16.4 The Email track (a stub)
 

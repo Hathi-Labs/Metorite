@@ -43,10 +43,21 @@ content decision.
 This module is pure data + text: it never imports the orchestrator or gateway
 (packages sit below apps in the import graph). The agent-registry block is a
 parameter; the risk block defaults to ``acb_skills.tool_annotations``.
+
+**The per-run sections (WS-43u, ``maf_coding_engine.md`` §16.3).**
+:data:`RUN_SECTIONS` holds the prose for the tools that only a sandboxed run
+holds (``tool_annotations.SANDBOX_TOOL_NAMES``). The injection never adds
+those tools, so they are in no skill family, and :func:`rendered_parts` never
+renders these sections, not even for an unscoped agent. Only
+:func:`render_run_sections` renders them, and only for a tool set that holds a
+gate tool. ``sandbox_tools._add_tools`` calls it with the tools of ONE run, so
+a run without ``run_command`` never reads the sandbox section. Fence:
+``tests/unit/test_generated_addendum.py`` and
+``tests/unit/test_projects_agent.py``.
 """
 from __future__ import annotations
 
-from typing import Callable, NamedTuple, Union
+from typing import Callable, Iterable, NamedTuple, Union
 
 from acb_skills.skill_families import SKILL_FAMILIES
 
@@ -414,6 +425,62 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("core", _DELEGATION, lambda ctx: ctx.registry_block),
     Section("core", (), "---"),
 )
+
+
+# ---------------------------------------------------------------------------
+# The per-run sections (WS-43u) — for tools that only a sandboxed run holds
+# ---------------------------------------------------------------------------
+
+class RunSection(NamedTuple):
+    """One section for the tools that ONE run holds, never the injected set.
+
+    ``gate`` — tool names. The section renders iff the run holds AT LEAST ONE
+    of them. It is never empty, and nothing here reads a missing scope as
+    "every tool", so an unscoped agent never reads these sections.
+    ``text`` — the prose, static so the instructions stay byte-stable.
+    """
+
+    gate: tuple[str, ...]
+    text: str
+
+
+#: The heading of the sandbox section. Tests and the agent's own
+#: ``instructions.md`` name it.
+SANDBOX_CODE_HEADING = "## Code in the sandbox"
+
+#: The rules for code in the sandbox (``maf_coding_engine.md`` §16.3, D85,
+#: D86). The Projects ``instructions.md`` keeps its ban on code over the rows
+#: for a run that does not hold ``run_command``, and points here.
+_SANDBOX_CODE_SECTION = SANDBOX_CODE_HEADING + """
+
+You hold `run_command` in this chat. It runs a command in a sandbox: a Linux container with Python 3.12, pandas, numpy, matplotlib, openpyxl and the other data libraries. These rules come before the rule "No file and no code over the rows" in your instructions.
+
+1. **Write and run code when a request needs it.** Examples are a custom chart, a calculation that the analytics tools do not give, and a file conversion. When an analytics read, `task_dataset` with `group_by`, a report or a render tool already answers the question, use that tool and write no code.
+2. **Get project data only through your Projects tools.** `task_dataset` and the other reads give only what this member can see. Write their rows to a file in the data folder of this run with `file_access_write`, for example `.run/rows.json`. A script reads that file as `/workspace/.run/rows.json`. Run the script on it with `run_command`. The data folder is deleted when the run ends. Never write member data to `agent-data/`, `inputs/` or a `skills/` folder.
+3. **Keep the HR gate exactly as it is.** A script sees only the rows that a tool gave you. Never route around the HR gate. Do not compute the speed, the estimate or the lead time of a person from the rows, and not from `created_at` and `completed_at`. When a tool hides a value, say that an admin can see it.
+4. **Put the result in `/workspace/outputs/`.** That is the output folder of this chat alone, and a file there shows in the chat as an artifact card. Make only the result that the member asked for, and put no copy of the rows there. To write a file yourself, use `file_access_write`, because `write_artifact` is off in this chat.
+5. **Label what a script computes.** A figure from a script is a figure that you compute, so it carries the label that "Numbers you compute" gives. When the trailer says `truncated=yes`, compute no total, share or median from the rows in a script either.
+6. **The sandbox has no network.** Do not install a package, and do not fetch a URL from a script. The image already has the data libraries.
+7. **Make a skill for a job that will come again.** Write it under `agent-data/skills/<name>/`: a `SKILL.md` that says how to use it, and its scripts. A skill holds no member data. Its scripts read their data from `/workspace/.run/`. A skill is private to the member who made it, and no other member sees it.
+"""
+
+RUN_SECTIONS: tuple[RunSection, ...] = (
+    RunSection(("run_command",), _SANDBOX_CODE_SECTION),
+)
+
+
+def render_run_sections(held: Iterable[str]) -> str:
+    """The per-run sections for the tools in *held*, or ``""``.
+
+    *held* is the tool names of ONE run (``sandbox_tools._add_tools`` passes
+    the tools of the turn's context). A section renders only when *held*
+    names one of its gate tools. There is no "unscoped" value.
+    """
+    names = frozenset(str(n) for n in (held or ()))
+    return "\n\n".join(
+        section.text for section in RUN_SECTIONS
+        if section.gate and names.intersection(section.gate)
+    )
 
 
 # ---------------------------------------------------------------------------

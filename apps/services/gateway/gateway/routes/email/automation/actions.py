@@ -28,13 +28,17 @@ from gateway.routes.email.automation.drafting import (
     _store_ai_draft,
     _upsert_local_draft,
 )
-from gateway.routes.email.automation.identity import resolve_self
+from gateway.routes.email.automation.identity import (
+    draft_skip_in_pair,
+    resolve_self,
+)
 from gateway.routes.email.core import (
     RESERVED_INDICATORS,
     _attachment_summaries,
     _log,
     _persist_rotated_creds,
     _provider_for_message,
+    _savepoint,
 )
 from sqlalchemy import text
 
@@ -330,6 +334,33 @@ async def _draft_from_address(
     return (await resolve_self(db, account_id)).address
 
 
+async def _skip_for_paired_mailbox(
+    db: Any, account_id: str, message_id: str,
+) -> bool:
+    """True when the automatic draft of this mail must not start, because of
+    a paired mailbox (WS-17 EM-T8g-3 items 3 and 5, §11.6 edge case 11).
+
+    A paired mailbox holds a copy of this mail whose thread already holds a
+    draft or a sent mail, newer than the copy. Or another run for the same
+    mail holds the try-lock, so two overlapping runs make one draft at most.
+    The caller asks this before its thread check, so a skip trashes nothing.
+    The read is best-effort in a savepoint, like the thread check: a failure
+    drafts as before. The log names no address."""
+    if not account_id:
+        return False
+    skip: str | None = None
+    try:
+        async with _savepoint(db):
+            skip = await draft_skip_in_pair(db, account_id, str(message_id))
+    except Exception as exc:
+        _log.warning("email.draft_dedupe_failed", account_id=account_id,
+                     error=str(exc)[:160])
+    if skip:
+        _log.info("email.draft_skipped_other_mailbox",
+                  account_id=account_id, reason=skip)
+    return bool(skip)
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -432,6 +463,12 @@ async def _apply_rule_actions(
                 # fine — the user authored them).
                 if not tmpl and skip_ai_drafts:
                     _log.info("email.draft_skipped_sensitive", account_id=account_id)
+                    continue
+                # The draft dedupe across mailboxes (WS-17 EM-T8g-3 items 3
+                # and 5) runs FIRST. A run that skips changes nothing, so it
+                # never trashes the draft of the thread check below and then
+                # leaves the thread with no draft (review round 1, F1).
+                if await _skip_for_paired_mailbox(db, account_id, message_id):
                     continue
                 # Dedup (inbox-zero handlePreviousDraftDeletion parity): at most
                 # one AI draft per thread — replace an unmodified prior draft,

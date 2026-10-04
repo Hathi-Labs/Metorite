@@ -64,6 +64,18 @@ def _parse_dt(value: str | None) -> Any:
         return None
 
 
+async def _also_in_by_message(
+    db: Any, message_ids: list[str], owner: str,
+) -> dict[str, list[str]]:
+    """``identity.also_in_by_message`` for the list and search (EM-T8g-3).
+
+    The import is lazy, as each import of ``automation`` from ``transport``
+    is: the automation layer imports ``transport.send`` at load time, so a
+    load-time import here would be a cycle."""
+    from gateway.routes.email.automation.identity import also_in_by_message
+    return await also_in_by_message(db, message_ids, owner)
+
+
 def _mailbox_clause(
     account_id: str | None, thread_id: str | None, params: dict[str, Any],
 ) -> str | None:
@@ -408,11 +420,17 @@ async def list_messages(
             thread_counts = {
                 (str(r.account_id), r.thread_id): r.c for r in cnt_res.fetchall()}
 
+        # "Also in" (EM-T8g-3 item 1, D-EM-22): the paired mailboxes that hold
+        # a copy of each row. One read serves the page, never one per row.
+        also_in = await _also_in_by_message(
+            db, [m.id for m in messages], user.email or "anonymous")
+
         emails_out = []
         for m in messages:
             d = m.model_dump()
             d["thread_count"] = thread_counts.get(
                 (str(m.account_id), m.thread_id), 1)
+            d["also_in"] = also_in.get(str(m.id), [])
             emails_out.append(d)
 
         return {

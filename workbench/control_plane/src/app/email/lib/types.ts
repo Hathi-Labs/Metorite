@@ -48,6 +48,14 @@ export interface Email {
   rank?: number;
   /** Search-only: highlighted snippet (<mark>…</mark>) showing why it matched. */
   highlight?: string;
+  /**
+   * "Also in" (WS-17 EM-T8g-3, D-EM-22): the id of each other mailbox of the
+   * member that holds a copy of this mail. The list and search send it. The
+   * gateway pairs two mailboxes only when neither one is separate (D-EM-30),
+   * and only two Outlook mailboxes, because only Outlook stores the
+   * Message-ID. Empty when no copy is known.
+   */
+  alsoIn?: string[];
 }
 
 export interface EmailAccount {
