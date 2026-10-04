@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. ✅ **EM-T6c MERGED (#615, 2026-10-04, no migration): a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1.**
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. ✅ **EM-T6c MERGED (#615, 2026-10-04, no migration): a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1.** 🔨 **EM-T6e BUILT, not merged (2026-10-04), branch `email-storage-ui`:** the storage notice, the removal dialog and the storage step, UI and BFF only.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
@@ -601,7 +601,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** ✅ **EM-T4b MERGED (#617, 2026-10-04), dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** 🔨 **EM-T6e BUILT, not merged (2026-10-04), branch `email-storage-ui`.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -2548,7 +2548,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e narrowed (2026-10-04), not built. Anchors re-verified at `3d11922c2` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`. Anchors re-verified at `3d11922c2` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2998,7 +2998,69 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 **Waits for** EM-T6c and EM-T6d.
 
-**Narrowed (orchestrator, 2026-10-04).** The spec-auditor cleared this slice as GO-NARROWED at `3d11922c2`. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
+**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`. Two commits on `3d11922c2`: the narrowing, then the build. The gateway does not change.
+
+**As built.**
+
+- `lib/storage.ts` holds each decision: the limit, the copy, the MB format, the choices, the kept ids and `removalReducer`. The reducer is the one state machine of the dialog, so a test drives each path with no DOM.
+- `shortDate` moved from `lib/onboarding.ts` to `lib/utils.ts`, and `onboarding.ts` re-exports it. `onboarding.ts` and `mailbox.ts` import `storage.ts`, so `storage.ts` reads the date from `utils.ts` with no cycle.
+- The storage step is its own component, `components/StorageStep.tsx`. `components/StorageNotice.tsx` draws the two kinds of notice: `limit` with the action, and the gap line of D2.
+- The rule of the proxy lives in `src/app/api/email/[...path]/postTimeout.ts`. The set of AI paths moved there with no change, because a Next route file may export only its handlers.
+- The dialog calls both routes from the click, never from an effect. React runs an effect twice in development, and a removal must not go twice. Only the timer of the follow-up is an effect.
+- The confirm sends the `before` that the preview answered, which is Python ISO text with `+00:00`. `previewOlderMail` encodes it, because a bare `+` in a query reads as a space.
+- A 400 or a 404 shows the detail of the gateway. A 500 or a 503 shows "Metorite could not finish the removal. Try again." The dialog then reads the accounts and the preview again, because some chunks can be gone.
+- The page shortcuts stop while the dialog is open. Without that, `#` with focus on a dialog button deleted the open mail behind the dialog.
+- The month choices have no default, because the act removes mail. The member picks one.
+- The dialog names the provider that does not change: Outlook for Microsoft, and Gmail for a Gmail mailbox.
+- The switcher mark shows for one mailbox too, as the error mark does. In All inboxes, the notice names a mailbox at the limit only. The gap line shows in the own view of its mailbox.
+- "Keep it as it is" keeps at most 50 ids, and the oldest id goes first.
+- The scans of `onboarding.test.ts` and `onboardingRules.test.ts` now read `setupStage`, the one stage read of the page. The page still calls `onboardingStage` once.
+
+**Fences.**
+
+- `lib/storage.test.ts`: `email-storage-limit` (A1), `email-storage-copy` (A2, A3), `email-storage-confirm` (A8, A9), `email-storage-follow-up` (A11, A13), `email-storage-meter-store` (A14) and `email-storage-kept` (D6).
+- `lib/removeOlderMailDialog.test.ts`: `email-storage-dialog-name` (A4), `email-storage-dialog-copy` (A10), `email-storage-dialog-busy` (A11) and `email-storage-dialog-ui` (D5).
+- `lib/onboarding.test.ts`: `email-storage-stage` (A7). `lib/allInboxes.test.ts`: `email-storage-mailbox` (A5, A6) and `email-storage-switcher` (UC-12).
+- `src/app/api/email/[...path]/postTimeout.test.ts`: `email-storage-proxy-budget` (A12). It also runs the real POST handler and reads the budget of the gateway call.
+
+**Mutation checks (2026-10-04).** For each mutation, a script changed the code, ran the named tests and put the file back. A SHA-256 check proved each restore. All 27 mutations went red.
+
+| Mutation | What it changes | Tests that went red |
+|---|---|---|
+| A1 | The limit takes `>` in place of `>=` | `storage.test.ts`, 1 |
+| A2 | The notice drops "Metorite stopped importing older mail." | `storage.test.ts`, 2 |
+| A3, action | The gap line draws the action | `storage.test.ts`, 1 |
+| A3, under | Each mailbox under the limit gets the gap line | `storage.test.ts`, 1 |
+| A4 | The dialog draws no chip | `removeOlderMailDialog.test.ts`, 1 |
+| A5, pool | `storageMailbox` reads a separate mailbox too | `allInboxes.test.ts`, 1 |
+| A5, id | The notice opens the dialog for `selectedAccountId` | `allInboxes.test.ts`, 1 |
+| A6, banner | The reconnect banner no longer wins | `allInboxes.test.ts`, 1 |
+| A6, step | The storage step no longer wins | `allInboxes.test.ts`, 1 |
+| A7, meter | The stage `storage` drops the meter test | `onboarding.test.ts`, 3 |
+| A7, keep | The stage ignores "Keep it as it is" | `onboarding.test.ts`, 1 |
+| A8, late | A late answer for an earlier choice lands | `storage.test.ts`, 1 |
+| A8, zero | The confirm is on at 0 messages | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| A9 | The confirm sends its own key, not the `before` of the answer | `storage.test.ts`, 5 |
+| A10 | The copy says that Metorite deletes mail in Outlook | `removeOlderMailDialog.test.ts`, 3 |
+| A11 | A 409 clears the choice | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| A12, rule | The removal loses its 120 s | `postTimeout.test.ts`, 2 |
+| A12, width | The pattern takes three segments or more | `postTimeout.test.ts`, 1 |
+| A13, 502 | A 502 reads as a failure | `storage.test.ts`, 1 |
+| A13, time | The follow-up runs with no end | `storage.test.ts`, 1 |
+| A13, zero | The follow-up never confirms at 0 messages | `storage.test.ts`, 2 |
+| A14, meter | `withRemovalMeter` keeps the old meter | `storage.test.ts`, 1 |
+| A14, page | The page writes no answer into the store | `storage.test.ts`, 1 |
+| D6 | A refused store throws | `storage.test.ts`, 1 |
+| UC-12 | The switcher draws no mark | `allInboxes.test.ts`, 2 |
+| Shortcuts | The page shortcuts run under the dialog | `allInboxes.test.ts`, 1 |
+| Key | The notice keys on the bare id again | `storage.test.ts`, 1 |
+
+**Verification (2026-10-04).** `npx tsc --noEmit` exits 0. The command below with `src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts` passes 53 files and 1097 tests. The full `npx vitest run` passes 298 of 300 files and 5741 of 5745 tests. The 4 failures are in `layoutBoundary.test.ts` and `reportsLiveOverview.test.ts`. They read `ReportsView.tsx`, which this branch does not change, and they pass when that file has LF line ends. So the CRLF checkout on Windows causes them.
+
+**Visual review (A15, 2026-10-04).** The rig of the `visual-review` skill ran on the local Next dev server, with each `/api` call stubbed. No gateway, no database and no mailbox took part, so no call reached the removal route. The captures show the notice in All inboxes, the switcher marks, each state of the dialog, the storage step, the state after "Keep it as it is" and the gap line. They use dark, light, compact density, a changed accent and mobile width. The captures stay in a private scratch folder, not in the repo.
+
+- The review found a duplicate React key. After "Keep it as it is", the notice and the rules step drew for one mailbox with one key. The keys now carry a prefix, and `storage.test.ts` fences it.
+- At mobile width, the action of the notice squeezed the words into a narrow column. The row now wraps, and the action drops below the words. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
 
 **The two routes (EM-T6c, `transport/storage.py`).**
 
@@ -3082,6 +3144,9 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 **Open points.**
 
 - The notice has no close button. The owner can reverse this.
+- **(Visual review) The app shell remounts the page at the mobile width.** A change of the window across that width closes an open dialog. Every dialog of the page does the same, so this belongs to the shell, not to EM-T6e.
+- **(Visual review) The compact switcher cuts a label short.** At compact density, a separate mailbox at the limit shows "Cl…" beside the "Separate" badge and the mark.
+- **(Visual review) No capture beside Calendar.** The done-when of EM-T6d named a view beside Calendar. This review did not capture one.
 - **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
 
 ##### Recorded risks (EM-T6)
