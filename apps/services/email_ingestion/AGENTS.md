@@ -40,7 +40,7 @@ All providers implement the `BaseEmailProvider` abstract interface:
   back to it. IMAP ignores it and reads by its UID cursor. ⚠️ Gmail ignores it too,
   but Gmail stores no history cursor today, so a pause loses the mail past the
   first page of each label. `project-docs/specs/email_app_master_plan.md` §12
-  (GM-16 to GM-18) owns the fix, slice EM-G4.
+  (GM-16 to GM-18) owns the fix, slice EM-G4b.
   It takes `delta_shadow` too (WS-17 EM-T4d). Outlook then runs the Graph
   delta after the sweep, and Gmail and IMAP ignore it.
 - `import_batches(since, until, size)` — the import in lists, newest first
@@ -144,7 +144,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
      A single-part HTML mail fills `body_html` only, as Outlook does.
    - Each part decodes with the charset of its `Content-Type`, else UTF-8. A
      sender picks the charset, so a codec that raises falls back to UTF-8 too.
-     A raise fails the parse, and `list_messages` then skips the mail.
+     A raise fails the parse, and `list_messages` then skips the mail and
+     records it (contract 9).
    - A part with a file name, a part with the disposition `attachment` and a
      `message/*` part are files. The body walk skips them.
    - `_parse_headers` keys each header by its lower-case name. Read a header
@@ -163,6 +164,33 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - `list_messages` keeps the folder of the parse, and `canonical_override`
      never sets it. The folder key `archive` pages with `GMAIL_ARCHIVE_QUERY`
      and sends no `labelIds`.
+
+9. **The Gmail client seam (WS-17 EM-G4a).** `_get_client` in `gmail.py`
+   sets `auth=GmailBearer(self)`. `GmailBearer` is a `RefreshingBearer`, so
+   contract 6 still holds. It adds the rate limits of Gmail to each call.
+   Do not add a retry at a call site. Fence:
+   `tests/unit/test_gmail_rate_limits.py`.
+   - A 429, or a 403 with the reason `rateLimitExceeded` or
+     `userRateLimitExceeded`, waits for `Retry-After` or a back-off. Then the
+     request goes again, 3 times at most. Then the flow raises
+     `GmailRateLimited`, an `httpx.HTTPStatusError`.
+   - A plain 403 and a 5xx go back to the caller at once.
+   - One wait is 30 seconds at most, and a longer `Retry-After` ends the
+     tries. The waits of one client add up to 60 seconds at most, so one
+     sync cycle waits 60 seconds at most for rate limits.
+   - Only a GET, HEAD, PUT or DELETE, or a POST to `modify`, `batchModify`,
+     `trash` or `untrash`, goes again. Each other POST goes once, so a send
+     never goes out twice. A new POST that a second try cannot change goes
+     into `_REPEATABLE_POST_ACTIONS`.
+   - A fetch whose tries are spent raises, and each loop of `sync_messages`
+     raises it again through `_raise_rate_limit`. So the sync fails and
+     backs off, and the cursor stays.
+   - A fetch that fails for another reason calls `_record_fetch_failure`. It
+     logs `gmail.fetch_failed` with the message id, the class of the error
+     and the status, never a subject or an address. The record goes into
+     `SyncResult.errors`.
+   - The `authenticate` probe and the token post use their own clients, so
+     the seam does not wrap them.
 
 ## Inbound SMTP Server
 

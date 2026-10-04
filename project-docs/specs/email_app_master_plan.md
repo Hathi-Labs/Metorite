@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). 🔨 **EM-G4a is BUILT, not merged (2026-10-05), branch `email-gmail-g4a`:** the Gmail rate limits and the record of a failed fetch (§12.3.5.1).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6133,6 +6133,7 @@ change.
 > the only provider.
 
 > **The split of EM-G4 (2026-10-05).** EM-G4a and EM-G4b take the place of EM-G4 (§12.3.5).
+> EM-G4a is 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g4a` (§12.3.5.1).
 
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
@@ -6777,7 +6778,8 @@ it with no change. EM-G3a and EM-G4b then go in any order.
 
 ##### 12.3.5.1 EM-G4a — the rate limits and the fetch record
 
-**Status.** 📝 READY (2026-10-05). The build starts on the branch `email-gmail-g4a`.
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g4a`. The as-built notes and
+the mutation table are at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no column and no flag. Gmail stays dark. Production
 holds no Gmail mailbox, and D-EM-35 keeps the Gmail connect hidden on a box with no Google app.
@@ -6839,6 +6841,7 @@ answers as Gmail does. Each test drives the real `_get_client`, and no test slee
 - `test_the_401_refresh_still_runs_once`
 - `test_a_failed_fetch_is_recorded_and_the_other_messages_parse`
 - `test_a_failed_fetch_on_the_history_path_goes_into_errors`
+- `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors`
 - `test_a_rate_limited_fetch_fails_the_page`
 - `test_a_rate_limit_past_the_tries_fails_the_sync`
 
@@ -6875,6 +6878,93 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_rate_limit
 
 The run must show 0 skips. `test_email_provider_401_retry.py` holds R8 cases, so the database
 must be up.
+
+**As built (2026-10-05, branch `email-gmail-g4a`).** The build follows items 8 to 10 and the rules
+above. It adds no migration, no flag, no column and no SQL. Production holds no Gmail mailbox, so
+no live mailbox changes.
+
+- **The seam.** `GmailBearer` is a subclass of `RefreshingBearer`, and `_get_client` sets it. So
+  the fence of EM-T4c, `isinstance(client.auth, RefreshingBearer)`, still holds. Each try runs the
+  flow of the parent class, so its one refresh on a 401 does not change.
+- **What is a rate limit.** `_is_rate_limit` is true for a 429. It is true for a 403 when one
+  `error.errors[].reason` is one of the two names. It reads the body of a 403 only.
+- **What goes again.** `_repeatable` is true for GET, HEAD, PUT and DELETE. It is true for a POST
+  whose path ends in `/modify`, `/batchModify`, `/trash` or `/untrash`. Each other POST goes once.
+- **The wait.** `Retry-After` sets the wait, in seconds or as an HTTP date. With no value, the
+  back-off is 1 second, then 2 seconds, and each gets up to 1 second more at random.
+- **The bounds.** `GMAIL_MAX_TRIES` is 3, `GMAIL_MAX_WAIT_SECS` is 30 and
+  `GMAIL_WAIT_BUDGET_SECS` is 60. A wait past either bound ends the tries at once. So one request
+  waits 60 seconds at most, and one client waits 60 seconds at most in all.
+- **The typed error.** `GmailRateLimited` is an `httpx.HTTPStatusError`, so each caller that
+  handles an HTTP failure handles it too. Its message names the method and the path, and no query.
+- **The logs.** `gmail.rate_limited` logs each wait, and `gmail.rate_limit_gave_up` logs the end of
+  the tries. Both name the method, the path and the status only.
+- **The fetch record.** `_record_fetch_failure` logs `gmail.fetch_failed` with the message id, the
+  class of the error and the status. It adds the record to `fetch_failures` on the provider. The
+  history path puts the record into `SyncResult.errors`, as item 10 says. The sweep with no cursor
+  and the deep sync put the records of their own call there too.
+- **A rate limit fails the sync.** `list_messages` raises a `GmailRateLimited` again. Each loop of
+  `sync_messages` that skips a failed label calls `_raise_rate_limit` first. One named helper keeps
+  the complexity of `sync_messages` at 25, the value on main.
+- **The size.** The build is larger than its estimate of S. It changes 240 lines of `gmail.py`,
+  and most of them are comments. The new test file has 582 lines.
+- **Anchors.** At `ba723e0f1`, `_get_client` is at `gmail.py:326-337`, not at `:185-196`, because
+  EM-G2 moved it. `RefreshingBearer` is at `base.py:51`.
+
+**The fences, as built.** `tests/unit/test_gmail_rate_limits.py` holds 36 cases, and all are
+hermetic. A fake Gmail on `httpx.MockTransport` answers the client, the `authenticate` probe and
+the token post.
+
+| Test | What it proves |
+|---|---|
+| `test_get_client_puts_the_helper_on_each_call` | The client of `_get_client` uses `GmailBearer`, which is still a `RefreshingBearer` of the provider. |
+| `test_a_429_waits_for_retry_after_and_succeeds` (2 cases) | `Retry-After` in seconds and as an HTTP date sets the one wait, and the second try succeeds. |
+| `test_a_403_with_a_rate_limit_reason_retries` (2 cases) | Each of the two reasons gets a back-off from 1 to 2 seconds and a second try. |
+| `test_a_plain_403_is_not_retried` (5 cases) | A scope, a daily limit, a policy, no reason and a body that is not JSON each go back after one try. |
+| `test_a_5xx_is_not_retried` (2 cases) | A 500 and a 503 go back after one try, with no wait. |
+| `test_the_tries_are_bounded_and_end_in_a_typed_error` | 3 tries and 2 waits, then `GmailRateLimited` with no query in its message. |
+| `test_a_retry_after_past_the_cap_ends_the_tries` | A `Retry-After` of 31 seconds ends the tries after one try. |
+| `test_the_total_wait_of_a_client_is_bounded` | Four calls wait 50 seconds in all. Each call past the budget stops at its first refusal. |
+| `test_a_send_is_not_retried_after_the_request_was_sent` (3 cases) | `messages.send`, `drafts.create` and `drafts.send` each go once. |
+| `test_a_post_that_sets_a_state_retries` (3 cases) | `modify`, `trash` and `batchModify` get a second try. |
+| `test_the_401_refresh_still_runs_once` (2 cases) | A 429 and a 401 in either order cost one refresh. |
+| `test_a_failed_fetch_is_recorded_and_the_other_messages_parse` (3 cases) | A 500, a 404 and a failed parse each leave one record and one log line, with no subject and no address. |
+| `test_a_failed_fetch_on_the_history_path_goes_into_errors` | The history path puts the record into `SyncResult.errors`. |
+| `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors` | The sweep returns the records of its own call, and a later call starts empty. |
+| `test_a_rate_limited_fetch_fails_the_page` | A fetch whose tries are spent raises, and it leaves no record. |
+| `test_a_rate_limit_past_the_tries_fails_the_sync` (7 cases) | Each loop of `sync_messages` raises the rate limit: the label list, a user label and a system label of the sweep and of the deep sync, and the history fetch. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against
+`test_gmail_rate_limits.py`. It then wrote back the original bytes of `gmail.py`, and the SHA-256
+matched each time. Each mutation turned a named test red.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M5 | A 429 is no rate limit | 18 tests, with both cases of the 429 test |
+| M8 | Each 403 is a rate limit | the 5 cases of `test_a_plain_403_is_not_retried` |
+| M9 | No limit of tries | `test_the_tries_are_bounded_and_end_in_a_typed_error`, the page test and the 7 cases of the failed-sync test |
+| M10 | No wait budget | `test_the_total_wait_of_a_client_is_bounded` |
+| M11 | Each POST goes again | the 3 cases of `test_a_send_is_not_retried_after_the_request_was_sent` |
+| M12 | `list_messages` skips a failed fetch with no record | the 3 cases of the fetch-record test, and the sweep-record test |
+| M12b | The history path drops the record | `test_a_failed_fetch_on_the_history_path_goes_into_errors` |
+| M12c | The sweep returns no record | `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors` |
+| M13 | `list_messages` records and skips a fetch whose tries are spent | `test_a_rate_limited_fetch_fails_the_page` |
+| M14a to M14g | One loop of `sync_messages` swallows the rate limit, for each of the 7 loops | the matching case of `test_a_rate_limit_past_the_tries_fails_the_sync`, one for each |
+| M15 | `_get_client` uses the plain `RefreshingBearer` | 21 tests, with `test_get_client_puts_the_helper_on_each_call` |
+| M16 | `_next_wait` ignores `Retry-After` | 10 tests, with both cases of the 429 test |
+| M17 | A wait past the cap goes ahead | `test_a_retry_after_past_the_cap_ends_the_tries` |
+
+Under M9, httpx stopped the loop itself after 20 requests with `TooManyRedirects`. So the tests
+went red on the missing typed error, not on a hang.
+
+**Known limit EM-G4a-f1.** When a `batchModify` stops on a rate limit, `bulk_apply` falls back to
+one `modify` for each message, as it did before EM-G4a. With the budget spent, each `modify` stops
+at its first refusal. So a large bulk act can send many quick requests to a mailbox that Gmail
+limits. EM-G5 or a later slice owns a fix, with its own audit.
+
+**Known limit EM-G4a-f2.** On the history path, a fetch that fails with a 5xx leaves a record, and
+the cursor still moves past that message. Only a rate limit holds the cursor. EM-G4b decides
+whether a 5xx holds the cursor too.
 
 ##### 12.3.5.2 EM-G4b — the history cursor and its recovery
 

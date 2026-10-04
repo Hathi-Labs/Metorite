@@ -12,13 +12,14 @@ import asyncio
 import base64
 import json
 import logging
-from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+import random
+from collections.abc import AsyncGenerator, Callable, Iterator
+from datetime import UTC, datetime, timezone
 from email.errors import HeaderParseError
 from email.header import decode_header, make_header
 from email.message import Message
 from email.mime.text import MIMEText
-from email.utils import getaddresses
+from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -278,6 +279,177 @@ def _parse_list_unsubscribe(header: str) -> str | None:
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
 GMAIL_SCOPES = ["https://mail.google.com/"]
 
+# ── Rate limits (WS-17 EM-G4a, GM-9) ─────────────────────────────────────
+# ``email_app_master_plan.md`` §12.3.5.1. Fence: test_gmail_rate_limits.py.
+
+#: The tries of one request that Gmail refuses for a rate limit (item 9).
+GMAIL_MAX_TRIES = 3
+#: The longest single wait. A ``Retry-After`` that asks more ends the tries,
+#: because a shorter wait gets one more refusal.
+GMAIL_MAX_WAIT_SECS = 30.0
+#: The sum of the waits of one client. One provider serves one sync cycle,
+#: so a cycle waits this long at most for rate limits.
+GMAIL_WAIT_BUDGET_SECS = 60.0
+#: The first back-off when Gmail sends no ``Retry-After``. It doubles.
+_GMAIL_BACKOFF_SECS = 1.0
+#: The two reasons of a 403 that are a rate limit (item 8). Every other 403
+#: is a refusal, such as a missing scope, and a second try cannot help it.
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+#: The methods that RFC 9110 calls idempotent.
+_REPEATABLE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
+#: The POST actions that set a state, so a second try changes nothing.
+_REPEATABLE_POST_ACTIONS = ("/modify", "/batchModify", "/trash", "/untrash")
+
+
+class GmailRateLimited(httpx.HTTPStatusError):
+    """Gmail refused a request for a rate limit, and the helper sends it no
+    more (EM-G4a item 9). A sync that gets it fails, and the loop backs off.
+
+    It is an ``httpx.HTTPStatusError``, so each caller that handles an HTTP
+    failure handles it too."""
+
+    def __init__(self, response: httpx.Response, *, tries: int) -> None:
+        request = response.request
+        super().__init__(
+            f"Gmail rate limit: {response.status_code} on {request.method} "
+            f"{request.url.path} after {tries} tries",
+            request=request, response=response)
+        self.tries = tries
+
+
+def _repeatable(request: httpx.Request) -> bool:
+    """True when a second try of *request* cannot change the mailbox.
+
+    Each answer of Google proves that the request reached Google, so a send
+    must go once only. ``messages.send``, ``drafts.create``, ``drafts.send``
+    and each other POST are not repeatable."""
+    if request.method in _REPEATABLE_METHODS:
+        return True
+    return (request.method == "POST"
+            and request.url.path.endswith(_REPEATABLE_POST_ACTIONS))
+
+
+async def _is_rate_limit(response: httpx.Response) -> bool:
+    """True for a 429, and for a 403 whose reason is a rate limit.
+
+    A 5xx is not a rate limit (§12.3.5.1). It goes back to the caller."""
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
+        return False
+    await response.aread()
+    try:
+        errors = response.json()["error"]["errors"]
+        return any(e.get("reason") in _RATE_LIMIT_REASONS for e in errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """The seconds that ``Retry-After`` asks for, or None with no value.
+
+    The value is a count of seconds or an HTTP date."""
+    value = response.headers.get("Retry-After", "").strip()
+    if not value:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
+
+
+def _raise_rate_limit(exc: BaseException) -> None:
+    """Raise *exc* again when it is a rate limit whose tries are spent.
+
+    A sweep skips a label that fails, and the history path records a fetch
+    that fails. A rate limit must fail the sync instead, so the loop backs
+    off and the cursor stays (EM-G4a item 9)."""
+    if isinstance(exc, GmailRateLimited):
+        raise exc
+
+
+async def _wait(seconds: float) -> None:
+    """Wait for a rate limit. The tests replace it, so no test sleeps."""
+    await asyncio.sleep(seconds)
+
+
+class GmailBearer(RefreshingBearer):
+    """The bearer of the Gmail client, with the rate limits of Gmail.
+
+    WS-17 EM-G4a (``email_app_master_plan.md`` §12.3.5.1). ``_get_client``
+    sets it, so each Gmail call gets the rule, and no call site changes.
+
+    * A 429, or a 403 with a rate-limit reason, waits for ``Retry-After``
+      or a back-off. Then the same request goes again, at most
+      ``GMAIL_MAX_TRIES`` times in all.
+    * The tries end at once for a wait longer than ``GMAIL_MAX_WAIT_SECS``,
+      or for a wait past the budget of this client. Then, and after the last
+      try, the flow raises :class:`GmailRateLimited`.
+    * A request that is not :func:`_repeatable` goes back to the caller with
+      its answer. So a send never goes out twice.
+    * Each try runs the flow of :class:`RefreshingBearer`, so a 401 still
+      refreshes once. A rate limit and a 401 in one call cost one refresh.
+    """
+
+    def __init__(self, provider: Any) -> None:
+        super().__init__(provider)
+        #: The seconds that this client waited for rate limits.
+        self.waited = 0.0
+
+    def _next_wait(self, response: httpx.Response, tries: int) -> float | None:
+        """The wait before the next try, or None when the tries end."""
+        if tries >= GMAIL_MAX_TRIES:
+            return None
+        asked = _retry_after(response)
+        wait = (asked if asked is not None
+                else _GMAIL_BACKOFF_SECS * 2 ** (tries - 1) + random.uniform(0, 1))
+        if wait > GMAIL_MAX_WAIT_SECS or self.waited + wait > GMAIL_WAIT_BUDGET_SECS:
+            return None
+        return wait
+
+    async def async_auth_flow(
+        self, request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        tries = 0
+        while True:
+            tries += 1
+            # One try: the flow of RefreshingBearer, with its one refresh.
+            flow = super().async_auth_flow(request)
+            try:
+                response = yield await flow.__anext__()
+                while True:
+                    try:
+                        follow = await flow.asend(response)
+                    except StopAsyncIteration:
+                        break
+                    response = yield follow
+            finally:
+                await flow.aclose()
+            if not _repeatable(request) or not await _is_rate_limit(response):
+                return
+            # Read the answer, so the connection goes back to the pool and
+            # the error keeps its body.
+            await response.aread()
+            wait = self._next_wait(response, tries)
+            if wait is None:
+                logger.warning(
+                    "gmail.rate_limit_gave_up method=%s path=%s status=%s "
+                    "tries=%d waited=%.1f", request.method, request.url.path,
+                    response.status_code, tries, self.waited)
+                raise GmailRateLimited(response, tries=tries)
+            self.waited += wait
+            logger.info(
+                "gmail.rate_limited method=%s path=%s status=%s try=%d wait=%.1f",
+                request.method, request.url.path, response.status_code, tries, wait)
+            await _wait(wait)
+
 
 class GmailProvider(BaseEmailProvider):
     """Gmail API email provider."""
@@ -307,6 +479,9 @@ class GmailProvider(BaseEmailProvider):
         # fetching the whole label list once per label per message.
         self._label_ids_by_name: dict[str, str] | None = None   # lower name → id
         self._label_names_by_id: dict[str, str] = {}            # id → display name
+        #: The record of each message that a fetch could not read, for the
+        #: life of this instance (EM-G4a item 10). No entry names content.
+        self.fetch_failures: list[str] = []
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -324,17 +499,33 @@ class GmailProvider(BaseEmailProvider):
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
-        # No Authorization header here. RefreshingBearer sets the current
-        # token on each request, and refreshes once on a 401 (EM-T4c).
+        # No Authorization header here. GmailBearer is a RefreshingBearer: it
+        # sets the current token on each request, and refreshes once on a 401
+        # (EM-T4c). It also waits out a rate limit (EM-G4a), so each Gmail
+        # call through this client gets one rule.
         if self._http is None:
             await self.authenticate()
             self._http = httpx.AsyncClient(
                 base_url=GMAIL_API_BASE,
                 headers={"Content-Type": "application/json"},
-                auth=RefreshingBearer(self),
+                auth=GmailBearer(self),
                 timeout=30.0,
             )
         return self._http
+
+    def _record_fetch_failure(self, message_id: Any, exc: BaseException) -> str:
+        """Log and count one message that a fetch could not read (EM-G4a
+        item 10), and return its record.
+
+        The record names the message id, the class of the error and the HTTP
+        status. It never names a subject or an address."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        note = (f"gmail.fetch_failed id={message_id} "
+                f"error={type(exc).__name__} status={status}")
+        self.fetch_failures.append(note)
+        logger.warning("gmail.fetch_failed message_id=%s error=%s status=%s",
+                       message_id, type(exc).__name__, status)
+        return note
 
     async def _refresh_access_token(self) -> None:
         """Refresh the OAuth access token using the refresh token."""
@@ -448,8 +639,13 @@ class GmailProvider(BaseEmailProvider):
             # Fetch full message
             try:
                 messages.append(await self.get_message(msg_ref["id"]))
-            except Exception:
-                continue
+            except GmailRateLimited:
+                # The tries are spent. The sync fails and backs off, and the
+                # next cycle reads this message (EM-G4a item 9).
+                raise
+            except Exception as exc:
+                # No silent skip (item 10). The other messages still parse.
+                self._record_fetch_failure(msg_ref.get("id"), exc)
 
         next_token = data.get("nextPageToken")
         return messages, next_token
@@ -1047,6 +1243,10 @@ class GmailProvider(BaseEmailProvider):
         # change since the last sync (EM-T6b item 9). ``delta_shadow`` is
         # ignored too: it is the Graph delta of Outlook (EM-T4d).
         client = await self._get_client()
+        # The fetch records of this call go into ``SyncResult.errors``
+        # (EM-G4a item 10). A failed label still skips. A rate limit whose
+        # tries are spent raises instead, so the sync fails (item 9).
+        first_failure = len(self.fetch_failures)
 
         if deep:
             # One-time deep backfill: page every label back to ``since`` (incl.
@@ -1055,7 +1255,8 @@ class GmailProvider(BaseEmailProvider):
             deep_messages: list[EmailMessage] = []
             try:
                 folders = await self.list_folders()
-            except Exception:
+            except Exception as exc:
+                _raise_rate_limit(exc)
                 folders = []
             for f in folders:
                 if f.type != "user":
@@ -1067,18 +1268,21 @@ class GmailProvider(BaseEmailProvider):
                     deep_messages.extend(await self._sweep_label(
                         f.provider_folder_id, max_results, since, canon
                     ))
-                except Exception:
+                except Exception as exc:
+                    _raise_rate_limit(exc)
                     continue
             for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
                 try:
                     deep_messages.extend(
                         await self._sweep_label(label, max_results, since)
                     )
-                except Exception:
+                except Exception as exc:
+                    _raise_rate_limit(exc)
                     continue
             return SyncResult(
                 messages_synced=len(deep_messages), messages=deep_messages,
                 new_history_id=None,
+                errors=self.fetch_failures[first_failure:],
             )
 
         if history_id:
@@ -1122,7 +1326,9 @@ class GmailProvider(BaseEmailProvider):
                     result.messages.append(msg)
                     result.messages_synced += 1
                 except Exception as e:
-                    result.errors.append(f"Failed to fetch message {mid}: {e}")
+                    # The sync fails, so the cursor stays (EM-G4a item 9).
+                    _raise_rate_limit(e)
+                    result.errors.append(self._record_fetch_failure(mid, e))
 
             result.messages_synced += len(message_ids_deleted)
             return result
@@ -1139,7 +1345,8 @@ class GmailProvider(BaseEmailProvider):
             # ``categories`` (O-GM-1). ``canonical_override`` sets no folder.
             try:
                 folders = await self.list_folders()
-            except Exception:
+            except Exception as exc:
+                _raise_rate_limit(exc)
                 folders = []
             for f in folders:
                 if f.type != "user":
@@ -1155,7 +1362,8 @@ class GmailProvider(BaseEmailProvider):
                         canonical_override=canon,
                     )
                     messages.extend(user_msgs)
-                except Exception:
+                except Exception as exc:
+                    _raise_rate_limit(exc)
                     continue
 
             # System labels. EM-G5 owns the archived mail with no user label
@@ -1166,13 +1374,15 @@ class GmailProvider(BaseEmailProvider):
                         folder=label, max_results=max_results
                     )
                     messages.extend(label_msgs)
-                except Exception:
+                except Exception as exc:
+                    _raise_rate_limit(exc)
                     continue
 
             return SyncResult(
                 messages_synced=len(messages),
                 messages=messages,
                 new_history_id=None,  # will be set after first history call
+                errors=self.fetch_failures[first_failure:],
             )
 
     async def get_attachment(
