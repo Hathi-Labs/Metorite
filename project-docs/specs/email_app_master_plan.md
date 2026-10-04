@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. 🔨 **EM-T6c BUILT, not merged: branch `email-t6c`, commit `8b4cb4dfc`, no PR.**
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
@@ -2340,7 +2340,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b is MERGED (#580, 2026-10-03). EM-T6c to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** EM-T6a MERGED (#577). EM-T6b MERGED (#580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-t6c`, commit `8b4cb4dfc`, no PR. EM-T6e not built. Anchors re-verified at `ba8857617` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2548,6 +2548,20 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Waits for** EM-T6b. The owner answered Q1, Q2 and Q3 on 2026-10-02 (§10.2). The items marked (Q2) and (Q3) carry those answers.
 
+**Narrowed (2026-10-04).** Port `8b4cb4dfc` onto `main`. Do not build it again.
+
+- A dry-run apply onto `main` gives five conflicts: `email_ingestion/scheduler.py`, `transport/accounts.py`, `email_ingestion/AGENTS.md`, this spec and `work_plan.md`. Seven files apply clean.
+- On `main`, `_reconcile_import` takes `provider`. The old commit calls it without `provider`, so the port adds it.
+- The port takes no migration. Migration 225 holds `stored_bytes` and `stored_bytes_at`. A later change that needs a column takes the next free number at build time (R1).
+
+**The gaps G1 to G5 (2026-10-04).** The old commit leaves five gaps. The port closes each one, and these rules bind it.
+
+- **G1. The removal keeps drafts.** The preview and the removal skip the folder `drafts`, so an unsent draft stays. This is an orchestrator decision, and the owner can reverse it.
+- **G2. At the limit, `core.hydrate_message_body` writes no body** (`core.py:365-418`). It returns the body that it loads. The reply drafter and the follow-up path call it.
+- **G3. The removal holds the mailbox lock.** A new public helper in `scheduler.py` takes the lock that each sync takes (`scheduler.py:769-860`). The removal waits 5 seconds for it, then answers 409. Its first block under the lock moves `import_since`, before any delete.
+- **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit.
+- **G5. The last block deletes the orphan drafts of the AI.** It deletes each `email_ai_drafts` row of the mailbox whose thread has no message left.
+
 **Scope.**
 
 1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
@@ -2558,10 +2572,10 @@ The R8 tests must show PASSED, not SKIPPED.
 6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
 8. **The preview route.** `GET /email/accounts/{id}/storage/older?before=<date>` returns the count of messages and the bytes that a removal would free. It writes nothing.
-9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400.
-10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row of the mailbox whose thread has no message left.
-11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders and the contacts.
-12. **After the removal.** `import_since` becomes the later of `import_since` and `before`, so a Resync does not import that mail again. The meter runs again. The answer holds the count removed and the new `stored_bytes`.
+9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400. Both routes go in a new module, `transport/storage.py`.
+10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It skips the folder `drafts` (G1). It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row and each `email_ai_drafts` row of the mailbox whose thread has no message left (G5).
+11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders, the contacts and the unsent drafts (G1). The Mem0 memories of the mailbox stay, because no Mem0 key names one mail.
+12. **The import floor and the meter.** The first block under the lock moves `import_since` to the later of `import_since` and `before`, before any delete (G3). So a Resync does not import that mail again, also after a removal that fails part way. The last block runs the meter again, and it ends the `limit` phase under the limit (G4). The answer holds the count removed and the new `stored_bytes`.
 13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
 14. **The account API.** `EmailAccountModel` gains `stored_bytes` and `storage_limit_bytes`.
 
@@ -2575,8 +2589,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - A Resync at the limit stops in the same way, and its result holds `limit: true`.
 - (Q3) At the limit, phases (e) and (f) make no provider call and no model call.
 - (Q3) At the limit, a member who opens a message with no stored body gets the body.
-- (Q4) At the limit, that open writes no body to the row (`transport/messages.py:624-654`), so the meter
-  does not change. Under the limit, the open stores the body as it does today.
+- (Q4) At the limit, that open writes no body (`transport/messages.py:674-687`). Attachment rows may still land, because the download route needs the row id. Under the limit, the open stores the body as it does today.
 - (Q2) At the limit, the next poll still writes a new message.
 - The preview returns the count and the bytes, and the count of `email_messages` rows does not change.
 - R8: a removal with `before` 30 days back deletes each message of the mailbox older than that date, and no message of another mailbox. It deletes their `email_executed_rules` rows, and it moves `import_since` to `before`.
@@ -2585,23 +2598,36 @@ The R8 tests must show PASSED, not SKIPPED.
 - An AST fence finds no import of `email_ingestion.providers`, `build_provider` or `provider_session` in `storage.py` or in the two handlers. A companion test proves that the fence can fail.
 - An AST fence finds no `.commit()` in `storage.py`.
 - R8, for two organizations: a member who does not own the mailbox gets 404 from both routes.
-- `test_email_owner_scope_fence.py` passes with no new entry.
+- `test_email_owner_scope_fence.py` passes with no new entry. Its `email_ingestion/` entry gets a new reason text only.
+- (G1) The removal keeps each message in the folder `drafts`, and the preview does not count it.
+- (G2) At the limit, `hydrate_message_body` returns the body and writes none.
+- (G3) While a sync holds the mailbox, the removal answers 409. The removal moves `import_since` before its first delete.
+- (G4) R8: a removal that takes the meter under the limit writes `import_phase = 'done'`.
+- (G5) R8: the removal deletes each `email_ai_drafts` row of the mailbox whose thread has no message left. A patched Mem0 client gets no call.
+- R8, multi-inbox: a removal in mailbox A of member M leaves mailbox B of M unchanged.
 
-**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `transport/accounts.py`. The test is a new `tests/unit/test_email_storage_limit.py`.
+**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `core.py`, `transport/accounts.py`, `transport/messages.py`, `transport/__init__.py` and a new `transport/storage.py`. The DOX files `apps/services/email_ingestion/AGENTS.md` and `apps/services/gateway/AGENTS.md`. The test is a new `tests/unit/test_email_storage_limit.py`.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_storage_limit.py tests/unit/test_email_import_batches.py \
-  tests/unit/test_email_import_floor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_email_embeddings_hash.py tests/unit/test_email_owner_scope_fence.py \
-  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_org_purge_tenant.py -q -rs
-uv run ruff check apps/services/email_ingestion packages/acb_common \
-  apps/services/gateway/gateway/routes/email/transport tests/unit/test_email_storage_limit.py
+  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_keep_separate.py \
+  tests/unit/test_org_purge_tenant.py tests/unit/test_db_engine_seam.py -q -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/storage.py \
+  apps/services/gateway/gateway/routes/email/transport/storage.py \
+  tests/unit/test_email_storage_limit.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+Before merge, read the meter (the SELECT form only) for each production mailbox. A mailbox from before EM-T6 can already be over 500 MB (R-8).
 
 ##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
 
@@ -2609,8 +2635,8 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
 
-- **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
-- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is BUILT, not merged (2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
+- **Part 1** builds items 1 to 7, 12 and 13. ✅ MERGED (#579). `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". ✅ MERGED (#581, 2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
 - **Part 2 offers "Process past emails" (owner decision (d), #576).** The automatic rule run touches only mail that arrived after the first enabled rule. So, once a rule exists, the step offers "Sort my imported mail". It opens AI Settings with "Process past emails" from the date of `import_since`, and the dialog counts the mail before it spends a model call.
 - **Part 2, the ways out.** "Done", "Skip for now" and the "Skip setup" button send `onboarding_done: true`. The page writes the returned account into the store, so a failed re-read cannot bring the step back (fix round 1).
 - **Part 2, the drafting switch (fix round 1).** It shows the stored `draft_replies`, read on each mount, and stays disabled until the read returns or when it fails. It shows only with an enabled reply rule, the rule of `_is_reply_rule` in `rules.py`. Without one, a line names the "Needs Reply" rule. The client match mirrors the two tuples of `rules.py`, and a test parses them.
@@ -2714,7 +2740,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **R-7. A member act can import removed mail again.** Process past emails with an explicit date is bound by the ceiling only. The member asked for that mail, and the limit still binds.
 - **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
 - **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
-- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:624-654`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
+- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:674-687`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
 
 #### 10.4.8 EM-T5b in full
 
